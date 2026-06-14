@@ -1,0 +1,14 @@
+pub mod adapter;
+pub mod audio;
+pub mod editor;
+pub mod effects;
+pub mod kernel;
+pub mod midi_file;
+pub mod modulation;
+pub mod patch;
+pub mod plugin;
+pub mod presets;
+pub mod real_time;
+pub mod sample_library;
+pub mod shell;
+pub mod synth;
