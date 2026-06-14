@@ -1,16 +1,9 @@
 package crestsynth
 
-// Phase 4: Multiple patches subscribed to channels
-// Per-patch voice pools, channel dispatch, global mix.
-
-// ── Kernel addition ────────────────────────────────────
-
-project: contexts: Kernel: valueObjects: ChannelAddress: {
-	state:       {group: "MidiGroup", channel: "MidiChannel"}
-	description: "a (group, channel) pair — the 256-destination address space for MIDI 2.0"
-}
-
-// ── Patch context ──────────────────────────────────────
+// ── Patch ──────────────────────────────────────────────
+// Patch management: each patch is a complete instrument subscribed to a MIDI
+// channel, with its own voice pool, channel dispatch, and global mix. Plus the
+// multi-patch integration prover.
 
 project: contexts: Patch: purpose: "patch management: each patch is a complete instrument subscribed to a MIDI channel"
 project: contexts: Patch: ubiquitousLanguage: {
@@ -71,7 +64,7 @@ project: contexts: Patch: repositories: PatchRepository: {
 	contract: {findById: "PatchId -> Option<Patch>", findByChannel: "ChannelAddress -> Vec<Patch>", save: "Patch -> ()", listAll: "() -> Vec<Patch>"}
 }
 
-// ── Multi-patch MIDI playback (the integration prover) ─────────────────
+// ── Multi-patch integration prover ─────────────────────
 // patch_play is THE end-to-end integration proof: a multi-channel MIDI file
 // fanned out by the ChannelDispatcher into per-patch voice pools and summed
 // by the PatchMixer / GlobalMixer to one WAV.

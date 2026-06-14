@@ -1,27 +1,11 @@
 package crestsynth
 
-// Phase 11: Standalone editor app — keyboard/gamepad-driven parameter editor.
+// ── Editor ─────────────────────────────────────────────
+// Keyboard/gamepad-driven parameter editor: a one-way (Elm/Flux) event loop
+// over a single store (EditorState) that edits live engine parameters. The
+// standalone editor app hosts the live engine (external MIDI in via MidirInput,
+// audio out via cpal) and is hermetically smoke-testable with no window/device.
 //
-// A real, runnable eframe/egui WINDOW that hosts the live engine (external
-// MIDI in via MidirInput, audio out via cpal) and lets you edit synth
-// parameters while external gear plays notes. This is an EDITOR, not a
-// performance surface: there is NO on-screen keyboard, NO note triggering,
-// and NO mouse/touch input. All notes come from external MIDI hardware.
-//
-// Architecture: a strict ONE-WAY event loop (Elm/Flux). The keyboard/gamepad
-// input adapter translates raw keys/buttons into semantic EditorEvents; those
-// events are applied to a single store (EditorState); the egui view is a pure
-// function of that store's state. Widgets never mutate state and never touch a
-// parameter directly — they only render. Edited parameter values are published
-// to the audio engine across the phase-3 lock-free seam as a ParameterSnapshot;
-// the audio model consumes external MIDI + that snapshot and knows nothing
-// about EditorEvents.
-//
-// `make ui` launches the window; `make ui-smoke` is the hermetic headless
-// validation (constructs app state, opens NO window and NO audio device).
-// Depends only on phases 1-9 components; does NOT depend on the phase-10 plugin.
-
-// ── Editor context: the control plane (one-way event loop) ─────────────
 // EditorState is the single store. The egui shell and the gamepad adapter both
 // emit the SAME EditorEvents into it, so keyboard and gamepad are interchangeable
 // and the whole control plane is hermetically testable: feed an event sequence,
@@ -94,7 +78,7 @@ project: contexts: Editor: aggregates: EditorState: {
 	]
 }
 
-// ── Standalone editor app (hosts the live engine) ──────────────────────
+// ── Standalone editor app (hosts the live engine) ──────
 
 project: assets: StandaloneUiMain: {
 	kind:        "rust-bin-target"
@@ -139,9 +123,6 @@ project: assets: StandaloneUiMain: {
 	]
 	validations: [
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with the standalone editor app"},
-		// hermetic: ui-smoke constructs full app state + drives a few EditorEvents
-		// and exits 0 WITHOUT opening a window, audio device, or MIDI device. The
-		// real window is launched manually via `make ui`.
 		{kind: "integration", command: ["make", "ui-smoke"], description: "editor app constructs headlessly AND renders a non-silent audio block (catches a stubbed/silent engine path without a device)", assertions: [
 			{kind: "exit_code", expected: 0},
 			{kind: "stdout_contains", pattern: "ui smoke ok"},

@@ -1,7 +1,8 @@
 package crestsynth
 
-// Phase 7: Effects
-// Per-patch and global reverb/chorus/delay via fundsp.
+// ── Effects ────────────────────────────────────────────
+// Audio effects processing: per-patch and global reverb, chorus, delay via
+// fundsp. Includes the fundsp adapter and the slot-order/bypass prover.
 
 project: contexts: Effects: purpose: "audio effects processing: per-patch and global reverb, chorus, delay via fundsp"
 project: contexts: Effects: ubiquitousLanguage: {
@@ -82,14 +83,23 @@ project: contexts: Effects: repositories: EffectChainRepository: {
 	]
 }
 
-// ── Effects made audible (the phase-7 behavior prover) ─────────────────
+// ── Infrastructure adapter (implements EffectProcessor) ─
+
+project: adapters: FundspEffects: {
+	implements: "port.Effects.EffectProcessor"
+	layer: "infrastructure"
+	meta: notes: "fundsp: composable DSP nodes for reverb, chorus, delay"
+	validations: [{kind: "compiles", command: ["cargo", "build"], description: "crate builds with FundspEffects adapter"}]
+}
+
+// ── Effects made audible (slot-order + bypass prover) ──
 // effects_demo proves the EffectChain end to end through the real render path:
 // it renders the multi-patch demo, runs each patch's audio through a per-patch
 // EffectChain and the master mix through a global EffectChain, and MECHANICALLY
 // proves the two invariants — (1) slot order matters, (2) a bypassed chain
-// passes audio through unmodified. fundsp's adapter arrives in phase 9, so the
-// demo supplies a tiny in-crate EffectProcessor impl (the port exists now); the
-// proof is structural (ordering + bypass), not DSP-quality.
+// passes audio through unmodified. The fundsp adapter implements the port; the
+// demo supplies a tiny in-crate EffectProcessor impl so the proof is structural
+// (ordering + bypass), not DSP-quality.
 
 project: assets: EffectsDemoMain: {
 	kind:        "rust-bin-target"

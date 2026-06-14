@@ -1,21 +1,8 @@
 package crestsynth
 
-// Phase 6: Sample playback
-// SF2/WAV loading, key/velocity zones, interpolation.
-// SampleLibrary context manages sample data; Synth gains a SamplePlayer engine type.
-
-// ── Synth addition ─────────────────────────────────────
-
-project: contexts: Synth: valueObjects: SamplePlayerConfig: {
-	state:       {sampleSetId: "SampleSetId", interpolation: "InterpolationMode", loopMode: "LoopMode"}
-	description: "sample player engine config: which sample set, interpolation quality, loop behavior"
-	validations: [
-		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with SamplePlayerConfig"},
-		{kind: "test", command: ["cargo", "test", "sample_player_config"], description: "SamplePlayerConfig unit tests pass"},
-	]
-}
-
-// ── SampleLibrary context ──────────────────────────────
+// ── SampleLibrary ──────────────────────────────────────
+// Sample data management: loading, organizing, and serving sample sets to the
+// engine (key/velocity zones, interpolation). Plus the hermetic sample prover.
 
 project: contexts: SampleLibrary: purpose: "sample data management: loading, organizing, and serving sample sets to the engine"
 project: contexts: SampleLibrary: ubiquitousLanguage: {
@@ -94,7 +81,7 @@ project: contexts: SampleLibrary: repositories: SampleSetRepository: {
 	]
 }
 
-// ── Sample playback made audible (the phase-6 behavior prover) ─────────
+// ── Sample playback prover (hermetic) ──────────────────
 // sample_demo proves the SampleLibrary end to end: it SYNTHESIZES its own tiny
 // WAV sample at startup (so no sample file ships in the repo), loads it through
 // the SampleLoader into a SampleSet with multiple key/velocity zones, looks up

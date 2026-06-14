@@ -1,9 +1,16 @@
 package crestsynth
 
-// Phase 9: Gamepad UX + all adapters + context map
-// Controller input, full-screen layout, distributable build.
+// ── Shell ──────────────────────────────────────────────
+// Application shell: wires audio output, MIDI input, the window, and gamepad
+// input to the engine, plus the host-agnostic navigation/glyph domain services.
+// Infrastructure adapters that implement Shell ports are co-located here.
 
-// ── Shell additions ────────────────────────────────────
+project: contexts: Shell: purpose: "application shell: wires audio output, MIDI input, and the window to the engine"
+
+project: contexts: Shell: ports: AudioOutput: contract:    {openStream: "SampleRate -> AudioStream", writeBuffer: "[AudioFrame] -> ()", availableFrames: "() -> usize"}
+project: contexts: Shell: ports: MidiInput: contract:      {listPorts: "() -> Vec<MidiPortInfo>", connect: "MidiPortId -> MidiConnection", nextEvent: "() -> Option<RawMidiMessage>"}
+project: contexts: Shell: ports: MidiNormalizer: contract:  {normalize: "RawMidiMessage -> MidiEvent"}
+project: contexts: Shell: ports: AppWindow: contract:       {create: "WindowConfig -> Window", runLoop: "FrameCallback -> ()"}
 
 project: contexts: Shell: ports: GamepadInput: {
 	contract: {poll: "() -> Vec<GamepadEvent>", connectedControllers: "() -> Vec<ControllerId>", controllerType: "ControllerId -> ControllerType"}
@@ -39,8 +46,13 @@ project: contexts: Shell: domainServices: GlyphResolver: {
 	]
 }
 
-// ── Adapters ───────────────────────────────────────────
+// ── Infrastructure adapters (implement Shell ports) ────
 
+project: adapters: CpalAudioOutput: {
+	implements: "port.Shell.AudioOutput"
+	layer:      "infrastructure"
+	meta: notes: "cpal: cross-platform audio output (ALSA/PipeWire, WASAPI, CoreAudio)"
+}
 project: adapters: MidirInput: {
 	implements: "port.Shell.MidiInput"
 	layer: "infrastructure"
@@ -71,42 +83,21 @@ project: adapters: EguiRenderer: {
 	meta: notes: "egui: immediate-mode UI with custom painting"
 	validations: [{kind: "compiles", command: ["cargo", "build"], description: "crate builds with EguiRenderer adapter"}]
 }
-project: adapters: FundspEffects: {
-	implements: "port.Effects.EffectProcessor"
-	layer: "infrastructure"
-	meta: notes: "fundsp: composable DSP nodes for reverb, chorus, delay"
-	validations: [{kind: "compiles", command: ["cargo", "build"], description: "crate builds with FundspEffects adapter"}]
-}
-project: adapters: SerdePresetCodec: {
-	implements: "port.Presets.PresetCodec"
-	layer: "infrastructure"
-	meta: notes: "serde_json for presets, bincode for setups"
-	validations: [
-		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with SerdePresetCodec adapter"},
-		{kind: "test", command: ["cargo", "test", "serde_preset_codec"], description: "SerdePresetCodec round-trip tests pass"},
+
+project: assets: CpalAudioOutputAdapter: {
+	kind:        "rust-adapter"
+	description: "CpalAudioOutput: cpal-backed implementation of the AudioOutput port"
+	prompts: [
+		"File path: src/Shell/CpalAudioOutput.rs",
+		"Implement AudioOutput and AudioStream traits from Shell::AudioOutput",
+		"Use cpal::traits::{DeviceTrait, HostTrait, StreamTrait}",
+		"Use an internal lock-free SPSC ring buffer (rtrb) of interleaved stereo f32: the producer half lives on the writing thread; the cpal data callback drains the consumer half, filling any shortfall with silence (0.0) so it never underruns or blocks.",
+		"Implement availableFrames() -> usize: return the number of whole STEREO FRAMES of FREE space currently in the ring buffer (i.e. producer free f32 slots / 2). Callers use this to render exactly what fits so the buffer never overflows. It must be cheap and non-blocking.",
+		"write_buffer(frames): push interleaved L,R into the ring. If the buffer is full, drop the excess SILENTLY — do NOT print to stderr per dropped frame (a paced caller that respects availableFrames never overflows; logging here just floods the console). At most, you may keep an internal dropped-frame counter, but emit nothing on the hot path.",
 	]
 }
 
-// ── Context map ────────────────────────────────────────
-
-project: contextMap: shellToSynth:        {from: "Shell", to: "Synth", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: shellToPatch:        {from: "Shell", to: "Patch", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: patchToSynth:        {from: "Patch", to: "Synth", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: patchToEffects:      {from: "Patch", to: "Effects", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: modToSynth:          {from: "Modulation", to: "Synth", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: modToPatch:          {from: "Modulation", to: "Patch", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: sampleLibToSynth:    {from: "SampleLibrary", to: "Synth", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: sampleLibToRealTime: {from: "SampleLibrary", to: "RealTime", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: presetsToPatch:      {from: "Presets", to: "Patch", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: presetsToMod:        {from: "Presets", to: "Modulation", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: presetsToEffects:    {from: "Presets", to: "Effects", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: kernelToSynth:       {from: "Kernel", to: "Synth", kind: "shared-kernel"}
-project: contextMap: kernelToPatch:       {from: "Kernel", to: "Patch", kind: "shared-kernel"}
-project: contextMap: kernelToMod:         {from: "Kernel", to: "Modulation", kind: "shared-kernel"}
-project: contextMap: realTimeToSynth:     {from: "RealTime", to: "Synth", kind: "anti-corruption", direction: "upstream"}
-project: contextMap: realTimeToPatch:     {from: "RealTime", to: "Patch", kind: "anti-corruption", direction: "upstream"}
-
-// ── Gamepad navigation made provable (the phase-9 behavior prover) ─────
+// ── Gamepad navigation prover ──────────────────────────
 // gamepad_demo proves the controller-first navigation logic WITHOUT any device
 // or window: it feeds a scripted sequence of raw GamepadEvents through the
 // GamepadNavigator (translating them into GamepadActions that drive the app's
@@ -132,8 +123,6 @@ project: assets: GamepadNavDemoMain: {
 	]
 	validations: [
 		{kind: "compiles", command: ["make", "build"], description: "gamepad demo builds"},
-		// device-free + window-free: this validation exercises only the
-		// host-agnostic GamepadNavigator/GlyphResolver domain services.
 		{kind: "integration", command: ["make", "check-gamepad"], description: "scripted gamepad events map to actions and glyphs resolve per controller, no device", assertions: [
 			{kind: "exit_code", expected: 0},
 			{kind: "stdout_contains", pattern: "nav actions ok:"},

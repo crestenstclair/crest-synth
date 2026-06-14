@@ -1,7 +1,8 @@
 package crestsynth
 
-// Phase 10: Plugin wrapper (optional)
-// nih-plug shell over the same engine library for CLAP/VST3.
+// ── Plugin ─────────────────────────────────────────────
+// Plugin wrapper: exposes the engine library as CLAP/VST3 plugins via nih-plug.
+// Includes the nih-plug host adapter.
 
 project: contexts: Plugin: purpose: "plugin wrapper: exposes the engine library as CLAP/VST3 plugins via nih-plug"
 project: contexts: Plugin: ubiquitousLanguage: {
@@ -47,15 +48,9 @@ project: contexts: Plugin: aggregates: PluginInstance: {
 
 project: contexts: Plugin: applicationServices: PluginShell: {purpose: "orchestrates plugin lifecycle: init, process, param sync, state persistence via the host"}
 
-// ── Adapter ────────────────────────────────────────────
+// ── Infrastructure adapter (implements PluginHost) ─────
 
 project: adapters: NihPlugHost: {implements: "port.Plugin.PluginHost", layer: "infrastructure", meta: notes: "nih-plug: Rust framework for CLAP/VST3 plugin development"}
-
-// ── Context map additions ──────────────────────────────
-
-project: contextMap: pluginToSynth:   {from: "Plugin", to: "Synth", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: pluginToPatch:   {from: "Plugin", to: "Patch", kind: "customer-supplier", direction: "downstream"}
-project: contextMap: pluginToPresets: {from: "Plugin", to: "Presets", kind: "customer-supplier", direction: "downstream"}
 
 // ── Invariants ─────────────────────────────────────────
 

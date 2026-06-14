@@ -1,7 +1,8 @@
 package crestsynth
 
-// Phase 8: Presets
-// serde save/load for patches and full setups; preset browser.
+// ── Presets ────────────────────────────────────────────
+// Persistence: save/load individual patches and full setups via serde.
+// Includes the serde codec adapter and the round-trip fidelity prover.
 
 project: contexts: Presets: purpose: "persistence: save/load individual patches and full setups via serde"
 project: contexts: Presets: ubiquitousLanguage: {
@@ -103,15 +104,27 @@ project: contexts: Presets: repositories: PresetRepository: {
 	]
 }
 
-// ── Preset round-trip made provable (the phase-8 behavior prover) ──────
+// ── Infrastructure adapter (implements PresetCodec) ────
+
+project: adapters: SerdePresetCodec: {
+	implements: "port.Presets.PresetCodec"
+	layer: "infrastructure"
+	meta: notes: "serde_json for presets, bincode for setups"
+	validations: [
+		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with SerdePresetCodec adapter"},
+		{kind: "test", command: ["cargo", "test", "serde_preset_codec"], description: "SerdePresetCodec round-trip tests pass"},
+	]
+}
+
+// ── Preset round-trip prover ───────────────────────────
 // preset_demo proves the two presetIntegrity invariants MECHANICALLY: it builds
 // a full Setup (several distinct patches + mixer + mod + effects), serializes it
 // via the PresetCodec port, deserializes it back, asserts the reloaded Setup
 // equals the original, and — the real proof of "reproduces the saved sound
 // exactly" — renders the SAME demo passage through both the original and the
 // reloaded Setup and asserts the two WAVs are BIT-IDENTICAL. The SerdePresetCodec
-// adapter lands in phase 9; this phase provides the serde-backed codec inline so
-// the round-trip is testable now.
+// adapter implements the port; this demo provides the serde-backed codec inline
+// so the round-trip is testable.
 
 project: assets: PresetRoundtripDemoMain: {
 	kind:        "rust-bin-target"

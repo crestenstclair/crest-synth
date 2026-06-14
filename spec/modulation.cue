@@ -1,7 +1,8 @@
 package crestsynth
 
-// Phase 5: Modulation
-// Envelopes, LFOs, routing matrix, per-note expression (MPE-ready).
+// ── Modulation ─────────────────────────────────────────
+// Modulation routing: sources (envelopes, LFOs, per-note expression) mapped to
+// destinations via a matrix. Plus the modulation-made-audible prover.
 
 project: contexts: Modulation: purpose: "modulation routing: sources (envelopes, LFOs, expression) mapped to destinations via a matrix"
 project: contexts: Modulation: ubiquitousLanguage: {
@@ -57,7 +58,7 @@ project: contexts: Modulation: domainServices: ModulationProcessor: {
 	uses: ["aggregate.Modulation.ModMatrix"]
 }
 
-// ── Modulation made audible ────────────────────────────────────────────
+// ── Modulation made audible ────────────────────────────
 // mod_play is patch_play with the Modulation context active: an LFO vibrato
 // and a filter sweep, routed through the ModMatrix and applied each block by
 // the ModulationProcessor, so the modulation is something a human can hear.

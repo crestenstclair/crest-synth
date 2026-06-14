@@ -1,19 +1,31 @@
 package crestsynth
 
-// Override (phase 11): adds `ui` and `ui-smoke` — the standalone eframe/egui
-// window and its hermetic headless self-check. `make ui` launches the real
-// interactive window (and opens an audio device — human-only, like play-*);
-// `make ui-smoke` constructs the full app state with NO window and NO device
-// and is validation-safe. Picked up by run-phased-agent.sh (highest-numbered
-// phase-N.override-BuildMakefile.cue with N <= target phase). REPLACES the
-// phase-9 override, so the FULL cumulative target list is enumerated here.
-//
-//   - `demo-*`   targets render to a WAV and are safe in validations.
-//   - `check-*`  targets are device-free behavioral checks (no WAV, no device).
-//   - `*-smoke`  targets are headless constructors (no window, no device); safe in validations.
-//   - `play-*`   targets are human-only: render then afplay.
-//   - `ui`       is human-only: opens the real window and an audio device.
-//   - afplay appears ONLY in play-* targets, NEVER in a demo-*/check-*/*-smoke/validation.
+// ── Crate manifest & build automation ──────────────────
+// The root Cargo.toml (dependencies + [[bin]] targets) and the Makefile that
+// drives builds, demos, device-free checks, headless smokes, and human-only
+// playback/UI targets.
+
+project: assets: RootCargoToml: {
+	kind:        "cargo-manifest"
+	description: "Root Cargo.toml for the crest-synth project"
+	prompts: [
+		"Package name: crest-synth, version 0.1.0",
+		#"Include [[bin]] section: name = "crest-synth", path = "src/main.rs""#,
+		#"Include [[bin]] section: name = "midi_play", path = "src/bin/midi_play.rs""#,
+		#"Include [[bin]] section: name = "voice_demo", path = "src/bin/voice_demo.rs""#,
+		#"Include [[bin]] section: name = "midi_play_live", path = "src/bin/midi_play_live.rs""#,
+		#"Include [[bin]] section: name = "patch_play", path = "src/bin/patch_play.rs""#,
+		#"Include [[bin]] section: name = "mod_play", path = "src/bin/mod_play.rs""#,
+		#"Include [[bin]] section: name = "sample_demo", path = "src/bin/sample_demo.rs""#,
+		#"Include [[bin]] section: name = "effects_demo", path = "src/bin/effects_demo.rs""#,
+		#"Include [[bin]] section: name = "preset_demo", path = "src/bin/preset_demo.rs""#,
+		#"Include [[bin]] section: name = "gamepad_demo", path = "src/bin/gamepad_demo.rs""#,
+		#"Include [[bin]] section: name = "synth_ui", path = "src/bin/synth_ui.rs""#,
+		#"Dependencies: `midly` (0.5.x) for SMF parsing; `cpal` for audio output; the lock-free seam crates `rtrb`, `triple_buffer`, `basedrop`; `serde` (with `derive`) and `serde_json` for presets; and the phase-9 adapter crates: `midir` (MIDI I/O), `midi2` (MIDI 1.0 upconversion), `eframe`/`egui` (window + UI), `gilrs` (gamepad input), and `fundsp` (effects DSP)."#,
+		#"CRITICAL eframe/egui version pin: depend on a CURRENT eframe/egui release — 0.28 or newer (prefer the latest 0.x line) — that transitively uses `objc2` 0.5+ and `winit` 0.30+. Do NOT use the eframe/egui 0.27 line: it pulls `winit` 0.29 → `objc2` 0.3-beta + `icrate` 0.0.4, which on current macOS aborts at window creation with a non-unwinding panic inside winit's `did_finish_launching` ("invalid message send to NSScreen countByEnumeratingWithState…: expected 'q', found 'Q'"). The crate builds fine and `ui-smoke` passes regardless (it opens no window), so this MUST be pinned here — the validation loop cannot catch a window-creation runtime panic."#,
+		"Only include dependencies actually needed by the generated code. The standalone synth_ui binary is a new shell over the existing engine; it reuses the already-declared eframe/egui (window + UI) and cpal (audio) crates and pulls in NO new crate. Do NOT add nih-plug — that is the phase-10 plugin wrapper's dependency and phase 11 must not depend on it.",
+	]
+}
 
 project: assets: BuildMakefile: {
 	kind:        "makefile"

@@ -1,15 +1,9 @@
 package crestsynth
 
-// Phase 2: Real polyphonic engine
-// Voice allocation with stealing, oscillator, filter, amp envelope.
-// Replaces throwaway Audio context from phase 1.
-
-// ── Kernel additions ───────────────────────────────────
-
-project: contexts: Kernel: valueObjects: Frequency: {from: "f64", description: "frequency in Hz", invariants: ["must be positive"]}
-project: contexts: Kernel: valueObjects: Amplitude: {from: "f64", description: "linear amplitude (0.0 = silence, 1.0 = unity)", invariants: ["must be non-negative"]}
-
-// ── Synth context ──────────────────────────────────────
+// ── Synth ──────────────────────────────────────────────
+// Polyphonic synthesis engine: voice management, oscillator, filter, envelope,
+// and sample-player engine config. Plus the tone-test entry point and the
+// voice-stealing prover that exercise this context.
 
 project: contexts: Synth: purpose: "polyphonic synthesis engine: voice management, oscillator, filter, envelope"
 project: contexts: Synth: ubiquitousLanguage: {
@@ -29,6 +23,14 @@ project: contexts: Synth: valueObjects: AmpEnvelopeConfig: {
 	state:       {attack: "f64", decay: "f64", sustain: "f64", release: "f64"}
 	description: "ADSR envelope times (seconds) and sustain level (0.0-1.0)"
 	invariants: ["attack, decay, release must be non-negative", "sustain must be 0.0-1.0"]
+}
+project: contexts: Synth: valueObjects: SamplePlayerConfig: {
+	state:       {sampleSetId: "SampleSetId", interpolation: "InterpolationMode", loopMode: "LoopMode"}
+	description: "sample player engine config: which sample set, interpolation quality, loop behavior"
+	validations: [
+		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with SamplePlayerConfig"},
+		{kind: "test", command: ["cargo", "test", "sample_player_config"], description: "SamplePlayerConfig unit tests pass"},
+	]
 }
 
 project: contexts: Synth: aggregates: Voice: {
@@ -70,7 +72,26 @@ project: contexts: Synth: invariants: synthEngineTuning: [
 project: contexts: Synth: domainServices: VoiceAllocator: {purpose: "assigns incoming notes to voices, stealing oldest/quietest when pool is full", uses: ["aggregate.Synth.Voice"]}
 project: contexts: Synth: domainServices: AudioRenderer:  {purpose: "iterates all active voices, renders each through the engine, mixes to output", uses: ["aggregate.Synth.Voice"]}
 
-// ── Voice stealing made audible (the phase-2 behavior prover) ──────────
+// ── Tone test (default binary) ─────────────────────────
+
+project: assets: ToneTestMain: {
+	kind:        "rust-binary"
+	description: "src/main.rs: tone test exercising the synth engine"
+	prompts: [
+		"File path: src/main.rs",
+		"Play a 3-second C4-E4-G4 arpeggio (notes at 0.0s, 0.5s, 1.0s; each ~0.4s duration)",
+		"Render in 256-sample blocks, triggering note_on/note_off at the correct sample offsets",
+		"Write output to tone-test.wav using a pure-Rust WAV writer (no external crates)",
+	]
+	validations: [
+		{kind: "integration", command: ["cargo", "run", "--", "--wav"], description: "arpeggio renders to WAV", assertions: [
+			{kind: "exit_code", expected: 0},
+			{kind: "file_exists", path: "tone-test.wav"},
+		]},
+	]
+}
+
+// ── Voice stealing prover ──────────────────────────────
 // voice_demo deliberately over-drives polyphony so the VoiceAllocator's
 // stealing path actually fires, then renders the result to WAV and reports
 // a steal count and per-stage envelope markers. This is what mechanically
