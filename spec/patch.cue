@@ -11,12 +11,35 @@ project: contexts: Patch: ubiquitousLanguage: {
 	ChannelSubscription: "which (group, channel) address a patch listens to"
 	VoicePool:           "per-patch pool of voices with its own polyphony limit and stealing policy"
 	MpeZone:             "a span of channels treated as one expressive instrument"
+	ChannelStrip:        "one of the 16 mixer channels: volume, reverb send, echo send, pan, mute, solo"
+	ChannelMixer:        "the 16-channel mix bus with solo-aware audibility and per-channel peak metering"
+	PeakLevel:           "a channel's live meter level; reflects its own signal regardless of mute/solo gating"
 }
 
 project: contexts: Patch: valueObjects: PatchId:              {from: "u32", description: "unique identifier for a patch"}
 project: contexts: Patch: valueObjects: MpeZone:              {state: {managerChannel: "MidiChannel", memberChannelStart: "MidiChannel", memberChannelEnd: "MidiChannel"}, description: "MPE zone configuration", invariants: ["memberChannelStart < memberChannelEnd", "manager channel must not overlap member channels"]}
 project: contexts: Patch: valueObjects: ChannelSubscription:  {state: {address: "ChannelAddress", mpeZone: "Option<MpeZone>"}, description: "what a patch listens to"}
 project: contexts: Patch: valueObjects: VoicePoolConfig:      {state: {maxVoices: "u8", stealingPolicy: "StealingPolicy"}, description: "per-patch voice pool sizing", invariants: ["maxVoices must be at least 1"]}
+
+project: contexts: Patch: valueObjects: ChannelStrip: {
+	state:       {volume: "f64", reverbSend: "f64", echoSend: "f64", pan: "f64", mute: "bool", solo: "bool"}
+	description: "one mixer channel's settings: volume (0.0-1.0, normalized — also the channel's metering source), reverb send (0.0-1.0), echo send (0.0-1.0), pan (-1.0 hard-left … 0.0 center … +1.0 hard-right), and the mute and solo toggles"
+	invariants: [
+		"volume, reverbSend, echoSend are always within 0.0-1.0 (clamped on every set)",
+		"pan is always within -1.0 (hard left) to +1.0 (hard right); 0.0 is center",
+	]
+	validations: [
+		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with ChannelStrip"},
+		{kind: "test", command: ["cargo", "test", "channel_strip"], description: "ChannelStrip range/clamp unit tests pass"},
+	]
+}
+
+project: contexts: Patch: valueObjects: PeakLevel: {
+	from:        "f32"
+	description: "a channel's live peak meter level (0.0 = silent); derived from the channel's OWN signal and is independent of mute/solo gating"
+	invariants: ["must be non-negative"]
+	validations: [{kind: "compiles", command: ["cargo", "build"], description: "crate builds with PeakLevel"}]
+}
 
 project: contexts: Patch: aggregates: Patch: {
 	root:    true
@@ -54,6 +77,69 @@ project: contexts: Patch: aggregates: GlobalMixer: {
 	state: {masterGain: "Amplitude"}
 	commands: [{name: "SetMasterGain", payload: {gain: "Amplitude"}}]
 	events:   [{name: "MasterGainChanged", payload: {gain: "Amplitude"}}]
+}
+
+project: contexts: Patch: aggregates: ChannelMixer: {
+	root:    true
+	purpose: "the 16-channel mix bus: per-channel volume/sends/pan/mute/solo, solo-aware audibility, and independent per-channel peak metering"
+	state: {channels: "[ChannelStrip; 16]", peaks: "[PeakLevel; 16]"}
+	commands: [
+		{name: "SetVolume", payload: {channel: "usize", value: "f64"}},
+		{name: "SetReverbSend", payload: {channel: "usize", value: "f64"}},
+		{name: "SetEchoSend", payload: {channel: "usize", value: "f64"}},
+		{name: "SetPan", payload: {channel: "usize", value: "f64"}},
+		{name: "ToggleMute", payload: {channel: "usize"}},
+		{name: "ToggleSolo", payload: {channel: "usize"}},
+	]
+	events: [
+		{name: "ChannelVolumeChanged", payload: {channel: "usize", value: "f64"}},
+		{name: "ChannelReverbSendChanged", payload: {channel: "usize", value: "f64"}},
+		{name: "ChannelEchoSendChanged", payload: {channel: "usize", value: "f64"}},
+		{name: "ChannelPanChanged", payload: {channel: "usize", value: "f64"}},
+		{name: "ChannelMuteToggled", payload: {channel: "usize", muted: "bool"}},
+		{name: "ChannelSoloToggled", payload: {channel: "usize", soloed: "bool"}},
+	]
+	meta: notes: """
+		The mixer owns 16 ChannelStrips (one per MIDI channel) and 16 PeakLevels.
+		Every set-command clamps its value to the parameter's range before storing
+		it. Toggles flip the boolean for the addressed channel. All commands ignore
+		(or debug-assert) an out-of-range channel index.
+
+		AUDIBILITY (solo/mute semantics):
+		  let any_solo = self.channels.iter().any(|c| c.solo);
+		  fn audible(i) -> bool { !channels[i].mute && (!any_solo || channels[i].solo) }
+		Soloing one or more channels silences the AUDIO of every non-soloed channel;
+		muting silences that channel's audio. An inaudible channel contributes zero
+		to the stereo sum.
+
+		MIXDOWN: provide `fn mix(&mut self, inputs: &[Vec<AudioFrame>; 16]) -> Vec<AudioFrame>`
+		(or take a slice of 16 channel buffers). For each channel it FIRST records the
+		peak — peaks[i] = max absolute sample of inputs[i] (the channel's OWN signal,
+		BEFORE any mute/solo gating and before applying volume) — THEN, only if
+		audible(i), adds the channel's signal to the stereo bus applying volume and an
+		equal-power pan (pan -1 → all left, +1 → all right, 0 → centered). reverbSend
+		and echoSend are routing amounts toward the (future) global reverb/echo buses;
+		model them as scalar send levels here (they do not affect the dry sum).
+
+		METERING IS INDEPENDENT OF GATING: because peaks[i] is recorded before the
+		audibility check, a channel silenced by another channel's solo (or by its own
+		mute) still reports its true live level. This is the property the headless
+		prover asserts.
+
+		Keep mix() allocation-discipline friendly for the audio thread (no per-call
+		heap growth in steady state; the output buffer may be caller-provided).
+		"""
+	invariants: [
+		"the mixer has exactly 16 channels",
+		"every set-command clamps to the parameter range (volume/sends 0.0-1.0, pan -1.0..+1.0) before storing",
+		"audible(i) == !channels[i].mute && (no channel is soloed || channels[i].solo)",
+		"soloing any channel silences the AUDIO of all non-soloed channels; an inaudible channel adds zero to the stereo sum",
+		"peaks[i] reflects channel i's own pre-gate signal and is NEVER zeroed by that channel being muted or solo-silenced — metering is independent of audibility",
+	]
+	validations: [
+		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with ChannelMixer"},
+		{kind: "test", command: ["cargo", "test", "channel_mixer"], description: "ChannelMixer audibility, clamping, and metering-independence unit tests pass"},
+	]
 }
 
 project: contexts: Patch: domainServices: ChannelDispatcher: {purpose: "routes incoming MidiEvents to every subscribed patch", uses: ["aggregate.Patch.Patch"]}

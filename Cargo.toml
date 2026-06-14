@@ -48,6 +48,10 @@ name = "gamepad_demo"
 path = "src/bin/gamepad_demo.rs"
 
 [[bin]]
+name = "mixer_demo"
+path = "src/bin/mixer_demo.rs"
+
+[[bin]]
 name = "synth_ui"
 path = "src/bin/synth_ui.rs"
 

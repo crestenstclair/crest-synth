@@ -4,6 +4,7 @@ pub mod editor;
 pub mod effects;
 pub mod kernel;
 pub mod midi_file;
+pub mod mixer;
 pub mod modulation;
 pub mod patch;
 pub mod plugin;

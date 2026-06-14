@@ -1,4 +1,4 @@
-.PHONY: build test check clean run lint fmt demo-midi demo-voices check-live check-gamepad ui-smoke ui play-midi play-voices play-tone play-midi-live demo-patches play-patches demo-mod play-mod demo-samples play-samples demo-effects play-effects demo-presets play-presets
+.PHONY: build test check clean run lint fmt demo-midi demo-voices check-live check-gamepad demo-mixer ui-smoke ui play-midi play-voices play-tone play-midi-live demo-patches play-patches demo-mod play-mod demo-samples play-samples demo-effects play-effects demo-presets play-presets
 
 .DEFAULT_GOAL := build
 
@@ -34,6 +34,12 @@ check-live:
 
 check-gamepad:
 	cargo run --bin gamepad_demo
+
+demo-mixer:
+	cargo run --bin mixer_demo
+
+ui-smoke:
+	cargo run --bin synth_ui -- --smoke
 
 play-midi: demo-midi
 	afplay midi-play.wav
@@ -77,9 +83,6 @@ demo-presets:
 
 play-presets: demo-presets
 	afplay preset-demo.wav
-
-ui-smoke:
-	cargo run --bin synth_ui -- --smoke
 
 ui:
 	cargo run --bin synth_ui -- --play "../../../midi/Corridors of Time - Chrono Trigger.mid"

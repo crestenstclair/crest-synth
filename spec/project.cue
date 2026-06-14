@@ -59,6 +59,8 @@ project: contextMap: kernelToPatch:       {from: "Kernel", to: "Patch", kind: "s
 project: contextMap: kernelToMod:         {from: "Kernel", to: "Modulation", kind: "shared-kernel"}
 project: contextMap: realTimeToSynth:     {from: "RealTime", to: "Synth", kind: "anti-corruption", direction: "upstream"}
 project: contextMap: realTimeToPatch:     {from: "RealTime", to: "Patch", kind: "anti-corruption", direction: "upstream"}
+project: contextMap: mixerToPatch:        {from: "Mixer", to: "Patch", kind: "customer-supplier", direction: "downstream"}
+project: contextMap: kernelToMixer:        {from: "Kernel", to: "Mixer", kind: "shared-kernel"}
 project: contextMap: pluginToSynth:       {from: "Plugin", to: "Synth", kind: "customer-supplier", direction: "downstream"}
 project: contextMap: pluginToPatch:       {from: "Plugin", to: "Patch", kind: "customer-supplier", direction: "downstream"}
 project: contextMap: pluginToPresets:     {from: "Plugin", to: "Presets", kind: "customer-supplier", direction: "downstream"}
