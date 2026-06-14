@@ -4,3 +4,5 @@
 *.db-shm
 *.db-wal
 .crest-spec/
+.mcp.json
+.claude/
