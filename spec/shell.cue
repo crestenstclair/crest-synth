@@ -18,6 +18,7 @@ project: contexts: Shell: ports: GamepadInput: {
 }
 project: contexts: Shell: ports: GuiRenderer: {
 	contract: {beginFrame: "() -> UiContext", endFrame: "UiContext -> ()", customPaint: "(Rect, PaintCallback) -> ()"}
+	meta: notes: "defines the GuiRenderer trait plus Rect/UiContext and a StubRenderer test double in src/shell/gui_renderer.rs. Test code is linted under clippy -D warnings: every `let` binding you assert against must be read; never put `mut` on a binding that is never reassigned; drop any temporary that is written but never read."
 	validations: [{kind: "compiles", command: ["cargo", "build"], description: "crate builds with GuiRenderer port"}]
 }
 
@@ -25,6 +26,7 @@ project: contexts: Shell: valueObjects: GamepadAction:   {from: "enum", descript
 project: contexts: Shell: valueObjects: ControllerGlyph: {
 	state: {button: "GamepadButton", controllerType: "ControllerType", glyphPath: "string"}
 	description: "maps a logical button to the correct visual glyph for the connected controller"
+	invariants: ["the #[cfg(test)] unit-test module is named `tests`, never the same name as its file/parent module (clippy::module_inception is denied under -D warnings)"]
 	validations: [
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with ControllerGlyph"},
 		{kind: "test", command: ["cargo", "test", "controller_glyph"], description: "ControllerGlyph unit tests pass"},
@@ -80,7 +82,7 @@ project: adapters: GilrsGamepad: {
 project: adapters: EguiRenderer: {
 	implements: "port.Shell.GuiRenderer"
 	layer: "infrastructure"
-	meta: notes: "egui: immediate-mode UI with custom painting"
+	meta: notes: "egui: immediate-mode UI with custom painting. Test code is linted under clippy -D warnings: every `let` binding you assert against must be read; never put `mut` on a binding that is never reassigned; drop any temporary that is written but never read."
 	validations: [{kind: "compiles", command: ["cargo", "build"], description: "crate builds with EguiRenderer adapter"}]
 }
 

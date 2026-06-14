@@ -104,7 +104,7 @@ impl Default for SerdePresetCodec {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod serde_preset_codec {
+mod tests {
     use super::*;
     use crate::presets::preset::Preset;
     use crate::presets::setup::Setup;

@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod audio;
+pub mod design_system;
 pub mod editor;
 pub mod effects;
 pub mod kernel;

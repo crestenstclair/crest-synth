@@ -455,18 +455,16 @@ mod tests {
 
     // ── ParameterId constants are stable ─────────────────────────────────────
 
-    #[test]
-    fn stable_param_ids_are_non_zero() {
-        // All stable IDs must be > 0 (reserved convention).
-        assert!(stable_param::DETUNE > 0);
-        assert!(stable_param::PULSE_WIDTH > 0);
-        assert!(stable_param::ENV_ATTACK > 0);
-        assert!(stable_param::ENV_DECAY > 0);
-        assert!(stable_param::ENV_SUSTAIN > 0);
-        assert!(stable_param::ENV_RELEASE > 0);
-        assert!(stable_param::FILTER_CUTOFF > 0);
-        assert!(stable_param::FILTER_RESONANCE > 0);
-    }
+    // All stable IDs must be > 0 (reserved convention).
+    // Checked at compile time to avoid clippy::assertions_on_constants.
+    const _: () = assert!(stable_param::DETUNE > 0);
+    const _: () = assert!(stable_param::PULSE_WIDTH > 0);
+    const _: () = assert!(stable_param::ENV_ATTACK > 0);
+    const _: () = assert!(stable_param::ENV_DECAY > 0);
+    const _: () = assert!(stable_param::ENV_SUSTAIN > 0);
+    const _: () = assert!(stable_param::ENV_RELEASE > 0);
+    const _: () = assert!(stable_param::FILTER_CUTOFF > 0);
+    const _: () = assert!(stable_param::FILTER_RESONANCE > 0);
 
     #[test]
     fn stable_param_ids_are_unique() {

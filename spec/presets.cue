@@ -109,7 +109,7 @@ project: contexts: Presets: repositories: PresetRepository: {
 project: adapters: SerdePresetCodec: {
 	implements: "port.Presets.PresetCodec"
 	layer: "infrastructure"
-	meta: notes: "serde_json for presets, bincode for setups"
+	meta: notes: "serde_json for presets, bincode for setups. Name the #[cfg(test)] module `tests`, never the same name as its file/parent module (clippy::module_inception is denied under -D warnings)."
 	validations: [
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with SerdePresetCodec adapter"},
 		{kind: "test", command: ["cargo", "test", "serde_preset_codec"], description: "SerdePresetCodec round-trip tests pass"},

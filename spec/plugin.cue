@@ -21,7 +21,7 @@ project: contexts: Plugin: valueObjects: ParameterRange: {
 
 project: contexts: Plugin: ports: PluginHost: {
 	contract: {processBlock: "(AudioBuffer, MidiEvents) -> AudioBuffer", getParameter: "ParameterId -> f64", setParameter: "(ParameterId, f64) -> ()", saveState: "() -> Vec<u8>", loadState: "Vec<u8> -> Result<(), StateError>"}
-	meta: notes: "nih-plug provides the Plugin trait; this port maps to its process(), params(), and state methods"
+	meta: notes: "nih-plug provides the Plugin trait; this port maps to its process(), params(), and state methods. In tests, never `assert!` on a constant expression (e.g. `assert!(SOME_CONST > 0)`) — clippy::assertions_on_constants is denied under -D warnings; assert on runtime values or use a `const _: () = assert!(...)` compile-time check instead."
 }
 
 project: contexts: Plugin: aggregates: PluginInstance: {

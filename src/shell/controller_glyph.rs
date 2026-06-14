@@ -124,7 +124,7 @@ impl ControllerGlyph {
 }
 
 #[cfg(test)]
-mod controller_glyph {
+mod tests {
     use super::*;
 
     #[test]
