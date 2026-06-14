@@ -1,2 +1,6 @@
 /target
 *.wav
+*.db
+*.db-shm
+*.db-wal
+.crest-spec/
