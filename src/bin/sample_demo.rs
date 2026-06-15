@@ -2,13 +2,25 @@
 //
 // sample_demo — hermetic SampleLibrary prover.
 //
-// Synthesizes a tiny mono WAV sample in code, loads it into a SampleSet
-// with two non-overlapping zones, plays a short passage through different
-// zones with linear pitch interpolation, and writes the mix to a WAV file.
+// HERMETIC: Synthesizes a tiny mono 16-bit WAV in code (decaying sine ~0.3s
+// at a known root note), writes it to a temp file, loads it through
+// SampleLoader, builds a two-zone SampleSet, plays a passage hitting both
+// zones, pitch-shifts with SampleInterpolator (Linear), and writes the mix
+// to a 16-bit mono WAV.
+//
+// Required stdout markers (exact text, parsed by harness):
+//   zones loaded=N
+//   zone hit: <name> (note=K vel=V)
+//   distinct zones hit=K
+//
+// Three in-code assertions (non-zero exit on failure):
+//   1. Loaded zone count >= 2
+//   2. At least 2 distinct zones were hit during playback
+//   3. Pitch-shifted interpolation is NOT a no-op
 
+use std::collections::HashSet;
 use std::env;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io;
 use std::sync::Arc;
 
 use crest_synth::kernel::note_number::NoteNumber;
@@ -17,6 +29,8 @@ use crest_synth::kernel::velocity::Velocity;
 use crest_synth::sample_library::interpolation_mode::InterpolationMode;
 use crest_synth::sample_library::key_velocity_range::KeyVelocityRange;
 use crest_synth::sample_library::sample_format::SampleFormat;
+use crest_synth::sample_library::sample_interpolator::SampleInterpolator;
+use crest_synth::sample_library::sample_loader::{SampleLoader, WavLoadOptions};
 use crest_synth::sample_library::sample_metadata::SampleMetadata;
 use crest_synth::sample_library::sample_set::{SampleLibrary, SampleSet};
 use crest_synth::sample_library::sample_set_id::SampleSetId;
@@ -41,213 +55,59 @@ const ROOT_FREQ_HZ: f64 = 440.0;
 // WAV synthesis — produce a short decaying sine at ROOT_NOTE
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Synthesize a short mono 16-bit WAV decaying sine and return raw bytes.
-fn synthesize_wav_bytes(sample_rate: u32, duration_secs: f64, freq_hz: f64) -> Vec<u8> {
+/// Synthesize a short mono 16-bit WAV decaying sine and write it using hound.
+fn synthesize_and_write_wav(
+    path: &std::path::Path,
+    sample_rate: u32,
+    duration_secs: f64,
+    freq_hz: f64,
+) {
     let num_samples = (sample_rate as f64 * duration_secs) as usize;
     let decay = 6.0 / duration_secs; // ~6 time-constants across the duration
 
-    let mut pcm_i16: Vec<i16> = Vec::with_capacity(num_samples);
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).expect("create temp WAV");
     for i in 0..num_samples {
         let t = i as f64 / sample_rate as f64;
         let envelope = (-decay * t).exp();
         let sample_f = (std::f64::consts::TAU * freq_hz * t).sin() * envelope * 0.8;
         let s = (sample_f * i16::MAX as f64).clamp(i16::MIN as f64, i16::MAX as f64) as i16;
-        pcm_i16.push(s);
+        writer.write_sample(s).expect("write sample");
     }
-
-    // Build minimal WAV header + data
-    let num_channels: u16 = 1;
-    let bits_per_sample: u16 = 16;
-    let byte_rate: u32 = sample_rate * u32::from(num_channels) * u32::from(bits_per_sample) / 8;
-    let block_align: u16 = num_channels * bits_per_sample / 8;
-    let data_size: u32 = (pcm_i16.len() as u32) * u32::from(block_align);
-    let riff_size: u32 = 36 + data_size;
-
-    let mut wav = Vec::with_capacity(44 + pcm_i16.len() * 2);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&riff_size.to_le_bytes());
-    wav.extend_from_slice(b"WAVE");
-    wav.extend_from_slice(b"fmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    wav.extend_from_slice(&num_channels.to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&block_align.to_le_bytes());
-    wav.extend_from_slice(&bits_per_sample.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_size.to_le_bytes());
-    for s in &pcm_i16 {
-        wav.extend_from_slice(&s.to_le_bytes());
-    }
-
-    wav
+    writer.finalize().expect("finalize WAV");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WAV loading — parse 16-bit mono PCM from raw bytes; return f32 samples
+// WAV writer (output)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Minimal WAV loader: reads raw bytes and returns (sample_rate, mono f32 samples).
-///
-/// Handles only 16-bit mono PCM (which is what we write above).
-fn load_wav_f32(bytes: &[u8]) -> Result<(u32, Vec<f32>), String> {
-    if bytes.len() < 44 {
-        return Err("WAV too small".to_string());
+fn write_wav_output(path: &str, samples: &[f32], sample_rate: u32) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).expect("create output WAV");
+    for &s in samples {
+        let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        writer.write_sample(v).expect("write output sample");
     }
-    if &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return Err("Not a RIFF/WAVE file".to_string());
-    }
-    if &bytes[12..16] != b"fmt " {
-        return Err("Expected fmt chunk".to_string());
-    }
-    let audio_format = u16::from_le_bytes([bytes[20], bytes[21]]);
-    if audio_format != 1 {
-        return Err("Only PCM supported".to_string());
-    }
-    let num_channels = u16::from_le_bytes([bytes[22], bytes[23]]);
-    let sample_rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-    let bits_per_sample = u16::from_le_bytes([bytes[34], bytes[35]]);
-
-    if num_channels != 1 || bits_per_sample != 16 {
-        return Err("Only 16-bit mono PCM supported".to_string());
-    }
-
-    if &bytes[36..40] != b"data" {
-        return Err("Expected data chunk after fmt".to_string());
-    }
-    let data_size = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-    let data_start = 44;
-    let data_end = data_start + data_size;
-    if bytes.len() < data_end {
-        return Err("WAV data truncated".to_string());
-    }
-
-    let num_samples = data_size / 2;
-    let mut f32_samples = Vec::with_capacity(num_samples);
-    for i in 0..num_samples {
-        let offset = data_start + i * 2;
-        let raw = i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
-        f32_samples.push(raw as f32 / i16::MAX as f32);
-    }
-
-    Ok((sample_rate, f32_samples))
+    writer.finalize().expect("finalize output WAV");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Linear interpolation — read a sample buffer at a fractional position
+// Zone name lookup helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Read one mono sample from `data` at fractional `pos` using linear interpolation.
-///
-/// Returns 0.0 when `pos` is beyond the buffer.
-fn interpolate_linear(data: &[f32], pos: f64) -> f32 {
-    if pos < 0.0 {
-        return 0.0;
-    }
-    let i = pos as usize;
-    let frac = (pos - i as f64) as f32;
-    if i + 1 < data.len() {
-        data[i] * (1.0 - frac) + data[i + 1] * frac
-    } else if i < data.len() {
-        data[i] * (1.0 - frac)
-    } else {
-        0.0
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SamplePlayer — renders a SampleZone pitch-shifted to a target note
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Renders sample data from a zone pitch-shifted to match `target_note`.
-///
-/// Pitch ratio = 2^((target_midi - root_midi) / 12).
-/// Uses linear interpolation (or nearest for `InterpolationMode::Nearest`).
-struct SamplePlayer {
-    data: Arc<[f32]>,
-    pos: f64,
-    pitch_ratio: f64,
-    mode: InterpolationMode,
-}
-
-impl SamplePlayer {
-    fn new(zone: &SampleZone, target_note: NoteNumber, mode: InterpolationMode) -> Self {
-        let root_midi = zone.metadata().root_note.value() as i32;
-        let target_midi = target_note.value() as i32;
-        let semitones = (target_midi - root_midi) as f64;
-        let pitch_ratio = 2.0_f64.powf(semitones / 12.0);
-        Self {
-            data: zone.sample_data_ref(),
-            pos: 0.0,
-            pitch_ratio,
-            mode,
-        }
-    }
-
-    /// Returns true if playback has reached the end of the sample.
-    fn is_done(&self) -> bool {
-        self.pos as usize >= self.data.len()
-    }
-
-    /// Render the next sample.
-    fn next_sample(&mut self) -> f32 {
-        if self.is_done() {
-            return 0.0;
-        }
-        let sample = match self.mode {
-            InterpolationMode::Nearest => {
-                let i = self.pos as usize;
-                if i < self.data.len() {
-                    self.data[i]
-                } else {
-                    0.0
-                }
-            }
-            // Linear, Cubic, Sinc all use linear here (demo uses Linear)
-            _ => interpolate_linear(&self.data, self.pos),
-        };
-        self.pos += self.pitch_ratio;
-        sample
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WAV writer
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn write_wav(path: &str, samples: &[i16], sample_rate: u32) -> io::Result<()> {
-    let num_channels: u16 = 1;
-    let bits_per_sample: u16 = 16;
-    let byte_rate: u32 = sample_rate * u32::from(num_channels) * u32::from(bits_per_sample) / 8;
-    let block_align: u16 = num_channels * bits_per_sample / 8;
-    let data_size: u32 = (samples.len() as u32) * u32::from(block_align);
-    let riff_size: u32 = 36 + data_size;
-
-    let file = File::create(path)?;
-    let mut w = BufWriter::new(file);
-    w.write_all(b"RIFF")?;
-    w.write_all(&riff_size.to_le_bytes())?;
-    w.write_all(b"WAVE")?;
-    w.write_all(b"fmt ")?;
-    w.write_all(&16u32.to_le_bytes())?;
-    w.write_all(&1u16.to_le_bytes())?; // PCM
-    w.write_all(&num_channels.to_le_bytes())?;
-    w.write_all(&sample_rate.to_le_bytes())?;
-    w.write_all(&byte_rate.to_le_bytes())?;
-    w.write_all(&block_align.to_le_bytes())?;
-    w.write_all(&bits_per_sample.to_le_bytes())?;
-    w.write_all(b"data")?;
-    w.write_all(&data_size.to_le_bytes())?;
-    for s in samples {
-        w.write_all(&s.to_le_bytes())?;
-    }
-    w.flush()?;
-    Ok(())
-}
-
-fn f32_to_i16(v: f32) -> i16 {
-    (v.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+/// Return a display name for the zone based on its key range.
+fn zone_name(key_low: u8, key_high: u8) -> String {
+    format!("notes-{key_low}-{key_high}")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -260,8 +120,6 @@ struct Note {
     number: u8,
     /// Velocity (0.0–1.0).
     velocity: f64,
-    /// Name of expected zone for logging.
-    zone_label: &'static str,
 }
 
 fn build_passage() -> Vec<Note> {
@@ -270,29 +128,24 @@ fn build_passage() -> Vec<Note> {
         Note {
             number: 48,
             velocity: 0.3,
-            zone_label: "low-key",
         },
         Note {
             number: 52,
             velocity: 0.6,
-            zone_label: "low-key",
         },
         // High-key zone: notes 60–84, any velocity
         Note {
             number: 64,
             velocity: 0.9,
-            zone_label: "high-key",
         },
         Note {
             number: 72,
             velocity: 0.5,
-            zone_label: "high-key",
         },
         // Another low-key note
         Note {
             number: 36,
             velocity: 0.7,
-            zone_label: "low-key",
         },
     ]
 }
@@ -315,12 +168,7 @@ fn main() -> io::Result<()> {
         }
     }
 
-    println!("sample_demo: output={out_path}");
-
     // ── Step 1: Synthesize a tiny sample in code (HERMETIC — no sample file in repo) ──
-    let wav_bytes = synthesize_wav_bytes(OUT_SAMPLE_RATE, SAMPLE_DURATION_SECS, ROOT_FREQ_HZ);
-
-    // Write to a unique temp file, clean up at the end.
     let temp_path = {
         let mut p = std::env::temp_dir();
         p.push(format!(
@@ -329,45 +177,48 @@ fn main() -> io::Result<()> {
         ));
         p
     };
-    {
-        let mut f = File::create(&temp_path)?;
-        f.write_all(&wav_bytes)?;
+    synthesize_and_write_wav(
+        &temp_path,
+        OUT_SAMPLE_RATE,
+        SAMPLE_DURATION_SECS,
+        ROOT_FREQ_HZ,
+    );
+
+    // ── Step 2: Load the temp WAV through SampleLoader ───────────────────────
+    let loader = SampleLoader::new();
+    let seed_set = loader
+        .load_wav(&temp_path, SampleSetId::new(999), WavLoadOptions::default())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    // Extract decoded PCM; share it across zones via Arc.
+    let shared_data: Arc<[f32]> = seed_set.zones()[0].sample_data_ref();
+    let num_frames = seed_set.zones()[0].frame_count() as u64;
+    if num_frames == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "loaded 0 frames",
+        ));
     }
-    println!("synthesized sample written to {}", temp_path.display());
 
-    // ── Step 2: Load the temp WAV through our inline SampleLoader ────────────
-    let (wav_sample_rate, f32_samples) =
-        load_wav_f32(&wav_bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    let num_frames = f32_samples.len() as u64;
-    let sample_rate_obj = SampleRate::try_new(wav_sample_rate)
+    let sample_rate_obj = SampleRate::try_new(OUT_SAMPLE_RATE)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let root_note_obj = NoteNumber::try_new(ROOT_NOTE)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // Store PCM data behind an Arc so both zones share the same backing buffer.
-    let shared_data: Arc<[f32]> = f32_samples.into();
-
     // ── Step 3: Build SampleSet with TWO non-overlapping zones ───────────────
     //
-    // Zone 1 "low-key":  notes 36–59, full velocity range
-    // Zone 2 "high-key": notes 60–84, full velocity range
+    // Zone A "low-key":  notes 36–59, full velocity range
+    // Zone B "high-key": notes 60–84, full velocity range
     //
-    // Both zones share the same Arc<[f32]> sample data (HERMETIC: no extra files).
+    // Both zones share the same Arc<[f32]> sample data.
     let vel_lo = Velocity::try_new(0.0)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     let vel_hi = Velocity::try_new(1.0)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let metadata = SampleMetadata::try_new(
-        1, // mono
-        num_frames,
-        None, // no loop
-        None,
-        root_note_obj,
-        sample_rate_obj,
-    )
-    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let metadata =
+        SampleMetadata::try_new(1, num_frames, None, None, root_note_obj, sample_rate_obj)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     // Low-key zone: notes 36–59
     let low_key_lo = NoteNumber::try_new(36)
@@ -387,7 +238,7 @@ fn main() -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     let zone_high = SampleZone::new(metadata, high_range, Arc::clone(&shared_data));
 
-    // Build the SampleSet aggregate via SampleLibrary (the application service).
+    // Build the SampleSet aggregate via SampleLibrary.
     let mut library = SampleLibrary::new();
     let set_id: SampleSetId = library.next_id();
 
@@ -399,21 +250,33 @@ fn main() -> io::Result<()> {
         .add_zone(zone_high)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let zone_count = sample_set.zone_count();
+    let zone_count = sample_set.zone_count() as usize;
     library.apply_load(sample_set);
 
     // Required output marker: zone count
     println!("zones loaded={zone_count}");
 
+    // ── ASSERTION 1: zone count >= 2 ─────────────────────────────────────────
+    assert!(
+        zone_count >= 2,
+        "ASSERT FAILED: zone_count {zone_count} < 2"
+    );
+
     // ── Step 4: Drive the passage — look up zone, interpolate, render ─────────
     let set_ref = library.get(set_id).expect("just loaded; must be present");
 
     let passage = build_passage();
-    // Each note sounds for 400 ms; notes are rendered sequentially (no overlap).
+    // Each note sounds for 400 ms; notes rendered sequentially (no overlap).
     let note_duration_samples = (OUT_SAMPLE_RATE as f64 * 0.4) as usize;
     let total_samples = passage.len() * note_duration_samples;
 
     let mut mix_buf: Vec<f32> = vec![0.0; total_samples];
+    let mut distinct_zones_hit: HashSet<String> = HashSet::new();
+
+    // For assertion 3: collect root-pitch and pitch-shifted renders of one note
+    // whose pitch_ratio != 1.0 (note 48 vs root 69 → big pitch shift).
+    let mut assertion3_root_buf: Vec<f32> = Vec::new();
+    let mut assertion3_shifted_buf: Vec<f32> = Vec::new();
 
     for (note_idx, note) in passage.iter().enumerate() {
         let note_num = NoteNumber::try_new(note.number)
@@ -429,15 +292,48 @@ fn main() -> io::Result<()> {
             )
         })?;
 
+        // Compute pitch ratio from zone root and target note.
+        let root_midi = zone.metadata().root_note.value() as i32;
+        let target_midi = note_num.value() as i32;
+        let semitones = (target_midi - root_midi) as f64;
+        let pitch_ratio = 2.0_f64.powf(semitones / 12.0);
+
+        // Identify zone by key range for display + assertion 2.
+        let zone_key_lo = zone.range().key_low().value();
+        let zone_key_hi = zone.range().key_high().value();
+        let zname = zone_name(zone_key_lo, zone_key_hi);
+        distinct_zones_hit.insert(zname.clone());
+
         // Required output marker: zone hit
         println!(
-            "zone hit: {} (note={} vel={:.1})",
-            note.zone_label, note.number, note.velocity
+            "zone hit: {zname} (note={} vel={:.1})",
+            note.number, note.velocity
         );
 
-        // Render this note with linear pitch interpolation.
-        let mut player = SamplePlayer::new(zone, note_num, InterpolationMode::Linear);
+        // For assertion 3: capture root-pitch and pitch-shifted renders of
+        // the first note (note 48, pitch_ratio != 1.0 vs root 69).
+        if assertion3_root_buf.is_empty() && (pitch_ratio - 1.0).abs() > 1e-4 {
+            let zone_data = zone.sample_data_ref();
+            let capture_len = zone_data.len();
+
+            // Root-pitch render (pitch_ratio = 1.0).
+            let mut root_interp = SampleInterpolator::new(InterpolationMode::Linear, 1.0);
+            assertion3_root_buf = (0..capture_len)
+                .map(|_| root_interp.next_frame(&zone_data))
+                .collect();
+
+            // Pitch-shifted render.
+            let mut shifted_interp =
+                SampleInterpolator::new(InterpolationMode::Linear, pitch_ratio);
+            assertion3_shifted_buf = (0..capture_len)
+                .map(|_| shifted_interp.next_frame(&zone_data))
+                .collect();
+        }
+
+        // Render this note with the SampleInterpolator (Linear), in fixed blocks.
         let amplitude = note.velocity as f32 * 0.6; // scale to avoid clipping
+        let zone_data = zone.sample_data_ref();
+        let mut interp = SampleInterpolator::new(InterpolationMode::Linear, pitch_ratio);
 
         let note_start = note_idx * note_duration_samples;
         let mut block = [0.0f32; BLOCK_SIZE];
@@ -446,10 +342,10 @@ fn main() -> io::Result<()> {
         while rendered < note_duration_samples {
             let to_render = BLOCK_SIZE.min(note_duration_samples - rendered);
             for slot in block[..to_render].iter_mut() {
-                *slot = if player.is_done() {
+                *slot = if interp.is_finished(zone_data.len()) {
                     0.0
                 } else {
-                    player.next_sample() * amplitude
+                    interp.next_frame(&zone_data) * amplitude
                 };
             }
             let mix_start = note_start + rendered;
@@ -466,10 +362,33 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // ── Step 5: Convert to 16-bit PCM and write output WAV ───────────────────
-    let pcm: Vec<i16> = mix_buf.iter().map(|&s| f32_to_i16(s)).collect();
-    write_wav(&out_path, &pcm, OUT_SAMPLE_RATE)?;
-    println!("wrote {} samples to {out_path}", pcm.len());
+    // Required output marker: distinct zones hit count
+    let distinct_count = distinct_zones_hit.len();
+    println!("distinct zones hit={distinct_count}");
+
+    // ── ASSERTION 2: at least 2 distinct zones hit ────────────────────────────
+    assert!(
+        distinct_count >= 2,
+        "ASSERT FAILED: only {distinct_count} distinct zone(s) hit; expected >= 2"
+    );
+
+    // ── ASSERTION 3: pitch-shifted render differs from root-pitch render ───────
+    assert!(
+        !assertion3_root_buf.is_empty(),
+        "ASSERT FAILED: no pitch-shifted note was played (all notes at root pitch?)"
+    );
+    let differ = assertion3_root_buf
+        .iter()
+        .zip(assertion3_shifted_buf.iter())
+        .any(|(a, b)| (a - b).abs() > 1e-6);
+    assert!(
+        differ,
+        "ASSERT FAILED: pitch-shifted render is identical to root-pitch render — interpolation is a no-op"
+    );
+
+    // ── Step 5: Write output WAV ──────────────────────────────────────────────
+    write_wav_output(&out_path, &mix_buf, OUT_SAMPLE_RATE);
+    println!("wrote {} samples to {out_path}", mix_buf.len());
 
     // ── Step 6: Clean up temp WAV file ────────────────────────────────────────
     if let Err(e) = std::fs::remove_file(&temp_path) {

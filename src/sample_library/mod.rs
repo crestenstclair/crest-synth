@@ -3,6 +3,7 @@
 pub mod interpolation_mode;
 pub mod key_velocity_range;
 pub mod sample_format;
+pub mod sample_interpolator;
 pub mod sample_loader;
 pub mod sample_metadata;
 pub mod sample_set;

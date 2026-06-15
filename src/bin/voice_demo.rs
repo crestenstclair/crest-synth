@@ -204,29 +204,44 @@ struct ScheduledNote {
     velocity: f64,
 }
 
-/// Build a rolling cluster passage that forces voice stealing.
+/// Build a rolling cluster passage that guarantees voice stealing.
 ///
-/// We start notes every 500 ms but hold each one for 2 seconds with MAX_VOICES=4.
-/// After the 4th note there will always be more than 4 active notes → stealing.
+/// Strategy: start a burst of 5 notes simultaneously at t=0 (more than the 4
+/// voice slots), then continue with more notes every 300 ms while each note
+/// lasts 2 seconds.  This ensures at least one steal on the very first
+/// dispatch and many more steals as the passage continues.
 fn build_passage() -> Vec<ScheduledNote> {
-    // Each note-on is 500 ms apart, each note sustains for ~2.0 s.
-    // With 4 voice slots and 2 s duration / 0.5 s onset = 4 notes in flight at
-    // any moment after the first 2 s.  Notes 5+ steal voices.
-    let on_interval_samples = (SAMPLE_RATE * 0.5) as usize; // 500 ms
-    let sustain_samples = (SAMPLE_RATE * 2.0) as usize; // 2 s hold
+    // Burst: 8 notes all starting at t=0, held for 2 s.
+    // MAX_VOICES=4 → the 5th through 8th note-ons MUST steal.
+    let burst_notes: [u8; 8] = [60, 62, 64, 65, 67, 69, 71, 72];
+    let burst_duration = (SAMPLE_RATE * 2.0) as usize;
 
-    // A chromatic cluster: 12 notes, each on a successive semitone
-    let note_numbers: [u8; 12] = [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71];
+    // Follow-up cluster: 4 more notes staggered at 300 ms intervals, also long.
+    let followup_notes: [u8; 4] = [74, 76, 77, 79];
+    let followup_onset = (SAMPLE_RATE * 0.3) as usize;
+    let followup_duration = (SAMPLE_RATE * 1.5) as usize;
 
     let mut notes = Vec::new();
-    for (i, &nn) in note_numbers.iter().enumerate() {
-        let on_at = i * on_interval_samples;
-        let off_at = on_at + sustain_samples;
+
+    // Burst (all at sample 0).
+    for &nn in &burst_notes {
         notes.push(ScheduledNote {
-            on_at,
-            off_at: Some(off_at),
+            on_at: 0,
+            off_at: Some(burst_duration),
             note_number: nn,
             velocity: 0.8,
+        });
+    }
+
+    // Follow-up stagger starting at t=2.5 s so some burst notes have expired.
+    let followup_start = (SAMPLE_RATE * 2.5) as usize;
+    for (i, &nn) in followup_notes.iter().enumerate() {
+        let on_at = followup_start + i * followup_onset;
+        notes.push(ScheduledNote {
+            on_at,
+            off_at: Some(on_at + followup_duration),
+            note_number: nn,
+            velocity: 0.7,
         });
     }
 
@@ -254,7 +269,8 @@ fn main() -> io::Result<()> {
     println!("voice_demo: MAX_VOICES={MAX_VOICES}, output={out_path}");
 
     // ── Build allocator ───────────────────────────────────────────────────────
-    // Fast envelope so steals are observable quickly:
+    // Fast envelope so steals are observable quickly and envelope stages are
+    // traversed within the demo duration:
     //   attack=10 ms, decay=50 ms, sustain=0.7, release=100 ms
     let env_cfg = AmpEnvelopeConfig::try_new(0.01, 0.05, 0.7, 0.1).expect("valid envelope config");
     let mut allocator = VoiceAllocator::new(env_cfg);
@@ -268,7 +284,7 @@ fn main() -> io::Result<()> {
         .unwrap_or(0);
 
     println!(
-        "  passage: {} notes, {} s ({} samples)",
+        "  passage: {} notes, {:.2} s ({} samples)",
         passage.len(),
         total_samples as f64 / SAMPLE_RATE,
         total_samples
@@ -278,7 +294,7 @@ fn main() -> io::Result<()> {
     let mut samples: Vec<i16> = Vec::with_capacity(total_samples);
     let mut tracker = EnvelopeTracker::new();
 
-    // Build sorted event list
+    // Build sorted event list; note-offs sort before note-ons at the same sample.
     #[derive(Clone)]
     enum Event {
         NoteOn {
@@ -291,6 +307,21 @@ fn main() -> io::Result<()> {
             sample: usize,
             note_id: u32,
         },
+    }
+
+    impl Event {
+        fn sample(&self) -> usize {
+            match self {
+                Event::NoteOn { sample, .. } | Event::NoteOff { sample, .. } => *sample,
+            }
+        }
+        /// Sort key: note-offs (0) before note-ons (1) at the same sample.
+        fn kind_order(&self) -> u8 {
+            match self {
+                Event::NoteOff { .. } => 0,
+                Event::NoteOn { .. } => 1,
+            }
+        }
     }
 
     let mut events: Vec<Event> = Vec::new();
@@ -308,9 +339,11 @@ fn main() -> io::Result<()> {
             });
         }
     }
-    events.sort_by_key(|e| match e {
-        Event::NoteOn { sample, .. } => *sample,
-        Event::NoteOff { sample, .. } => *sample,
+    // Sort by sample; at the same sample, note-offs before note-ons.
+    events.sort_by(|a, b| {
+        a.sample()
+            .cmp(&b.sample())
+            .then_with(|| a.kind_order().cmp(&b.kind_order()))
     });
 
     let mut event_idx = 0;
@@ -318,14 +351,7 @@ fn main() -> io::Result<()> {
 
     for s in 0..total_samples {
         // Dispatch scheduled events for this sample.
-        while event_idx < events.len() {
-            let ev_sample = match &events[event_idx] {
-                Event::NoteOn { sample, .. } => *sample,
-                Event::NoteOff { sample, .. } => *sample,
-            };
-            if ev_sample > s {
-                break;
-            }
+        while event_idx < events.len() && events[event_idx].sample() <= s {
             match events[event_idx].clone() {
                 Event::NoteOn {
                     note_id,
@@ -409,15 +435,16 @@ fn main() -> io::Result<()> {
     // Final envelope observation.
     tracker.observe(&allocator);
 
+    // ── ASSERT steals > 0 BEFORE printing the token ───────────────────────────
+    // A zero-steal result means the passage failed to exercise the allocator.
+    // Panic here so the process exits non-zero, making the validation fail.
+    if allocator.steal_count() == 0 {
+        panic!("voice_demo FAILED: passage forced no voice steals");
+    }
+
     // ── Print steal total ─────────────────────────────────────────────────────
     // IMPORTANT: this exact format is required by the validation.
     println!("steals={}", allocator.steal_count());
-
-    // Verify at least one steal occurred.
-    assert!(
-        allocator.steal_count() > 0,
-        "passage must force at least one voice steal"
-    );
 
     // ── Write WAV ─────────────────────────────────────────────────────────────
     let file = File::create(&out_path)?;

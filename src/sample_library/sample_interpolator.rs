@@ -157,7 +157,7 @@ impl SampleInterpolator {
     ///
     /// * `mode`        – Interpolation quality.
     /// * `pitch_ratio` – Source frames consumed per output frame.
-    ///                   1.0 = original pitch; 2.0 = one octave up; 0.5 = one octave down.
+    ///   1.0 = original pitch; 2.0 = one octave up; 0.5 = one octave down.
     pub fn new(mode: InterpolationMode, pitch_ratio: f64) -> Self {
         Self {
             mode,

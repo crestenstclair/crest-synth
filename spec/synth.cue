@@ -108,7 +108,8 @@ project: assets: VoiceDemoMain: {
 		"Drive each note through the real engine: trigger note_on/note_off via the VoiceAllocator, render every active Voice through the SynthEngine port (oscillator → filter → amp envelope), and mix via the AudioRenderer in fixed sample blocks.",
 		"Track and count every voice steal (each time the allocator reclaims an active voice to service a new note). Maintain a running total across the whole passage.",
 		"Print per-stage envelope markers so the envelope progression is observable: at minimum print a line for each envelope stage transition observed (Attack/Decay/Sustain/Release) at least once, and a per-section summary.",
-		#"Print EXACTLY a line containing the token `steals=` followed by the integer total number of voice steals for this passage, e.g. `steals=37`. The passage MUST be constructed so this count is NONZERO. Print this token verbatim (lowercase, no spaces around `=`) so a validation can assert on it."#,
+		#"ASSERT IN CODE that the measured total steal count is > 0: if it is 0, panic with a clear message (e.g. `panic!("voice_demo FAILED: passage forced no voice steals")`) so the process exits non-zero and the validation FAILS. Printing `steals=0` and exiting 0 is not acceptable — the in-code assertion on the measured count is what makes a zero-steal regression fail (the `steals=` token alone matches `steals=0`)."#,
+		#"Then print EXACTLY a line containing the token `steals=` followed by the integer total (verbatim, lowercase, no spaces around `=`, e.g. `steals=37`) so a human and the validation can see the measured count."#,
 		"Write 16-bit mono WAV (default voice-demo.wav, or --out) using a pure-Rust WAV writer (no external WAV crate).",
 		"Exit 0 on success.",
 	]

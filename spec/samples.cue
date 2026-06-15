@@ -101,16 +101,17 @@ project: assets: SamplePlayDemoMain: {
 		"Load that temp WAV through the SampleLoader (applicationService.SampleLibrary.SampleLoader) into a SampleSet aggregate (LoadSampleSet). Build a SampleSet with at least TWO non-overlapping zones differing in KeyVelocityRange (e.g. a low-key zone and a high-key zone, or two velocity layers) sharing the synthesized SampleData via Arc.",
 		"Drive a short built-in passage of note-ons at DIFFERENT (note, velocity) pairs chosen so they land in DIFFERENT zones; for each note, look up the matching SampleZone by key+velocity, then read the sample pitch-shifted to the note's frequency through the SampleInterpolator (use Linear interpolation at minimum). Mix the rendered output in fixed sample blocks.",
 		"Write 16-bit mono WAV (default sample-demo.wav, or --out) with a pure-Rust WAV writer.",
-		#"Print verbatim behavior markers: a line `zones loaded=N` with the zone count, and for each played note a line containing the token `zone hit:` naming which zone matched the (key, velocity) lookup (e.g. `zone hit: low-key (note=48 vel=0.3)`). Both tokens must appear verbatim so a validation can assert that zone loading and key/velocity lookup actually ran."#,
-		"Exit 0 on success.",
+		#"Print verbatim behavior markers: a line `zones loaded=N` with the zone count, and for each played note a line containing the token `zone hit:` naming which zone matched the (key, velocity) lookup (e.g. `zone hit: low-key (note=48 vel=0.3)`)."#,
+		#"ASSERT IN CODE (panic → non-zero exit on any failure) the MEASURED properties — printing the markers is not proof: (1) the loaded zone count is >= 2 (panic if fewer); (2) the played notes hit at least TWO DISTINCT zones — track the set of matched zone identities and panic if fewer than 2 distinct zones were hit, which proves key/velocity routing actually selects different zones rather than the same one every time; (3) interpolation is NOT a no-op — for at least one note played at a different pitch than its zone's root, assert the pitch-shifted interpolated render differs from a same-length read at root pitch (compare sample values / rendered length / peak; panic if identical). Print a line `distinct zones hit=K` with the measured K. Exit 0 ONLY if all three in-code assertions hold — a silent no-op interpolation or single-zone routing MUST fail."#,
 	]
 	validations: [
 		{kind: "compiles", command: ["make", "build"], description: "sample demo builds"},
-		{kind: "integration", command: ["make", "demo-samples"], description: "synthesized sample loads, zones resolve by key/velocity, interpolated render to WAV", assertions: [
+		{kind: "integration", command: ["make", "demo-samples"], description: "synthesized sample loads, >=2 zones resolve by DISTINCT key/velocity lookup, interpolation provably changes the render (all asserted in-code; a no-op or single-zone run exits non-zero)", assertions: [
 			{kind: "exit_code", expected: 0},
 			{kind: "file_exists", path: "sample-demo.wav"},
 			{kind: "stdout_contains", pattern: "zones loaded="},
 			{kind: "stdout_contains", pattern: "zone hit:"},
+			{kind: "stdout_contains", pattern: "distinct zones hit="},
 		]},
 	]
 }
