@@ -1,4 +1,4 @@
-.PHONY: build test check clean run lint fmt demo-midi demo-voices check-live check-gamepad demo-mixer ui-smoke ui play-midi play-voices play-tone play-midi-live demo-patches play-patches demo-mod play-mod demo-samples play-samples demo-effects play-effects demo-presets play-presets
+.PHONY: build test check clean run lint fmt demo-midi demo-voices check-live check-gamepad demo-mixer ui-smoke ui autopilot play-midi play-voices play-tone play-midi-live demo-patches play-patches demo-mod play-mod demo-samples play-samples demo-effects play-effects demo-presets play-presets
 
 .DEFAULT_GOAL := build
 
@@ -85,4 +85,7 @@ play-presets: demo-presets
 	afplay preset-demo.wav
 
 ui:
-	cargo run --bin synth_ui -- --play "../../../midi/Corridors of Time - Chrono Trigger.mid"
+	cargo run --bin synth_ui -- --play "midi/Corridors of Time - Chrono Trigger.mid"
+
+autopilot:
+	cargo run --bin synth_ui -- --autopilot --seconds 4
