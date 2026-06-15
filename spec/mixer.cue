@@ -38,64 +38,6 @@ project: contexts: Mixer: aggregates: MixerView: {
 	root:    true
 	purpose: "the single mixer-view store: owns cursor (channel + parameter), viewport offset, edit-mode, and the ChannelMixer; the one entry point that reacts to MixerViewEvents"
 	state: {mixer: "ChannelMixer", cursorChannel: "usize", cursorParam: "MixerParam", viewportOffset: "usize", editMode: "bool"}
-	meta: notes: """
-		Implement MixerView as a Flux-style store with ONE mutation entry point:
-		`fn apply(&mut self, event: MixerViewEvent)`. There are no setters and no
-		other way to change state — this is the heart of the one-way loop. Keep
-		apply() pure and allocation-free: no I/O, no rendering, no audio.
-
-		Constants: CHANNEL_COUNT = 16, VISIBLE_CHANNELS = 6. The visible window is
-		channels [viewportOffset, viewportOffset + 5]. Fine step = 0.01 (one unit on
-		a 0–100 readout); coarse step = 0.10 (ten units). cursorChannel is an ABSOLUTE
-		channel index 0..=15; viewportOffset ranges 0..=10 (so the window always shows
-		6 channels). The cursor is ALWAYS inside the visible window.
-
-		apply(), by current mode:
-
-		  EnterEditMode -> editMode = true     (alone, this changes nothing else)
-		  ExitEditMode  -> editMode = false
-
-		  NAVIGATE mode (editMode == false):
-		    NavUp/NavDown move cursorParam between the six rows, saturating at the
-		    ends (Up = toward Volume, Down = toward Solo); no wrap.
-		    NavLeft/NavRight move between channels WITH EDGE SCROLLING:
-		      Right: if cursorChannel < viewportOffset + 5  -> cursorChannel += 1
-		             else if viewportOffset + 5 < 15        -> viewportOffset += 1
-		                  (cursorChannel UNCHANGED — the window scrolls one channel,
-		                   the opposite-edge channel scrolls off, the next channel is
-		                   revealed at the trailing edge, the selected channel stays
-		                   selected and is now one position inward)
-		             else                                   -> no-op (already at ch 16)
-		      Left:  mirror — if cursorChannel > viewportOffset -> cursorChannel -= 1
-		             else if viewportOffset > 0                 -> viewportOffset -= 1
-		             else                                       -> no-op (already at ch 1)
-		    Example (window 0..5 showing channels 1–6, cursor on channel 6 = index 5):
-		    NavRight -> viewportOffset becomes 1 (window 1..6 showing channels 2–7),
-		    cursorChannel stays 5 (channel 6), now one position inward.
-
-		  EDIT mode (editMode == true):
-		    If cursorParam is CONTINUOUS (Volume/ReverbSend/EchoSend/Pan), directional
-		    input adjusts the FOCUSED channel's value via the ChannelMixer set-command:
-		      NavLeft  -> value -= fine   (fine, -1 unit)
-		      NavRight -> value += fine   (fine, +1 unit)
-		      NavUp    -> value += coarse (coarse, +10 units)
-		      NavDown  -> value -= coarse (coarse, -10 units)
-		    The ChannelMixer clamps to range. (Note the axis assignment is the mirror
-		    of the Editor view: here Left/Right are FINE and Up/Down are COARSE.)
-		    If cursorParam is a TOGGLE (Mute/Solo), directional input in edit mode is a
-		    NO-OP — fine/coarse do not apply to toggles.
-
-		  ToggleFocusedParam (double-tap Edit), in ANY mode:
-		    If cursorParam == Mute  -> mixer.ToggleMute(cursorChannel)
-		    If cursorParam == Solo  -> mixer.ToggleSolo(cursorChannel)
-		    Otherwise (continuous param focused) -> no-op.
-
-		This store is unit-tested by feeding MixerViewEvent sequences and asserting
-		the resulting cursor / viewportOffset / editMode and the underlying
-		ChannelMixer values — that is the `cargo test mixer_view` validation, and the
-		real proof that the mixer view's navigation, edge-scrolling, editing, and
-		toggling work without ever opening a window.
-		"""
 	invariants: [
 		"apply(MixerViewEvent) is the ONLY way to mutate the mixer view",
 		"exactly 6 channels are visible; the cursor is ALWAYS within the visible window [viewportOffset, viewportOffset+5]",

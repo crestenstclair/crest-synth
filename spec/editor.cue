@@ -39,37 +39,11 @@ project: contexts: Editor: aggregates: EditorState: {
 	root:    true
 	purpose: "the single editor store: owns focus, edit-mode, and the editable parameter fields; the one entry point that reacts to EditorEvents"
 	state: {fields: "Vec<ParamField>", focus: "usize", editMode: "bool"}
-	meta: notes: """
-		Implement EditorState as a Flux-style store with ONE mutation entry point:
-		`fn apply(&mut self, event: EditorEvent)`. There are no setters and no other
-		way to change state — this is the heart of the one-way loop.
-
-		Behavior of apply(), by current mode:
-		  - EnterEditMode  -> editMode = true
-		  - ExitEditMode   -> editMode = false
-		  - When editMode == false (NAVIGATE): NavUp/NavDown/NavLeft/NavRight move
-		    `focus` between fields by one (saturating at the ends; no wrap unless you
-		    note otherwise). (Vertical and horizontal both move focus by one in the
-		    simple single-column MVP; layout may map them differently later.)
-		  - When editMode == true (EDIT): directional input adjusts the FOCUSED
-		    field's value instead of moving focus:
-		      * NavLeft  -> value -= step   (fine, -1 unit)
-		      * NavRight -> value += step   (fine, +1 unit)
-		      * NavDown  -> value -= 10*step (coarse, -10 units)
-		      * NavUp    -> value += 10*step (coarse, +10 units)
-		    Every adjustment clamps to the field's [min, max].
-
-		Keep it pure and allocation-free in apply(); no I/O, no rendering, no audio.
-		This store is unit-tested by feeding EditorEvent sequences and asserting the
-		resulting focus / editMode / field values — that is the `cargo test
-		editor_state` validation, and it is the real proof that 'keyboard buttons
-		work' without ever opening a window.
-		"""
 	invariants: [
-		"apply(EditorEvent) is the ONLY way to mutate editor state",
-		"focus always stays within the fields range",
-		"in navigate mode directional events move focus; in edit mode they adjust the focused field's value",
-		"horizontal adjust is one step (fine); vertical adjust is ten steps (coarse)",
+		"apply(EditorEvent) is the ONLY way to mutate editor state; no setters, pure and allocation-free (no I/O, rendering, or audio)",
+		"focus always stays within the fields range; navigate-mode directional events move focus by one, saturating at the ends (no wrap)",
+		"in navigate mode directional events move focus; in edit mode they adjust the focused field's value instead",
+		"in edit mode NavRight = +fine and NavLeft = -fine (one unit); NavUp = +coarse and NavDown = -coarse (ten units = 10x fine)",
 		"every value adjustment clamps to the focused field's [min, max]",
 	]
 	validations: [
@@ -118,7 +92,7 @@ project: assets: StandaloneUiMain: {
 		"ONE-WAY EVENT LOOP: the only way UI input changes state is by emitting MixerViewEvents and calling MixerView::apply on them. The egui draw code is a PURE VIEW over MixerView — it never mutates state directly and never reads or writes a channel parameter except through MixerView / its ChannelMixer.",
 		#"RENDER THE MIXER VIEW: draw all 6 currently-visible channel strips (the window MixerView exposes via its viewportOffset) SIDE BY SIDE in a single horizontal row — all six must be visible at once, not just the first. Each strip is vertical with these rows top-to-bottom: Volume, Reverb send, Echo send, Pan, Mute, Solo. The VOLUME control IS the level strip: a vertical strip, dark at rest, that animates to show that channel's live peak level (read each channel's PeakLevel from the ChannelMixer) — it both sets volume and meters. Every channel meters independently and metering is UNAFFECTED by solo (a channel silenced by another's solo still shows its own level). Highlight the cursor's (channel, parameter) cell. While Edit (J) is held, the cursor changes color, and when the focused row is Volume the full box containing the level strip is highlighted. Show Mute/Solo as toggle indicators."#,
 		#"STRIP LAYOUT — each visible channel strip MUST occupy a FIXED width (e.g. a STRIP_WIDTH constant around 120 px), laid out left-to-right inside one horizontal container, so all 6 strips fit on screen at once. NEVER size a strip, a row, or a separator by `ui.available_width()` — inside the per-strip vertical that returns the whole remaining window width, which makes the FIRST strip consume all horizontal space and pushes strips 2–6 off-screen (this is the single-channel bug; do not reintroduce it). Give each strip its own fixed-width sub-region (e.g. `ui.allocate_ui_with_layout(vec2(STRIP_WIDTH, ...), ...)` or a child ui with `set_width(STRIP_WIDTH)`); the vertical separator between strips is 1 px wide and STRIP-tall, never available_width-wide. Set the window's default inner size wide enough for all 6 strips plus the row labels (at least ~6*STRIP_WIDTH + label gutter, e.g. 820x520) via NativeOptions/viewport so they are visible without resizing."#,
-		#"STYLE THROUGH THE DESIGN SYSTEM (behavior÷skin÷token): the draw code is a SKIN — it must NOT contain a single literal color. Construct one DefaultTheme (the DesignSystem::Theme port) once at app construction and resolve EVERY color through `theme.color(SemanticToken::…)`, converting the returned Rgba to egui's Color32 only at the point of use. Map each visual intent to its token, with NO other color source: the focused (cursor) cell's highlight → FocusRing; the cursor highlight WHILE Edit (J) is held, and the highlighted box around the focused Volume row in edit mode → EditActive; the volume/value bar fill on every continuous row (Volume, Reverb send, Echo send, Pan) → ValueFill; the live peak overlay on the level strip → MeterPeak; a Mute/Solo indicator that is ON → ToggleOn; one that is OFF → ToggleOff; channel labels / readout text → TextDefault; secondary or inactive text → TextMuted; each strip/panel background → PanelBg; the rules between strips and rows → Separator. The Rgba→Color32 conversion is the ONLY place draw code touches a raw color, and it comes from the Theme — never a hand-written Color32::from_rgb. Swapping the Theme must restyle the whole mixer with zero change to this draw code."#,
+		#"STYLE THROUGH THE DESIGN SYSTEM: the draw code is a SKIN. Construct one DefaultTheme (the DesignSystem::Theme port) once at app construction and resolve EVERY color through `theme.color(SemanticToken::…)`, converting the returned Rgba to egui Color32 only at the point of use (never a hand-written Color32::from_rgb). Use each SemanticToken for the intent its own type defines — the variant set and per-variant meanings live in the SemanticToken value object (FocusRing=focused cell, EditActive=focused-and-edit-mode, ValueFill=continuous value bar, MeterPeak=live peak overlay, ToggleOn/ToggleOff=toggle state, TextDefault/TextMuted=text, PanelBg/Separator=chrome), not restated here. The 'no literal color in draw code; swap the Theme to restyle' rule is the standaloneEditor and DesignSystem invariants."#,
 		"Seed a ChannelMixer (16 channels) wired into the live engine and wrap it in a MixerView. Map the 16 mixer channels to the engine's 16 MIDI channels: editing a channel's Volume/Reverb send/Echo send/Pan/Mute/Solo updates the ChannelMixer via MixerView; after each event-loop tick, publish the current per-channel mixer values to the audio engine as a ParameterSnapshot across the phase-3 lock-free real-time seam (no locks/alloc/blocking on the audio callback), and read back each channel's live peak level for the meters.",
 		"HOST THE LIVE ENGINE — THE AUDIO PATH MUST ACTUALLY PRODUCE SOUND, not a stub. Open external MIDI input via the MidirInput adapter (Shell::MidiInput) and an audio output stream via the CpalAudioOutput adapter (Shell::AudioOutput). CpalAudioOutput::open_stream starts a cpal callback (on cpal's own internal audio thread) that drains the adapter's internal ring buffer; you MUST feed that buffer with rendered engine audio by calling AudioOutput::write_buffer(&[AudioFrame]) — opening the stream alone yields SILENCE.",
 		#"THREADING — a cpal Stream / CpalAudioOutput is NOT Send on macOS (CoreAudio); you CANNOT move it into a thread::spawn closure (that fails to compile with "*mut () cannot be sent between threads safely"). So keep CpalAudioOutput on the thread that created it (the main/UI thread) and render+feed there. Own the VoiceAllocator/SynthEngine/PatchMixer/ChannelMixer/GlobalMixer and the CpalAudioOutput on the main thread; in the eframe update tick drain pending MIDI events and apply them to the VoiceAllocator (note-on allocates/steals; note-off releases), then render AudioFrames via VoiceAllocator -> SynthEngine -> PatchMixer -> ChannelMixer (per-channel volume/pan/solo/mute + peak metering) -> GlobalMixer applying the current mixer values, and read back each channel's PeakLevel from the ChannelMixer for the UI meters. These engine objects must be OWNED and DRIVEN here — never unused/`_`-prefixed. Do NOT spawn a thread that holds the stream or the engine. Call ctx.request_repaint() each update so the loop keeps running."#,

@@ -99,42 +99,15 @@ project: contexts: Patch: aggregates: ChannelMixer: {
 		{name: "ChannelMuteToggled", payload: {channel: "usize", muted: "bool"}},
 		{name: "ChannelSoloToggled", payload: {channel: "usize", soloed: "bool"}},
 	]
-	meta: notes: """
-		The mixer owns 16 ChannelStrips (one per MIDI channel) and 16 PeakLevels.
-		Every set-command clamps its value to the parameter's range before storing
-		it. Toggles flip the boolean for the addressed channel. All commands ignore
-		(or debug-assert) an out-of-range channel index.
-
-		AUDIBILITY (solo/mute semantics):
-		  let any_solo = self.channels.iter().any(|c| c.solo);
-		  fn audible(i) -> bool { !channels[i].mute && (!any_solo || channels[i].solo) }
-		Soloing one or more channels silences the AUDIO of every non-soloed channel;
-		muting silences that channel's audio. An inaudible channel contributes zero
-		to the stereo sum.
-
-		MIXDOWN: provide `fn mix(&mut self, inputs: &[Vec<AudioFrame>; 16]) -> Vec<AudioFrame>`
-		(or take a slice of 16 channel buffers). For each channel it FIRST records the
-		peak — peaks[i] = max absolute sample of inputs[i] (the channel's OWN signal,
-		BEFORE any mute/solo gating and before applying volume) — THEN, only if
-		audible(i), adds the channel's signal to the stereo bus applying volume and an
-		equal-power pan (pan -1 → all left, +1 → all right, 0 → centered). reverbSend
-		and echoSend are routing amounts toward the (future) global reverb/echo buses;
-		model them as scalar send levels here (they do not affect the dry sum).
-
-		METERING IS INDEPENDENT OF GATING: because peaks[i] is recorded before the
-		audibility check, a channel silenced by another channel's solo (or by its own
-		mute) still reports its true live level. This is the property the headless
-		prover asserts.
-
-		Keep mix() allocation-discipline friendly for the audio thread (no per-call
-		heap growth in steady state; the output buffer may be caller-provided).
-		"""
 	invariants: [
-		"the mixer has exactly 16 channels",
-		"every set-command clamps to the parameter range (volume/sends 0.0-1.0, pan -1.0..+1.0) before storing",
+		"the mixer has exactly 16 channels; commands ignore (or debug-assert) an out-of-range channel index",
+		"every set-command clamps to the parameter range (volume/sends 0.0-1.0, pan -1.0..+1.0) before storing; toggles flip the addressed channel's boolean",
 		"audible(i) == !channels[i].mute && (no channel is soloed || channels[i].solo)",
 		"soloing any channel silences the AUDIO of all non-soloed channels; an inaudible channel adds zero to the stereo sum",
 		"peaks[i] reflects channel i's own pre-gate signal and is NEVER zeroed by that channel being muted or solo-silenced — metering is independent of audibility",
+		"mix() over 16 channel buffers FIRST records each channel's own pre-gate peak, THEN sums only audible channels into the stereo bus applying volume and an equal-power pan (pan -1 = full left, +1 = full right, 0 = centered)",
+		"reverbSend/echoSend are scalar send levels routed toward the global reverb/echo buses; they do NOT affect the dry stereo sum",
+		"mix() is allocation-disciplined for the audio thread: no per-call heap growth in steady state",
 	]
 	validations: [
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with ChannelMixer"},
