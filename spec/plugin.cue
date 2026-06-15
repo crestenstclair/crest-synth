@@ -16,7 +16,8 @@ project: contexts: Plugin: valueObjects: ParameterId:  {from: "u32", description
 project: contexts: Plugin: valueObjects: ParameterRange: {
 	state:       {min: "f64", max: "f64", defaultValue: "f64", step: "Option<f64>"}
 	description: "value range and default for a host-visible parameter"
-	invariants: ["min < max", "defaultValue must be within [min, max]"]
+	invariants: ["min < max", "defaultValue must be within [min, max]", "a checked constructor rejects min>=max and a defaultValue outside [min,max] (returns Err/None), proven by a unit test"]
+	validations: [{kind: "test", command: ["cargo", "test", "parameter_range"], description: "ParameterRange constructor rejects min>=max and out-of-range default"}]
 }
 
 project: contexts: Plugin: ports: PluginHost: {
@@ -42,7 +43,10 @@ project: contexts: Plugin: aggregates: PluginInstance: {
 		"plugin parameters map 1:1 to engine parameters",
 		"state save/load uses the same PresetCodec as the standalone app",
 		"MIDI events from the host are normalized through the same MidiNormalizer",
+		"a unit test proves the command→event reducer: each command (Initialize/Reset/SetParameter) yields its corresponding event (PluginInitialized/PluginReset/ParameterChanged) with matching payload",
+		"a unit test proves state round-trips through the PresetCodec: saveState then loadState reconstructs an equivalent PluginInstance (same parameters/values)",
 	]
+	validations: [{kind: "test", command: ["cargo", "test", "plugin_instance"], description: "PluginInstance command→event reducer + PresetCodec state round-trip tests pass"}]
 	entities: PluginParameter: {state: {id: "ParameterId", name: "string", range: "ParameterRange", currentValue: "f64", engineMapping: "string"}}
 }
 
