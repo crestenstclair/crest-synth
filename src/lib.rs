@@ -3,6 +3,7 @@
 pub mod effects;
 pub mod engine;
 pub mod kernel;
+pub mod midi_file;
 pub mod mixer;
 pub mod modulation;
 pub mod patch;

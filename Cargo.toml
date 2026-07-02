@@ -13,3 +13,4 @@ triple_buffer = "9.0.0"
 basedrop = "0.1"
 symphonia = { version = "0.5", features = ["wav", "pcm"] }
 gilrs = "0.10"
+midly = "0.5"
