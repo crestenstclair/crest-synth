@@ -1,663 +1,662 @@
 // path: src/patch/patch.rs
 
-//! `Patch` aggregate — a complete instrument: engine type, parameters, voice pool,
-//! and channel subscription.
+//! Patch aggregate: one playable instrument and its complete configuration.
 //!
-//! # Invariants
-//!
-//! - Each `Patch` owns its own independent `VoiceAllocator`; polyphony of one
-//!   patch cannot starve another.
-//! - `pan` is constrained to the range −1.0 (left) to 1.0 (right).
+//! The `Patch` aggregate owns configuration state for a single instrument
+//! slot: its MIDI channel mapping, optional MPE zone, modulation matrix,
+//! sample set assignment, voice configuration, and which mixer strip
+//! carries its audio. All command handling here runs off the real-time
+//! audio thread; the resulting `PatchEvent`s are the only way this state
+//! is meant to cross into the `ParameterBridge` / `EventRing` that the
+//! audio thread observes.
 
-use crate::kernel::amplitude::Amplitude;
-use crate::patch::channel_subscription::ChannelSubscription;
-use crate::patch::patch_id::PatchId;
-use crate::patch::voice_pool_config::VoicePoolConfig;
-use crate::synth::amp_envelope_config::AmpEnvelopeConfig;
-use crate::synth::filter_config::FilterConfig;
-use crate::synth::oscillator_config::OscillatorConfig;
-use crate::synth::voice_allocator::VoiceAllocator;
+use std::error::Error;
+use std::fmt;
+use std::ops::RangeInclusive;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// EngineType
-// ─────────────────────────────────────────────────────────────────────────────
+/// Stable identity for a `Patch` aggregate instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PatchId(u32);
 
-/// The synthesis engine that will power the voices in this patch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum EngineType {
-    /// A simple sine-wave oscillator engine.
-    #[default]
-    Sine,
-    /// A wavetable-based engine.
-    Wavetable,
-    /// A subtractive synthesis engine.
-    Subtractive,
+impl PatchId {
+    /// Constructs a `PatchId` from a raw identifier.
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// Returns the raw identifier.
+    pub fn value(self) -> u32 {
+        self.0
+    }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Errors
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Error variants for `Patch` command processing.
-#[derive(Debug, Clone, PartialEq)]
-pub enum PatchError {
-    /// A command was applied to a patch that has not yet been created.
-    NotInitialized,
-    /// The `pan` value supplied is out of the valid range −1.0 to 1.0.
-    InvalidPan(f64),
-    /// The supplied name is empty.
-    EmptyName,
+impl fmt::Display for PatchId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PatchId({})", self.0)
+    }
 }
 
-impl std::fmt::Display for PatchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PatchError::NotInitialized => write!(f, "patch has not been created yet"),
-            PatchError::InvalidPan(v) => {
-                write!(f, "pan value {v} is out of range -1.0 to 1.0")
+/// Which MIDI channels (0-15) address this patch.
+///
+/// Represented as a 16-bit mask so a single patch can be layered across
+/// multiple channels. Matching is what makes layering intentional per the
+/// dispatch invariant: a `MidiEvent` is routed to exactly the set of
+/// patches whose mapping matches its address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelMapping {
+    mask: u16,
+}
+
+impl ChannelMapping {
+    /// A mapping that matches no channel at all.
+    pub fn none() -> Self {
+        Self { mask: 0 }
+    }
+
+    /// A mapping that matches every MIDI channel (omni).
+    pub fn omni() -> Self {
+        Self { mask: 0xFFFF }
+    }
+
+    /// A mapping that matches exactly one MIDI channel (0-15).
+    pub fn single(channel: u8) -> Result<Self, PatchError> {
+        if channel > 15 {
+            return Err(PatchError::InvalidChannel(channel));
+        }
+        Ok(Self {
+            mask: 1u16 << channel,
+        })
+    }
+
+    /// A mapping that matches any of `channels` (each must be 0-15).
+    pub fn from_channels(channels: &[u8]) -> Result<Self, PatchError> {
+        let mut mask = 0u16;
+        for &channel in channels {
+            if channel > 15 {
+                return Err(PatchError::InvalidChannel(channel));
             }
-            PatchError::EmptyName => write!(f, "patch name must not be empty"),
+            mask |= 1u16 << channel;
+        }
+        Ok(Self { mask })
+    }
+
+    /// True if this mapping matches `channel` (0-15).
+    pub fn matches(&self, channel: u8) -> bool {
+        if channel > 15 {
+            return false;
+        }
+        self.mask & (1u16 << channel) != 0
+    }
+
+    /// The raw 16-bit channel mask, one bit per MIDI channel.
+    pub fn mask(&self) -> u16 {
+        self.mask
+    }
+}
+
+impl Default for ChannelMapping {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+/// An MPE (MIDI Polyphonic Expression) zone: a master channel plus a
+/// contiguous run of member channels that carry per-note expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MpeZone {
+    master_channel: u8,
+    member_start: u8,
+    member_count: u8,
+}
+
+impl MpeZone {
+    /// Builds an MPE zone. `master_channel` and every member channel must
+    /// fall within the 16 MIDI channels (0-15), and the zone must claim at
+    /// least one member channel.
+    pub fn try_new(
+        master_channel: u8,
+        member_start: u8,
+        member_count: u8,
+    ) -> Result<Self, PatchError> {
+        if master_channel > 15 {
+            return Err(PatchError::InvalidChannel(master_channel));
+        }
+        if member_start > 15 {
+            return Err(PatchError::InvalidChannel(member_start));
+        }
+        if member_count == 0 {
+            return Err(PatchError::EmptyMpeZone);
+        }
+        let last_member = u16::from(member_start) + u16::from(member_count) - 1;
+        if last_member > 15 {
+            return Err(PatchError::MpeZoneOutOfRange);
+        }
+        Ok(Self {
+            master_channel,
+            member_start,
+            member_count,
+        })
+    }
+
+    /// The zone's master channel, which carries zone-wide expression.
+    pub fn master_channel(&self) -> u8 {
+        self.master_channel
+    }
+
+    /// The inclusive range of member channels claimed by this zone.
+    pub fn member_range(&self) -> RangeInclusive<u8> {
+        self.member_start..=(self.member_start + self.member_count - 1)
+    }
+
+    /// True if this zone's occupied channels (master and members)
+    /// intersect `other`'s occupied channels. Used to enforce the
+    /// cross-patch invariant that MPE zones never overlap.
+    pub fn overlaps(&self, other: &MpeZone) -> bool {
+        self.occupied_mask() & other.occupied_mask() != 0
+    }
+
+    fn occupied_mask(&self) -> u16 {
+        let mut mask = 1u16 << self.master_channel;
+        for channel in self.member_range() {
+            mask |= 1u16 << channel;
+        }
+        mask
+    }
+}
+
+/// A modulation source: a signal that can drive a `ModDestination`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModSource {
+    Lfo1,
+    Lfo2,
+    EnvelopeAmp,
+    EnvelopeFilter,
+    Aftertouch,
+    ModWheel,
+    Velocity,
+}
+
+/// A modulation destination: a parameter a `ModSource` can drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModDestination {
+    Pitch,
+    FilterCutoff,
+    FilterResonance,
+    Amplitude,
+    Pan,
+}
+
+/// One route in the modulation matrix: a source driving a destination by
+/// some signed amount.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModRoute {
+    pub source: ModSource,
+    pub destination: ModDestination,
+    pub amount: f32,
+}
+
+/// The modulation matrix: an ordered set of source-to-destination routes.
+///
+/// This is configuration data owned by the non-real-time side; the audio
+/// thread only ever sees a snapshot delivered through the
+/// `ParameterBridge`, never this owning collection.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ModMatrix {
+    routes: Vec<ModRoute>,
+}
+
+impl ModMatrix {
+    /// A modulation matrix with no routes.
+    pub fn empty() -> Self {
+        Self { routes: Vec::new() }
+    }
+
+    /// Builds a modulation matrix from an explicit set of routes.
+    pub fn with_routes(routes: Vec<ModRoute>) -> Self {
+        Self { routes }
+    }
+
+    /// The routes currently configured, in evaluation order.
+    pub fn routes(&self) -> &[ModRoute] {
+        &self.routes
+    }
+}
+
+/// Per-voice synthesis configuration: polyphony and amplitude envelope
+/// timing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VoiceConfig {
+    polyphony: u8,
+    attack_ms: f32,
+    decay_ms: f32,
+    sustain_level: f32,
+    release_ms: f32,
+}
+
+impl VoiceConfig {
+    /// Builds a voice configuration. `polyphony` must be at least 1;
+    /// `sustain_level` must lie in `0.0..=1.0` and not be NaN; the envelope
+    /// timings must be finite and non-negative.
+    pub fn try_new(
+        polyphony: u8,
+        attack_ms: f32,
+        decay_ms: f32,
+        sustain_level: f32,
+        release_ms: f32,
+    ) -> Result<Self, PatchError> {
+        if polyphony == 0 {
+            return Err(PatchError::InvalidVoiceConfig(
+                "polyphony must be at least 1",
+            ));
+        }
+        if sustain_level.is_nan() || !(0.0..=1.0).contains(&sustain_level) {
+            return Err(PatchError::InvalidVoiceConfig(
+                "sustain_level must be within 0.0..=1.0",
+            ));
+        }
+        if !attack_ms.is_finite() || attack_ms < 0.0 {
+            return Err(PatchError::InvalidVoiceConfig(
+                "attack_ms must be finite and non-negative",
+            ));
+        }
+        if !decay_ms.is_finite() || decay_ms < 0.0 {
+            return Err(PatchError::InvalidVoiceConfig(
+                "decay_ms must be finite and non-negative",
+            ));
+        }
+        if !release_ms.is_finite() || release_ms < 0.0 {
+            return Err(PatchError::InvalidVoiceConfig(
+                "release_ms must be finite and non-negative",
+            ));
+        }
+        Ok(Self {
+            polyphony,
+            attack_ms,
+            decay_ms,
+            sustain_level,
+            release_ms,
+        })
+    }
+
+    pub fn polyphony(&self) -> u8 {
+        self.polyphony
+    }
+
+    pub fn attack_ms(&self) -> f32 {
+        self.attack_ms
+    }
+
+    pub fn decay_ms(&self) -> f32 {
+        self.decay_ms
+    }
+
+    pub fn sustain_level(&self) -> f32 {
+        self.sustain_level
+    }
+
+    pub fn release_ms(&self) -> f32 {
+        self.release_ms
+    }
+}
+
+/// Errors raised while constructing patch value objects or applying
+/// commands to a `Patch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchError {
+    InvalidChannel(u8),
+    EmptyMpeZone,
+    MpeZoneOutOfRange,
+    InvalidVoiceConfig(&'static str),
+    OverlappingMpeZone,
+}
+
+impl fmt::Display for PatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PatchError::InvalidChannel(channel) => {
+                write!(f, "invalid MIDI channel: {channel} (must be 0..=15)")
+            }
+            PatchError::EmptyMpeZone => {
+                write!(f, "MPE zone must claim at least one member channel")
+            }
+            PatchError::MpeZoneOutOfRange => {
+                write!(f, "MPE zone member range exceeds the 16 MIDI channels")
+            }
+            PatchError::InvalidVoiceConfig(reason) => {
+                write!(f, "invalid voice configuration: {reason}")
+            }
+            PatchError::OverlappingMpeZone => {
+                write!(f, "MPE zone overlaps another patch's zone")
+            }
         }
     }
 }
 
-impl std::error::Error for PatchError {}
+impl Error for PatchError {}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Commands
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Commands that drive a `Patch` aggregate.
-#[derive(Debug, Clone)]
-pub enum PatchCommand {
-    /// Create and initialise the patch.
-    CreatePatch {
-        name: String,
-        engine_type: EngineType,
-        subscription: ChannelSubscription,
-    },
-    /// Update the channel subscription.
-    UpdateSubscription { subscription: ChannelSubscription },
-    /// Update the oscillator configuration.
-    UpdateOscillator { config: OscillatorConfig },
-    /// Update the amplitude envelope configuration.
-    UpdateEnvelope { config: AmpEnvelopeConfig },
-    /// Set the output gain.
-    SetGain { gain: Amplitude },
-    /// Set the stereo pan position (−1.0 = left, 1.0 = right).
-    SetPan { pan: f64 },
-    /// Mark the patch as active.
-    ActivatePatch,
-    /// Mark the patch as inactive.
-    DeactivatePatch,
-    /// Update the filter configuration.
-    UpdateFilter { config: FilterConfig },
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Events
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Domain events emitted by the `Patch` aggregate.
-#[derive(Debug, Clone, PartialEq)]
+/// Domain events raised by `Patch` commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchEvent {
-    /// The patch was created.
-    PatchCreated {
-        id: PatchId,
-        name: String,
-        engine_type: EngineType,
-    },
-    /// The channel subscription changed.
-    SubscriptionChanged {
-        id: PatchId,
-        subscription: ChannelSubscription,
-    },
-    /// Oscillator, envelope, filter, gain, or pan parameters changed.
-    PatchParametersUpdated { id: PatchId },
-    /// The patch was activated.
-    PatchActivated { id: PatchId },
-    /// The patch was deactivated.
-    PatchDeactivated { id: PatchId },
+    ConfigChanged { id: PatchId },
+    MappingChanged { id: PatchId },
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Aggregate state
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// The `Patch` aggregate.
-///
-/// A `Patch` is a complete instrument: it owns a `VoiceAllocator` (its voice
-/// pool), carries synthesis parameters, and knows which MIDI channel(s) to
-/// respond to.
-///
-/// # Independence guarantee
-///
-/// Each `Patch` constructs its own `VoiceAllocator` at creation time.
-/// No two patches ever share a voice pool, so the polyphony of one patch
-/// can never deplete the voices available to another.
-///
-/// # Pan invariant
-///
-/// `pan` is always in the range −1.0 (left) to 1.0 (right).  `SetPan`
-/// commands with values outside that range are rejected with
-/// [`PatchError::InvalidPan`].
+/// One playable instrument and its complete configuration.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Patch {
-    /// Unique identifier, `None` until `CreatePatch` is applied.
-    id: Option<PatchId>,
-    name: String,
-    active: bool,
-    engine_type: EngineType,
-    oscillator: OscillatorConfig,
-    amp_envelope: AmpEnvelopeConfig,
-    filter: FilterConfig,
-    gain: Amplitude,
-    /// Stereo pan: −1.0 (full left) to 1.0 (full right).
-    pan: f64,
-    subscription: ChannelSubscription,
-    /// Each patch owns its own independent voice pool.
-    voice_pool: VoiceAllocator,
-    voice_pool_config: VoicePoolConfig,
+    id: PatchId,
+    mapping: ChannelMapping,
+    mixer_strip: u32,
+    mod_matrix: ModMatrix,
+    mpe_zone: Option<MpeZone>,
+    sample_set: Option<u32>,
+    voice: VoiceConfig,
 }
 
 impl Patch {
-    /// Create an uninitialised `Patch` with the given voice-pool configuration.
-    ///
-    /// Call [`Patch::handle`] with [`PatchCommand::CreatePatch`] to initialise.
-    pub fn new(voice_pool_config: VoicePoolConfig, subscription: ChannelSubscription) -> Self {
-        let num_voices = voice_pool_config.max_voices() as usize;
+    /// Constructs a new patch bound to `mixer_strip`, with no channel
+    /// mapping, no MPE zone, no sample set, and an empty modulation
+    /// matrix. `voice` has no universally safe default, so callers must
+    /// supply one explicitly.
+    pub fn new(id: PatchId, mixer_strip: u32, voice: VoiceConfig) -> Self {
         Self {
-            id: None,
-            name: String::new(),
-            active: false,
-            engine_type: EngineType::default(),
-            oscillator: OscillatorConfig::default(),
-            amp_envelope: AmpEnvelopeConfig::default(),
-            filter: FilterConfig::default(),
-            gain: Amplitude::unity(),
-            pan: 0.0,
-            subscription,
-            voice_pool: VoiceAllocator::new(num_voices),
-            voice_pool_config,
+            id,
+            mapping: ChannelMapping::none(),
+            mixer_strip,
+            mod_matrix: ModMatrix::empty(),
+            mpe_zone: None,
+            sample_set: None,
+            voice,
         }
     }
 
-    // ── Accessors ─────────────────────────────────────────────────────────────
-
-    /// The patch's unique identifier (available after `CreatePatch`).
-    pub fn id(&self) -> Option<PatchId> {
+    pub fn id(&self) -> PatchId {
         self.id
     }
 
-    /// The patch name.
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn mapping(&self) -> ChannelMapping {
+        self.mapping
     }
 
-    /// Whether the patch is currently active.
-    pub fn active(&self) -> bool {
-        self.active
+    pub fn mixer_strip(&self) -> u32 {
+        self.mixer_strip
     }
 
-    /// The synthesis engine type.
-    pub fn engine_type(&self) -> EngineType {
-        self.engine_type
+    pub fn mod_matrix(&self) -> &ModMatrix {
+        &self.mod_matrix
     }
 
-    /// Current oscillator configuration.
-    pub fn oscillator(&self) -> OscillatorConfig {
-        self.oscillator
+    pub fn mpe_zone(&self) -> Option<MpeZone> {
+        self.mpe_zone
     }
 
-    /// Current amplitude envelope configuration.
-    pub fn amp_envelope(&self) -> AmpEnvelopeConfig {
-        self.amp_envelope
+    pub fn sample_set(&self) -> Option<u32> {
+        self.sample_set
     }
 
-    /// Current filter configuration.
-    pub fn filter(&self) -> FilterConfig {
-        self.filter
+    pub fn voice(&self) -> VoiceConfig {
+        self.voice
     }
 
-    /// Current output gain.
-    pub fn gain(&self) -> Amplitude {
-        self.gain
+    /// Command: `SetMapping`. Always succeeds; a mapping that matches no
+    /// channels is valid — the patch simply receives no `MidiEvent`s.
+    pub fn set_mapping(&mut self, mapping: ChannelMapping) -> PatchEvent {
+        self.mapping = mapping;
+        PatchEvent::MappingChanged { id: self.id }
     }
 
-    /// Current stereo pan (−1.0 left … 1.0 right).
-    pub fn pan(&self) -> f64 {
-        self.pan
-    }
-
-    /// Current channel subscription.
-    pub fn subscription(&self) -> ChannelSubscription {
-        self.subscription
-    }
-
-    /// Shared reference to the voice pool for rendering.
-    pub fn voice_pool(&self) -> &VoiceAllocator {
-        &self.voice_pool
-    }
-
-    /// Mutable reference to the voice pool.
-    pub fn voice_pool_mut(&mut self) -> &mut VoiceAllocator {
-        &mut self.voice_pool
-    }
-
-    /// The voice pool configuration.
-    pub fn voice_pool_config(&self) -> VoicePoolConfig {
-        self.voice_pool_config
-    }
-
-    // ── Command handler ───────────────────────────────────────────────────────
-
-    /// Apply a command to the patch and return the resulting events.
-    ///
-    /// Returns `Err(PatchError)` if the command is invalid in the current state.
-    pub fn handle(&mut self, cmd: PatchCommand) -> Result<Vec<PatchEvent>, PatchError> {
-        match cmd {
-            PatchCommand::CreatePatch {
-                name,
-                engine_type,
-                subscription,
-            } => self.create_patch(name, engine_type, subscription),
-
-            PatchCommand::UpdateSubscription { subscription } => {
-                self.require_id()?;
-                self.subscription = subscription;
-                Ok(vec![PatchEvent::SubscriptionChanged {
-                    id: self.id.unwrap(),
-                    subscription,
-                }])
-            }
-
-            PatchCommand::UpdateOscillator { config } => {
-                self.require_id()?;
-                self.oscillator = config;
-                Ok(vec![PatchEvent::PatchParametersUpdated {
-                    id: self.id.unwrap(),
-                }])
-            }
-
-            PatchCommand::UpdateEnvelope { config } => {
-                self.require_id()?;
-                self.amp_envelope = config;
-                Ok(vec![PatchEvent::PatchParametersUpdated {
-                    id: self.id.unwrap(),
-                }])
-            }
-
-            PatchCommand::SetGain { gain } => {
-                self.require_id()?;
-                self.gain = gain;
-                Ok(vec![PatchEvent::PatchParametersUpdated {
-                    id: self.id.unwrap(),
-                }])
-            }
-
-            PatchCommand::SetPan { pan } => {
-                self.require_id()?;
-                if pan.is_nan() || !(-1.0_f64..=1.0_f64).contains(&pan) {
-                    return Err(PatchError::InvalidPan(pan));
-                }
-                self.pan = pan;
-                Ok(vec![PatchEvent::PatchParametersUpdated {
-                    id: self.id.unwrap(),
-                }])
-            }
-
-            PatchCommand::ActivatePatch => {
-                self.require_id()?;
-                self.active = true;
-                Ok(vec![PatchEvent::PatchActivated {
-                    id: self.id.unwrap(),
-                }])
-            }
-
-            PatchCommand::DeactivatePatch => {
-                self.require_id()?;
-                self.active = false;
-                Ok(vec![PatchEvent::PatchDeactivated {
-                    id: self.id.unwrap(),
-                }])
-            }
-
-            PatchCommand::UpdateFilter { config } => {
-                self.require_id()?;
-                self.filter = config;
-                Ok(vec![PatchEvent::PatchParametersUpdated {
-                    id: self.id.unwrap(),
-                }])
-            }
-        }
-    }
-
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    fn create_patch(
+    /// Command: `SetMpeZone`. `other_zones` must contain every MPE zone
+    /// currently claimed by *other* patches. The invariant that MPE zones
+    /// never overlap across patches is a cross-aggregate rule, so this
+    /// method checks the proposed zone (if any) against that set before
+    /// committing the change; on rejection this patch's state is left
+    /// untouched.
+    pub fn set_mpe_zone(
         &mut self,
-        name: String,
-        engine_type: EngineType,
-        subscription: ChannelSubscription,
-    ) -> Result<Vec<PatchEvent>, PatchError> {
-        if name.is_empty() {
-            return Err(PatchError::EmptyName);
+        zone: Option<MpeZone>,
+        other_zones: &[MpeZone],
+    ) -> Result<PatchEvent, PatchError> {
+        if let Some(candidate) = zone {
+            if other_zones
+                .iter()
+                .any(|existing| existing.overlaps(&candidate))
+            {
+                return Err(PatchError::OverlappingMpeZone);
+            }
         }
-        // Use a deterministic ID derived from the name length for a simple
-        // self-contained aggregate. In a real system the ID would come from an
-        // external ID generator injected via the constructor.
-        let id = PatchId::new(name.len() as u32 ^ 0xDEAD_BEEF);
-        self.id = Some(id);
-        self.name = name.clone();
-        self.engine_type = engine_type;
-        self.subscription = subscription;
-        self.active = false;
-        Ok(vec![PatchEvent::PatchCreated {
-            id,
-            name,
-            engine_type,
-        }])
+        self.mpe_zone = zone;
+        Ok(PatchEvent::ConfigChanged { id: self.id })
     }
 
-    /// Return `Err(PatchError::NotInitialized)` if the patch has no id yet.
-    fn require_id(&self) -> Result<(), PatchError> {
-        if self.id.is_none() {
-            Err(PatchError::NotInitialized)
-        } else {
-            Ok(())
-        }
+    /// Command: `AssignSampleSet`. Always succeeds; `None` unassigns any
+    /// previously configured sample set.
+    pub fn assign_sample_set(&mut self, sample_set: Option<u32>) -> PatchEvent {
+        self.sample_set = sample_set;
+        PatchEvent::ConfigChanged { id: self.id }
+    }
+
+    /// Command: `SetVoiceConfig`. Always succeeds; `VoiceConfig` is
+    /// pre-validated at construction via `VoiceConfig::try_new`.
+    pub fn set_voice_config(&mut self, voice: VoiceConfig) -> PatchEvent {
+        self.voice = voice;
+        PatchEvent::ConfigChanged { id: self.id }
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::midi_channel::MidiChannel;
-    use crate::kernel::midi_group::MidiGroup;
-    use crate::patch::channel_subscription::ChannelAddress;
-    use crate::patch::voice_pool_config::StealingPolicy;
-    use crate::synth::filter_config::FilterType;
-    use crate::synth::oscillator_config::Waveform;
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    fn default_subscription() -> ChannelSubscription {
-        let group = MidiGroup::try_new(0).unwrap();
-        let channel = MidiChannel::try_new(0).unwrap();
-        let address = ChannelAddress::new(group, channel);
-        ChannelSubscription::new(address, None)
-    }
-
-    fn default_voice_pool_config() -> VoicePoolConfig {
-        VoicePoolConfig::try_new(8, StealingPolicy::QuietestFirst).unwrap()
-    }
-
-    fn default_patch() -> Patch {
-        Patch::new(default_voice_pool_config(), default_subscription())
-    }
-
-    fn created_patch() -> Patch {
-        let mut p = default_patch();
-        p.handle(PatchCommand::CreatePatch {
-            name: "Lead".to_string(),
-            engine_type: EngineType::Sine,
-            subscription: default_subscription(),
-        })
-        .unwrap();
-        p
-    }
-
-    // ── CreatePatch ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn create_patch_emits_patch_created() {
-        let mut p = default_patch();
-        let events = p
-            .handle(PatchCommand::CreatePatch {
-                name: "Bass".to_string(),
-                engine_type: EngineType::Subtractive,
-                subscription: default_subscription(),
-            })
-            .unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], PatchEvent::PatchCreated { .. }));
+    fn voice() -> VoiceConfig {
+        VoiceConfig::try_new(8, 5.0, 50.0, 0.8, 200.0).expect("valid voice config")
     }
 
     #[test]
-    fn create_patch_sets_name_and_engine_type() {
-        let p = created_patch();
-        assert_eq!(p.name(), "Lead");
-        assert_eq!(p.engine_type(), EngineType::Sine);
+    fn channel_mapping_single_matches_only_that_channel() {
+        let mapping = ChannelMapping::single(3).expect("valid channel");
+        assert!(mapping.matches(3));
+        assert!(!mapping.matches(4));
     }
 
     #[test]
-    fn create_patch_with_empty_name_returns_error() {
-        let mut p = default_patch();
-        let result = p.handle(PatchCommand::CreatePatch {
-            name: String::new(),
-            engine_type: EngineType::Sine,
-            subscription: default_subscription(),
-        });
-        assert!(matches!(result, Err(PatchError::EmptyName)));
-    }
-
-    #[test]
-    fn commands_before_create_return_not_initialized() {
-        let mut p = default_patch();
-        let result = p.handle(PatchCommand::ActivatePatch);
-        assert!(matches!(result, Err(PatchError::NotInitialized)));
-    }
-
-    // ── Independent voice pools ───────────────────────────────────────────────
-
-    #[test]
-    fn each_patch_has_independent_voice_pool() {
-        let cfg = VoicePoolConfig::try_new(4, StealingPolicy::QuietestFirst).unwrap();
-        let p1 = Patch::new(cfg, default_subscription());
-        let p2 = Patch::new(cfg, default_subscription());
-        // The two patches have independent allocators: the address of their
-        // voice pools must differ (they are separate heap allocations).
-        assert_ne!(
-            p1.voice_pool() as *const _,
-            p2.voice_pool() as *const _,
-            "each patch must own its own voice pool"
+    fn channel_mapping_single_rejects_out_of_range_channel() {
+        assert_eq!(
+            ChannelMapping::single(16),
+            Err(PatchError::InvalidChannel(16))
         );
     }
 
     #[test]
-    fn voice_pool_voice_count_matches_config() {
-        let cfg = VoicePoolConfig::try_new(3, StealingPolicy::OldestFirst).unwrap();
-        let p = Patch::new(cfg, default_subscription());
-        assert_eq!(p.voice_pool().voice_count(), 3);
-    }
-
-    // ── ActivatePatch / DeactivatePatch ───────────────────────────────────────
-
-    #[test]
-    fn activate_patch_sets_active_true() {
-        let mut p = created_patch();
-        p.handle(PatchCommand::ActivatePatch).unwrap();
-        assert!(p.active());
+    fn channel_mapping_omni_matches_every_channel() {
+        let mapping = ChannelMapping::omni();
+        for channel in 0..=15u8 {
+            assert!(mapping.matches(channel));
+        }
     }
 
     #[test]
-    fn activate_patch_emits_patch_activated() {
-        let mut p = created_patch();
-        let events = p.handle(PatchCommand::ActivatePatch).unwrap();
-        assert!(matches!(events[0], PatchEvent::PatchActivated { .. }));
+    fn channel_mapping_from_channels_matches_each_listed_channel() {
+        let mapping = ChannelMapping::from_channels(&[0, 5, 10]).expect("valid channels");
+        assert!(mapping.matches(0));
+        assert!(mapping.matches(5));
+        assert!(mapping.matches(10));
+        assert!(!mapping.matches(1));
     }
 
     #[test]
-    fn deactivate_patch_sets_active_false() {
-        let mut p = created_patch();
-        p.handle(PatchCommand::ActivatePatch).unwrap();
-        p.handle(PatchCommand::DeactivatePatch).unwrap();
-        assert!(!p.active());
+    fn mpe_zone_rejects_zero_member_count() {
+        assert_eq!(MpeZone::try_new(0, 1, 0), Err(PatchError::EmptyMpeZone));
     }
 
     #[test]
-    fn deactivate_patch_emits_patch_deactivated() {
-        let mut p = created_patch();
-        p.handle(PatchCommand::ActivatePatch).unwrap();
-        let events = p.handle(PatchCommand::DeactivatePatch).unwrap();
-        assert!(matches!(events[0], PatchEvent::PatchDeactivated { .. }));
-    }
-
-    // ── SetPan ────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn set_pan_within_range_is_accepted() {
-        let mut p = created_patch();
-        p.handle(PatchCommand::SetPan { pan: -1.0 }).unwrap();
-        assert!((p.pan() - (-1.0)).abs() < f64::EPSILON);
-
-        p.handle(PatchCommand::SetPan { pan: 1.0 }).unwrap();
-        assert!((p.pan() - 1.0).abs() < f64::EPSILON);
-
-        p.handle(PatchCommand::SetPan { pan: 0.0 }).unwrap();
-        assert!(p.pan().abs() < f64::EPSILON);
+    fn mpe_zone_rejects_member_range_beyond_sixteen_channels() {
+        assert_eq!(
+            MpeZone::try_new(0, 10, 10),
+            Err(PatchError::MpeZoneOutOfRange)
+        );
     }
 
     #[test]
-    fn set_pan_above_one_is_rejected() {
-        let mut p = created_patch();
-        let result = p.handle(PatchCommand::SetPan { pan: 1.001 });
-        assert!(matches!(result, Err(PatchError::InvalidPan(_))));
+    fn mpe_zone_overlap_detects_shared_member_channel() {
+        let a = MpeZone::try_new(0, 1, 7).expect("valid zone");
+        let b = MpeZone::try_new(8, 7, 8).expect("valid zone");
+        assert!(a.overlaps(&b));
+        assert!(b.overlaps(&a));
     }
 
     #[test]
-    fn set_pan_below_minus_one_is_rejected() {
-        let mut p = created_patch();
-        let result = p.handle(PatchCommand::SetPan { pan: -1.001 });
-        assert!(matches!(result, Err(PatchError::InvalidPan(_))));
+    fn mpe_zone_no_overlap_for_disjoint_channels() {
+        let a = MpeZone::try_new(0, 1, 6).expect("valid zone");
+        let b = MpeZone::try_new(8, 9, 6).expect("valid zone");
+        assert!(!a.overlaps(&b));
     }
 
     #[test]
-    fn set_pan_nan_is_rejected() {
-        let mut p = created_patch();
-        let result = p.handle(PatchCommand::SetPan { pan: f64::NAN });
-        assert!(matches!(result, Err(PatchError::InvalidPan(_))));
-    }
-
-    // ── SetGain ───────────────────────────────────────────────────────────────
-
-    #[test]
-    fn set_gain_updates_gain() {
-        let mut p = created_patch();
-        let gain = Amplitude::try_new(0.75).unwrap();
-        p.handle(PatchCommand::SetGain { gain }).unwrap();
-        assert!((p.gain().value() - 0.75).abs() < f64::EPSILON);
+    fn voice_config_rejects_zero_polyphony() {
+        assert_eq!(
+            VoiceConfig::try_new(0, 1.0, 1.0, 0.5, 1.0),
+            Err(PatchError::InvalidVoiceConfig(
+                "polyphony must be at least 1"
+            ))
+        );
     }
 
     #[test]
-    fn set_gain_emits_parameters_updated() {
-        let mut p = created_patch();
-        let gain = Amplitude::try_new(0.5).unwrap();
-        let events = p.handle(PatchCommand::SetGain { gain }).unwrap();
-        assert!(matches!(
-            events[0],
-            PatchEvent::PatchParametersUpdated { .. }
-        ));
-    }
-
-    // ── UpdateSubscription ────────────────────────────────────────────────────
-
-    #[test]
-    fn update_subscription_changes_subscription() {
-        let mut p = created_patch();
-        let new_sub = {
-            let group = MidiGroup::try_new(0).unwrap();
-            let channel = MidiChannel::try_new(5).unwrap();
-            let address = ChannelAddress::new(group, channel);
-            ChannelSubscription::new(address, None)
-        };
-        p.handle(PatchCommand::UpdateSubscription {
-            subscription: new_sub,
-        })
-        .unwrap();
-        assert_eq!(p.subscription(), new_sub);
+    fn voice_config_rejects_out_of_range_sustain() {
+        assert_eq!(
+            VoiceConfig::try_new(1, 1.0, 1.0, 1.5, 1.0),
+            Err(PatchError::InvalidVoiceConfig(
+                "sustain_level must be within 0.0..=1.0"
+            ))
+        );
     }
 
     #[test]
-    fn update_subscription_emits_subscription_changed() {
-        let mut p = created_patch();
-        let events = p
-            .handle(PatchCommand::UpdateSubscription {
-                subscription: default_subscription(),
-            })
-            .unwrap();
-        assert!(matches!(events[0], PatchEvent::SubscriptionChanged { .. }));
-    }
-
-    // ── UpdateOscillator ──────────────────────────────────────────────────────
-
-    #[test]
-    fn update_oscillator_changes_config() {
-        let mut p = created_patch();
-        let cfg = OscillatorConfig::try_new(100.0, 0.5, Waveform::Square).unwrap();
-        p.handle(PatchCommand::UpdateOscillator { config: cfg })
-            .unwrap();
-        assert_eq!(p.oscillator(), cfg);
-    }
-
-    // ── UpdateEnvelope ────────────────────────────────────────────────────────
-
-    #[test]
-    fn update_envelope_changes_config() {
-        let mut p = created_patch();
-        let cfg = AmpEnvelopeConfig::try_new(0.1, 0.2, 0.5, 0.4).unwrap();
-        p.handle(PatchCommand::UpdateEnvelope { config: cfg })
-            .unwrap();
-        assert_eq!(p.amp_envelope(), cfg);
-    }
-
-    // ── UpdateFilter ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn update_filter_changes_config() {
-        let mut p = created_patch();
-        let cfg = FilterConfig::try_new(2_000.0, FilterType::HighPass, 0.3).unwrap();
-        p.handle(PatchCommand::UpdateFilter { config: cfg })
-            .unwrap();
-        assert_eq!(p.filter(), cfg);
-    }
-
-    // ── PatchError display ────────────────────────────────────────────────────
-
-    #[test]
-    fn error_display_not_initialized() {
-        let msg = PatchError::NotInitialized.to_string();
-        assert!(msg.contains("not been created"));
+    fn voice_config_rejects_nan_sustain() {
+        assert_eq!(
+            VoiceConfig::try_new(1, 1.0, 1.0, f32::NAN, 1.0),
+            Err(PatchError::InvalidVoiceConfig(
+                "sustain_level must be within 0.0..=1.0"
+            ))
+        );
     }
 
     #[test]
-    fn error_display_invalid_pan() {
-        let msg = PatchError::InvalidPan(2.5).to_string();
-        assert!(msg.contains("2.5"));
+    fn voice_config_rejects_negative_attack() {
+        assert_eq!(
+            VoiceConfig::try_new(1, -1.0, 1.0, 0.5, 1.0),
+            Err(PatchError::InvalidVoiceConfig(
+                "attack_ms must be finite and non-negative"
+            ))
+        );
     }
 
     #[test]
-    fn error_display_empty_name() {
-        let msg = PatchError::EmptyName.to_string();
-        assert!(msg.contains("empty"));
+    fn set_mapping_emits_mapping_changed_and_updates_state() {
+        let mut patch = Patch::new(PatchId::new(1), 0, voice());
+        let mapping = ChannelMapping::single(2).expect("valid channel");
+
+        let event = patch.set_mapping(mapping);
+
+        assert_eq!(
+            event,
+            PatchEvent::MappingChanged {
+                id: PatchId::new(1)
+            }
+        );
+        assert_eq!(patch.mapping(), mapping);
     }
 
-    // ── Multi-patch dispatch ──────────────────────────────────────────────────
+    #[test]
+    fn assign_sample_set_emits_config_changed_and_updates_state() {
+        let mut patch = Patch::new(PatchId::new(1), 0, voice());
+
+        let event = patch.assign_sample_set(Some(42));
+
+        assert_eq!(
+            event,
+            PatchEvent::ConfigChanged {
+                id: PatchId::new(1)
+            }
+        );
+        assert_eq!(patch.sample_set(), Some(42));
+    }
 
     #[test]
-    fn two_patches_on_same_subscription_both_independent() {
-        // Validates: two patches with the same subscription each have their
-        // own independent voice pool — the pool of one does not affect the other.
-        let cfg = VoicePoolConfig::try_new(2, StealingPolicy::QuietestFirst).unwrap();
-        let sub = default_subscription();
-        let p1 = Patch::new(cfg, sub);
-        let p2 = Patch::new(cfg, sub);
-        // Voice pools at different addresses — truly independent.
-        assert_ne!(p1.voice_pool() as *const _, p2.voice_pool() as *const _,);
-        assert_eq!(p1.voice_pool().voice_count(), 2);
-        assert_eq!(p2.voice_pool().voice_count(), 2);
+    fn assign_sample_set_none_clears_previous_assignment() {
+        let mut patch = Patch::new(PatchId::new(1), 0, voice());
+        patch.assign_sample_set(Some(7));
+
+        patch.assign_sample_set(None);
+
+        assert_eq!(patch.sample_set(), None);
+    }
+
+    #[test]
+    fn set_voice_config_emits_config_changed_and_updates_state() {
+        let mut patch = Patch::new(PatchId::new(1), 0, voice());
+        let new_voice = VoiceConfig::try_new(4, 1.0, 1.0, 0.5, 1.0).expect("valid voice config");
+
+        let event = patch.set_voice_config(new_voice);
+
+        assert_eq!(
+            event,
+            PatchEvent::ConfigChanged {
+                id: PatchId::new(1)
+            }
+        );
+        assert_eq!(patch.voice(), new_voice);
+    }
+
+    #[test]
+    fn set_mpe_zone_succeeds_when_no_overlap_with_other_zones() {
+        let mut patch = Patch::new(PatchId::new(1), 0, voice());
+        let zone = MpeZone::try_new(0, 1, 6).expect("valid zone");
+        let others = [MpeZone::try_new(8, 9, 6).expect("valid zone")];
+
+        let event = patch.set_mpe_zone(Some(zone), &others).expect("no overlap");
+
+        assert_eq!(
+            event,
+            PatchEvent::ConfigChanged {
+                id: PatchId::new(1)
+            }
+        );
+        assert_eq!(patch.mpe_zone(), Some(zone));
+    }
+
+    #[test]
+    fn set_mpe_zone_rejects_overlap_and_leaves_state_untouched() {
+        let mut patch = Patch::new(PatchId::new(1), 0, voice());
+        let original = MpeZone::try_new(0, 1, 6).expect("valid zone");
+        patch
+            .set_mpe_zone(Some(original), &[])
+            .expect("initial zone has no conflicts");
+
+        let overlapping = MpeZone::try_new(8, 5, 4).expect("valid zone");
+        let others = [MpeZone::try_new(9, 6, 4).expect("valid zone")];
+
+        let result = patch.set_mpe_zone(Some(overlapping), &others);
+
+        assert_eq!(result, Err(PatchError::OverlappingMpeZone));
+        assert_eq!(patch.mpe_zone(), Some(original));
+    }
+
+    #[test]
+    fn set_mpe_zone_none_always_succeeds_regardless_of_other_zones() {
+        let mut patch = Patch::new(PatchId::new(1), 0, voice());
+        let others = [MpeZone::try_new(0, 0, 16).expect("valid zone")];
+
+        let event = patch
+            .set_mpe_zone(None, &others)
+            .expect("clearing always ok");
+
+        assert_eq!(
+            event,
+            PatchEvent::ConfigChanged {
+                id: PatchId::new(1)
+            }
+        );
+        assert_eq!(patch.mpe_zone(), None);
     }
 }

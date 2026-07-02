@@ -1,15 +1,5 @@
-// path: src/patch/mod.rs
-
-pub mod channel_dispatcher;
-pub mod channel_mixer;
-pub mod channel_strip;
-pub mod channel_subscription;
-pub mod global_mixer;
-pub mod mpe_zone;
+pub mod channel_mapping;
+pub mod midi_dispatcher;
 #[allow(clippy::module_inception)]
 pub mod patch;
-pub mod patch_id;
-pub mod patch_mixer;
-pub mod patch_repository;
-pub mod peak_level;
-pub mod voice_pool_config;
+pub mod patch_manager;

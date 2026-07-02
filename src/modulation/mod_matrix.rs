@@ -1,80 +1,162 @@
 // path: src/modulation/mod_matrix.rs
 
-use crate::modulation::lfo_config::LfoConfig;
-use crate::modulation::mod_destination_type::ModDestinationType;
-use crate::modulation::mod_envelope_config::ModEnvelopeConfig;
-use crate::modulation::mod_routing::{ModRouting, ModRoutingError};
-use crate::modulation::mod_source_type::ModSourceType;
-use crate::patch::patch_id::PatchId;
+//! The `ModMatrix` aggregate: the set of active modulation routes and LFO
+//! configurations for one patch.
+//!
+//! `ModMatrix` is a pure state value — no heap allocation performed here ever
+//! reaches the audio thread directly. Commands are applied on the UI/command
+//! thread; the resulting snapshot crosses the real-time boundary via the
+//! `ParameterBridge` / `EventRing`, never by handing this aggregate itself to
+//! the audio callback.
 
-// ── Commands ─────────────────────────────────────────────────────────────────────────────
+/// Number of LFO slots a `ModMatrix` always holds.
+///
+/// The matrix has exactly this many LFOs at all times — never more, never
+/// fewer. Modeling `lfos` as a fixed-size array (rather than a `Vec`) makes
+/// "there are exactly 4 LFOs" a structural guarantee instead of a runtime
+/// check.
+pub const LFO_COUNT: usize = 4;
+
+// ── Value objects ────────────────────────────────────────────────────────
+//
+// `ModRoute` and `LfoConfig` are not yet published by another module in this
+// workspace, so they are defined locally here per the resource's state
+// declaration (`routes: list<ModRoute>`, `lfos: list<LfoConfig>`). If a
+// dedicated `mod_route` / `lfo_config` module is generated later, these
+// definitions should move there and this module should import them instead.
+
+/// A single modulation routing: a source identifier and destination
+/// identifier connected with a signed depth.
+///
+/// `ModRoute` is a plain data value — `Copy`, no heap allocation, safe to
+/// pass across the real-time boundary inside a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModRoute {
+    /// Identifier of the modulation source (LFO index, envelope, MPE
+    /// dimension, etc.). Opaque to the matrix — interpreted by the
+    /// modulation processor.
+    pub source_id: u32,
+    /// Identifier of the modulation destination (parameter being modulated).
+    /// Opaque to the matrix — interpreted by the modulation processor.
+    pub destination_id: u32,
+    /// Signed modulation depth. Not range-constrained by this aggregate;
+    /// destination-specific clamping happens downstream.
+    pub depth: f64,
+}
+
+impl ModRoute {
+    /// Construct a new `ModRoute`.
+    pub fn new(source_id: u32, destination_id: u32, depth: f64) -> Self {
+        Self {
+            source_id,
+            destination_id,
+            depth,
+        }
+    }
+}
+
+impl Default for ModRoute {
+    fn default() -> Self {
+        Self {
+            source_id: 0,
+            destination_id: 0,
+            depth: 0.0,
+        }
+    }
+}
+
+/// Configuration for a single LFO slot.
+///
+/// `LfoConfig` is a plain data value — `Copy`, no heap allocation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LfoConfig {
+    /// Oscillation rate in Hz.
+    pub rate_hz: f64,
+    /// Modulation depth in `[0.0, 1.0]`. Not enforced by this aggregate;
+    /// callers are expected to supply valid values.
+    pub depth: f64,
+    /// Initial phase in radians.
+    pub phase: f64,
+}
+
+impl LfoConfig {
+    /// Construct a new `LfoConfig`.
+    pub fn new(rate_hz: f64, depth: f64, phase: f64) -> Self {
+        Self {
+            rate_hz,
+            depth,
+            phase,
+        }
+    }
+}
+
+impl Default for LfoConfig {
+    fn default() -> Self {
+        Self {
+            rate_hz: 1.0,
+            depth: 0.0,
+            phase: 0.0,
+        }
+    }
+}
+
+// ── Commands ─────────────────────────────────────────────────────────────
 
 /// Commands that can be applied to a [`ModMatrix`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModMatrixCommand {
-    /// Add an LFO routing slot for the given index.
-    ConfigureLfo { lfo_index: u8, config: LfoConfig },
-    /// Configure the mod envelope at the given index.
-    ConfigureModEnvelope {
-        env_index: u8,
-        config: ModEnvelopeConfig,
-    },
-    /// Add a new routing from `source` to `destination` with `depth`.
-    AddRouting {
-        source: ModSourceType,
-        destination: ModDestinationType,
-        depth: f64,
-    },
-    /// Remove the routing at `routing_index`.
-    RemoveRouting { routing_index: u8 },
-    /// Update the depth of the routing at `routing_index`.
-    UpdateRoutingDepth { routing_index: u8, depth: f64 },
+    /// Append a new route to the matrix.
+    AddRoute { route: ModRoute },
+    /// Remove the route at `index`.
+    RemoveRoute { index: u32 },
+    /// Replace the LFO configuration at `index` (must be `< LFO_COUNT`).
+    SetLfo { index: u8, config: LfoConfig },
 }
 
-// ── Events ─────────────────────────────────────────────────────────────────────────────
+// ── Events ───────────────────────────────────────────────────────────────
 
 /// Domain events emitted by [`ModMatrix`] after a command is applied.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModMatrixEvent {
-    /// A routing was added.
-    RoutingAdded {
-        source: ModSourceType,
-        destination: ModDestinationType,
-        depth: f64,
-    },
-    /// A routing was removed.
-    RoutingRemoved { routing_index: u8 },
-    /// A routing's depth was changed.
-    RoutingDepthChanged { routing_index: u8, depth: f64 },
-    /// An LFO was configured.
-    LfoConfigured { lfo_index: u8 },
-    /// A mod envelope was configured.
-    ModEnvelopeConfigured { env_index: u8 },
+    /// A route was added at `index`.
+    RouteAdded { index: u32 },
+    /// The route at `index` was removed.
+    RouteRemoved { index: u32 },
+    /// The LFO at `index` was reconfigured.
+    LfoSet { index: u8 },
 }
 
-// ── Errors ────────────────────────────────────────────────────────────────────────────
+// ── Errors ───────────────────────────────────────────────────────────────
 
 /// Errors that can arise when applying a command to [`ModMatrix`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModMatrixError {
-    /// The routing depth was outside `[-1.0, 1.0]`.
-    InvalidDepth(ModRoutingError),
-    /// The routing index is out of bounds.
-    RoutingIndexOutOfBounds { index: u8, len: usize },
-}
-
-impl From<ModRoutingError> for ModMatrixError {
-    fn from(e: ModRoutingError) -> Self {
-        ModMatrixError::InvalidDepth(e)
-    }
+    /// `AddRoute` was rejected because the matrix already holds `maxRoutes`
+    /// routes.
+    MaxRoutesExceeded { max_routes: u8 },
+    /// `RemoveRoute` was given an index that does not exist.
+    RouteIndexOutOfBounds { index: u32, len: usize },
+    /// `SetLfo` was given an index `>= LFO_COUNT`.
+    LfoIndexOutOfBounds { index: u8 },
 }
 
 impl std::fmt::Display for ModMatrixError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ModMatrixError::InvalidDepth(e) => write!(f, "invalid depth: {e}"),
-            ModMatrixError::RoutingIndexOutOfBounds { index, len } => {
-                write!(f, "routing index {index} out of bounds (len = {len})")
+            ModMatrixError::MaxRoutesExceeded { max_routes } => {
+                write!(
+                    f,
+                    "cannot add route: matrix already at maxRoutes ({max_routes})"
+                )
+            }
+            ModMatrixError::RouteIndexOutOfBounds { index, len } => {
+                write!(f, "route index {index} out of bounds (len = {len})")
+            }
+            ModMatrixError::LfoIndexOutOfBounds { index } => {
+                write!(
+                    f,
+                    "lfo index {index} out of bounds (there are exactly {LFO_COUNT} lfos)"
+                )
             }
         }
     }
@@ -82,464 +164,357 @@ impl std::fmt::Display for ModMatrixError {
 
 impl std::error::Error for ModMatrixError {}
 
-// ── Aggregate ─────────────────────────────────────────────────────────────────────────────
+// ── Aggregate ────────────────────────────────────────────────────────────
 
-/// Per-patch modulation routing aggregate.
-///
-/// Maps modulation sources (LFOs, envelopes, per-note expression, etc.) to
-/// destinations (filter cutoff, oscillator pitch, amplitude…) with an
-/// adjustable signed depth per routing.
+/// The set of active modulation routes and LFO configurations for one patch.
 ///
 /// # Audio-thread safety
 ///
-/// `ModMatrix` is a pure state value — all heap allocation happens off the
-/// audio thread (when commands are applied) and the resulting routing list is
-/// passed across the boundary via `ParameterBridge` / `EventRingBuffer`.
-/// The audio thread reads the snapshot; it never holds a `ModMatrix` directly.
+/// `ModMatrix` is a pure state value. All mutation happens off the audio
+/// thread via [`ModMatrix::apply`]; the resulting snapshot is handed to the
+/// audio thread only through the `ParameterBridge` / `EventRing` boundary.
+/// The audio thread never calls `apply` and never owns a mutable
+/// `ModMatrix`.
 ///
 /// # Invariants
 ///
-/// - Every stored routing has depth in `[-1.0, 1.0]`.
-/// - LFOs and macros are per-patch: they are configured once in the matrix and
-///   shared by every voice in the patch.
-/// - Per-note expression sources (`PerNoteBendX`, `PerNoteTimbreY`,
-///   `PerNotePressureZ`) are per-voice: the engine delivers their values to
-///   the individual voice, never to the patch as a whole.
-#[derive(Debug, Clone)]
+/// - The matrix never holds more than `max_routes` routes.
+/// - There are always exactly [`LFO_COUNT`] LFOs — enforced structurally by
+///   storing `lfos` as a fixed-size array rather than a growable list.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModMatrix {
-    /// The patch this matrix belongs to.
-    patch_id: PatchId,
-    /// LFO configurations (per-patch, indexed).
-    lfo_configs: Vec<LfoConfig>,
-    /// Mod envelope configurations (per-patch, indexed).
-    mod_envelopes: Vec<ModEnvelopeConfig>,
-    /// Ordered list of modulation routings.
-    routings: Vec<ModRouting>,
+    lfos: [LfoConfig; LFO_COUNT],
+    max_routes: u8,
+    routes: Vec<ModRoute>,
 }
 
 impl ModMatrix {
-    /// Construct an empty `ModMatrix` for a given patch.
-    pub fn new(patch_id: PatchId) -> Self {
+    /// Construct an empty `ModMatrix` with default LFO configurations and
+    /// the given route capacity.
+    pub fn new(max_routes: u8) -> Self {
         Self {
-            patch_id,
-            lfo_configs: Vec::new(),
-            mod_envelopes: Vec::new(),
-            routings: Vec::new(),
+            lfos: [LfoConfig::default(); LFO_COUNT],
+            max_routes,
+            routes: Vec::new(),
         }
     }
 
-    /// Returns the patch this matrix belongs to.
-    pub fn patch_id(&self) -> PatchId {
-        self.patch_id
+    /// Returns the configured route capacity.
+    #[inline]
+    pub fn max_routes(&self) -> u8 {
+        self.max_routes
     }
 
-    /// Returns a slice of all LFO configurations.
+    /// Returns the current routes, in order.
+    #[inline]
+    pub fn routes(&self) -> &[ModRoute] {
+        &self.routes
+    }
+
+    /// Returns the four LFO configurations.
+    #[inline]
+    pub fn lfos(&self) -> &[LfoConfig; LFO_COUNT] {
+        &self.lfos
+    }
+
+    /// Apply a command to the aggregate, returning the resulting event or an
+    /// error if the command would violate an invariant.
     ///
-    /// LFOs are per-patch — one LFO state is shared across all voices.
-    pub fn lfo_configs(&self) -> &[LfoConfig] {
-        &self.lfo_configs
-    }
-
-    /// Returns a slice of all mod envelope configurations.
-    pub fn mod_envelopes(&self) -> &[ModEnvelopeConfig] {
-        &self.mod_envelopes
-    }
-
-    /// Returns a slice of all modulation routings.
-    pub fn routings(&self) -> &[ModRouting] {
-        &self.routings
-    }
-
-    /// Apply a command to the aggregate.
-    ///
-    /// Returns the domain event to be stored/broadcast, or an error if the
-    /// command violates an invariant.
-    ///
-    /// No heap allocation occurs inside the audio thread; this method is
-    /// expected to be called from the UI / command thread, not the audio thread.
+    /// No heap allocation performed here ever executes on the audio thread;
+    /// this method is called only from the UI / command thread.
     pub fn apply(&mut self, command: ModMatrixCommand) -> Result<ModMatrixEvent, ModMatrixError> {
         match command {
-            ModMatrixCommand::ConfigureLfo { lfo_index, config } => {
-                let idx = lfo_index as usize;
-                if idx >= self.lfo_configs.len() {
-                    self.lfo_configs.resize_with(idx + 1, LfoConfig::default);
-                }
-                self.lfo_configs[idx] = config;
-                Ok(ModMatrixEvent::LfoConfigured { lfo_index })
-            }
-
-            ModMatrixCommand::ConfigureModEnvelope { env_index, config } => {
-                let idx = env_index as usize;
-                if idx >= self.mod_envelopes.len() {
-                    self.mod_envelopes
-                        .resize_with(idx + 1, ModEnvelopeConfig::default);
-                }
-                self.mod_envelopes[idx] = config;
-                Ok(ModMatrixEvent::ModEnvelopeConfigured { env_index })
-            }
-
-            ModMatrixCommand::AddRouting {
-                source,
-                destination,
-                depth,
-            } => {
-                let routing = ModRouting::try_new(source, destination, depth)?;
-                self.routings.push(routing);
-                Ok(ModMatrixEvent::RoutingAdded {
-                    source,
-                    destination,
-                    depth,
-                })
-            }
-
-            ModMatrixCommand::RemoveRouting { routing_index } => {
-                let idx = routing_index as usize;
-                if idx >= self.routings.len() {
-                    return Err(ModMatrixError::RoutingIndexOutOfBounds {
-                        index: routing_index,
-                        len: self.routings.len(),
+            ModMatrixCommand::AddRoute { route } => {
+                if self.routes.len() >= self.max_routes as usize {
+                    return Err(ModMatrixError::MaxRoutesExceeded {
+                        max_routes: self.max_routes,
                     });
                 }
-                self.routings.remove(idx);
-                Ok(ModMatrixEvent::RoutingRemoved { routing_index })
+                self.routes.push(route);
+                let index = (self.routes.len() - 1) as u32;
+                Ok(ModMatrixEvent::RouteAdded { index })
             }
 
-            ModMatrixCommand::UpdateRoutingDepth {
-                routing_index,
-                depth,
-            } => {
-                let idx = routing_index as usize;
-                if idx >= self.routings.len() {
-                    return Err(ModMatrixError::RoutingIndexOutOfBounds {
-                        index: routing_index,
-                        len: self.routings.len(),
+            ModMatrixCommand::RemoveRoute { index } => {
+                let idx = index as usize;
+                if idx >= self.routes.len() {
+                    return Err(ModMatrixError::RouteIndexOutOfBounds {
+                        index,
+                        len: self.routes.len(),
                     });
                 }
-                let updated = ModRouting::try_new(
-                    self.routings[idx].source(),
-                    self.routings[idx].destination(),
-                    depth,
-                )?;
-                self.routings[idx] = updated;
-                Ok(ModMatrixEvent::RoutingDepthChanged {
-                    routing_index,
-                    depth,
-                })
+                self.routes.remove(idx);
+                Ok(ModMatrixEvent::RouteRemoved { index })
+            }
+
+            ModMatrixCommand::SetLfo { index, config } => {
+                let idx = index as usize;
+                if idx >= LFO_COUNT {
+                    return Err(ModMatrixError::LfoIndexOutOfBounds { index });
+                }
+                self.lfos[idx] = config;
+                Ok(ModMatrixEvent::LfoSet { index })
             }
         }
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────────────
+impl Default for ModMatrix {
+    /// Default matrix: no route capacity, four default LFOs, no routes.
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modulation::lfo_waveform::LfoWaveform;
 
-    fn patch() -> PatchId {
-        PatchId::new(1)
+    fn route(source_id: u32, destination_id: u32, depth: f64) -> ModRoute {
+        ModRoute::new(source_id, destination_id, depth)
     }
 
-    fn empty_matrix() -> ModMatrix {
-        ModMatrix::new(patch())
-    }
-
-    // ── AddRouting ────────────────────────────────────────────────────────────────────────
+    // ── Construction ─────────────────────────────────────────────────────
 
     #[test]
-    fn add_routing_appends_and_emits_event() {
-        let mut m = empty_matrix();
+    fn new_matrix_has_exactly_four_lfos() {
+        let m = ModMatrix::new(8);
+        assert_eq!(m.lfos().len(), LFO_COUNT);
+        assert_eq!(LFO_COUNT, 4);
+    }
+
+    #[test]
+    fn new_matrix_has_no_routes() {
+        let m = ModMatrix::new(8);
+        assert!(m.routes().is_empty());
+    }
+
+    #[test]
+    fn max_routes_accessor_reports_configured_value() {
+        let m = ModMatrix::new(3);
+        assert_eq!(m.max_routes(), 3);
+    }
+
+    #[test]
+    fn default_matrix_has_zero_capacity_and_four_lfos() {
+        let m = ModMatrix::default();
+        assert_eq!(m.max_routes(), 0);
+        assert_eq!(m.lfos().len(), LFO_COUNT);
+    }
+
+    // ── AddRoute ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_route_appends_and_emits_event_with_index() {
+        let mut m = ModMatrix::new(2);
         let evt = m
-            .apply(ModMatrixCommand::AddRouting {
-                source: ModSourceType::Lfo,
-                destination: ModDestinationType::FilterCutoff,
-                depth: 0.5,
+            .apply(ModMatrixCommand::AddRoute {
+                route: route(1, 2, 0.5),
             })
             .unwrap();
-
-        assert_eq!(
-            evt,
-            ModMatrixEvent::RoutingAdded {
-                source: ModSourceType::Lfo,
-                destination: ModDestinationType::FilterCutoff,
-                depth: 0.5,
-            }
-        );
-        assert_eq!(m.routings().len(), 1);
-        assert!((m.routings()[0].depth() - 0.5).abs() < f64::EPSILON);
+        assert_eq!(evt, ModMatrixEvent::RouteAdded { index: 0 });
+        assert_eq!(m.routes().len(), 1);
+        assert_eq!(m.routes()[0], route(1, 2, 0.5));
     }
 
     #[test]
-    fn add_routing_rejects_depth_out_of_range() {
-        let mut m = empty_matrix();
-        let result = m.apply(ModMatrixCommand::AddRouting {
-            source: ModSourceType::Lfo,
-            destination: ModDestinationType::FilterCutoff,
-            depth: 1.5,
+    fn add_route_second_route_gets_index_one() {
+        let mut m = ModMatrix::new(2);
+        m.apply(ModMatrixCommand::AddRoute {
+            route: route(1, 2, 0.5),
+        })
+        .unwrap();
+        let evt = m
+            .apply(ModMatrixCommand::AddRoute {
+                route: route(3, 4, -0.5),
+            })
+            .unwrap();
+        assert_eq!(evt, ModMatrixEvent::RouteAdded { index: 1 });
+        assert_eq!(m.routes().len(), 2);
+    }
+
+    #[test]
+    fn add_route_never_exceeds_max_routes() {
+        let mut m = ModMatrix::new(1);
+        m.apply(ModMatrixCommand::AddRoute {
+            route: route(1, 2, 0.5),
+        })
+        .unwrap();
+        let result = m.apply(ModMatrixCommand::AddRoute {
+            route: route(3, 4, 0.1),
+        });
+        assert_eq!(
+            result,
+            Err(ModMatrixError::MaxRoutesExceeded { max_routes: 1 })
+        );
+        // The matrix truly never exceeds maxRoutes.
+        assert_eq!(m.routes().len(), 1);
+    }
+
+    #[test]
+    fn add_route_at_zero_capacity_always_rejected() {
+        let mut m = ModMatrix::new(0);
+        let result = m.apply(ModMatrixCommand::AddRoute {
+            route: route(1, 2, 0.5),
         });
         assert!(result.is_err());
+        assert!(m.routes().is_empty());
     }
 
+    // ── RemoveRoute ──────────────────────────────────────────────────────
+
     #[test]
-    fn add_routing_negative_depth_accepted() {
-        let mut m = empty_matrix();
-        m.apply(ModMatrixCommand::AddRouting {
-            source: ModSourceType::Envelope,
-            destination: ModDestinationType::Amplitude,
-            depth: -1.0,
+    fn remove_route_removes_correct_index() {
+        let mut m = ModMatrix::new(4);
+        m.apply(ModMatrixCommand::AddRoute {
+            route: route(1, 2, 0.1),
         })
         .unwrap();
-        assert!((m.routings()[0].depth() - (-1.0)).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn add_routing_nan_depth_rejected() {
-        let mut m = empty_matrix();
-        assert!(m
-            .apply(ModMatrixCommand::AddRouting {
-                source: ModSourceType::Lfo,
-                destination: ModDestinationType::FilterCutoff,
-                depth: f64::NAN,
-            })
-            .is_err());
-    }
-
-    // ── RemoveRouting ────────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn remove_routing_removes_correct_index() {
-        let mut m = empty_matrix();
-        m.apply(ModMatrixCommand::AddRouting {
-            source: ModSourceType::Lfo,
-            destination: ModDestinationType::FilterCutoff,
-            depth: 0.5,
-        })
-        .unwrap();
-        m.apply(ModMatrixCommand::AddRouting {
-            source: ModSourceType::Envelope,
-            destination: ModDestinationType::Amplitude,
-            depth: -0.3,
-        })
-        .unwrap();
-        assert_eq!(m.routings().len(), 2);
-
-        let evt = m
-            .apply(ModMatrixCommand::RemoveRouting { routing_index: 0 })
-            .unwrap();
-        assert_eq!(evt, ModMatrixEvent::RoutingRemoved { routing_index: 0 });
-        assert_eq!(m.routings().len(), 1);
-        // Remaining routing is the second one (Envelope → Amplitude)
-        assert_eq!(m.routings()[0].source(), ModSourceType::Envelope);
-    }
-
-    #[test]
-    fn remove_routing_out_of_bounds_returns_error() {
-        let mut m = empty_matrix();
-        let result = m.apply(ModMatrixCommand::RemoveRouting { routing_index: 5 });
-        assert!(matches!(
-            result,
-            Err(ModMatrixError::RoutingIndexOutOfBounds { .. })
-        ));
-    }
-
-    // ── UpdateRoutingDepth ──────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn update_routing_depth_changes_value() {
-        let mut m = empty_matrix();
-        m.apply(ModMatrixCommand::AddRouting {
-            source: ModSourceType::Lfo,
-            destination: ModDestinationType::FilterCutoff,
-            depth: 0.5,
+        m.apply(ModMatrixCommand::AddRoute {
+            route: route(3, 4, 0.2),
         })
         .unwrap();
 
-        let evt = m
-            .apply(ModMatrixCommand::UpdateRoutingDepth {
-                routing_index: 0,
-                depth: -0.8,
-            })
-            .unwrap();
+        let evt = m.apply(ModMatrixCommand::RemoveRoute { index: 0 }).unwrap();
+        assert_eq!(evt, ModMatrixEvent::RouteRemoved { index: 0 });
+        assert_eq!(m.routes().len(), 1);
+        assert_eq!(m.routes()[0], route(3, 4, 0.2));
+    }
+
+    #[test]
+    fn remove_route_out_of_bounds_returns_error() {
+        let mut m = ModMatrix::new(4);
+        let result = m.apply(ModMatrixCommand::RemoveRoute { index: 5 });
         assert_eq!(
-            evt,
-            ModMatrixEvent::RoutingDepthChanged {
-                routing_index: 0,
-                depth: -0.8
-            }
+            result,
+            Err(ModMatrixError::RouteIndexOutOfBounds { index: 5, len: 0 })
         );
-        assert!((m.routings()[0].depth() - (-0.8)).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn update_routing_depth_invalid_depth_rejected() {
-        let mut m = empty_matrix();
-        m.apply(ModMatrixCommand::AddRouting {
-            source: ModSourceType::Lfo,
-            destination: ModDestinationType::FilterCutoff,
-            depth: 0.0,
+    fn remove_route_then_add_route_reuses_freed_capacity() {
+        let mut m = ModMatrix::new(1);
+        m.apply(ModMatrixCommand::AddRoute {
+            route: route(1, 2, 0.1),
         })
         .unwrap();
-        assert!(m
-            .apply(ModMatrixCommand::UpdateRoutingDepth {
-                routing_index: 0,
-                depth: 2.0,
-            })
-            .is_err());
-    }
-
-    #[test]
-    fn update_routing_depth_out_of_bounds_returns_error() {
-        let mut m = empty_matrix();
-        let result = m.apply(ModMatrixCommand::UpdateRoutingDepth {
-            routing_index: 10,
-            depth: 0.5,
-        });
-        assert!(matches!(
-            result,
-            Err(ModMatrixError::RoutingIndexOutOfBounds { .. })
-        ));
-    }
-
-    // ── ConfigureLfo ─────────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn configure_lfo_stores_config_and_emits_event() {
-        let mut m = empty_matrix();
-        let cfg = LfoConfig::try_new(2.0, 0.5, 0.0, false, LfoWaveform::Sine).unwrap();
+        m.apply(ModMatrixCommand::RemoveRoute { index: 0 }).unwrap();
+        // Capacity was freed, so adding again must succeed.
         let evt = m
-            .apply(ModMatrixCommand::ConfigureLfo {
-                lfo_index: 0,
-                config: cfg.clone(),
+            .apply(ModMatrixCommand::AddRoute {
+                route: route(5, 6, 0.3),
             })
             .unwrap();
-
-        assert_eq!(evt, ModMatrixEvent::LfoConfigured { lfo_index: 0 });
-        assert_eq!(m.lfo_configs().len(), 1);
-        assert!((m.lfo_configs()[0].rate - 2.0).abs() < f64::EPSILON);
+        assert_eq!(evt, ModMatrixEvent::RouteAdded { index: 0 });
     }
 
-    #[test]
-    fn configure_lfo_expands_vec_for_non_zero_index() {
-        let mut m = empty_matrix();
-        let cfg = LfoConfig::default();
-        m.apply(ModMatrixCommand::ConfigureLfo {
-            lfo_index: 2,
-            config: cfg,
-        })
-        .unwrap();
-        // Slots 0, 1, and 2 should all exist after gapping
-        assert_eq!(m.lfo_configs().len(), 3);
-    }
+    // ── SetLfo ───────────────────────────────────────────────────────────
 
     #[test]
-    fn configure_lfo_is_per_patch_shared_comment() {
-        // LFOs are per-patch: configuring them at the matrix level affects all voices
-        let mut m = empty_matrix();
-        let cfg = LfoConfig::try_new(4.0, 1.0, 0.0, false, LfoWaveform::Square).unwrap();
-        m.apply(ModMatrixCommand::ConfigureLfo {
-            lfo_index: 0,
-            config: cfg,
-        })
-        .unwrap();
-        // All voices in this patch see the same LFO config
-        assert!((m.lfo_configs()[0].rate - 4.0).abs() < f64::EPSILON);
-    }
-
-    // ── ConfigureModEnvelope ───────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn configure_mod_envelope_stores_config_and_emits_event() {
-        let mut m = empty_matrix();
-        let cfg = ModEnvelopeConfig::try_new(0.01, 0.1, 0.7, 0.4).unwrap();
+    fn set_lfo_replaces_config_and_emits_event() {
+        let mut m = ModMatrix::new(4);
+        let cfg = LfoConfig::new(2.0, 0.5, 0.0);
         let evt = m
-            .apply(ModMatrixCommand::ConfigureModEnvelope {
-                env_index: 0,
+            .apply(ModMatrixCommand::SetLfo {
+                index: 0,
                 config: cfg,
             })
             .unwrap();
-        assert_eq!(evt, ModMatrixEvent::ModEnvelopeConfigured { env_index: 0 });
-        assert_eq!(m.mod_envelopes().len(), 1);
-        assert!((m.mod_envelopes()[0].attack - 0.01).abs() < f64::EPSILON);
+        assert_eq!(evt, ModMatrixEvent::LfoSet { index: 0 });
+        assert_eq!(m.lfos()[0], cfg);
     }
 
     #[test]
-    fn configure_mod_envelope_expands_vec_for_non_zero_index() {
-        let mut m = empty_matrix();
-        m.apply(ModMatrixCommand::ConfigureModEnvelope {
-            env_index: 3,
-            config: ModEnvelopeConfig::default(),
+    fn set_lfo_accepts_all_four_valid_indices() {
+        let mut m = ModMatrix::new(4);
+        for i in 0..LFO_COUNT as u8 {
+            let cfg = LfoConfig::new(1.0 + i as f64, 0.1, 0.0);
+            let evt = m
+                .apply(ModMatrixCommand::SetLfo {
+                    index: i,
+                    config: cfg,
+                })
+                .unwrap();
+            assert_eq!(evt, ModMatrixEvent::LfoSet { index: i });
+            assert_eq!(m.lfos()[i as usize], cfg);
+        }
+    }
+
+    #[test]
+    fn set_lfo_index_four_is_out_of_bounds() {
+        let mut m = ModMatrix::new(4);
+        let result = m.apply(ModMatrixCommand::SetLfo {
+            index: 4,
+            config: LfoConfig::default(),
+        });
+        assert_eq!(
+            result,
+            Err(ModMatrixError::LfoIndexOutOfBounds { index: 4 })
+        );
+    }
+
+    #[test]
+    fn set_lfo_out_of_bounds_leaves_lfos_unchanged() {
+        let mut m = ModMatrix::new(4);
+        let before = *m.lfos();
+        let _ = m.apply(ModMatrixCommand::SetLfo {
+            index: 200,
+            config: LfoConfig::new(9.0, 1.0, 1.0),
+        });
+        assert_eq!(*m.lfos(), before);
+    }
+
+    #[test]
+    fn set_lfo_never_changes_lfo_count() {
+        let mut m = ModMatrix::new(4);
+        m.apply(ModMatrixCommand::SetLfo {
+            index: 2,
+            config: LfoConfig::new(3.0, 0.2, 0.0),
         })
         .unwrap();
-        assert_eq!(m.mod_envelopes().len(), 4);
+        // Structurally guaranteed, but assert explicitly for the invariant.
+        assert_eq!(m.lfos().len(), 4);
     }
 
-    // ── Accessors ──────────────────────────────────────────────────────────────────────────
+    // ── Error display ────────────────────────────────────────────────────
 
     #[test]
-    fn patch_id_accessor() {
-        let m = ModMatrix::new(PatchId::new(42));
-        assert_eq!(m.patch_id(), PatchId::new(42));
-    }
-
-    #[test]
-    fn empty_matrix_has_no_routings() {
-        let m = empty_matrix();
-        assert!(m.routings().is_empty());
-        assert!(m.lfo_configs().is_empty());
-        assert!(m.mod_envelopes().is_empty());
-    }
-
-    // ── Per-note expression routing ────────────────────────────────────────────────
-
-    #[test]
-    fn per_note_expression_routing_tracked_correctly() {
-        let mut m = empty_matrix();
-        // PerNoteBendX → OscillatorPitch is a per-note expression routing
-        m.apply(ModMatrixCommand::AddRouting {
-            source: ModSourceType::PerNoteBendX,
-            destination: ModDestinationType::OscillatorPitch,
-            depth: 1.0,
-        })
-        .unwrap();
-        let routing = &m.routings()[0];
-        assert!(routing.is_per_note_expression_routing());
+    fn error_display_max_routes_exceeded() {
+        let e = ModMatrixError::MaxRoutesExceeded { max_routes: 6 };
+        assert!(e.to_string().contains('6'));
     }
 
     #[test]
-    fn per_note_expression_routing_distinct_from_patch_level() {
-        // Adding a per-note expression routing alongside a patch-level LFO routing
-        let mut m = empty_matrix();
-        m.apply(ModMatrixCommand::AddRouting {
-            source: ModSourceType::Lfo, // per-patch
-            destination: ModDestinationType::FilterCutoff,
-            depth: 0.7,
-        })
-        .unwrap();
-        m.apply(ModMatrixCommand::AddRouting {
-            source: ModSourceType::PerNotePressureZ, // per-voice
-            destination: ModDestinationType::Amplitude,
-            depth: 0.5,
-        })
-        .unwrap();
-        assert!(!m.routings()[0].is_per_note_expression_routing());
-        assert!(m.routings()[1].is_per_note_expression_routing());
-    }
-
-    // ── Error display ──────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn error_display_depth_out_of_range() {
-        use crate::modulation::mod_routing::ModRoutingError;
-        let e = ModMatrixError::InvalidDepth(ModRoutingError::DepthOutOfRange(3.0));
-        assert!(e.to_string().contains("3"));
-    }
-
-    #[test]
-    fn error_display_index_out_of_bounds() {
-        let e = ModMatrixError::RoutingIndexOutOfBounds { index: 7, len: 3 };
+    fn error_display_route_index_out_of_bounds() {
+        let e = ModMatrixError::RouteIndexOutOfBounds { index: 9, len: 2 };
         let s = e.to_string();
-        assert!(s.contains("7"), "expected index 7 in: {s}");
-        assert!(s.contains("3"), "expected len 3 in: {s}");
+        assert!(s.contains('9'));
+        assert!(s.contains('2'));
+    }
+
+    #[test]
+    fn error_display_lfo_index_out_of_bounds() {
+        let e = ModMatrixError::LfoIndexOutOfBounds { index: 7 };
+        let s = e.to_string();
+        assert!(s.contains('7'));
+        assert!(s.contains('4'));
+    }
+
+    // ── Value objects ────────────────────────────────────────────────────
+
+    #[test]
+    fn mod_route_default_is_valid_zeroed_route() {
+        let r = ModRoute::default();
+        assert_eq!(r.source_id, 0);
+        assert_eq!(r.destination_id, 0);
+        assert_eq!(r.depth, 0.0);
+    }
+
+    #[test]
+    fn lfo_config_default_has_positive_rate() {
+        let c = LfoConfig::default();
+        assert!(c.rate_hz > 0.0);
     }
 }

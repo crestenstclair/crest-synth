@@ -1,182 +1,242 @@
 // path: src/kernel/channel_address.rs
 
-use crate::kernel::midi_channel::MidiChannel;
-use crate::kernel::midi_group::MidiGroup;
+//! A fully-qualified MIDI destination: a channel within a group.
+//!
+//! `ChannelAddress` is a plain value object — it holds no dependencies and
+//! performs no I/O, allocation, or locking, so it is safe to construct,
+//! copy, and compare on the real-time audio thread.
 
-/// A (group, channel) pair that addresses one of the 256 destinations in the
-/// MIDI 2.0 address space.
+use std::error::Error;
+use std::fmt;
+
+/// A MIDI channel number.
 ///
-/// MIDI 2.0 extends the traditional 16-channel model by adding 16 groups, each
-/// containing 16 channels, for a total of 256 independently addressable
-/// destinations.
+/// Classic MIDI exposes 16 channels per cable (0-15, displayed to users as
+/// 1-16). This newtype stores the zero-based value and enforces the valid
+/// range at construction so an out-of-range channel can never exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MidiChannel(u8);
+
+/// The valid range of MIDI channel numbers (zero-based, inclusive).
+const MIDI_CHANNEL_RANGE: std::ops::RangeInclusive<u8> = 0..=15;
+
+impl MidiChannel {
+    /// Attempts to construct a `MidiChannel`, rejecting values outside the
+    /// valid 0-15 range.
+    pub fn try_new(value: u8) -> Result<Self, MidiChannelError> {
+        if !MIDI_CHANNEL_RANGE.contains(&value) {
+            return Err(MidiChannelError::OutOfRange(value));
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the zero-based channel number.
+    pub fn value(&self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for MidiChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Errors produced when constructing a [`MidiChannel`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MidiChannelError {
+    /// The supplied value fell outside the valid 0-15 range.
+    OutOfRange(u8),
+}
+
+impl fmt::Display for MidiChannelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MidiChannelError::OutOfRange(value) => {
+                write!(f, "MIDI channel {value} is out of range (expected 0..=15)")
+            }
+        }
+    }
+}
+
+impl Error for MidiChannelError {}
+
+/// A MIDI group number.
+///
+/// Groups partition a MIDI 2.0 Universal MIDI Packet stream (or, in this
+/// project, a logical bank of MIDI channel sets) into independently
+/// addressable sets of 16 channels each. This newtype stores the zero-based
+/// group index and enforces the valid range at construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MidiGroup(u8);
+
+/// The valid range of MIDI group numbers (zero-based, inclusive).
+const MIDI_GROUP_RANGE: std::ops::RangeInclusive<u8> = 0..=15;
+
+impl MidiGroup {
+    /// Attempts to construct a `MidiGroup`, rejecting values outside the
+    /// valid 0-15 range.
+    pub fn try_new(value: u8) -> Result<Self, MidiGroupError> {
+        if !MIDI_GROUP_RANGE.contains(&value) {
+            return Err(MidiGroupError::OutOfRange(value));
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the zero-based group index.
+    pub fn value(&self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for MidiGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Errors produced when constructing a [`MidiGroup`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MidiGroupError {
+    /// The supplied value fell outside the valid 0-15 range.
+    OutOfRange(u8),
+}
+
+impl fmt::Display for MidiGroupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MidiGroupError::OutOfRange(value) => {
+                write!(f, "MIDI group {value} is out of range (expected 0..=15)")
+            }
+        }
+    }
+}
+
+impl Error for MidiGroupError {}
+
+/// A fully-qualified MIDI destination: a channel within a group.
+///
+/// `ChannelAddress` identifies exactly one channel slot in the system. Two
+/// addresses are equal only when both their group and channel match, which
+/// is what channel-mapping dispatch relies on: a `MidiEvent` reaches every
+/// patch whose mapping contains a `ChannelAddress` equal to the event's
+/// address, and no others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChannelAddress {
-    group: MidiGroup,
     channel: MidiChannel,
+    group: MidiGroup,
 }
 
 impl ChannelAddress {
-    /// Construct a `ChannelAddress` from a `MidiGroup` and a `MidiChannel`.
-    ///
-    /// Both components must already be valid (use [`MidiGroup::try_new`] and
-    /// [`MidiChannel::try_new`] to validate raw values before passing them
-    /// here).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use crest_synth::kernel::channel_address::ChannelAddress;
-    /// use crest_synth::kernel::midi_channel::MidiChannel;
-    /// use crest_synth::kernel::midi_group::MidiGroup;
-    ///
-    /// if let (Ok(group), Ok(channel)) = (MidiGroup::try_new(0), MidiChannel::try_new(0)) {
-    ///     let addr = ChannelAddress::new(group, channel);
-    ///     assert_eq!(addr.group().value(), 0);
-    ///     assert_eq!(addr.channel().value(), 0);
-    /// }
-    /// ```
-    pub fn new(group: MidiGroup, channel: MidiChannel) -> Self {
-        Self { group, channel }
+    /// Constructs a `ChannelAddress` from an already-validated channel and
+    /// group.
+    pub fn new(channel: MidiChannel, group: MidiGroup) -> Self {
+        Self { channel, group }
     }
 
-    /// Return the `MidiGroup` component of this address.
-    #[inline]
-    pub fn group(self) -> MidiGroup {
-        self.group
-    }
-
-    /// Return the `MidiChannel` component of this address.
-    #[inline]
-    pub fn channel(self) -> MidiChannel {
+    /// Returns the channel component of this address.
+    pub fn channel(&self) -> MidiChannel {
         self.channel
     }
 
-    /// Return the linear index of this address in the 256-destination space
-    /// (group * 16 + channel).
+    /// Returns the group component of this address.
+    pub fn group(&self) -> MidiGroup {
+        self.group
+    }
+
+    /// Returns `true` if `other` names the same channel within the same
+    /// group as `self`.
     ///
-    /// The index is in the range 0–255.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use crest_synth::kernel::channel_address::ChannelAddress;
-    /// use crest_synth::kernel::midi_channel::MidiChannel;
-    /// use crest_synth::kernel::midi_group::MidiGroup;
-    ///
-    /// if let (Ok(group), Ok(channel)) = (MidiGroup::try_new(1), MidiChannel::try_new(3)) {
-    ///     let addr = ChannelAddress::new(group, channel);
-    ///     assert_eq!(addr.linear_index(), 1 * 16 + 3);
-    /// }
-    /// ```
-    #[inline]
-    pub fn linear_index(self) -> u8 {
-        self.group.value() * 16 + self.channel.value()
+    /// This is the equality check channel-mapping dispatch uses: a
+    /// `MidiEvent` is routed to a patch precisely when the event's address
+    /// matches an address in that patch's channel mapping.
+    pub fn matches(&self, other: &ChannelAddress) -> bool {
+        self == other
+    }
+}
+
+impl fmt::Display for ChannelAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "group {} / channel {}", self.group, self.channel)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::midi_channel::MidiChannel;
-    use crate::kernel::midi_group::MidiGroup;
-
-    fn make(group: u8, channel: u8) -> ChannelAddress {
-        ChannelAddress::new(
-            MidiGroup::try_new(group).unwrap(),
-            MidiChannel::try_new(channel).unwrap(),
-        )
-    }
 
     #[test]
-    fn group_zero_channel_zero() {
-        let addr = make(0, 0);
-        assert_eq!(addr.group().value(), 0);
-        assert_eq!(addr.channel().value(), 0);
-    }
-
-    #[test]
-    fn max_address() {
-        let addr = make(15, 15);
-        assert_eq!(addr.group().value(), 15);
-        assert_eq!(addr.channel().value(), 15);
-    }
-
-    #[test]
-    fn linear_index_is_group_times_16_plus_channel() {
-        let addr = make(3, 7);
-        assert_eq!(addr.linear_index(), 3 * 16 + 7);
-    }
-
-    #[test]
-    fn linear_index_min() {
-        assert_eq!(make(0, 0).linear_index(), 0);
-    }
-
-    #[test]
-    fn linear_index_max() {
-        assert_eq!(make(15, 15).linear_index(), 255);
-    }
-
-    #[test]
-    fn equality() {
-        let a = make(2, 5);
-        let b = make(2, 5);
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn inequality_different_group() {
-        let a = make(1, 5);
-        let b = make(2, 5);
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn inequality_different_channel() {
-        let a = make(2, 4);
-        let b = make(2, 5);
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn copy_semantics() {
-        let a = make(7, 3);
-        let b = a; // Copy
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn hash_consistent_with_equality() {
-        use std::collections::HashSet;
-        let mut set = HashSet::new();
-        set.insert(make(0, 0));
-        set.insert(make(0, 0)); // duplicate
-        assert_eq!(set.len(), 1);
-        set.insert(make(1, 0));
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test]
-    fn all_256_destinations_are_distinct() {
-        use std::collections::HashSet;
-        let mut set = HashSet::new();
-        for g in 0u8..16 {
-            for c in 0u8..16 {
-                set.insert(make(g, c));
-            }
+    fn midi_channel_accepts_full_valid_range() {
+        for raw in 0..=15u8 {
+            assert_eq!(MidiChannel::try_new(raw).unwrap().value(), raw);
         }
-        assert_eq!(set.len(), 256);
     }
 
     #[test]
-    fn all_256_linear_indices_are_distinct() {
-        use std::collections::HashSet;
-        let mut indices: HashSet<u8> = HashSet::new();
-        for g in 0u8..16 {
-            for c in 0u8..16 {
-                indices.insert(make(g, c).linear_index());
-            }
+    fn midi_channel_rejects_out_of_range() {
+        let err = MidiChannel::try_new(16).unwrap_err();
+        assert_eq!(err, MidiChannelError::OutOfRange(16));
+    }
+
+    #[test]
+    fn midi_group_accepts_full_valid_range() {
+        for raw in 0..=15u8 {
+            assert_eq!(MidiGroup::try_new(raw).unwrap().value(), raw);
         }
-        assert_eq!(indices.len(), 256);
+    }
+
+    #[test]
+    fn midi_group_rejects_out_of_range() {
+        let err = MidiGroup::try_new(200).unwrap_err();
+        assert_eq!(err, MidiGroupError::OutOfRange(200));
+    }
+
+    #[test]
+    fn addresses_with_same_channel_and_group_are_equal() {
+        let a = ChannelAddress::new(
+            MidiChannel::try_new(3).unwrap(),
+            MidiGroup::try_new(1).unwrap(),
+        );
+        let b = ChannelAddress::new(
+            MidiChannel::try_new(3).unwrap(),
+            MidiGroup::try_new(1).unwrap(),
+        );
+        assert_eq!(a, b);
+        assert!(a.matches(&b));
+    }
+
+    #[test]
+    fn addresses_differing_by_channel_do_not_match() {
+        let a = ChannelAddress::new(
+            MidiChannel::try_new(3).unwrap(),
+            MidiGroup::try_new(1).unwrap(),
+        );
+        let b = ChannelAddress::new(
+            MidiChannel::try_new(4).unwrap(),
+            MidiGroup::try_new(1).unwrap(),
+        );
+        assert!(!a.matches(&b));
+    }
+
+    #[test]
+    fn addresses_differing_by_group_do_not_match() {
+        let a = ChannelAddress::new(
+            MidiChannel::try_new(3).unwrap(),
+            MidiGroup::try_new(1).unwrap(),
+        );
+        let b = ChannelAddress::new(
+            MidiChannel::try_new(3).unwrap(),
+            MidiGroup::try_new(2).unwrap(),
+        );
+        assert!(!a.matches(&b));
+    }
+
+    #[test]
+    fn accessors_return_the_constructed_components() {
+        let channel = MidiChannel::try_new(9).unwrap();
+        let group = MidiGroup::try_new(5).unwrap();
+        let address = ChannelAddress::new(channel, group);
+        assert_eq!(address.channel(), channel);
+        assert_eq!(address.group(), group);
     }
 }

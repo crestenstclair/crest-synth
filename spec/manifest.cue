@@ -1,67 +1,33 @@
 package crestsynth
 
-// ── Crate manifest & build automation ──────────────────
-// The root Cargo.toml (dependencies + [[bin]] targets) and the Makefile that
-// drives builds, demos, device-free checks, headless smokes, and human-only
-// playback/UI targets.
+// Manifest — the crate manifest and the demo binary. This file is the ONLY
+// place in the spec where crate dependencies are named; everywhere else the
+// spec is language-profile-clean (adapters carry a framework name only).
 
 project: assets: RootCargoToml: {
 	kind:        "cargo-manifest"
-	description: "Root Cargo.toml for the crest-synth project"
+	description: "Cargo.toml for the crest-synth crate"
 	prompts: [
-		"Package name: crest-synth, version 0.1.0",
-		#"Include [[bin]] section: name = "crest-synth", path = "src/main.rs""#,
-		#"Include [[bin]] section: name = "midi_play", path = "src/bin/midi_play.rs""#,
-		#"Include [[bin]] section: name = "voice_demo", path = "src/bin/voice_demo.rs""#,
-		#"Include [[bin]] section: name = "midi_play_live", path = "src/bin/midi_play_live.rs""#,
-		#"Include [[bin]] section: name = "patch_play", path = "src/bin/patch_play.rs""#,
-		#"Include [[bin]] section: name = "mod_play", path = "src/bin/mod_play.rs""#,
-		#"Include [[bin]] section: name = "sample_demo", path = "src/bin/sample_demo.rs""#,
-		#"Include [[bin]] section: name = "effects_demo", path = "src/bin/effects_demo.rs""#,
-		#"Include [[bin]] section: name = "preset_demo", path = "src/bin/preset_demo.rs""#,
-		#"Include [[bin]] section: name = "gamepad_demo", path = "src/bin/gamepad_demo.rs""#,
-		#"Include [[bin]] section: name = "mixer_demo", path = "src/bin/mixer_demo.rs""#,
-		#"Include [[bin]] section: name = "synth_ui", path = "src/bin/synth_ui.rs""#,
-		#"Dependencies: `midly` (0.5.x) for SMF parsing; `cpal` for audio output; the lock-free seam crates `rtrb`, `triple_buffer`, `basedrop`; `serde` (with `derive`) and `serde_json` for presets; and the phase-9 adapter crates: `midir` (MIDI I/O), `midi2` (MIDI 1.0 upconversion), `eframe`/`egui` (window + UI), `gilrs` (gamepad input), and `fundsp` (effects DSP)."#,
-		#"CRITICAL eframe/egui version pin: depend on a CURRENT eframe/egui release — 0.28 or newer (prefer the latest 0.x line) — that transitively uses `objc2` 0.5+ and `winit` 0.30+. Do NOT use the eframe/egui 0.27 line: it pulls `winit` 0.29 → `objc2` 0.3-beta + `icrate` 0.0.4, which on current macOS aborts at window creation with a non-unwinding panic inside winit's `did_finish_launching` ("invalid message send to NSScreen countByEnumeratingWithState…: expected 'q', found 'Q'"). The crate builds fine and `ui-smoke` passes regardless (it opens no window), so this MUST be pinned here — the validation loop cannot catch a window-creation runtime panic."#,
-		"Only include dependencies actually needed by the generated code. The standalone synth_ui binary is a new shell over the existing engine; it reuses the already-declared eframe/egui (window + UI) and cpal (audio) crates and pulls in NO new crate. Do NOT add nih-plug — that is the phase-10 plugin wrapper's dependency and phase 11 must not depend on it.",
+		"File path: Cargo.toml",
+		"Package name crest-synth, edition 2021, a lib target plus binary targets under src/bin/.",
+		"Dependencies and why each exists: cpal (audio output), midir (MIDI input), eframe + egui (GUI), gilrs (gamepad input), rtrb (lock-free SPSC ring buffer), triple_buffer (lock-free latest-wins parameter sharing), basedrop (deferred deallocation for real-time), serde + serde_json (preset/session serialization), symphonia (audio file decoding).",
+		"Choose current stable versions; the whole-tree gate (build/clippy/test) proves the resolution works.",
 	]
 }
 
-project: assets: BuildMakefile: {
-	kind:        "makefile"
-	description: "Build automation for the crest-synth project"
+project: assets: ToneTestMain: {
+	kind:        "rust-bin-target"
+	description: "src/bin/tone_test.rs: renders one second of A440 through the engine and asserts the output is audible"
+	uses: ["domainService.Engine.EngineRenderer", "valueObject.Kernel.Frequency", "valueObject.Kernel.AudioFrame"]
 	prompts: [
-		"Default target: build",
-		"build: cargo build",
-		"test: cargo test",
-		"check: cargo check",
-		"clean: cargo clean",
-		"run: cargo run  (runs the default tone-test binary)",
-		"lint: cargo clippy -- -D warnings",
-		"fmt: cargo fmt -- --check",
-		"demo-midi: cargo run --bin midi_play -- $(FILE)  — renders a MIDI file (or built-in demo tune) to midi-play.wav. `make demo-midi FILE=song.mid` forwards the path.",
-		"demo-voices: cargo run --bin voice_demo  — renders the over-polyphonic voice-stealing prover to voice-demo.wav and prints a `steals=` count. Takes no FILE argument.",
-		"check-live: cargo run --bin midi_play_live -- --no-device-dry-run  — constructs the real-time pipeline without opening an audio device, prints `dry-run ok: pipeline constructed`, exits 0. Validation-safe.",
-		"demo-patches: cargo run --bin patch_play -- $(FILE)  — renders the multi-patch integration proof to patch-play.wav. `make demo-patches FILE=song.mid` forwards the path.",
-		"demo-mod: cargo run --bin mod_play -- $(FILE)  — renders the modulated (LFO vibrato + filter sweep) demo to mod-play.wav. `make demo-mod FILE=song.mid` forwards the path.",
-		"demo-samples: cargo run --bin sample_demo  — synthesizes a sample, loads it, resolves key/velocity zones, interpolates, renders to sample-demo.wav and prints `zones loaded=` / `zone hit:` markers. Hermetic; no FILE argument.",
-		"demo-effects: cargo run --bin effects_demo -- $(FILE)  — renders the multi-patch demo through per-patch + global EffectChains to effects-demo.wav and prints `slot order matters: true` / `bypass passthrough: true`. `make demo-effects FILE=song.mid` forwards the path.",
-		"demo-presets: cargo run --bin preset_demo  — serializes a full Setup, reloads it, proves bit-identical re-render, writes preset-demo.wav and prints `setup roundtrip: equal` / `render identical: true`. No FILE argument.",
-		"check-gamepad: cargo run --bin gamepad_demo  — headless prover for the GamepadNavigator/GlyphResolver domain services; feeds scripted events, asserts action mapping + per-controller glyphs, prints `nav actions ok:` / `glyphs resolved: per-controller`, exits 0. Opens NO device or window; validation-safe.",
-		"demo-mixer: cargo run --bin mixer_demo  — headless prover for the MixerView store + ChannelMixer: scripts events to assert edge-scrolling/fine-coarse/double-tap-toggle and mixes per-channel buffers to prove solo silences other channels' audio but not their metering. Prints `edge scroll ok` / `fine/coarse ok` / `toggle ok` / `solo mutes others: true` / `metering independent of solo: true`, exits 0. Takes no FILE argument; opens NO device or window; validation-safe.",
-		"ui-smoke: cargo run --bin synth_ui -- --smoke  — hermetic headless self-check of the standalone mixer-view window: constructs the full app state (patches, engine, 16-channel ChannelMixer + MixerView, cpal stream-config), renders one block through the ChannelMixer, prints `ui smoke ok: app constructed` / `render non-silent: true` / `channel metered: true`, exits 0. Opens NO window and NO audio device; validation-safe.",
-		"play-midi: depends on demo-midi, then `afplay midi-play.wav`. `make play-midi FILE=song.mid` plays that file.",
-		"play-voices: depends on demo-voices, then `afplay voice-demo.wav`.",
-		"play-tone: run the tone test to produce tone-test.wav (cargo run), then `afplay tone-test.wav`.",
-		"play-midi-live: cargo run --bin midi_play_live -- $(FILE)  — streams live through the default output device. `make play-midi-live FILE=song.mid` plays that file. Opens an audio device; no afplay; never used by a validation.",
-		"play-patches: depends on demo-patches, then `afplay patch-play.wav`.",
-		"play-mod: depends on demo-mod, then `afplay mod-play.wav`.",
-		"play-samples: depends on demo-samples, then `afplay sample-demo.wav`.",
-		"play-effects: depends on demo-effects, then `afplay effects-demo.wav`.",
-		"play-presets: depends on demo-presets, then `afplay preset-demo.wav`.",
-		#"ui: cargo run --bin synth_ui -- --play "midi/Corridors of Time - Chrono Trigger.mid"  — launches the standalone keyboard/gamepad MIXER VIEW window over the engine + cpal audio, and auto-plays that MIDI file through the engine on launch so you hear the synth and watch the channel meters while mixing (dev/audition convenience; external MIDI remains the primary note source). Quote the path — it contains spaces. The file lives in the repo's own midi/ directory at the workspace root, so the path is exactly `midi/Corridors of Time - Chrono Trigger.mid` relative to where `make` runs (the crate root). Do NOT prefix it with ../ — the midi/ folder is INSIDE this workspace, not above it. Opens a real window and audio device; human-only; no afplay; NEVER used by a validation."#,
-		"autopilot: cargo run --bin synth_ui -- --autopilot --seconds 4  — launches the SAME standalone MIXER VIEW window over the live engine + cpal audio as the `ui` target, but instead of waiting for a human it AUTO-DRIVES a scripted MixerViewEvent session (navigate channels with edge-scroll, enter edit mode and nudge continuous values, double-tap to toggle Mute/Solo) for ~4 seconds, then closes the window itself and exits 0. Unlike `ui`, autopilot is SELF-DRIVING and SELF-TERMINATING, so it IS used by a validation: it is the real end-to-end autopilot run that proves the live window + audio + input loop + design-system skin all work together without a human. Opens a real window and audio device; no afplay.",
-		"Use cargo for all Rust operations. Declare .PHONY for all targets. afplay must appear ONLY in play-midi, play-voices, play-tone, play-patches, play-mod, play-samples, play-effects, and play-presets. demo-*, check-*, and *-smoke targets never use afplay and never open a device or window. The `ui` target opens a real window/device and is human-only, never used by a validation. The `autopilot` target also opens a real window/device but is self-driving and self-terminating, and IS used by a validation (the real end-to-end run).",
+		"File path: src/bin/tone_test.rs",
+		"Trigger a single A440 note through the engine, render one second of audio into a buffer, and MEASURE the peak absolute sample value of the rendered buffer.",
+		#"Print exactly one line `peak=<value>` with the measured peak, then exit non-zero unless 0.1 < peak <= 1.0 — a silent or clipping render must fail the run."#,
+	]
+	validations: [
+		{kind: "integration", command: ["cargo", "run", "--bin", "tone_test"], description: "renders an audible, non-clipping tone", assertions: [
+			{kind: "exit_code", expected: 0},
+			{kind: "stdout_contains", pattern: "peak="},
+		]},
 	]
 }

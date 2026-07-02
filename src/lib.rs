@@ -1,16 +1,12 @@
-pub mod adapter;
-pub mod audio;
-pub mod design_system;
-pub mod editor;
+// path: src/lib.rs
+
 pub mod effects;
+pub mod engine;
 pub mod kernel;
-pub mod midi_file;
 pub mod mixer;
 pub mod modulation;
 pub mod patch;
-pub mod plugin;
-pub mod presets;
+pub mod preset;
 pub mod real_time;
-pub mod sample_library;
+pub mod sample;
 pub mod shell;
-pub mod synth;

@@ -1,277 +1,306 @@
 // path: src/shell/gui_renderer.rs
 
-/// An axis-aligned rectangle in logical (UI) coordinates.
+//! `GuiRenderer` is the port through which the UI/MIDI-side application
+//! core drives whatever concrete windowing/graphics adapter is plugged in
+//! (egui, a Steam Deck touch UI, a headless test double, etc.).
+//!
+//! This module lives entirely on the non-real-time side of the codebase.
+//! It never touches the audio thread: a `ViewState` is a plain, owned
+//! snapshot built from data that already crossed the RT boundary via the
+//! `ParameterBridge` / `EventRing`, so rendering it never allocates on,
+//! locks against, or blocks the audio callback.
+//!
+//! Every view exposes an explicit `focus` cursor so every action reachable
+//! by mouse/touch is also reachable by gamepad d-pad/stick navigation and
+//! a single "activate" button.
+
+/// A zero-based cursor position within a list of focusable UI elements.
 ///
-/// Used to specify the region passed to [`GuiRenderer::custom_paint`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Rect {
-    /// Horizontal position of the left edge in logical pixels.
-    pub x: f32,
-    /// Vertical position of the top edge in logical pixels.
-    pub y: f32,
-    /// Width of the rectangle in logical pixels.
-    pub width: f32,
-    /// Height of the rectangle in logical pixels.
-    pub height: f32,
+/// Newtype so a raw `usize` index can never be silently mixed up with a
+/// patch slot, preset slot, or matrix row/column index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct FocusIndex(usize);
+
+impl FocusIndex {
+    pub fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    pub fn value(self) -> usize {
+        self.0
+    }
+
+    /// Clamped move used by gamepad d-pad/stick navigation; never panics
+    /// and never wraps past the bounds of `len`.
+    pub fn moved_by(self, delta: isize, len: usize) -> Self {
+        if len == 0 {
+            return Self(0);
+        }
+        let max = len - 1;
+        let current = self.0.min(max) as isize;
+        let next = (current + delta).clamp(0, max as isize);
+        Self(next as usize)
+    }
 }
 
-impl Rect {
-    /// Creates a new `Rect` at position `(x, y)` with the given `width` and
-    /// `height`.
-    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+/// Identifies which top-level surface of the shell is currently on screen.
+///
+/// Exactly one of these is active at a time; switching between them is a
+/// gamepad-reachable action (e.g. a shoulder-button tab cycle) modeled by
+/// [`GuiRenderer::show_surface`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceKind {
+    PatchEditor,
+    MixerView,
+    PresetBrowser,
+    ModMatrixEditor,
+}
+
+/// One editable parameter row in the patch editor, already resolved from
+/// engine/patch state into display-ready values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatchParamRow {
+    pub label: String,
+    pub display_value: String,
+}
+
+/// Snapshot of the patch editor surface.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PatchEditorState {
+    pub patch_name: String,
+    pub params: Vec<PatchParamRow>,
+    pub focus: FocusIndex,
+}
+
+/// One channel strip's display-ready state within the mixer view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelStripRow {
+    pub label: String,
+    pub level_db: f32,
+    pub pan: f32,
+    pub muted: bool,
+    pub soloed: bool,
+}
+
+/// Snapshot of the mixer view surface: channel strips plus the aux/master
+/// bus meters that terminate the canonical signal path.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MixerViewState {
+    pub channel_strips: Vec<ChannelStripRow>,
+    pub aux_bus_labels: Vec<String>,
+    pub master_level_db: f32,
+    pub focus: FocusIndex,
+}
+
+/// One entry in the preset browser list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresetEntry {
+    pub name: String,
+    pub bank_label: String,
+}
+
+/// Snapshot of the preset browser surface.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PresetBrowserState {
+    pub entries: Vec<PresetEntry>,
+    pub focus: FocusIndex,
+}
+
+/// One routing cell in the modulation matrix: a source-to-destination
+/// depth, already clamped/validated upstream by the modulation context.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModMatrixCell {
+    pub source_label: String,
+    pub destination_label: String,
+    pub depth: f32,
+}
+
+/// Snapshot of the mod matrix editor surface.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ModMatrixEditorState {
+    pub cells: Vec<ModMatrixCell>,
+    pub row_focus: FocusIndex,
+    pub column_focus: FocusIndex,
+}
+
+/// Everything the shell needs to paint a single frame.
+///
+/// `active_surface` names which of the four snapshots is on screen; the
+/// renderer is free to keep the other snapshots around for cheap surface
+/// switching, but only `active_surface` is guaranteed fresh.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewState {
+    pub active_surface: SurfaceKind,
+    pub patch_editor: PatchEditorState,
+    pub mixer_view: MixerViewState,
+    pub preset_browser: PresetBrowserState,
+    pub mod_matrix_editor: ModMatrixEditorState,
+}
+
+impl ViewState {
+    pub fn new(active_surface: SurfaceKind) -> Self {
         Self {
-            x,
-            y,
-            width,
-            height,
+            active_surface,
+            patch_editor: PatchEditorState::default(),
+            mixer_view: MixerViewState::default(),
+            preset_browser: PresetBrowserState::default(),
+            mod_matrix_editor: ModMatrixEditorState::default(),
         }
     }
-
-    /// Returns the x-coordinate of the right edge.
-    pub fn right(&self) -> f32 {
-        self.x + self.width
-    }
-
-    /// Returns the y-coordinate of the bottom edge.
-    pub fn bottom(&self) -> f32 {
-        self.y + self.height
-    }
-
-    /// Returns `true` if this rect contains the point `(px, py)`.
-    pub fn contains(&self, px: f32, py: f32) -> bool {
-        px >= self.x && px <= self.right() && py >= self.y && py <= self.bottom()
-    }
 }
 
-/// An opaque handle representing the UI context for a single rendered frame.
+/// The `Shell.GuiRenderer` port: `render(view) -> ()`.
 ///
-/// Obtained from [`GuiRenderer::begin_frame`] and consumed by
-/// [`GuiRenderer::end_frame`].  The handle must not be held across frame
-/// boundaries.
-pub struct UiContext {
-    /// Frame sequence number; incremented by the renderer on each call to
-    /// `begin_frame`.
-    pub(crate) frame_index: u64,
-}
-
-impl UiContext {
-    /// Creates a new `UiContext` with the given frame index.
-    ///
-    /// Intended for use by [`GuiRenderer`] implementations only.
-    pub fn new(frame_index: u64) -> Self {
-        Self { frame_index }
-    }
-
-    /// Returns the sequence number of the frame this context belongs to.
-    pub fn frame_index(&self) -> u64 {
-        self.frame_index
-    }
-}
-
-/// A callback that performs custom painting inside a [`Rect`].
-///
-/// The closure receives the target [`Rect`] so it can position draw calls
-/// within the allocated region.
-pub type PaintCallback = Box<dyn FnOnce(Rect) + Send + 'static>;
-
-/// Port: GUI rendering.
-///
-/// Implementations wire a concrete rendering back-end (e.g. `egui` / `wgpu`)
-/// behind this interface so that higher-level shell code stays back-end agnostic.
-///
-/// # Frame lifecycle
-///
-/// Each rendered frame follows the sequence:
-/// 1. [`begin_frame`][Self::begin_frame] — acquire a [`UiContext`] for this frame.
-/// 2. Zero or more [`custom_paint`][Self::custom_paint] calls — schedule
-///    arbitrary paint callbacks into bounded screen regions.
-/// 3. [`end_frame`][Self::end_frame] — flush/present the frame, consuming the
-///    [`UiContext`].
-///
-/// # UI thread constraint
-///
-/// All methods must be called from the UI / window thread.  Implementations
-/// must **not** block on audio-thread resources.
+/// Concrete adapters (egui, a headless test double, a future native Steam
+/// Deck UI) implement this trait. The application core depends only on
+/// this narrow interface (ISP) — it never names a concrete windowing
+/// toolkit, so core logic stays testable without one (DIP).
 pub trait GuiRenderer {
-    /// Begins a new UI frame and returns an opaque [`UiContext`] handle.
-    ///
-    /// Must be paired with exactly one call to [`end_frame`][Self::end_frame]
-    /// before the next call to `begin_frame`.
-    fn begin_frame(&mut self) -> UiContext;
+    /// Paint the given snapshot. Implementations must not block on I/O
+    /// indefinitely (a frame must complete so the UI stays gamepad-
+    /// responsive) and must treat `view` as a fully-formed, read-only
+    /// snapshot — no reaching back across the RT boundary from here.
+    fn render(&mut self, view: ViewState);
+}
 
-    /// Schedules a custom paint callback to be rendered within `region`.
-    ///
-    /// The `callback` is invoked by the back-end during frame presentation
-    /// with the exact [`Rect`] that was reserved for it.  Multiple calls to
-    /// `custom_paint` within a single frame are composited in call order.
-    ///
-    /// # Panics
-    ///
-    /// Implementations may panic if called outside of a `begin_frame` /
-    /// `end_frame` pair.
-    fn custom_paint(&mut self, region: Rect, callback: PaintCallback);
+/// Extension point for surface switching. Kept as a separate, narrow
+/// trait (ISP) rather than folded into [`GuiRenderer`]: adapters that only
+/// need to paint a fixed surface (e.g. a kiosk-mode renderer) can depend
+/// on `GuiRenderer` alone and ignore this one.
+pub trait SurfaceSwitcher {
+    /// Move to the next surface in a fixed gamepad-reachable cycle:
+    /// PatchEditor -> MixerView -> PresetBrowser -> ModMatrixEditor -> ...
+    fn show_surface(&mut self, surface: SurfaceKind);
+}
 
-    /// Ends the current frame, flushing all pending paint operations and
-    /// presenting the result to the screen.
-    ///
-    /// Consumes the [`UiContext`] returned by [`begin_frame`][Self::begin_frame],
-    /// enforcing that a context is never reused across frames.
-    fn end_frame(&mut self, ctx: UiContext);
+/// Cycles a [`SurfaceKind`] to the next surface in the fixed tab order.
+/// Free function (not a method with hidden state) so any adapter can
+/// reuse the same cycle order without duplicating it.
+pub fn next_surface(current: SurfaceKind) -> SurfaceKind {
+    match current {
+        SurfaceKind::PatchEditor => SurfaceKind::MixerView,
+        SurfaceKind::MixerView => SurfaceKind::PresetBrowser,
+        SurfaceKind::PresetBrowser => SurfaceKind::ModMatrixEditor,
+        SurfaceKind::ModMatrixEditor => SurfaceKind::PatchEditor,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── Rect ─────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn rect_new_stores_fields() {
-        let r = Rect::new(10.0, 20.0, 100.0, 50.0);
-        assert_eq!(r.x, 10.0);
-        assert_eq!(r.y, 20.0);
-        assert_eq!(r.width, 100.0);
-        assert_eq!(r.height, 50.0);
+    /// A minimal in-memory `GuiRenderer` test double: records the last
+    /// view it was asked to paint so tests can assert on dispatch without
+    /// standing up any real graphics backend.
+    struct RecordingRenderer {
+        last_rendered: Option<ViewState>,
+        render_count: usize,
     }
 
-    #[test]
-    fn rect_right_and_bottom() {
-        let r = Rect::new(5.0, 5.0, 40.0, 30.0);
-        assert_eq!(r.right(), 45.0);
-        assert_eq!(r.bottom(), 35.0);
-    }
-
-    #[test]
-    fn rect_contains_inside_point() {
-        let r = Rect::new(0.0, 0.0, 100.0, 100.0);
-        assert!(r.contains(50.0, 50.0));
-    }
-
-    #[test]
-    fn rect_contains_edge_point() {
-        let r = Rect::new(0.0, 0.0, 100.0, 100.0);
-        assert!(r.contains(0.0, 0.0));
-        assert!(r.contains(100.0, 100.0));
-    }
-
-    #[test]
-    fn rect_does_not_contain_outside_point() {
-        let r = Rect::new(10.0, 10.0, 50.0, 50.0);
-        assert!(!r.contains(5.0, 30.0));
-        assert!(!r.contains(30.0, 5.0));
-        assert!(!r.contains(65.0, 30.0));
-        assert!(!r.contains(30.0, 65.0));
-    }
-
-    #[test]
-    fn rect_clone_is_independent() {
-        let r = Rect::new(1.0, 2.0, 3.0, 4.0);
-        // Copy r into a second binding; mutating the copy must not affect r.
-        let r_copy = r;
-        assert_eq!(r.x, r_copy.x);
-        assert_eq!(r.x, 1.0);
-    }
-
-    // ── UiContext ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn ui_context_exposes_frame_index() {
-        let ctx = UiContext::new(42);
-        assert_eq!(ctx.frame_index(), 42);
-    }
-
-    #[test]
-    fn ui_context_first_frame_is_zero() {
-        let ctx = UiContext::new(0);
-        assert_eq!(ctx.frame_index(), 0);
-    }
-
-    // ── GuiRenderer (stub impl) ──────────────────────────────────────────────
-
-    /// A minimal stub implementation used only within this test module.
-    struct StubRenderer {
-        frame_counter: u64,
-        paint_calls: Vec<Rect>,
-        frames_ended: u64,
-    }
-
-    impl StubRenderer {
+    impl RecordingRenderer {
         fn new() -> Self {
             Self {
-                frame_counter: 0,
-                paint_calls: Vec::new(),
-                frames_ended: 0,
+                last_rendered: None,
+                render_count: 0,
             }
         }
     }
 
-    impl GuiRenderer for StubRenderer {
-        fn begin_frame(&mut self) -> UiContext {
-            let ctx = UiContext::new(self.frame_counter);
-            self.frame_counter += 1;
-            ctx
-        }
-
-        fn custom_paint(&mut self, region: Rect, callback: PaintCallback) {
-            // Record the region and invoke the callback immediately (stub flush).
-            self.paint_calls.push(region);
-            callback(region);
-        }
-
-        fn end_frame(&mut self, _ctx: UiContext) {
-            self.frames_ended += 1;
+    impl GuiRenderer for RecordingRenderer {
+        fn render(&mut self, view: ViewState) {
+            self.last_rendered = Some(view);
+            self.render_count += 1;
         }
     }
 
-    #[test]
-    fn begin_frame_returns_incrementing_index() {
-        let mut renderer = StubRenderer::new();
-        let ctx0 = renderer.begin_frame();
-        renderer.end_frame(ctx0);
-        let ctx1 = renderer.begin_frame();
-        renderer.end_frame(ctx1);
-        assert_eq!(renderer.frame_counter, 2);
-        assert_eq!(renderer.frames_ended, 2);
+    impl SurfaceSwitcher for RecordingRenderer {
+        fn show_surface(&mut self, surface: SurfaceKind) {
+            if let Some(view) = self.last_rendered.as_mut() {
+                view.active_surface = surface;
+            }
+        }
+    }
+
+    fn sample_view() -> ViewState {
+        let mut view = ViewState::new(SurfaceKind::PatchEditor);
+        view.patch_editor.patch_name = "Init Patch".to_string();
+        view.patch_editor.params.push(PatchParamRow {
+            label: "Cutoff".to_string(),
+            display_value: "1.2 kHz".to_string(),
+        });
+        view
     }
 
     #[test]
-    fn custom_paint_records_region_and_invokes_callback() {
-        let mut renderer = StubRenderer::new();
-        let ctx = renderer.begin_frame();
+    fn render_records_the_exact_view_it_was_given() {
+        let mut renderer = RecordingRenderer::new();
+        let view = sample_view();
 
-        let region = Rect::new(0.0, 0.0, 800.0, 600.0);
-        // Verify via the recorded paint_calls count and that the callback
-        // receives the exact rect that was passed to custom_paint.
-        renderer.custom_paint(
-            region,
-            Box::new(|r| {
-                assert_eq!(r.width, 800.0);
-                assert_eq!(r.height, 600.0);
-            }),
+        renderer.render(view.clone());
+
+        assert_eq!(renderer.last_rendered, Some(view));
+        assert_eq!(renderer.render_count, 1);
+    }
+
+    #[test]
+    fn render_can_be_called_multiple_times_and_counts_each_frame() {
+        let mut renderer = RecordingRenderer::new();
+
+        renderer.render(sample_view());
+        renderer.render(sample_view());
+        renderer.render(sample_view());
+
+        assert_eq!(renderer.render_count, 3);
+    }
+
+    #[test]
+    fn focus_index_moves_within_bounds_and_never_wraps() {
+        let focus = FocusIndex::new(0);
+
+        let moved_backward_from_zero = focus.moved_by(-1, 5);
+        assert_eq!(moved_backward_from_zero.value(), 0);
+
+        let moved_forward = focus.moved_by(2, 5);
+        assert_eq!(moved_forward.value(), 2);
+
+        let clamped_at_end = FocusIndex::new(4).moved_by(10, 5);
+        assert_eq!(clamped_at_end.value(), 4);
+    }
+
+    #[test]
+    fn focus_index_on_empty_list_stays_at_zero() {
+        let focus = FocusIndex::new(0);
+
+        let moved = focus.moved_by(3, 0);
+
+        assert_eq!(moved.value(), 0);
+    }
+
+    #[test]
+    fn next_surface_cycles_through_all_four_surfaces_and_back() {
+        let start = SurfaceKind::PatchEditor;
+
+        let after_one = next_surface(start);
+        let after_two = next_surface(after_one);
+        let after_three = next_surface(after_two);
+        let after_four = next_surface(after_three);
+
+        assert_eq!(after_one, SurfaceKind::MixerView);
+        assert_eq!(after_two, SurfaceKind::PresetBrowser);
+        assert_eq!(after_three, SurfaceKind::ModMatrixEditor);
+        assert_eq!(after_four, SurfaceKind::PatchEditor);
+    }
+
+    #[test]
+    fn surface_switcher_updates_the_active_surface_of_the_last_rendered_view() {
+        let mut renderer = RecordingRenderer::new();
+        renderer.render(sample_view());
+
+        renderer.show_surface(SurfaceKind::MixerView);
+
+        assert_eq!(
+            renderer.last_rendered.as_ref().map(|v| v.active_surface),
+            Some(SurfaceKind::MixerView)
         );
-
-        assert_eq!(renderer.paint_calls.len(), 1);
-        assert_eq!(renderer.paint_calls[0].width, 800.0);
-
-        renderer.end_frame(ctx);
-    }
-
-    #[test]
-    fn multiple_custom_paints_per_frame_are_all_recorded() {
-        let mut renderer = StubRenderer::new();
-        let ctx = renderer.begin_frame();
-
-        renderer.custom_paint(Rect::new(0.0, 0.0, 100.0, 100.0), Box::new(|_| {}));
-        renderer.custom_paint(Rect::new(100.0, 0.0, 100.0, 100.0), Box::new(|_| {}));
-        renderer.custom_paint(Rect::new(200.0, 0.0, 100.0, 100.0), Box::new(|_| {}));
-
-        assert_eq!(renderer.paint_calls.len(), 3);
-        renderer.end_frame(ctx);
-    }
-
-    #[test]
-    fn gui_renderer_trait_is_object_safe() {
-        let renderer: Box<dyn GuiRenderer> = Box::new(StubRenderer::new());
-        drop(renderer);
     }
 }

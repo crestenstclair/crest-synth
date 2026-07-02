@@ -1,6 +1,12 @@
+// path: src/kernel/mod.rs
+
 pub mod amplitude;
 pub mod audio_frame;
+pub mod bank_id;
+pub mod buffer_size;
+pub mod bus_id;
 pub mod channel_address;
+pub mod decibel;
 pub mod frequency;
 pub mod midi_channel;
 pub mod midi_event;
@@ -8,5 +14,11 @@ pub mod midi_event_kind;
 pub mod midi_group;
 pub mod note_id;
 pub mod note_number;
+pub mod pan;
+pub mod patch_id;
+pub mod preset_id;
+pub mod sample_count;
 pub mod sample_rate;
+pub mod tempo;
+pub mod time_signature;
 pub mod velocity;
