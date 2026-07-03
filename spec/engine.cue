@@ -28,7 +28,10 @@ project: contexts: Engine: valueObjects: {
 	VoiceConfig: {
 		state: {engineType: "EngineType", oscillator: "OscillatorConfig", filter: "FilterConfig", ampEnvelope: "EnvelopeConfig", filterEnvelope: "EnvelopeConfig", pitchEnvelope: "EnvelopeConfig", maxPolyphony: "u8", stealPolicy: "StealPolicy"}
 		description: "complete per-patch voice configuration"
-		invariants: ["maxPolyphony must be positive (typically 8-64)"]
+		invariants: [
+			"maxPolyphony must be positive (typically 8-64)",
+			"engineType is the Engine context's canonical EngineType — every one of its four documented variants is accepted at construction and preserved unchanged when read back",
+		]
 	}
 }
 
@@ -79,6 +82,7 @@ project: contexts: Engine: domainServices: {
 	VoiceAllocator: {
 		purpose: "assigns incoming notes to voices, stealing per the configured policy when polyphony is exhausted"
 		uses: ["aggregate.Engine.Voice"]
+		meta: notes: "the steal policy parameter is the Engine context's canonical StealPolicy — never a private duplicate type. Each documented variant is observably honored through the public interface: Refuse declines the allocation when full; Oldest/Quietest/LowestVelocity each select their respective victim, and the chosen victim differs across variants when the candidates differ."
 	}
 	VoiceRenderer: {
 		purpose: "renders one voice for one buffer: oscillator → filter → envelopes"

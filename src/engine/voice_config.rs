@@ -1,13 +1,26 @@
 // path: src/engine/voice_config.rs
 
-//! Per-patch voice configuration: oscillator, envelopes, filter, and
-//! polyphony/voice-stealing behavior for a single patch.
+//! Per-patch voice configuration: oscillator, envelopes, filter, engine
+//! type, and polyphony/voice-stealing behavior for a single patch.
 //!
 //! `VoiceConfig` is a pure value object -- validated on construction,
 //! immutable thereafter. It does not touch the audio thread directly;
 //! runtime engines consume it via ParameterBridge snapshots.
+//!
+//! `VoiceConfig` composes the Engine context's canonical shared value
+//! types (`EngineType`, `EnvelopeConfig`, `FilterConfig`,
+//! `OscillatorConfig`, `StealPolicy`) rather than redefining them --
+//! those types own their own construction-time validation, so
+//! `VoiceConfig::try_new` only enforces the one invariant that is its
+//! own concern: `maxPolyphony` must be positive.
 
 use std::fmt;
+
+use crate::engine::engine_type::EngineType;
+use crate::engine::envelope_config::EnvelopeConfig;
+use crate::engine::filter_config::FilterConfig;
+use crate::engine::oscillator_config::OscillatorConfig;
+use crate::engine::steal_policy::StealPolicy;
 
 /// Number of concurrently sounding voices a patch may use.
 ///
@@ -35,283 +48,21 @@ impl fmt::Display for MaxPolyphony {
     }
 }
 
-/// Sound-generation strategy a patch's voices use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EngineType {
-    Subtractive,
-    Fm,
-    Wavetable,
-    Sample,
-}
-
-/// Behavior applied when a note-on arrives and every voice slot is busy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StealPolicy {
-    /// Steal the voice that has been sounding the longest.
-    Oldest,
-    /// Steal the voice with the lowest pitch.
-    Lowest,
-    /// Steal the voice with the highest pitch.
-    Highest,
-    /// Steal the voice with the smallest current amplitude.
-    Quietest,
-}
-
-/// Filter type applied to the oscillator/sample signal before envelopes
-/// shape it and it is summed into the channel strip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FilterKind {
-    LowPass,
-    HighPass,
-    BandPass,
-    Notch,
-}
-
-/// Normalized cutoff frequency, 0.0 (fully closed) to 1.0 (fully open),
-/// typically mapped to a Hz range by the runtime filter implementation.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Cutoff(f32);
-
-impl Cutoff {
-    pub fn try_new(value: f32) -> Result<Self, VoiceConfigError> {
-        if value.is_nan() || !(0.0..=1.0).contains(&value) {
-            return Err(VoiceConfigError::CutoffOutOfRange(value));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn get(&self) -> f32 {
-        self.0
-    }
-}
-
-/// Normalized resonance amount, 0.0 (no emphasis) to 1.0 (near self-oscillation).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Resonance(f32);
-
-impl Resonance {
-    pub fn try_new(value: f32) -> Result<Self, VoiceConfigError> {
-        if value.is_nan() || !(0.0..=1.0).contains(&value) {
-            return Err(VoiceConfigError::ResonanceOutOfRange(value));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn get(&self) -> f32 {
-        self.0
-    }
-}
-
-/// Filter stage configuration for a patch's voices.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FilterConfig {
-    kind: FilterKind,
-    cutoff: Cutoff,
-    resonance: Resonance,
-}
-
-impl FilterConfig {
-    pub fn new(kind: FilterKind, cutoff: Cutoff, resonance: Resonance) -> Self {
-        Self {
-            kind,
-            cutoff,
-            resonance,
-        }
-    }
-
-    pub fn kind(&self) -> FilterKind {
-        self.kind
-    }
-
-    pub fn cutoff(&self) -> Cutoff {
-        self.cutoff
-    }
-
-    pub fn resonance(&self) -> Resonance {
-        self.resonance
-    }
-}
-
-/// Oscillator waveform shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Waveform {
-    Sine,
-    Saw,
-    Square,
-    Triangle,
-    Noise,
-}
-
-/// Oscillator detune, in semitones, applied before mixing into the voice.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Detune(f32);
-
-impl Detune {
-    pub fn try_new(value: f32) -> Result<Self, VoiceConfigError> {
-        if value.is_nan() || !(-24.0..=24.0).contains(&value) {
-            return Err(VoiceConfigError::DetuneOutOfRange(value));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn get(&self) -> f32 {
-        self.0
-    }
-}
-
-/// Oscillator output level, 0.0 (silent) to 1.0 (unity).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OscillatorLevel(f32);
-
-impl OscillatorLevel {
-    pub fn try_new(value: f32) -> Result<Self, VoiceConfigError> {
-        if value.is_nan() || !(0.0..=1.0).contains(&value) {
-            return Err(VoiceConfigError::OscillatorLevelOutOfRange(value));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn get(&self) -> f32 {
-        self.0
-    }
-}
-
-/// Oscillator stage configuration for a patch's voices.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OscillatorConfig {
-    waveform: Waveform,
-    detune: Detune,
-    level: OscillatorLevel,
-}
-
-impl OscillatorConfig {
-    pub fn new(waveform: Waveform, detune: Detune, level: OscillatorLevel) -> Self {
-        Self {
-            waveform,
-            detune,
-            level,
-        }
-    }
-
-    pub fn waveform(&self) -> Waveform {
-        self.waveform
-    }
-
-    pub fn detune(&self) -> Detune {
-        self.detune
-    }
-
-    pub fn level(&self) -> OscillatorLevel {
-        self.level
-    }
-}
-
-/// A non-negative envelope stage duration, in seconds.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EnvelopeTime(f32);
-
-impl EnvelopeTime {
-    pub fn try_new(value: f32) -> Result<Self, VoiceConfigError> {
-        if value.is_nan() || value.is_sign_negative() {
-            return Err(VoiceConfigError::NegativeEnvelopeTime(value));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn get(&self) -> f32 {
-        self.0
-    }
-}
-
-/// Sustain level, 0.0 (silent) to 1.0 (full amplitude).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SustainLevel(f32);
-
-impl SustainLevel {
-    pub fn try_new(value: f32) -> Result<Self, VoiceConfigError> {
-        if value.is_nan() || !(0.0..=1.0).contains(&value) {
-            return Err(VoiceConfigError::SustainOutOfRange(value));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn get(&self) -> f32 {
-        self.0
-    }
-}
-
-/// A four-stage attack/decay/sustain/release envelope shape shared by the
-/// amplitude, filter, and pitch envelopes of a voice.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EnvelopeConfig {
-    attack: EnvelopeTime,
-    decay: EnvelopeTime,
-    sustain: SustainLevel,
-    release: EnvelopeTime,
-}
-
-impl EnvelopeConfig {
-    pub fn new(
-        attack: EnvelopeTime,
-        decay: EnvelopeTime,
-        sustain: SustainLevel,
-        release: EnvelopeTime,
-    ) -> Self {
-        Self {
-            attack,
-            decay,
-            sustain,
-            release,
-        }
-    }
-
-    pub fn attack(&self) -> EnvelopeTime {
-        self.attack
-    }
-
-    pub fn decay(&self) -> EnvelopeTime {
-        self.decay
-    }
-
-    pub fn sustain(&self) -> SustainLevel {
-        self.sustain
-    }
-
-    pub fn release(&self) -> EnvelopeTime {
-        self.release
-    }
-}
-
-/// Errors constructing a `VoiceConfig` or any of its constituent value types.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Errors constructing a `VoiceConfig`.
+///
+/// Every constituent value type (`EnvelopeConfig`, `EngineType`,
+/// `FilterConfig`, `OscillatorConfig`, `StealPolicy`) validates its own
+/// fields at its own construction site; `VoiceConfig` only adds the
+/// `maxPolyphony` check that is its own concern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceConfigError {
     NonPositiveMaxPolyphony,
-    CutoffOutOfRange(f32),
-    ResonanceOutOfRange(f32),
-    DetuneOutOfRange(f32),
-    OscillatorLevelOutOfRange(f32),
-    NegativeEnvelopeTime(f32),
-    SustainOutOfRange(f32),
 }
 
 impl fmt::Display for VoiceConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NonPositiveMaxPolyphony => write!(f, "maxPolyphony must be positive"),
-            Self::CutoffOutOfRange(v) => write!(f, "filter cutoff {v} is out of range [0.0, 1.0]"),
-            Self::ResonanceOutOfRange(v) => {
-                write!(f, "filter resonance {v} is out of range [0.0, 1.0]")
-            }
-            Self::DetuneOutOfRange(v) => {
-                write!(f, "oscillator detune {v} is out of range [-24.0, 24.0]")
-            }
-            Self::OscillatorLevelOutOfRange(v) => {
-                write!(f, "oscillator level {v} is out of range [0.0, 1.0]")
-            }
-            Self::NegativeEnvelopeTime(v) => write!(f, "envelope time {v} must be non-negative"),
-            Self::SustainOutOfRange(v) => {
-                write!(f, "envelope sustain {v} is out of range [0.0, 1.0]")
-            }
         }
     }
 }
@@ -319,12 +70,12 @@ impl fmt::Display for VoiceConfigError {
 impl std::error::Error for VoiceConfigError {}
 
 /// Complete per-patch voice configuration: oscillator, envelopes, filter,
-/// and polyphony/voice-stealing behavior.
+/// engine type, and polyphony/voice-stealing behavior.
 ///
 /// A `VoiceConfig` is validated on construction and immutable thereafter;
 /// there is no in-place mutation path, so every field of every constituent
 /// value type must already be valid before the whole config exists.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VoiceConfig {
     amp_envelope: EnvelopeConfig,
     engine_type: EngineType,
@@ -342,7 +93,9 @@ impl VoiceConfig {
     /// `max_polyphony` is a plain `u8` here (not `MaxPolyphony`) so callers
     /// building from raw preset data get the "must be positive" check
     /// enforced at this single seam; every other field type already
-    /// enforces its own invariants at its own construction site.
+    /// enforces its own invariants at its own construction site, and
+    /// every one of `EngineType`'s four documented variants is accepted
+    /// and stored unchanged.
     ///
     /// Takes eight parameters by design -- one per `VoiceConfig` field --
     /// rather than an arbitrary grouping that would only exist to dodge a
@@ -408,37 +161,30 @@ impl VoiceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::filter_config::FilterType;
+    use crate::engine::oscillator_config::Waveform;
 
     fn sample_envelope() -> EnvelopeConfig {
-        EnvelopeConfig::new(
-            EnvelopeTime::try_new(0.01).unwrap(),
-            EnvelopeTime::try_new(0.1).unwrap(),
-            SustainLevel::try_new(0.7).unwrap(),
-            EnvelopeTime::try_new(0.2).unwrap(),
-        )
+        // (attack, decay, release, sustain)
+        EnvelopeConfig::try_new(0.01, 0.1, 0.2, 0.7).expect("valid envelope")
     }
 
     fn sample_filter() -> FilterConfig {
-        FilterConfig::new(
-            FilterKind::LowPass,
-            Cutoff::try_new(0.5).unwrap(),
-            Resonance::try_new(0.2).unwrap(),
-        )
+        // (cutoffHz, drive, envelopeAmount, filterType, keyTracking, resonance)
+        FilterConfig::try_new(1_000.0, 0.0, 0.0, FilterType::LowPass, 0.0, 0.2)
+            .expect("valid filter")
     }
 
     fn sample_oscillator() -> OscillatorConfig {
-        OscillatorConfig::new(
-            Waveform::Saw,
-            Detune::try_new(0.0).unwrap(),
-            OscillatorLevel::try_new(1.0).unwrap(),
-        )
+        // (detuneCents, pulseWidth, unisonSpread, unisonVoices, waveform)
+        OscillatorConfig::new(0.0, 0.5, 0.0, 1, Waveform::Sine).expect("valid oscillator")
     }
 
     #[test]
     fn accepts_positive_max_polyphony() {
         let config = VoiceConfig::try_new(
             sample_envelope(),
-            EngineType::Subtractive,
+            EngineType::VirtualAnalog,
             sample_filter(),
             sample_envelope(),
             16,
@@ -480,15 +226,26 @@ mod tests {
     }
 
     #[test]
-    fn cutoff_rejects_out_of_range() {
-        assert!(Cutoff::try_new(1.5).is_err());
-        assert!(Cutoff::try_new(-0.1).is_err());
-        assert!(Cutoff::try_new(f32::NAN).is_err());
-    }
-
-    #[test]
-    fn envelope_time_rejects_negative() {
-        assert!(EnvelopeTime::try_new(-0.01).is_err());
-        assert!(EnvelopeTime::try_new(0.0).is_ok());
+    fn preserves_all_engine_type_variants_unchanged() {
+        let variants = [
+            EngineType::VirtualAnalog,
+            EngineType::Wavetable,
+            EngineType::SamplePlayback,
+            EngineType::Fm,
+        ];
+        for variant in variants {
+            let config = VoiceConfig::try_new(
+                sample_envelope(),
+                variant,
+                sample_filter(),
+                sample_envelope(),
+                16,
+                sample_oscillator(),
+                sample_envelope(),
+                StealPolicy::Oldest,
+            )
+            .expect("valid config");
+            assert_eq!(config.engine_type(), variant);
+        }
     }
 }

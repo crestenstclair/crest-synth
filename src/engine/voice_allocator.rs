@@ -16,24 +16,16 @@
 //! the voice pool is preallocated once in `VoiceAllocator::new` and never grows or shrinks
 //! afterward, so these methods are safe to call from the audio thread's real-time callback.
 //!
-//! `StealPolicy` is not yet available as a shared `valueObject.Engine.StealPolicy` resource
-//! in this project, so it is defined locally here, following the same pattern
-//! `aggregate.Engine.Voice` used for `NoteId`/`NoteNumber`/`Velocity`/`VoiceConfig`. When the
-//! shared value object is generated, this local definition should be replaced by a `use`
-//! import of it.
+//! `StealPolicy` is the Engine context's canonical steal policy value object, defined once in
+//! `crate::engine::steal_policy` and imported here rather than duplicated privately. Every
+//! documented variant (`Oldest`, `Quietest`, `LowestVelocity`, `Refuse`) is observably honored
+//! through `allocate`'s public behavior: `Refuse` declines the allocation when the pool is
+//! full, while `Oldest`/`Quietest`/`LowestVelocity` each pick their respective victim.
 
+pub use crate::engine::steal_policy::StealPolicy;
 use crate::engine::voice::{
     AmpEnvelopeStage, NoteId, NoteNumber, Velocity, Voice, VoiceConfig, VoiceEvent,
 };
-
-/// Policy governing which sounding voice is reclaimed when polyphony is exhausted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StealPolicy {
-    /// Reclaim the voice that has been sounding the longest.
-    Oldest,
-    /// Reclaim the voice with the lowest current amplitude envelope level.
-    Quietest,
-}
 
 /// Errors returned when a `VoiceAllocator` command cannot be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +40,9 @@ pub enum VoiceAllocatorError {
     /// The underlying `Voice` command was rejected even though the allocator's own
     /// bookkeeping expected it to succeed (defensive; should not occur in practice).
     VoiceCommandRejected,
+    /// `allocate` was called under `StealPolicy::Refuse` while every voice was active; the
+    /// allocator declines the new note instead of stealing a voice for it.
+    Refused,
 }
 
 /// Outcome of a successful `VoiceAllocator::allocate` call.
@@ -145,7 +140,8 @@ impl VoiceAllocator {
 
     /// Assigns `note`/`note_id`/`velocity` to a voice: an idle voice if one is available,
     /// otherwise the `steal_policy` victim, whose new note is queued to trigger once it
-    /// becomes idle (see `advance_all`).
+    /// becomes idle (see `advance_all`). Under `StealPolicy::Refuse`, declines with
+    /// `VoiceAllocatorError::Refused` instead of stealing once the pool is full.
     pub fn allocate(
         &mut self,
         note: NoteNumber,
@@ -155,6 +151,10 @@ impl VoiceAllocator {
         if let Some(index) = self.find_reclaimable() {
             self.trigger_slot(index, note, note_id, velocity);
             return Ok(VoiceAssignment::Assigned { index });
+        }
+
+        if self.steal_policy == StealPolicy::Refuse {
+            return Err(VoiceAllocatorError::Refused);
         }
 
         let index = self
@@ -265,6 +265,18 @@ impl VoiceAllocator {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map(|(i, _)| i),
+            StealPolicy::LowestVelocity => candidates
+                .min_by(|(_, a), (_, b)| {
+                    a.voice
+                        .velocity()
+                        .value()
+                        .partial_cmp(&b.voice.velocity().value())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i),
+            // `allocate` returns `VoiceAllocatorError::Refused` before ever calling this
+            // method under `StealPolicy::Refuse`; this arm exists only for exhaustiveness.
+            StealPolicy::Refuse => None,
         }
     }
 
@@ -399,6 +411,94 @@ mod tests {
                 stolen_note_id: NoteId::new(2),
             }
         );
+    }
+
+    #[test]
+    fn allocate_when_full_steals_lowest_velocity_even_if_not_oldest_or_quietest() {
+        let mut allocator =
+            VoiceAllocator::new(fast_config(), 2, StealPolicy::LowestVelocity).unwrap();
+
+        // Voice 0: triggered first (oldest) and loudest note-on velocity.
+        allocator
+            .allocate(note(60), NoteId::new(1), velocity(0.9))
+            .unwrap();
+        // Voice 1: triggered second (newer) but quietest note-on velocity.
+        allocator
+            .allocate(note(64), NoteId::new(2), velocity(0.2))
+            .unwrap();
+
+        let assignment = allocator
+            .allocate(note(67), NoteId::new(3), velocity(0.8))
+            .unwrap();
+
+        assert_eq!(
+            assignment,
+            VoiceAssignment::Stolen {
+                index: 1,
+                stolen_note_id: NoteId::new(2),
+            }
+        );
+    }
+
+    #[test]
+    fn allocate_with_refuse_policy_declines_when_full() {
+        let mut allocator = VoiceAllocator::new(fast_config(), 1, StealPolicy::Refuse).unwrap();
+        allocator
+            .allocate(note(60), NoteId::new(1), velocity(0.8))
+            .unwrap();
+
+        let result = allocator.allocate(note(64), NoteId::new(2), velocity(0.8));
+
+        assert_eq!(result.err(), Some(VoiceAllocatorError::Refused));
+        assert_eq!(allocator.active_count(), 1);
+        assert_eq!(allocator.voice(0).unwrap().note_id(), NoteId::new(1));
+    }
+
+    #[test]
+    fn steal_victim_differs_across_policies_for_the_same_pool() {
+        // A pool where age, current loudness, and note-on velocity each single out a
+        // different voice, built identically except for the configured `StealPolicy`.
+        let build = |policy: StealPolicy| {
+            let mut allocator = VoiceAllocator::new(slow_config(), 3, policy).unwrap();
+            // Voice 0: oldest, loudest once advanced, highest velocity.
+            allocator
+                .allocate(note(60), NoteId::new(1), velocity(0.9))
+                .unwrap();
+            allocator.advance_all(0.5, |_, _| {});
+            // Voice 1: newer than 0, mid velocity.
+            allocator
+                .allocate(note(64), NoteId::new(2), velocity(0.5))
+                .unwrap();
+            // Voice 2: newest, lowest velocity.
+            allocator
+                .allocate(note(67), NoteId::new(3), velocity(0.1))
+                .unwrap();
+            allocator.advance_all(0.2, |_, _| {});
+            allocator
+        };
+
+        let mut oldest = build(StealPolicy::Oldest);
+        let mut quietest = build(StealPolicy::Quietest);
+        let mut lowest_velocity = build(StealPolicy::LowestVelocity);
+
+        let steal_victim = |allocator: &mut VoiceAllocator| match allocator
+            .allocate(note(70), NoteId::new(4), velocity(0.8))
+            .unwrap()
+        {
+            VoiceAssignment::Stolen { stolen_note_id, .. } => stolen_note_id,
+            other => panic!("expected a steal, got {other:?}"),
+        };
+
+        let oldest_victim = steal_victim(&mut oldest);
+        let quietest_victim = steal_victim(&mut quietest);
+        let lowest_velocity_victim = steal_victim(&mut lowest_velocity);
+
+        assert_eq!(oldest_victim, NoteId::new(1));
+        assert_eq!(quietest_victim, NoteId::new(2));
+        assert_eq!(lowest_velocity_victim, NoteId::new(3));
+        assert_ne!(oldest_victim, quietest_victim);
+        assert_ne!(quietest_victim, lowest_velocity_victim);
+        assert_ne!(oldest_victim, lowest_velocity_victim);
     }
 
     #[test]
