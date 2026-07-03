@@ -53,6 +53,10 @@ project: assets: SynthUiMain: {
 			{kind: "stdout_contains", pattern: "peak="},
 			{kind: "stdout_contains", pattern: "events="},
 		]},
+		{kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--play", "midi/Corridors of Time - Chrono Trigger.mid"], description: "format-1 multi-track SMF: notes in non-first tracks must sound (regression: events=0 when only the conductor track was read)", assertions: [
+			{kind: "exit_code", expected: 0},
+			{kind: "stdout_contains", pattern: "peak="},
+		]},
 	]
 }
 

@@ -1010,13 +1010,25 @@ fn load_smf_events(path: &Path, sample_rate_hz: u32) -> Result<Vec<(u64, Vec<u8>
             }
         }
 
-        // Only the first track chunk is sequenced -- sufficient for a
-        // single-patch demo app and for the `--smoke` check's purpose of
-        // exercising the render path with real events.
-        break;
+        // Every track chunk is sequenced and merged into one timeline --
+        // standard MIDI format 1 files commonly split the tempo/meta
+        // information into track 0 and the actual channel-voice events
+        // (the melody) into later tracks, so stopping after the first
+        // chunk would silently drop all note data for such files.
+        offset = chunk_end;
     }
 
     events.sort_by_key(|(sample, _)| *sample);
+
+    // Rebase onto the first event so that any silent lead-in before the
+    // first note (common in real-world song files) does not eat into a
+    // caller's fixed-length "first seconds" playback window.
+    if let Some(&(first_sample, _)) = events.first() {
+        for event in events.iter_mut() {
+            event.0 -= first_sample;
+        }
+    }
+
     Ok(events)
 }
 

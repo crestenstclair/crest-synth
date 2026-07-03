@@ -41,5 +41,8 @@ project: contexts: MidiFile: domainServices: {
 project: adapters: MidlyMidiFileReader: {
 	implements: "port.MidiFile.MidiFileReader"
 	layer:      "infrastructure"
-	meta: framework: "midly"
+	meta: {
+		framework: "midly"
+		notes:     "Standard MIDI File format 1 stores parallel tracks: note events live in tracks OTHER than the first (the first is often a conductor track holding only the tempo map). load() must merge events from ALL tracks into one ascending-time stream, applying the conductor track's tempo changes to every track. A multi-track file with notes only in later tracks must produce those notes."
+	}
 }
