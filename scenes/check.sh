@@ -158,6 +158,37 @@ else
   fail "scene_run exited non-zero for scenes/preset-roundtrip.json (see $WORK_DIR/$(basename "$vocab_sweep_out").stdout)"
 fi
 
+# ---------------------------------------------------------------------------
+# showcase (scenes/showcase.json): the ~30-second, human-watchable demo
+# scene (solo strip 1 then unsolo, pan hard left then hard right, a volume
+# dip and return, a mute toggle -- see scenes/showcase.json's step comments
+# in this file's sibling documentation). Headlessly asserts scene_run's
+# MEASURED summary line: every one of the scene's 35 scripted steps applied
+# with zero rejections, and the real oscillator-backed render produced a
+# nonzero peak across all of its paced render_blocks -- so a regression that
+# drops a step, rejects an event, or silences the renderer fails this check
+# even though the scene's real purpose is to be watched, not just graded.
+# ---------------------------------------------------------------------------
+showcase_out="$WORK_DIR/showcase.snapshot.json"
+if run_scene scenes/showcase.json "$showcase_out"; then
+  summary_file="$WORK_DIR/$(basename "$showcase_out").stdout"
+  events_applied=$(summary_field "$summary_file" "events_applied")
+  rejections=$(summary_field "$summary_file" "rejections")
+  frames=$(summary_field "$summary_file" "frames")
+  peak=$(summary_field "$summary_file" "peak")
+
+  if [[ -z "$events_applied" || -z "$rejections" || -z "$frames" || -z "$peak" ]]; then
+    fail "showcase: could not parse scene_run's summary line from $summary_file"
+  elif [[ "$events_applied" == "35" && "$rejections" == "0" && "$frames" == "5175" ]] \
+      && awk -v p="$peak" 'BEGIN { exit !(p > 0) }'; then
+    pass "showcase: events_applied=35 rejections=0 frames=5175 peak=$peak (> 0)"
+  else
+    fail "showcase: expected events_applied=35 rejections=0 frames=5175 peak>0; got events_applied=$events_applied rejections=$rejections frames=$frames peak=$peak"
+  fi
+else
+  fail "scene_run exited non-zero for scenes/showcase.json (see $WORK_DIR/$(basename "$showcase_out").stdout)"
+fi
+
 echo
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All scene checks passed."

@@ -47,11 +47,14 @@ project: assets: SynthUiMain: {
 		"domainService.DesignSystem.DefaultTheme",
 		"domainService.Engine.VoiceAllocator",
 		"port.RealTime.ParameterBridge", "valueObject.RealTime.ParameterSnapshot",
+		"aggregate.Loop.AppState", "domainService.Loop.StateProjector",
+		"domainService.Loop.SceneRunner", "valueObject.Loop.Scene",
 	]
 	prompts: [
 		"File path: src/bin/synth_ui.rs",
 		"The standalone app: open the audio output and the window, render the GUI views, poll the gamepad for navigation, and play notes from connected MIDI inputs and/or a MIDI file through the full engine-to-mixer signal path.",
 		"ONE-WAY LOOP: every input path (MIDI, gamepad, editor keys) emits AppEvents into the single AppState apply loop; views render from AppState only; the audio thread receives changes exclusively via StateProjector -> ParameterBridge. No input handler mutates state directly.",
+		#"--scene <FILE> [--loop-scene]: LIVE scene playback for human observation — drive the running app from a scene file: apply each step's event through the SAME AppState/MixerView apply path the UI uses, at real-time pacing (each step's renderBlocks elapse at the device sample rate), with the window open and audio audible. Combinable with --play so music runs underneath while the scene manipulates the app. Log each applied event as a one-line caption to stdout AND to the on-screen log panel, so the observer can correlate what they see and hear with the event that caused it. At scene end (or each loop pass), print the summary line `scene=<name> events_applied=<N> rejections=<M>`. In --smoke mode, --scene applies the whole scene headlessly through the same path (no window/device) and still prints the scene= summary line."#,
 		#"--play <FILE.mid>: load the file via the MidiFileReader port and sequence it through the engine, looping until quit."#,
 		#"--smoke: headless self-check with no window and no audio device — build the full stack (dispatcher, engine, mixer), sequence the first seconds of the --play file (or a synthetic note-on if none was given), render blocks through the SAME render path the live app uses, MEASURE the peak absolute sample and the count of dispatched events, print exactly one line `peak=<value>` and one line `events=<count>`, and exit non-zero unless 0.05 < peak <= 1.0 and events > 0."#,
 		"MIXER VIEW SCOPE (editor increment): this app's GUI is the MIXER VIEW (aggregate.Mixer.MixerView over its 16 aggregate.Mixer.ChannelStrip channels) and nothing else — do NOT add view-switching or other screens yet. INPUT IS KEYBOARD + GAMEPAD ONLY: do NOT implement any mouse or touch interaction — no clickable widgets, no draggable sliders, no hover behavior (mouse/touch may be added later; not now). This is a MIXER, not a performance surface: there is NO on-screen keyboard and NO note triggering of any kind from the UI. All note performance comes from EXTERNAL MIDI hardware via port.Shell.MidiInput.",
@@ -82,6 +85,11 @@ project: assets: SynthUiMain: {
 			{kind: "stdout_contains", pattern: "peak="},
 			{kind: "stdout_contains", pattern: "events="},
 		]},
+		{kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--scene", "scenes/showcase.json", "--play", "midi/Megalovania.mid"], description: "scene-driven playback plumbing: the showcase scene applies through the live app loop while music plays (headless proof; windowed liveness is human-observed via make watch)", assertions: [
+			{kind: "exit_code", expected: 0},
+			{kind: "stdout_contains", pattern: "scene="},
+			{kind: "stdout_contains", pattern: "peak="},
+		]},
 		{kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--play", "midi/Corridors of Time - Chrono Trigger.mid"], description: "format-1 multi-track SMF: notes in non-first tracks must sound (regression: events=0 when only the conductor track was read)", assertions: [
 			{kind: "exit_code", expected: 0},
 			{kind: "stdout_contains", pattern: "peak="},
@@ -109,7 +117,7 @@ project: assets: BuildMakefile: {
 	uses: ["asset.SynthUiMain", "asset.ToneTestMain", "asset.VoiceDemoMain", "asset.SamplePlayDemoMain", "asset.EffectsDemoMain", "asset.ModPlayMain", "asset.PatchPlayMain", "asset.PresetRoundtripDemoMain", "asset.MidiPlayMain", "asset.MidiPlayLiveMain", "asset.MixerDemoMain", "asset.GamepadNavDemoMain"]
 	prompts: [
 		"File path: Makefile",
-		"Targets, each with a one-line ## comment shown by a default `help` target: build (cargo build), test (cargo test), lint (cargo clippy --all-targets -- -D warnings), fmt (cargo fmt), tone (run the tone_test proof), smoke (run synth_ui --smoke --play midi/Megalovania.mid), play (run synth_ui --play $(FILE), FILE defaulting to midi/Megalovania.mid), ui (launch the synth_ui app windowed, no --play unless FILE is set), plus demo-scenes (run scenes/check.sh) and scene (run scene_run --scene \"$(FILE)\" --dump-every-step), and one target per proof binary, named EXACTLY as the demo validations invoke them: demo-voices (voice_demo), demo-samples (sample_demo), demo-effects (effects_demo), demo-mod (mod_play), demo-patches (patch_play), demo-presets (preset_demo), demo-midi (midi_play, offline WAV render), check-live (midi_play_live) — each simply cargo-runs its binary with the arguments its validation expects.",
+		"Targets, each with a one-line ## comment shown by a default `help` target: build (cargo build), test (cargo test), lint (cargo clippy --all-targets -- -D warnings), fmt (cargo fmt), tone (run the tone_test proof), smoke (run synth_ui --smoke --play midi/Megalovania.mid), play (run synth_ui --play $(FILE), FILE defaulting to midi/Megalovania.mid), ui (launch the synth_ui app windowed, no --play unless FILE is set), plus demo-scenes (run scenes/check.sh), scene (run scene_run --scene \"$(FILE)\" --dump-every-step), and watch (LIVE human observation: synth_ui --scene \"$(if $(FILE),$(FILE),scenes/showcase.json)\" --play \"$(DEFAULT_MIDI)\" --loop-scene — window open, audio on, captions streaming), and one target per proof binary, named EXACTLY as the demo validations invoke them: demo-voices (voice_demo), demo-samples (sample_demo), demo-effects (effects_demo), demo-mod (mod_play), demo-patches (patch_play), demo-presets (preset_demo), demo-midi (midi_play, offline WAV render), check-live (midi_play_live) — each simply cargo-runs its binary with the arguments its validation expects.",
 		"Additional targets (editor increment, original names ported from the source spec): ui-smoke (cargo run --bin synth_ui -- --smoke --play midi/Megalovania.mid — the enriched hermetic self-check covering the mixer view + design system, asserting `ui smoke ok`, `render non-silent: true`, `channel metered: true`, `theme tokens resolved: 10`, in addition to the existing peak=/events= tokens); autopilot (cargo run --bin synth_ui -- --autopilot --seconds 4 — the real end-to-end window+audio run that self-drives a scripted MixerViewEvent session, asserts real audio + 6 visible strips in code, writes autopilot.png, and self-terminates; opens a real window/device, no afplay, but IS used by a validation because it is self-driving and self-terminating); demo-mixer (cargo run --bin mixer_demo — headless prover for MixerView + its 16 ChannelStrip channels; opens no device or window); check-gamepad (cargo run --bin gamepad_demo — headless prover for GamepadNavigator/GlyphResolver; opens no device or window).",
 		"Plain portable Makefile: .PHONY where appropriate, no shell-specific tricks. Always quote \"$(FILE)\" and any path variable in recipes — MIDI file paths contain spaces.",
 	]
@@ -153,6 +161,7 @@ project: assets: SceneLibrary: {
 		"volume-edit: navigate to a strip, enter edit mode, adjust volume down 6 dB, assert the snapshot volume field equals the expected value exactly.",
 		"voice-steal: configure polyphony 2 with oldest-steal, fire 3 note-ons with renders between, assert active voice count is 2 and the frame clock equals the step count.",
 		"preset-roundtrip: edit a patch, save preset, mutate again, load the preset, assert the snapshot's patch state equals the post-save snapshot's patch state.",
+		"showcase: a ~30-second scene WRITTEN TO BE WATCHED with music playing underneath (synth_ui --scene scenes/showcase.json --play <mid>): mixer moves one at a time with a beat of renderBlocks between each — solo strip 1 then unsolo, pan hard left then right, a volume dip and return, a mute toggle — each step audible and visible in the mixer view. Pace steps with renderBlocks so a human can follow. Assert it headlessly in check.sh too: events_applied equals the step count, rejections 0.",
 		"Every assertion reads a MEASURED value from the snapshot JSON — never a token the binary prints unconditionally.",
 	]
 }

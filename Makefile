@@ -1,6 +1,6 @@
 # path: Makefile
 
-.PHONY: help build test lint fmt tone smoke play ui demo-scenes scene demo-voices demo-samples demo-effects demo-mod demo-patches demo-presets demo-midi check-live ui-smoke autopilot demo-mixer check-gamepad
+.PHONY: help build test lint fmt tone smoke play ui demo-scenes scene watch demo-voices demo-samples demo-effects demo-mod demo-patches demo-presets demo-midi check-live ui-smoke autopilot demo-mixer check-gamepad
 
 DEFAULT_MIDI := midi/Megalovania.mid
 
@@ -40,6 +40,9 @@ demo-scenes: ## Run the demo scenes check script
 
 scene: ## Run a scene through scene_run, dumping every step (FILE=path/to/scene)
 	cargo run --bin scene_run -- --scene "$(FILE)" --dump-every-step
+
+watch: ## LIVE human observation: run a scene against the app with audio and captions streaming (FILE=path/to/scene, defaults to scenes/showcase.json)
+	cargo run --bin synth_ui -- --scene "$(if $(FILE),$(FILE),scenes/showcase.json)" --play "$(DEFAULT_MIDI)" --loop-scene
 
 demo-voices: ## Run the voice allocation proof (voice_demo)
 	cargo run --bin voice_demo

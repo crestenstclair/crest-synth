@@ -14,6 +14,13 @@
 //!   runs the mixer-view event loop until the window is closed.
 //! - `--play <FILE.mid>`: additionally loads and sequences a standard MIDI
 //!   file through the engine, looping the file until quit.
+//! - `--scene <FILE> [--loop-scene]`: live scene playback for human
+//!   observation -- applies each step's `MixerViewEvent` through the same
+//!   `MixerView::apply` path the UI uses, paced by rendered audio blocks
+//!   (real device sample-rate time) rather than wall clock, captioning
+//!   each applied event to stdout and the on-screen log panel. Combinable
+//!   with `--play`. In `--smoke` mode the whole scene is applied headlessly
+//!   through the same path with no window/device.
 //! - `--smoke`: headless self-check -- no window, no audio device, no MIDI
 //!   device. Builds the full stack (dispatcher, engine, mixer, mixer view,
 //!   design-system theme) and exercises it entirely in memory, printing
@@ -47,7 +54,7 @@ use std::cell::UnsafeCell;
 use std::env;
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -747,6 +754,10 @@ struct StackRenderCallback {
     stack: SynthStack,
     block_len: usize,
     peak_bits: Arc<AtomicU32>,
+    /// Incremented once per real render call, so the main thread can pace
+    /// `--scene` playback at the device's actual real-time schedule
+    /// instead of a wall-clock guess.
+    rendered_blocks: Arc<AtomicU64>,
 }
 
 impl RenderCallback for StackRenderCallback {
@@ -798,6 +809,7 @@ impl RenderCallback for StackRenderCallback {
             }
             Err(_) => output.fill(0.0),
         }
+        self.rendered_blocks.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -808,6 +820,7 @@ fn open_audio_output(
     stack: SynthStack,
     block_len: usize,
     peak_bits: Arc<AtomicU32>,
+    rendered_blocks: Arc<AtomicU64>,
 ) -> Result<CpalStreamHandle, String> {
     let adapter = CpalAudioOutput::new();
     let sample_rate =
@@ -818,6 +831,7 @@ fn open_audio_output(
         stack,
         block_len,
         peak_bits,
+        rendered_blocks,
     });
     adapter
         .open(sample_rate, buffer_size, callback)
@@ -1179,6 +1193,124 @@ fn load_smf_events(path: &Path, sample_rate_hz: u32) -> Result<Vec<(u64, Vec<u8>
 // Modes.
 // ---------------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// `--scene <FILE>` live scene playback.
+//
+// `r#loop::scene::Scene` / `scene_step` / `scene_runner` exist in this
+// crate's module tree but their exact Rust types are not reflected in
+// this binary's visible dependencies, so -- per this project's
+// established convention for a not-yet-fitting collaborator (see the
+// local SMF reader above) -- this binary parses the scene file's JSON
+// wire format directly instead of guessing at an unpublished API. A
+// scene file is a JSON document of the shape already used under
+// `scenes/` in this project:
+// `{"name": "...", "steps": [{"event": {"Mixer": "NavRight"}, "render_blocks": 10}]}`.
+// `event` is serde's default externally-tagged representation of an
+// `AppEvent`-shaped enum whose `Mixer` variant carries a semantic
+// `MixerViewEvent` by name; `render_blocks` (default 0) is how many
+// rendered audio blocks to wait for after the previous step before
+// applying this one, so playback paces at the real device sample rate
+// rather than wall-clock guesses.
+// ---------------------------------------------------------------------
+
+/// Mirrors the externally-tagged wire shape of the `AppEvent` enum a
+/// scene step's `event` field encodes -- only the `Mixer` variant this
+/// binary's own input adapters emit is modeled; other domains a future
+/// `AppEvent` might carry are out of scope for this binary.
+#[derive(serde::Deserialize, Clone)]
+enum SceneEventFile {
+    Mixer(String),
+}
+
+#[derive(serde::Deserialize)]
+struct SceneStepFile {
+    event: SceneEventFile,
+    #[serde(default)]
+    render_blocks: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct SceneFile {
+    #[serde(default)]
+    name: Option<String>,
+    steps: Vec<SceneStepFile>,
+}
+
+/// A parsed scene ready to drive: a display name and its ordered steps.
+struct LoadedScene {
+    name: String,
+    steps: Vec<SceneStepFile>,
+}
+
+/// The scene-file event name this step encodes, for captioning.
+fn scene_event_name(event: &SceneEventFile) -> &str {
+    let SceneEventFile::Mixer(name) = event;
+    name
+}
+
+/// Translates a scene step's event into the semantic `MixerViewEvent`
+/// vocabulary the keyboard/gamepad adapters emit. Returns `None` for an
+/// unrecognized name, which the caller counts as a rejection rather than
+/// failing the whole scene.
+fn parse_scene_event(event: &SceneEventFile) -> Option<MixerViewEvent> {
+    match scene_event_name(event) {
+        "NavUp" => Some(MixerViewEvent::NavUp),
+        "NavDown" => Some(MixerViewEvent::NavDown),
+        "NavLeft" => Some(MixerViewEvent::NavLeft),
+        "NavRight" => Some(MixerViewEvent::NavRight),
+        "EnterEditMode" => Some(MixerViewEvent::EnterEditMode),
+        "ExitEditMode" => Some(MixerViewEvent::ExitEditMode),
+        "ToggleFocusedParam" => Some(MixerViewEvent::ToggleFocusedParam),
+        _ => None,
+    }
+}
+
+/// Loads and parses a `--scene` file. The scene's display name defaults to
+/// the file's stem when the document does not specify one.
+fn load_scene_file(path: &Path) -> Result<LoadedScene, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| format!("could not read {}: {err}", path.display()))?;
+    let parsed: SceneFile = serde_json::from_str(&text)
+        .map_err(|err| format!("could not parse {}: {err}", path.display()))?;
+    let name = parsed.name.unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("scene")
+            .to_string()
+    });
+    Ok(LoadedScene {
+        name,
+        steps: parsed.steps,
+    })
+}
+
+/// Applies every step of `scene` to `mixer_view` immediately (no pacing),
+/// captioning each applied/rejected step to stdout, then prints the
+/// required `scene=<name> events_applied=<N> rejections=<M>` summary line.
+/// Used by `--smoke`, which applies a whole scene headlessly.
+fn drive_scene_headless(scene: &LoadedScene, mixer_view: &mut MixerView) {
+    let mut events_applied: u64 = 0;
+    let mut rejections: u64 = 0;
+    for step in &scene.steps {
+        let name = scene_event_name(&step.event);
+        match parse_scene_event(&step.event) {
+            Some(event) => {
+                mixer_view.apply(event);
+                events_applied += 1;
+                println!("scene: applied {name}");
+            }
+            None => {
+                rejections += 1;
+                println!("scene: rejected '{name}' (unrecognized event)");
+            }
+        }
+    }
+    println!(
+        "scene={} events_applied={events_applied} rejections={rejections}",
+        scene.name
+    );
+}
+
 fn synthetic_note_schedule() -> Vec<(u64, Vec<u8>)> {
     vec![
         (0, vec![0x90, 60, 100]),
@@ -1194,7 +1326,7 @@ fn synthetic_note_schedule() -> Vec<(u64, Vec<u8>)> {
 /// system) and exercises every layer entirely in memory, printing the
 /// stdout markers the wave gate checks for and returning the process exit
 /// code.
-fn run_smoke(play_path: Option<PathBuf>) -> i32 {
+fn run_smoke(play_path: Option<PathBuf>, scene_path: Option<PathBuf>) -> i32 {
     // THEME SELF-CHECK: proves the design-system seam is wired and
     // exhaustive without opening a window.
     let theme = DefaultTheme::new();
@@ -1215,6 +1347,20 @@ fn run_smoke(play_path: Option<PathBuf>) -> i32 {
     mixer_view.apply(MixerViewEvent::ExitEditMode);
     let mixer_wired = mixer_view.channels().len() == TOTAL_CHANNELS;
     println!("ui smoke ok: app constructed");
+
+    // SCENE SELF-CHECK: in --smoke mode a --scene file is applied
+    // headlessly through the same MixerView::apply path, with no window
+    // or device, still printing the required scene= summary line.
+    let mut scene_ok = true;
+    if let Some(path) = &scene_path {
+        match load_scene_file(path) {
+            Ok(scene) => drive_scene_headless(&scene, &mut mixer_view),
+            Err(err) => {
+                eprintln!("warning: could not load scene {}: {err}", path.display());
+                scene_ok = false;
+            }
+        }
+    }
 
     // AUDIO RENDER SELF-CHECK: apply a synthetic note-on (middle C, full
     // velocity) and render through the exact same render path the live
@@ -1304,6 +1450,7 @@ fn run_smoke(play_path: Option<PathBuf>) -> i32 {
         && channel_metered
         && mixer_wired
         && tokens_resolved == ALL_SEMANTIC_TOKENS.len()
+        && scene_ok
     {
         0
     } else {
@@ -1391,6 +1538,17 @@ struct MixerUiApp {
 
     tour: bool,
     tour_printed: bool,
+
+    scene_name: String,
+    scene_steps: Vec<SceneStepFile>,
+    scene_index: usize,
+    scene_loop: bool,
+    scene_events_applied: u64,
+    scene_rejections: u64,
+    scene_next_at_block: u64,
+    scene_finished: bool,
+    scene_log: Vec<String>,
+    rendered_blocks: Arc<AtomicU64>,
 }
 
 impl MixerUiApp {
@@ -1406,7 +1564,14 @@ impl MixerUiApp {
         autopilot: bool,
         autopilot_seconds: f64,
         tour: bool,
+        scene: Option<LoadedScene>,
+        scene_loop: bool,
+        rendered_blocks: Arc<AtomicU64>,
     ) -> Self {
+        let (scene_name, scene_steps) = match scene {
+            Some(loaded) => (loaded.name, loaded.steps),
+            None => (String::new(), Vec::new()),
+        };
         Self {
             theme: DefaultTheme::new(),
             mixer_view: MixerView::new(),
@@ -1434,6 +1599,16 @@ impl MixerUiApp {
             autopilot_strips_visible: 0,
             tour,
             tour_printed: false,
+            scene_name,
+            scene_steps,
+            scene_index: 0,
+            scene_loop,
+            scene_events_applied: 0,
+            scene_rejections: 0,
+            scene_next_at_block: 0,
+            scene_finished: false,
+            scene_log: Vec::new(),
+            rendered_blocks,
         }
     }
 
@@ -1474,6 +1649,58 @@ impl MixerUiApp {
             self.note_activity_from_bytes(&bytes);
             self.injector.inject(&bytes);
             self.schedule_index += 1;
+        }
+    }
+
+    /// Drives one tick of `--scene` playback: while the previous step's
+    /// `render_blocks` have actually elapsed on the real render callback
+    /// (device sample-rate time, not wall clock), applies the next step
+    /// through the same `MixerView::apply` the keyboard/gamepad adapters
+    /// use, captioning it to stdout and the on-screen log panel. At scene
+    /// end, prints the required summary line and either loops or stops.
+    fn drive_scene(&mut self) {
+        if self.scene_steps.is_empty() || self.scene_finished {
+            return;
+        }
+        let current_block = self.rendered_blocks.load(Ordering::Relaxed);
+        while self.scene_index < self.scene_steps.len() && current_block >= self.scene_next_at_block
+        {
+            let step_event = self.scene_steps[self.scene_index].event.clone();
+            let render_blocks = self.scene_steps[self.scene_index].render_blocks;
+            let name = scene_event_name(&step_event).to_string();
+            let caption = match parse_scene_event(&step_event) {
+                Some(event) => {
+                    self.mixer_view.apply(event);
+                    self.scene_events_applied += 1;
+                    format!("scene: applied {name}")
+                }
+                None => {
+                    self.scene_rejections += 1;
+                    format!("scene: rejected '{name}' (unrecognized event)")
+                }
+            };
+            println!("{caption}");
+            self.scene_log.push(caption);
+            if self.scene_log.len() > 8 {
+                self.scene_log.remove(0);
+            }
+            self.scene_index += 1;
+            self.scene_next_at_block = current_block + render_blocks;
+        }
+
+        if self.scene_index >= self.scene_steps.len() {
+            println!(
+                "scene={} events_applied={} rejections={}",
+                self.scene_name, self.scene_events_applied, self.scene_rejections
+            );
+            if self.scene_loop {
+                self.scene_index = 0;
+                self.scene_events_applied = 0;
+                self.scene_rejections = 0;
+                self.scene_next_at_block = current_block;
+            } else {
+                self.scene_finished = true;
+            }
         }
     }
 
@@ -1587,9 +1814,21 @@ impl eframe::App for MixerUiApp {
         }
 
         self.drive_schedule();
+        self.drive_scene();
 
         for level in self.channel_activity.iter_mut() {
             *level *= 0.9;
+        }
+
+        if !self.scene_log.is_empty() {
+            let theme = self.theme;
+            let text_color = to_color32(theme.color(SemanticToken::ForegroundMuted));
+            let log_lines = self.scene_log.clone();
+            egui::TopBottomPanel::bottom("scene_log_panel").show(ctx, |ui| {
+                for line in &log_lines {
+                    ui.colored_label(text_color, line);
+                }
+            });
         }
 
         let strips_visible = self.draw(ctx);
@@ -1720,12 +1959,26 @@ fn draw_channel_strip(
 /// audio output, connects real MIDI hardware, opens the gamepad, and runs
 /// the `eframe` window's event loop until the window is closed (or, in
 /// `--autopilot` mode, until the scripted run self-terminates).
+#[allow(clippy::too_many_arguments)]
 fn run_app(
     play_path: Option<PathBuf>,
     autopilot: bool,
     seconds: f64,
     tour: bool,
+    scene_path: Option<PathBuf>,
+    loop_scene: bool,
 ) -> Result<(), String> {
+    let scene = match &scene_path {
+        Some(path) => match load_scene_file(path) {
+            Ok(scene) => Some(scene),
+            Err(err) => {
+                eprintln!("warning: could not load scene {}: {err}", path.display());
+                None
+            }
+        },
+        None => None,
+    };
+
     let event_ring = Arc::new(LocalEventRing::new(256));
     let dispatch_targets = create_channel_patches();
     let injector = MidiInjector::new(Arc::clone(&event_ring), dispatch_targets);
@@ -1743,7 +1996,13 @@ fn run_app(
     };
 
     let audio_peak_bits = Arc::new(AtomicU32::new(0));
-    let audio_stream = match open_audio_output(stack, BLOCK_LEN, Arc::clone(&audio_peak_bits)) {
+    let rendered_blocks = Arc::new(AtomicU64::new(0));
+    let audio_stream = match open_audio_output(
+        stack,
+        BLOCK_LEN,
+        Arc::clone(&audio_peak_bits),
+        Arc::clone(&rendered_blocks),
+    ) {
         Ok(stream) => Some(stream),
         Err(err) => {
             eprintln!("warning: audio output unavailable: {err} (continuing without sound)");
@@ -1773,6 +2032,9 @@ fn run_app(
         autopilot,
         seconds,
         tour,
+        scene,
+        loop_scene,
+        rendered_blocks,
     );
 
     let native_options = eframe::NativeOptions {
@@ -1790,12 +2052,23 @@ fn run_app(
     .map_err(|err| err.to_string())
 }
 
-fn run_live(play_path: Option<PathBuf>, tour: bool) -> Result<(), String> {
-    run_app(play_path, false, 0.0, tour)
+fn run_live(
+    play_path: Option<PathBuf>,
+    tour: bool,
+    scene_path: Option<PathBuf>,
+    loop_scene: bool,
+) -> Result<(), String> {
+    run_app(play_path, false, 0.0, tour, scene_path, loop_scene)
 }
 
-fn run_autopilot(play_path: Option<PathBuf>, seconds: f64, tour: bool) -> i32 {
-    match run_app(play_path, true, seconds, tour) {
+fn run_autopilot(
+    play_path: Option<PathBuf>,
+    seconds: f64,
+    tour: bool,
+    scene_path: Option<PathBuf>,
+    loop_scene: bool,
+) -> i32 {
+    match run_app(play_path, true, seconds, tour, scene_path, loop_scene) {
         Ok(()) => 0,
         Err(err) => {
             eprintln!("synth_ui: autopilot failed: {err}");
@@ -1812,6 +2085,8 @@ fn main() {
     let mut tour = false;
     let mut seconds: f64 = 4.0;
     let mut play_path: Option<PathBuf> = None;
+    let mut scene_path: Option<PathBuf> = None;
+    let mut loop_scene = false;
 
     let mut index = 0;
     while index < args.len() {
@@ -1826,6 +2101,21 @@ fn main() {
             }
             "--tour" => {
                 tour = true;
+                index += 1;
+            }
+            "--scene" => {
+                index += 1;
+                match args.get(index) {
+                    Some(value) => scene_path = Some(PathBuf::from(value)),
+                    None => {
+                        eprintln!("synth_ui: --scene requires a file path");
+                        std::process::exit(1);
+                    }
+                }
+                index += 1;
+            }
+            "--loop-scene" => {
+                loop_scene = true;
                 index += 1;
             }
             "--seconds" => {
@@ -1863,14 +2153,16 @@ fn main() {
     }
 
     if smoke {
-        std::process::exit(run_smoke(play_path));
+        std::process::exit(run_smoke(play_path, scene_path));
     }
 
     if autopilot {
-        std::process::exit(run_autopilot(play_path, seconds, tour));
+        std::process::exit(run_autopilot(
+            play_path, seconds, tour, scene_path, loop_scene,
+        ));
     }
 
-    if let Err(err) = run_live(play_path, tour) {
+    if let Err(err) = run_live(play_path, tour, scene_path, loop_scene) {
         eprintln!("synth_ui: {err}");
         std::process::exit(1);
     }
@@ -2146,5 +2438,90 @@ mod tests {
         assert!(script.contains(&MixerViewEvent::EnterEditMode));
         assert!(script.contains(&MixerViewEvent::ExitEditMode));
         assert!(script.contains(&MixerViewEvent::ToggleFocusedParam));
+    }
+
+    #[test]
+    fn parse_scene_event_recognizes_every_mixer_view_event_name() {
+        assert_eq!(
+            parse_scene_event(&SceneEventFile::Mixer("NavUp".to_string())),
+            Some(MixerViewEvent::NavUp)
+        );
+        assert_eq!(
+            parse_scene_event(&SceneEventFile::Mixer("NavDown".to_string())),
+            Some(MixerViewEvent::NavDown)
+        );
+        assert_eq!(
+            parse_scene_event(&SceneEventFile::Mixer("NavLeft".to_string())),
+            Some(MixerViewEvent::NavLeft)
+        );
+        assert_eq!(
+            parse_scene_event(&SceneEventFile::Mixer("NavRight".to_string())),
+            Some(MixerViewEvent::NavRight)
+        );
+        assert_eq!(
+            parse_scene_event(&SceneEventFile::Mixer("EnterEditMode".to_string())),
+            Some(MixerViewEvent::EnterEditMode)
+        );
+        assert_eq!(
+            parse_scene_event(&SceneEventFile::Mixer("ExitEditMode".to_string())),
+            Some(MixerViewEvent::ExitEditMode)
+        );
+        assert_eq!(
+            parse_scene_event(&SceneEventFile::Mixer("ToggleFocusedParam".to_string())),
+            Some(MixerViewEvent::ToggleFocusedParam)
+        );
+    }
+
+    #[test]
+    fn parse_scene_event_rejects_unknown_names() {
+        assert_eq!(
+            parse_scene_event(&SceneEventFile::Mixer("Nonsense".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn load_scene_file_parses_steps_and_defaults_name_to_file_stem() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "crest_synth_scene_test_{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"steps":[
+                {"event":{"Mixer":"NavRight"},"render_blocks":5},
+                {"event":{"Mixer":"ToggleFocusedParam"}}
+            ]}"#,
+        )
+        .unwrap();
+
+        let scene = load_scene_file(&path).unwrap();
+        assert_eq!(scene.steps.len(), 2);
+        assert_eq!(scene_event_name(&scene.steps[0].event), "NavRight");
+        assert_eq!(scene.steps[0].render_blocks, 5);
+        assert_eq!(scene.steps[1].render_blocks, 0);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn drive_scene_headless_counts_applied_and_rejected_steps() {
+        let scene = LoadedScene {
+            name: "test-scene".to_string(),
+            steps: vec![
+                SceneStepFile {
+                    event: SceneEventFile::Mixer("NavRight".to_string()),
+                    render_blocks: 0,
+                },
+                SceneStepFile {
+                    event: SceneEventFile::Mixer("Bogus".to_string()),
+                    render_blocks: 0,
+                },
+            ],
+        };
+        let mut mixer_view = MixerView::new();
+        drive_scene_headless(&scene, &mut mixer_view);
+        assert_eq!(mixer_view.cursor_channel(), 1);
     }
 }
