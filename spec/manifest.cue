@@ -55,3 +55,21 @@ project: assets: SynthUiMain: {
 		]},
 	]
 }
+
+project: assets: BuildMakefile: {
+	kind:        "makefile"
+	description: "Makefile: the human entry points for building, testing, and hearing the synth"
+	uses: ["asset.SynthUiMain", "asset.ToneTestMain"]
+	prompts: [
+		"File path: Makefile",
+		"Targets, each with a one-line ## comment shown by a default `help` target: build (cargo build), test (cargo test), lint (cargo clippy --all-targets -- -D warnings), fmt (cargo fmt), tone (run the tone_test proof), smoke (run synth_ui --smoke --play midi/Megalovania.mid), play (run synth_ui --play $(FILE), FILE defaulting to midi/Megalovania.mid), ui (launch the synth_ui app windowed, no --play unless FILE is set).",
+		"Plain portable Makefile: .PHONY where appropriate, no shell-specific tricks.",
+	]
+	validations: [
+		{kind: "custom", command: ["make", "-n", "ui"], description: "ui target exists"},
+		{kind: "integration", command: ["make", "smoke"], description: "make smoke runs the audible self-check", assertions: [
+			{kind: "exit_code", expected: 0},
+			{kind: "stdout_contains", pattern: "peak="},
+		]},
+	]
+}
