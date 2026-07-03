@@ -1,6 +1,6 @@
 # path: Makefile
 
-.PHONY: help build test lint fmt tone smoke play ui
+.PHONY: help build test lint fmt tone smoke play ui demo-voices demo-samples demo-effects demo-mod demo-patches demo-presets demo-midi check-live
 
 DEFAULT_MIDI := midi/Megalovania.mid
 
@@ -23,14 +23,38 @@ tone: ## Run the tone_test proof
 	cargo run --bin tone_test
 
 smoke: ## Run the audible self-check against the default MIDI file
-	cargo run --bin synth_ui -- --smoke --play $(DEFAULT_MIDI)
+	cargo run --bin synth_ui -- --smoke --play "$(DEFAULT_MIDI)"
 
 play: ## Play a MIDI file (FILE=path/to.mid), defaults to midi/Megalovania.mid
-	cargo run --bin synth_ui -- --play $(if $(FILE),$(FILE),$(DEFAULT_MIDI))
+	cargo run --bin synth_ui -- --play "$(if $(FILE),$(FILE),$(DEFAULT_MIDI))"
 
 ui: ## Launch the synth_ui app windowed (set FILE=path/to.mid to also play it)
 ifdef FILE
-	cargo run --bin synth_ui -- --play $(FILE)
+	cargo run --bin synth_ui -- --play "$(FILE)"
 else
 	cargo run --bin synth_ui
 endif
+
+demo-voices: ## Run the voice allocation proof (voice_demo)
+	cargo run --bin voice_demo
+
+demo-samples: ## Run the sample playback proof (sample_demo)
+	cargo run --bin sample_demo
+
+demo-effects: ## Run the effects chain proof (effects_demo)
+	cargo run --bin effects_demo
+
+demo-mod: ## Run the modulation matrix proof (mod_play)
+	cargo run --bin mod_play
+
+demo-patches: ## Run the patch dispatch proof (patch_play)
+	cargo run --bin patch_play
+
+demo-presets: ## Run the preset save/load proof (preset_demo)
+	cargo run --bin preset_demo
+
+demo-midi: ## Render a MIDI file offline to WAV (midi_play)
+	cargo run --bin midi_play
+
+check-live: ## Verify the live MIDI player's real-time pipeline wiring, no audio device required (midi_play_live --no-device-dry-run)
+	cargo run --bin midi_play_live -- --no-device-dry-run

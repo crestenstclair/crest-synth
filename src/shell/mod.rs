@@ -1,5 +1,6 @@
 pub mod app_window;
 pub mod audio_output;
+pub mod cpal_audio_output;
 pub mod gamepad_action;
 pub mod gamepad_input;
 pub mod gilrs_gamepad_input;

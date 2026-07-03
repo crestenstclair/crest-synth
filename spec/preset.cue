@@ -9,10 +9,12 @@ project: contexts: Preset: valueObjects: {
 	PresetMetadata: {
 		state: {name: "string", author: "string", tags: "list<string>", category: "string", description: "string"}
 		description: "searchable metadata carried by every preset"
+			validations: [{kind: "test", command: ["cargo", "test", "preset_metadata"], description: "PresetMetadata unit tests pass"}]
 	}
 	Preset: {
 		state: {id: "PresetId", meta: "PresetMetadata", version: "u32"}
 		description: "a versioned snapshot of one patch's complete configuration (voice, sample, mod, mixer, sends, inserts)"
+			validations: [{kind: "test", command: ["cargo", "test", "preset"], description: "Preset unit tests pass"}]
 	}
 }
 
@@ -32,6 +34,7 @@ project: contexts: Preset: aggregates: Bank: {
 		"a bank never contains the same preset twice",
 		"a read-only bank rejects all mutating commands",
 	]
+	validations: [{kind: "test", command: ["cargo", "test", "bank"], description: "Bank unit tests pass"}]
 }
 
 project: contexts: Preset: aggregates: Session: {
@@ -47,6 +50,7 @@ project: contexts: Preset: aggregates: Session: {
 	invariants: [
 		"restoring a session replaces all state atomically — a failed restore leaves prior state untouched",
 	]
+	validations: [{kind: "test", command: ["cargo", "test", "session"], description: "Session unit tests pass"}]
 }
 
 project: contexts: Preset: ports: {
@@ -70,6 +74,7 @@ project: contexts: Preset: applicationServices: {
 	PresetBrowser: {
 		purpose: "search and filter presets, preview with a test note, load into a patch, save from a patch, import SF2, export a bank"
 		uses: ["aggregate.Preset.Bank", "port.Preset.PresetCodec", "port.Preset.PresetStorage"]
+			validations: [{kind: "test", command: ["cargo", "test", "preset_browser"], description: "PresetBrowser unit tests pass"}]
 	}
 	SessionManager: {
 		purpose: "save, load, list, and delete full sessions"
@@ -81,6 +86,7 @@ project: adapters: SerdePresetCodec: {
 	implements: "port.Preset.PresetCodec"
 	layer:      "infrastructure"
 	meta: framework: "serde"
+	validations: [{kind: "test", command: ["cargo", "test", "serde_preset_codec"], description: "SerdePresetCodec unit tests pass"}]
 }
 
 project: adapters: FsPresetStorage: {

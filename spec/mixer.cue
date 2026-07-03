@@ -32,6 +32,7 @@ project: contexts: Mixer: aggregates: ChannelStrip: {
 		"a strip has at most 8 send taps",
 		"peak metering reflects the level after volume and pan are applied",
 	]
+	validations: [{kind: "test", command: ["cargo", "test", "channel_strip"], description: "ChannelStrip unit tests pass"}]
 }
 
 project: contexts: Mixer: aggregates: MixBus: {
@@ -48,6 +49,7 @@ project: contexts: Mixer: aggregates: MixBus: {
 		"bus 0 is the master bus and cannot be removed",
 		"aux buses feed the master bus, never each other",
 	]
+	validations: [{kind: "test", command: ["cargo", "test", "mix_bus"], description: "MixBus unit tests pass"}]
 }
 
 project: contexts: Mixer: domainServices: {

@@ -7,8 +7,8 @@ project: contexts: Sample: purpose: "sample-based sound sources: WAV and SF2 loa
 project: contexts: Sample: valueObjects: {
 	InterpolationMode: {description: "resampling quality: none (nearest), linear, cubic, or sinc"}
 	LoopMode: {description: "playback looping: no loop, forward, ping-pong, or release (loop until note-off then play to end)"}
-	KeyRange: {state: {low: "NoteNumber", high: "NoteNumber"}, description: "inclusive note range a zone responds to", invariants: ["low must be <= high"]}
-	VelocityRange: {state: {low: "Velocity", high: "Velocity"}, description: "inclusive velocity range a zone responds to", invariants: ["low must be <= high"]}
+	KeyRange: {state: {low: "NoteNumber", high: "NoteNumber"}, description: "inclusive note range a zone responds to", invariants: ["low must be <= high"], validations: [{kind: "test", command: ["cargo", "test", "key_range"], description: "KeyRange unit tests pass"}]}
+	VelocityRange: {state: {low: "Velocity", high: "Velocity"}, description: "inclusive velocity range a zone responds to", invariants: ["low must be <= high"], validations: [{kind: "test", command: ["cargo", "test", "velocity_range"], description: "VelocityRange unit tests pass"}]}
 	Zone: {
 		state: {keys: "KeyRange", velocities: "VelocityRange", rootKey: "NoteNumber", fineTuneCents: "f64", gain: "Amplitude", pan: "Pan", loopMode: "LoopMode"}
 		description: "maps a key range + velocity range to one sample with per-zone playback settings"
@@ -30,6 +30,7 @@ project: contexts: Sample: aggregates: SampleSet: {
 	invariants: [
 		"resolving a note returns every zone whose key range and velocity range both match",
 	]
+	validations: [{kind: "test", command: ["cargo", "test", "sample_set"], description: "SampleSet unit tests pass"}]
 }
 
 project: contexts: Sample: ports: {
@@ -38,6 +39,7 @@ project: contexts: Sample: ports: {
 			loadWav: "(path: Path) -> result<SampleSet, LoadError>"
 			loadSf2: "(path: Path) -> result<list<SampleSet>, LoadError>"
 		}
+			validations: [{kind: "test", command: ["cargo", "test", "sample_loader"], description: "SampleLoader unit tests pass"}]
 	}
 	SampleStore: {
 		contract: {
@@ -55,6 +57,7 @@ project: contexts: Sample: domainServices: {
 	SamplePlayer: {
 		purpose: "plays a zone's sample at the correct pitch with the configured interpolation and loop mode"
 		uses: ["aggregate.Sample.SampleSet", "domainService.Sample.ZoneResolver"]
+			validations: [{kind: "test", command: ["cargo", "test", "sample_player"], description: "SamplePlayer unit tests pass"}]
 	}
 }
 

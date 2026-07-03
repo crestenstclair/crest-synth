@@ -10,16 +10,19 @@ project: contexts: Effects: valueObjects: {
 		state: {roomSize: "f64", damping: "f64", wetDry: "f64", preDelayMs: "f64", width: "f64"}
 		description: "algorithmic reverb settings"
 		invariants: ["wetDry must be 0.0-1.0"]
+			validations: [{kind: "test", command: ["cargo", "test", "reverb_params"], description: "ReverbParams unit tests pass"}]
 	}
 	DelayParams: {
 		state: {timeMs: "f64", feedback: "f64", wetDry: "f64", pingPong: "bool", tempoSync: "bool"}
 		description: "delay line settings"
 		invariants: ["feedback must be 0.0-1.0 (unity or less, or the line self-oscillates unboundedly)", "wetDry must be 0.0-1.0"]
+			validations: [{kind: "test", command: ["cargo", "test", "delay_params"], description: "DelayParams unit tests pass"}]
 	}
 	ChorusParams: {
 		state: {rateHz: "f64", depth: "f64", wet: "f64", voiceCount: "u8"}
 		description: "chorus/flanger settings"
 		invariants: ["voiceCount must be positive"]
+			validations: [{kind: "test", command: ["cargo", "test", "chorus_params"], description: "ChorusParams unit tests pass"}]
 	}
 	EqBandType: {description: "EQ band response: low-pass, high-pass, band-pass, notch, low shelf, high shelf, or peak"}
 	EqBand: {
@@ -68,6 +71,7 @@ project: contexts: Effects: aggregates: EffectChain: {
 		"a bypassed slot passes its input through unchanged",
 		"the chain never exceeds maxSlots slots",
 	]
+	validations: [{kind: "test", command: ["cargo", "test", "effect_chain"], description: "EffectChain unit tests pass"}]
 }
 
 project: contexts: Effects: domainServices: {
