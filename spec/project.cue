@@ -89,9 +89,6 @@ project: contextMap: [
 	{from: "Patch", to: "Loop", kind: "customer-supplier", direction: "upstream"},
 	{from: "Mixer", to: "Loop", kind: "customer-supplier", direction: "upstream"},
 	{from: "Preset", to: "Loop", kind: "customer-supplier", direction: "upstream"},
-	{from: "Engine", to: "Plugin", kind: "customer-supplier", direction: "upstream"},
-	{from: "Patch", to: "Plugin", kind: "customer-supplier", direction: "upstream"},
-	{from: "Preset", to: "Plugin", kind: "customer-supplier", direction: "upstream"},
 ]
 
 project: assetKinds: {

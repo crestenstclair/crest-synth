@@ -15,8 +15,6 @@ pub mod midi_group;
 pub mod note_id;
 pub mod note_number;
 pub mod pan;
-pub mod parameter_id;
-pub mod parameter_range;
 pub mod patch_id;
 pub mod preset_id;
 pub mod sample_count;

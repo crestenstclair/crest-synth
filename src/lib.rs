@@ -10,7 +10,6 @@ pub mod midi_file;
 pub mod mixer;
 pub mod modulation;
 pub mod patch;
-pub mod plugin;
 pub mod preset;
 pub mod real_time;
 pub mod sample;

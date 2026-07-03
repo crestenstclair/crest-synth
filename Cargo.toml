@@ -6,7 +6,6 @@ edition = "2021"
 [lib]
 name = "crest_synth"
 path = "src/lib.rs"
-crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cpal = "0.15"
@@ -21,4 +20,3 @@ rtrb = "0.3"
 midir = "0.10"
 eframe = "0.29"
 egui = "0.29"
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git" }
