@@ -108,15 +108,6 @@ all smokes/demos/scenes pass, main is pushed.
   predicate field names verbatim — add one hard line to the verifier prompts
   ("CREST_OBS/CREST_STUB keys are copied VERBATIM from check_json predicates").
   This was the root of the last unconverged check-polish round.
-- **Shared-module-file destroy wart** (crest-spec engine): generated_files
-  ownership is last-committer-wins by path, so destroying a resource that
-  last committed src/lib.rs deletes the shared file. Destroy should
-  regenerate or surgically update shared module files instead. (Recovered by
-  hand once — restore from git minus the destroyed module's declarations.)
-- **Engine validation for symbolic `member` values**: twice now, checks were
-  authored with `member:"SR"`-style back-references to witness arguments,
-  compared literally. Candidate structural validation in crest-spec
-  `internal/check` (like the existing field-name and missing-bounds gates).
 - **Snapshot `frame` field placement**: top-level `frame` read as None when
   evaluating scenes externally; harmless (summary line carries frames) but
   worth normalizing in a future SnapshotCodec pass.
