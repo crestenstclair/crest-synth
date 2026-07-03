@@ -1,7 +1,7 @@
 # HANDOFF — crest-synth session bootstrap
 
-_Last updated: 2026-07-03, end of the big autonomous run. Read this top-to-bottom
-before doing anything; it is the state of the world._
+_Last updated: 2026-07-03 (post live-scenes + plugin removal). Read this
+top-to-bottom before doing anything; it is the state of the world._
 
 ## What this is
 
@@ -11,8 +11,7 @@ hand-write `.rs` files** — to change the product, change the spec (use the
 `spec-authoring` skill) and run generation (`spec-generate` skill / the HTTP
 drivers below). This rule has no exceptions.
 
-Current state on `main` (through commit `a45800b` + possibly-uncommitted staged
-spec edits, see "In flight"):
+Current state on `main` (through commit `59fbb15`; working tree clean):
 
 - **Bounded contexts** (~170 spec resources): Kernel, Engine, Sample, Effects,
   Mixer, Modulation, Patch, Preset, RealTime, Shell, MidiFile, Editor,
@@ -37,15 +36,19 @@ spec edits, see "In flight"):
 
 ## How to run / test (human)
 
+`make help` is authoritative (generated from the spec). Highlights:
+
 ```bash
+make watch                          # LIVE observation: showcase scene drives the app —
+                                    # window, audio, captions (FILE=<scene> for any scene)
 make ui FILE="./midi/Corridors of Time - Chrono Trigger.mid"  # window + gamepad + music
-make play FILE=...      # headfirst playback
-make watch [FILE=scenes/showcase.json]   # LIVE observation mode (after the staged
-                        # live-scenes increment lands): scene drives the app,
-                        # window open, audio on, captions streaming
-make demo-scenes        # 4 scenes + jq state assertions
-make smoke / tone / test / lint
+make play FILE=...                  # headfirst playback
+make scene FILE=scenes/mixer-solo.json  # headless scene run, dumps every state snapshot
+make demo-scenes                    # all scenes + jq state assertions
+make autopilot                      # self-driving window+audio proof run (self-terminates)
+make smoke / ui-smoke / tone / test / lint
 make demo-voices demo-samples demo-effects demo-mod demo-patches demo-presets demo-midi
+make check-gamepad check-live
 ```
 
 ## The generation loop (how to run a session here)
