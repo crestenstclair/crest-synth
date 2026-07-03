@@ -1199,7 +1199,7 @@ fn run_smoke(play_path: Option<PathBuf>) -> i32 {
     // exhaustive without opening a window.
     let theme = DefaultTheme::new();
     ALL_SEMANTIC_TOKENS.iter().for_each(|&token| {
-        theme.color(token);
+        let _ = theme.color(token);
     });
     let tokens_resolved = ALL_SEMANTIC_TOKENS.len();
     println!("theme tokens resolved: {tokens_resolved}");
