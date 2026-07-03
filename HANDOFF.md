@@ -14,9 +14,12 @@ drivers below). This rule has no exceptions.
 Current state on `main` (through commit `a45800b` + possibly-uncommitted staged
 spec edits, see "In flight"):
 
-- **12 bounded contexts**, ~180 spec resources: Kernel, Engine, Sample, Effects,
+- **Bounded contexts** (~170 spec resources): Kernel, Engine, Sample, Effects,
   Mixer, Modulation, Patch, Preset, RealTime, Shell, MidiFile, Editor,
-  DesignSystem, Loop, Plugin.
+  DesignSystem, Loop. (Plugin/VST-host was built and then REMOVED by user
+  decision — premature without a mature UI. When it returns, much later, its
+  role is hosting third-party effects in effect slots; the generated Effects
+  context is the effects story until then.)
 - **One-way event loop** (`Loop` context): `AppEvent` union → pure
   `AppState.apply` (the ONLY control-plane mutation path) → views render state;
   audio thread consumes `ParameterSnapshot`s via `StateProjector` →
@@ -31,8 +34,6 @@ spec edits, see "In flight"):
 - **Proof harness**: `make help` lists everything — demo binaries with measured
   outputs (`demo-voices` → `steals=N`, etc.), smokes with exit-code teeth,
   ~1200 generated unit tests.
-- **Plugin context** (nih-plug): generated; crate builds `cdylib + rlib`.
-  No `.clap`/`.vst3` bundle step yet (open decision, see backlog).
 
 ## How to run / test (human)
 
@@ -88,30 +89,27 @@ Engine repo: `~/workspace/crest-spec` (pushed to origin/main). Rebuild with
 
 ## In flight at handoff
 
-1. **Plugin behavioral polish** — a re-author round for 6 Plugin checks
-   (5 incomplete verifiers + one symbolic-`member` check) may still be running
-   or just finished. Reconcile with:
-   `spec/sql: SELECT state, COUNT(*) FROM checks GROUP BY state` — expect all
-   `graduated`. If stragglers remain: ONE sharper re-author round, then stop
-   and report; never force.
-2. **Live-scenes increment (STAGED, not yet generated)** — spec edits already
-   in `spec/manifest.cue` (check `git status`): `synth_ui --scene` live playback
-   with captions, the `scenes/showcase.json` observation scene, `make watch`,
-   plus a fix for missing Loop dependency edges on SynthUiMain.
-   `spec/plan` should show exactly 3 modifies (SynthUiMain, SceneLibrary,
-   BuildMakefile). Run: begin → `spec-generate-http.js` → finish → commit.
-   **This is the user's top priority: scenes that launch and PLAY so they can
-   observe and identify issues.**
-3. After both: push `main`.
+Nothing. The last session closed everything out: live-scenes landed
+(`make watch` works: scenes/showcase.json drives the app with captions while
+music plays), the Plugin context was destroyed through spec/confirm_destroys,
+the board is fully green (118 graduated checks, nothing else), 1151 tests,
+all smokes/demos/scenes pass, main is pushed.
 
 ## Backlog (in priority order)
 
 - **User-observation feedback loop**: the user will run `make watch` / `make ui`
   and report what looks/sounds wrong. Each finding becomes a spec invariant or
   a scene + validation — fix through the loop, never patch by hand.
-- **nih-plug bundle step** (user decision pending): conventionally an xtask
-  bundler (`nih_plug_xtask`) produces the `.clap`/`.vst3`. The original spec
-  never had one, so it was not invented. Ask before authoring.
+- **Verifier key-compliance prompt** (crest-spec drivers): witness agents
+  sometimes emit their own observation keys instead of copying the check's
+  predicate field names verbatim — add one hard line to the verifier prompts
+  ("CREST_OBS/CREST_STUB keys are copied VERBATIM from check_json predicates").
+  This was the root of the last unconverged check-polish round.
+- **Shared-module-file destroy wart** (crest-spec engine): generated_files
+  ownership is last-committer-wins by path, so destroying a resource that
+  last committed src/lib.rs deletes the shared file. Destroy should
+  regenerate or surgically update shared module files instead. (Recovered by
+  hand once — restore from git minus the destroyed module's declarations.)
 - **Engine validation for symbolic `member` values**: twice now, checks were
   authored with `member:"SR"`-style back-references to witness arguments,
   compared literally. Candidate structural validation in crest-spec
