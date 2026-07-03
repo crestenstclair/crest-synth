@@ -61,6 +61,9 @@ project: invariants: core: [
 	// Persistence
 	{text: "presets serialize with an explicit version and older versions are migrated on load", meta: rationale: "user libraries must survive format evolution"},
 	{text: "restoring a session replaces all state atomically — a failed load leaves prior state untouched", meta: rationale: "no partial loads; a half-restored session is corruption"},
+
+	// One-way data flow
+	{text: "all control-plane state mutation flows through the Loop reducer; views and adapters read state and emit events, never mutate", meta: rationale: "one-way data flow is what makes the control plane hermetically testable: feed events, read state"},
 ]
 
 // Bounded-context relationships (DDD context map).
@@ -81,6 +84,11 @@ project: contextMap: [
 	{from: "Mixer", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
 	{from: "Patch", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
 	{from: "Shell", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
+	{from: "Kernel", to: "Loop", kind: "shared-kernel"},
+	{from: "Loop", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
+	{from: "Patch", to: "Loop", kind: "customer-supplier", direction: "upstream"},
+	{from: "Mixer", to: "Loop", kind: "customer-supplier", direction: "upstream"},
+	{from: "Preset", to: "Loop", kind: "customer-supplier", direction: "upstream"},
 ]
 
 project: assetKinds: {

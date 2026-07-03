@@ -30,7 +30,13 @@ impl ParamField {
         assert!(min <= max, "ParamField min must be <= max");
         assert!(step > 0.0, "ParamField step must be positive");
         let value = value.clamp(min, max);
-        Self { name: name.into(), value, min, max, step }
+        Self {
+            name: name.into(),
+            value,
+            min,
+            max,
+            step,
+        }
     }
 
     pub fn name(&self) -> &str {

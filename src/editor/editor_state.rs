@@ -26,7 +26,11 @@ impl EditorState {
     /// Creates a new editor state over `fields`, starting in navigate mode
     /// with focus on the first field (or `0` if `fields` is empty).
     pub fn new(fields: Vec<ParamField>) -> Self {
-        Self { edit_mode: false, fields, focus: 0 }
+        Self {
+            edit_mode: false,
+            fields,
+            focus: 0,
+        }
     }
 
     pub fn edit_mode(&self) -> bool {
@@ -145,13 +149,21 @@ mod editor_state_tests {
     fn navigate_mode_saturates_at_ends_without_wrapping() {
         let mut state = EditorState::new(three_fields());
         state.apply(EditorEvent::NavLeft);
-        assert_eq!(state.focus(), 0, "must saturate at 0, not wrap to last index");
+        assert_eq!(
+            state.focus(),
+            0,
+            "must saturate at 0, not wrap to last index"
+        );
 
         state.apply(EditorEvent::NavRight);
         state.apply(EditorEvent::NavRight);
         state.apply(EditorEvent::NavRight);
         state.apply(EditorEvent::NavRight);
-        assert_eq!(state.focus(), 2, "must saturate at last index, not wrap to 0");
+        assert_eq!(
+            state.focus(),
+            2,
+            "must saturate at last index, not wrap to 0"
+        );
     }
 
     #[test]
@@ -179,11 +191,19 @@ mod editor_state_tests {
         let mut state = EditorState::new(three_fields());
         state.apply(EditorEvent::EnterEditMode);
         state.apply(EditorEvent::NavUp);
-        assert_eq!(state.focused_field().unwrap().value(), 10.0, "NavUp is +10x fine, clamped to max");
+        assert_eq!(
+            state.focused_field().unwrap().value(),
+            10.0,
+            "NavUp is +10x fine, clamped to max"
+        );
 
         state.apply(EditorEvent::NavDown);
         state.apply(EditorEvent::NavDown);
-        assert_eq!(state.focused_field().unwrap().value(), 0.0, "two NavDown (-10 each) clamps to min");
+        assert_eq!(
+            state.focused_field().unwrap().value(),
+            0.0,
+            "two NavDown (-10 each) clamps to min"
+        );
     }
 
     #[test]
@@ -203,10 +223,18 @@ mod editor_state_tests {
         state.apply(EditorEvent::NavUp);
         assert_eq!(state.focused_field().unwrap().value(), 1.0);
         state.apply(EditorEvent::NavUp);
-        assert_eq!(state.focused_field().unwrap().value(), 1.0, "stays clamped at max");
+        assert_eq!(
+            state.focused_field().unwrap().value(),
+            1.0,
+            "stays clamped at max"
+        );
         state.apply(EditorEvent::NavDown);
         state.apply(EditorEvent::NavDown);
-        assert_eq!(state.focused_field().unwrap().value(), 0.0, "stays clamped at min");
+        assert_eq!(
+            state.focused_field().unwrap().value(),
+            0.0,
+            "stays clamped at min"
+        );
     }
 
     #[test]
