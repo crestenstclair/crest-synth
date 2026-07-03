@@ -95,4 +95,5 @@ project: assetKinds: {
 	"cargo-manifest": {description: "the crate's Cargo.toml manifest", filePattern: "Cargo.toml"}
 	"rust-bin-target": {description: "a binary target under src/bin/", filePattern: "src/bin/*.rs"}
 	"makefile": {description: "the project Makefile — the human entry points", filePattern: "Makefile"}
+	"scene-library": {description: "scene data files + their assertion script", filePattern: "scenes/*"}
 }

@@ -108,7 +108,7 @@ project: assets: BuildMakefile: {
 	uses: ["asset.SynthUiMain", "asset.ToneTestMain", "asset.VoiceDemoMain", "asset.SamplePlayDemoMain", "asset.EffectsDemoMain", "asset.ModPlayMain", "asset.PatchPlayMain", "asset.PresetRoundtripDemoMain", "asset.MidiPlayMain", "asset.MidiPlayLiveMain", "asset.MixerDemoMain", "asset.GamepadNavDemoMain"]
 	prompts: [
 		"File path: Makefile",
-		"Targets, each with a one-line ## comment shown by a default `help` target: build (cargo build), test (cargo test), lint (cargo clippy --all-targets -- -D warnings), fmt (cargo fmt), tone (run the tone_test proof), smoke (run synth_ui --smoke --play midi/Megalovania.mid), play (run synth_ui --play $(FILE), FILE defaulting to midi/Megalovania.mid), ui (launch the synth_ui app windowed, no --play unless FILE is set), and one target per proof binary, named EXACTLY as the demo validations invoke them: demo-voices (voice_demo), demo-samples (sample_demo), demo-effects (effects_demo), demo-mod (mod_play), demo-patches (patch_play), demo-presets (preset_demo), demo-midi (midi_play, offline WAV render), check-live (midi_play_live) — each simply cargo-runs its binary with the arguments its validation expects.",
+		"Targets, each with a one-line ## comment shown by a default `help` target: build (cargo build), test (cargo test), lint (cargo clippy --all-targets -- -D warnings), fmt (cargo fmt), tone (run the tone_test proof), smoke (run synth_ui --smoke --play midi/Megalovania.mid), play (run synth_ui --play $(FILE), FILE defaulting to midi/Megalovania.mid), ui (launch the synth_ui app windowed, no --play unless FILE is set), plus demo-scenes (run scenes/check.sh) and scene (run scene_run --scene \"$(FILE)\" --dump-every-step), and one target per proof binary, named EXACTLY as the demo validations invoke them: demo-voices (voice_demo), demo-samples (sample_demo), demo-effects (effects_demo), demo-mod (mod_play), demo-patches (patch_play), demo-presets (preset_demo), demo-midi (midi_play, offline WAV render), check-live (midi_play_live) — each simply cargo-runs its binary with the arguments its validation expects.",
 		"Additional targets (editor increment, original names ported from the source spec): ui-smoke (cargo run --bin synth_ui -- --smoke --play midi/Megalovania.mid — the enriched hermetic self-check covering the mixer view + design system, asserting `ui smoke ok`, `render non-silent: true`, `channel metered: true`, `theme tokens resolved: 10`, in addition to the existing peak=/events= tokens); autopilot (cargo run --bin synth_ui -- --autopilot --seconds 4 — the real end-to-end window+audio run that self-drives a scripted MixerViewEvent session, asserts real audio + 6 visible strips in code, writes autopilot.png, and self-terminates; opens a real window/device, no afplay, but IS used by a validation because it is self-driving and self-terminating); demo-mixer (cargo run --bin mixer_demo — headless prover for MixerView + its 16 ChannelStrip channels; opens no device or window); check-gamepad (cargo run --bin gamepad_demo — headless prover for GamepadNavigator/GlyphResolver; opens no device or window).",
 		"Plain portable Makefile: .PHONY where appropriate, no shell-specific tricks. Always quote \"$(FILE)\" and any path variable in recipes — MIDI file paths contain spaces.",
 	]
@@ -122,5 +122,36 @@ project: assets: BuildMakefile: {
 			{kind: "exit_code", expected: 0},
 			{kind: "stdout_contains", pattern: "peak="},
 		]},
+	]
+}
+
+project: assets: SceneRunMain: {
+	kind:        "rust-bin-target"
+	description: "src/bin/scene_run.rs: execute a scene file and emit snapshots for evaluation"
+	uses: ["domainService.Loop.SceneRunner", "port.Loop.SnapshotCodec"]
+	prompts: [
+		"File path: src/bin/scene_run.rs",
+		"scene_run --scene <FILE> [--dump-every-step] [--out <FILE>]: load the scene, run it through SceneRunner, print the FINAL StateSnapshot to stdout as one JSON document; with --dump-every-step print one snapshot JSON per step first.",
+		#"After the snapshot, print exactly one summary line: `events_applied=<N> rejections=<M> frames=<F> peak=<final rendered peak>` — measured from the run, and exit non-zero if any event was rejected (a scene that doesn't fully apply is a failed scene)."#,
+	]
+	validations: [
+		{kind: "integration", command: ["make", "demo-scenes"], description: "the starter scene library applies cleanly and asserts state facts", assertions: [
+			{kind: "exit_code", expected: 0},
+			{kind: "stdout_contains", pattern: "events_applied="},
+		]},
+	]
+}
+
+project: assets: SceneLibrary: {
+	kind:        "scene-library"
+	description: "scenes/: starter scenes proving one behavior each, plus scenes/check.sh asserting state facts from the snapshots"
+	uses: ["asset.SceneRunMain"]
+	prompts: [
+		"Directory: scenes/. Author FOUR scene files in the SnapshotCodec format plus a scenes/check.sh that runs each through scene_run and asserts snapshot facts with jq.",
+		"mixer-solo: solo one of three strips, assert the snapshot shows the other two muted=true and the soloed one muted=false (solo exclusivity).",
+		"volume-edit: navigate to a strip, enter edit mode, adjust volume down 6 dB, assert the snapshot volume field equals the expected value exactly.",
+		"voice-steal: configure polyphony 2 with oldest-steal, fire 3 note-ons with renders between, assert active voice count is 2 and the frame clock equals the step count.",
+		"preset-roundtrip: edit a patch, save preset, mutate again, load the preset, assert the snapshot's patch state equals the post-save snapshot's patch state.",
+		"Every assertion reads a MEASURED value from the snapshot JSON — never a token the binary prints unconditionally.",
 	]
 }

@@ -1,0 +1,10 @@
+{
+  "name": "mixer-solo",
+  "steps": [
+    { "event": { "Mixer": "NavRight" }, "render_blocks": 0 },
+    { "event": { "Mixer": "NavDown" }, "render_blocks": 0 },
+    { "event": { "Mixer": "NavDown" }, "render_blocks": 0 },
+    { "event": { "Mixer": "NavDown" }, "render_blocks": 0 },
+    { "event": { "Mixer": "ToggleFocusedParam" }, "render_blocks": 1 }
+  ]
+}

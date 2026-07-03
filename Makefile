@@ -1,6 +1,6 @@
 # path: Makefile
 
-.PHONY: help build test lint fmt tone smoke play ui demo-voices demo-samples demo-effects demo-mod demo-patches demo-presets demo-midi check-live ui-smoke autopilot demo-mixer check-gamepad
+.PHONY: help build test lint fmt tone smoke play ui demo-scenes scene demo-voices demo-samples demo-effects demo-mod demo-patches demo-presets demo-midi check-live ui-smoke autopilot demo-mixer check-gamepad
 
 DEFAULT_MIDI := midi/Megalovania.mid
 
@@ -34,6 +34,12 @@ ifdef FILE
 else
 	cargo run --bin synth_ui
 endif
+
+demo-scenes: ## Run the demo scenes check script
+	sh scenes/check.sh
+
+scene: ## Run a scene through scene_run, dumping every step (FILE=path/to/scene)
+	cargo run --bin scene_run -- --scene "$(FILE)" --dump-every-step
 
 demo-voices: ## Run the voice allocation proof (voice_demo)
 	cargo run --bin voice_demo

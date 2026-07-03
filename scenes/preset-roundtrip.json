@@ -1,0 +1,11 @@
+{
+  "name": "vocabulary-sweep",
+  "steps": [
+    { "event": { "Mixer": "NavRight" }, "render_blocks": 0 },
+    { "event": { "Editor": "NavDown" }, "render_blocks": 0 },
+    { "event": { "Gamepad": "Select" }, "render_blocks": 0 },
+    { "event": { "Gamepad": { "Navigate": "Up" } }, "render_blocks": 0 },
+    { "event": { "Editor": "EnterEditMode" }, "render_blocks": 0 },
+    { "event": { "Editor": "ExitEditMode" }, "render_blocks": 1 }
+  ]
+}

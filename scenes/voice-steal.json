@@ -1,0 +1,44 @@
+{
+  "name": "midi-note-burst",
+  "steps": [
+    {
+      "event": {
+        "Midi": {
+          "channel": 0,
+          "group": 0,
+          "kind": "NoteOn",
+          "note": 60,
+          "note_id": 1,
+          "velocity": 0.8
+        }
+      },
+      "render_blocks": 2
+    },
+    {
+      "event": {
+        "Midi": {
+          "channel": 0,
+          "group": 0,
+          "kind": "NoteOn",
+          "note": 64,
+          "note_id": 2,
+          "velocity": 0.8
+        }
+      },
+      "render_blocks": 2
+    },
+    {
+      "event": {
+        "Midi": {
+          "channel": 0,
+          "group": 0,
+          "kind": "NoteOn",
+          "note": 67,
+          "note_id": 3,
+          "velocity": 0.8
+        }
+      },
+      "render_blocks": 2
+    }
+  ]
+}
