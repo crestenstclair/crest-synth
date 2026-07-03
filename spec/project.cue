@@ -39,7 +39,9 @@ project: validations: [
 
 // Architectural invariants — behavioral rules, injected into every generator
 // prompt. Code that violates one is wrong even if it compiles and tests pass.
-project: invariants: [
+// Named-group form: each spec file may contribute its own group (CUE unifies
+// sibling keys; a bare list here would conflict across files).
+project: invariants: core: [
 	// Real-time safety
 	{text: "the audio thread never allocates heap memory", meta: rationale: "the callback has a hard deadline; the allocator can block unboundedly"},
 	{text: "the audio thread never acquires a mutex or blocking lock", meta: rationale: "priority inversion causes audible dropouts"},

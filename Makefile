@@ -1,6 +1,6 @@
 # path: Makefile
 
-.PHONY: help build test lint fmt tone smoke play ui demo-voices demo-samples demo-effects demo-mod demo-patches demo-presets demo-midi check-live
+.PHONY: help build test lint fmt tone smoke play ui demo-voices demo-samples demo-effects demo-mod demo-patches demo-presets demo-midi check-live ui-smoke autopilot demo-mixer check-gamepad
 
 DEFAULT_MIDI := midi/Megalovania.mid
 
@@ -58,3 +58,15 @@ demo-midi: ## Render a MIDI file offline to WAV (midi_play)
 
 check-live: ## Verify the live MIDI player's real-time pipeline wiring, no audio device required (midi_play_live --no-device-dry-run)
 	cargo run --bin midi_play_live -- --no-device-dry-run
+
+ui-smoke: ## Run the enriched hermetic self-check covering the mixer view + design system (no window/device/MIDI)
+	cargo run --bin synth_ui -- --smoke --play "$(DEFAULT_MIDI)"
+
+autopilot: ## Real end-to-end window+audio run that self-drives a scripted session and self-terminates
+	cargo run --bin synth_ui -- --autopilot --seconds 4
+
+demo-mixer: ## Headless prover for MixerView + its 16 ChannelStrip channels (mixer_demo)
+	cargo run --bin mixer_demo
+
+check-gamepad: ## Headless prover for GamepadNavigator/GlyphResolver (gamepad_demo)
+	cargo run --bin gamepad_demo

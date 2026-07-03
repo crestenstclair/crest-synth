@@ -1,5 +1,6 @@
 // path: src/lib.rs
 
+pub mod design_system;
 pub mod effects;
 pub mod engine;
 pub mod kernel;

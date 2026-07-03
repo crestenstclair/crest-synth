@@ -207,3 +207,80 @@ project: assets: MidiPlayLiveMain: {
 		]},
 	]
 }
+
+// Demo / proof binaries — the editor increment's headless provers, ported
+// verbatim from the original spec (main branch) onto the clean base; only
+// resource IDs were remapped to the new context names (see NOTES.md). These
+// are the two assets spec/demos.cue's header comment already anticipates:
+// "MixerDemoMain and GamepadNavDemoMain return with the editor increment
+// (they exercise the MixerView/GamepadNavigator resources)."
+
+// ── Headless mixer-view prover ─────────────────────────
+// mixer_demo proves the mixer view's control logic AND the ChannelStrip's
+// solo/metering semantics WITHOUT any device or window: it scripts MixerViewEvent
+// sequences through MixerView and asserts the cursor / viewport / values, then
+// mixes per-channel buffers through the 16 ChannelStrip channels to prove solo
+// silences other channels' AUDIO while every channel still meters its own
+// level. The egui/gilrs adapters open real windows/devices, so they are NEVER
+// invoked here.
+
+project: assets: MixerDemoMain: {
+	kind:        "rust-bin-target"
+	description: "src/bin/mixer_demo.rs: headless prover for MixerView + its 16 ChannelStrip channels — scripted events drive cursor/viewport/edit, and a mixdown proves solo-vs-metering independence"
+	uses: ["aggregate.Mixer.MixerView", "valueObject.Mixer.MixerViewEvent", "valueObject.Mixer.MixerParam", "aggregate.Mixer.ChannelStrip"]
+	prompts: [
+		"File path: src/bin/mixer_demo.rs",
+		"CLI: `mixer_demo`. Takes no arguments and opens NO device and NO window — it is a headless harness over the Mixer view store and the ChannelStrip domain. Do NOT import gilrs, egui, eframe, cpal, or midir.",
+		#"EDGE-SCROLL PROOF: build a MixerView (16 channels, 6 visible). Put the cursor on the trailing visible channel (channel index 5) with viewportOffset 0, then feed NavRight and assert IN CODE that viewportOffset becomes 1 AND cursorChannel stays 5 (panic with a clear message on mismatch). Feed a few more NavRights and assert the viewport keeps scrolling while the cursor never leaves the visible window. Then mirror at the left edge (NavLeft scrolls the viewport back, cursor stays). Print a verbatim line `edge scroll ok`."#,
+		#"FINE/COARSE PROOF: navigate to a continuous row (e.g. Volume) on some channel, EnterEditMode, then assert NavRight raises that channel's volume by the fine step and NavUp raises it by the coarse step (10x fine), and that values clamp at their upper and lower bounds (repeated NavUp never exceeds the max). Read the values back from the addressed ChannelStrip. Panic on mismatch. Print a verbatim line `fine/coarse ok`."#,
+		#"TOGGLE PROOF: navigate to the Mute row of a channel, feed ToggleFocusedParam and assert the channel's mute flips true; feed it again and assert it flips back. Then EnterEditMode on the Mute row and feed NavRight/NavUp and assert the mute flag is UNCHANGED (directional input is a no-op on a toggle). Panic on mismatch. Print a verbatim line `toggle ok`."#,
+		#"SOLO-VS-METERING PROOF (this is the one that catches a wrong gating implementation): on a fresh set of 16 ChannelStrip channels (as MixerView wraps them), build 16 small per-channel audio buffers each with a clearly non-zero signal. Solo exactly one channel (e.g. channel 3) via the view (navigate to its Solo row + ToggleFocusedParam). Run the mix pass over the 16 channels' buffers (e.g. via MixEngine, or an equivalent direct mixdown over the ChannelStrip list). Assert IN CODE: (a) the stereo mix equals ONLY channel 3's contribution — every other channel added zero (compare against a reference mix of channel 3 alone); (b) EVERY channel's peak level is still > 0, including the solo-silenced ones (so a channel inaudible due to another's solo still meters its own level). Panic with a clear message on either failure. Print the verbatim lines `solo mutes others: true` and `metering independent of solo: true`."#,
+		"Print a short summary. The tokens `edge scroll ok`, `fine/coarse ok`, `toggle ok`, `solo mutes others: true`, and `metering independent of solo: true` MUST appear verbatim so a validation can assert each behavior ran correctly with no device.",
+		"Exit 0 on success (all in-code assertions must pass).",
+	]
+	validations: [
+		{kind: "compiles", command: ["make", "build"], description: "mixer demo builds"},
+		{kind: "integration", command: ["make", "demo-mixer"], description: "scripted mixer-view events drive cursor/viewport/edit/toggle, and the mixdown proves solo silences other channels' audio but not their metering — no device", assertions: [
+			{kind: "exit_code", expected: 0},
+			{kind: "stdout_contains", pattern: "edge scroll ok"},
+			{kind: "stdout_contains", pattern: "fine/coarse ok"},
+			{kind: "stdout_contains", pattern: "toggle ok"},
+			{kind: "stdout_contains", pattern: "solo mutes others: true"},
+			{kind: "stdout_contains", pattern: "metering independent of solo: true"},
+		]},
+	]
+}
+
+// ── Gamepad navigation prover ──────────────────────────
+// gamepad_demo proves the controller-first navigation logic WITHOUT any device
+// or window: it feeds a scripted sequence of raw GamepadEvents through the
+// GamepadNavigator (translating them into GamepadActions that drive the app's
+// own cursor/edit model) and resolves glyphs through the GlyphResolver for more
+// than one controller type. The gilrs/egui/eframe adapters open real devices and
+// windows, so they are NEVER invoked by a validation; this demo exercises the
+// host-agnostic domain services (GamepadNavigator, GlyphResolver) that the
+// adapters merely feed — which is exactly the "UI is a pure view / nav uses the
+// app's own cursor model" invariant made checkable.
+
+project: assets: GamepadNavDemoMain: {
+	kind:        "rust-bin-target"
+	description: "src/bin/gamepad_demo.rs: headless prover for GamepadNavigator + GlyphResolver — scripted events -> GamepadActions -> cursor model, glyph resolution per controller type"
+	uses: ["domainService.Shell.GamepadNavigator", "domainService.Shell.GlyphResolver"]
+	prompts: [
+		"File path: src/bin/gamepad_demo.rs",
+		"CLI: `gamepad_demo`. Takes no arguments and opens NO device and NO window — it is a headless harness over the host-agnostic Shell domain services. Do NOT import gilrs, egui, or eframe.",
+		"Build a small app cursor/edit model (the app's OWN navigation state, not egui focus). Feed a SCRIPTED, deterministic sequence of raw GamepadEvents through the GamepadNavigator, which must translate them into GamepadActions and drive the cursor/edit model accordingly.",
+		#"Assert in code that the scripted events produce the EXPECTED GamepadActions and the EXPECTED final cursor position (panic with a clear message on mismatch). Print a verbatim line `nav actions ok: N` where N is the number of actions dispatched."#,
+		#"Drive the GlyphResolver for at least TWO different ControllerTypes (e.g. an Xbox-style and a PlayStation-style controller) and assert each resolves to a DIFFERENT glyph for the same logical button (panic if identical). Print a verbatim line `glyphs resolved: per-controller`."#,
+		"Print a short summary. The `nav actions ok:` and `glyphs resolved: per-controller` tokens MUST appear verbatim so a validation can assert the navigation + glyph logic ran correctly with no device.",
+		"Exit 0 on success (both in-code assertions must pass).",
+	]
+	validations: [
+		{kind: "compiles", command: ["make", "build"], description: "gamepad demo builds"},
+		{kind: "integration", command: ["make", "check-gamepad"], description: "scripted gamepad events map to actions and glyphs resolve per controller, no device", assertions: [
+			{kind: "exit_code", expected: 0},
+			{kind: "stdout_contains", pattern: "nav actions ok:"},
+			{kind: "stdout_contains", pattern: "glyphs resolved: per-controller"},
+		]},
+	]
+}
