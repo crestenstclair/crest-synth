@@ -1,260 +1,272 @@
-//! MIDI input port abstraction for the Shell context.
-//!
-//! Provides a trait ([`MidiInput`]) that abstracts MIDI port discovery,
-//! connection, and raw-message delivery, plus a concrete adapter
-//! ([`MidirMidiInput`]) backed by the `midir` crate.
-//!
-//! # Design
-//!
-//! * **`MidiInput` trait** – narrow port interface (list_ports, connect, next_event).
-//! * **`MidirMidiInput`** – implements the trait using `midir`; incoming bytes are
-//!   pushed into an `std::sync::mpsc` channel inside the callback so `next_event`
-//!   never blocks.
-//! * **Value types** – `MidiPortId`, `MidiPortInfo`, `MidiConnection` are plain
-//!   data structs.  `RawMidiMessage` is re-used from [`crate::shell::midi_normalizer`].
+// path: src/shell/midi_input.rs
 
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::fmt;
 
-use crate::shell::midi_normalizer::RawMidiMessage;
+/// A MIDI channel address in the range 0..=15, used to match incoming
+/// events against a patch's channel mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MidiChannel(u8);
 
-// ── Value types ───────────────────────────────────────────────────────────────
+impl MidiChannel {
+    pub const MIN: u8 = 0;
+    pub const MAX: u8 = 15;
 
-/// Opaque identifier for a MIDI input port returned by [`MidiInput::list_ports`].
+    /// Constructs a channel, validating it falls within the 16-channel range.
+    pub fn try_new(value: u8) -> Result<Self, MidiError> {
+        if !(Self::MIN..=Self::MAX).contains(&value) {
+            return Err(MidiError::InvalidChannel(value));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn value(&self) -> u8 {
+        self.0
+    }
+}
+
+/// A stable identifier for a MIDI input port discovered on the host system.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MidiPortId(pub String);
-
-/// Human-readable information about a MIDI input port.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiPortInfo {
-    pub id: MidiPortId,
-    pub name: String,
+    id: String,
+    name: String,
 }
 
-/// An active MIDI connection.  Dropping this value disconnects the port.
-///
-/// Messages are consumed by calling [`MidiInput::next_event`] after a
-/// connection is established.  The `_inner` field holds the live MIDI
-/// connection handle; its [`Drop`] impl closes the port automatically.
-pub struct MidiConnection {
-    /// Opaque connection handle — kept alive for its `Drop` side-effect.
-    pub(crate) _inner: Box<dyn std::any::Any + Send>,
+impl MidiPortInfo {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
-// ── Port trait ────────────────────────────────────────────────────────────────
+/// The kind of raw MIDI message carried by a `MidiEvent`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MidiEventKind {
+    NoteOn { note: u8, velocity: u8 },
+    NoteOff { note: u8, velocity: u8 },
+    ControlChange { controller: u8, value: u8 },
+    PitchBend { value: i16 },
+    ChannelPressure { value: u8 },
+    PolyPressure { note: u8, value: u8 },
+}
 
-/// Narrow MIDI-input port interface.
+/// A single MIDI event captured from an input port, addressed to a channel
+/// and timestamped relative to the connection's monotonic clock.
 ///
-/// Implementors discover available ports, open a connection to one, and
-/// deliver raw MIDI bytes on demand.
+/// This is a plain, `Copy`-able value: forwarding it into the audio thread's
+/// EventRing performs no allocation, matching the project's real-time
+/// invariants. `MidiInput` itself never touches the audio thread directly —
+/// it is the caller's responsibility to route delivered events through the
+/// EventRing or ParameterBridge rather than any other seam.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MidiEvent {
+    pub channel: MidiChannel,
+    pub kind: MidiEventKind,
+    pub timestamp_micros: u64,
+}
+
+/// Errors that can occur while listing, connecting to, or operating a MIDI
+/// input port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MidiError {
+    PortNotFound(String),
+    ConnectionFailed(String),
+    InvalidChannel(u8),
+    AlreadyConnected(String),
+}
+
+impl fmt::Display for MidiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MidiError::PortNotFound(id) => write!(f, "MIDI port not found: {id}"),
+            MidiError::ConnectionFailed(msg) => write!(f, "MIDI connection failed: {msg}"),
+            MidiError::InvalidChannel(ch) => write!(f, "invalid MIDI channel: {ch}"),
+            MidiError::AlreadyConnected(id) => write!(f, "MIDI port already connected: {id}"),
+        }
+    }
+}
+
+impl std::error::Error for MidiError {}
+
+/// Callback invoked, on the non-real-time MIDI thread, once per received
+/// event. Implementations must not block or perform I/O; events destined
+/// for the audio engine must be handed off via the EventRing rather than
+/// processed synchronously here.
+pub trait EventCallback: Send {
+    fn on_event(&mut self, event: MidiEvent);
+}
+
+impl<F> EventCallback for F
+where
+    F: FnMut(MidiEvent) + Send,
+{
+    fn on_event(&mut self, event: MidiEvent) {
+        self(event)
+    }
+}
+
+/// A live connection to a MIDI input port. Event delivery stops once the
+/// connection is closed via `MidiInput::disconnect` or dropped.
+#[derive(Debug)]
+pub struct Connection {
+    port: MidiPortInfo,
+    active: bool,
+}
+
+impl Connection {
+    pub fn new(port: MidiPortInfo) -> Self {
+        Self { port, active: true }
+    }
+
+    pub fn port(&self) -> &MidiPortInfo {
+        &self.port
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    fn close(&mut self) {
+        self.active = false;
+    }
+}
+
+/// Port (hexagonal architecture) for discovering MIDI input hardware and
+/// receiving events from it. Adapters implement this trait against a
+/// concrete backend; the rest of the Shell context depends only on this
+/// narrow abstraction, never on a concrete backend type.
 pub trait MidiInput {
-    /// List all available MIDI input ports on the host.
+    /// Enumerates the MIDI input ports currently visible to the host.
     fn list_ports(&self) -> Vec<MidiPortInfo>;
 
-    /// Open a connection to the given port.
-    ///
-    /// Returns an error string if the port cannot be opened.  On success the
-    /// returned [`MidiConnection`] must be kept alive for the duration of
-    /// reception; dropping it closes the port.
-    fn connect(&mut self, port_id: MidiPortId) -> Result<MidiConnection, String>;
+    /// Opens a connection to `port`, delivering every subsequent event to
+    /// `on_event` until the connection is disconnected or dropped.
+    fn connect(
+        &self,
+        port: &MidiPortInfo,
+        on_event: Box<dyn EventCallback>,
+    ) -> Result<Connection, MidiError>;
 
-    /// Return the next buffered [`RawMidiMessage`], or `None` if none has
-    /// arrived since the last call.  This method never blocks.
-    fn next_event(&self) -> Option<RawMidiMessage>;
-}
-
-// ── midir adapter ─────────────────────────────────────────────────────────────
-
-/// Concrete [`MidiInput`] backed by the `midir` crate.
-///
-/// Incoming MIDI bytes are forwarded from the `midir` callback into a bounded
-/// sync channel so that `next_event` is always non-blocking and lock-free
-/// (the `SyncSender::try_send` in the callback is non-blocking).
-pub struct MidirMidiInput {
-    /// The sender half; cloned into each callback closure.
-    tx: SyncSender<RawMidiMessage>,
-    /// The receiver half; polled by `next_event`.
-    rx: Receiver<RawMidiMessage>,
-}
-
-impl MidirMidiInput {
-    /// Create a new adapter with the given channel capacity.
-    ///
-    /// `buffer_capacity` is the maximum number of MIDI messages that can be
-    /// queued before the callback starts dropping.  A value of 256 is
-    /// sufficient for normal real-time use.
-    pub fn new(buffer_capacity: usize) -> Self {
-        let (tx, rx) = mpsc::sync_channel(buffer_capacity);
-        Self { tx, rx }
+    /// Closes a previously opened connection. The default implementation
+    /// simply marks the connection inactive; adapters that own OS-level
+    /// resources should override this to release them.
+    fn disconnect(&self, mut connection: Connection) {
+        connection.close();
     }
 }
-
-impl Default for MidirMidiInput {
-    fn default() -> Self {
-        Self::new(256)
-    }
-}
-
-impl MidiInput for MidirMidiInput {
-    fn list_ports(&self) -> Vec<MidiPortInfo> {
-        let input = match midir::MidiInput::new("crest-synth-list") {
-            Ok(i) => i,
-            Err(_) => return vec![],
-        };
-        input
-            .ports()
-            .iter()
-            .filter_map(|p| {
-                let name = input.port_name(p).ok()?;
-                Some(MidiPortInfo {
-                    id: MidiPortId(name.clone()),
-                    name,
-                })
-            })
-            .collect()
-    }
-
-    fn connect(&mut self, port_id: MidiPortId) -> Result<MidiConnection, String> {
-        let input = midir::MidiInput::new("crest-synth-input")
-            .map_err(|e| format!("midir init error: {e}"))?;
-
-        // Find the port whose name matches the id string.
-        let ports = input.ports();
-        let port = ports
-            .iter()
-            .find(|p| input.port_name(p).map(|n| n == port_id.0).unwrap_or(false))
-            .ok_or_else(|| format!("MIDI port not found: {}", port_id.0))?
-            .clone();
-
-        let tx = self.tx.clone();
-        let connection = input
-            .connect(
-                &port,
-                "crest-synth-conn",
-                move |_timestamp_us, bytes, _| {
-                    // Non-blocking: if the channel is full, drop the message rather
-                    // than blocking the audio callback.
-                    let _ = tx.try_send(RawMidiMessage::new(bytes.to_vec(), 0));
-                },
-                (),
-            )
-            .map_err(|e| format!("midir connect error: {e}"))?;
-
-        Ok(MidiConnection {
-            _inner: Box::new(connection),
-        })
-    }
-
-    fn next_event(&self) -> Option<RawMidiMessage> {
-        self.rx.try_recv().ok()
-    }
-}
-
-// ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
-
-    // ── Value type tests ──────────────────────────────────────────────────────
 
     #[test]
-    fn midi_port_id_equality() {
-        let a = MidiPortId("port-a".to_string());
-        let b = MidiPortId("port-a".to_string());
-        let c = MidiPortId("port-b".to_string());
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+    fn channel_accepts_full_valid_range() {
+        assert!(MidiChannel::try_new(0).is_ok());
+        assert!(MidiChannel::try_new(15).is_ok());
+        assert_eq!(MidiChannel::try_new(7).unwrap().value(), 7);
     }
 
     #[test]
-    fn midi_port_info_fields() {
-        let info = MidiPortInfo {
-            id: MidiPortId("id".to_string()),
-            name: "My MIDI Controller".to_string(),
-        };
-        assert_eq!(info.id, MidiPortId("id".to_string()));
-        assert_eq!(info.name, "My MIDI Controller");
+    fn channel_rejects_out_of_range() {
+        let err = MidiChannel::try_new(16).unwrap_err();
+        assert_eq!(err, MidiError::InvalidChannel(16));
     }
 
-    // ── Channel-based stub that exercises MidiInput trait ─────────────────────
-
-    /// A test double that lets us inject messages directly into the channel,
-    /// verifying `next_event` contract without requiring a real MIDI device.
-    struct StubMidiInput {
-        tx: SyncSender<RawMidiMessage>,
-        rx: mpsc::Receiver<RawMidiMessage>,
+    #[test]
+    fn port_info_exposes_id_and_name() {
+        let port = MidiPortInfo::new("port-1", "USB MIDI Keyboard");
+        assert_eq!(port.id(), "port-1");
+        assert_eq!(port.name(), "USB MIDI Keyboard");
     }
 
-    impl StubMidiInput {
-        fn new() -> Self {
-            let (tx, rx) = mpsc::sync_channel(16);
-            Self { tx, rx }
-        }
-
-        fn inject(&self, msg: RawMidiMessage) {
-            self.tx.try_send(msg).expect("channel full in test");
-        }
+    #[test]
+    fn error_messages_are_human_readable() {
+        assert_eq!(
+            MidiError::PortNotFound("p1".into()).to_string(),
+            "MIDI port not found: p1"
+        );
+        assert_eq!(
+            MidiError::InvalidChannel(20).to_string(),
+            "invalid MIDI channel: 20"
+        );
     }
 
-    impl MidiInput for StubMidiInput {
+    #[test]
+    fn connection_starts_active_and_can_be_closed() {
+        let port = MidiPortInfo::new("port-1", "Test Port");
+        let mut connection = Connection::new(port);
+        assert!(connection.is_active());
+        connection.close();
+        assert!(!connection.is_active());
+    }
+
+    struct FakeMidiInput {
+        ports: Vec<MidiPortInfo>,
+    }
+
+    impl MidiInput for FakeMidiInput {
         fn list_ports(&self) -> Vec<MidiPortInfo> {
-            vec![MidiPortInfo {
-                id: MidiPortId("stub-0".to_string()),
-                name: "Stub Port 0".to_string(),
-            }]
+            self.ports.clone()
         }
 
-        fn connect(&mut self, _port_id: MidiPortId) -> Result<MidiConnection, String> {
-            struct NoopConn;
-            Ok(MidiConnection {
-                _inner: Box::new(NoopConn),
-            })
-        }
-
-        fn next_event(&self) -> Option<RawMidiMessage> {
-            self.rx.try_recv().ok()
+        fn connect(
+            &self,
+            port: &MidiPortInfo,
+            _on_event: Box<dyn EventCallback>,
+        ) -> Result<Connection, MidiError> {
+            if self.ports.iter().any(|p| p.id() == port.id()) {
+                Ok(Connection::new(port.clone()))
+            } else {
+                Err(MidiError::PortNotFound(port.id().to_string()))
+            }
         }
     }
 
     #[test]
-    fn next_event_returns_none_when_empty() {
-        let stub = StubMidiInput::new();
-        assert!(stub.next_event().is_none());
+    fn connect_succeeds_for_known_port_and_disconnect_deactivates() {
+        let known = MidiPortInfo::new("p1", "Keyboard");
+        let adapter = FakeMidiInput {
+            ports: vec![known.clone()],
+        };
+
+        let connection = adapter
+            .connect(&known, Box::new(|_event: MidiEvent| {}))
+            .expect("known port should connect");
+        assert!(connection.is_active());
+
+        adapter.disconnect(connection);
     }
 
     #[test]
-    fn next_event_returns_injected_message() {
-        let stub = StubMidiInput::new();
-        let msg = RawMidiMessage::new(vec![0x80, 0x3C, 0x00], 0);
-        stub.inject(msg.clone());
-        assert_eq!(stub.next_event(), Some(msg));
+    fn connect_fails_for_unknown_port() {
+        let adapter = FakeMidiInput { ports: vec![] };
+        let unknown = MidiPortInfo::new("missing", "Ghost Port");
+
+        let result = adapter.connect(&unknown, Box::new(|_event: MidiEvent| {}));
+        assert_eq!(
+            result.unwrap_err(),
+            MidiError::PortNotFound("missing".to_string())
+        );
     }
 
     #[test]
-    fn next_event_drains_in_fifo_order() {
-        let stub = StubMidiInput::new();
-        let m1 = RawMidiMessage::new(vec![0x90, 0x3C, 0x7F], 0);
-        let m2 = RawMidiMessage::new(vec![0x90, 0x40, 0x64], 0);
-        stub.inject(m1.clone());
-        stub.inject(m2.clone());
-        assert_eq!(stub.next_event(), Some(m1));
-        assert_eq!(stub.next_event(), Some(m2));
-        assert!(stub.next_event().is_none());
-    }
+    fn list_ports_reflects_configured_ports() {
+        let a = MidiPortInfo::new("a", "Port A");
+        let b = MidiPortInfo::new("b", "Port B");
+        let adapter = FakeMidiInput {
+            ports: vec![a.clone(), b.clone()],
+        };
 
-    #[test]
-    fn list_ports_returns_stub_port() {
-        let stub = StubMidiInput::new();
-        let ports = stub.list_ports();
-        assert_eq!(ports.len(), 1);
-        assert_eq!(ports[0].name, "Stub Port 0");
-    }
-
-    #[test]
-    fn connect_returns_connection() {
-        let mut stub = StubMidiInput::new();
-        let result = stub.connect(MidiPortId("stub-0".to_string()));
-        assert!(result.is_ok());
+        let listed = adapter.list_ports();
+        assert_eq!(listed, vec![a, b]);
     }
 }

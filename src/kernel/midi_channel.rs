@@ -1,29 +1,44 @@
-/// MIDI channel within a group (0-15).
+// path: src/kernel/midi_channel.rs
+
+//! `MidiChannel` — channel within a group.
+//!
+//! A small newtype around `u8` that guarantees the wrapped value is a valid
+//! MIDI channel number. MIDI channels are addressed 0-15 (the 16 channels of
+//! a single MIDI cable); any other value is meaningless and would make
+//! downstream channel-mapping and dispatch logic degenerate.
+
+use std::fmt;
+
+/// A single MIDI channel within a group (0-15).
 ///
-/// A `MidiChannel` identifies one of the 16 channels available in a MIDI
-/// group. Valid values are 0–15 inclusive. Attempting to construct a value
-/// outside that range returns an error.
+/// Invariant: the wrapped value is always in the range `0..=15`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MidiChannel(u8);
 
-/// Error returned when a `MidiChannel` value is out of the 0-15 range.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MidiChannelError(u8);
+/// Error returned when constructing a `MidiChannel` from an invalid value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MidiChannelError {
+    /// The supplied value was outside the valid `0..=15` range.
+    OutOfRange(u8),
+}
 
-impl std::fmt::Display for MidiChannelError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MidiChannel value {} is out of range 0-15", self.0)
+impl fmt::Display for MidiChannelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MidiChannelError::OutOfRange(value) => {
+                write!(f, "midi channel must be 0-15 (got {value})")
+            }
+        }
     }
 }
 
 impl std::error::Error for MidiChannelError {}
 
 impl MidiChannel {
-    /// Construct a `MidiChannel` from a raw `u8`.
+    /// Attempts to construct a `MidiChannel` from a raw channel number.
     ///
-    /// Returns `Err` if `value` is not in the range 0-15.
-    ///
-    /// # Examples
+    /// Returns `Err(MidiChannelError::OutOfRange)` if `channel` is not in
+    /// `0..=15`.
     ///
     /// ```
     /// use crest_synth::kernel::midi_channel::MidiChannel;
@@ -32,17 +47,37 @@ impl MidiChannel {
     /// assert!(MidiChannel::try_new(15).is_ok());
     /// assert!(MidiChannel::try_new(16).is_err());
     /// ```
-    pub fn try_new(value: u8) -> Result<Self, MidiChannelError> {
-        if !(0..=15).contains(&value) {
-            return Err(MidiChannelError(value));
+    pub fn try_new(channel: u8) -> Result<Self, MidiChannelError> {
+        if !(0..=15).contains(&channel) {
+            Err(MidiChannelError::OutOfRange(channel))
+        } else {
+            Ok(Self(channel))
         }
-        Ok(Self(value))
     }
 
-    /// Return the underlying `u8` value.
-    #[inline]
-    pub fn value(self) -> u8 {
+    /// Returns the channel number as a raw `u8`.
+    pub fn value(&self) -> u8 {
         self.0
+    }
+}
+
+impl TryFrom<u8> for MidiChannel {
+    type Error = MidiChannelError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MidiChannel> for u8 {
+    fn from(value: MidiChannel) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for MidiChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -51,51 +86,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zero_is_valid() {
-        assert!(MidiChannel::try_new(0).is_ok());
+    fn try_new_accepts_in_range_values() {
+        let channel = MidiChannel::try_new(9).expect("9 is in range");
+        assert_eq!(channel.value(), 9);
     }
 
     #[test]
-    fn fifteen_is_valid() {
-        let ch = MidiChannel::try_new(15).unwrap();
-        assert_eq!(ch.value(), 15);
+    fn try_new_accepts_lower_bound() {
+        let channel = MidiChannel::try_new(0).expect("0 is in range");
+        assert_eq!(channel.value(), 0);
     }
 
     #[test]
-    fn sixteen_is_invalid() {
-        assert!(MidiChannel::try_new(16).is_err());
+    fn try_new_accepts_upper_bound() {
+        let channel = MidiChannel::try_new(15).expect("15 is in range");
+        assert_eq!(channel.value(), 15);
     }
 
     #[test]
-    fn max_u8_is_invalid() {
-        assert!(MidiChannel::try_new(255).is_err());
+    fn try_new_rejects_above_range() {
+        let result = MidiChannel::try_new(16);
+        assert_eq!(result, Err(MidiChannelError::OutOfRange(16)));
     }
 
     #[test]
-    fn value_roundtrips() {
-        for v in 0u8..=15 {
-            let ch = MidiChannel::try_new(v).unwrap();
-            assert_eq!(ch.value(), v);
-        }
+    fn try_new_rejects_far_above_range() {
+        let result = MidiChannel::try_new(255);
+        assert_eq!(result, Err(MidiChannelError::OutOfRange(255)));
     }
 
     #[test]
-    fn error_message_contains_value() {
-        let err = MidiChannel::try_new(20).unwrap_err();
-        assert!(err.to_string().contains("20"));
+    fn try_from_u8_matches_try_new() {
+        let channel: Result<MidiChannel, _> = MidiChannel::try_from(3);
+        assert_eq!(channel.expect("3 is in range").value(), 3);
+
+        let err: Result<MidiChannel, _> = MidiChannel::try_from(16);
+        assert!(err.is_err());
     }
 
     #[test]
-    fn copy_semantics() {
-        let a = MidiChannel::try_new(7).unwrap();
-        let b = a;
-        assert_eq!(a.value(), b.value());
+    fn into_u8_round_trips() {
+        let channel = MidiChannel::try_new(7).expect("7 is in range");
+        let raw: u8 = channel.into();
+        assert_eq!(raw, 7);
     }
 
     #[test]
-    fn ordering() {
-        let lo = MidiChannel::try_new(3).unwrap();
-        let hi = MidiChannel::try_new(12).unwrap();
-        assert!(lo < hi);
+    fn display_shows_raw_value() {
+        let channel = MidiChannel::try_new(12).expect("12 is in range");
+        assert_eq!(channel.to_string(), "12");
+    }
+
+    #[test]
+    fn ordering_and_equality_are_derived_from_value() {
+        let low = MidiChannel::try_new(1).expect("1 is in range");
+        let high = MidiChannel::try_new(10).expect("10 is in range");
+        assert!(low < high);
+        assert_eq!(low, MidiChannel::try_new(1).expect("1 is in range"));
+    }
+
+    #[test]
+    fn error_message_is_descriptive() {
+        let err = MidiChannel::try_new(16).expect_err("16 is invalid");
+        assert_eq!(err.to_string(), "midi channel must be 0-15 (got 16)");
     }
 }

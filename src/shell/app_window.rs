@@ -1,18 +1,54 @@
 // path: src/shell/app_window.rs
 
-/// Configuration for creating an application window.
-#[derive(Debug, Clone)]
-pub struct WindowConfig {
-    /// Title displayed in the window title bar.
+use std::fmt;
+
+/// Errors that can occur while running the application window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowError {
+    /// The windowing backend failed to initialize (e.g. no display server, no GPU surface).
+    InitializationFailed(String),
+    /// The window's event loop terminated with a failure.
+    EventLoopFailed(String),
+    /// Audio device setup required by the window's owning App failed.
+    AudioDeviceUnavailable(String),
+}
+
+impl fmt::Display for WindowError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WindowError::InitializationFailed(reason) => {
+                write!(f, "window initialization failed: {reason}")
+            }
+            WindowError::EventLoopFailed(reason) => {
+                write!(f, "window event loop failed: {reason}")
+            }
+            WindowError::AudioDeviceUnavailable(reason) => {
+                write!(f, "audio device unavailable: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WindowError {}
+
+/// The application handle passed into the window's `run` entry point.
+///
+/// `App` is a plain data bundle assembled by composition-root code (e.g.
+/// `main`) via dependency injection: every collaborator the window's UI/MIDI
+/// thread might need is injected here rather than constructed inside an
+/// `AppWindow` implementation. `AppWindow` implementations must not construct
+/// their own `App` -- they only ever receive one.
+pub struct App {
+    /// Human-readable title shown in the window chrome.
     pub title: String,
-    /// Initial width in logical pixels.
+    /// Requested window width in logical pixels.
     pub width: u32,
-    /// Initial height in logical pixels.
+    /// Requested window height in logical pixels.
     pub height: u32,
 }
 
-impl WindowConfig {
-    /// Creates a new `WindowConfig` with the given title and dimensions.
+impl App {
+    /// Full constructor -- callers (composition root, tests) supply every field.
     pub fn new(title: impl Into<String>, width: u32, height: u32) -> Self {
         Self {
             title: title.into(),
@@ -22,149 +58,105 @@ impl WindowConfig {
     }
 }
 
-/// An opaque handle to an open application window.
-///
-/// Returned by [`AppWindow::create`]; passed back to the port implementation
-/// as needed. Callers should not construct this directly.
-pub struct Window {
-    pub(crate) config: WindowConfig,
-}
-
-impl Window {
-    /// Creates a `Window` from a [`WindowConfig`].
-    ///
-    /// Intended for use by [`AppWindow`] implementations only.
-    pub fn new(config: WindowConfig) -> Self {
-        Self { config }
-    }
-
-    /// Returns the title of this window.
-    pub fn title(&self) -> &str {
-        &self.config.title
-    }
-
-    /// Returns the width of this window in logical pixels.
-    pub fn width(&self) -> u32 {
-        self.config.width
-    }
-
-    /// Returns the height of this window in logical pixels.
-    pub fn height(&self) -> u32 {
-        self.config.height
+impl Default for App {
+    fn default() -> Self {
+        Self::new("crest-synth", 1280, 720)
     }
 }
 
-/// Callback invoked on every UI frame.
+/// Port: the entry point that owns and drives the top-level application
+/// window and its event loop.
 ///
-/// The closure receives no arguments; implementations use captured state
-/// (e.g., `Arc<Mutex<AppState>>`) to drive rendering per-frame.
-pub type FrameCallback = Box<dyn FnMut() + Send + 'static>;
-
-/// Port: application window lifecycle.
-///
-/// Implementations wire a concrete windowing back-end (e.g. `eframe` / `winit`)
-/// behind this interface so that higher-level code stays back-end agnostic.
-///
-/// # Contract
-/// - `create`: given a [`WindowConfig`], open or configure the native window
-///   and return a [`Window`] handle.
-/// - `run_loop`: enter the native event loop, calling `callback` on every
-///   rendered frame until the window is closed.  Blocks until the loop exits.
+/// `AppWindow` is a narrow, single-method interface (Interface Segregation):
+/// its only responsibility is "given an assembled `App`, run the window
+/// until the user closes it or a fatal error occurs." It knows nothing about
+/// how the window is drawn, how MIDI or gamepad input is polled, or how the
+/// audio thread is wired -- those are the responsibilities of whatever `App`
+/// was assembled to hold. Concrete adapters (winit, SDL, headless test
+/// double, ...) implement this trait; callers depend only on the trait
+/// (Dependency Inversion), never on a concrete windowing backend.
 pub trait AppWindow {
-    /// Creates a window from the given configuration, returning a handle.
-    fn create(&mut self, config: WindowConfig) -> Window;
-
-    /// Runs the native event loop, invoking `callback` each frame.
+    /// Run the window's event loop to completion.
     ///
-    /// This method blocks until the window is closed or the loop is otherwise
-    /// terminated by the underlying back-end.
-    fn run_loop(&mut self, callback: FrameCallback);
+    /// Takes ownership of `app` because the window becomes the sole owner of
+    /// the top-level application state for the duration of the run -- no
+    /// other code may mutate it concurrently. Returns `Ok(())` on a clean
+    /// user-initiated shutdown, or `Err(WindowError)` if the window could not
+    /// be created or its event loop failed.
+    fn run(&mut self, app: App) -> Result<(), WindowError>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── WindowConfig ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn window_config_new_stores_fields() {
-        let cfg = WindowConfig::new("My Synth", 1280, 720);
-        assert_eq!(cfg.title, "My Synth");
-        assert_eq!(cfg.width, 1280);
-        assert_eq!(cfg.height, 720);
+    /// A test double: never touches a real display server, just records
+    /// whether it was invoked and with what `App`, then returns a
+    /// preconfigured result. This lets tests exercise the `AppWindow`
+    /// contract without pulling in a real windowing backend.
+    struct FakeAppWindow {
+        result: Result<(), WindowError>,
+        received_title: Option<String>,
     }
 
-    #[test]
-    fn window_config_clone_is_independent() {
-        let cfg = WindowConfig::new("Original", 800, 600);
-        let mut clone = cfg.clone();
-        clone.title = "Clone".to_string();
-        assert_eq!(cfg.title, "Original");
-    }
-
-    // ── Window ──────────────────────────────────────────────────────────────
-
-    #[test]
-    fn window_exposes_config_via_accessors() {
-        let cfg = WindowConfig::new("Test Window", 640, 480);
-        let win = Window::new(cfg);
-        assert_eq!(win.title(), "Test Window");
-        assert_eq!(win.width(), 640);
-        assert_eq!(win.height(), 480);
-    }
-
-    // ── AppWindow (stub impl) ───────────────────────────────────────────────
-
-    /// A minimal stub implementation used only within this test module.
-    struct StubWindow {
-        frames_rendered: u32,
-    }
-
-    impl StubWindow {
-        fn new() -> Self {
-            Self { frames_rendered: 0 }
-        }
-    }
-
-    impl AppWindow for StubWindow {
-        fn create(&mut self, config: WindowConfig) -> Window {
-            Window::new(config)
-        }
-
-        fn run_loop(&mut self, mut callback: FrameCallback) {
-            // Simulate a brief event loop: call the callback a fixed number
-            // of times, then return (simulating window close).
-            for _ in 0..3 {
-                callback();
-                self.frames_rendered += 1;
+    impl FakeAppWindow {
+        fn new(result: Result<(), WindowError>) -> Self {
+            Self {
+                result,
+                received_title: None,
             }
         }
     }
 
-    #[test]
-    fn stub_create_returns_window_with_correct_config() {
-        let mut stub = StubWindow::new();
-        let cfg = WindowConfig::new("Stub", 320, 240);
-        let win = stub.create(cfg);
-        assert_eq!(win.title(), "Stub");
-        assert_eq!(win.width(), 320);
-        assert_eq!(win.height(), 240);
+    impl AppWindow for FakeAppWindow {
+        fn run(&mut self, app: App) -> Result<(), WindowError> {
+            self.received_title = Some(app.title);
+            self.result.clone()
+        }
     }
 
     #[test]
-    fn stub_run_loop_invokes_callback_each_frame() {
-        let mut stub = StubWindow::new();
-        stub.run_loop(Box::new(move || {}));
-        // StubWindow simulates 3 frames; frames_rendered should be 3.
-        assert_eq!(stub.frames_rendered, 3);
+    fn run_returns_ok_on_clean_shutdown() {
+        let mut window = FakeAppWindow::new(Ok(()));
+        let app = App::new("test-app", 640, 480);
+
+        let outcome = window.run(app);
+
+        assert!(outcome.is_ok());
+        assert_eq!(window.received_title.as_deref(), Some("test-app"));
     }
 
     #[test]
-    fn app_window_trait_is_object_safe() {
-        // Verify the trait can be used as a trait object.
-        let stub: Box<dyn AppWindow> = Box::new(StubWindow::new());
-        // Just hold the box; no method call needed to confirm object safety.
-        drop(stub);
+    fn run_propagates_initialization_failure() {
+        let mut window = FakeAppWindow::new(Err(WindowError::InitializationFailed(
+            "no display".to_string(),
+        )));
+        let app = App::default();
+
+        let outcome = window.run(app);
+
+        assert_eq!(
+            outcome,
+            Err(WindowError::InitializationFailed("no display".to_string()))
+        );
+    }
+
+    #[test]
+    fn app_default_provides_sensible_window_size() {
+        let app = App::default();
+
+        assert_eq!(app.title, "crest-synth");
+        assert!(app.width > 0);
+        assert!(app.height > 0);
+    }
+
+    #[test]
+    fn window_error_display_includes_reason() {
+        let error = WindowError::EventLoopFailed("panic in redraw".to_string());
+
+        assert_eq!(
+            error.to_string(),
+            "window event loop failed: panic in redraw"
+        );
     }
 }

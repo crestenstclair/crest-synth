@@ -1,343 +1,696 @@
 // path: src/bin/midi_play.rs
 //
-// midi_play — offline MIDI-file renderer to WAV
+// Offline MIDI-file player: renders a .mid file (or a built-in demo melody)
+// to a 16-bit mono WAV file through the phase-1 engine's `Oscillator` port.
 //
-// Usage: midi_play [FILE.mid] [--out OUT.wav]
+// This binary is a batch/offline tool: it has no real-time audio callback,
+// so it is not the "audio thread" governed by this project's real-time
+// invariants (no allocation, no locks, no blocking I/O on that thread). It
+// is free to allocate and perform blocking file I/O.
 //
-// If FILE is omitted, a built-in demo arpeggio is synthesised.
+// Usage:
+//   midi_play [FILE.mid] [--out OUT.wav]
+//
+// If FILE is omitted, a built-in demo melody is rendered instead so no
+// .mid asset needs to live in the repository.
 
 use std::collections::HashMap;
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process;
+use std::env;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::Path;
+use std::process::exit;
 
-use crest_synth::audio::sine_voice::SineVoice;
-use crest_synth::kernel::midi_channel::MidiChannel;
-use crest_synth::kernel::midi_group::MidiGroup;
+use crest_synth::engine::oscillator::{
+    Amplitude, Frequency, Oscillator, OscillatorConfig, SampleRate, StandardOscillator, Waveform,
+};
+use crest_synth::kernel::channel_address::{ChannelAddress, MidiChannel, MidiGroup};
+use crest_synth::kernel::midi_event::MidiEvent;
+use crest_synth::kernel::midi_event_kind::MidiEventKind;
 use crest_synth::kernel::note_id::NoteId;
 use crest_synth::kernel::note_number::NoteNumber;
 use crest_synth::kernel::velocity::Velocity;
+use crest_synth::midi_file::midi_file_reader::{MidiFileReader, Song, TimedMidiEvent};
+use crest_synth::midi_file::midly_midi_file_reader::MidlyMidiFileReader;
 
-// ── Constants ──────────────────────────────────────────────────────────────────
-
-const SAMPLE_RATE: u32 = 44_100;
-const BLOCK_SIZE: usize = 256;
-
-// ── Entry point ────────────────────────────────────────────────────────────────
+/// Fixed sample rate used for the offline render.
+const SAMPLE_RATE_HZ: f64 = 44_100.0;
+/// Fixed block size the renderer steps by (mirrors a real-time callback's
+/// fixed-size buffer, even though this render is offline).
+const BLOCK_SIZE: usize = 512;
+/// Extra tail rendered after the last note-off so releases are not cut off.
+const TAIL_SECONDS: f64 = 0.3;
+/// Sustain applied to a note-on that is never matched by a note-off.
+const DEFAULT_SUSTAIN_SECONDS: f64 = 0.5;
+/// Per-voice attack/release fade to avoid clicks at note boundaries.
+const FADE_SECONDS: f64 = 0.005;
+/// Headroom applied per voice before summing, to leave room for polyphony.
+const VOICE_GAIN: f32 = 0.28;
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    match run() {
+        Ok(summary) => {
+            print_summary(&summary);
+            exit(0);
+        }
+        Err(message) => {
+            eprintln!("midi_play: error: {message}");
+            exit(1);
+        }
+    }
+}
 
-    // Parse CLI: optional positional FILE, optional --out PATH.
-    let mut midi_path: Option<PathBuf> = None;
-    let mut out_path = PathBuf::from("midi-play.wav");
+struct RenderSummary {
+    source: String,
+    total_events: usize,
+    peak_voices: usize,
+    rendered_seconds: f64,
+    output_path: String,
+}
+
+fn print_summary(summary: &RenderSummary) {
+    println!("midi_play: source={}", summary.source);
+    println!(
+        "midi_play: sample_rate={} channels=1 block_size={}",
+        SAMPLE_RATE_HZ as u32, BLOCK_SIZE
+    );
+    println!("midi_play: total events={}", summary.total_events);
+    println!(
+        "midi_play: peak simultaneous voices={}",
+        summary.peak_voices
+    );
+    // The literal token `rendered seconds=` must appear verbatim so a
+    // validation harness can assert the offline render actually ran.
+    println!(
+        "midi_play: rendered seconds={:.2}",
+        summary.rendered_seconds
+    );
+    println!("midi_play: output={}", summary.output_path);
+}
+
+fn run() -> Result<RenderSummary, String> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let (file_arg, out_path) = parse_args(&args)?;
+
+    let (events, source_label): (Vec<TimedMidiEvent>, String) = match &file_arg {
+        Some(path) => {
+            let song =
+                load_song(path).map_err(|e| format!("failed to parse MIDI file '{path}': {e}"))?;
+            (song.events().to_vec(), path.clone())
+        }
+        None => (build_demo_events(), "built-in demo melody".to_string()),
+    };
+
+    let total_events = events.len();
+    let notes = build_notes(&events);
+
+    let rendered = render_notes_to_pcm(&notes);
+    let peak_voices = compute_peak_voices(&notes);
+
+    write_wav(&out_path, &rendered.samples)
+        .map_err(|e| format!("failed to write WAV file '{out_path}': {e}"))?;
+
+    Ok(RenderSummary {
+        source: source_label,
+        total_events,
+        peak_voices,
+        rendered_seconds: rendered.duration_seconds,
+        output_path: out_path,
+    })
+}
+
+fn parse_args(args: &[String]) -> Result<(Option<String>, String), String> {
+    let mut file_arg: Option<String> = None;
+    let mut out_path: String = "midi-play.wav".to_string();
+
     let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
-            "--out" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("error: --out requires a path argument");
-                    process::exit(1);
-                }
-                out_path = PathBuf::from(&args[i]);
-            }
-            other => {
-                midi_path = Some(PathBuf::from(other));
-            }
+        let arg = &args[i];
+        if arg == "--out" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| "--out requires a path argument".to_string())?;
+            out_path = value.clone();
+            i += 2;
+        } else if file_arg.is_none() {
+            file_arg = Some(arg.clone());
+            i += 1;
+        } else {
+            return Err(format!("unexpected argument: {arg}"));
         }
-        i += 1;
     }
 
-    // Build the event timeline.
-    let timeline = match midi_path {
-        Some(ref path) => match load_midi_file(path) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("error: cannot parse MIDI file '{}': {e}", path.display());
-                process::exit(1);
-            }
-        },
-        None => builtin_demo(),
-    };
-
-    // Render.
-    let result = render_to_wav(&timeline, &out_path);
-
-    println!(
-        "rendered seconds={:.3}  events={}  peak_voices={}  out={}",
-        result.duration_secs,
-        result.total_events,
-        result.peak_voices,
-        out_path.display()
-    );
+    Ok((file_arg, out_path))
 }
 
-// ── MIDI event timeline ────────────────────────────────────────────────────────
+/// Loads a .mid file into a fully decoded [`Song`] via the `MidiFileReader`
+/// port, using the `midly`-backed adapter. This is a non-real-time, blocking
+/// path -- exactly as `MidiFileReader`'s contract requires.
+fn load_song(path: &str) -> Result<Song, String> {
+    let reader = MidlyMidiFileReader::new();
+    reader.load(Path::new(path)).map_err(|e| e.to_string())
+}
 
-/// A single scheduled MIDI note action.
-#[derive(Debug, Clone)]
-struct NoteEvent {
-    time_secs: f64,
+// ---------------------------------------------------------------------
+// Built-in demo melody (no external asset file required).
+// ---------------------------------------------------------------------
+
+fn demo_address(channel: u8) -> ChannelAddress {
+    ChannelAddress::new(
+        MidiChannel::try_new(channel).expect("demo channel is within 0..=15"),
+        MidiGroup::try_new(0).expect("group 0 is always valid"),
+    )
+}
+
+/// Appends a matched NoteOn/NoteOff pair (sharing one freshly minted
+/// `NoteId`, as a real `MidiFileReader` would) to `events`.
+#[allow(clippy::too_many_arguments)]
+fn push_demo_note(
+    events: &mut Vec<TimedMidiEvent>,
+    next_note_id: &mut u32,
+    channel: u8,
     note: u8,
-    /// `true` = note-on, `false` = note-off.
-    is_on: bool,
-    velocity: f64,
+    velocity: u8,
+    start_seconds: f64,
+    end_seconds: f64,
+) {
+    let note_number = NoteNumber::try_new(note).expect("demo note number is in 0..=127");
+    let note_id = NoteId::new(*next_note_id);
+    *next_note_id += 1;
+    let velocity = Velocity::from_midi7(velocity);
+    let address = demo_address(channel);
+
+    events.push(TimedMidiEvent::new(
+        start_seconds,
+        MidiEvent::new(
+            address,
+            MidiEventKind::NoteOn,
+            note_number,
+            note_id,
+            velocity,
+        ),
+    ));
+    events.push(TimedMidiEvent::new(
+        end_seconds,
+        MidiEvent::new(
+            address,
+            MidiEventKind::NoteOff,
+            note_number,
+            note_id,
+            velocity,
+        ),
+    ));
 }
 
-// ── MIDI file loader ───────────────────────────────────────────────────────────
+/// Builds a short, recognizable arpeggio over a sustained bass note so the
+/// demo exercises basic polyphony (multiple simultaneous voices). Spans
+/// exactly 4.0 seconds of melody before the release tail.
+fn build_demo_events() -> Vec<TimedMidiEvent> {
+    let mut events = Vec::new();
+    let mut next_note_id = 0u32;
 
-/// Load a Standard MIDI File and convert it to a flat, time-ordered list of
-/// [`NoteEvent`]s in seconds.
-fn load_midi_file(path: &Path) -> Result<Vec<NoteEvent>, Box<dyn std::error::Error>> {
-    let bytes = fs::read(path)?;
-    let smf = midly::Smf::parse(&bytes)?;
+    const STEP_SECONDS: f64 = 0.25;
+    const MELODY: [u8; 16] = [
+        60, 64, 67, 72, 67, 64, 60, 64, 67, 72, 67, 64, 60, 64, 67, 72,
+    ];
+    const MELODY_CHANNEL: u8 = 0;
+    const MELODY_VELOCITY: u8 = 100;
 
-    let ticks_per_beat: u64 = match smf.header.timing {
-        midly::Timing::Metrical(tpb) => tpb.as_int() as u64,
-        midly::Timing::Timecode(fps, sub) => {
-            return Err(
-                format!("SMPTE timecode ({fps:?} fps, {sub} sub-frames) not supported").into(),
-            );
-        }
-    };
-
-    // Default tempo: 120 BPM = 500 000 µs/beat.
-    let mut microsecs_per_beat: u64 = 500_000;
-    let mut events: Vec<NoteEvent> = Vec::new();
-
-    for track in &smf.tracks {
-        let mut time_secs: f64 = 0.0;
-
-        for ev in track {
-            let delta = ev.delta.as_int() as u64;
-            if delta > 0 {
-                let delta_us = delta * microsecs_per_beat / ticks_per_beat;
-                time_secs += delta_us as f64 / 1_000_000.0;
-            }
-
-            match ev.kind {
-                midly::TrackEventKind::Midi { message, .. } => match message {
-                    midly::MidiMessage::NoteOn { key, vel } => {
-                        let v = vel.as_int();
-                        if v == 0 {
-                            events.push(NoteEvent {
-                                time_secs,
-                                note: key.as_int(),
-                                is_on: false,
-                                velocity: 0.0,
-                            });
-                        } else {
-                            events.push(NoteEvent {
-                                time_secs,
-                                note: key.as_int(),
-                                is_on: true,
-                                velocity: v as f64 / 127.0,
-                            });
-                        }
-                    }
-                    midly::MidiMessage::NoteOff { key, .. } => {
-                        events.push(NoteEvent {
-                            time_secs,
-                            note: key.as_int(),
-                            is_on: false,
-                            velocity: 0.0,
-                        });
-                    }
-                    _ => {}
-                },
-                midly::TrackEventKind::Meta(midly::MetaMessage::Tempo(us)) => {
-                    microsecs_per_beat = us.as_int() as u64;
-                }
-                _ => {}
-            }
-        }
+    for (i, &note) in MELODY.iter().enumerate() {
+        let start = i as f64 * STEP_SECONDS;
+        let end = start + STEP_SECONDS;
+        push_demo_note(
+            &mut events,
+            &mut next_note_id,
+            MELODY_CHANNEL,
+            note,
+            MELODY_VELOCITY,
+            start,
+            end,
+        );
     }
 
-    // Sort: time ascending; at equal time, note-offs before note-ons.
-    events.sort_by(|a, b| {
-        a.time_secs
-            .partial_cmp(&b.time_secs)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.is_on.cmp(&b.is_on)) // false < true → offs first
-    });
+    // Sustained bass note under the first half of the arpeggio, giving a
+    // recognizable moment of polyphony (peak simultaneous voices > 1).
+    push_demo_note(&mut events, &mut next_note_id, 1, 48, 80, 0.0, 2.0);
 
-    Ok(events)
-}
-
-// ── Built-in demo melody ───────────────────────────────────────────────────────
-
-/// A short C-major arpeggio spanning ~4 seconds.
-fn builtin_demo() -> Vec<NoteEvent> {
-    let notes: &[u8] = &[60, 64, 67, 72, 67, 64, 60, 55, 60, 64, 67, 72];
-    let note_dur = 0.3_f64;
-    let step = 0.35_f64;
-
-    let mut events: Vec<NoteEvent> = Vec::new();
-    for (i, &note) in notes.iter().enumerate() {
-        let t_on = i as f64 * step;
-        let t_off = t_on + note_dur;
-        events.push(NoteEvent {
-            time_secs: t_on,
-            note,
-            is_on: true,
-            velocity: 0.8,
-        });
-        events.push(NoteEvent {
-            time_secs: t_off,
-            note,
-            is_on: false,
-            velocity: 0.0,
-        });
-    }
-
-    events.sort_by(|a, b| {
-        a.time_secs
-            .partial_cmp(&b.time_secs)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.is_on.cmp(&b.is_on))
-    });
+    events.sort_by(|a, b| a.at_seconds().partial_cmp(&b.at_seconds()).unwrap());
     events
 }
 
-// ── Renderer ───────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Note matching: pairs NoteOn/NoteOff into discrete sounding notes.
+// ---------------------------------------------------------------------
 
-struct RenderResult {
-    duration_secs: f64,
-    total_events: usize,
-    peak_voices: usize,
+#[derive(Clone, Copy, Debug)]
+struct Note {
+    note_number: u8,
+    /// Normalized velocity in `0.0..=1.0`.
+    velocity: f64,
+    start_seconds: f64,
+    end_seconds: f64,
 }
 
-/// Render the note-event timeline through the SineVoice engine and write a
-/// 16-bit mono WAV file.
-fn render_to_wav(events: &[NoteEvent], out_path: &Path) -> RenderResult {
-    let sr = SAMPLE_RATE as f64;
+/// Matches NoteOn events to their NoteOff by shared `NoteId` (the identity a
+/// `MidiFileReader` mints per sounding note), producing discrete `Note`
+/// intervals. Unmatched trailing note-ons are given a default sustain so
+/// they still render audibly.
+fn build_notes(events: &[TimedMidiEvent]) -> Vec<Note> {
+    let mut open: HashMap<NoteId, (u8, f64, f64)> = HashMap::new();
+    let mut notes = Vec::new();
+    let mut last_time = 0.0f64;
 
-    let last_t = events.iter().map(|e| e.time_secs).fold(0.0_f64, f64::max);
-    let total_secs = last_t + 0.5;
-    let total_samples = (total_secs * sr).ceil() as usize;
-
-    // Clamp amplitude to avoid WAV clipping on polyphony.
-    let amplitude = 0.25_f32;
-
-    // Map: note_number -> NoteId (most recently activated).
-    let mut active: HashMap<u8, NoteId> = HashMap::new();
-    let mut next_id: u32 = 1;
-
-    let default_group = MidiGroup::try_new(0).expect("group 0 is valid");
-    let default_channel = MidiChannel::try_new(0).expect("channel 0 is valid");
-
-    // Silence the compiler about unused fields — these are here for
-    // structural clarity (a real engine would route events via group/channel).
-    let _group = default_group;
-    let _channel = default_channel;
-
-    let mut voice = SineVoice::new();
-
-    let mut samples: Vec<i16> = Vec::with_capacity(total_samples);
-
-    let mut event_cursor = 0;
-    let mut peak_voices: usize = 0;
-    let mut active_voice_count: usize = 0;
-    let mut events_fired: usize = 0;
-
-    for sample_idx in 0..total_samples {
-        let t = sample_idx as f64 / sr;
-
-        // Dispatch all events whose time has been reached.
-        while event_cursor < events.len() && events[event_cursor].time_secs <= t {
-            let ev = &events[event_cursor];
-            if ev.is_on {
-                if let (Ok(note_number), Ok(velocity)) =
-                    (NoteNumber::try_new(ev.note), Velocity::try_new(ev.velocity))
-                {
-                    // If there is already an active voice for this pitch, stop it first.
-                    if let Some(old_id) = active.remove(&ev.note) {
-                        let _ = voice.note_off(old_id);
-                        active_voice_count = active_voice_count.saturating_sub(1);
-                    }
-                    let note_id = NoteId::new(next_id);
-                    next_id += 1;
-                    let _ = voice.note_on(note_id, note_number, velocity);
-                    active.insert(ev.note, note_id);
-                    active_voice_count += 1;
-                    if active_voice_count > peak_voices {
-                        peak_voices = active_voice_count;
-                    }
-                    events_fired += 1;
-                }
-            } else {
-                if let Some(note_id) = active.remove(&ev.note) {
-                    let _ = voice.note_off(note_id);
-                    active_voice_count = active_voice_count.saturating_sub(1);
-                    events_fired += 1;
+    for timed in events {
+        last_time = last_time.max(timed.at_seconds());
+        let event = timed.event();
+        match event.kind() {
+            MidiEventKind::NoteOn => {
+                open.insert(
+                    *event.note_id(),
+                    (
+                        event.note().value(),
+                        event.velocity().value(),
+                        timed.at_seconds(),
+                    ),
+                );
+            }
+            MidiEventKind::NoteOff => {
+                if let Some((note_number, velocity, start)) = open.remove(event.note_id()) {
+                    notes.push(Note {
+                        note_number,
+                        velocity,
+                        start_seconds: start,
+                        end_seconds: timed.at_seconds().max(start),
+                    });
                 }
             }
-            event_cursor += 1;
-        }
-
-        let raw = voice.render_sample(sr) * amplitude;
-        let clamped = raw.clamp(-1.0, 1.0);
-        let pcm = (clamped * i16::MAX as f32) as i16;
-        samples.push(pcm);
-
-        if sample_idx % BLOCK_SIZE == 0 {
-            voice.gc_voices();
+            _ => {}
         }
     }
 
-    write_wav(out_path, &samples, SAMPLE_RATE);
+    // Any notes still open at the end of the file get a default sustain.
+    for (note_number, velocity, start) in open.into_values() {
+        notes.push(Note {
+            note_number,
+            velocity,
+            start_seconds: start,
+            end_seconds: start + DEFAULT_SUSTAIN_SECONDS.max(last_time - start),
+        });
+    }
 
-    RenderResult {
-        duration_secs: total_secs,
-        total_events: events_fired,
-        peak_voices,
+    notes.sort_by(|a, b| a.start_seconds.partial_cmp(&b.start_seconds).unwrap());
+    notes
+}
+
+fn note_to_frequency_hz(note_number: u8) -> f64 {
+    440.0 * 2f64.powf((note_number as f64 - 69.0) / 12.0)
+}
+
+// ---------------------------------------------------------------------
+// Offline rendering: the phase-1 engine's `Oscillator` port, stepped in
+// fixed blocks, with active voices summed for basic polyphony.
+// ---------------------------------------------------------------------
+
+struct RenderedAudio {
+    samples: Vec<i16>,
+    duration_seconds: f64,
+}
+
+#[derive(Clone, Copy)]
+struct ActiveVoice {
+    frequency: Frequency,
+    velocity_gain: f32,
+    phase: f64,
+    start_sample: usize,
+    end_sample: usize,
+}
+
+fn render_notes_to_pcm(notes: &[Note]) -> RenderedAudio {
+    let oscillator = StandardOscillator::new();
+    let sample_rate = SampleRate::try_new(SAMPLE_RATE_HZ).expect("44.1kHz is a valid sample rate");
+    let osc_config = OscillatorConfig::new(
+        Waveform::Sine,
+        Amplitude::try_new(1.0).expect("1.0 is a valid amplitude"),
+    );
+
+    let last_end = notes.iter().map(|n| n.end_seconds).fold(0.0f64, f64::max);
+    let duration_seconds = last_end + TAIL_SECONDS;
+    let total_samples = ((duration_seconds * SAMPLE_RATE_HZ).ceil() as usize).max(1);
+
+    let mut mix = vec![0f32; total_samples];
+
+    // Sort notes by start sample so we can trigger them as the block
+    // cursor reaches them, mirroring how a real-time engine triggers
+    // note_on/note_off at the correct sample offsets.
+    let mut pending: Vec<ActiveVoice> = notes
+        .iter()
+        .map(|n| ActiveVoice {
+            frequency: Frequency::try_new(note_to_frequency_hz(n.note_number))
+                .expect("a MIDI note number always yields an audible positive frequency"),
+            velocity_gain: (n.velocity as f32) * VOICE_GAIN,
+            phase: 0.0,
+            start_sample: (n.start_seconds * SAMPLE_RATE_HZ).round() as usize,
+            end_sample: (n.end_seconds * SAMPLE_RATE_HZ).round() as usize,
+        })
+        .collect();
+    pending.sort_by_key(|v| v.start_sample);
+
+    let fade_samples = ((FADE_SECONDS * SAMPLE_RATE_HZ) as usize).max(1);
+
+    let mut next_pending_idx = 0usize;
+    let mut active: Vec<ActiveVoice> = Vec::new();
+
+    let mut block_start = 0usize;
+    while block_start < total_samples {
+        let block_end = (block_start + BLOCK_SIZE).min(total_samples);
+
+        // Trigger note-ons whose start sample falls within this block.
+        while next_pending_idx < pending.len() && pending[next_pending_idx].start_sample < block_end
+        {
+            active.push(pending[next_pending_idx]);
+            next_pending_idx += 1;
+        }
+
+        for (sample_idx, mix_sample) in mix.iter_mut().enumerate().take(block_end).skip(block_start)
+        {
+            let mut sample_value = 0f32;
+            for voice in active.iter_mut() {
+                if sample_idx < voice.start_sample || sample_idx >= voice.end_sample {
+                    continue;
+                }
+                let phase_into_note = sample_idx - voice.start_sample;
+                let samples_remaining = voice.end_sample - sample_idx;
+                let envelope = fade_gain(phase_into_note, samples_remaining, fade_samples);
+
+                let raw = oscillator.render(voice.phase, osc_config);
+                sample_value += (raw as f32) * voice.velocity_gain * envelope;
+                voice.phase = oscillator.advance(voice.phase, voice.frequency, sample_rate);
+            }
+            *mix_sample = sample_value;
+        }
+
+        // Drop voices that have fully ended; freed here since this is an
+        // offline batch process, not the real-time audio thread.
+        active.retain(|voice| voice.end_sample > block_end);
+
+        block_start = block_end;
+    }
+
+    let samples = mix.into_iter().map(clamp_to_i16).collect();
+
+    RenderedAudio {
+        samples,
+        duration_seconds,
     }
 }
 
-// ── Pure-Rust WAV writer ───────────────────────────────────────────────────────
+fn fade_gain(phase_into_note: usize, samples_remaining: usize, fade_samples: usize) -> f32 {
+    let attack = if phase_into_note < fade_samples {
+        phase_into_note as f32 / fade_samples as f32
+    } else {
+        1.0
+    };
+    let release = if samples_remaining < fade_samples {
+        samples_remaining as f32 / fade_samples as f32
+    } else {
+        1.0
+    };
+    attack.min(release).clamp(0.0, 1.0)
+}
 
-fn write_wav(path: &Path, samples: &[i16], sample_rate: u32) {
-    let num_channels: u16 = 1;
-    let bits_per_sample: u16 = 16;
-    let byte_rate = sample_rate * num_channels as u32 * bits_per_sample as u32 / 8;
-    let block_align = num_channels * bits_per_sample / 8;
-    let data_chunk_size = (samples.len() * 2) as u32; // 2 bytes per i16
+/// Simple limiter: clamps the mixed signal to `[-1.0, 1.0]` before
+/// quantizing, matching this project's canonical signal path (a limiter
+/// sits before output).
+fn clamp_to_i16(sample: f32) -> i16 {
+    let clamped = sample.clamp(-1.0, 1.0);
+    (clamped * i16::MAX as f32) as i16
+}
 
-    // Total RIFF size: 4 (WAVE id) + 24 (fmt chunk) + 8 (data header) + data
-    let riff_size = 4 + 24 + 8 + data_chunk_size;
+fn compute_peak_voices(notes: &[Note]) -> usize {
+    let mut edges: Vec<(usize, i32)> = Vec::with_capacity(notes.len() * 2);
+    for note in notes {
+        let start = (note.start_seconds * SAMPLE_RATE_HZ).round() as usize;
+        let end = (note.end_seconds * SAMPLE_RATE_HZ).round() as usize;
+        edges.push((start, 1));
+        edges.push((end, -1));
+    }
+    // At equal sample offsets, process note-offs (-1) before note-ons (+1)
+    // so a note ending exactly when the next begins is not double-counted
+    // as an overlap.
+    edges.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-    let mut buf: Vec<u8> = Vec::with_capacity(12 + 24 + 8 + data_chunk_size as usize);
+    let mut running = 0i32;
+    let mut peak = 0i32;
+    for (_, delta) in edges {
+        running += delta;
+        peak = peak.max(running);
+    }
+    peak.max(0) as usize
+}
 
-    // RIFF header
-    buf.extend_from_slice(b"RIFF");
-    buf.extend_from_slice(&riff_size.to_le_bytes());
-    buf.extend_from_slice(b"WAVE");
+// ---------------------------------------------------------------------
+// Pure-Rust 16-bit mono WAV writer (no external WAV crate).
+// ---------------------------------------------------------------------
 
-    // fmt  chunk (PCM = audio format 1)
-    buf.extend_from_slice(b"fmt ");
-    buf.extend_from_slice(&16u32.to_le_bytes());
-    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    buf.extend_from_slice(&num_channels.to_le_bytes());
-    buf.extend_from_slice(&sample_rate.to_le_bytes());
-    buf.extend_from_slice(&byte_rate.to_le_bytes());
-    buf.extend_from_slice(&block_align.to_le_bytes());
-    buf.extend_from_slice(&bits_per_sample.to_le_bytes());
+fn write_wav(path: &str, samples: &[i16]) -> Result<(), String> {
+    let file = File::create(path).map_err(|e| e.to_string())?;
+    let mut writer = BufWriter::new(file);
 
-    // data chunk
-    buf.extend_from_slice(b"data");
-    buf.extend_from_slice(&data_chunk_size.to_le_bytes());
-    for &s in samples {
-        buf.extend_from_slice(&s.to_le_bytes());
+    const BITS_PER_SAMPLE: u16 = 16;
+    const NUM_CHANNELS: u16 = 1;
+    let sample_rate = SAMPLE_RATE_HZ as u32;
+    let byte_rate = sample_rate * NUM_CHANNELS as u32 * (BITS_PER_SAMPLE as u32 / 8);
+    let block_align = NUM_CHANNELS * (BITS_PER_SAMPLE / 8);
+    let data_len = (samples.len() * 2) as u32;
+    let riff_len = 36 + data_len;
+
+    writer.write_all(b"RIFF").map_err(|e| e.to_string())?;
+    writer
+        .write_all(&riff_len.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer.write_all(b"WAVE").map_err(|e| e.to_string())?;
+
+    writer.write_all(b"fmt ").map_err(|e| e.to_string())?;
+    writer
+        .write_all(&16u32.to_le_bytes())
+        .map_err(|e| e.to_string())?; // fmt chunk size
+    writer
+        .write_all(&1u16.to_le_bytes())
+        .map_err(|e| e.to_string())?; // PCM format
+    writer
+        .write_all(&NUM_CHANNELS.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer
+        .write_all(&sample_rate.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer
+        .write_all(&byte_rate.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer
+        .write_all(&block_align.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer
+        .write_all(&BITS_PER_SAMPLE.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+
+    writer.write_all(b"data").map_err(|e| e.to_string())?;
+    writer
+        .write_all(&data_len.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    for sample in samples {
+        writer
+            .write_all(&sample.to_le_bytes())
+            .map_err(|e| e.to_string())?;
     }
 
-    let mut file = fs::File::create(path).unwrap_or_else(|e| {
-        eprintln!("error: cannot create '{}': {e}", path.display());
-        process::exit(1);
-    });
-    file.write_all(&buf).unwrap_or_else(|e| {
-        eprintln!("error: cannot write '{}': {e}", path.display());
-        process::exit(1);
-    });
+    writer.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn address() -> ChannelAddress {
+        demo_address(0)
+    }
+
+    fn note_event(note_id: u32, kind: MidiEventKind, note: u8, velocity: u8) -> MidiEvent {
+        MidiEvent::new(
+            address(),
+            kind,
+            NoteNumber::try_new(note).unwrap(),
+            NoteId::new(note_id),
+            Velocity::from_midi7(velocity),
+        )
+    }
+
+    #[test]
+    fn a4_frequency_is_440_hz() {
+        let freq = note_to_frequency_hz(69);
+        assert!((freq - 440.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn one_octave_up_doubles_frequency() {
+        let a4 = note_to_frequency_hz(69);
+        let a5 = note_to_frequency_hz(81);
+        assert!((a5 - 2.0 * a4).abs() < 0.001);
+    }
+
+    #[test]
+    fn build_notes_matches_on_off_pairs_by_note_id() {
+        let events = vec![
+            TimedMidiEvent::new(0.0, note_event(1, MidiEventKind::NoteOn, 60, 100)),
+            TimedMidiEvent::new(1.0, note_event(1, MidiEventKind::NoteOff, 60, 0)),
+        ];
+        let notes = build_notes(&events);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].note_number, 60);
+        assert_eq!(notes[0].start_seconds, 0.0);
+        assert_eq!(notes[0].end_seconds, 1.0);
+    }
+
+    #[test]
+    fn build_notes_gives_unmatched_note_on_a_default_sustain() {
+        let events = vec![TimedMidiEvent::new(
+            0.0,
+            note_event(1, MidiEventKind::NoteOn, 60, 100),
+        )];
+        let notes = build_notes(&events);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].end_seconds > notes[0].start_seconds);
+    }
+
+    #[test]
+    fn build_notes_ignores_non_lifecycle_events() {
+        let events = vec![
+            TimedMidiEvent::new(0.0, note_event(1, MidiEventKind::NoteOn, 60, 100)),
+            TimedMidiEvent::new(0.5, note_event(1, MidiEventKind::PolyPressure, 60, 80)),
+            TimedMidiEvent::new(1.0, note_event(1, MidiEventKind::NoteOff, 60, 0)),
+        ];
+        let notes = build_notes(&events);
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn peak_voices_counts_overlap() {
+        let notes = vec![
+            Note {
+                note_number: 60,
+                velocity: 1.0,
+                start_seconds: 0.0,
+                end_seconds: 1.0,
+            },
+            Note {
+                note_number: 64,
+                velocity: 1.0,
+                start_seconds: 0.5,
+                end_seconds: 1.5,
+            },
+        ];
+        assert_eq!(compute_peak_voices(&notes), 2);
+    }
+
+    #[test]
+    fn peak_voices_is_one_when_sequential() {
+        let notes = vec![
+            Note {
+                note_number: 60,
+                velocity: 1.0,
+                start_seconds: 0.0,
+                end_seconds: 1.0,
+            },
+            Note {
+                note_number: 64,
+                velocity: 1.0,
+                start_seconds: 1.0,
+                end_seconds: 2.0,
+            },
+        ];
+        assert_eq!(compute_peak_voices(&notes), 1);
+    }
+
+    #[test]
+    fn demo_events_are_time_ordered_and_nonempty() {
+        let events = build_demo_events();
+        assert!(!events.is_empty());
+        for pair in events.windows(2) {
+            assert!(pair[0].at_seconds() <= pair[1].at_seconds());
+        }
+    }
+
+    #[test]
+    fn demo_notes_include_a_moment_of_polyphony() {
+        let events = build_demo_events();
+        let notes = build_notes(&events);
+        assert!(compute_peak_voices(&notes) >= 2);
+    }
+
+    #[test]
+    fn render_produces_pcm_covering_the_full_duration_plus_tail() {
+        let notes = vec![Note {
+            note_number: 69,
+            velocity: 1.0,
+            start_seconds: 0.0,
+            end_seconds: 1.0,
+        }];
+        let rendered = render_notes_to_pcm(&notes);
+        assert!(rendered.duration_seconds >= 1.0);
+        let expected_samples = (rendered.duration_seconds * SAMPLE_RATE_HZ).ceil() as usize;
+        assert_eq!(rendered.samples.len(), expected_samples);
+    }
+
+    #[test]
+    fn render_does_not_clip_a_single_voice() {
+        let notes = vec![Note {
+            note_number: 69,
+            velocity: 1.0,
+            start_seconds: 0.0,
+            end_seconds: 0.5,
+        }];
+        let rendered = render_notes_to_pcm(&notes);
+        let peak = rendered
+            .samples
+            .iter()
+            .map(|s| s.unsigned_abs())
+            .max()
+            .unwrap_or(0);
+        assert!(peak < i16::MAX as u16);
+    }
+
+    #[test]
+    fn parse_args_defaults_to_demo_and_default_out_path() {
+        let (file_arg, out_path) = parse_args(&[]).unwrap();
+        assert_eq!(file_arg, None);
+        assert_eq!(out_path, "midi-play.wav");
+    }
+
+    #[test]
+    fn parse_args_reads_file_and_out_flag() {
+        let args: Vec<String> = vec![
+            "song.mid".to_string(),
+            "--out".to_string(),
+            "out.wav".to_string(),
+        ];
+        let (file_arg, out_path) = parse_args(&args).unwrap();
+        assert_eq!(file_arg, Some("song.mid".to_string()));
+        assert_eq!(out_path, "out.wav");
+    }
+
+    #[test]
+    fn parse_args_rejects_out_flag_without_value() {
+        let args: Vec<String> = vec!["--out".to_string()];
+        assert!(parse_args(&args).is_err());
+    }
+
+    #[test]
+    fn load_song_reports_a_clear_error_for_a_missing_file() {
+        let result = load_song("/definitely/does/not/exist.mid");
+        assert!(result.is_err());
+    }
 }

@@ -1,31 +1,35 @@
 // path: src/mixer/mixer_view_event.rs
 
-/// Semantic input vocabulary of the mixer view.
+//! The semantic input vocabulary of the mixer view.
+//!
+//! Keyboard and gamepad adapters both emit ONLY these variants. Timing
+//! concerns (Edit-hold detection, double-tap detection) live entirely in the
+//! input adapter that produces these events — `MixerViewEvent` itself and the
+//! `MixerView` reducer that consumes it are timing-free, which keeps the
+//! store a pure reducer that unit tests can drive with plain event
+//! sequences.
+
+/// A single semantic input event understood by the mixer view's reducer.
 ///
-/// Keyboard and gamepad adapters both emit **only** these events. The two input
-/// paths are interchangeable — callers need not know the origin.
-///
-/// * `EnterEditMode` / `ExitEditMode` — track the Edit modifier (J key or a
-///   face button) hold state. Emitted by the adapter when the modifier is
-///   pressed or released.
-/// * `ToggleFocusedParam` — emitted by the adapter on a **double-tap** of the
-///   Edit modifier. Double-tap detection and timing logic live entirely in the
-///   adapter; this store is timing-free.
+/// `EnterEditMode` / `ExitEditMode` track the Edit modifier (keyboard `J` /
+/// gamepad face button) being held down. `ToggleFocusedParam` is emitted by
+/// the input adapter on a double-tap of Edit; the double-tap timing window
+/// is entirely the adapter's concern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MixerViewEvent {
-    /// Move focus to the previous row / channel strip.
+    /// Move focus up (e.g. to the previous parameter row on a channel).
     NavUp,
-    /// Move focus to the next row / channel strip.
+    /// Move focus down (e.g. to the next parameter row on a channel).
     NavDown,
-    /// Move focus to the previous parameter within the focused channel.
+    /// Move focus left (e.g. to the previous channel strip).
     NavLeft,
-    /// Move focus to the next parameter within the focused channel.
+    /// Move focus right (e.g. to the next channel strip).
     NavRight,
-    /// The Edit modifier was pressed — enter value-editing mode.
+    /// The Edit modifier has been pressed/held down.
     EnterEditMode,
-    /// The Edit modifier was released — exit value-editing mode.
+    /// The Edit modifier has been released.
     ExitEditMode,
-    /// Toggle the currently focused parameter (emitted on double-tap of Edit).
+    /// Toggle the currently focused parameter (emitted on Edit double-tap).
     ToggleFocusedParam,
 }
 
@@ -34,8 +38,8 @@ mod tests {
     use super::MixerViewEvent;
 
     #[test]
-    fn all_variants_debug() {
-        let variants = [
+    fn variants_are_distinct() {
+        let all = [
             MixerViewEvent::NavUp,
             MixerViewEvent::NavDown,
             MixerViewEvent::NavLeft,
@@ -44,36 +48,33 @@ mod tests {
             MixerViewEvent::ExitEditMode,
             MixerViewEvent::ToggleFocusedParam,
         ];
-        for v in &variants {
-            // Each variant must be representable as a debug string.
-            let s = format!("{:?}", v);
-            assert!(!s.is_empty());
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i == j {
+                    assert_eq!(a, b);
+                } else {
+                    assert_ne!(a, b);
+                }
+            }
         }
     }
 
     #[test]
-    fn clone_and_eq() {
-        let a = MixerViewEvent::NavUp;
-        let b = a;
-        assert_eq!(a, b);
+    fn event_is_copy_and_hashable() {
+        use std::collections::HashSet;
+        let mut set: HashSet<MixerViewEvent> = HashSet::new();
+        set.insert(MixerViewEvent::NavUp);
+        let copied = MixerViewEvent::NavUp;
+        set.insert(copied);
+        assert_eq!(set.len(), 1);
     }
 
     #[test]
-    fn copy_semantics() {
-        let a = MixerViewEvent::ToggleFocusedParam;
-        let b = a; // copy
-        let _ = a; // still usable
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn variants_are_distinct() {
-        assert_ne!(MixerViewEvent::NavUp, MixerViewEvent::NavDown);
-        assert_ne!(MixerViewEvent::NavLeft, MixerViewEvent::NavRight);
-        assert_ne!(MixerViewEvent::EnterEditMode, MixerViewEvent::ExitEditMode);
-        assert_ne!(
-            MixerViewEvent::ToggleFocusedParam,
-            MixerViewEvent::EnterEditMode
+    fn events_are_debug_formattable() {
+        assert_eq!(format!("{:?}", MixerViewEvent::NavUp), "NavUp");
+        assert_eq!(
+            format!("{:?}", MixerViewEvent::ToggleFocusedParam),
+            "ToggleFocusedParam"
         );
     }
 }

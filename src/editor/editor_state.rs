@@ -1,53 +1,21 @@
 // path: src/editor/editor_state.rs
 
+//! The single editor store: owns focus, edit-mode, and the editable
+//! parameter fields. `apply` is the only entry point that reacts to
+//! `EditorEvent`s and mutates state.
+
 use crate::editor::editor_event::EditorEvent;
 use crate::editor::param_field::ParamField;
 
-/// Flux-style store for all editor UI state.
+/// Coarse adjustment is this many times the field's fine step (10 units).
+const COARSE_MULTIPLIER: f32 = 10.0;
+
+/// The single editor store: owns focus, edit-mode, and the editable
+/// parameter fields.
 ///
-/// `apply` is the **only** mutation entry point - there are no setters and no
-/// other path that changes `edit_mode`, `focus`, or any field value.
-///
-/// # Navigate mode (`edit_mode == false`)
-/// Directional events move `focus` between fields (saturating at the ends).
-/// Both vertical (NavUp/NavDown) and horizontal (NavLeft/NavRight) move focus
-/// by one in the single-column MVP.
-///
-/// # Edit mode (`edit_mode == true`)
-/// Directional events adjust the focused field's value instead:
-/// - `NavLeft`  -- value -= 1 step  (fine)
-/// - `NavRight` -- value += 1 step  (fine)
-/// - `NavDown`  -- value -= 10 steps (coarse)
-/// - `NavUp`    -- value += 10 steps (coarse)
-///
-/// Every adjustment is clamped to the focused field's `[min, max]`.
-///
-/// # Examples
-///
-/// ```
-/// use crest_synth::editor::editor_state::EditorState;
-/// use crest_synth::editor::editor_event::EditorEvent;
-/// use crest_synth::editor::param_field::ParamField;
-///
-/// let fields = vec![
-///     ParamField::new("volume", "Volume", 0.0, 100.0, 1.0, 50.0).unwrap(),
-///     ParamField::new("cutoff", "Cutoff", 20.0, 20000.0, 10.0, 1000.0).unwrap(),
-/// ];
-/// let mut state = EditorState::new(fields);
-/// assert_eq!(state.focus(), 0);
-/// assert!(!state.edit_mode());
-///
-/// // Navigate to second field
-/// state.apply(EditorEvent::NavDown);
-/// assert_eq!(state.focus(), 1);
-///
-/// // Enter edit mode and increase value by one fine step (+10.0)
-/// state.apply(EditorEvent::EnterEditMode);
-/// assert!(state.edit_mode());
-/// state.apply(EditorEvent::NavRight);
-/// assert_eq!(state.fields()[1].value(), 1010.0);
-/// ```
-#[derive(Debug, Clone)]
+/// `apply(EditorEvent)` is the ONLY way to mutate this state; it is pure
+/// and allocation-free (no I/O, rendering, or audio).
+#[derive(Debug, Clone, PartialEq)]
 pub struct EditorState {
     edit_mode: bool,
     fields: Vec<ParamField>,
@@ -55,88 +23,80 @@ pub struct EditorState {
 }
 
 impl EditorState {
-    /// Construct a new `EditorState` with the given fields.
-    ///
-    /// `focus` starts at 0. `edit_mode` starts as `false` (navigate mode).
+    /// Creates a new editor state over `fields`, starting in navigate mode
+    /// with focus on the first field (or `0` if `fields` is empty).
     pub fn new(fields: Vec<ParamField>) -> Self {
-        Self {
-            edit_mode: false,
-            fields,
-            focus: 0,
-        }
+        Self { edit_mode: false, fields, focus: 0 }
     }
 
-    /// Returns `true` when the editor is in edit mode (directional = adjust value).
     pub fn edit_mode(&self) -> bool {
         self.edit_mode
     }
 
-    /// Returns the index of the currently focused field.
-    pub fn focus(&self) -> usize {
-        self.focus
-    }
-
-    /// Returns a reference to the list of parameter fields.
     pub fn fields(&self) -> &[ParamField] {
         &self.fields
     }
 
-    /// The only way to mutate editor state.
-    ///
-    /// Behaviour depends on the current mode:
-    /// - `EnterEditMode` / `ExitEditMode` toggle `edit_mode`.
-    /// - In navigate mode: directional events move `focus` (saturating).
-    /// - In edit mode: directional events adjust the focused field's value.
+    pub fn focus(&self) -> usize {
+        self.focus
+    }
+
+    /// The currently focused field, if any (`None` when `fields` is empty).
+    pub fn focused_field(&self) -> Option<&ParamField> {
+        self.fields.get(self.focus)
+    }
+
+    /// The only mutator of `EditorState`. Pure and allocation-free: no I/O,
+    /// rendering, or audio.
     pub fn apply(&mut self, event: EditorEvent) {
         match event {
-            EditorEvent::EnterEditMode => {
-                self.edit_mode = true;
-            }
-            EditorEvent::ExitEditMode => {
-                self.edit_mode = false;
-            }
-            EditorEvent::NavUp
-            | EditorEvent::NavDown
-            | EditorEvent::NavLeft
-            | EditorEvent::NavRight => {
-                if self.edit_mode {
-                    self.apply_edit(event);
-                } else {
-                    self.apply_navigate(event);
-                }
-            }
+            EditorEvent::EnterEditMode => self.edit_mode = true,
+            EditorEvent::ExitEditMode => self.edit_mode = false,
+            EditorEvent::NavUp => self.on_vertical(COARSE_MULTIPLIER),
+            EditorEvent::NavDown => self.on_vertical(-COARSE_MULTIPLIER),
+            EditorEvent::NavLeft => self.on_horizontal(-1.0),
+            EditorEvent::NavRight => self.on_horizontal(1.0),
         }
     }
 
-    /// Handle directional input in navigate mode -- moves focus (saturating).
-    fn apply_navigate(&mut self, event: EditorEvent) {
-        let len = self.fields.len();
-        if len == 0 {
-            return;
-        }
-        match event {
-            EditorEvent::NavUp | EditorEvent::NavLeft => {
-                self.focus = self.focus.saturating_sub(1);
-            }
-            EditorEvent::NavDown | EditorEvent::NavRight => {
-                self.focus = (self.focus + 1).min(len - 1);
-            }
-            _ => {}
+    /// NavUp (positive `units`) / NavDown (negative `units`): in edit mode
+    /// this is the coarse adjustment; in navigate mode it moves focus
+    /// (NavUp decreases focus, NavDown increases it).
+    fn on_vertical(&mut self, units: f32) {
+        if self.edit_mode {
+            self.adjust_focused(units);
+        } else {
+            self.move_focus(if units > 0.0 { -1 } else { 1 });
         }
     }
 
-    /// Handle directional input in edit mode -- adjusts the focused field's value.
-    fn apply_edit(&mut self, event: EditorEvent) {
+    /// NavRight (positive `units`) / NavLeft (negative `units`): in edit
+    /// mode this is the fine adjustment; in navigate mode it moves focus
+    /// (NavLeft decreases focus, NavRight increases it).
+    fn on_horizontal(&mut self, units: f32) {
+        if self.edit_mode {
+            self.adjust_focused(units);
+        } else {
+            self.move_focus(if units > 0.0 { 1 } else { -1 });
+        }
+    }
+
+    /// Moves focus by `delta` (+1 or -1), saturating at the ends (no wrap).
+    fn move_focus(&mut self, delta: isize) {
         if self.fields.is_empty() {
             return;
         }
-        let field = &mut self.fields[self.focus];
-        match event {
-            EditorEvent::NavLeft => field.step_down(),
-            EditorEvent::NavRight => field.step_up(),
-            EditorEvent::NavDown => field.coarse_down(),
-            EditorEvent::NavUp => field.coarse_up(),
-            _ => {}
+        let max_index = (self.fields.len() - 1) as isize;
+        let next = self.focus as isize + delta;
+        self.focus = next.clamp(0, max_index) as usize;
+    }
+
+    /// Adjusts the focused field's value by `units` fine-steps, clamping to
+    /// the field's `[min, max]`.
+    fn adjust_focused(&mut self, units: f32) {
+        if let Some(field) = self.fields.get_mut(self.focus) {
+            let delta = units * field.step();
+            field.adjust(delta);
         }
     }
 }
@@ -145,241 +105,117 @@ impl EditorState {
 mod editor_state_tests {
     use super::*;
 
-    fn make_field(id: &str, label: &str, value: f64) -> ParamField {
-        ParamField::new(id, label, 0.0, 100.0, 1.0, value).unwrap()
+    fn three_fields() -> Vec<ParamField> {
+        vec![
+            ParamField::new("a", 5.0, 0.0, 10.0, 1.0),
+            ParamField::new("b", 5.0, 0.0, 10.0, 1.0),
+            ParamField::new("c", 5.0, 0.0, 10.0, 1.0),
+        ]
     }
-
-    fn two_field_state() -> EditorState {
-        EditorState::new(vec![
-            make_field("volume", "Volume", 50.0),
-            make_field("cutoff", "Cutoff", 50.0),
-        ])
-    }
-
-    // -- mode toggle --
 
     #[test]
-    fn editor_state_starts_in_navigate_mode() {
-        let state = two_field_state();
+    fn starts_in_navigate_mode_focused_on_first_field() {
+        let state = EditorState::new(three_fields());
         assert!(!state.edit_mode());
+        assert_eq!(state.focus(), 0);
     }
 
     #[test]
-    fn editor_state_enter_edit_mode() {
-        let mut state = two_field_state();
+    fn navigate_mode_right_and_down_move_focus_forward() {
+        let mut state = EditorState::new(three_fields());
+        state.apply(EditorEvent::NavRight);
+        assert_eq!(state.focus(), 1);
+        state.apply(EditorEvent::NavDown);
+        assert_eq!(state.focus(), 2);
+    }
+
+    #[test]
+    fn navigate_mode_left_and_up_move_focus_backward() {
+        let mut state = EditorState::new(three_fields());
+        state.apply(EditorEvent::NavRight);
+        state.apply(EditorEvent::NavRight);
+        assert_eq!(state.focus(), 2);
+        state.apply(EditorEvent::NavLeft);
+        assert_eq!(state.focus(), 1);
+        state.apply(EditorEvent::NavUp);
+        assert_eq!(state.focus(), 0);
+    }
+
+    #[test]
+    fn navigate_mode_saturates_at_ends_without_wrapping() {
+        let mut state = EditorState::new(three_fields());
+        state.apply(EditorEvent::NavLeft);
+        assert_eq!(state.focus(), 0, "must saturate at 0, not wrap to last index");
+
+        state.apply(EditorEvent::NavRight);
+        state.apply(EditorEvent::NavRight);
+        state.apply(EditorEvent::NavRight);
+        state.apply(EditorEvent::NavRight);
+        assert_eq!(state.focus(), 2, "must saturate at last index, not wrap to 0");
+    }
+
+    #[test]
+    fn enter_and_exit_edit_mode_toggle_flag() {
+        let mut state = EditorState::new(three_fields());
         state.apply(EditorEvent::EnterEditMode);
         assert!(state.edit_mode());
-    }
-
-    #[test]
-    fn editor_state_exit_edit_mode() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::EnterEditMode);
         state.apply(EditorEvent::ExitEditMode);
         assert!(!state.edit_mode());
     }
 
-    // -- navigation --
-
     #[test]
-    fn editor_state_nav_down_moves_focus() {
-        let mut state = two_field_state();
-        assert_eq!(state.focus(), 0);
-        state.apply(EditorEvent::NavDown);
-        assert_eq!(state.focus(), 1);
-    }
-
-    #[test]
-    fn editor_state_nav_up_moves_focus() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::NavDown);
-        assert_eq!(state.focus(), 1);
-        state.apply(EditorEvent::NavUp);
-        assert_eq!(state.focus(), 0);
-    }
-
-    #[test]
-    fn editor_state_nav_right_moves_focus() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::NavRight);
-        assert_eq!(state.focus(), 1);
-    }
-
-    #[test]
-    fn editor_state_nav_left_moves_focus() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::NavDown);
-        state.apply(EditorEvent::NavLeft);
-        assert_eq!(state.focus(), 0);
-    }
-
-    #[test]
-    fn editor_state_focus_saturates_at_start() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::NavUp);
-        assert_eq!(state.focus(), 0);
-        state.apply(EditorEvent::NavLeft);
-        assert_eq!(state.focus(), 0);
-    }
-
-    #[test]
-    fn editor_state_focus_saturates_at_end() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::NavDown);
-        state.apply(EditorEvent::NavDown);
-        assert_eq!(state.focus(), 1);
-        state.apply(EditorEvent::NavRight);
-        assert_eq!(state.focus(), 1);
-    }
-
-    // -- edit mode: fine adjustments --
-
-    #[test]
-    fn editor_state_edit_mode_nav_right_fine_increase() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::EnterEditMode);
-        let before = state.fields()[0].value();
-        state.apply(EditorEvent::NavRight);
-        assert_eq!(state.fields()[0].value(), before + 1.0);
-    }
-
-    #[test]
-    fn editor_state_edit_mode_nav_left_fine_decrease() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::EnterEditMode);
-        let before = state.fields()[0].value();
-        state.apply(EditorEvent::NavLeft);
-        assert_eq!(state.fields()[0].value(), before - 1.0);
-    }
-
-    // -- edit mode: coarse adjustments --
-
-    #[test]
-    fn editor_state_edit_mode_nav_up_coarse_increase() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::EnterEditMode);
-        let before = state.fields()[0].value();
-        state.apply(EditorEvent::NavUp);
-        assert_eq!(state.fields()[0].value(), before + 10.0);
-    }
-
-    #[test]
-    fn editor_state_edit_mode_nav_down_coarse_decrease() {
-        let mut state = two_field_state();
-        state.apply(EditorEvent::EnterEditMode);
-        let before = state.fields()[0].value();
-        state.apply(EditorEvent::NavDown);
-        assert_eq!(state.fields()[0].value(), before - 10.0);
-    }
-
-    // -- clamping --
-
-    #[test]
-    fn editor_state_edit_clamps_at_max() {
-        let mut state = EditorState::new(vec![ParamField::new(
-            "vol", "Volume", 0.0, 100.0, 1.0, 98.0,
-        )
-        .unwrap()]);
-        state.apply(EditorEvent::EnterEditMode);
-        state.apply(EditorEvent::NavUp);
-        assert_eq!(state.fields()[0].value(), 100.0);
-    }
-
-    #[test]
-    fn editor_state_edit_clamps_at_min() {
-        let mut state =
-            EditorState::new(vec![
-                ParamField::new("vol", "Volume", 0.0, 100.0, 1.0, 2.0).unwrap()
-            ]);
-        state.apply(EditorEvent::EnterEditMode);
-        state.apply(EditorEvent::NavDown);
-        assert_eq!(state.fields()[0].value(), 0.0);
-    }
-
-    #[test]
-    fn editor_state_edit_fine_clamps_at_max() {
-        let mut state = EditorState::new(vec![ParamField::new(
-            "vol", "Volume", 0.0, 100.0, 1.0, 100.0,
-        )
-        .unwrap()]);
+    fn edit_mode_right_and_left_adjust_by_fine_unit() {
+        let mut state = EditorState::new(three_fields());
         state.apply(EditorEvent::EnterEditMode);
         state.apply(EditorEvent::NavRight);
-        assert_eq!(state.fields()[0].value(), 100.0);
-    }
-
-    #[test]
-    fn editor_state_edit_fine_clamps_at_min() {
-        let mut state =
-            EditorState::new(vec![
-                ParamField::new("vol", "Volume", 0.0, 100.0, 1.0, 0.0).unwrap()
-            ]);
-        state.apply(EditorEvent::EnterEditMode);
+        assert_eq!(state.focused_field().unwrap().value(), 6.0);
         state.apply(EditorEvent::NavLeft);
-        assert_eq!(state.fields()[0].value(), 0.0);
+        state.apply(EditorEvent::NavLeft);
+        assert_eq!(state.focused_field().unwrap().value(), 4.0);
     }
 
-    // -- in edit mode, focus does NOT move --
-
     #[test]
-    fn editor_state_edit_mode_does_not_move_focus() {
-        let mut state = two_field_state();
+    fn edit_mode_up_and_down_adjust_by_coarse_unit_ten_times_fine() {
+        let mut state = EditorState::new(three_fields());
         state.apply(EditorEvent::EnterEditMode);
-        let focus_before = state.focus();
-        state.apply(EditorEvent::NavDown);
         state.apply(EditorEvent::NavUp);
-        state.apply(EditorEvent::NavLeft);
-        state.apply(EditorEvent::NavRight);
-        assert_eq!(state.focus(), focus_before);
+        assert_eq!(state.focused_field().unwrap().value(), 10.0, "NavUp is +10x fine, clamped to max");
+
+        state.apply(EditorEvent::NavDown);
+        state.apply(EditorEvent::NavDown);
+        assert_eq!(state.focused_field().unwrap().value(), 0.0, "two NavDown (-10 each) clamps to min");
     }
 
-    // -- empty fields edge case --
+    #[test]
+    fn edit_mode_directional_events_do_not_move_focus() {
+        let mut state = EditorState::new(three_fields());
+        state.apply(EditorEvent::EnterEditMode);
+        state.apply(EditorEvent::NavRight);
+        state.apply(EditorEvent::NavUp);
+        assert_eq!(state.focus(), 0, "edit mode adjusts the value, not focus");
+    }
 
     #[test]
-    fn editor_state_empty_fields_navigate_is_noop() {
-        let mut state = EditorState::new(vec![]);
+    fn every_adjustment_clamps_to_focused_field_min_max() {
+        let fields = vec![ParamField::new("narrow", 0.0, 0.0, 1.0, 1.0)];
+        let mut state = EditorState::new(fields);
+        state.apply(EditorEvent::EnterEditMode);
+        state.apply(EditorEvent::NavUp);
+        assert_eq!(state.focused_field().unwrap().value(), 1.0);
+        state.apply(EditorEvent::NavUp);
+        assert_eq!(state.focused_field().unwrap().value(), 1.0, "stays clamped at max");
         state.apply(EditorEvent::NavDown);
+        state.apply(EditorEvent::NavDown);
+        assert_eq!(state.focused_field().unwrap().value(), 0.0, "stays clamped at min");
+    }
+
+    #[test]
+    fn empty_fields_apply_is_a_safe_no_op() {
+        let mut state = EditorState::new(Vec::new());
+        state.apply(EditorEvent::NavRight);
+        state.apply(EditorEvent::EnterEditMode);
         state.apply(EditorEvent::NavUp);
         assert_eq!(state.focus(), 0);
-    }
-
-    #[test]
-    fn editor_state_empty_fields_edit_is_noop() {
-        let mut state = EditorState::new(vec![]);
-        state.apply(EditorEvent::EnterEditMode);
-        state.apply(EditorEvent::NavRight);
-        state.apply(EditorEvent::NavLeft);
-        state.apply(EditorEvent::NavUp);
-        state.apply(EditorEvent::NavDown);
-    }
-
-    // -- focused field is adjusted, not others --
-
-    #[test]
-    fn editor_state_edit_only_adjusts_focused_field() {
-        let mut state = two_field_state();
-        let v0_before = state.fields()[0].value();
-        let v1_before = state.fields()[1].value();
-
-        state.apply(EditorEvent::NavDown);
-        state.apply(EditorEvent::EnterEditMode);
-        state.apply(EditorEvent::NavRight);
-
-        assert_eq!(state.fields()[0].value(), v0_before);
-        assert_eq!(state.fields()[1].value(), v1_before + 1.0);
-    }
-
-    // -- step size respected --
-
-    #[test]
-    fn editor_state_step_size_respected() {
-        let mut state = EditorState::new(vec![ParamField::new(
-            "cutoff", "Cutoff", 0.0, 20000.0, 10.0, 500.0,
-        )
-        .unwrap()]);
-        state.apply(EditorEvent::EnterEditMode);
-        state.apply(EditorEvent::NavRight); // fine: +1 step = +10
-        assert_eq!(state.fields()[0].value(), 510.0);
-        state.apply(EditorEvent::NavUp); // coarse: +10 steps = +100
-        assert_eq!(state.fields()[0].value(), 610.0);
+        assert!(state.focused_field().is_none());
     }
 }

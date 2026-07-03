@@ -1,113 +1,86 @@
 // path: src/design_system/semantic_token.rs
 
-/// Named UI intent tokens that a skin resolves through the Theme port.
+/// A named role a skin resolves to a concrete `Rgba` through the `Theme`
+/// port. Skins never hold a literal color; they hold a `SemanticToken` and
+/// ask the active `Theme` to resolve it.
 ///
-/// A `SemanticToken` expresses *what* a color is for, never *which* color it
-/// is. Skins map each token to a concrete `egui::Color32` (or size) by
-/// consulting the active `Theme` implementation — no literal colour value or
-/// hard-coded size ever appears in draw code.
-///
-/// # Variants
-///
-/// | Token        | Intent                                              |
-/// |--------------|-----------------------------------------------------|
-/// | FocusRing    | Marks the currently focused cell                   |
-/// | EditActive   | Marks a cell that is focused *and* in edit mode    |
-/// | ValueFill    | Value readout or progress-bar fill                  |
-/// | MeterPeak    | Live peak-level overlay on the meter                |
-/// | ToggleOn     | Toggle/button in the ON state                       |
-/// | ToggleOff    | Toggle/button in the OFF state                      |
-/// | TextDefault  | Primary body text                                   |
-/// | TextMuted    | Secondary / de-emphasised text                      |
-/// | PanelBg      | Panel or container background                       |
-/// | Separator    | Divider lines between containers                    |
+/// The token set names *purpose*, not appearance, so a new `Theme`
+/// implementation (dark, light, high-contrast, ...) can restyle every skin
+/// with zero draw-code change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemanticToken {
-    /// Marks the currently focused cell.
+    /// The application's base background.
+    Background,
+    /// A raised surface sitting above the background (e.g. a panel).
+    Surface,
+    /// A surface variant used to differentiate adjacent surfaces.
+    SurfaceVariant,
+    /// Primary text/foreground content.
+    Foreground,
+    /// De-emphasized text/foreground content.
+    ForegroundMuted,
+    /// The primary accent used for active/selected state.
+    Accent,
+    /// A muted variant of the accent, for hover/secondary emphasis.
+    AccentMuted,
+    /// Hairline borders and dividers.
+    Border,
+    /// The ring drawn around the focused primitive.
     FocusRing,
-    /// Marks a cell that is focused *and* in edit mode.
+    /// The indicator drawn on a primitive while it is in edit mode.
     EditActive,
-    /// Value readout or progress-bar fill.
-    ValueFill,
-    /// Live peak-level overlay on the meter.
-    MeterPeak,
-    /// Toggle/button in the ON state.
-    ToggleOn,
-    /// Toggle/button in the OFF state.
-    ToggleOff,
-    /// Primary body text.
-    TextDefault,
-    /// Secondary / de-emphasised text.
-    TextMuted,
-    /// Panel or container background.
-    PanelBg,
-    /// Divider lines between containers.
-    Separator,
-}
-
-impl SemanticToken {
-    /// Returns a slice containing every variant in declaration order.
-    pub fn all() -> &'static [SemanticToken] {
-        &[
-            SemanticToken::FocusRing,
-            SemanticToken::EditActive,
-            SemanticToken::ValueFill,
-            SemanticToken::MeterPeak,
-            SemanticToken::ToggleOn,
-            SemanticToken::ToggleOff,
-            SemanticToken::TextDefault,
-            SemanticToken::TextMuted,
-            SemanticToken::PanelBg,
-            SemanticToken::Separator,
-        ]
-    }
+    /// Destructive or error state.
+    Danger,
+    /// Cautionary state.
+    Warning,
+    /// Confirmatory/success state.
+    Success,
+    /// Meter fill in its low (safe) range.
+    MeterLow,
+    /// Meter fill in its mid (approaching hot) range.
+    MeterMid,
+    /// Meter fill in its high (clipping/hot) range.
+    MeterHigh,
+    /// A channel's mute indicator.
+    MuteIndicator,
+    /// A channel's solo indicator.
+    SoloIndicator,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SemanticToken;
+    use super::*;
+    use std::collections::HashSet;
 
     #[test]
-    fn all_returns_exactly_ten_variants() {
-        assert_eq!(SemanticToken::all().len(), 10);
+    fn tokens_are_distinct_hash_keys() {
+        let tokens = [
+            SemanticToken::Background,
+            SemanticToken::Surface,
+            SemanticToken::SurfaceVariant,
+            SemanticToken::Foreground,
+            SemanticToken::ForegroundMuted,
+            SemanticToken::Accent,
+            SemanticToken::AccentMuted,
+            SemanticToken::Border,
+            SemanticToken::FocusRing,
+            SemanticToken::EditActive,
+            SemanticToken::Danger,
+            SemanticToken::Warning,
+            SemanticToken::Success,
+            SemanticToken::MeterLow,
+            SemanticToken::MeterMid,
+            SemanticToken::MeterHigh,
+            SemanticToken::MuteIndicator,
+            SemanticToken::SoloIndicator,
+        ];
+        let unique: HashSet<SemanticToken> = tokens.iter().copied().collect();
+        assert_eq!(unique.len(), tokens.len());
     }
 
     #[test]
-    fn variant_set_is_complete() {
-        let all = SemanticToken::all();
-        assert!(all.contains(&SemanticToken::FocusRing));
-        assert!(all.contains(&SemanticToken::EditActive));
-        assert!(all.contains(&SemanticToken::ValueFill));
-        assert!(all.contains(&SemanticToken::MeterPeak));
-        assert!(all.contains(&SemanticToken::ToggleOn));
-        assert!(all.contains(&SemanticToken::ToggleOff));
-        assert!(all.contains(&SemanticToken::TextDefault));
-        assert!(all.contains(&SemanticToken::TextMuted));
-        assert!(all.contains(&SemanticToken::PanelBg));
-        assert!(all.contains(&SemanticToken::Separator));
-    }
-
-    #[test]
-    fn tokens_are_copy_and_eq() {
-        let a = SemanticToken::FocusRing;
-        let b = a;
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn distinct_variants_are_not_equal() {
+    fn token_equality_is_structural() {
+        assert_eq!(SemanticToken::FocusRing, SemanticToken::FocusRing);
         assert_ne!(SemanticToken::FocusRing, SemanticToken::EditActive);
-        assert_ne!(SemanticToken::ToggleOn, SemanticToken::ToggleOff);
-        assert_ne!(SemanticToken::TextDefault, SemanticToken::TextMuted);
-    }
-
-    #[test]
-    fn token_is_hashable() {
-        use std::collections::HashMap;
-        let mut map: HashMap<SemanticToken, &str> = HashMap::new();
-        map.insert(SemanticToken::FocusRing, "focus-ring");
-        map.insert(SemanticToken::PanelBg, "panel-bg");
-        assert_eq!(map[&SemanticToken::FocusRing], "focus-ring");
-        assert_eq!(map[&SemanticToken::PanelBg], "panel-bg");
     }
 }

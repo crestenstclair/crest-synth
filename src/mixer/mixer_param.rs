@@ -1,47 +1,24 @@
 // path: src/mixer/mixer_param.rs
 
-/// The six parameter rows displayed in the mixer view, in top-to-bottom order.
+//! Row identifiers for a channel strip in top-to-bottom navigation order.
+
+/// The six parameter rows of a channel strip, top-to-bottom.
 ///
-/// The row order defines navigation: `NavUp` moves toward `Volume` (the first
-/// row) and `NavDown` moves toward `Solo` (the last row). Navigation saturates
-/// at both ends — there is no wrap-around.
-///
-/// `Volume`, `ReverbSend`, `EchoSend`, and `Pan` are **continuous** parameters
-/// (adjusted by fine/coarse steps in edit mode).  `Mute` and `Solo` are
-/// **toggle** parameters (changed only via `ToggleFocusedParam`).
-///
-/// # Examples
-///
-/// ```
-/// use crest_synth::mixer::mixer_param::MixerParam;
-///
-/// let p = MixerParam::Volume;
-/// assert!(p.is_continuous());
-/// assert!(!p.is_toggle());
-///
-/// let m = MixerParam::Mute;
-/// assert!(m.is_toggle());
-/// assert!(!m.is_continuous());
-/// ```
+/// `Volume`, `ReverbSend`, `EchoSend`, `Pan` are continuous parameters.
+/// `Mute` and `Solo` are toggles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MixerParam {
-    /// Channel output level (0.0–1.0).
     Volume,
-    /// Reverb send level (0.0–1.0).
     ReverbSend,
-    /// Echo/delay send level (0.0–1.0).
     EchoSend,
-    /// Stereo pan position (−1.0 = full left, +1.0 = full right).
     Pan,
-    /// Mute toggle — channel is silenced when true.
     Mute,
-    /// Solo toggle — only soloed channels are audible when at least one is soloed.
     Solo,
 }
 
 impl MixerParam {
-    /// All six rows in top-to-bottom display order.
-    pub const ALL: [MixerParam; 6] = [
+    /// All six rows in canonical top-to-bottom navigation order.
+    pub const ROW_ORDER: [MixerParam; 6] = [
         MixerParam::Volume,
         MixerParam::ReverbSend,
         MixerParam::EchoSend,
@@ -50,104 +27,76 @@ impl MixerParam {
         MixerParam::Solo,
     ];
 
-    /// Returns `true` if this parameter is adjusted by fine/coarse steps.
+    /// True for continuously-valued parameters (Volume, ReverbSend, EchoSend, Pan).
     pub fn is_continuous(self) -> bool {
-        matches!(
-            self,
-            MixerParam::Volume | MixerParam::ReverbSend | MixerParam::EchoSend | MixerParam::Pan
-        )
+        !self.is_toggle()
     }
 
-    /// Returns `true` if this parameter is a boolean toggle.
+    /// True for two-state toggle parameters (Mute, Solo).
     pub fn is_toggle(self) -> bool {
         matches!(self, MixerParam::Mute | MixerParam::Solo)
     }
 
-    /// Returns the row index (0 = Volume, 5 = Solo) of this parameter.
-    pub fn row_index(self) -> usize {
+    /// The index into `ChannelStrip::sends` this parameter addresses, if any.
+    ///
+    /// `ReverbSend` addresses `sends[0]`; `EchoSend` addresses `sends[1]`.
+    /// All other parameters do not address a send slot.
+    pub fn send_index(self) -> Option<usize> {
         match self {
-            MixerParam::Volume => 0,
-            MixerParam::ReverbSend => 1,
-            MixerParam::EchoSend => 2,
-            MixerParam::Pan => 3,
-            MixerParam::Mute => 4,
-            MixerParam::Solo => 5,
-        }
-    }
-
-    /// Return the param one step toward `Volume`, saturating.
-    pub fn prev(self) -> MixerParam {
-        let idx = self.row_index();
-        if idx == 0 {
-            self
-        } else {
-            MixerParam::ALL[idx - 1]
-        }
-    }
-
-    /// Return the param one step toward `Solo`, saturating.
-    pub fn next(self) -> MixerParam {
-        let idx = self.row_index();
-        let last = MixerParam::ALL.len() - 1;
-        if idx >= last {
-            self
-        } else {
-            MixerParam::ALL[idx + 1]
+            MixerParam::ReverbSend => Some(0),
+            MixerParam::EchoSend => Some(1),
+            _ => None,
         }
     }
 }
 
 #[cfg(test)]
-mod mixer_param_tests {
+mod tests {
     use super::*;
 
     #[test]
-    fn mixer_param_continuous_rows() {
-        assert!(MixerParam::Volume.is_continuous());
-        assert!(MixerParam::ReverbSend.is_continuous());
-        assert!(MixerParam::EchoSend.is_continuous());
-        assert!(MixerParam::Pan.is_continuous());
+    fn row_order_matches_navigation_order() {
+        assert_eq!(
+            MixerParam::ROW_ORDER,
+            [
+                MixerParam::Volume,
+                MixerParam::ReverbSend,
+                MixerParam::EchoSend,
+                MixerParam::Pan,
+                MixerParam::Mute,
+                MixerParam::Solo,
+            ]
+        );
     }
 
     #[test]
-    fn mixer_param_toggle_rows() {
-        assert!(MixerParam::Mute.is_toggle());
-        assert!(MixerParam::Solo.is_toggle());
-    }
-
-    #[test]
-    fn mixer_param_not_both() {
-        for p in &MixerParam::ALL {
-            assert_ne!(p.is_continuous(), p.is_toggle());
+    fn continuous_params_are_not_toggles() {
+        for param in [
+            MixerParam::Volume,
+            MixerParam::ReverbSend,
+            MixerParam::EchoSend,
+            MixerParam::Pan,
+        ] {
+            assert!(param.is_continuous());
+            assert!(!param.is_toggle());
         }
     }
 
     #[test]
-    fn mixer_param_prev_saturates_at_volume() {
-        assert_eq!(MixerParam::Volume.prev(), MixerParam::Volume);
-    }
-
-    #[test]
-    fn mixer_param_next_saturates_at_solo() {
-        assert_eq!(MixerParam::Solo.next(), MixerParam::Solo);
-    }
-
-    #[test]
-    fn mixer_param_prev_steps_correctly() {
-        assert_eq!(MixerParam::ReverbSend.prev(), MixerParam::Volume);
-        assert_eq!(MixerParam::Solo.prev(), MixerParam::Mute);
-    }
-
-    #[test]
-    fn mixer_param_next_steps_correctly() {
-        assert_eq!(MixerParam::Volume.next(), MixerParam::ReverbSend);
-        assert_eq!(MixerParam::Mute.next(), MixerParam::Solo);
-    }
-
-    #[test]
-    fn mixer_param_row_index_order() {
-        for (i, p) in MixerParam::ALL.iter().enumerate() {
-            assert_eq!(p.row_index(), i);
+    fn toggle_params_are_not_continuous() {
+        for param in [MixerParam::Mute, MixerParam::Solo] {
+            assert!(param.is_toggle());
+            assert!(!param.is_continuous());
         }
+    }
+
+    #[test]
+    fn send_index_addresses_expected_send_slots() {
+        assert_eq!(MixerParam::ReverbSend.send_index(), Some(0));
+        assert_eq!(MixerParam::EchoSend.send_index(), Some(1));
+        assert_eq!(MixerParam::Volume.send_index(), None);
+        assert_eq!(MixerParam::Pan.send_index(), None);
+        assert_eq!(MixerParam::Mute.send_index(), None);
+        assert_eq!(MixerParam::Solo.send_index(), None);
     }
 }

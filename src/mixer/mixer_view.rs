@@ -1,154 +1,229 @@
 // path: src/mixer/mixer_view.rs
 
-use crate::mixer::channel_mixer::ChannelMixer;
-use crate::mixer::mixer_param::MixerParam;
-use crate::mixer::mixer_view_event::MixerViewEvent;
+//! `MixerView` — the single mixer-view store.
+//!
+//! Owns cursor (channel + parameter), viewport offset, edit-mode, and the
+//! 16 [`ChannelStrip`] channels it wraps. This is the one entry point that
+//! reacts to [`MixerViewEvent`]s: `apply` is the ONLY way to mutate the
+//! view. Draw code (egui or otherwise) reads channel values and per-channel
+//! peak levels from the wrapped strips but never mutates them directly —
+//! all mutation flows through an event applied here, keeping the control
+//! plane hermetically testable exactly like the Editor view.
+//!
+//! Timing (double-tap detection, Edit-hold duration) lives entirely in the
+//! input adapter that produces these events; this reducer is timing-free.
+//! Keyboard and gamepad adapters emit the identical `MixerViewEvent`
+//! variants, so the two input paths are interchangeable here.
 
-/// Total number of channels in the mixer.
-pub const CHANNEL_COUNT: usize = 16;
+use crate::mixer::channel_strip::{ChannelStrip, ChannelStripCommand, Decibel, Pan};
 
-/// Number of channels visible in the mixer viewport at one time.
+/// Total number of channel strips a [`MixerView`] wraps.
+pub const TOTAL_CHANNELS: usize = 16;
+
+/// Number of channels visible in the viewport at once.
 pub const VISIBLE_CHANNELS: usize = 6;
 
-/// Fine adjustment step for continuous parameters (one unit on a 0–100 readout).
-const FINE_STEP: f32 = 0.01;
+/// The highest legal `viewportOffset` (so that `offset + VISIBLE_CHANNELS`
+/// never exceeds `TOTAL_CHANNELS`).
+pub const MAX_VIEWPORT_OFFSET: usize = TOTAL_CHANNELS - VISIBLE_CHANNELS;
 
-/// Coarse adjustment step (10x fine).
-const COARSE_STEP: f32 = 0.10;
+/// Fine adjustment step for volume, in decibels.
+pub const VOLUME_FINE_STEP_DB: f32 = 0.5;
 
-/// Maximum value of `viewport_offset` (so the window [offset, offset+5] always
-/// contains 16 channels without going past the last).
-pub const MAX_VIEWPORT_OFFSET: usize = CHANNEL_COUNT - VISIBLE_CHANNELS; // 10
+/// Coarse adjustment step for volume: 10x the fine step.
+pub const VOLUME_COARSE_STEP_DB: f32 = VOLUME_FINE_STEP_DB * 10.0;
 
-/// Flux-style store for the entire mixer view.
+/// Fine adjustment step for pan.
+pub const PAN_FINE_STEP: f32 = 0.02;
+
+/// Coarse adjustment step for pan: 10x the fine step.
+pub const PAN_COARSE_STEP: f32 = PAN_FINE_STEP * 10.0;
+
+/// One row the mixer cursor can rest on within a channel strip.
 ///
-/// `apply` is the **sole** mutation entry point — there are no setters and no
-/// other public path that changes any field.  The store is pure and
-/// allocation-free: no I/O, no rendering, no audio.
+/// `Volume` and `Pan` are continuous parameters: in edit mode, directional
+/// input adjusts their value. `Mute` and `Solo` are toggle parameters:
+/// their value changes ONLY via [`MixerViewEvent::ToggleFocusedParam`],
+/// never via directional input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerParam {
+    Volume,
+    Pan,
+    Mute,
+    Solo,
+}
+
+impl MixerParam {
+    /// Fixed top-to-bottom row order used for NavUp/NavDown traversal.
+    const ORDER: [MixerParam; 4] = [
+        MixerParam::Volume,
+        MixerParam::Pan,
+        MixerParam::Mute,
+        MixerParam::Solo,
+    ];
+
+    fn row_index(self) -> usize {
+        Self::ORDER
+            .iter()
+            .position(|p| *p == self)
+            .expect("MixerParam::ORDER covers every variant")
+    }
+
+    /// Moves one row up, saturating at the first row.
+    fn saturating_prev(self) -> Self {
+        let idx = self.row_index();
+        Self::ORDER[idx.saturating_sub(1)]
+    }
+
+    /// Moves one row down, saturating at the last row.
+    fn saturating_next(self) -> Self {
+        let idx = self.row_index();
+        Self::ORDER[(idx + 1).min(Self::ORDER.len() - 1)]
+    }
+
+    /// True for parameters whose value is a continuous quantity adjustable
+    /// by directional input while in edit mode (Volume, Pan). False for
+    /// toggle parameters (Mute, Solo), which only change via
+    /// `ToggleFocusedParam`.
+    fn is_continuous(self) -> bool {
+        matches!(self, MixerParam::Volume | MixerParam::Pan)
+    }
+}
+
+/// Semantic events accepted by [`MixerView::apply`].
 ///
-/// ## State
+/// These are emitted identically by the keyboard and gamepad input
+/// adapters; double-tap detection and Edit-hold timing are resolved by the
+/// adapter before a `ToggleFocusedParam` / `EnterEditMode` / `ExitEditMode`
+/// event ever reaches this reducer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerViewEvent {
+    /// In navigate mode: move the parameter row up (saturating).
+    /// In edit mode on a continuous param: increase by the coarse step.
+    NavUp,
+    /// In navigate mode: move the parameter row down (saturating).
+    /// In edit mode on a continuous param: decrease by the coarse step.
+    NavDown,
+    /// In navigate mode: move to the previous channel (with edge-scroll).
+    /// In edit mode on a continuous param: decrease by the fine step.
+    NavLeft,
+    /// In navigate mode: move to the next channel (with edge-scroll).
+    /// In edit mode on a continuous param: increase by the fine step.
+    NavRight,
+    /// Enters edit mode. Alone, this changes no parameter value — it is a
+    /// no-op until directional input arrives.
+    EnterEditMode,
+    /// Leaves edit mode, returning to navigation.
+    ExitEditMode,
+    /// Toggles the focused parameter if it is a toggle parameter (Mute or
+    /// Solo). The input adapter raises this on an Edit double-tap. A no-op
+    /// when the focused parameter is continuous (Volume, Pan).
+    ToggleFocusedParam,
+}
+
+/// The single mixer-view store: owns cursor (channel + parameter), viewport
+/// offset, edit-mode, and the 16 [`ChannelStrip`] channels.
 ///
-/// | Field             | Range         | Meaning                                    |
-/// |-------------------|---------------|--------------------------------------------||
-/// | `cursor_channel`  | 0..=15        | Absolute channel index under the cursor    |
-/// | `cursor_param`    | `MixerParam`  | Parameter row under the cursor             |
-/// | `viewport_offset` | 0..=10        | Index of the first visible channel         |
-/// | `edit_mode`       | bool          | `true` → directional input edits values    |
-/// | `mixer`           | `ChannelMixer`| All 16 channels' state                     |
-///
-/// The visible window is always `[viewport_offset, viewport_offset + 5]` (6
-/// channels).  The cursor is **always** inside this window.
-///
-/// ## Navigation (edit_mode = false)
-///
-/// * `NavUp` / `NavDown` — move `cursor_param` one row (saturating).
-/// * `NavRight` — advance one channel with edge-scrolling:
-///   - cursor is **not** at the right edge → move cursor one step right.
-///   - cursor **is** at the right edge and window is **not** at the end →
-///     scroll the viewport one step right (cursor stays on the same absolute
-///     channel, now one position inward).
-///   - already at channel 16 (index 15) → no-op.
-/// * `NavLeft` — mirror of `NavRight`.
-///
-/// ## Edit mode (edit_mode = true)
-///
-/// Directional input on a **continuous** param adjusts the focused channel:
-///
-/// | Event     | Effect                      |
-/// |-----------|-----------------------------||
-/// | `NavLeft` | value −= fine (−0.01)       |
-/// | `NavRight`| value += fine (+0.01)       |
-/// | `NavDown` | value −= coarse (−0.10)     |
-/// | `NavUp`   | value += coarse (+0.10)     |
-///
-/// On a **toggle** param (`Mute` / `Solo`) directional input is a **no-op**.
-///
-/// ## Toggling
-///
-/// `ToggleFocusedParam` (double-tap Edit) toggles `Mute` or `Solo` on the
-/// focused channel regardless of mode.  On a continuous param it is a no-op.
-///
-/// ## Examples
-///
-/// ```
-/// use crest_synth::mixer::mixer_view::MixerView;
-/// use crest_synth::mixer::mixer_view_event::MixerViewEvent;
-/// use crest_synth::mixer::mixer_param::MixerParam;
-///
-/// let mut view = MixerView::new();
-/// assert_eq!(view.cursor_channel(), 0);
-/// assert_eq!(view.cursor_param(), MixerParam::Volume);
-/// assert!(!view.edit_mode());
-///
-/// // Navigate right
-/// view.apply(MixerViewEvent::NavRight);
-/// assert_eq!(view.cursor_channel(), 1);
-///
-/// // Enter edit mode and adjust volume fine
-/// view.apply(MixerViewEvent::EnterEditMode);
-/// assert!(view.edit_mode());
-/// view.apply(MixerViewEvent::NavRight);
-/// let vol = view.mixer().channel(1).volume;
-/// assert!((vol - 0.76).abs() < 1e-5);
-/// ```
-#[derive(Debug, Clone)]
+/// `apply(MixerViewEvent)` is the ONLY way to mutate this type. Draw code
+/// must never reach into a wrapped `ChannelStrip`'s fields directly.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MixerView {
+    channels: [ChannelStrip; TOTAL_CHANNELS],
     cursor_channel: usize,
     cursor_param: MixerParam,
     edit_mode: bool,
-    mixer: ChannelMixer,
     viewport_offset: usize,
 }
 
 impl MixerView {
-    /// Create a new `MixerView` with default state.
-    ///
-    /// Cursor starts at channel 0, `Volume` row, navigate mode, viewport at 0.
+    /// Creates a view over 16 freshly-defaulted channel strips, cursor at
+    /// channel 0 / Volume, navigate mode, viewport at the start.
     pub fn new() -> Self {
+        Self::with_channels(std::array::from_fn(|_| ChannelStrip::new()))
+    }
+
+    /// Full constructor: builds a view over pre-existing channel strip
+    /// state (e.g. when restoring a session). Callers that don't care
+    /// about initial channel state should use [`MixerView::new`].
+    pub fn with_channels(channels: [ChannelStrip; TOTAL_CHANNELS]) -> Self {
         Self {
+            channels,
             cursor_channel: 0,
             cursor_param: MixerParam::Volume,
             edit_mode: false,
-            mixer: ChannelMixer::new(),
             viewport_offset: 0,
         }
     }
 
-    // ── Accessors ────────────────────────────────────────────────────────────
+    /// The 16 wrapped channel strips, in order.
+    pub fn channels(&self) -> &[ChannelStrip; TOTAL_CHANNELS] {
+        &self.channels
+    }
 
-    /// The absolute channel index (0..=15) currently under the cursor.
+    /// The channel strip at absolute index `index`, if in range.
+    pub fn channel(&self, index: usize) -> Option<&ChannelStrip> {
+        self.channels.get(index)
+    }
+
+    /// The absolute index (0..=15) of the currently focused channel.
     pub fn cursor_channel(&self) -> usize {
         self.cursor_channel
     }
 
-    /// The parameter row currently under the cursor.
+    /// The currently focused parameter row.
     pub fn cursor_param(&self) -> MixerParam {
         self.cursor_param
     }
 
-    /// `true` when the view is in edit mode.
+    /// Whether the view is currently in edit mode.
     pub fn edit_mode(&self) -> bool {
         self.edit_mode
     }
 
-    /// The index of the first channel visible in the viewport (0..=10).
+    /// The first absolute channel index currently visible.
     pub fn viewport_offset(&self) -> usize {
         self.viewport_offset
     }
 
-    /// Read-only access to the underlying `ChannelMixer`.
-    pub fn mixer(&self) -> &ChannelMixer {
-        &self.mixer
+    /// The inclusive range of absolute channel indices currently visible.
+    /// Always exactly [`VISIBLE_CHANNELS`] wide.
+    pub fn visible_range(&self) -> std::ops::RangeInclusive<usize> {
+        self.viewport_offset..=(self.viewport_offset + VISIBLE_CHANNELS - 1)
     }
 
-    // ── Single mutation entry point ───────────────────────────────────────────
-
-    /// Apply a `MixerViewEvent`, mutating the store in place.
-    ///
-    /// This is the **only** public mutation method.  It is pure and
-    /// allocation-free.
+    /// The only entry point that mutates a [`MixerView`]. All other
+    /// mutation is forbidden; draw code must treat this type as read-only
+    /// except through this method.
     pub fn apply(&mut self, event: MixerViewEvent) {
         match event {
+            MixerViewEvent::NavUp => {
+                if self.edit_mode {
+                    self.adjust_focused(false, true);
+                } else {
+                    self.cursor_param = self.cursor_param.saturating_prev();
+                }
+            }
+            MixerViewEvent::NavDown => {
+                if self.edit_mode {
+                    self.adjust_focused(false, false);
+                } else {
+                    self.cursor_param = self.cursor_param.saturating_next();
+                }
+            }
+            MixerViewEvent::NavLeft => {
+                if self.edit_mode {
+                    self.adjust_focused(true, false);
+                } else {
+                    self.nav_channel_left();
+                }
+            }
+            MixerViewEvent::NavRight => {
+                if self.edit_mode {
+                    self.adjust_focused(true, true);
+                } else {
+                    self.nav_channel_right();
+                }
+            }
             MixerViewEvent::EnterEditMode => {
                 self.edit_mode = true;
             }
@@ -156,100 +231,101 @@ impl MixerView {
                 self.edit_mode = false;
             }
             MixerViewEvent::ToggleFocusedParam => {
-                self.apply_toggle();
-            }
-            MixerViewEvent::NavUp
-            | MixerViewEvent::NavDown
-            | MixerViewEvent::NavLeft
-            | MixerViewEvent::NavRight => {
-                if self.edit_mode {
-                    self.apply_edit(event);
-                } else {
-                    self.apply_navigate(event);
-                }
+                self.toggle_focused_param();
             }
         }
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    /// Handle navigation events (navigate mode).
-    fn apply_navigate(&mut self, event: MixerViewEvent) {
-        match event {
-            MixerViewEvent::NavUp => {
-                self.cursor_param = self.cursor_param.prev();
-            }
-            MixerViewEvent::NavDown => {
-                self.cursor_param = self.cursor_param.next();
-            }
-            MixerViewEvent::NavRight => {
-                self.navigate_right();
-            }
-            MixerViewEvent::NavLeft => {
-                self.navigate_left();
-            }
-            _ => {}
-        }
-    }
-
-    /// Move the cursor (or viewport) one step to the right.
-    fn navigate_right(&mut self) {
-        let right_edge = self.viewport_offset + (VISIBLE_CHANNELS - 1);
-        if self.cursor_channel < right_edge {
-            // Cursor is NOT at the visible right edge — move it.
-            self.cursor_channel += 1;
-        } else if right_edge < CHANNEL_COUNT - 1 {
-            // Cursor IS at the right edge and the viewport can scroll right.
-            // Scroll the viewport; cursor stays on the same absolute channel
-            // (now one position inward from the new right edge).
-            self.viewport_offset += 1;
-            // cursor_channel is unchanged; it is now one position inward.
-        }
-        // else: already at channel 16 (index 15) — no-op.
-    }
-
-    /// Move the cursor (or viewport) one step to the left.
-    fn navigate_left(&mut self) {
-        if self.cursor_channel > self.viewport_offset {
-            // Cursor is NOT at the visible left edge — move it.
-            self.cursor_channel -= 1;
-        } else if self.viewport_offset > 0 {
-            // Cursor IS at the left edge and the viewport can scroll left.
-            self.viewport_offset -= 1;
-            // cursor_channel unchanged (one position inward from new left edge).
-        }
-        // else: already at channel 1 (index 0) — no-op.
-    }
-
-    /// Handle directional events in edit mode.
-    fn apply_edit(&mut self, event: MixerViewEvent) {
-        if self.cursor_param.is_toggle() {
-            // Toggle params are not adjustable by directional input.
+    /// Moves the cursor one channel to the left. At the left edge of the
+    /// visible window, scrolls the viewport by one instead, keeping the
+    /// cursor on the same absolute channel (now one position inward).
+    /// No-op at channel 0 (the first channel).
+    fn nav_channel_left(&mut self) {
+        if self.cursor_channel == 0 {
             return;
         }
-        let delta = match event {
-            MixerViewEvent::NavLeft => -FINE_STEP,
-            MixerViewEvent::NavRight => FINE_STEP,
-            MixerViewEvent::NavUp => COARSE_STEP,
-            MixerViewEvent::NavDown => -COARSE_STEP,
-            _ => return,
-        };
-        self.mixer
-            .adjust(self.cursor_channel, self.cursor_param, delta);
+        if self.cursor_channel == self.viewport_offset && self.viewport_offset > 0 {
+            self.viewport_offset -= 1;
+        } else {
+            self.cursor_channel -= 1;
+        }
     }
 
-    /// Handle `ToggleFocusedParam` — toggles Mute or Solo, no-op otherwise.
-    fn apply_toggle(&mut self) {
-        match self.cursor_param {
+    /// Moves the cursor one channel to the right. At the right edge of the
+    /// visible window, scrolls the viewport by one instead, keeping the
+    /// cursor on the same absolute channel (now one position inward).
+    /// No-op at channel 15 (the last channel).
+    fn nav_channel_right(&mut self) {
+        if self.cursor_channel == TOTAL_CHANNELS - 1 {
+            return;
+        }
+        let right_edge = self.viewport_offset + VISIBLE_CHANNELS - 1;
+        if self.cursor_channel == right_edge && self.viewport_offset < MAX_VIEWPORT_OFFSET {
+            self.viewport_offset += 1;
+        } else {
+            self.cursor_channel += 1;
+        }
+    }
+
+    /// Adjusts the focused continuous parameter (Volume or Pan) on the
+    /// focused channel strip by a fine or coarse step, in the given
+    /// direction, clamped to that parameter's valid domain range. A no-op
+    /// if the focused parameter is a toggle parameter (Mute, Solo), if the
+    /// cursor addresses an out-of-range channel, or if the clamped value
+    /// somehow fails validation.
+    fn adjust_focused(&mut self, fine: bool, positive: bool) {
+        if !self.cursor_param.is_continuous() {
+            return;
+        }
+        let param = self.cursor_param;
+        let Some(strip) = self.channels.get_mut(self.cursor_channel) else {
+            return;
+        };
+        match param {
+            MixerParam::Volume => {
+                let step = if fine {
+                    VOLUME_FINE_STEP_DB
+                } else {
+                    VOLUME_COARSE_STEP_DB
+                };
+                let delta = if positive { step } else { -step };
+                let raw = strip.volume_db().value() + delta;
+                let clamped = raw.clamp(Decibel::MIN, Decibel::MAX);
+                if let Ok(volume_db) = Decibel::try_new(clamped) {
+                    let _ = strip.handle(ChannelStripCommand::SetVolume { volume_db });
+                }
+            }
+            MixerParam::Pan => {
+                let step = if fine { PAN_FINE_STEP } else { PAN_COARSE_STEP };
+                let delta = if positive { step } else { -step };
+                let raw = strip.pan().value() + delta;
+                let clamped = raw.clamp(Pan::MIN, Pan::MAX);
+                if let Ok(pan) = Pan::try_new(clamped) {
+                    let _ = strip.handle(ChannelStripCommand::SetPan { pan });
+                }
+            }
+            MixerParam::Mute | MixerParam::Solo => {}
+        }
+    }
+
+    /// Toggles the focused toggle parameter (Mute or Solo) on the focused
+    /// channel strip. A no-op if the focused parameter is continuous
+    /// (Volume, Pan) or if the cursor addresses an out-of-range channel.
+    fn toggle_focused_param(&mut self) {
+        let param = self.cursor_param;
+        let Some(strip) = self.channels.get_mut(self.cursor_channel) else {
+            return;
+        };
+        match param {
             MixerParam::Mute => {
-                self.mixer.toggle_mute(self.cursor_channel);
+                let mute = !strip.mute();
+                let _ = strip.handle(ChannelStripCommand::SetMute { mute });
             }
             MixerParam::Solo => {
-                self.mixer.toggle_solo(self.cursor_channel);
+                let solo = !strip.solo();
+                let _ = strip.handle(ChannelStripCommand::SetSolo { solo });
             }
-            _ => {
-                // Continuous params are not toggled by this event.
-            }
+            MixerParam::Volume | MixerParam::Pan => {}
         }
     }
 }
@@ -260,471 +336,266 @@ impl Default for MixerView {
     }
 }
 
-// ── Unit tests ────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
-mod mixer_view_tests {
+mod tests {
     use super::*;
-    use crate::mixer::mixer_view_event::MixerViewEvent;
-
-    // ── Initial state ────────────────────────────────────────────────────────
 
     #[test]
-    fn mixer_view_initial_state() {
-        let v = MixerView::new();
-        assert_eq!(v.cursor_channel(), 0);
-        assert_eq!(v.cursor_param(), MixerParam::Volume);
-        assert!(!v.edit_mode());
-        assert_eq!(v.viewport_offset(), 0);
-    }
-
-    // ── Mode toggling ────────────────────────────────────────────────────────
-
-    #[test]
-    fn mixer_view_enter_edit_mode() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::EnterEditMode);
-        assert!(v.edit_mode());
+    fn new_view_starts_at_channel_zero_volume_navigate_mode() {
+        let view = MixerView::new();
+        assert_eq!(view.cursor_channel(), 0);
+        assert_eq!(view.cursor_param(), MixerParam::Volume);
+        assert!(!view.edit_mode());
+        assert_eq!(view.viewport_offset(), 0);
+        assert_eq!(*view.visible_range().start(), 0);
+        assert_eq!(*view.visible_range().end(), VISIBLE_CHANNELS - 1);
     }
 
     #[test]
-    fn mixer_view_exit_edit_mode() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::EnterEditMode);
-        v.apply(MixerViewEvent::ExitEditMode);
-        assert!(!v.edit_mode());
+    fn nav_down_moves_through_rows_and_saturates_at_last_row() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::NavDown);
+        assert_eq!(view.cursor_param(), MixerParam::Pan);
+        view.apply(MixerViewEvent::NavDown);
+        assert_eq!(view.cursor_param(), MixerParam::Mute);
+        view.apply(MixerViewEvent::NavDown);
+        assert_eq!(view.cursor_param(), MixerParam::Solo);
+        // Saturates: one more NavDown stays at Solo.
+        view.apply(MixerViewEvent::NavDown);
+        assert_eq!(view.cursor_param(), MixerParam::Solo);
     }
 
     #[test]
-    fn mixer_view_enter_edit_mode_no_param_change() {
-        let mut v = MixerView::new();
-        let vol_before = v.mixer().channel(0).volume;
-        v.apply(MixerViewEvent::EnterEditMode);
-        assert_eq!(v.mixer().channel(0).volume, vol_before);
-        assert_eq!(v.cursor_channel(), 0);
-        assert_eq!(v.cursor_param(), MixerParam::Volume);
-    }
-
-    // ── Navigate mode: param rows (NavUp / NavDown) ──────────────────────────
-
-    #[test]
-    fn mixer_view_nav_down_moves_param_row() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::NavDown);
-        assert_eq!(v.cursor_param(), MixerParam::ReverbSend);
+    fn nav_up_saturates_at_first_row() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::NavUp);
+        assert_eq!(view.cursor_param(), MixerParam::Volume);
     }
 
     #[test]
-    fn mixer_view_nav_up_moves_param_row() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::NavDown);
-        v.apply(MixerViewEvent::NavUp);
-        assert_eq!(v.cursor_param(), MixerParam::Volume);
-    }
-
-    #[test]
-    fn mixer_view_nav_up_saturates_at_volume() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::NavUp);
-        assert_eq!(v.cursor_param(), MixerParam::Volume);
-    }
-
-    #[test]
-    fn mixer_view_nav_down_saturates_at_solo() {
-        let mut v = MixerView::new();
-        for _ in 0..10 {
-            v.apply(MixerViewEvent::NavDown);
-        }
-        assert_eq!(v.cursor_param(), MixerParam::Solo);
-    }
-
-    #[test]
-    fn mixer_view_nav_through_all_rows() {
-        let mut v = MixerView::new();
-        let rows = [
-            MixerParam::Volume,
-            MixerParam::ReverbSend,
-            MixerParam::EchoSend,
-            MixerParam::Pan,
-            MixerParam::Mute,
-            MixerParam::Solo,
-        ];
-        for expected in &rows {
-            assert_eq!(v.cursor_param(), *expected);
-            v.apply(MixerViewEvent::NavDown);
-        }
-        assert_eq!(v.cursor_param(), MixerParam::Solo);
-    }
-
-    // ── Navigate mode: channel columns (NavLeft / NavRight, no edge scroll) ──
-
-    #[test]
-    fn mixer_view_nav_right_moves_cursor_channel() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::NavRight);
-        assert_eq!(v.cursor_channel(), 1);
-        assert_eq!(v.viewport_offset(), 0);
-    }
-
-    #[test]
-    fn mixer_view_nav_left_saturates_at_channel_zero() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::NavLeft);
-        assert_eq!(v.cursor_channel(), 0);
-        assert_eq!(v.viewport_offset(), 0);
-    }
-
-    #[test]
-    fn mixer_view_nav_right_saturates_at_channel_15() {
-        let mut v = MixerView::new();
-        // To reach channel 15: first 5 presses move cursor from 0→5 (no scroll),
-        // then each subsequent 2 presses = 1 scroll + 1 channel advance.
-        // 5 + 10*2 = 25 total presses to reach channel 15, viewport 10.
-        for _ in 0..25 {
-            v.apply(MixerViewEvent::NavRight);
-        }
-        assert_eq!(v.cursor_channel(), 15);
-        assert_eq!(v.viewport_offset(), 10);
-        // Additional NavRight is a no-op (already at channel 16 = index 15)
-        v.apply(MixerViewEvent::NavRight);
-        assert_eq!(v.cursor_channel(), 15);
-        assert_eq!(v.viewport_offset(), 10);
-    }
-
-    // ── Edge scrolling ───────────────────────────────────────────────────────
-
-    #[test]
-    fn mixer_view_right_edge_scroll() {
-        // Start with cursor at the right edge of the visible window.
-        // Window [0..5], cursor at channel 5 (right edge).
-        let mut v = MixerView::new();
-        for _ in 0..5 {
-            v.apply(MixerViewEvent::NavRight);
-        }
-        assert_eq!(v.cursor_channel(), 5);
-        assert_eq!(v.viewport_offset(), 0);
-
-        // NavRight when at right edge: scroll viewport, cursor stays.
-        v.apply(MixerViewEvent::NavRight);
-        assert_eq!(
-            v.cursor_channel(),
-            5,
-            "cursor stays on same absolute channel"
-        );
-        assert_eq!(v.viewport_offset(), 1, "viewport scrolled right by 1");
-    }
-
-    #[test]
-    fn mixer_view_left_edge_scroll() {
-        // Set up: move to channel 5, then scroll so that the viewport is at 1
-        // and cursor is at channel 5 (one inward from right edge).
-        // Then move left to the left edge and scroll.
-        let mut v = MixerView::new();
-        for _ in 0..5 {
-            v.apply(MixerViewEvent::NavRight);
-        }
-        v.apply(MixerViewEvent::NavRight); // scrolls viewport to 1, cursor stays 5
-        assert_eq!(v.viewport_offset(), 1);
-        assert_eq!(v.cursor_channel(), 5);
-
-        // Now move left from channel 5 to reach the left edge (channel 1 = index 1 = viewport_offset).
-        for _ in 0..4 {
-            v.apply(MixerViewEvent::NavLeft);
-        }
-        assert_eq!(v.cursor_channel(), 1);
-        assert_eq!(v.viewport_offset(), 1);
-
-        // At left edge — NavLeft scrolls viewport left, cursor stays.
-        v.apply(MixerViewEvent::NavLeft);
-        assert_eq!(
-            v.cursor_channel(),
-            1,
-            "cursor stays on same absolute channel"
-        );
-        assert_eq!(v.viewport_offset(), 0, "viewport scrolled left by 1");
-    }
-
-    #[test]
-    fn mixer_view_example_from_spec() {
-        // "window 0..5 showing channels 1–6, cursor on channel 6 = index 5"
-        // NavRight → viewportOffset becomes 1, cursorChannel stays 5.
-        let mut v = MixerView::new();
-        // Move cursor to index 5 (right edge of window [0..5])
-        for _ in 0..5 {
-            v.apply(MixerViewEvent::NavRight);
-        }
-        assert_eq!(v.cursor_channel(), 5);
-        assert_eq!(v.viewport_offset(), 0);
-
-        v.apply(MixerViewEvent::NavRight);
-        assert_eq!(v.viewport_offset(), 1);
-        assert_eq!(v.cursor_channel(), 5);
-    }
-
-    #[test]
-    fn mixer_view_cursor_always_in_visible_window() {
-        // Walk across all channels and verify the invariant holds.
-        let mut v = MixerView::new();
-        for _ in 0..20 {
-            v.apply(MixerViewEvent::NavRight);
-            let lo = v.viewport_offset();
-            let hi = lo + VISIBLE_CHANNELS - 1;
-            assert!(
-                (lo..=hi).contains(&v.cursor_channel()),
-                "cursor {} not in [{}, {}]",
-                v.cursor_channel(),
-                lo,
-                hi
-            );
-        }
-        for _ in 0..20 {
-            v.apply(MixerViewEvent::NavLeft);
-            let lo = v.viewport_offset();
-            let hi = lo + VISIBLE_CHANNELS - 1;
-            assert!(
-                (lo..=hi).contains(&v.cursor_channel()),
-                "cursor {} not in [{}, {}]",
-                v.cursor_channel(),
-                lo,
-                hi
-            );
-        }
-    }
-
-    #[test]
-    fn mixer_view_viewport_stays_in_range() {
-        let mut v = MixerView::new();
-        for _ in 0..30 {
-            v.apply(MixerViewEvent::NavRight);
-            assert!(v.viewport_offset() <= MAX_VIEWPORT_OFFSET);
-        }
-        for _ in 0..30 {
-            v.apply(MixerViewEvent::NavLeft);
-            assert!(v.viewport_offset() <= MAX_VIEWPORT_OFFSET);
-        }
-    }
-
-    // ── Edit mode: continuous params ─────────────────────────────────────────
-
-    #[test]
-    fn mixer_view_edit_nav_right_fine_increase() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::EnterEditMode);
-        let before = v.mixer().channel(0).volume;
-        v.apply(MixerViewEvent::NavRight);
-        let after = v.mixer().channel(0).volume;
-        assert!((after - (before + FINE_STEP)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mixer_view_edit_nav_left_fine_decrease() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::EnterEditMode);
-        let before = v.mixer().channel(0).volume;
-        v.apply(MixerViewEvent::NavLeft);
-        let after = v.mixer().channel(0).volume;
-        assert!((after - (before - FINE_STEP)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mixer_view_edit_nav_up_coarse_increase() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::EnterEditMode);
-        let before = v.mixer().channel(0).volume;
-        v.apply(MixerViewEvent::NavUp);
-        let after = v.mixer().channel(0).volume;
-        assert!((after - (before + COARSE_STEP)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mixer_view_edit_nav_down_coarse_decrease() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::EnterEditMode);
-        let before = v.mixer().channel(0).volume;
-        v.apply(MixerViewEvent::NavDown);
-        let after = v.mixer().channel(0).volume;
-        assert!((after - (before - COARSE_STEP)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mixer_view_coarse_is_10x_fine() {
-        // Use a reasonable float tolerance for 0.10 vs 10.0 * 0.01
-        assert!((COARSE_STEP - 10.0 * FINE_STEP).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mixer_view_edit_adjusts_focused_channel_only() {
-        let mut v = MixerView::new();
-        // Move to channel 3
+    fn nav_right_moves_cursor_within_visible_window() {
+        let mut view = MixerView::new();
         for _ in 0..3 {
-            v.apply(MixerViewEvent::NavRight);
+            view.apply(MixerViewEvent::NavRight);
         }
-        v.apply(MixerViewEvent::EnterEditMode);
-        let vol0_before = v.mixer().channel(0).volume;
-        v.apply(MixerViewEvent::NavRight);
-        // Channel 0 unchanged, channel 3 changed.
-        assert_eq!(v.mixer().channel(0).volume, vol0_before);
-        let vol3 = v.mixer().channel(3).volume;
-        assert!((vol3 - (0.75 + FINE_STEP)).abs() < 1e-6);
+        assert_eq!(view.cursor_channel(), 3);
+        assert_eq!(view.viewport_offset(), 0);
     }
 
     #[test]
-    fn mixer_view_edit_volume_clamps_at_max() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::EnterEditMode);
-        for _ in 0..200 {
-            v.apply(MixerViewEvent::NavRight);
+    fn nav_right_at_visible_right_edge_scrolls_viewport_keeping_absolute_channel() {
+        let mut view = MixerView::new();
+        for _ in 0..(VISIBLE_CHANNELS - 1) {
+            view.apply(MixerViewEvent::NavRight);
         }
-        assert!((v.mixer().channel(0).volume - 1.0).abs() < 1e-6);
+        assert_eq!(view.cursor_channel(), VISIBLE_CHANNELS - 1);
+        assert_eq!(view.viewport_offset(), 0);
+
+        view.apply(MixerViewEvent::NavRight);
+        assert_eq!(view.cursor_channel(), VISIBLE_CHANNELS - 1);
+        assert_eq!(view.viewport_offset(), 1);
+        assert!(view.visible_range().contains(&view.cursor_channel()));
     }
 
     #[test]
-    fn mixer_view_edit_volume_clamps_at_min() {
-        let mut v = MixerView::new();
-        v.apply(MixerViewEvent::EnterEditMode);
-        for _ in 0..200 {
-            v.apply(MixerViewEvent::NavLeft);
+    fn nav_right_is_noop_at_last_channel() {
+        let mut view = MixerView::new();
+        // Scrolling and cursor movement alternate once the cursor first
+        // reaches a visible edge, so reaching the last channel takes more
+        // than TOTAL_CHANNELS presses; TOTAL_CHANNELS * 2 is ample and any
+        // presses past the last channel are no-ops.
+        for _ in 0..(TOTAL_CHANNELS * 2) {
+            view.apply(MixerViewEvent::NavRight);
         }
-        assert!((v.mixer().channel(0).volume - 0.0).abs() < 1e-6);
+        assert_eq!(view.cursor_channel(), TOTAL_CHANNELS - 1);
+        assert_eq!(view.viewport_offset(), MAX_VIEWPORT_OFFSET);
+
+        view.apply(MixerViewEvent::NavRight);
+        assert_eq!(view.cursor_channel(), TOTAL_CHANNELS - 1);
+        assert_eq!(view.viewport_offset(), MAX_VIEWPORT_OFFSET);
     }
 
-    // ── Edit mode: toggle params are a no-op for directional input ───────────
+    #[test]
+    fn nav_left_is_noop_at_first_channel() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::NavLeft);
+        assert_eq!(view.cursor_channel(), 0);
+        assert_eq!(view.viewport_offset(), 0);
+    }
 
     #[test]
-    fn mixer_view_edit_mute_directional_is_noop() {
-        let mut v = MixerView::new();
-        // Navigate to Mute row
-        for _ in 0..4 {
-            v.apply(MixerViewEvent::NavDown);
+    fn nav_left_at_visible_left_edge_scrolls_viewport_keeping_absolute_channel() {
+        let mut view = MixerView::new();
+        for _ in 0..(TOTAL_CHANNELS * 2) {
+            view.apply(MixerViewEvent::NavRight);
         }
-        assert_eq!(v.cursor_param(), MixerParam::Mute);
-        v.apply(MixerViewEvent::EnterEditMode);
-        let mute_before = v.mixer().channel(0).mute;
-        v.apply(MixerViewEvent::NavLeft);
-        v.apply(MixerViewEvent::NavRight);
-        v.apply(MixerViewEvent::NavUp);
-        v.apply(MixerViewEvent::NavDown);
-        assert_eq!(v.mixer().channel(0).mute, mute_before);
-    }
+        assert_eq!(view.cursor_channel(), TOTAL_CHANNELS - 1);
+        assert_eq!(view.viewport_offset(), MAX_VIEWPORT_OFFSET);
 
-    #[test]
-    fn mixer_view_edit_solo_directional_is_noop() {
-        let mut v = MixerView::new();
-        // Navigate to Solo row
-        for _ in 0..5 {
-            v.apply(MixerViewEvent::NavDown);
+        // Move cursor back to the left edge of the visible window.
+        for _ in 0..(VISIBLE_CHANNELS - 1) {
+            view.apply(MixerViewEvent::NavLeft);
         }
-        assert_eq!(v.cursor_param(), MixerParam::Solo);
-        v.apply(MixerViewEvent::EnterEditMode);
-        let solo_before = v.mixer().channel(0).solo;
-        v.apply(MixerViewEvent::NavLeft);
-        v.apply(MixerViewEvent::NavRight);
-        assert_eq!(v.mixer().channel(0).solo, solo_before);
+        assert_eq!(view.cursor_channel(), MAX_VIEWPORT_OFFSET);
+        assert_eq!(view.viewport_offset(), MAX_VIEWPORT_OFFSET);
+
+        view.apply(MixerViewEvent::NavLeft);
+        assert_eq!(view.cursor_channel(), MAX_VIEWPORT_OFFSET);
+        assert_eq!(view.viewport_offset(), MAX_VIEWPORT_OFFSET - 1);
+        assert!(view.visible_range().contains(&view.cursor_channel()));
     }
 
-    // ── ToggleFocusedParam ───────────────────────────────────────────────────
-
     #[test]
-    fn mixer_view_toggle_mute() {
-        let mut v = MixerView::new();
-        // Navigate to Mute row
-        for _ in 0..4 {
-            v.apply(MixerViewEvent::NavDown);
+    fn cursor_always_stays_within_visible_window_during_full_traversal() {
+        let mut view = MixerView::new();
+        for _ in 0..(TOTAL_CHANNELS * 2) {
+            view.apply(MixerViewEvent::NavRight);
+            assert!(view.visible_range().contains(&view.cursor_channel()));
         }
-        assert_eq!(v.cursor_param(), MixerParam::Mute);
-        assert!(!v.mixer().channel(0).mute);
-        v.apply(MixerViewEvent::ToggleFocusedParam);
-        assert!(v.mixer().channel(0).mute);
-        v.apply(MixerViewEvent::ToggleFocusedParam);
-        assert!(!v.mixer().channel(0).mute);
-    }
-
-    #[test]
-    fn mixer_view_toggle_solo() {
-        let mut v = MixerView::new();
-        for _ in 0..5 {
-            v.apply(MixerViewEvent::NavDown);
+        for _ in 0..(TOTAL_CHANNELS * 2) {
+            view.apply(MixerViewEvent::NavLeft);
+            assert!(view.visible_range().contains(&view.cursor_channel()));
         }
-        assert_eq!(v.cursor_param(), MixerParam::Solo);
-        assert!(!v.mixer().channel(0).solo);
-        v.apply(MixerViewEvent::ToggleFocusedParam);
-        assert!(v.mixer().channel(0).solo);
-        v.apply(MixerViewEvent::ToggleFocusedParam);
-        assert!(!v.mixer().channel(0).solo);
     }
 
     #[test]
-    fn mixer_view_toggle_continuous_is_noop() {
-        let mut v = MixerView::new();
-        assert_eq!(v.cursor_param(), MixerParam::Volume);
-        let vol_before = v.mixer().channel(0).volume;
-        v.apply(MixerViewEvent::ToggleFocusedParam);
-        assert_eq!(v.mixer().channel(0).volume, vol_before);
+    fn enter_edit_mode_alone_changes_no_value() {
+        let mut view = MixerView::new();
+        let before = view.channel(0).unwrap().volume_db();
+        view.apply(MixerViewEvent::EnterEditMode);
+        assert!(view.edit_mode());
+        assert_eq!(view.channel(0).unwrap().volume_db(), before);
     }
 
     #[test]
-    fn mixer_view_toggle_in_navigate_mode_works() {
-        let mut v = MixerView::new();
-        for _ in 0..4 {
-            v.apply(MixerViewEvent::NavDown);
-        }
-        // Not in edit mode
-        assert!(!v.edit_mode());
-        v.apply(MixerViewEvent::ToggleFocusedParam);
-        assert!(v.mixer().channel(0).mute);
+    fn edit_mode_right_adjusts_volume_by_fine_step() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::EnterEditMode);
+        view.apply(MixerViewEvent::NavRight);
+        let expected = Decibel::unity().value() + VOLUME_FINE_STEP_DB;
+        assert!((view.channel(0).unwrap().volume_db().value() - expected).abs() < 1e-4);
     }
 
     #[test]
-    fn mixer_view_toggle_in_edit_mode_works() {
-        let mut v = MixerView::new();
-        for _ in 0..4 {
-            v.apply(MixerViewEvent::NavDown);
-        }
-        v.apply(MixerViewEvent::EnterEditMode);
-        v.apply(MixerViewEvent::ToggleFocusedParam);
-        assert!(v.mixer().channel(0).mute);
+    fn edit_mode_up_adjusts_volume_by_coarse_step() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::EnterEditMode);
+        view.apply(MixerViewEvent::NavUp);
+        let expected = Decibel::unity().value() + VOLUME_COARSE_STEP_DB;
+        assert!((view.channel(0).unwrap().volume_db().value() - expected).abs() < 1e-4);
     }
 
     #[test]
-    fn mixer_view_toggle_targets_focused_channel() {
-        let mut v = MixerView::new();
-        // Move to channel 2
-        v.apply(MixerViewEvent::NavRight);
-        v.apply(MixerViewEvent::NavRight);
-        assert_eq!(v.cursor_channel(), 2);
-        // Navigate to Mute row
-        for _ in 0..4 {
-            v.apply(MixerViewEvent::NavDown);
-        }
-        v.apply(MixerViewEvent::ToggleFocusedParam);
-        assert!(!v.mixer().channel(0).mute);
-        assert!(v.mixer().channel(2).mute);
-    }
-
-    // ── Invariant: cursor channel stays in 0..=15 ────────────────────────────
-
-    #[test]
-    fn mixer_view_cursor_channel_stays_in_range() {
-        let mut v = MixerView::new();
+    fn edit_mode_volume_clamps_at_max() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::EnterEditMode);
         for _ in 0..50 {
-            v.apply(MixerViewEvent::NavRight);
+            view.apply(MixerViewEvent::NavUp);
         }
-        assert!(v.cursor_channel() <= 15);
-        for _ in 0..50 {
-            v.apply(MixerViewEvent::NavLeft);
-        }
-        assert!(v.cursor_channel() <= 15);
+        assert_eq!(view.channel(0).unwrap().volume_db().value(), Decibel::MAX);
     }
 
-    // ── Default impl ─────────────────────────────────────────────────────────
+    #[test]
+    fn edit_mode_volume_clamps_at_min() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::EnterEditMode);
+        for _ in 0..50 {
+            view.apply(MixerViewEvent::NavDown);
+        }
+        assert_eq!(view.channel(0).unwrap().volume_db().value(), Decibel::MIN);
+    }
 
     #[test]
-    fn mixer_view_default_equals_new() {
-        let a = MixerView::new();
-        let b = MixerView::default();
-        assert_eq!(a.cursor_channel(), b.cursor_channel());
-        assert_eq!(a.cursor_param(), b.cursor_param());
-        assert_eq!(a.edit_mode(), b.edit_mode());
-        assert_eq!(a.viewport_offset(), b.viewport_offset());
+    fn edit_mode_pan_fine_and_coarse_steps_and_clamping() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::NavDown); // cursor_param -> Pan
+        view.apply(MixerViewEvent::EnterEditMode);
+        view.apply(MixerViewEvent::NavRight);
+        let expected = Pan::center().value() + PAN_FINE_STEP;
+        assert!((view.channel(0).unwrap().pan().value() - expected).abs() < 1e-4);
+
+        for _ in 0..50 {
+            view.apply(MixerViewEvent::NavUp);
+        }
+        assert_eq!(view.channel(0).unwrap().pan().value(), Pan::MAX);
+    }
+
+    #[test]
+    fn edit_mode_directional_input_never_toggles_mute_or_solo() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::NavDown); // Pan
+        view.apply(MixerViewEvent::NavDown); // Mute
+        view.apply(MixerViewEvent::EnterEditMode);
+        view.apply(MixerViewEvent::NavUp);
+        view.apply(MixerViewEvent::NavDown);
+        view.apply(MixerViewEvent::NavLeft);
+        view.apply(MixerViewEvent::NavRight);
+        assert!(!view.channel(0).unwrap().mute());
+    }
+
+    #[test]
+    fn toggle_focused_param_toggles_mute() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::NavDown); // Pan
+        view.apply(MixerViewEvent::NavDown); // Mute
+        view.apply(MixerViewEvent::ToggleFocusedParam);
+        assert!(view.channel(0).unwrap().mute());
+        view.apply(MixerViewEvent::ToggleFocusedParam);
+        assert!(!view.channel(0).unwrap().mute());
+    }
+
+    #[test]
+    fn toggle_focused_param_toggles_solo() {
+        let mut view = MixerView::new();
+        for _ in 0..3 {
+            view.apply(MixerViewEvent::NavDown);
+        }
+        assert_eq!(view.cursor_param(), MixerParam::Solo);
+        view.apply(MixerViewEvent::ToggleFocusedParam);
+        assert!(view.channel(0).unwrap().solo());
+    }
+
+    #[test]
+    fn toggle_focused_param_is_noop_on_continuous_param() {
+        let mut view = MixerView::new();
+        let before = view.channel(0).unwrap().volume_db();
+        view.apply(MixerViewEvent::ToggleFocusedParam);
+        assert_eq!(view.channel(0).unwrap().volume_db(), before);
+    }
+
+    #[test]
+    fn exit_edit_mode_returns_to_navigate_mode() {
+        let mut view = MixerView::new();
+        view.apply(MixerViewEvent::EnterEditMode);
+        assert!(view.edit_mode());
+        view.apply(MixerViewEvent::ExitEditMode);
+        assert!(!view.edit_mode());
+    }
+
+    #[test]
+    fn wraps_exactly_sixteen_channels() {
+        let view = MixerView::new();
+        assert_eq!(view.channels().len(), TOTAL_CHANNELS);
+        assert!(view.channel(TOTAL_CHANNELS).is_none());
+    }
+
+    #[test]
+    fn metering_is_independent_of_solo_and_mute() {
+        use crate::mixer::channel_strip::Amplitude;
+
+        let mut channels: [ChannelStrip; TOTAL_CHANNELS] =
+            std::array::from_fn(|_| ChannelStrip::new());
+        channels[0]
+            .handle(ChannelStripCommand::SetMute { mute: true })
+            .unwrap();
+        channels[1]
+            .handle(ChannelStripCommand::SetSolo { solo: true })
+            .unwrap();
+        let mut view = MixerView::with_channels(channels);
+
+        // Meter a muted, non-soloed channel while another channel is
+        // soloed: it must still report a real (non-silent) peak.
+        let peak = view.channels[0].meter(Amplitude::unity());
+        assert!(peak.value() > 0.0);
     }
 }

@@ -1,174 +1,297 @@
 // path: src/real_time/deferred_deallocator.rs
-//
-// DeferredDeallocator — basedrop-style deferred memory reclamation.
-//
-// The audio thread calls `retire` to hand ownership of an `Arc<T>` to the
-// deallocator without freeing it.  A background thread calls `collect` to
-// drain the queue and drop the arcs (which may free the underlying
-// allocation).  This guarantees that `free()` never runs on the audio thread.
-//
-// Design
-// ------
-//   • `retire` is lock-free and allocation-free:
-//       - The incoming `Arc<T>` is coerced to `Arc<dyn Any + Send + Sync>`,
-//         a fat pointer (2 words) stored directly in the ring buffer slot.
-//         No `Box::new` or heap allocation occurs.
-//       - `rtrb::Producer::push` is a single atomic operation; it never blocks.
-//   • `collect` may call `free()` (dropping the last Arc) but is only ever
-//     called from a non-real-time background thread.
-//   • The two halves are split by `rtrb::RingBuffer` into a `Producer`
-//     (audio-thread side) and a `Consumer` (collector-thread side).
 
-use std::{any::Any, sync::Arc};
+//! Deferred deallocation port for the real-time boundary.
+//!
+//! The audio thread must never free memory itself: freeing is allocation's
+//! twin and both can block unboundedly (the allocator may take a lock,
+//! coalesce free lists, or make a syscall). Instead the audio thread
+//! *retires* an already-heap-allocated value into a bounded, lock-free ring
+//! buffer, and a non-real-time background thread later *collects* the ring
+//! and drops the retired values, actually freeing them off the RT path.
+//!
+//! [`Retire`] is the narrow interface the audio thread depends on (push
+//! only). [`Collect`] is the narrow interface the background thread depends
+//! on (drain only). Splitting them (Interface Segregation) makes it
+//! impossible for RT code to accidentally call the allocating/blocking
+//! `collect` path, and vice versa.
 
-use rtrb::{Consumer, Producer, RingBuffer};
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
-/// Capacity of the retire queue (number of `Arc` slots).
+/// A type-erased, already-heap-allocated value waiting to be freed by a
+/// background thread.
 ///
-/// If the audio thread retires more than this many objects between consecutive
-/// `collect` calls, `retire` will silently drop the excess rather than
-/// block or allocate.  Size conservatively: in practice a single audio
-/// callback retires at most a handful of voices.
-const QUEUE_CAPACITY: usize = 256;
+/// Constructing a `Retired` never allocates: it takes ownership of a `Box<T>`
+/// the caller already allocated (e.g. when a voice or patch was first
+/// created) and performs only pointer bookkeeping via an unsizing coercion.
+pub struct Retired(Box<dyn Send + 'static>);
 
-/// Type-erased retired `Arc`.  Stored as a fat pointer (2 words) — no
-/// additional heap allocation.
-type Retired = Arc<dyn Any + Send + Sync>;
-
-/// Audio-thread handle.  Accepts retired `Arc<T>` values without blocking
-/// and without heap allocation.
-pub struct RetireHandle {
-    producer: Producer<Retired>,
-}
-
-impl RetireHandle {
-    /// Hand an `Arc<T>` to the deallocator.
+impl Retired {
+    /// Wrap an already-boxed value for deferred freeing.
     ///
-    /// This operation is **lock-free and allocation-free**:
-    /// - Coercing to `Arc<dyn Any + Send + Sync>` is a fat-pointer cast (no alloc).
-    /// - `push` is a single atomic store onto the ring buffer; never blocks.
-    ///
-    /// If the queue is full (the background thread has fallen behind by
-    /// more than `QUEUE_CAPACITY` slots) the arc is silently dropped here
-    /// instead — still correct, but `free()` may run on the audio thread
-    /// in that rare overload case.
-    pub fn retire<T: Any + Send + Sync + 'static>(&mut self, value: Arc<T>) {
-        let erased: Retired = value; // fat-pointer coercion, no allocation
-        let _ = self.producer.push(erased); // single atomic op
+    /// This does not allocate: ownership of the existing `Box<T>` moves into
+    /// the returned `Retired`.
+    pub fn new<T: Send + 'static>(value: Box<T>) -> Self {
+        Retired(value)
     }
 }
 
-/// Background-thread handle.  Drains and drops retired values.
-pub struct CollectHandle {
-    consumer: Consumer<Retired>,
+impl Drop for Retired {
+    /// Explicitly touches field 0 so the compiler recognizes it as read
+    /// (silencing `dead_code`) rather than merely dropped implicitly: the
+    /// whole point of this type is that the background collector's thread
+    /// reaches this point and frees the boxed payload here, off the audio
+    /// thread. The field then finishes dropping normally afterward.
+    fn drop(&mut self) {
+        let _payload: &(dyn Send + 'static) = &*self.0;
+    }
 }
 
-impl CollectHandle {
-    /// Drain all pending retired values and drop them.
-    ///
-    /// Call this periodically from a background (non-audio) thread.
-    /// Dropping the `Arc<dyn …>` may call `free()` on the underlying
-    /// allocation — safe here because we are not on the audio thread.
-    pub fn collect(&mut self) {
-        while let Ok(retired) = self.consumer.pop() {
-            drop(retired); // may call free(); safe on background thread
+/// Port depended on by real-time code: hand off a retired allocation.
+///
+/// Implementations must guarantee `retire` never allocates heap memory,
+/// acquires a mutex or blocking lock, or performs blocking I/O.
+pub trait Retire {
+    /// Hand off `allocation` to be freed later, off the audio thread.
+    fn retire(&mut self, allocation: Retired);
+}
+
+/// Port depended on by the background reclaimer: drain retired allocations.
+///
+/// Implementations may allocate, lock, or block internally. Never call this
+/// from the audio thread.
+pub trait Collect {
+    /// Drop every retired allocation currently queued, actually freeing
+    /// them, and return how many were freed.
+    fn collect(&mut self) -> u32;
+}
+
+/// One slot in the ring buffer.
+///
+/// `UnsafeCell` is required for interior mutability across the
+/// producer/consumer split; it unconditionally opts the slot out of `Sync`,
+/// which we restore below with a manual, access-pattern-justified impl.
+struct Slot(UnsafeCell<Option<Retired>>);
+
+impl Slot {
+    fn empty() -> Self {
+        Slot(UnsafeCell::new(None))
+    }
+}
+
+// Safety: `Slot` is only ever written by the single producer half
+// (`Retirer`) and only ever read/cleared by the single consumer half
+// (`Collector`) of a given ring, and the two sides never touch the same
+// index concurrently (guarded by the head/tail atomics below). That
+// single-producer/single-consumer discipline makes shared access to the
+// `RingState` safe despite the `UnsafeCell`.
+unsafe impl Sync for Slot {}
+
+/// Shared state behind a producer/consumer pair. `capacity` slots are
+/// allocated once, up front, when the ring is created (not on the audio
+/// thread) - `retire` and `collect` never grow or shrink this buffer.
+struct RingState {
+    slots: Box<[Slot]>,
+    capacity: usize,
+    /// Next index the consumer will read from. Written only by the
+    /// consumer, read by both sides.
+    head: AtomicUsize,
+    /// Next index the producer will write to. Written only by the
+    /// producer, read by both sides.
+    tail: AtomicUsize,
+}
+
+/// Real-time-side handle: the only operation available is [`Retire::retire`].
+pub struct Retirer {
+    state: Arc<RingState>,
+}
+
+/// Background-side handle: the only operation available is
+/// [`Collect::collect`].
+pub struct Collector {
+    state: Arc<RingState>,
+}
+
+// Safety: a `Retirer` is created once (off the audio thread) and then moved
+// onto the audio thread; it never shares `&Retirer` across threads, so
+// `Send` is all it needs.
+unsafe impl Send for Retirer {}
+// Safety: symmetric argument for the background thread.
+unsafe impl Send for Collector {}
+
+/// Build a deferred-deallocation ring with room for `capacity - 1` retired
+/// allocations in flight at once (one slot is always kept empty to
+/// distinguish "full" from "empty" without extra bookkeeping).
+///
+/// `capacity` must be at least 2. This allocates the backing buffer once,
+/// up front - call it during setup, never from the audio thread.
+pub fn deferred_deallocator(capacity: usize) -> (Retirer, Collector) {
+    assert!(
+        capacity >= 2,
+        "deferred_deallocator requires capacity >= 2, got {capacity}"
+    );
+
+    let mut slots = Vec::with_capacity(capacity);
+    for _ in 0..capacity {
+        slots.push(Slot::empty());
+    }
+
+    let state = Arc::new(RingState {
+        slots: slots.into_boxed_slice(),
+        capacity,
+        head: AtomicUsize::new(0),
+        tail: AtomicUsize::new(0),
+    });
+
+    (
+        Retirer {
+            state: Arc::clone(&state),
+        },
+        Collector { state },
+    )
+}
+
+impl Retire for Retirer {
+    fn retire(&mut self, allocation: Retired) {
+        let tail = self.state.tail.load(Ordering::Relaxed);
+        let head = self.state.head.load(Ordering::Acquire);
+        let next = (tail + 1) % self.state.capacity;
+
+        if next == head {
+            // The ring is full: the background collector has fallen behind.
+            // We cannot drop `allocation` here (that would run its
+            // destructor, i.e. free memory, on the audio thread) and we
+            // cannot block waiting for room. Deliberately leak it instead -
+            // a bounded, rare memory leak is preferable to a real-time
+            // deadline violation.
+            std::mem::forget(allocation);
+            return;
         }
+
+        // Safety: only the producer ever writes to `slots[tail]`, and the
+        // `next == head` check above guarantees the consumer has already
+        // vacated this slot (or never occupied it), so there is no
+        // concurrent access to this index.
+        unsafe {
+            *self.state.slots[tail].0.get() = Some(allocation);
+        }
+        self.state.tail.store(next, Ordering::Release);
     }
 }
 
-/// Create a linked (`RetireHandle`, `CollectHandle`) pair.
-///
-/// `retire_handle` goes to the audio thread; `collect_handle` goes to a
-/// background collector thread or is polled from a timer.
-///
-/// # Example
-///
-/// ```
-/// use crest_synth::real_time::deferred_deallocator::deferred_deallocator;
-/// use std::sync::Arc;
-///
-/// let (mut retire, mut collect) = deferred_deallocator();
-/// let data: Arc<Vec<f32>> = Arc::new(vec![0.0_f32; 1024]);
-/// retire.retire(data);
-/// collect.collect(); // drops the Arc on the background thread
-/// ```
-pub fn deferred_deallocator() -> (RetireHandle, CollectHandle) {
-    let (producer, consumer) = RingBuffer::<Retired>::new(QUEUE_CAPACITY);
-    (RetireHandle { producer }, CollectHandle { consumer })
+impl Collect for Collector {
+    fn collect(&mut self) -> u32 {
+        let mut freed: u32 = 0;
+        loop {
+            let head = self.state.head.load(Ordering::Relaxed);
+            let tail = self.state.tail.load(Ordering::Acquire);
+            if head == tail {
+                break;
+            }
+
+            // Safety: only the consumer ever reads/clears `slots[head]`, and
+            // `head != tail` guarantees the producer has already published a
+            // value at this index.
+            let item = unsafe { (*self.state.slots[head].0.get()).take() };
+            drop(item); // Actually frees the retired allocation.
+            freed += 1;
+
+            let next = (head + 1) % self.state.capacity;
+            self.state.head.store(next, Ordering::Release);
+        }
+        freed
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering as StdOrdering};
 
-    /// Helper: an object that records when it is dropped.
-    struct DropRecorder {
-        dropped: Arc<Mutex<bool>>,
-    }
+    struct DropCounter(Arc<StdAtomicUsize>);
 
-    impl Drop for DropRecorder {
+    impl Drop for DropCounter {
         fn drop(&mut self) {
-            *self.dropped.lock().unwrap() = true;
+            self.0.fetch_add(1, StdOrdering::SeqCst);
         }
     }
 
     #[test]
-    fn collect_drops_retired_value() {
-        let (mut retire, mut collect) = deferred_deallocator();
-
-        let was_dropped = Arc::new(Mutex::new(false));
-        let recorder = Arc::new(DropRecorder {
-            dropped: Arc::clone(&was_dropped),
-        });
-
-        // Drop the local `Arc` — only the retired one remains.
-        retire.retire(Arc::clone(&recorder));
-        drop(recorder);
-
-        // Not yet dropped — still in the queue.
-        assert!(!*was_dropped.lock().unwrap());
-
-        // collect() drains the queue; the last Arc drops here.
-        collect.collect();
-        assert!(*was_dropped.lock().unwrap());
+    fn collect_on_empty_ring_returns_zero() {
+        let (_retirer, mut collector) = deferred_deallocator(4);
+        assert_eq!(collector.collect(), 0);
     }
 
     #[test]
-    fn multiple_retires_all_collected() {
-        let (mut retire, mut collect) = deferred_deallocator();
+    fn retire_defers_the_drop_until_collect_runs() {
+        let counter = Arc::new(StdAtomicUsize::new(0));
+        let (mut retirer, mut collector) = deferred_deallocator(4);
 
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let item = Box::new(DropCounter(Arc::clone(&counter)));
+        retirer.retire(Retired::new(item));
+        assert_eq!(
+            counter.load(StdOrdering::SeqCst),
+            0,
+            "retire must not run the destructor on the retiring thread"
+        );
 
-        struct Counter(Arc<std::sync::atomic::AtomicUsize>);
-        impl Drop for Counter {
-            fn drop(&mut self) {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let freed = collector.collect();
+        assert_eq!(freed, 1);
+        assert_eq!(counter.load(StdOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn collect_drains_every_retired_allocation_in_order() {
+        let counter = Arc::new(StdAtomicUsize::new(0));
+        let (mut retirer, mut collector) = deferred_deallocator(8);
+
+        for _ in 0..5 {
+            retirer.retire(Retired::new(Box::new(DropCounter(Arc::clone(&counter)))));
+        }
+
+        let freed = collector.collect();
+        assert_eq!(freed, 5);
+        assert_eq!(counter.load(StdOrdering::SeqCst), 5);
+
+        // A second collect on a now-empty ring must be a no-op.
+        assert_eq!(collector.collect(), 0);
+    }
+
+    #[test]
+    fn retire_on_a_full_ring_leaks_instead_of_dropping_on_the_caller() {
+        let counter = Arc::new(StdAtomicUsize::new(0));
+        // capacity 2 => exactly one usable slot before "full".
+        let (mut retirer, mut collector) = deferred_deallocator(2);
+
+        retirer.retire(Retired::new(Box::new(DropCounter(Arc::clone(&counter)))));
+        // Ring is now full; this second retire must not drop its payload
+        // on this (simulated audio) thread.
+        retirer.retire(Retired::new(Box::new(DropCounter(Arc::clone(&counter)))));
+        assert_eq!(
+            counter.load(StdOrdering::SeqCst),
+            0,
+            "a full ring must leak, not drop, on the retiring thread"
+        );
+
+        let freed = collector.collect();
+        assert_eq!(freed, 1, "only the accepted allocation is collectible");
+        assert_eq!(counter.load(StdOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ring_can_be_reused_after_draining() {
+        let counter = Arc::new(StdAtomicUsize::new(0));
+        let (mut retirer, mut collector) = deferred_deallocator(3);
+
+        for round in 0..3 {
+            for _ in 0..2 {
+                retirer.retire(Retired::new(Box::new(DropCounter(Arc::clone(&counter)))));
             }
+            let freed = collector.collect();
+            assert_eq!(freed, 2, "round {round} should free exactly 2");
         }
 
-        for _ in 0..8 {
-            retire.retire(Arc::new(Counter(Arc::clone(&count))));
-        }
-
-        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 0);
-        collect.collect();
-        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 8);
-    }
-
-    #[test]
-    fn collect_on_empty_queue_is_noop() {
-        let (_retire, mut collect) = deferred_deallocator();
-        collect.collect(); // must not panic
-    }
-
-    #[test]
-    fn retire_returns_without_blocking() {
-        // Sanity: retire 100 arcs, none should block.
-        let (mut retire, mut collect) = deferred_deallocator();
-        for i in 0_u64..100 {
-            retire.retire(Arc::new(i));
-        }
-        collect.collect();
+        assert_eq!(counter.load(StdOrdering::SeqCst), 6);
     }
 }

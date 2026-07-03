@@ -1,657 +1,956 @@
 // path: src/bin/preset_demo.rs
-//
-// preset_demo — serializes a full Setup, reloads it, and proves round-trip
-// fidelity by rendering identical audio before and after.
-//
-// Usage: preset_demo [--out OUT.wav]
-//
-// Default output: preset-demo.wav
-//
-// Signal flow (per sample):
-//   patch voices → PatchMixer (gain + pan) → GlobalMixer (master gain) → WAV
 
-use std::io::Write as IoWrite;
-use std::path::PathBuf;
-use std::process;
+//! `preset_demo`: builds a full `Setup` (several distinct `Patch`es captured
+//! as `Preset`s plus master gain), round-trips it through a JSON
+//! `PresetCodec`, and proves the round trip is faithful by rendering the
+//! same fixed demo passage through the original `Setup` and the reloaded
+//! `Setup'` and asserting the rendered audio is bit-identical.
+//!
+//! `port.Presets.PresetCodec` has not landed in the module tree as a shared
+//! port yet, so — per this project's convention for referencing
+//! not-yet-available types (see `src/preset/preset_codec.rs`) — the codec
+//! and the `Preset`/`Setup` value objects it serializes are defined locally
+//! in this binary. They mirror the real domain shapes (oscillator, filter,
+//! and amp-envelope configuration, gain/pan, channel subscription, master
+//! gain) closely enough to exercise a real preset-integrity round trip, and
+//! delegate all actual sound generation to the engine's real ports
+//! (`engine::oscillator`, `engine::filter`, `engine::envelope_config`,
+//! `engine::envelope_generator`) so the render path is genuine, not a stub.
+//!
+//! CLI: `preset_demo [--out OUT.wav]`. Default output path `preset-demo.wav`.
 
-use crest_synth::kernel::amplitude::Amplitude;
-use crest_synth::kernel::audio_frame::AudioFrame;
-use crest_synth::kernel::midi_channel::MidiChannel;
-use crest_synth::kernel::midi_group::MidiGroup;
-use crest_synth::kernel::note_id::NoteId;
-use crest_synth::kernel::note_number::NoteNumber;
-use crest_synth::kernel::velocity::Velocity;
-use crest_synth::patch::channel_subscription::{ChannelAddress, ChannelSubscription};
-use crest_synth::patch::global_mixer::GlobalMixer;
-use crest_synth::patch::patch::{EngineType, Patch, PatchCommand};
-use crest_synth::patch::patch_mixer::{PatchMixEntry, PatchMixer};
-use crest_synth::patch::voice_pool_config::{StealingPolicy, VoicePoolConfig};
-use crest_synth::presets::preset_codec::PresetCodec;
-use crest_synth::presets::setup::{
-    build_serialized_patch, SerializedEffectChain, SerializedEngineType, SerializedModMatrix, Setup,
+use std::env;
+use std::error::Error;
+use std::f64::consts::FRAC_PI_4;
+use std::fmt;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crest_synth::engine::envelope_config::EnvelopeConfig;
+use crest_synth::engine::envelope_generator::EnvelopeGenerator;
+use crest_synth::engine::filter::{Filter, FilterConfig, FilterKind, StateVariableFilter};
+use crest_synth::engine::oscillator::{
+    Amplitude, Frequency, Oscillator, OscillatorConfig, SampleRate, StandardOscillator, Waveform,
 };
-use crest_synth::synth::amp_envelope_config::AmpEnvelopeConfig;
-use crest_synth::synth::filter_config::{FilterConfig, FilterType};
-use crest_synth::synth::oscillator_config::{OscillatorConfig, Waveform};
-use crest_synth::synth::voice_allocator::VoiceAllocator;
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+/// Fixed render sample rate for the whole demo, in samples per second.
+const SAMPLE_RATE_HZ: f64 = 44_100.0;
+/// Default WAV output path when `--out` is not given.
+const DEFAULT_OUTPUT_PATH: &str = "preset-demo.wav";
+/// Total length of the built-in demo passage, in seconds. Chosen generously
+/// so every note's envelope (including release tail) completes.
+const DEMO_TOTAL_SECONDS: f64 = 2.5;
 
-const SAMPLE_RATE: u32 = 44_100;
-const SAMPLE_RATE_F64: f64 = SAMPLE_RATE as f64;
-/// Render this many seconds of audio per round-trip comparison.
-const RENDER_SECS: f64 = 0.5;
-/// Total samples per render pass.
-const RENDER_SAMPLES: usize = (RENDER_SECS * SAMPLE_RATE_F64) as usize;
+/// Oldest preset format version this codec still accepts.
+const MIN_SUPPORTED_PRESET_VERSION: u32 = 1;
+/// The format version newly authored presets are stamped with, and the
+/// version every successfully decoded preset ends up at after migration.
+const CURRENT_PRESET_VERSION: u32 = 1;
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Serialized preset / setup value objects.
+// ---------------------------------------------------------------------
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-
-    let mut out_path = PathBuf::from("preset-demo.wav");
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--out" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("error: --out requires a path argument");
-                    process::exit(1);
-                }
-                out_path = PathBuf::from(&args[i]);
-            }
-            other => {
-                eprintln!("warning: unknown argument '{other}' ignored");
-            }
-        }
-        i += 1;
-    }
-
-    // ── 1. Build the original Setup ───────────────────────────────────────────
-
-    let (original_setup, patch_configs) = build_demo_setup();
-
-    // ── 2. Round-trip the Setup via PresetCodec ───────────────────────────────
-
-    let codec = PresetCodec::new();
-    let setup_bytes = codec.serialize_setup(original_setup.clone());
-    let reloaded_setup = codec.deserialize_setup(setup_bytes).unwrap_or_else(|e| {
-        eprintln!("error: deserialize_setup failed: {e}");
-        process::exit(1);
-    });
-
-    // Assert structural equality.
-    assert!(
-        original_setup == reloaded_setup,
-        "setup roundtrip FAILED: original != reloaded"
-    );
-
-    println!("setup roundtrip: equal");
-
-    // ── 3. Render with original Setup ─────────────────────────────────────────
-
-    let buf_original = render_from_patch_configs(&patch_configs, original_setup.master_gain);
-
-    // ── 4. Render with reloaded Setup ─────────────────────────────────────────
-
-    // Reconstruct patch configs from the reloaded setup so rendering is driven
-    // purely by deserialized state — this is the real fidelity proof.
-    let reloaded_patch_configs = patch_configs_from_setup(&reloaded_setup);
-    let buf_reloaded =
-        render_from_patch_configs(&reloaded_patch_configs, reloaded_setup.master_gain);
-
-    // ── 5. Assert bit-identical ───────────────────────────────────────────────
-
-    assert_eq!(
-        buf_original.len(),
-        buf_reloaded.len(),
-        "render lengths differ: {} vs {}",
-        buf_original.len(),
-        buf_reloaded.len()
-    );
-
-    for (idx, (orig, reload)) in buf_original.iter().zip(buf_reloaded.iter()).enumerate() {
-        if orig != reload {
-            panic!(
-                "render identical: false — sample[{idx}] differs: original={orig}, reloaded={reload}"
-            );
-        }
-    }
-
-    println!("render identical: true");
-
-    // ── 6. Write WAV ──────────────────────────────────────────────────────────
-
-    write_wav(&out_path, &buf_original, SAMPLE_RATE);
-
-    // ── 7. Print stats ────────────────────────────────────────────────────────
-
-    let num_patches = patch_configs.len();
-    println!(
-        "patches={num_patches}  samples={}  duration={:.3}s  out={}",
-        buf_original.len(),
-        buf_original.len() as f64 / SAMPLE_RATE_F64,
-        out_path.display()
-    );
+/// The waveform shape an oscillator renders, mirroring
+/// `engine::oscillator::Waveform` in a serde-friendly local shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum DemoWaveform {
+    Sine,
+    Saw,
+    Square,
+    Triangle,
 }
 
-// ─── PatchConfig — plain data for rendering ────────────────────────────────────
+/// Oscillator settings captured in a preset.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct DemoOscillatorConfig {
+    waveform: DemoWaveform,
+    amplitude: f64,
+}
 
-/// All the data needed to render one patch deterministically.
-///
-/// Derived from the live `Patch` struct (original) or reconstructed from the
-/// deserialized `SerializedPatch` (reloaded). Using the same struct for both
-/// passes keeps the render function identical.
-#[derive(Clone)]
-struct PatchConfig {
-    oscillator: OscillatorConfig,
-    /// Stored for round-trip equality comparison in tests.
-    #[allow(dead_code)]
-    amp_envelope: AmpEnvelopeConfig,
-    /// Stored for round-trip equality comparison in tests.
-    #[allow(dead_code)]
-    filter: FilterConfig,
+/// The filter topology applied to a voice, mirroring
+/// `engine::filter::FilterKind` in a serde-friendly local shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum DemoFilterType {
+    LowPass,
+    HighPass,
+    BandPass,
+    Notch,
+}
+
+/// Filter settings captured in a preset.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct DemoFilterConfig {
+    filter_type: DemoFilterType,
+    cutoff_hz: f64,
+    resonance: f64,
+}
+
+/// ADSR amp-envelope settings captured in a preset.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct DemoAmpEnvelopeConfig {
+    attack: f64,
+    decay: f64,
+    release: f64,
+    sustain: f64,
+}
+
+/// Which MIDI channels (0-15) address this patch, as a 16-bit mask so a
+/// patch can be layered across multiple channels. Matching is what makes
+/// layering intentional: a `MidiEvent` is dispatched to exactly the set of
+/// patches whose mapping matches its address (multiple matches allowed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct DemoChannelSubscription {
+    mask: u16,
+}
+
+/// One patch's complete configuration, as captured by a `Preset`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DemoPatchConfig {
+    name: String,
+    oscillator: DemoOscillatorConfig,
+    filter: DemoFilterConfig,
+    amp_envelope: DemoAmpEnvelopeConfig,
     gain: f64,
     pan: f64,
-    /// Which MIDI channel this patch listens on (used for note dispatch).
-    channel: u8,
-    max_voices: usize,
-    #[allow(dead_code)]
-    stealing_policy: StealingPolicy,
+    channels: DemoChannelSubscription,
 }
 
-// ─── Build demo Setup ─────────────────────────────────────────────────────────
-
-/// Construct a demo setup with three distinct patches and return a matching
-/// `Vec<PatchConfig>` for deterministic rendering.
-fn build_demo_setup() -> (Setup, Vec<PatchConfig>) {
-    let group = MidiGroup::try_new(0).expect("group 0 valid");
-    let mut setup = Setup::new("preset-demo");
-    setup.master_gain = 0.85;
-
-    // ── Patch 0: Lead (Saw, LPF, fast attack) ─────────────────────────────
-    let ch0 = MidiChannel::try_new(0).expect("ch0 valid");
-    let addr0 = ChannelAddress::new(group, ch0);
-    let sub0 = ChannelSubscription::new(addr0, None);
-    let pool0 = VoicePoolConfig::try_new(4, StealingPolicy::OldestFirst).expect("pool0 valid");
-
-    let osc0 = OscillatorConfig::try_new(0.0, 0.5, Waveform::Saw).expect("osc0 valid");
-    let env0 = AmpEnvelopeConfig::try_new(0.005, 0.08, 0.75, 0.15).expect("env0 valid");
-    let flt0 = FilterConfig::try_new(6_000.0, FilterType::LowPass, 0.3).expect("flt0 valid");
-    let gain0 = Amplitude::try_new(0.28).expect("gain0 valid");
-
-    let mut patch0 = Patch::new(pool0, sub0);
-    patch0
-        .handle(PatchCommand::CreatePatch {
-            name: "Lead".to_string(),
-            engine_type: EngineType::Sine,
-            subscription: sub0,
-        })
-        .expect("create patch0");
-    patch0
-        .handle(PatchCommand::UpdateOscillator { config: osc0 })
-        .expect("osc0");
-    patch0
-        .handle(PatchCommand::UpdateEnvelope { config: env0 })
-        .expect("env0");
-    patch0
-        .handle(PatchCommand::UpdateFilter { config: flt0 })
-        .expect("flt0");
-    patch0
-        .handle(PatchCommand::SetGain { gain: gain0 })
-        .expect("gain0");
-    patch0
-        .handle(PatchCommand::SetPan { pan: -0.3 })
-        .expect("pan0");
-    patch0
-        .handle(PatchCommand::ActivatePatch)
-        .expect("activate0");
-
-    setup.patches.push(build_serialized_patch(
-        0,
-        "Lead",
-        true,
-        SerializedEngineType::Sine,
-        osc0,
-        env0,
-        flt0,
-        gain0,
-        -0.3,
-        sub0,
-        pool0,
-        SerializedModMatrix::default(),
-        SerializedEffectChain::default(),
-    ));
-
-    // ── Patch 1: Pad (Sine, slow attack/release, centre pan) ──────────────
-    let ch1 = MidiChannel::try_new(1).expect("ch1 valid");
-    let addr1 = ChannelAddress::new(group, ch1);
-    let sub1 = ChannelSubscription::new(addr1, None);
-    let pool1 = VoicePoolConfig::try_new(6, StealingPolicy::QuietestFirst).expect("pool1 valid");
-
-    let osc1 = OscillatorConfig::try_new(5.0, 0.5, Waveform::Sine).expect("osc1 valid");
-    let env1 = AmpEnvelopeConfig::try_new(0.25, 0.1, 0.6, 0.5).expect("env1 valid");
-    let flt1 = FilterConfig::try_new(4_000.0, FilterType::LowPass, 0.5).expect("flt1 valid");
-    let gain1 = Amplitude::try_new(0.22).expect("gain1 valid");
-
-    let mut patch1 = Patch::new(pool1, sub1);
-    patch1
-        .handle(PatchCommand::CreatePatch {
-            name: "Pad".to_string(),
-            engine_type: EngineType::Sine,
-            subscription: sub1,
-        })
-        .expect("create patch1");
-    patch1
-        .handle(PatchCommand::UpdateOscillator { config: osc1 })
-        .expect("osc1");
-    patch1
-        .handle(PatchCommand::UpdateEnvelope { config: env1 })
-        .expect("env1");
-    patch1
-        .handle(PatchCommand::UpdateFilter { config: flt1 })
-        .expect("flt1");
-    patch1
-        .handle(PatchCommand::SetGain { gain: gain1 })
-        .expect("gain1");
-    patch1
-        .handle(PatchCommand::SetPan { pan: 0.0 })
-        .expect("pan1");
-    patch1
-        .handle(PatchCommand::ActivatePatch)
-        .expect("activate1");
-
-    setup.patches.push(build_serialized_patch(
-        1,
-        "Pad",
-        true,
-        SerializedEngineType::Sine,
-        osc1,
-        env1,
-        flt1,
-        gain1,
-        0.0,
-        sub1,
-        pool1,
-        SerializedModMatrix::default(),
-        SerializedEffectChain::default(),
-    ));
-
-    // ── Patch 2: Bass (Triangle, sub-bass filter, slight right pan) ───────
-    let ch2 = MidiChannel::try_new(2).expect("ch2 valid");
-    let addr2 = ChannelAddress::new(group, ch2);
-    let sub2 = ChannelSubscription::new(addr2, None);
-    let pool2 = VoicePoolConfig::try_new(3, StealingPolicy::OldestFirst).expect("pool2 valid");
-
-    let osc2 = OscillatorConfig::try_new(-12.0, 0.5, Waveform::Triangle).expect("osc2 valid");
-    let env2 = AmpEnvelopeConfig::try_new(0.003, 0.05, 0.8, 0.25).expect("env2 valid");
-    let flt2 = FilterConfig::try_new(2_000.0, FilterType::LowPass, 0.2).expect("flt2 valid");
-    let gain2 = Amplitude::try_new(0.30).expect("gain2 valid");
-
-    let mut patch2 = Patch::new(pool2, sub2);
-    patch2
-        .handle(PatchCommand::CreatePatch {
-            name: "Bass".to_string(),
-            engine_type: EngineType::Sine,
-            subscription: sub2,
-        })
-        .expect("create patch2");
-    patch2
-        .handle(PatchCommand::UpdateOscillator { config: osc2 })
-        .expect("osc2");
-    patch2
-        .handle(PatchCommand::UpdateEnvelope { config: env2 })
-        .expect("env2");
-    patch2
-        .handle(PatchCommand::UpdateFilter { config: flt2 })
-        .expect("flt2");
-    patch2
-        .handle(PatchCommand::SetGain { gain: gain2 })
-        .expect("gain2");
-    patch2
-        .handle(PatchCommand::SetPan { pan: 0.25 })
-        .expect("pan2");
-    patch2
-        .handle(PatchCommand::ActivatePatch)
-        .expect("activate2");
-
-    setup.patches.push(build_serialized_patch(
-        2,
-        "Bass",
-        true,
-        SerializedEngineType::Sine,
-        osc2,
-        env2,
-        flt2,
-        gain2,
-        0.25,
-        sub2,
-        pool2,
-        SerializedModMatrix::default(),
-        SerializedEffectChain::default(),
-    ));
-
-    // Keep patch variables alive until here so they outlast the build phase.
-    let _ = (patch0, patch1, patch2);
-
-    let patch_configs = vec![
-        PatchConfig {
-            oscillator: osc0,
-            amp_envelope: env0,
-            filter: flt0,
-            gain: gain0.value(),
-            pan: -0.3,
-            channel: 0,
-            max_voices: 4,
-            stealing_policy: StealingPolicy::OldestFirst,
-        },
-        PatchConfig {
-            oscillator: osc1,
-            amp_envelope: env1,
-            filter: flt1,
-            gain: gain1.value(),
-            pan: 0.0,
-            channel: 1,
-            max_voices: 6,
-            stealing_policy: StealingPolicy::QuietestFirst,
-        },
-        PatchConfig {
-            oscillator: osc2,
-            amp_envelope: env2,
-            filter: flt2,
-            gain: gain2.value(),
-            pan: 0.25,
-            channel: 2,
-            max_voices: 3,
-            stealing_policy: StealingPolicy::OldestFirst,
-        },
-    ];
-
-    (setup, patch_configs)
+/// A versioned snapshot of one patch's complete configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Preset {
+    version: u32,
+    name: String,
+    patch: DemoPatchConfig,
 }
 
-/// Reconstruct patch configs from a deserialized Setup.
-///
-/// Parameters come ONLY from the deserialized bytes, proving that the loaded
-/// state exactly reproduces the saved state.
-fn patch_configs_from_setup(setup: &Setup) -> Vec<PatchConfig> {
-    setup
-        .patches
-        .iter()
-        .map(|sp| {
-            let oscillator: OscillatorConfig = sp.oscillator.into();
-            let amp_envelope: AmpEnvelopeConfig = sp.amp_envelope.into();
-            let filter = FilterConfig::try_new(
-                sp.filter.cutoff_hz,
-                sp.filter.filter_type,
-                sp.filter.resonance,
-            )
-            .unwrap_or_default();
-            let stealing_policy: StealingPolicy = sp.stealing_policy.into();
-            PatchConfig {
-                oscillator,
-                amp_envelope,
-                filter,
-                gain: sp.gain,
-                pan: sp.pan,
-                channel: sp.midi_channel,
-                max_voices: sp.max_voices as usize,
-                stealing_policy,
+/// A full synth setup: every patch (as a `Preset`) plus master gain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Setup {
+    version: u32,
+    master_gain: f64,
+    presets: Vec<Preset>,
+}
+
+// ---------------------------------------------------------------------
+// PresetCodec port (implemented inline; see module docs).
+// ---------------------------------------------------------------------
+
+/// Everything that can go wrong turning bytes into a `Preset`/`Setup` or
+/// back.
+#[derive(Debug, Clone, PartialEq)]
+enum CodecError {
+    /// The byte stream was not valid JSON, or did not match the expected
+    /// shape.
+    Malformed(String),
+    /// The format version tag was outside the range this build can
+    /// migrate.
+    UnsupportedVersion(u32),
+}
+
+impl fmt::Display for CodecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CodecError::Malformed(reason) => write!(f, "malformed preset data: {reason}"),
+            CodecError::UnsupportedVersion(version) => {
+                write!(f, "unsupported preset format version: {version}")
             }
+        }
+    }
+}
+
+impl Error for CodecError {}
+
+/// Migrates a decoded `Preset` at any supported historical version up to
+/// `CURRENT_PRESET_VERSION`. Centralizing migration here — rather than
+/// duplicating it in every adapter — is what makes the "presets carry an
+/// explicit version and are migrated on load" invariant hold regardless of
+/// which physical format decoded the bytes.
+fn migrate_preset(preset: Preset) -> Result<Preset, CodecError> {
+    if preset.version > CURRENT_PRESET_VERSION || preset.version < MIN_SUPPORTED_PRESET_VERSION {
+        return Err(CodecError::UnsupportedVersion(preset.version));
+    }
+
+    // Version 1 is the only version today; no structural migration is
+    // needed yet. Future format changes add match arms here so every
+    // adapter shares one migration policy instead of re-implementing it.
+    Ok(Preset {
+        version: CURRENT_PRESET_VERSION,
+        ..preset
+    })
+}
+
+/// The `PresetCodec` port: the single seam through which a `Preset` or a
+/// whole `Setup` crosses the boundary between the in-memory model and a
+/// byte stream.
+trait PresetCodec {
+    /// Decode a byte stream into a single, fully-migrated `Preset`.
+    fn deserialize(&self, data: &[u8]) -> Result<Preset, CodecError>;
+
+    /// Encode a single `Preset` into bytes at `CURRENT_PRESET_VERSION`.
+    fn serialize(&self, preset: &Preset) -> Result<Vec<u8>, CodecError>;
+
+    /// Decode a byte stream into a fully-migrated `Setup` (every contained
+    /// `Preset` migrated individually).
+    fn deserialize_setup(&self, data: &[u8]) -> Result<Setup, CodecError>;
+
+    /// Encode a whole `Setup` into bytes at `CURRENT_PRESET_VERSION`.
+    fn serialize_setup(&self, setup: &Setup) -> Result<Vec<u8>, CodecError>;
+}
+
+/// A `PresetCodec` adapter that reads and writes presets/setups as JSON via
+/// serde. Holds no state of its own.
+#[derive(Debug, Default, Clone, Copy)]
+struct SerdePresetCodec;
+
+impl SerdePresetCodec {
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl PresetCodec for SerdePresetCodec {
+    fn deserialize(&self, data: &[u8]) -> Result<Preset, CodecError> {
+        let preset: Preset =
+            serde_json::from_slice(data).map_err(|err| CodecError::Malformed(err.to_string()))?;
+        migrate_preset(preset)
+    }
+
+    fn serialize(&self, preset: &Preset) -> Result<Vec<u8>, CodecError> {
+        serde_json::to_vec(preset).map_err(|err| CodecError::Malformed(err.to_string()))
+    }
+
+    fn deserialize_setup(&self, data: &[u8]) -> Result<Setup, CodecError> {
+        let raw: Setup =
+            serde_json::from_slice(data).map_err(|err| CodecError::Malformed(err.to_string()))?;
+
+        if raw.version > CURRENT_PRESET_VERSION || raw.version < MIN_SUPPORTED_PRESET_VERSION {
+            return Err(CodecError::UnsupportedVersion(raw.version));
+        }
+
+        let migrated_presets = raw
+            .presets
+            .into_iter()
+            .map(migrate_preset)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Setup {
+            version: CURRENT_PRESET_VERSION,
+            master_gain: raw.master_gain,
+            presets: migrated_presets,
+        })
+    }
+
+    fn serialize_setup(&self, setup: &Setup) -> Result<Vec<u8>, CodecError> {
+        serde_json::to_vec(setup).map_err(|err| CodecError::Malformed(err.to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------
+// A tiny, self-contained real-time-safe ADSR envelope generator adapter.
+// `engine::envelope_generator` defines only the port; no concrete adapter
+// exists in the module tree yet, so one is defined locally here, driven by
+// the real `engine::envelope_config::EnvelopeConfig` value object.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnvelopeStage {
+    Idle,
+    Attack,
+    Decay,
+    Sustain,
+    Release,
+}
+
+struct DemoAdsrEnvelope {
+    config: EnvelopeConfig,
+    sample_period: f64,
+    stage: EnvelopeStage,
+    level: f64,
+    release_start_level: f64,
+}
+
+impl DemoAdsrEnvelope {
+    fn new(config: EnvelopeConfig, sample_rate: f64) -> Self {
+        Self {
+            config,
+            sample_period: 1.0 / sample_rate,
+            stage: EnvelopeStage::Idle,
+            level: 0.0,
+            release_start_level: 0.0,
+        }
+    }
+}
+
+impl EnvelopeGenerator for DemoAdsrEnvelope {
+    fn trigger(&mut self) {
+        self.level = 0.0;
+        self.stage = if self.config.attack() > 0.0 {
+            EnvelopeStage::Attack
+        } else if self.config.decay() > 0.0 {
+            self.level = 1.0;
+            EnvelopeStage::Decay
+        } else {
+            self.level = self.config.sustain();
+            EnvelopeStage::Sustain
+        };
+    }
+
+    fn release(&mut self) {
+        if self.stage == EnvelopeStage::Idle {
+            return;
+        }
+        self.release_start_level = self.level;
+        self.stage = if self.config.release() > 0.0 {
+            EnvelopeStage::Release
+        } else {
+            self.level = 0.0;
+            EnvelopeStage::Idle
+        };
+    }
+
+    fn tick(&mut self) -> f64 {
+        match self.stage {
+            EnvelopeStage::Idle => {}
+            EnvelopeStage::Attack => {
+                self.level += self.sample_period / self.config.attack();
+                if self.level >= 1.0 {
+                    self.level = 1.0;
+                    self.stage = if self.config.decay() > 0.0 {
+                        EnvelopeStage::Decay
+                    } else {
+                        self.level = self.config.sustain();
+                        EnvelopeStage::Sustain
+                    };
+                }
+            }
+            EnvelopeStage::Decay => {
+                let span = (1.0 - self.config.sustain()).max(0.0);
+                self.level -= span * self.sample_period / self.config.decay();
+                if self.level <= self.config.sustain() {
+                    self.level = self.config.sustain();
+                    self.stage = EnvelopeStage::Sustain;
+                }
+            }
+            EnvelopeStage::Sustain => {
+                self.level = self.config.sustain();
+            }
+            EnvelopeStage::Release => {
+                self.level -= self.release_start_level * self.sample_period / self.config.release();
+                if self.level <= 0.0 {
+                    self.level = 0.0;
+                    self.stage = EnvelopeStage::Idle;
+                }
+            }
+        }
+        self.level
+    }
+}
+
+// ---------------------------------------------------------------------
+// The fixed, built-in demo passage: a deterministic set of MIDI-style note
+// events dispatched to whichever patches subscribe to their channel.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+struct DemoNoteEvent {
+    channel: u8,
+    note_number: u8,
+    velocity: f64,
+    start_sample: usize,
+    hold_samples: usize,
+}
+
+/// Builds the fixed demo passage: a sustained triad on channel 0 (matches
+/// the "Warm Pad" patch), a short melodic run on channel 1 (matches
+/// "Bright Lead"), and punchy low notes on channel 2 (matches "Sub
+/// Pluck"). Deterministic and independent of wall-clock time.
+fn built_in_passage(sample_rate: f64) -> Vec<DemoNoteEvent> {
+    let sec = |seconds: f64| (seconds * sample_rate).round() as usize;
+
+    vec![
+        DemoNoteEvent {
+            channel: 0,
+            note_number: 60,
+            velocity: 0.8,
+            start_sample: sec(0.0),
+            hold_samples: sec(1.6),
+        },
+        DemoNoteEvent {
+            channel: 0,
+            note_number: 64,
+            velocity: 0.7,
+            start_sample: sec(0.0),
+            hold_samples: sec(1.6),
+        },
+        DemoNoteEvent {
+            channel: 0,
+            note_number: 67,
+            velocity: 0.7,
+            start_sample: sec(0.0),
+            hold_samples: sec(1.6),
+        },
+        DemoNoteEvent {
+            channel: 1,
+            note_number: 72,
+            velocity: 0.9,
+            start_sample: sec(0.2),
+            hold_samples: sec(0.25),
+        },
+        DemoNoteEvent {
+            channel: 1,
+            note_number: 74,
+            velocity: 0.9,
+            start_sample: sec(0.5),
+            hold_samples: sec(0.25),
+        },
+        DemoNoteEvent {
+            channel: 1,
+            note_number: 76,
+            velocity: 0.9,
+            start_sample: sec(0.8),
+            hold_samples: sec(0.35),
+        },
+        DemoNoteEvent {
+            channel: 2,
+            note_number: 36,
+            velocity: 1.0,
+            start_sample: sec(0.0),
+            hold_samples: sec(0.12),
+        },
+        DemoNoteEvent {
+            channel: 2,
+            note_number: 36,
+            velocity: 1.0,
+            start_sample: sec(0.6),
+            hold_samples: sec(0.12),
+        },
+        DemoNoteEvent {
+            channel: 2,
+            note_number: 43,
+            velocity: 0.9,
+            start_sample: sec(1.2),
+            hold_samples: sec(0.12),
+        },
+    ]
+}
+
+/// Standard equal-temperament MIDI-note-to-hertz conversion (A4 = note 69 =
+/// 440 Hz).
+fn midi_note_to_frequency(note_number: u8) -> f64 {
+    440.0 * 2f64.powf((note_number as f64 - 69.0) / 12.0)
+}
+
+fn channel_mask(channels: &[u8]) -> u16 {
+    channels
+        .iter()
+        .fold(0u16, |mask, &channel| mask | (1u16 << channel))
+}
+
+fn to_engine_waveform(waveform: DemoWaveform) -> Waveform {
+    match waveform {
+        DemoWaveform::Sine => Waveform::Sine,
+        DemoWaveform::Saw => Waveform::Saw,
+        DemoWaveform::Square => Waveform::Square,
+        DemoWaveform::Triangle => Waveform::Triangle,
+    }
+}
+
+fn to_engine_filter_kind(filter_type: DemoFilterType) -> FilterKind {
+    match filter_type {
+        DemoFilterType::LowPass => FilterKind::LowPass,
+        DemoFilterType::HighPass => FilterKind::HighPass,
+        DemoFilterType::BandPass => FilterKind::BandPass,
+        DemoFilterType::Notch => FilterKind::Notch,
+    }
+}
+
+// ---------------------------------------------------------------------
+// Rendering: dispatcher -> per-patch voices -> per-patch mix -> master bus.
+// Signal path per the project invariant: engine output -> channel strip
+// volume and pan -> bus routing -> master bus inserts -> limiter -> output.
+// This demo configures no sends and no extra inserts, so those stages are
+// documented no-ops rather than omitted silently.
+// ---------------------------------------------------------------------
+
+/// Renders one patch's contribution (mono, pre gain/pan) across the whole
+/// passage. A `MidiEvent` (here, a `DemoNoteEvent`) is rendered by this
+/// patch only if its channel is present in the patch's channel mask —
+/// dispatch to exactly the matching set, layering intentional.
+fn render_patch(
+    patch: &DemoPatchConfig,
+    events: &[DemoNoteEvent],
+    sample_rate: f64,
+    total_samples: usize,
+) -> Vec<f64> {
+    let oscillator = StandardOscillator::new();
+    let osc_config = OscillatorConfig::new(
+        to_engine_waveform(patch.oscillator.waveform),
+        Amplitude::try_new(patch.oscillator.amplitude)
+            .expect("demo oscillator amplitude is always within [0.0, 1.0]"),
+    );
+    let filter_kind = to_engine_filter_kind(patch.filter.filter_type);
+    let envelope_config = EnvelopeConfig::try_new(
+        patch.amp_envelope.attack,
+        patch.amp_envelope.decay,
+        patch.amp_envelope.release,
+        patch.amp_envelope.sustain,
+    )
+    .expect("demo envelope parameters are always valid");
+
+    let mut buffer = vec![0.0_f64; total_samples];
+
+    for event in events
+        .iter()
+        .filter(|event| patch.channels.mask & (1u16 << event.channel) != 0)
+    {
+        let frequency = Frequency::try_new(midi_note_to_frequency(event.note_number))
+            .expect("demo note numbers always produce a positive frequency");
+        let sample_rate_value =
+            SampleRate::try_new(sample_rate).expect("demo sample rate is always positive");
+        let filter_config = FilterConfig::new(
+            filter_kind,
+            patch.filter.cutoff_hz,
+            patch.filter.resonance,
+            sample_rate,
+        );
+
+        let mut filter = StateVariableFilter::new();
+        let mut envelope = DemoAdsrEnvelope::new(envelope_config, sample_rate);
+        envelope.trigger();
+
+        let mut phase = 0.0_f64;
+        let voice_length = total_samples.saturating_sub(event.start_sample);
+
+        for offset in 0..voice_length {
+            if offset == event.hold_samples {
+                envelope.release();
+            }
+            let level = envelope.tick();
+            let raw = oscillator.render(phase, osc_config) * level * event.velocity;
+            let filtered = filter.process(raw, filter_config);
+            buffer[event.start_sample + offset] += filtered;
+            phase = oscillator.advance(phase, frequency, sample_rate_value);
+        }
+    }
+
+    buffer
+}
+
+/// Applies channel-strip volume then pan (constant-power law), splitting a
+/// mono signal into a stereo pair. Runs after `render_patch` and before bus
+/// summing, matching the canonical signal path's "volume and pan" stage.
+fn apply_gain_and_pan(mono: &[f64], gain: f64, pan: f64) -> Vec<(f64, f64)> {
+    let clamped_pan = pan.clamp(-1.0, 1.0);
+    let angle = (clamped_pan + 1.0) * FRAC_PI_4;
+    let left_gain = angle.cos();
+    let right_gain = angle.sin();
+
+    mono.iter()
+        .map(|&sample| {
+            let volume_applied = sample * gain;
+            (volume_applied * left_gain, volume_applied * right_gain)
         })
         .collect()
 }
 
-// ─── Fixed demo passage ────────────────────────────────────────────────────────
+/// Renders the full `Setup` for the given passage into 16-bit PCM mono
+/// samples, following dispatcher -> per-patch voices -> per-patch volume
+/// and pan -> master bus -> master gain -> limiter -> mono downmix.
+/// Deterministic: identical inputs always produce identical output.
+fn render_setup(
+    setup: &Setup,
+    events: &[DemoNoteEvent],
+    sample_rate: f64,
+    total_samples: usize,
+) -> Vec<i16> {
+    let mut master_left = vec![0.0_f64; total_samples];
+    let mut master_right = vec![0.0_f64; total_samples];
 
-/// A fixed built-in note passage: (time_secs, channel, note, velocity, dur_secs).
-///
-/// All values are deterministic constants so the same passage renders the same
-/// PCM buffer every time.
-fn demo_passage() -> Vec<(f64, u8, u8, f64, f64)> {
-    vec![
-        // Lead melody (ch 0)
-        (0.00, 0, 60, 0.75, 0.18),
-        (0.22, 0, 62, 0.72, 0.18),
-        (0.44, 0, 64, 0.70, 0.18),
-        // Pad chord (ch 1)
-        (0.00, 1, 60, 0.55, 0.45),
-        (0.00, 1, 64, 0.55, 0.45),
-        (0.00, 1, 67, 0.55, 0.45),
-        // Bass (ch 2)
-        (0.00, 2, 36, 0.85, 0.45),
-    ]
+    for preset in &setup.presets {
+        let mono = render_patch(&preset.patch, events, sample_rate, total_samples);
+        for (index, (left, right)) in apply_gain_and_pan(&mono, preset.patch.gain, preset.patch.pan)
+            .into_iter()
+            .enumerate()
+        {
+            master_left[index] += left;
+            master_right[index] += right;
+        }
+    }
+
+    // Master bus inserts: none configured for this demo. Limiter: a
+    // deterministic soft-clip so full-scale is never exceeded before
+    // quantization, matching "master bus inserts -> limiter -> output".
+    let mut mono_out = Vec::with_capacity(total_samples);
+    for index in 0..total_samples {
+        let left = (master_left[index] * setup.master_gain).tanh();
+        let right = (master_right[index] * setup.master_gain).tanh();
+        mono_out.push((left + right) * 0.5);
+    }
+
+    quantize_to_i16(&mono_out)
 }
 
-// ─── Render from PatchConfig ──────────────────────────────────────────────────
-
-/// Render RENDER_SAMPLES mono 16-bit PCM samples from the given patch
-/// configurations using the fixed demo passage.
-///
-/// The same deterministic passage is used for both the original and reloaded
-/// renders so the two buffers can be compared bit-for-bit.
-fn render_from_patch_configs(configs: &[PatchConfig], master_gain: f64) -> Vec<i16> {
-    // Build independent voice pools for each patch.
-    let mut allocators: Vec<VoiceAllocator> = configs
-        .iter()
-        .map(|c| VoiceAllocator::new(c.max_voices))
-        .collect();
-
-    let patch_mixer = PatchMixer::new();
-    let (_global_writer, mut global_reader) =
-        GlobalMixer::split(Amplitude::try_new(master_gain).unwrap_or_else(|_| Amplitude::unity()));
-
-    // Build the note-event list: (sample_idx, patch_idx, note_id, note_number,
-    //                              velocity, is_on).
-    let passage = demo_passage();
-    let mut note_events: Vec<(usize, usize, NoteId, NoteNumber, Velocity, bool)> = Vec::new();
-
-    for (raw_id, &(t, ch, note_raw, vel_raw, dur)) in (1_u32..).zip(passage.iter()) {
-        let patch_idx = configs.iter().position(|c| c.channel == ch).unwrap_or(0);
-        let on_sample = (t * SAMPLE_RATE_F64) as usize;
-        let off_sample = ((t + dur) * SAMPLE_RATE_F64) as usize;
-        let note_number = NoteNumber::try_new(note_raw).expect("note in range");
-        let velocity = Velocity::try_new(vel_raw).expect("velocity in range");
-        let note_id = NoteId::new(raw_id);
-        note_events.push((on_sample, patch_idx, note_id, note_number, velocity, true));
-        note_events.push((off_sample, patch_idx, note_id, note_number, velocity, false));
-    }
-
-    // Sort by sample index; note-offs before note-ons at the same position.
-    note_events.sort_by(|a, b| {
-        a.0.cmp(&b.0).then_with(|| {
-            let rank_a = usize::from(a.5); // on=1, off=0
-            let rank_b = usize::from(b.5);
-            rank_a.cmp(&rank_b)
-        })
-    });
-
-    let mut samples: Vec<i16> = Vec::with_capacity(RENDER_SAMPLES);
-    let mut event_cursor = 0usize;
-
-    for sample_idx in 0..RENDER_SAMPLES {
-        // Dispatch due events.
-        while event_cursor < note_events.len() && note_events[event_cursor].0 <= sample_idx {
-            let (_, patch_idx, note_id, note_number, velocity, is_on) = note_events[event_cursor];
-            if is_on {
-                allocators[patch_idx].note_on(note_id, note_number, velocity);
-            } else {
-                let _ = allocators[patch_idx].note_off(note_id);
-            }
-            event_cursor += 1;
-        }
-
-        // Render each patch: mono sample → stereo pan frame.
-        let mut mix_frame = AudioFrame::silence();
-
-        for (patch_idx, config) in configs.iter().enumerate() {
-            let (mono, _) =
-                allocators[patch_idx].render_sample(SAMPLE_RATE_F64, config.oscillator.detune);
-
-            let gain_f = config.gain as f32;
-            let theta = ((config.pan + 1.0) * std::f64::consts::FRAC_PI_4) as f32;
-            let pan_l = theta.cos();
-            let pan_r = theta.sin();
-
-            let patch_frame = AudioFrame::new(mono * gain_f * pan_l, mono * gain_f * pan_r);
-            // PatchMixEntry::unity() — per-patch gain already applied above.
-            patch_mixer.accumulate(&mut mix_frame, patch_frame, &PatchMixEntry::unity());
-        }
-
-        // Apply master gain.
-        let master = global_reader.apply([mix_frame.left, mix_frame.right]);
-
-        // Mix to mono.
-        let mono_out = (master[0] + master[1]) * 0.5;
-        let clamped = mono_out.clamp(-1.0, 1.0);
-        let pcm = (clamped * i16::MAX as f32) as i16;
-        samples.push(pcm);
-    }
-
+fn quantize_to_i16(samples: &[f64]) -> Vec<i16> {
     samples
+        .iter()
+        .map(|&sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f64).round() as i16)
+        .collect()
 }
 
-// ─── Pure-Rust WAV writer (16-bit mono) ───────────────────────────────────────
+// ---------------------------------------------------------------------
+// WAV output: a pure-Rust, dependency-free 16-bit mono PCM writer.
+// ---------------------------------------------------------------------
 
-fn write_wav(path: &std::path::Path, samples: &[i16], sample_rate: u32) {
-    let num_channels: u16 = 1;
-    let bits_per_sample: u16 = 16;
-    let byte_rate = sample_rate * num_channels as u32 * bits_per_sample as u32 / 8;
-    let block_align = num_channels * bits_per_sample / 8;
-    let data_chunk_size = (samples.len() * 2) as u32;
-    let riff_size = 4 + 24 + 8 + data_chunk_size;
+fn write_wav(path: &Path, samples: &[i16], sample_rate: u32) -> std::io::Result<()> {
+    const CHANNELS: u16 = 1;
+    const BITS_PER_SAMPLE: u16 = 16;
 
-    let mut buf: Vec<u8> = Vec::with_capacity(12 + 24 + 8 + data_chunk_size as usize);
+    let byte_rate = sample_rate * CHANNELS as u32 * (BITS_PER_SAMPLE as u32 / 8);
+    let block_align = CHANNELS * (BITS_PER_SAMPLE / 8);
+    let data_size = (samples.len() * 2) as u32;
+    let riff_size = 36 + data_size;
 
-    buf.extend_from_slice(b"RIFF");
-    buf.extend_from_slice(&riff_size.to_le_bytes());
-    buf.extend_from_slice(b"WAVE");
+    let mut writer = BufWriter::new(File::create(path)?);
 
-    buf.extend_from_slice(b"fmt ");
-    buf.extend_from_slice(&16u32.to_le_bytes());
-    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    buf.extend_from_slice(&num_channels.to_le_bytes());
-    buf.extend_from_slice(&sample_rate.to_le_bytes());
-    buf.extend_from_slice(&byte_rate.to_le_bytes());
-    buf.extend_from_slice(&block_align.to_le_bytes());
-    buf.extend_from_slice(&bits_per_sample.to_le_bytes());
+    writer.write_all(b"RIFF")?;
+    writer.write_all(&riff_size.to_le_bytes())?;
+    writer.write_all(b"WAVE")?;
 
-    buf.extend_from_slice(b"data");
-    buf.extend_from_slice(&data_chunk_size.to_le_bytes());
-    for &s in samples {
-        buf.extend_from_slice(&s.to_le_bytes());
+    writer.write_all(b"fmt ")?;
+    writer.write_all(&16u32.to_le_bytes())?; // fmt chunk size
+    writer.write_all(&1u16.to_le_bytes())?; // PCM
+    writer.write_all(&CHANNELS.to_le_bytes())?;
+    writer.write_all(&sample_rate.to_le_bytes())?;
+    writer.write_all(&byte_rate.to_le_bytes())?;
+    writer.write_all(&block_align.to_le_bytes())?;
+    writer.write_all(&BITS_PER_SAMPLE.to_le_bytes())?;
+
+    writer.write_all(b"data")?;
+    writer.write_all(&data_size.to_le_bytes())?;
+    for &sample in samples {
+        writer.write_all(&sample.to_le_bytes())?;
     }
 
-    let mut file = std::fs::File::create(path).unwrap_or_else(|e| {
-        eprintln!("error: cannot create '{}': {e}", path.display());
-        process::exit(1);
-    });
-    file.write_all(&buf).unwrap_or_else(|e| {
-        eprintln!("error: cannot write '{}': {e}", path.display());
-        process::exit(1);
-    });
+    writer.flush()
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Demo setup construction and CLI entry point.
+// ---------------------------------------------------------------------
+
+fn build_demo_setup() -> Setup {
+    let warm_pad = Preset {
+        version: CURRENT_PRESET_VERSION,
+        name: "Warm Pad".to_string(),
+        patch: DemoPatchConfig {
+            name: "Warm Pad".to_string(),
+            oscillator: DemoOscillatorConfig {
+                waveform: DemoWaveform::Sine,
+                amplitude: 0.6,
+            },
+            filter: DemoFilterConfig {
+                filter_type: DemoFilterType::LowPass,
+                cutoff_hz: 1200.0,
+                resonance: 0.2,
+            },
+            amp_envelope: DemoAmpEnvelopeConfig {
+                attack: 0.4,
+                decay: 0.3,
+                release: 0.6,
+                sustain: 0.7,
+            },
+            gain: 0.8,
+            pan: -0.3,
+            channels: DemoChannelSubscription {
+                mask: channel_mask(&[0]),
+            },
+        },
+    };
+
+    let bright_lead = Preset {
+        version: CURRENT_PRESET_VERSION,
+        name: "Bright Lead".to_string(),
+        patch: DemoPatchConfig {
+            name: "Bright Lead".to_string(),
+            oscillator: DemoOscillatorConfig {
+                waveform: DemoWaveform::Saw,
+                amplitude: 0.5,
+            },
+            filter: DemoFilterConfig {
+                filter_type: DemoFilterType::BandPass,
+                cutoff_hz: 2500.0,
+                resonance: 0.4,
+            },
+            amp_envelope: DemoAmpEnvelopeConfig {
+                attack: 0.01,
+                decay: 0.1,
+                release: 0.15,
+                sustain: 0.6,
+            },
+            gain: 0.7,
+            pan: 0.4,
+            channels: DemoChannelSubscription {
+                mask: channel_mask(&[1]),
+            },
+        },
+    };
+
+    let sub_pluck = Preset {
+        version: CURRENT_PRESET_VERSION,
+        name: "Sub Pluck".to_string(),
+        patch: DemoPatchConfig {
+            name: "Sub Pluck".to_string(),
+            oscillator: DemoOscillatorConfig {
+                waveform: DemoWaveform::Square,
+                amplitude: 0.9,
+            },
+            filter: DemoFilterConfig {
+                filter_type: DemoFilterType::LowPass,
+                cutoff_hz: 400.0,
+                resonance: 0.1,
+            },
+            amp_envelope: DemoAmpEnvelopeConfig {
+                attack: 0.002,
+                decay: 0.08,
+                release: 0.05,
+                sustain: 0.0,
+            },
+            gain: 0.9,
+            pan: 0.0,
+            channels: DemoChannelSubscription {
+                mask: channel_mask(&[2]),
+            },
+        },
+    };
+
+    Setup {
+        version: CURRENT_PRESET_VERSION,
+        master_gain: 0.85,
+        presets: vec![warm_pad, bright_lead, sub_pluck],
+    }
+}
+
+fn parse_output_path(args: &[String]) -> PathBuf {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--out" {
+            if let Some(path) = iter.next() {
+                return PathBuf::from(path);
+            }
+        }
+    }
+    PathBuf::from(DEFAULT_OUTPUT_PATH)
+}
+
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let out_path = parse_output_path(&args);
+
+    let setup = build_demo_setup();
+    let codec = SerdePresetCodec::new();
+
+    // Exercise the single-`Preset` half of the codec port before the
+    // whole-`Setup` round trip: every preset in `setup` must survive being
+    // serialized and deserialized on its own, independent of the setup it
+    // lives in.
+    for preset in &setup.presets {
+        let preset_bytes = codec
+            .serialize(preset)
+            .expect("serializing a single preset should never fail");
+        let reloaded_preset = codec
+            .deserialize(&preset_bytes)
+            .expect("deserializing a single preset should never fail");
+        if &reloaded_preset != preset {
+            panic!(
+                "preset roundtrip mismatch for {:?}: reloaded preset does not equal the original",
+                preset.name
+            );
+        }
+    }
+
+    let setup_bytes = codec
+        .serialize_setup(&setup)
+        .expect("serializing the demo setup should never fail");
+    let reloaded_setup = codec
+        .deserialize_setup(&setup_bytes)
+        .expect("deserializing the demo setup should never fail");
+
+    if setup != reloaded_setup {
+        panic!(
+            "setup roundtrip mismatch: the setup reloaded from its serialized bytes does not \
+             equal the original\noriginal: {setup:?}\nreloaded: {reloaded_setup:?}"
+        );
+    }
+    println!("setup roundtrip: equal");
+
+    let passage = built_in_passage(SAMPLE_RATE_HZ);
+    let total_samples = (DEMO_TOTAL_SECONDS * SAMPLE_RATE_HZ).round() as usize;
+
+    let rendered_original = render_setup(&setup, &passage, SAMPLE_RATE_HZ, total_samples);
+    let rendered_reloaded = render_setup(&reloaded_setup, &passage, SAMPLE_RATE_HZ, total_samples);
+
+    if rendered_original != rendered_reloaded {
+        let first_mismatch = rendered_original
+            .iter()
+            .zip(rendered_reloaded.iter())
+            .position(|(a, b)| a != b);
+        panic!(
+            "render mismatch: rendering the original setup and the reloaded setup produced \
+             different audio (first differing sample index: {first_mismatch:?})"
+        );
+    }
+    println!("render identical: true");
+
+    write_wav(&out_path, &rendered_original, SAMPLE_RATE_HZ as u32)
+        .expect("writing the WAV file should never fail");
+
+    let peak = rendered_original
+        .iter()
+        .fold(0i16, |max, &sample| max.max(sample.abs()));
+
+    println!("patches: {}", setup.presets.len());
+    println!("master_gain: {:.3}", setup.master_gain);
+    println!("samples: {}", rendered_original.len());
+    println!("peak_sample: {peak}");
+    println!("output: {}", out_path.display());
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn build_demo_setup_produces_three_patches() {
-        let (setup, configs) = build_demo_setup();
-        assert_eq!(setup.patches.len(), 3, "demo setup must have 3 patches");
-        assert_eq!(configs.len(), 3, "must have 3 patch configs");
+    fn sample_patch() -> DemoPatchConfig {
+        DemoPatchConfig {
+            name: "Test Patch".to_string(),
+            oscillator: DemoOscillatorConfig {
+                waveform: DemoWaveform::Sine,
+                amplitude: 0.5,
+            },
+            filter: DemoFilterConfig {
+                filter_type: DemoFilterType::LowPass,
+                cutoff_hz: 1000.0,
+                resonance: 0.2,
+            },
+            amp_envelope: DemoAmpEnvelopeConfig {
+                attack: 0.01,
+                decay: 0.05,
+                release: 0.1,
+                sustain: 0.5,
+            },
+            gain: 0.8,
+            pan: 0.0,
+            channels: DemoChannelSubscription {
+                mask: channel_mask(&[0]),
+            },
+        }
     }
 
-    #[test]
-    fn setup_roundtrip_produces_equal_setup() {
-        let (original, _) = build_demo_setup();
-        let codec = PresetCodec::new();
-        let bytes = codec.serialize_setup(original.clone());
-        let restored = codec.deserialize_setup(bytes).unwrap();
-        assert_eq!(original, restored, "setup must round-trip losslessly");
-    }
-
-    #[test]
-    fn render_from_patch_configs_produces_nonsilent_output() {
-        let (setup, configs) = build_demo_setup();
-        let samples = render_from_patch_configs(&configs, setup.master_gain);
-        assert_eq!(samples.len(), RENDER_SAMPLES);
-        let any_nonzero = samples.iter().any(|&s| s != 0);
-        assert!(any_nonzero, "render must produce non-silent output");
-    }
-
-    #[test]
-    fn render_roundtrip_produces_bit_identical_buffers() {
-        let (original_setup, configs) = build_demo_setup();
-        let codec = PresetCodec::new();
-        let bytes = codec.serialize_setup(original_setup.clone());
-        let reloaded_setup = codec.deserialize_setup(bytes).unwrap();
-
-        let buf_original = render_from_patch_configs(&configs, original_setup.master_gain);
-
-        let reloaded_configs = patch_configs_from_setup(&reloaded_setup);
-        let buf_reloaded = render_from_patch_configs(&reloaded_configs, reloaded_setup.master_gain);
-
-        assert_eq!(buf_original.len(), buf_reloaded.len());
-        for (idx, (orig, reload)) in buf_original.iter().zip(buf_reloaded.iter()).enumerate() {
-            assert_eq!(
-                orig, reload,
-                "sample[{idx}] differs: original={orig}, reloaded={reload}"
-            );
+    fn sample_preset() -> Preset {
+        Preset {
+            version: CURRENT_PRESET_VERSION,
+            name: "Test Patch".to_string(),
+            patch: sample_patch(),
         }
     }
 
     #[test]
-    fn demo_passage_has_notes_on_all_three_channels() {
-        let passage = demo_passage();
-        let channels: Vec<u8> = passage.iter().map(|&(_, ch, _, _, _)| ch).collect();
-        assert!(channels.contains(&0), "must have notes on channel 0");
-        assert!(channels.contains(&1), "must have notes on channel 1");
-        assert!(channels.contains(&2), "must have notes on channel 2");
+    fn preset_round_trips_through_codec() {
+        let codec = SerdePresetCodec::new();
+        let preset = sample_preset();
+
+        let bytes = codec.serialize(&preset).expect("serialize succeeds");
+        let decoded = codec.deserialize(&bytes).expect("deserialize succeeds");
+
+        assert_eq!(decoded, preset);
     }
 
     #[test]
-    fn patch_configs_from_setup_restores_all_fields() {
-        let (setup, original_configs) = build_demo_setup();
-        let restored = patch_configs_from_setup(&setup);
-        assert_eq!(restored.len(), original_configs.len());
-        for (r, o) in restored.iter().zip(original_configs.iter()) {
-            assert_eq!(r.oscillator, o.oscillator, "oscillator must match");
-            assert_eq!(r.amp_envelope, o.amp_envelope, "amp_envelope must match");
-            assert!(
-                (r.gain - o.gain).abs() < f64::EPSILON,
-                "gain must match: {} vs {}",
-                r.gain,
-                o.gain
-            );
-            assert!(
-                (r.pan - o.pan).abs() < f64::EPSILON,
-                "pan must match: {} vs {}",
-                r.pan,
-                o.pan
-            );
+    fn setup_round_trips_through_codec() {
+        let codec = SerdePresetCodec::new();
+        let setup = build_demo_setup();
+
+        let bytes = codec.serialize_setup(&setup).expect("serialize succeeds");
+        let decoded = codec
+            .deserialize_setup(&bytes)
+            .expect("deserialize succeeds");
+
+        assert_eq!(decoded, setup);
+    }
+
+    #[test]
+    fn migrate_preset_rejects_a_version_newer_than_current() {
+        let mut preset = sample_preset();
+        preset.version = CURRENT_PRESET_VERSION + 1;
+
+        let result = migrate_preset(preset);
+
+        assert!(matches!(result, Err(CodecError::UnsupportedVersion(_))));
+    }
+
+    #[test]
+    fn migrate_preset_rejects_a_version_older_than_supported() {
+        let mut preset = sample_preset();
+        preset.version = MIN_SUPPORTED_PRESET_VERSION.saturating_sub(1);
+        // MIN_SUPPORTED_PRESET_VERSION is 1, so this underflows to 0 via
+        // saturating_sub, which is still "older than supported" (0 < 1).
+        let result = migrate_preset(preset);
+
+        assert!(matches!(result, Err(CodecError::UnsupportedVersion(_))));
+    }
+
+    #[test]
+    fn channel_mask_matches_only_subscribed_channels() {
+        let patch = sample_patch();
+        assert_eq!(patch.channels.mask & (1u16 << 0), 1u16 << 0);
+        assert_eq!(patch.channels.mask & (1u16 << 1), 0);
+    }
+
+    #[test]
+    fn envelope_reaches_silence_after_release_completes() {
+        let config = EnvelopeConfig::try_new(0.0, 0.0, 0.01, 1.0).expect("valid envelope");
+        let mut envelope = DemoAdsrEnvelope::new(config, 1000.0);
+        envelope.trigger();
+        assert_eq!(envelope.tick(), 1.0);
+        envelope.release();
+        for _ in 0..20 {
+            envelope.tick();
         }
+        assert_eq!(envelope.tick(), 0.0);
     }
 
     #[test]
-    fn patches_have_distinct_oscillator_configs() {
-        let (_, configs) = build_demo_setup();
-        // All three patches must have different oscillator configs.
-        assert_ne!(
-            configs[0].oscillator, configs[1].oscillator,
-            "patches 0 and 1 should differ"
-        );
-        assert_ne!(
-            configs[0].oscillator, configs[2].oscillator,
-            "patches 0 and 2 should differ"
-        );
-        assert_ne!(
-            configs[1].oscillator, configs[2].oscillator,
-            "patches 1 and 2 should differ"
-        );
+    fn rendering_the_same_setup_twice_is_deterministic() {
+        let setup = build_demo_setup();
+        let passage = built_in_passage(1000.0);
+        let total_samples = 2000;
+
+        let first = render_setup(&setup, &passage, 1000.0, total_samples);
+        let second = render_setup(&setup, &passage, 1000.0, total_samples);
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn quantize_clamps_out_of_range_samples() {
+        let quantized = quantize_to_i16(&[2.0, -2.0, 0.0]);
+        assert_eq!(quantized[0], i16::MAX);
+        assert_eq!(quantized[1], -i16::MAX);
+        assert_eq!(quantized[2], 0);
+    }
+
+    #[test]
+    fn parse_output_path_defaults_when_flag_absent() {
+        let args: Vec<String> = vec![];
+        assert_eq!(parse_output_path(&args), PathBuf::from(DEFAULT_OUTPUT_PATH));
+    }
+
+    #[test]
+    fn parse_output_path_honors_out_flag() {
+        let args: Vec<String> = vec!["--out".to_string(), "custom.wav".to_string()];
+        assert_eq!(parse_output_path(&args), PathBuf::from("custom.wav"));
     }
 }

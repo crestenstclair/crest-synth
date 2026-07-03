@@ -1,47 +1,48 @@
 // path: src/shell/controller_glyph.rs
 
-/// Logical gamepad button identifiers, controller-agnostic.
+//! Maps a logical gamepad button to the correct visual glyph path for the
+//! connected controller type.
+//!
+//! This is a pure value object: given a `GamepadButton` and a
+//! `ControllerType`, it resolves the path to the glyph asset that should be
+//! drawn for that button on that controller. It performs no I/O and touches
+//! no rendering backend — the shell's draw code is responsible for loading
+//! and rendering the asset at the resolved path.
+
+/// A logical button on a gamepad, independent of the physical controller
+/// brand that produced the input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GamepadButton {
     South,
     East,
     West,
     North,
-    LeftBumper,
-    RightBumper,
+    LeftShoulder,
+    RightShoulder,
     LeftTrigger,
     RightTrigger,
     Select,
     Start,
-    Mode,
-    LeftThumb,
-    RightThumb,
+    LeftStick,
+    RightStick,
     DPadUp,
     DPadDown,
     DPadLeft,
     DPadRight,
 }
 
-/// The family of controller whose visual glyphs should be used.
+/// The family of physical controller connected, used to pick the correct
+/// glyph art (button legends differ across controller brands).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ControllerType {
     Xbox,
     PlayStation,
-    Switch,
+    SteamDeck,
     Generic,
 }
 
-/// Maps a logical [`GamepadButton`] to the correct visual glyph path for the
-/// connected [`ControllerType`].
-///
-/// # Examples
-///
-/// ```
-/// use crest_synth::shell::controller_glyph::{ControllerGlyph, GamepadButton, ControllerType};
-///
-/// let glyph = ControllerGlyph::new(GamepadButton::South, ControllerType::Xbox);
-/// assert!(!glyph.glyph_path().is_empty());
-/// ```
+/// Maps a logical `GamepadButton`, for a given `ControllerType`, to the
+/// filesystem path of the glyph asset that represents it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerGlyph {
     button: GamepadButton,
@@ -50,10 +51,13 @@ pub struct ControllerGlyph {
 }
 
 impl ControllerGlyph {
-    /// Construct a [`ControllerGlyph`], deriving `glyph_path` from
-    /// `button` and `controller_type`.
-    pub fn new(button: GamepadButton, controller_type: ControllerType) -> Self {
-        let glyph_path = Self::resolve_path(button, controller_type);
+    /// Resolves the glyph for `button` on `controller_type`.
+    ///
+    /// The resulting `glyph_path` is a stable, deterministic asset path
+    /// derived from the controller family and button identity, e.g.
+    /// `assets/glyphs/xbox/south.svg`.
+    pub fn resolve(button: GamepadButton, controller_type: ControllerType) -> Self {
+        let glyph_path = Self::path_for(button, controller_type);
         Self {
             button,
             controller_type,
@@ -61,8 +65,10 @@ impl ControllerGlyph {
         }
     }
 
-    /// Construct a [`ControllerGlyph`] with an explicit `glyph_path` —
-    /// useful for tests or dynamic asset overrides.
+    /// Constructs a `ControllerGlyph` from an explicit, pre-resolved path.
+    ///
+    /// Intended for tests and for callers that source glyph paths from a
+    /// data-driven asset manifest rather than the built-in convention.
     pub fn with_path(
         button: GamepadButton,
         controller_type: ControllerType,
@@ -75,51 +81,54 @@ impl ControllerGlyph {
         }
     }
 
-    /// The logical button this glyph represents.
     pub fn button(&self) -> GamepadButton {
         self.button
     }
 
-    /// The controller family whose art style is used.
     pub fn controller_type(&self) -> ControllerType {
         self.controller_type
     }
 
-    /// Relative asset path to the glyph image.
     pub fn glyph_path(&self) -> &str {
         &self.glyph_path
     }
 
-    /// Resolve the canonical glyph asset path for a button + controller combination.
-    fn resolve_path(button: GamepadButton, controller_type: ControllerType) -> String {
-        let family = match controller_type {
+    fn path_for(button: GamepadButton, controller_type: ControllerType) -> String {
+        format!(
+            "assets/glyphs/{}/{}.svg",
+            Self::controller_dir(controller_type),
+            Self::button_slug(button)
+        )
+    }
+
+    fn controller_dir(controller_type: ControllerType) -> &'static str {
+        match controller_type {
             ControllerType::Xbox => "xbox",
             ControllerType::PlayStation => "playstation",
-            ControllerType::Switch => "switch",
+            ControllerType::SteamDeck => "steam_deck",
             ControllerType::Generic => "generic",
-        };
+        }
+    }
 
-        let glyph = match button {
+    fn button_slug(button: GamepadButton) -> &'static str {
+        match button {
             GamepadButton::South => "south",
             GamepadButton::East => "east",
             GamepadButton::West => "west",
             GamepadButton::North => "north",
-            GamepadButton::LeftBumper => "left_bumper",
-            GamepadButton::RightBumper => "right_bumper",
+            GamepadButton::LeftShoulder => "left_shoulder",
+            GamepadButton::RightShoulder => "right_shoulder",
             GamepadButton::LeftTrigger => "left_trigger",
             GamepadButton::RightTrigger => "right_trigger",
             GamepadButton::Select => "select",
             GamepadButton::Start => "start",
-            GamepadButton::Mode => "mode",
-            GamepadButton::LeftThumb => "left_thumb",
-            GamepadButton::RightThumb => "right_thumb",
+            GamepadButton::LeftStick => "left_stick",
+            GamepadButton::RightStick => "right_stick",
             GamepadButton::DPadUp => "dpad_up",
             GamepadButton::DPadDown => "dpad_down",
             GamepadButton::DPadLeft => "dpad_left",
             GamepadButton::DPadRight => "dpad_right",
-        };
-
-        format!("assets/glyphs/{}/{}.png", family, glyph)
+        }
     }
 }
 
@@ -128,94 +137,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_derives_glyph_path() {
-        let g = ControllerGlyph::new(GamepadButton::South, ControllerType::Xbox);
-        assert_eq!(g.glyph_path(), "assets/glyphs/xbox/south.png");
-        assert_eq!(g.button(), GamepadButton::South);
-        assert_eq!(g.controller_type(), ControllerType::Xbox);
+    fn resolve_builds_deterministic_path_per_controller() {
+        let xbox = ControllerGlyph::resolve(GamepadButton::South, ControllerType::Xbox);
+        let ps = ControllerGlyph::resolve(GamepadButton::South, ControllerType::PlayStation);
+        let deck = ControllerGlyph::resolve(GamepadButton::South, ControllerType::SteamDeck);
+
+        assert_eq!(xbox.glyph_path(), "assets/glyphs/xbox/south.svg");
+        assert_eq!(ps.glyph_path(), "assets/glyphs/playstation/south.svg");
+        assert_eq!(deck.glyph_path(), "assets/glyphs/steam_deck/south.svg");
     }
 
     #[test]
-    fn playstation_south_path() {
-        let g = ControllerGlyph::new(GamepadButton::South, ControllerType::PlayStation);
-        assert_eq!(g.glyph_path(), "assets/glyphs/playstation/south.png");
-    }
-
-    #[test]
-    fn switch_dpad_up_path() {
-        let g = ControllerGlyph::new(GamepadButton::DPadUp, ControllerType::Switch);
-        assert_eq!(g.glyph_path(), "assets/glyphs/switch/dpad_up.png");
-    }
-
-    #[test]
-    fn generic_trigger_path() {
-        let g = ControllerGlyph::new(GamepadButton::LeftTrigger, ControllerType::Generic);
-        assert_eq!(g.glyph_path(), "assets/glyphs/generic/left_trigger.png");
-    }
-
-    #[test]
-    fn with_path_override() {
-        let g = ControllerGlyph::with_path(
-            GamepadButton::North,
-            ControllerType::Xbox,
-            "custom/y_button.png".to_string(),
-        );
-        assert_eq!(g.glyph_path(), "custom/y_button.png");
-        assert_eq!(g.button(), GamepadButton::North);
-    }
-
-    #[test]
-    fn all_xbox_buttons_produce_non_empty_paths() {
+    fn resolve_distinguishes_every_logical_button() {
         let buttons = [
             GamepadButton::South,
             GamepadButton::East,
             GamepadButton::West,
             GamepadButton::North,
-            GamepadButton::LeftBumper,
-            GamepadButton::RightBumper,
+            GamepadButton::LeftShoulder,
+            GamepadButton::RightShoulder,
             GamepadButton::LeftTrigger,
             GamepadButton::RightTrigger,
             GamepadButton::Select,
             GamepadButton::Start,
-            GamepadButton::Mode,
-            GamepadButton::LeftThumb,
-            GamepadButton::RightThumb,
+            GamepadButton::LeftStick,
+            GamepadButton::RightStick,
             GamepadButton::DPadUp,
             GamepadButton::DPadDown,
             GamepadButton::DPadLeft,
             GamepadButton::DPadRight,
         ];
-        for button in buttons {
-            let g = ControllerGlyph::new(button, ControllerType::Xbox);
-            assert!(!g.glyph_path().is_empty(), "path empty for {:?}", button);
-        }
-    }
 
-    #[test]
-    fn all_controller_types_produce_unique_paths() {
-        let types = [
-            ControllerType::Xbox,
-            ControllerType::PlayStation,
-            ControllerType::Switch,
-            ControllerType::Generic,
-        ];
-        let mut paths: Vec<String> = types
+        let mut paths: Vec<String> = buttons
             .iter()
-            .map(|&ct| {
-                ControllerGlyph::new(GamepadButton::South, ct)
+            .map(|&button| {
+                ControllerGlyph::resolve(button, ControllerType::Generic)
                     .glyph_path()
                     .to_string()
             })
             .collect();
         paths.sort();
         paths.dedup();
-        assert_eq!(paths.len(), types.len());
+
+        assert_eq!(paths.len(), buttons.len());
     }
 
     #[test]
-    fn glyph_path_contains_family_and_button() {
-        let g = ControllerGlyph::new(GamepadButton::RightBumper, ControllerType::PlayStation);
-        assert!(g.glyph_path().contains("playstation"));
-        assert!(g.glyph_path().contains("right_bumper"));
+    fn accessors_expose_the_resolved_fields() {
+        let glyph = ControllerGlyph::resolve(GamepadButton::Start, ControllerType::SteamDeck);
+
+        assert_eq!(glyph.button(), GamepadButton::Start);
+        assert_eq!(glyph.controller_type(), ControllerType::SteamDeck);
+        assert_eq!(glyph.glyph_path(), "assets/glyphs/steam_deck/start.svg");
+    }
+
+    #[test]
+    fn with_path_allows_overriding_the_convention() {
+        let glyph = ControllerGlyph::with_path(
+            GamepadButton::East,
+            ControllerType::PlayStation,
+            "assets/custom/circle.png".to_string(),
+        );
+
+        assert_eq!(glyph.glyph_path(), "assets/custom/circle.png");
+        assert_eq!(glyph.button(), GamepadButton::East);
+        assert_eq!(glyph.controller_type(), ControllerType::PlayStation);
     }
 }

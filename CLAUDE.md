@@ -15,11 +15,11 @@ crest-spec generate→validate→retry loop.
 3. **Spec layout is domain-grouped.** One `.cue` per bounded context (plus
    `project.cue`, `manifest.cue`). No phases, no `override-*` files — those were
    a test-harness artifact. crest-spec loads the whole folder as one CUE package.
-4. **The gate is whole-tree validation.** `cargo fmt`, `clippy --all-targets`,
-   build, and test run across the entire crate (`project: validations` in
-   `project.cue`). Do not introduce per-file resource→file ownership or scope
-   validations to single files — that breaks crate-wide tooling (formatters,
-   lints) and is explicitly unwanted.
+4. **The gate is whole-tree validation.** `cargo fmt` (auto-fix normalization —
+   formatting never blocks), `clippy --all-targets`, build, and test run across
+   the entire crate (`project: validations` in `project.cue`). Do not introduce
+   per-file resource→file ownership or scope validations to single files — the
+   gate polices design, not files.
 
 ## Iterating
 

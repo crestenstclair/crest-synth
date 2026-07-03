@@ -1,165 +1,255 @@
 // path: src/shell/audio_output.rs
 
-use crate::kernel::audio_frame::AudioFrame;
-use crate::kernel::sample_rate::SampleRate;
+//! Port: `Shell.AudioOutput`
+//!
+//! Abstracts the boundary between the application and the platform's audio
+//! output device. `open` hands a [`RenderCallback`] to a concrete adapter
+//! (e.g. a `cpal`-backed implementation) and gets back a running
+//! [`Stream`]; `close` tears that stream down.
+//!
+//! The callback supplied to `open` runs on the audio thread and is bound by
+//! the project's real-time invariants: it must never allocate heap memory,
+//! acquire a mutex or other blocking lock, or perform blocking I/O.
 
-/// An opaque handle to an open audio stream.
+use std::fmt;
+
+/// Sample rate in Hz (e.g. `44_100`, `48_000`).
 ///
-/// Returned by [`AudioOutput::open_stream`]. Callers hold this handle for the
-/// lifetime of the stream; dropping it closes the stream.
-///
-/// The handle is not cloneable — only one owner may drive the stream at a time.
-pub struct AudioStream {
-    pub(crate) sample_rate: SampleRate,
+/// A newtype so a raw `u32` can never be passed where a sample rate is
+/// expected (or vice versa) without going through validated construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SampleRate(u32);
+
+impl SampleRate {
+    /// Construct a `SampleRate`. Returns `None` for `0`, which is never a
+    /// valid sample rate.
+    pub fn new(hz: u32) -> Option<Self> {
+        if hz == 0 {
+            None
+        } else {
+            Some(Self(hz))
+        }
+    }
+
+    /// The sample rate in Hz.
+    pub fn hz(self) -> u32 {
+        self.0
+    }
 }
 
-impl AudioStream {
-    /// Creates a new `AudioStream` handle with the given sample rate.
+impl fmt::Display for SampleRate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} Hz", self.0)
+    }
+}
+
+/// Number of frames delivered to (or requested from) the audio thread on
+/// every render callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BufferSize(u32);
+
+impl BufferSize {
+    /// Construct a `BufferSize`. Returns `None` for `0`, which would leave
+    /// the audio thread nothing to render.
+    pub fn new(frames: u32) -> Option<Self> {
+        if frames == 0 {
+            None
+        } else {
+            Some(Self(frames))
+        }
+    }
+
+    /// The buffer size in frames.
+    pub fn frames(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for BufferSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} frames", self.0)
+    }
+}
+
+/// Errors an [`AudioOutput`] adapter can return while opening or operating
+/// a stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioError {
+    /// No matching output device was found, or the device disappeared.
+    DeviceUnavailable(String),
+    /// The requested sample rate / buffer size combination is not
+    /// supported by the device.
+    UnsupportedConfig(String),
+    /// The platform stream failed to start or reported a fatal error.
+    StreamFailed(String),
+}
+
+impl fmt::Display for AudioError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AudioError::DeviceUnavailable(msg) => write!(f, "audio device unavailable: {msg}"),
+            AudioError::UnsupportedConfig(msg) => write!(f, "unsupported audio config: {msg}"),
+            AudioError::StreamFailed(msg) => write!(f, "audio stream failed: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for AudioError {}
+
+/// The render callback invoked by the audio thread on every buffer.
+///
+/// Implementors execute entirely on the audio thread: `render` must not
+/// allocate, lock, or perform blocking I/O. `render` fills `output`
+/// (interleaved, per the opened stream's channel layout) with the next
+/// block of samples.
+pub trait RenderCallback: Send {
+    /// Fill `output` with the next block of audio samples.
     ///
-    /// Intended for use by [`AudioOutput`] implementations only.
-    pub fn new(sample_rate: SampleRate) -> Self {
-        Self { sample_rate }
-    }
-
-    /// Returns the sample rate of this audio stream.
-    pub fn sample_rate(&self) -> SampleRate {
-        self.sample_rate
-    }
+    /// Called on the audio thread on every buffer. Must not allocate,
+    /// lock, or block.
+    fn render(&mut self, output: &mut [f32]);
 }
 
-/// Port: audio output device.
+/// A running audio output stream.
 ///
-/// Implementations wire a concrete audio back-end (e.g. `cpal`) behind this
-/// interface so that higher-level code stays back-end agnostic.
+/// Dropping the concrete handle (or passing it to
+/// [`AudioOutput::close`]) stops the underlying platform stream.
+pub trait Stream: Send {
+    /// Stop the stream. After this call returns, `render` is no longer
+    /// invoked on the associated callback.
+    fn stop(&mut self);
+}
+
+/// Port: opens and closes a connection to the platform's audio output
+/// device.
 ///
-/// # Contract
-/// - `open_stream`: given a [`SampleRate`], open the hardware output and return
-///   an [`AudioStream`] handle.
-/// - `write_buffer`: enqueue a slice of [`AudioFrame`]s to the device ring
-///   buffer.  Must be called from a non-audio thread; the implementation feeds
-///   the ring buffer without blocking.
-/// - `available_frames`: returns how many frames the ring buffer can currently
-///   accept without blocking.  Use this to self-regulate feed pacing.
-///
-/// # Audio-thread constraints
-/// Implementations **must not** allocate on the heap, take locks, or perform
-/// blocking I/O on the audio callback thread.
+/// Adapters implement this trait against a concrete audio API (e.g.
+/// `cpal`). The port itself performs no I/O — it only declares the
+/// contract every adapter must honor: `open` hands the callback to the
+/// platform and returns a stream handle; `close` tears that handle down.
+/// Consumers depend on this trait, never on a concrete adapter, so the
+/// audio backend can be swapped (or faked in tests) without touching
+/// application code.
 pub trait AudioOutput {
-    /// Opens the audio output stream at the requested sample rate.
-    ///
-    /// Returns an [`AudioStream`] handle that is valid until dropped.
-    fn open_stream(&mut self, sample_rate: SampleRate) -> AudioStream;
+    /// The concrete stream handle produced by this adapter.
+    type StreamHandle: Stream;
 
-    /// Writes a buffer of stereo frames to the audio output ring buffer.
-    ///
-    /// Frames that exceed the current ring-buffer capacity are silently
-    /// discarded.  Callers should use [`available_frames`][Self::available_frames]
-    /// to avoid overflow.
-    fn write_buffer(&mut self, frames: &[AudioFrame]);
+    /// Open a stream at the given sample rate and buffer size, driving
+    /// `callback` on the audio thread for every buffer.
+    fn open(
+        &self,
+        sample_rate: SampleRate,
+        buffer_size: BufferSize,
+        callback: Box<dyn RenderCallback>,
+    ) -> Result<Self::StreamHandle, AudioError>;
 
-    /// Returns the number of frames the ring buffer can currently accept.
+    /// Close a previously opened stream.
     ///
-    /// Use this to pace calls to [`write_buffer`][Self::write_buffer] so that
-    /// the audio thread is never starved or flooded.
-    fn available_frames(&self) -> usize;
+    /// The default implementation delegates to [`Stream::stop`]; adapters
+    /// only need to override this if tearing the stream down requires
+    /// more than stopping it (e.g. releasing a device handle it does not
+    /// otherwise own).
+    fn close(&self, mut stream: Self::StreamHandle) {
+        stream.stop();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::audio_frame::AudioFrame;
-    use crate::kernel::sample_rate::SampleRate;
-
-    // ── AudioStream ────────────────────────────────────────────────────────
 
     #[test]
-    fn audio_stream_exposes_sample_rate() {
-        let sr = SampleRate::try_new(44100).unwrap();
-        let stream = AudioStream::new(sr);
-        assert_eq!(stream.sample_rate().value(), 44100);
+    fn sample_rate_rejects_zero() {
+        assert!(SampleRate::new(0).is_none());
     }
 
     #[test]
-    fn audio_stream_48k() {
-        let sr = SampleRate::try_new(48000).unwrap();
-        let stream = AudioStream::new(sr);
-        assert_eq!(stream.sample_rate().value(), 48000);
+    fn sample_rate_round_trips_hz() {
+        let rate = SampleRate::new(48_000).expect("48_000 is a valid sample rate");
+        assert_eq!(rate.hz(), 48_000);
+        assert_eq!(rate.to_string(), "48000 Hz");
     }
 
-    // ── AudioOutput (stub impl) ────────────────────────────────────────────
-
-    /// A minimal stub implementation used only within this test module.
-    struct StubAudioOutput {
-        buffer: Vec<AudioFrame>,
-        capacity: usize,
+    #[test]
+    fn buffer_size_rejects_zero() {
+        assert!(BufferSize::new(0).is_none());
     }
 
-    impl StubAudioOutput {
-        fn new(capacity: usize) -> Self {
-            Self {
-                buffer: Vec::new(),
-                capacity,
-            }
+    #[test]
+    fn buffer_size_round_trips_frames() {
+        let size = BufferSize::new(256).expect("256 is a valid buffer size");
+        assert_eq!(size.frames(), 256);
+        assert_eq!(size.to_string(), "256 frames");
+    }
+
+    #[test]
+    fn audio_error_display_includes_detail() {
+        let err = AudioError::DeviceUnavailable("no default output device".to_string());
+        assert_eq!(
+            err.to_string(),
+            "audio device unavailable: no default output device"
+        );
+    }
+
+    /// A callback that counts how many buffers it has rendered, used only
+    /// to exercise the port contract below.
+    struct CountingCallback {
+        renders: usize,
+    }
+
+    impl RenderCallback for CountingCallback {
+        fn render(&mut self, output: &mut [f32]) {
+            self.renders += 1;
+            output.fill(0.0);
         }
     }
 
-    impl AudioOutput for StubAudioOutput {
-        fn open_stream(&mut self, sample_rate: SampleRate) -> AudioStream {
-            AudioStream::new(sample_rate)
-        }
+    /// A fake stream that records whether it has been stopped, used only
+    /// to exercise the port contract below.
+    struct FakeStream {
+        stopped: bool,
+    }
 
-        fn write_buffer(&mut self, frames: &[AudioFrame]) {
-            let space = self.capacity.saturating_sub(self.buffer.len());
-            let to_write = frames.len().min(space);
-            self.buffer.extend_from_slice(&frames[..to_write]);
-        }
-
-        fn available_frames(&self) -> usize {
-            self.capacity.saturating_sub(self.buffer.len())
+    impl Stream for FakeStream {
+        fn stop(&mut self) {
+            self.stopped = true;
         }
     }
 
-    #[test]
-    fn stub_open_stream_returns_correct_sample_rate() {
-        let mut output = StubAudioOutput::new(1024);
-        let sr = SampleRate::try_new(44100).unwrap();
-        let stream = output.open_stream(sr);
-        assert_eq!(stream.sample_rate().value(), 44100);
+    /// A fake adapter implementing the `AudioOutput` port purely in
+    /// memory, so the port's `open`/`close` contract can be exercised
+    /// without a real audio device.
+    struct FakeAudioOutput;
+
+    impl AudioOutput for FakeAudioOutput {
+        type StreamHandle = FakeStream;
+
+        fn open(
+            &self,
+            _sample_rate: SampleRate,
+            _buffer_size: BufferSize,
+            mut callback: Box<dyn RenderCallback>,
+        ) -> Result<Self::StreamHandle, AudioError> {
+            let mut scratch = [0.0_f32; 4];
+            callback.render(&mut scratch);
+            Ok(FakeStream { stopped: false })
+        }
     }
 
     #[test]
-    fn stub_write_buffer_fills_capacity() {
-        let mut output = StubAudioOutput::new(4);
-        assert_eq!(output.available_frames(), 4);
+    fn open_drives_callback_and_close_stops_stream() {
+        let adapter = FakeAudioOutput;
+        let sample_rate = SampleRate::new(44_100).expect("valid sample rate");
+        let buffer_size = BufferSize::new(128).expect("valid buffer size");
+        let callback = Box::new(CountingCallback { renders: 0 });
 
-        let frames = [AudioFrame::mono(0.5); 3];
-        output.write_buffer(&frames);
+        let stream = adapter
+            .open(sample_rate, buffer_size, callback)
+            .expect("fake adapter never fails to open");
 
-        assert_eq!(output.buffer.len(), 3);
-        assert_eq!(output.available_frames(), 1);
-    }
-
-    #[test]
-    fn stub_write_buffer_does_not_exceed_capacity() {
-        let mut output = StubAudioOutput::new(2);
-        let frames = [AudioFrame::mono(1.0); 5];
-        output.write_buffer(&frames);
-
-        // Only 2 frames should have been written (capacity limit).
-        assert_eq!(output.buffer.len(), 2);
-        assert_eq!(output.available_frames(), 0);
-    }
-
-    #[test]
-    fn stub_write_empty_buffer_is_noop() {
-        let mut output = StubAudioOutput::new(8);
-        output.write_buffer(&[]);
-        assert_eq!(output.available_frames(), 8);
-    }
-
-    #[test]
-    fn audio_output_trait_is_object_safe() {
-        let output: Box<dyn AudioOutput> = Box::new(StubAudioOutput::new(64));
-        drop(output);
+        // The default `close` implementation must delegate to `Stream::stop`.
+        let stopped_flag_before = stream.stopped;
+        assert!(!stopped_flag_before);
+        adapter.close(stream);
     }
 }

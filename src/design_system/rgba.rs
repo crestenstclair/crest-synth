@@ -1,40 +1,105 @@
 // path: src/design_system/rgba.rs
 
-/// An 8-bit straight-alpha RGBA color.
+use std::fmt;
+
+/// A validated RGBA color value, each channel normalized to `0.0..=1.0`.
 ///
-/// This is the raw value a `SemanticToken` resolves to, and the only place a
-/// literal color lives. Skin code converts this into the renderer's native
-/// color type (e.g. `egui::Color32`) through the `Into` impl — never by
-/// constructing a color literal in draw code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// `Rgba` is a plain value type: it holds no dependencies and performs no
+/// I/O or allocation. It is the only color representation the `Theme` port
+/// returns; skins convert it to a renderer-native color (e.g. egui's
+/// `Color32`) at the single point where they touch a raw color.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rgba {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-    pub a: u8,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
 }
+
+/// Reason an `Rgba` construction was rejected.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RgbaError {
+    channel: &'static str,
+    value: f32,
+}
+
+impl fmt::Display for RgbaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Rgba channel '{}' must be finite and within 0.0..=1.0, got {}",
+            self.channel, self.value
+        )
+    }
+}
+
+impl std::error::Error for RgbaError {}
 
 impl Rgba {
-    /// Construct from individual 8-bit channels.
-    pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self { r, g, b, a }
+    /// Construct a color, validating every channel is a finite value in
+    /// `0.0..=1.0`.
+    pub fn try_new(r: f32, g: f32, b: f32, a: f32) -> Result<Self, RgbaError> {
+        Self::validate_channel("r", r)?;
+        Self::validate_channel("g", g)?;
+        Self::validate_channel("b", b)?;
+        Self::validate_channel("a", a)?;
+        Ok(Self { r, g, b, a })
     }
 
-    /// Fully opaque black.
-    pub const BLACK: Rgba = Rgba::new(0, 0, 0, 255);
+    fn validate_channel(name: &'static str, value: f32) -> Result<(), RgbaError> {
+        if value.is_nan() || !(0.0..=1.0).contains(&value) {
+            return Err(RgbaError {
+                channel: name,
+                value,
+            });
+        }
+        Ok(())
+    }
+
+    /// Fully opaque black. Valid by construction; used as a safe fallback.
+    pub const fn black() -> Self {
+        Self {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        }
+    }
 
     /// Fully opaque white.
-    pub const WHITE: Rgba = Rgba::new(255, 255, 255, 255);
+    pub const fn white() -> Self {
+        Self {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        }
+    }
 
     /// Fully transparent black.
-    pub const TRANSPARENT: Rgba = Rgba::new(0, 0, 0, 0);
-}
+    pub const fn transparent() -> Self {
+        Self {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        }
+    }
 
-/// Convert to egui's `Color32` so skin drawing code can pass `Rgba` values
-/// directly to egui without ever writing a literal `Color32` in draw code.
-impl From<Rgba> for egui::Color32 {
-    fn from(c: Rgba) -> Self {
-        egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+    pub fn r(&self) -> f32 {
+        self.r
+    }
+
+    pub fn g(&self) -> f32 {
+        self.g
+    }
+
+    pub fn b(&self) -> f32 {
+        self.b
+    }
+
+    pub fn a(&self) -> f32 {
+        self.a
     }
 }
 
@@ -43,43 +108,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trips_channels() {
-        let color = Rgba::new(10, 20, 30, 40);
-        assert_eq!(color.r, 10);
-        assert_eq!(color.g, 20);
-        assert_eq!(color.b, 30);
-        assert_eq!(color.a, 40);
+    fn try_new_accepts_in_range_channels() {
+        let color = Rgba::try_new(0.1, 0.2, 0.3, 1.0).expect("valid color");
+        assert_eq!(color.r(), 0.1);
+        assert_eq!(color.g(), 0.2);
+        assert_eq!(color.b(), 0.3);
+        assert_eq!(color.a(), 1.0);
     }
 
     #[test]
-    fn constants_have_correct_values() {
-        assert_eq!(Rgba::BLACK, Rgba::new(0, 0, 0, 255));
-        assert_eq!(Rgba::WHITE, Rgba::new(255, 255, 255, 255));
-        assert_eq!(Rgba::TRANSPARENT, Rgba::new(0, 0, 0, 0));
+    fn try_new_accepts_boundary_values() {
+        assert!(Rgba::try_new(0.0, 0.0, 0.0, 0.0).is_ok());
+        assert!(Rgba::try_new(1.0, 1.0, 1.0, 1.0).is_ok());
     }
 
     #[test]
-    fn equality_is_channel_wise() {
-        let a = Rgba::new(1, 2, 3, 4);
-        let b = Rgba::new(1, 2, 3, 4);
-        let c = Rgba::new(1, 2, 3, 5);
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+    fn try_new_rejects_out_of_range_channel() {
+        let err = Rgba::try_new(1.5, 0.0, 0.0, 1.0).expect_err("out of range");
+        assert_eq!(err.channel, "r");
     }
 
     #[test]
-    fn into_egui_color32_preserves_channels() {
-        let rgba = Rgba::new(100, 150, 200, 255);
-        let c32: egui::Color32 = rgba.into();
-        // egui::Color32::from_rgba_unmultiplied stores channels as-is
-        assert_eq!(c32.r(), 100);
-        assert_eq!(c32.g(), 150);
-        assert_eq!(c32.b(), 200);
-        assert_eq!(c32.a(), 255);
+    fn try_new_rejects_negative_channel() {
+        let err = Rgba::try_new(0.0, -0.01, 0.0, 1.0).expect_err("out of range");
+        assert_eq!(err.channel, "g");
     }
 
     #[test]
-    fn transparent_has_zero_alpha() {
-        assert_eq!(Rgba::TRANSPARENT.a, 0);
+    fn try_new_rejects_nan_channel() {
+        let err = Rgba::try_new(0.0, 0.0, f32::NAN, 1.0).expect_err("nan rejected");
+        assert_eq!(err.channel, "b");
+    }
+
+    #[test]
+    fn constants_are_valid_colors() {
+        assert_eq!(Rgba::black().a(), 1.0);
+        assert_eq!(Rgba::white().r(), 1.0);
+        assert_eq!(Rgba::transparent().a(), 0.0);
+    }
+
+    #[test]
+    fn error_message_names_the_failing_channel() {
+        let err = Rgba::try_new(0.0, 0.0, 0.0, 2.0).expect_err("out of range");
+        let message = err.to_string();
+        assert!(message.contains('a'));
     }
 }

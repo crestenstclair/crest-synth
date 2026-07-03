@@ -1,338 +1,340 @@
 // path: src/bin/mixer_demo.rs
-//
-// mixer_demo — headless prover for MixerView + ChannelMixer.
-//
-// No audio device, no window, no gamepad, no MIDI.
-// Exercises four proofs and prints the verbatim tokens each proof requires.
 
-use crest_synth::mixer::channel_mixer::{ChannelMixer, CHANNEL_COUNT};
-use crest_synth::mixer::mixer_param::MixerParam;
-use crest_synth::mixer::mixer_view::{MixerView, VISIBLE_CHANNELS};
-use crest_synth::mixer::mixer_view_event::MixerViewEvent;
+//! `mixer_demo` — headless prover for `MixerView` and its 16 `ChannelStrip`
+//! channels.
+//!
+//! This binary opens NO window, NO audio device, and NO MIDI device. It is
+//! a pure, mechanically-checkable harness: it constructs `MixerView` state,
+//! drives it with scripted `MixerViewEvent`s exactly as a keyboard or
+//! gamepad adapter would, and asserts in code that the resulting state
+//! matches the behavior the mixer promises. A panic on any mismatch makes
+//! this process exit non-zero.
+
+use crest_synth::mixer::channel_strip::{Amplitude, ChannelStrip, Decibel};
+use crest_synth::mixer::mixer_view::{
+    MixerParam, MixerView, MixerViewEvent, MAX_VIEWPORT_OFFSET, TOTAL_CHANNELS, VISIBLE_CHANNELS,
+    VOLUME_COARSE_STEP_DB, VOLUME_FINE_STEP_DB,
+};
+
+/// Number of samples in each channel's small per-block audio buffer used by
+/// the solo-vs-metering proof.
+const SAMPLES_PER_BLOCK: usize = 8;
 
 fn main() {
-    proof_edge_scroll();
-    proof_fine_coarse();
-    proof_toggle();
-    proof_solo_vs_metering();
+    edge_scroll_proof();
+    fine_coarse_proof();
+    toggle_proof();
+    solo_vs_metering_proof();
 
-    println!("\nAll proofs passed.");
+    println!("mixer_demo: all proofs passed (16 channels, {VISIBLE_CHANNELS} visible)");
 }
 
-// ── Proof 1: Edge-scroll behaviour ───────────────────────────────────────────
-
-fn proof_edge_scroll() {
+/// Proves edge-scroll behavior: pushing the cursor past either edge of the
+/// visible viewport scrolls the viewport instead of walking the cursor off
+/// the visible window, at both the right and left edges.
+fn edge_scroll_proof() {
     let mut view = MixerView::new();
 
-    // Move cursor to the trailing visible channel (index 5 = VISIBLE_CHANNELS-1)
-    // while viewport stays at 0.
+    // Put the cursor on the trailing visible channel (index 5) with
+    // viewportOffset still at 0.
     for _ in 0..(VISIBLE_CHANNELS - 1) {
         view.apply(MixerViewEvent::NavRight);
     }
     assert_eq!(
         view.cursor_channel(),
         VISIBLE_CHANNELS - 1,
-        "cursor should be at the trailing visible channel before edge-scroll"
+        "expected the cursor on the trailing visible channel before the edge-scroll probe"
     );
     assert_eq!(
         view.viewport_offset(),
         0,
-        "viewport_offset should be 0 before edge-scroll"
+        "viewport must not have moved yet"
     );
 
-    // ONE NavRight at the right edge: viewport scrolls, cursor stays on same channel.
+    // One more NavRight must scroll the viewport, not move the cursor off
+    // the visible window.
     view.apply(MixerViewEvent::NavRight);
     assert_eq!(
         view.viewport_offset(),
         1,
-        "edge scroll: viewport_offset should be 1 after NavRight at right edge"
+        "NavRight past the trailing visible channel must scroll the viewport"
     );
     assert_eq!(
         view.cursor_channel(),
         VISIBLE_CHANNELS - 1,
-        "edge scroll: cursorChannel must stay at {} after viewport scroll",
-        VISIBLE_CHANNELS - 1
+        "cursorChannel must stay put (5) while the viewport scrolls"
     );
 
-    // A few more NavRights: cursor stays in visible window at all times.
-    // (The cursor will alternate between moving within the window and
-    // triggering a viewport scroll when it reaches the right edge again.)
-    for extra in 0..6usize {
+    // Keep scrolling right: the cursor must never leave the visible window.
+    for _ in 0..(TOTAL_CHANNELS * 2) {
         view.apply(MixerViewEvent::NavRight);
-        let lo = view.viewport_offset();
-        let hi = lo + VISIBLE_CHANNELS - 1;
         assert!(
-            (lo..=hi).contains(&view.cursor_channel()),
-            "cursor {} out of visible window [{}, {}] after {} additional NavRights post-first-scroll",
-            view.cursor_channel(),
-            lo,
-            hi,
-            extra + 1,
+            view.visible_range().contains(&view.cursor_channel()),
+            "cursor left the visible viewport while scrolling right"
         );
     }
+    assert_eq!(
+        view.viewport_offset(),
+        MAX_VIEWPORT_OFFSET,
+        "repeated NavRight must saturate the viewport at its maximum offset"
+    );
+    assert_eq!(view.cursor_channel(), TOTAL_CHANNELS - 1);
 
-    // Snapshot the state — cursor is somewhere inside the window.
-    let cursor_snapshot = view.cursor_channel();
-    let viewport_snapshot = view.viewport_offset();
-
-    // Mirror: NavLeft scrolls the viewport back when cursor is at the left edge.
-    // First, navigate left until we hit the left edge.
-    // Move cursor all the way to the left edge of the visible window.
-    while view.cursor_channel() > view.viewport_offset() {
+    // Mirror the proof at the left edge.
+    for _ in 0..(VISIBLE_CHANNELS - 1) {
         view.apply(MixerViewEvent::NavLeft);
     }
-    // Sanity: cursor is now at the left edge.
     assert_eq!(
         view.cursor_channel(),
-        view.viewport_offset(),
-        "cursor should be at the left edge of the viewport"
+        MAX_VIEWPORT_OFFSET,
+        "expected the cursor on the leading visible channel before the left edge-scroll probe"
     );
-    let cursor_at_left_edge = view.cursor_channel();
-    let viewport_at_left_edge = view.viewport_offset();
+    assert_eq!(
+        view.viewport_offset(),
+        MAX_VIEWPORT_OFFSET,
+        "viewport must not have moved yet"
+    );
 
-    // One NavLeft at the left edge: viewport scrolls back, cursor stays.
-    if viewport_at_left_edge > 0 {
-        view.apply(MixerViewEvent::NavLeft);
-        assert_eq!(
-            view.cursor_channel(),
-            cursor_at_left_edge,
-            "left edge scroll: cursor should stay at {} after viewport scrolls left",
-            cursor_at_left_edge
-        );
-        assert_eq!(
-            view.viewport_offset(),
-            viewport_at_left_edge - 1,
-            "left edge scroll: viewport_offset should decrease by 1"
-        );
-    }
+    view.apply(MixerViewEvent::NavLeft);
+    assert_eq!(
+        view.viewport_offset(),
+        MAX_VIEWPORT_OFFSET - 1,
+        "NavLeft past the leading visible channel must scroll the viewport back"
+    );
+    assert_eq!(
+        view.cursor_channel(),
+        MAX_VIEWPORT_OFFSET,
+        "cursorChannel must stay put while the viewport scrolls back"
+    );
 
-    // A few more NavLefts: cursor stays in visible window at all times.
-    for extra in 0..4usize {
+    for _ in 0..(TOTAL_CHANNELS * 2) {
         view.apply(MixerViewEvent::NavLeft);
-        let lo = view.viewport_offset();
-        let hi = lo + VISIBLE_CHANNELS - 1;
         assert!(
-            (lo..=hi).contains(&view.cursor_channel()),
-            "cursor {} out of visible window [{}, {}] after {} left NavLeft steps",
-            view.cursor_channel(),
-            lo,
-            hi,
-            extra + 1,
+            view.visible_range().contains(&view.cursor_channel()),
+            "cursor left the visible viewport while scrolling left"
         );
     }
-
-    // Suppress unused-variable warnings.
-    let _ = (cursor_snapshot, viewport_snapshot);
+    assert_eq!(
+        view.viewport_offset(),
+        0,
+        "repeated NavLeft must saturate the viewport back at zero"
+    );
+    assert_eq!(view.cursor_channel(), 0);
 
     println!("edge scroll ok");
 }
 
-// ── Proof 2: Fine / coarse adjustment and clamping ───────────────────────────
-
-fn proof_fine_coarse() {
-    let mut view = MixerView::new();
-
-    // Navigate to Volume row (it's already there), go to channel 2.
-    view.apply(MixerViewEvent::NavRight);
-    view.apply(MixerViewEvent::NavRight);
-    assert_eq!(view.cursor_channel(), 2);
-    assert_eq!(view.cursor_param(), MixerParam::Volume);
-
-    // Enter edit mode.
+/// Proves fine/coarse stepping and clamping on a continuous parameter
+/// (Volume): NavRight/NavLeft in edit mode move by the fine step, NavUp/
+/// NavDown move by the coarse step (10x fine), and repeated presses clamp
+/// at the domain bounds instead of overshooting.
+fn fine_coarse_proof() {
+    let mut view = MixerView::new(); // cursor: channel 0, Volume row, navigate mode
     view.apply(MixerViewEvent::EnterEditMode);
-    assert!(view.edit_mode(), "should be in edit mode");
 
-    let vol_before = view.mixer().channel(2).volume;
+    let start = view.channel(0).unwrap().volume_db().value();
 
-    // NavRight → fine step (+0.01).
     view.apply(MixerViewEvent::NavRight);
-    let vol_after_fine = view.mixer().channel(2).volume;
+    let after_fine = view.channel(0).unwrap().volume_db().value();
     assert!(
-        (vol_after_fine - (vol_before + 0.01)).abs() < 1e-5,
-        "NavRight in edit mode should raise volume by fine step (0.01): before={}, after={}",
-        vol_before,
-        vol_after_fine
+        (after_fine - (start + VOLUME_FINE_STEP_DB)).abs() < 1e-4,
+        "NavRight in edit mode must raise volume by the fine step: expected {}, got {after_fine}",
+        start + VOLUME_FINE_STEP_DB
     );
 
-    // NavUp → coarse step (+0.10).
-    let vol_before_coarse = view.mixer().channel(2).volume;
     view.apply(MixerViewEvent::NavUp);
-    let vol_after_coarse = view.mixer().channel(2).volume;
+    let after_coarse = view.channel(0).unwrap().volume_db().value();
     assert!(
-        (vol_after_coarse - (vol_before_coarse + 0.10)).abs() < 1e-5,
-        "NavUp in edit mode should raise volume by coarse step (0.10): before={}, after={}",
-        vol_before_coarse,
-        vol_after_coarse
+        (after_coarse - (after_fine + VOLUME_COARSE_STEP_DB)).abs() < 1e-4,
+        "NavUp in edit mode must raise volume by the coarse step (10x fine): expected {}, got {after_coarse}",
+        after_fine + VOLUME_COARSE_STEP_DB
     );
 
-    // Clamp at 1.0 — repeated NavUp must never exceed 1.0.
-    for _ in 0..20 {
+    // Repeated NavUp must clamp at the upper bound, never exceed it.
+    for _ in 0..200 {
         view.apply(MixerViewEvent::NavUp);
     }
-    let vol_at_max = view.mixer().channel(2).volume;
-    assert!(
-        (vol_at_max - 1.0).abs() < 1e-5,
-        "volume should clamp at 1.0, got {}",
-        vol_at_max
+    let clamped_max = view.channel(0).unwrap().volume_db().value();
+    assert_eq!(
+        clamped_max,
+        Decibel::MAX,
+        "volume must clamp at its upper bound under repeated NavUp"
     );
 
-    // Clamp at 0.0 — repeated NavDown must never go below 0.0.
-    for _ in 0..20 {
+    // Repeated NavDown must clamp at the lower bound, never undershoot it.
+    for _ in 0..500 {
         view.apply(MixerViewEvent::NavDown);
     }
-    let vol_at_min = view.mixer().channel(2).volume;
-    assert!(
-        (vol_at_min - 0.0).abs() < 1e-5,
-        "volume should clamp at 0.0, got {}",
-        vol_at_min
+    let clamped_min = view.channel(0).unwrap().volume_db().value();
+    assert_eq!(
+        clamped_min,
+        Decibel::MIN,
+        "volume must clamp at its lower bound under repeated NavDown"
     );
 
     println!("fine/coarse ok");
 }
 
-// ── Proof 3: Toggle param (Mute) ─────────────────────────────────────────────
-
-fn proof_toggle() {
+/// Proves toggle-parameter semantics on Mute: `ToggleFocusedParam` flips the
+/// flag on then off, and directional input while in edit mode is a no-op on
+/// a toggle (only continuous parameters respond to NavUp/NavDown/NavLeft/
+/// NavRight while editing).
+fn toggle_proof() {
     let mut view = MixerView::new();
 
-    // Navigate to Mute row (4 NavDowns from Volume).
-    for _ in 0..4 {
-        view.apply(MixerViewEvent::NavDown);
-    }
-    assert_eq!(view.cursor_param(), MixerParam::Mute);
-
-    // Toggle mute on → true.
-    view.apply(MixerViewEvent::ToggleFocusedParam);
-    assert!(
-        view.mixer().channel(0).mute,
-        "mute should be true after first toggle"
-    );
-
-    // Toggle mute off → false.
-    view.apply(MixerViewEvent::ToggleFocusedParam);
-    assert!(
-        !view.mixer().channel(0).mute,
-        "mute should be false after second toggle"
-    );
-
-    // Enter edit mode on the Mute row — directional input is a no-op.
-    view.apply(MixerViewEvent::EnterEditMode);
-    let mute_before = view.mixer().channel(0).mute;
-    view.apply(MixerViewEvent::NavRight);
-    view.apply(MixerViewEvent::NavUp);
+    // Navigate down to the Mute row: Volume -> Pan -> Mute.
+    view.apply(MixerViewEvent::NavDown);
+    view.apply(MixerViewEvent::NavDown);
     assert_eq!(
-        view.mixer().channel(0).mute,
-        mute_before,
-        "directional input in edit mode on a toggle param must not change mute flag"
+        view.cursor_param(),
+        MixerParam::Mute,
+        "expected the cursor on the Mute row"
+    );
+
+    view.apply(MixerViewEvent::ToggleFocusedParam);
+    assert!(
+        view.channel(0).unwrap().mute(),
+        "ToggleFocusedParam on the Mute row must flip mute on"
+    );
+
+    view.apply(MixerViewEvent::ToggleFocusedParam);
+    assert!(
+        !view.channel(0).unwrap().mute(),
+        "a second ToggleFocusedParam on the Mute row must flip mute back off"
+    );
+
+    // Directional input in edit mode must never touch a toggle parameter.
+    view.apply(MixerViewEvent::EnterEditMode);
+    view.apply(MixerViewEvent::NavRight);
+    view.apply(MixerViewEvent::NavLeft);
+    view.apply(MixerViewEvent::NavUp);
+    view.apply(MixerViewEvent::NavDown);
+    assert!(
+        !view.channel(0).unwrap().mute(),
+        "directional input on a toggle parameter in edit mode must be a no-op"
     );
 
     println!("toggle ok");
 }
 
-// ── Proof 4: Solo-vs-metering independence ────────────────────────────────────
+/// Proves the interaction that catches a wrong solo/mute gating
+/// implementation: soloing exactly one channel silences every other
+/// channel's contribution to the mix, but every channel — including the
+/// solo-silenced ones — still meters its own real (non-zero) signal.
+fn solo_vs_metering_proof() {
+    let mut view = MixerView::new(); // fresh 16 ChannelStrip channels
 
-/// Perform a stereo mixdown of 16 per-channel mono buffers.
-///
-/// Returns two values:
-/// - `mix`: the sum of contributions applied to the stereo bus (solo gating
-///   applied — a channel excluded by solo contributes nothing here).
-/// - `peak_levels`: each channel's own peak level, computed from its raw
-///   buffer regardless of solo status (metering is independent of solo).
-///
-/// The mix is simplified to mono for the proof (pan=0, so L==R).
-fn mixdown(
-    mixer: &ChannelMixer,
-    per_channel_buffers: &[[f32; 64]; CHANNEL_COUNT],
-) -> (f32, [f32; CHANNEL_COUNT]) {
-    // Determine if any channel is soloed.
-    let any_soloed = (0..CHANNEL_COUNT).any(|ch| mixer.channel(ch).solo);
+    let solo_channel = 3usize;
 
-    let mut mix_sum: f32 = 0.0;
-    let mut peak_levels = [0.0f32; CHANNEL_COUNT];
-
-    for ch in 0..CHANNEL_COUNT {
-        let state = mixer.channel(ch);
-        let buf = &per_channel_buffers[ch];
-
-        // Peak metering: always reads the raw signal regardless of solo/mute.
-        let peak = buf.iter().copied().fold(0.0f32, |acc, s| acc.max(s.abs()));
-        peak_levels[ch] = peak;
-
-        // Solo gating: if any channel is soloed, only soloed channels
-        // contribute to the mix. Muted channels never contribute.
-        let audible = if any_soloed {
-            state.solo && !state.mute
-        } else {
-            !state.mute
-        };
-
-        if audible {
-            let vol = state.volume;
-            let channel_mix: f32 = buf.iter().copied().sum::<f32>() * vol;
-            mix_sum += channel_mix;
-        }
-    }
-
-    (mix_sum, peak_levels)
-}
-
-fn proof_solo_vs_metering() {
-    let mut view = MixerView::new();
-
-    // Build 16 small per-channel buffers with clearly non-zero signal.
-    // Channel N's signal is (N+1) * 0.1 so they are all distinct and non-zero.
-    let mut per_channel_buffers = [[0.0f32; 64]; CHANNEL_COUNT];
-    for (ch, buf) in per_channel_buffers.iter_mut().enumerate() {
-        let amplitude = (ch as f32 + 1.0) * 0.1;
-        for sample in buf.iter_mut() {
-            *sample = amplitude;
-        }
-    }
-
-    // Solo exactly channel 3 via the view.
-    // Navigate to channel 3, then down to Solo row (5 NavDowns).
-    for _ in 0..3 {
+    // Navigate the cursor to channel 3 (well within the initial viewport,
+    // no edge-scroll involved).
+    for _ in 0..solo_channel {
         view.apply(MixerViewEvent::NavRight);
     }
-    assert_eq!(view.cursor_channel(), 3);
-    for _ in 0..5 {
+    assert_eq!(view.cursor_channel(), solo_channel);
+
+    // Navigate down to the Solo row: Volume -> Pan -> Mute -> Solo.
+    for _ in 0..3 {
         view.apply(MixerViewEvent::NavDown);
     }
-    assert_eq!(view.cursor_param(), MixerParam::Solo);
+    assert_eq!(
+        view.cursor_param(),
+        MixerParam::Solo,
+        "expected the cursor on the Solo row"
+    );
+
     view.apply(MixerViewEvent::ToggleFocusedParam);
     assert!(
-        view.mixer().channel(3).solo,
-        "channel 3 should be soloed after ToggleFocusedParam"
+        view.channel(solo_channel).unwrap().solo(),
+        "ToggleFocusedParam on the Solo row must flip solo on"
     );
 
-    // Run the mixdown.
-    let (mix_sum, peak_levels) = mixdown(view.mixer(), &per_channel_buffers);
+    // Build 16 small per-channel audio buffers, each with a clearly
+    // non-zero signal.
+    let buffers: [[f32; SAMPLES_PER_BLOCK]; TOTAL_CHANNELS] =
+        std::array::from_fn(|i| [0.3 + 0.01 * i as f32; SAMPLES_PER_BLOCK]);
 
-    // Compute the reference mix for channel 3 alone.
-    let ch3_state = view.mixer().channel(3);
-    let ch3_amplitude = (3_f32 + 1.0) * 0.1;
-    let ch3_vol = ch3_state.volume;
-    let reference_mix: f32 = ch3_amplitude * 64.0 * ch3_vol;
+    // Snapshot the view's channels as an owned array so the mix pass and
+    // the meter can be driven directly against the real ChannelStrip state
+    // the view just mutated (draw code never reaches into a ChannelStrip's
+    // fields directly, but this harness — like MixerView's own metering —
+    // operates one layer below the UI event flow, on the domain aggregates
+    // themselves).
+    let mut channels: [ChannelStrip; TOTAL_CHANNELS] = (*view.channels()).clone();
 
-    // (a) The stereo mix equals only channel 3's contribution.
-    assert!(
-        (mix_sum - reference_mix).abs() < 1e-3,
-        "solo mutes others: mix should equal only channel 3's contribution \
-         (expected {}, got {})",
-        reference_mix,
-        mix_sum
-    );
-    println!("solo mutes others: true");
+    // Run an equivalent direct mixdown over the ChannelStrip list, applying
+    // the same solo-in-place gating a MixEngine pass would: when any
+    // channel is soloed, only soloed channels are audible.
+    let mix = mixdown(&channels, &buffers);
+    let reference = stereo_contribution(&channels[solo_channel], &buffers[solo_channel]);
 
-    // (b) Every channel's peak level is still > 0, including solo-silenced ones.
-    for (ch, &peak) in peak_levels.iter().enumerate() {
+    assert_eq!(mix.len(), reference.len());
+    for (m, r) in mix.iter().zip(reference.iter()) {
         assert!(
-            peak > 0.0,
-            "metering independent of solo: channel {} peak level should be > 0 \
-             but got {} (metering must not respect solo gating)",
-            ch,
-            peak
+            (m.0 - r.0).abs() < 1e-5 && (m.1 - r.1).abs() < 1e-5,
+            "the stereo mix must equal ONLY channel {solo_channel}'s contribution when it is soloed; got {mix:?}, expected {reference:?}"
         );
     }
+    println!("solo mutes others: true");
+
+    // Metering is independent of solo/mute: every channel, including the
+    // ones the solo above silences, must still report a real non-zero
+    // peak for the same non-zero input it was fed.
+    let mut all_peaks_nonzero = true;
+    for (channel, buffer) in channels.iter_mut().zip(buffers.iter()) {
+        let sample =
+            Amplitude::try_new(buffer[0]).expect("buffer sample must be a valid Amplitude");
+        let peak = channel.meter(sample);
+        if peak.value() <= 0.0 {
+            all_peaks_nonzero = false;
+        }
+    }
+    assert!(
+        all_peaks_nonzero,
+        "every channel must still meter a non-zero peak regardless of solo/mute state"
+    );
     println!("metering independent of solo: true");
+}
+
+/// This channel strip's post-volume, post-pan stereo contribution for each
+/// sample in `buffer`.
+fn stereo_contribution(strip: &ChannelStrip, buffer: &[f32]) -> Vec<(f32, f32)> {
+    let volume_linear = strip.volume_db().to_linear();
+    let (left_gain, right_gain) = strip.pan().equal_power_gains();
+    buffer
+        .iter()
+        .map(|&sample| {
+            let post_volume = sample * volume_linear;
+            (post_volume * left_gain, post_volume * right_gain)
+        })
+        .collect()
+}
+
+/// An equivalent direct mixdown over a `ChannelStrip` list: sums every
+/// audible channel's stereo contribution for its buffer, applying
+/// solo-in-place gating (when any channel is soloed, only soloed channels
+/// are audible; otherwise every unmuted channel is audible).
+fn mixdown(
+    channels: &[ChannelStrip; TOTAL_CHANNELS],
+    buffers: &[[f32; SAMPLES_PER_BLOCK]; TOTAL_CHANNELS],
+) -> Vec<(f32, f32)> {
+    let any_soloed = channels.iter().any(ChannelStrip::solo);
+    let mut mix = vec![(0.0f32, 0.0f32); SAMPLES_PER_BLOCK];
+
+    for (channel, buffer) in channels.iter().zip(buffers.iter()) {
+        let audible = if any_soloed {
+            channel.solo()
+        } else {
+            !channel.mute()
+        };
+        if !audible {
+            continue;
+        }
+        for (entry, (l, r)) in mix.iter_mut().zip(stereo_contribution(channel, buffer)) {
+            entry.0 += l;
+            entry.1 += r;
+        }
+    }
+
+    mix
 }

@@ -1,772 +1,379 @@
-// path: src/effects/effect_chain.rs
+//! [`EffectChain`]: an ordered, bounded sequence of independently bypassable effect slots.
 
-use crate::effects::effect_chain_id::EffectChainId;
-use crate::effects::effect_processor::{EffectParams, EffectProcessor, EffectType};
-use crate::effects::effect_slot::EffectSlot;
-use crate::kernel::audio_frame::AudioFrame;
+use crate::effects::effect_slot::{EffectSlot, Processor};
 
-// ─── Commands ──────────────────────────────────────────────────────────────────────────────
+/// Forwarding impl so a boxed, type-erased processor can itself be used
+/// wherever a [`Processor`] is expected. This is what lets [`EffectChain`]
+/// hold slots of *different* concrete effect types (chorus, delay, reverb,
+/// ...) in one `Vec` without making the whole chain generic over a single
+/// processor type.
+impl Processor for Box<dyn Processor> {
+    fn process_sample(&mut self, sample: f32) -> f32 {
+        (**self).process_sample(sample)
+    }
 
-/// Insert a new effect at the given position (0-based).
-///
-/// If `position` is greater than the current slot count the effect is
-/// appended at the end.
-pub struct AddEffect {
-    pub effect_type: EffectType,
-    pub position: u8,
+    fn name(&self) -> &str {
+        (**self).name()
+    }
 }
 
-/// Remove the effect at `slot_index`.
-pub struct RemoveEffect {
-    pub slot_index: u8,
+/// A processor that passes its input through unchanged. Used as the default
+/// occupant of a freshly inserted slot until the caller swaps in a real
+/// effect.
+#[derive(Debug, Default)]
+struct PassthroughProcessor;
+
+impl Processor for PassthroughProcessor {
+    fn process_sample(&mut self, sample: f32) -> f32 {
+        sample
+    }
+
+    fn name(&self) -> &str {
+        "passthrough"
+    }
 }
 
-/// Move the effect at `from_index` to `to_index`, shifting other effects
-/// to fill the gap.
-pub struct ReorderEffect {
-    pub from_index: u8,
-    pub to_index: u8,
+/// The concrete slot type stored by [`EffectChain`]. Slots are type-erased
+/// (`Box<dyn Processor>`) rather than parameterized by one processor type,
+/// because a chain's slots each hold an independently-chosen effect.
+type BoxedSlot = EffectSlot<Box<dyn Processor>>;
+
+/// Commands accepted by [`EffectChain`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectChainCommand {
+    /// Insert a new, default effect slot at `index`.
+    InsertSlot { index: u32 },
+    /// Remove the slot at `index`.
+    RemoveSlot { index: u32 },
+    /// Move the slot at `from` to `to`, preserving the order of the remaining slots.
+    ReorderSlot { from: u32, to: u32 },
+    /// Set the bypass flag of the slot at `index`.
+    SetBypass { index: u32, bypassed: bool },
 }
 
-/// Replace the parameters on the slot at `slot_index`.
-pub struct UpdateEffectParams {
-    pub slot_index: u8,
-    pub params: EffectParams,
+/// Events emitted by [`EffectChain`] in response to commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectChainEvent {
+    /// A slot was inserted at `index`.
+    SlotInserted { index: u32 },
+    /// The slot at `index` was removed.
+    SlotRemoved { index: u32 },
+    /// A slot moved from `from` to `to`.
+    SlotsReordered { from: u32, to: u32 },
 }
 
-/// Bypass the entire chain (audio passes through unmodified).
-pub struct BypassChain;
-
-/// Re-enable the chain after bypass.
-pub struct EnableChain;
-
-// ─── Events ───────────────────────────────────────────────────────────────────────────────
-
-/// Emitted when a new effect is added to the chain.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EffectAdded {
-    pub effect_type: EffectType,
-    pub position: u8,
-}
-
-/// Emitted when an effect is removed from the chain.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EffectRemoved {
-    pub slot_index: u8,
-}
-
-/// Emitted when an effect is moved within the chain.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EffectReordered {
-    pub from_index: u8,
-    pub to_index: u8,
-}
-
-/// Emitted when an effect's parameters are changed.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EffectParamsUpdated {
-    pub slot_index: u8,
-}
-
-/// Emitted when the whole chain is bypassed.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ChainBypassed {
-    pub id: EffectChainId,
-}
-
-/// Emitted when the whole chain is re-enabled.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ChainEnabled {
-    pub id: EffectChainId,
-}
-
-// ─── Errors ──────────────────────────────────────────────────────────────────────────────
-
-/// Errors produced when a command cannot be applied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Errors returned when a command cannot be applied to an [`EffectChain`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectChainError {
-    /// The requested slot index is out of range.
-    SlotIndexOutOfRange { index: u8, len: u8 },
+    /// The chain already holds `max_slots` slots; no more may be inserted.
+    ChainFull { max_slots: u8 },
+    /// `index` does not refer to an existing slot.
+    IndexOutOfBounds { index: u32, len: usize },
 }
 
 impl std::fmt::Display for EffectChainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EffectChainError::SlotIndexOutOfRange { index, len } => {
+            EffectChainError::ChainFull { max_slots } => {
                 write!(
                     f,
-                    "slot index {index} is out of range (chain has {len} slots)"
+                    "effect chain already has the maximum of {max_slots} slots"
+                )
+            }
+            EffectChainError::IndexOutOfBounds { index, len } => {
+                write!(
+                    f,
+                    "index {index} is out of bounds for a chain of {len} slots"
                 )
             }
         }
     }
 }
 
-// ─── Aggregate ────────────────────────────────────────────────────────────────────────────
+impl std::error::Error for EffectChainError {}
 
-/// An ordered list of effect slots processed in series.
+/// An ordered sequence of effect slots, each independently bypassable.
 ///
-/// # Signal flow
+/// Invariants upheld by this type:
+/// - signal flows through slots strictly top-to-bottom in slot order (`slots` is a `Vec`,
+///   reordered only by an explicit [`EffectChainCommand::ReorderSlot`], and
+///   [`EffectChain::process_sample`] always walks it front to back)
+/// - a bypassed slot passes its input through unchanged (see [`EffectChain::process_sample`])
+/// - the chain never exceeds `max_slots` slots (enforced when inserting)
 ///
-/// Audio passes through slot 0 first and exits slot N last:
-///
-/// ```text
-/// input → slot[0] → slot[1] → … → slot[N] → output
-/// ```
-///
-/// When `bypass` is `true` the input audio is returned unchanged — no
-/// slots are executed.
-///
-/// # Audio-thread constraints
-///
-/// `process` performs no heap allocation after warm-up and acquires no locks.
-/// Each `EffectProcessor` pre-allocates its delay buffer at the time the
-/// slot is added; scratch buffers grow only when the block size increases.
-#[derive(Debug)]
+/// Slots are stored as type-erased [`EffectSlot<Box<dyn Processor>>`] rather
+/// than a single generic processor type, since each slot in a chain may hold
+/// a different concrete effect (chorus, delay, reverb, ...).
 pub struct EffectChain {
-    id: EffectChainId,
-    bypass: bool,
-    /// Configuration for each slot (parallel-indexed with `processors`).
-    slots: Vec<EffectSlot>,
-    /// Live DSP state for each slot (parallel-indexed with `slots`).
-    processors: Vec<EffectProcessor>,
-    /// Pre-allocated scratch buffer A for ping-pong processing across slots.
-    scratch_a: Vec<AudioFrame>,
-    /// Pre-allocated scratch buffer B for ping-pong processing across slots.
-    scratch_b: Vec<AudioFrame>,
+    max_slots: u8,
+    slots: Vec<BoxedSlot>,
+}
+
+impl std::fmt::Debug for EffectChain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EffectChain")
+            .field("max_slots", &self.max_slots)
+            .field("slot_count", &self.slots.len())
+            .finish()
+    }
 }
 
 impl EffectChain {
-    /// Creates a new, empty, non-bypassed `EffectChain`.
-    pub fn new(id: EffectChainId) -> Self {
+    /// Creates an empty chain that will accept at most `max_slots` slots.
+    pub fn new(max_slots: u8) -> Self {
         Self {
-            id,
-            bypass: false,
+            max_slots,
             slots: Vec::new(),
-            processors: Vec::new(),
-            scratch_a: Vec::new(),
-            scratch_b: Vec::new(),
         }
     }
 
-    // ── Queries ──────────────────────────────────────────────────────────────────────
-
-    /// Returns the chain's unique identifier.
-    pub fn id(&self) -> EffectChainId {
-        self.id
+    /// The maximum number of slots this chain will ever hold.
+    pub fn max_slots(&self) -> u8 {
+        self.max_slots
     }
 
-    /// Returns `true` when the chain is bypassed.
-    pub fn is_bypassed(&self) -> bool {
-        self.bypass
-    }
-
-    /// Returns an ordered slice of all effect slot configurations.
-    ///
-    /// Slot 0 is processed first; slot `len - 1` last.
-    pub fn slots(&self) -> &[EffectSlot] {
+    /// The slots currently in the chain, in top-to-bottom processing order.
+    pub fn slots(&self) -> &[BoxedSlot] {
         &self.slots
     }
 
-    /// Returns the number of slots in the chain.
-    pub fn len(&self) -> usize {
-        self.slots.len()
-    }
-
-    /// Returns `true` when the chain has no slots.
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
-    }
-
-    // ── Commands ─────────────────────────────────────────────────────────────────────
-
-    /// Insert a new effect at `position`.
-    ///
-    /// If `position` exceeds the current slot count the slot is appended.
-    ///
-    /// # Returns
-    /// `EffectAdded` event on success.
-    pub fn add_effect(&mut self, cmd: AddEffect) -> EffectAdded {
-        let pos = (cmd.position as usize).min(self.slots.len());
-        self.slots.insert(pos, EffectSlot::new(cmd.effect_type));
-        self.processors.insert(pos, EffectProcessor::new());
-        EffectAdded {
-            effect_type: cmd.effect_type,
-            position: pos as u8,
-        }
-    }
-
-    /// Remove the slot at `slot_index`.
-    ///
-    /// # Errors
-    /// Returns `SlotIndexOutOfRange` if the index is out of range.
-    pub fn remove_effect(&mut self, cmd: RemoveEffect) -> Result<EffectRemoved, EffectChainError> {
-        let idx = cmd.slot_index as usize;
-        if idx >= self.slots.len() {
-            return Err(EffectChainError::SlotIndexOutOfRange {
-                index: cmd.slot_index,
-                len: self.slots.len() as u8,
-            });
-        }
-        self.slots.remove(idx);
-        self.processors.remove(idx);
-        Ok(EffectRemoved {
-            slot_index: cmd.slot_index,
-        })
-    }
-
-    /// Move the effect at `from_index` to `to_index`.
-    ///
-    /// # Errors
-    /// Returns `SlotIndexOutOfRange` if either index is out of range.
-    pub fn reorder_effect(
+    /// Applies a command, returning the events it produced or the error that rejected it.
+    pub fn apply(
         &mut self,
-        cmd: ReorderEffect,
-    ) -> Result<EffectReordered, EffectChainError> {
-        let from = cmd.from_index as usize;
-        let to = cmd.to_index as usize;
-        let len = self.slots.len();
-
-        if from >= len {
-            return Err(EffectChainError::SlotIndexOutOfRange {
-                index: cmd.from_index,
-                len: len as u8,
-            });
+        command: EffectChainCommand,
+    ) -> Result<Vec<EffectChainEvent>, EffectChainError> {
+        match command {
+            EffectChainCommand::InsertSlot { index } => self.insert_slot(index),
+            EffectChainCommand::RemoveSlot { index } => self.remove_slot(index),
+            EffectChainCommand::ReorderSlot { from, to } => self.reorder_slot(from, to),
+            EffectChainCommand::SetBypass { index, bypassed } => self.set_bypass(index, bypassed),
         }
-        if to >= len {
-            return Err(EffectChainError::SlotIndexOutOfRange {
-                index: cmd.to_index,
-                len: len as u8,
-            });
-        }
-
-        let slot = self.slots.remove(from);
-        self.slots.insert(to, slot);
-        let proc = self.processors.remove(from);
-        self.processors.insert(to, proc);
-
-        Ok(EffectReordered {
-            from_index: cmd.from_index,
-            to_index: cmd.to_index,
-        })
     }
 
-    /// Replace the parameters on the slot at `slot_index`.
-    ///
-    /// # Errors
-    /// Returns `SlotIndexOutOfRange` if the index is out of range.
-    pub fn update_effect_params(
+    fn insert_slot(&mut self, index: u32) -> Result<Vec<EffectChainEvent>, EffectChainError> {
+        if self.slots.len() >= self.max_slots as usize {
+            return Err(EffectChainError::ChainFull {
+                max_slots: self.max_slots,
+            });
+        }
+        let position = (index as usize).min(self.slots.len());
+        let processor: Box<dyn Processor> = Box::new(PassthroughProcessor);
+        self.slots
+            .insert(position, EffectSlot::new(processor, false));
+        Ok(vec![EffectChainEvent::SlotInserted {
+            index: position as u32,
+        }])
+    }
+
+    fn remove_slot(&mut self, index: u32) -> Result<Vec<EffectChainEvent>, EffectChainError> {
+        let position = self.bounded_index(index)?;
+        self.slots.remove(position);
+        Ok(vec![EffectChainEvent::SlotRemoved { index }])
+    }
+
+    fn reorder_slot(
         &mut self,
-        cmd: UpdateEffectParams,
-    ) -> Result<EffectParamsUpdated, EffectChainError> {
-        let idx = cmd.slot_index as usize;
-        if idx >= self.slots.len() {
-            return Err(EffectChainError::SlotIndexOutOfRange {
-                index: cmd.slot_index,
-                len: self.slots.len() as u8,
+        from: u32,
+        to: u32,
+    ) -> Result<Vec<EffectChainEvent>, EffectChainError> {
+        let from_position = self.bounded_index(from)?;
+        let to_position = self.bounded_index(to)?;
+        let slot = self.slots.remove(from_position);
+        self.slots.insert(to_position, slot);
+        Ok(vec![EffectChainEvent::SlotsReordered { from, to }])
+    }
+
+    fn set_bypass(
+        &mut self,
+        index: u32,
+        bypassed: bool,
+    ) -> Result<Vec<EffectChainEvent>, EffectChainError> {
+        let position = self.bounded_index(index)?;
+        self.slots[position].set_bypassed(bypassed);
+        Ok(Vec::new())
+    }
+
+    fn bounded_index(&self, index: u32) -> Result<usize, EffectChainError> {
+        let position = index as usize;
+        if position >= self.slots.len() {
+            return Err(EffectChainError::IndexOutOfBounds {
+                index,
+                len: self.slots.len(),
             });
         }
-        self.slots[idx].params = cmd.params;
-        Ok(EffectParamsUpdated {
-            slot_index: cmd.slot_index,
+        Ok(position)
+    }
+
+    /// Runs `input` through every slot top-to-bottom, in order.
+    ///
+    /// A bypassed slot passes its input through unchanged; an active slot's contribution is
+    /// computed by `effect_fn`, which is given the slot and the running sample. `effect_fn` is
+    /// a generic closure rather than a trait object, so no dynamic dispatch is introduced into
+    /// the per-sample fold by the chain itself; the type erasure lives only in what a slot may
+    /// contain, not in how the chain walks its slots.
+    pub fn process_sample<F>(&self, input: f32, mut effect_fn: F) -> f32
+    where
+        F: FnMut(&BoxedSlot, f32) -> f32,
+    {
+        self.slots.iter().fold(input, |sample, slot| {
+            if slot.is_bypassed() {
+                sample
+            } else {
+                effect_fn(slot, sample)
+            }
         })
-    }
-
-    /// Bypass the entire chain.
-    ///
-    /// While bypassed, `process` returns each input frame unchanged.
-    pub fn bypass_chain(&mut self, _cmd: BypassChain) -> ChainBypassed {
-        self.bypass = true;
-        ChainBypassed { id: self.id }
-    }
-
-    /// Re-enable the chain after bypass.
-    pub fn enable_chain(&mut self, _cmd: EnableChain) -> ChainEnabled {
-        self.bypass = false;
-        ChainEnabled { id: self.id }
-    }
-
-    // ── Audio processing ───────────────────────────────────────────────────────────────────
-
-    /// Process a slice of `AudioFrame`s through the entire chain.
-    ///
-    /// Slots are applied in index order (slot 0 first, slot N last),
-    /// satisfying the invariant *"effects process in slot order"*.
-    ///
-    /// When the chain is bypassed (`bypass_chain` was called) the input
-    /// slice is copied directly into `output` unmodified, satisfying
-    /// *"bypassed chain passes audio through unmodified"*.
-    ///
-    /// # Arguments
-    ///
-    /// * `frames` — input audio frames (not mutated).
-    /// * `output` — caller-provided scratch buffer; must have at least
-    ///   `frames.len()` elements. On return the first `frames.len()`
-    ///   elements hold the processed audio.
-    ///
-    /// # Audio-thread safety
-    ///
-    /// - Zero heap allocation after warm-up (scratch buffers pre-grow on first large block).
-    /// - Zero mutex / lock acquisition.
-    /// - Zero blocking I/O.
-    pub fn process(&mut self, frames: &[AudioFrame], output: &mut Vec<AudioFrame>) {
-        let n = frames.len();
-
-        // Ensure caller's output buffer is large enough (grows only during warm-up).
-        if output.len() < n {
-            output.resize(n, AudioFrame::silence());
-        }
-
-        if self.bypass || self.slots.is_empty() {
-            output[..n].copy_from_slice(frames);
-            return;
-        }
-
-        // Grow the internal scratch buffers if the block size increased.
-        // After warm-up this branch is never taken.
-        if self.scratch_a.len() < n {
-            self.scratch_a.resize(n, AudioFrame::silence());
-        }
-        if self.scratch_b.len() < n {
-            self.scratch_b.resize(n, AudioFrame::silence());
-        }
-
-        // Ping-pong between scratch_a and scratch_b.
-        // scratch_a starts as input; each active slot reads from the current
-        // source and writes into the other buffer via the processor's own
-        // pre-allocated output buffer.  After the slot completes we copy
-        // the processor output into the destination scratch buffer.
-        self.scratch_a[..n].copy_from_slice(frames);
-
-        // `use_a_as_input` tracks which scratch buffer holds the current signal.
-        let mut use_a_as_input = true;
-
-        for (slot, proc) in self.slots.iter().zip(self.processors.iter_mut()) {
-            if slot.bypass {
-                continue;
-            }
-            // proc.process() returns a reference into proc's internal Vec,
-            // which is disjoint from both scratch buffers.
-            let slot_out = if use_a_as_input {
-                proc.process(&self.scratch_a[..n], slot.params)
-            } else {
-                proc.process(&self.scratch_b[..n], slot.params)
-            };
-            let len = slot_out.len().min(n);
-
-            // Copy the result into the other scratch buffer.
-            if use_a_as_input {
-                self.scratch_b[..len].copy_from_slice(&slot_out[..len]);
-            } else {
-                self.scratch_a[..len].copy_from_slice(&slot_out[..len]);
-            }
-            use_a_as_input = !use_a_as_input;
-        }
-
-        // The final result is in whichever buffer was last written to.
-        if use_a_as_input {
-            // Last write was into scratch_a (no active slots flipped the flag).
-            output[..n].copy_from_slice(&self.scratch_a[..n]);
-        } else {
-            output[..n].copy_from_slice(&self.scratch_b[..n]);
-        }
     }
 }
-
-// ─── Tests ───────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_chain() -> EffectChain {
-        EffectChain::new(EffectChainId::new(1))
-    }
-
-    fn make_output(n: usize) -> Vec<AudioFrame> {
-        vec![AudioFrame::silence(); n]
-    }
-
-    // ── add_effect ──────────────────────────────────────────────────────────────────────────
-
     #[test]
-    fn effect_chain_add_effect_appends_when_empty() {
-        let mut chain = make_chain();
-        let evt = chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
-        assert_eq!(chain.len(), 1);
-        assert_eq!(evt.effect_type, EffectType::Gain);
-        assert_eq!(evt.position, 0);
+    fn insert_slot_appends_within_capacity() {
+        let mut chain = EffectChain::new(2);
+        let events = chain
+            .apply(EffectChainCommand::InsertSlot { index: 0 })
+            .unwrap();
+        assert_eq!(events, vec![EffectChainEvent::SlotInserted { index: 0 }]);
+        assert_eq!(chain.slots().len(), 1);
     }
 
     #[test]
-    fn effect_chain_add_effect_inserts_at_position() {
-        let mut chain = make_chain();
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::LowPassFilter,
-            position: 0,
-        });
-        // LPF now at 0, Gain at 1
-        assert_eq!(chain.slots()[0].effect_type, EffectType::LowPassFilter);
-        assert_eq!(chain.slots()[1].effect_type, EffectType::Gain);
+    fn insert_slot_rejected_once_full() {
+        let mut chain = EffectChain::new(1);
+        chain
+            .apply(EffectChainCommand::InsertSlot { index: 0 })
+            .unwrap();
+        let result = chain.apply(EffectChainCommand::InsertSlot { index: 0 });
+        assert_eq!(result, Err(EffectChainError::ChainFull { max_slots: 1 }));
     }
 
     #[test]
-    fn effect_chain_add_effect_clamps_position_to_end() {
-        let mut chain = make_chain();
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 99,
-        });
-        assert_eq!(chain.len(), 1);
-        assert_eq!(chain.slots()[0].effect_type, EffectType::Gain);
-    }
-
-    // ── remove_effect ────────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn effect_chain_remove_effect_removes_correct_slot() {
-        let mut chain = make_chain();
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::LowPassFilter,
-            position: 1,
-        });
-        let evt = chain.remove_effect(RemoveEffect { slot_index: 0 }).unwrap();
-        assert_eq!(evt.slot_index, 0);
-        assert_eq!(chain.len(), 1);
-        assert_eq!(chain.slots()[0].effect_type, EffectType::LowPassFilter);
-    }
-
-    #[test]
-    fn effect_chain_remove_effect_out_of_range_returns_error() {
-        let mut chain = make_chain();
-        let err = chain
-            .remove_effect(RemoveEffect { slot_index: 5 })
-            .unwrap_err();
+    fn remove_slot_rejects_out_of_bounds_index() {
+        let mut chain = EffectChain::new(2);
+        let result = chain.apply(EffectChainCommand::RemoveSlot { index: 0 });
         assert_eq!(
-            err,
-            EffectChainError::SlotIndexOutOfRange { index: 5, len: 0 }
+            result,
+            Err(EffectChainError::IndexOutOfBounds { index: 0, len: 0 })
         );
     }
 
-    // ── reorder_effect ───────────────────────────────────────────────────────────────────────
-
     #[test]
-    fn effect_chain_reorder_effect_moves_slot() {
-        let mut chain = make_chain();
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::LowPassFilter,
-            position: 1,
-        });
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Delay,
-            position: 2,
-        });
-        // Move Gain (0) to position 2
+    fn remove_slot_removes_and_emits_event() {
+        let mut chain = EffectChain::new(2);
         chain
-            .reorder_effect(ReorderEffect {
-                from_index: 0,
-                to_index: 2,
-            })
+            .apply(EffectChainCommand::InsertSlot { index: 0 })
             .unwrap();
-        assert_eq!(chain.slots()[0].effect_type, EffectType::LowPassFilter);
-        assert_eq!(chain.slots()[1].effect_type, EffectType::Delay);
-        assert_eq!(chain.slots()[2].effect_type, EffectType::Gain);
+        let events = chain
+            .apply(EffectChainCommand::RemoveSlot { index: 0 })
+            .unwrap();
+        assert_eq!(events, vec![EffectChainEvent::SlotRemoved { index: 0 }]);
+        assert!(chain.slots().is_empty());
     }
 
     #[test]
-    fn effect_chain_reorder_effect_out_of_range_returns_error() {
-        let mut chain = make_chain();
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
-        let err = chain
-            .reorder_effect(ReorderEffect {
-                from_index: 0,
-                to_index: 5,
-            })
-            .unwrap_err();
+    fn reorder_slot_preserves_length_and_emits_event() {
+        let mut chain = EffectChain::new(3);
+        chain
+            .apply(EffectChainCommand::InsertSlot { index: 0 })
+            .unwrap();
+        chain
+            .apply(EffectChainCommand::InsertSlot { index: 1 })
+            .unwrap();
+        chain
+            .apply(EffectChainCommand::InsertSlot { index: 2 })
+            .unwrap();
+        let events = chain
+            .apply(EffectChainCommand::ReorderSlot { from: 2, to: 0 })
+            .unwrap();
         assert_eq!(
-            err,
-            EffectChainError::SlotIndexOutOfRange { index: 5, len: 1 }
+            events,
+            vec![EffectChainEvent::SlotsReordered { from: 2, to: 0 }]
         );
+        assert_eq!(chain.slots().len(), 3);
     }
 
-    // ── update_effect_params ─────────────────────────────────────────────────────────────────
-
     #[test]
-    fn effect_chain_update_effect_params_updates_slot() {
-        let mut chain = make_chain();
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
-        let new_params = EffectParams {
-            effect_type: EffectType::Gain,
-            gain: 2.0,
-            wet_mix: 1.0,
-            ..EffectParams::default()
-        };
-        let evt = chain
-            .update_effect_params(UpdateEffectParams {
-                slot_index: 0,
-                params: new_params,
-            })
+    fn reorder_slot_rejects_out_of_bounds() {
+        let mut chain = EffectChain::new(2);
+        chain
+            .apply(EffectChainCommand::InsertSlot { index: 0 })
             .unwrap();
-        assert_eq!(evt.slot_index, 0);
-        assert_eq!(chain.slots()[0].params, new_params);
-    }
-
-    #[test]
-    fn effect_chain_update_effect_params_out_of_range_returns_error() {
-        let mut chain = make_chain();
-        let err = chain
-            .update_effect_params(UpdateEffectParams {
-                slot_index: 0,
-                params: EffectParams::default(),
-            })
-            .unwrap_err();
+        let result = chain.apply(EffectChainCommand::ReorderSlot { from: 0, to: 5 });
         assert_eq!(
-            err,
-            EffectChainError::SlotIndexOutOfRange { index: 0, len: 0 }
+            result,
+            Err(EffectChainError::IndexOutOfBounds { index: 5, len: 1 })
         );
     }
 
-    // ── bypass / enable ───────────────────────────────────────────────────────────────────────
-
     #[test]
-    fn effect_chain_bypass_chain_sets_bypass_flag() {
-        let mut chain = make_chain();
-        assert!(!chain.is_bypassed());
-        let evt = chain.bypass_chain(BypassChain);
-        assert!(chain.is_bypassed());
-        assert_eq!(evt.id, EffectChainId::new(1));
+    fn set_bypass_toggles_slot_flag() {
+        let mut chain = EffectChain::new(1);
+        chain
+            .apply(EffectChainCommand::InsertSlot { index: 0 })
+            .unwrap();
+        chain
+            .apply(EffectChainCommand::SetBypass {
+                index: 0,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(chain.slots()[0].is_bypassed());
     }
 
     #[test]
-    fn effect_chain_enable_chain_clears_bypass_flag() {
-        let mut chain = make_chain();
-        chain.bypass_chain(BypassChain);
-        let evt = chain.enable_chain(EnableChain);
-        assert!(!chain.is_bypassed());
-        assert_eq!(evt.id, EffectChainId::new(1));
-    }
-
-    // ── process – slot order invariant ─────────────────────────────────────────────────────────────────
-
-    /// Verify that slots are applied in order: slot 0 first, slot N last.
-    ///
-    /// Two Gain slots: each with gain=2.0 (linear) and wet_mix=1.0.
-    /// In series the overall gain should be 2.0 × 2.0 = 4.0.
-    #[test]
-    fn effect_chain_process_slots_in_order() {
-        let mut chain = make_chain();
-
-        // Slot 0: gain ×2.0
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
+    fn set_bypass_rejects_out_of_bounds() {
+        let mut chain = EffectChain::new(1);
+        let result = chain.apply(EffectChainCommand::SetBypass {
+            index: 0,
+            bypassed: true,
         });
-        chain
-            .update_effect_params(UpdateEffectParams {
-                slot_index: 0,
-                params: EffectParams {
-                    effect_type: EffectType::Gain,
-                    gain: 2.0,
-                    wet_mix: 1.0,
-                    ..EffectParams::default()
-                },
-            })
-            .unwrap();
-
-        // Slot 1: gain ×2.0
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 1,
-        });
-        chain
-            .update_effect_params(UpdateEffectParams {
-                slot_index: 1,
-                params: EffectParams {
-                    effect_type: EffectType::Gain,
-                    gain: 2.0,
-                    wet_mix: 1.0,
-                    ..EffectParams::default()
-                },
-            })
-            .unwrap();
-
-        let input = vec![AudioFrame::new(1.0, 1.0)];
-        let mut output = make_output(1);
-        chain.process(&input, &mut output);
-
-        // Two ×2 gains applied in series → ×4
-        assert!(
-            (output[0].left - 4.0).abs() < 0.05,
-            "left={}",
-            output[0].left
-        );
-        assert!(
-            (output[0].right - 4.0).abs() < 0.05,
-            "right={}",
-            output[0].right
+        assert_eq!(
+            result,
+            Err(EffectChainError::IndexOutOfBounds { index: 0, len: 0 })
         );
     }
 
-    // ── process – bypassed chain passes through unmodified ───────────────────────────────────────
-
     #[test]
-    fn effect_chain_bypass_passes_audio_through_unmodified() {
-        let mut chain = make_chain();
-
-        // Add a ×4 gain that would clearly amplify output if applied.
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
+    fn bypassed_slot_passes_input_unchanged() {
+        let mut chain = EffectChain::new(2);
         chain
-            .update_effect_params(UpdateEffectParams {
-                slot_index: 0,
-                params: EffectParams {
-                    effect_type: EffectType::Gain,
-                    gain: 4.0,
-                    wet_mix: 1.0,
-                    ..EffectParams::default()
-                },
+            .apply(EffectChainCommand::InsertSlot { index: 0 })
+            .unwrap();
+        chain
+            .apply(EffectChainCommand::InsertSlot { index: 1 })
+            .unwrap();
+        chain
+            .apply(EffectChainCommand::SetBypass {
+                index: 0,
+                bypassed: true,
             })
             .unwrap();
-
-        chain.bypass_chain(BypassChain);
-
-        let input = vec![AudioFrame::new(0.5, -0.5)];
-        let mut output = make_output(1);
-        chain.process(&input, &mut output);
-
-        assert_eq!(output[0].left, 0.5);
-        assert_eq!(output[0].right, -0.5);
+        // The active slot doubles the sample; the bypassed slot must be a no-op.
+        let output = chain.process_sample(1.0_f32, |_slot, sample| sample * 2.0);
+        assert_eq!(output, 2.0);
     }
 
     #[test]
-    fn effect_chain_process_active_after_enable() {
-        let mut chain = make_chain();
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
+    fn signal_flows_top_to_bottom_in_slot_order() {
+        let mut chain = EffectChain::new(3);
         chain
-            .update_effect_params(UpdateEffectParams {
-                slot_index: 0,
-                params: EffectParams {
-                    effect_type: EffectType::Gain,
-                    gain: 2.0,
-                    wet_mix: 1.0,
-                    ..EffectParams::default()
-                },
-            })
+            .apply(EffectChainCommand::InsertSlot { index: 0 })
             .unwrap();
-
-        chain.bypass_chain(BypassChain);
-        chain.enable_chain(EnableChain);
-
-        let input = vec![AudioFrame::new(1.0, 1.0)];
-        let mut output = make_output(1);
-        chain.process(&input, &mut output);
-        assert!(
-            (output[0].left - 2.0).abs() < 0.05,
-            "left={}",
-            output[0].left
-        );
-    }
-
-    // ── process – empty chain ─────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn effect_chain_empty_chain_passes_through() {
-        let mut chain = make_chain();
-        let input = vec![AudioFrame::new(0.3, -0.7)];
-        let mut output = make_output(1);
-        chain.process(&input, &mut output);
-        assert_eq!(output[0].left, 0.3);
-        assert_eq!(output[0].right, -0.7);
-    }
-
-    // ── per-slot bypass ─────────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn effect_chain_per_slot_bypass_skips_slot() {
-        let mut chain = make_chain();
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
         chain
-            .update_effect_params(UpdateEffectParams {
-                slot_index: 0,
-                params: EffectParams {
-                    effect_type: EffectType::Gain,
-                    gain: 4.0,
-                    wet_mix: 1.0,
-                    ..EffectParams::default()
-                },
-            })
+            .apply(EffectChainCommand::InsertSlot { index: 1 })
             .unwrap();
-        // Bypass just the slot
-        chain.slots[0].bypass = true;
-
-        let input = vec![AudioFrame::new(0.5, 0.5)];
-        let mut output = make_output(1);
-        chain.process(&input, &mut output);
-        // Slot bypassed → gain not applied
-        assert_eq!(output[0].left, 0.5);
-        assert_eq!(output[0].right, 0.5);
-    }
-
-    // ── multiple frames ─────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn effect_chain_process_multiple_frames() {
-        let mut chain = make_chain();
-        chain.add_effect(AddEffect {
-            effect_type: EffectType::Gain,
-            position: 0,
-        });
         chain
-            .update_effect_params(UpdateEffectParams {
-                slot_index: 0,
-                params: EffectParams {
-                    effect_type: EffectType::Gain,
-                    gain: 2.0,
-                    wet_mix: 1.0,
-                    ..EffectParams::default()
-                },
-            })
+            .apply(EffectChainCommand::InsertSlot { index: 2 })
             .unwrap();
-
-        let input = vec![
-            AudioFrame::new(0.1, 0.2),
-            AudioFrame::new(0.3, 0.4),
-            AudioFrame::new(0.5, 0.6),
-        ];
-        let mut output = make_output(3);
-        chain.process(&input, &mut output);
-
-        assert!((output[0].left - 0.2).abs() < 1e-5);
-        assert!((output[1].left - 0.6).abs() < 1e-5);
-        assert!((output[2].left - 1.0).abs() < 1e-5);
+        // Each active slot records the sample it received, in visitation order; the recorded
+        // sequence proves slots are visited top-to-bottom.
+        let mut visited = Vec::new();
+        chain.process_sample(0.0_f32, |_slot, sample| {
+            visited.push(sample);
+            sample + 1.0
+        });
+        assert_eq!(visited, vec![0.0, 1.0, 2.0]);
     }
 }

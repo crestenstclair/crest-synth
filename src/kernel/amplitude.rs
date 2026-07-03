@@ -1,63 +1,75 @@
-/// Linear amplitude (0.0 = silence, 1.0 = unity).
+// path: src/kernel/amplitude.rs
+
+use std::fmt;
+
+/// Linear amplitude: `0.0` is silence, `1.0` is unity gain.
 ///
-/// `Amplitude` wraps a `f64` and enforces the invariant that the value
-/// is non-negative (not NaN and not less than 0.0). Values above 1.0 are
-/// permitted (e.g. for gain staging above unity).
+/// An `Amplitude` is always non-negative and finite. Construct one through
+/// [`Amplitude::try_new`] (or [`TryFrom<f64>`]) to validate untrusted input,
+/// or use the [`Amplitude::SILENCE`] / [`Amplitude::UNITY`] constants for
+/// known-good values.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Amplitude(f64);
 
-/// Error returned when an `Amplitude` value is negative or NaN.
+/// Error returned when constructing an [`Amplitude`] from an invalid value.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AmplitudeError(f64);
+pub struct InvalidAmplitude(pub f64);
 
-impl std::fmt::Display for AmplitudeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Amplitude value {} is negative or NaN", self.0)
+impl fmt::Display for InvalidAmplitude {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "amplitude must be non-negative and finite, got {}",
+            self.0
+        )
     }
 }
 
-impl std::error::Error for AmplitudeError {}
+impl std::error::Error for InvalidAmplitude {}
 
 impl Amplitude {
-    /// Construct an `Amplitude` from a raw `f64`.
+    /// Silence: zero amplitude.
+    pub const SILENCE: Amplitude = Amplitude(0.0);
+
+    /// Unity gain: amplitude of `1.0`.
+    pub const UNITY: Amplitude = Amplitude(1.0);
+
+    /// Construct an `Amplitude`, validating that `value` is non-negative and finite.
     ///
-    /// Returns `Err` if the value is NaN or negative.
+    /// # Errors
     ///
-    /// ```
-    /// use crest_synth::kernel::amplitude::Amplitude;
-    /// assert!(Amplitude::try_new(0.0).is_ok());
-    /// assert!(Amplitude::try_new(1.0).is_ok());
-    /// assert!(Amplitude::try_new(2.5).is_ok());
-    /// assert!(Amplitude::try_new(-0.1).is_err());
-    /// ```
-    pub fn try_new(value: f64) -> Result<Self, AmplitudeError> {
-        if value.is_nan() || value < 0.0 {
-            return Err(AmplitudeError(value));
+    /// Returns [`InvalidAmplitude`] if `value` is negative, `NaN`, or infinite.
+    pub fn try_new(value: f64) -> Result<Self, InvalidAmplitude> {
+        if value.is_finite() && value >= 0.0 {
+            Ok(Self(value))
+        } else {
+            Err(InvalidAmplitude(value))
         }
-        Ok(Self(value))
     }
 
-    /// Silence amplitude (0.0).
-    pub fn silence() -> Self {
-        Self(0.0)
-    }
-
-    /// Unity amplitude (1.0).
-    pub fn unity() -> Self {
-        Self(1.0)
-    }
-
-    /// Return the underlying `f64` value.
-    #[inline]
-    pub fn value(self) -> f64 {
+    /// Returns the underlying linear amplitude value.
+    pub fn value(&self) -> f64 {
         self.0
     }
 }
 
 impl Default for Amplitude {
-    /// Returns silence (0.0).
     fn default() -> Self {
-        Self(0.0)
+        Self::SILENCE
+    }
+}
+
+impl TryFrom<f64> for Amplitude {
+    type Error = InvalidAmplitude;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<Amplitude> for f64 {
+    fn from(amplitude: Amplitude) -> f64 {
+        amplitude.0
     }
 }
 
@@ -66,57 +78,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zero_is_valid() {
+    fn accepts_zero_and_positive_finite_values() {
         assert!(Amplitude::try_new(0.0).is_ok());
-    }
-
-    #[test]
-    fn unity_is_valid() {
-        let a = Amplitude::try_new(1.0).unwrap();
-        assert!((a.value() - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn above_unity_is_valid() {
+        assert!(Amplitude::try_new(1.0).is_ok());
         assert!(Amplitude::try_new(2.5).is_ok());
     }
 
     #[test]
-    fn negative_is_rejected() {
-        assert!(Amplitude::try_new(-0.001).is_err());
+    fn rejects_negative_values() {
+        assert!(Amplitude::try_new(-0.1).is_err());
     }
 
     #[test]
-    fn nan_is_rejected() {
+    fn rejects_non_finite_values() {
         assert!(Amplitude::try_new(f64::NAN).is_err());
+        assert!(Amplitude::try_new(f64::INFINITY).is_err());
+        assert!(Amplitude::try_new(f64::NEG_INFINITY).is_err());
     }
 
     #[test]
-    fn silence_constructor() {
-        assert!((Amplitude::silence().value()).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn unity_constructor() {
-        assert!((Amplitude::unity().value() - 1.0).abs() < f64::EPSILON);
+    fn silence_and_unity_constants_hold_expected_values() {
+        assert_eq!(Amplitude::SILENCE.value(), 0.0);
+        assert_eq!(Amplitude::UNITY.value(), 1.0);
     }
 
     #[test]
     fn default_is_silence() {
-        assert!((Amplitude::default().value()).abs() < f64::EPSILON);
+        assert_eq!(Amplitude::default(), Amplitude::SILENCE);
     }
 
     #[test]
-    fn copy_semantics() {
-        let a = Amplitude::try_new(0.5).unwrap();
-        let b = a;
-        assert!((a.value() - b.value()).abs() < f64::EPSILON);
+    fn try_from_matches_try_new() {
+        let result: Result<Amplitude, _> = Amplitude::try_from(0.5);
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn error_message_contains_value() {
-        let err = Amplitude::try_new(-1.0).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("-1"));
+    fn converts_back_to_f64() {
+        let amplitude = Amplitude::try_new(0.75).expect("valid amplitude");
+        let value: f64 = amplitude.into();
+        assert_eq!(value, 0.75);
     }
 }

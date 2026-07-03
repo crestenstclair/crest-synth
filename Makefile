@@ -1,91 +1,72 @@
-.PHONY: build test check clean run lint fmt demo-midi demo-voices check-live check-gamepad demo-mixer ui-smoke ui autopilot play-midi play-voices play-tone play-midi-live demo-patches play-patches demo-mod play-mod demo-samples play-samples demo-effects play-effects demo-presets play-presets
+# path: Makefile
 
-.DEFAULT_GOAL := build
+.PHONY: help build test lint fmt tone smoke play ui demo-voices demo-samples demo-effects demo-mod demo-patches demo-presets demo-midi check-live ui-smoke autopilot demo-mixer check-gamepad
 
-build:
+DEFAULT_MIDI := midi/Megalovania.mid
+
+help: ## Show this help message
+	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-10s %s\n", $$1, $$2}'
+
+build: ## Build the project (cargo build)
 	cargo build
 
-test:
+test: ## Run the test suite (cargo test)
 	cargo test
 
-check:
-	cargo check
+lint: ## Run clippy with warnings denied
+	cargo clippy --all-targets -- -D warnings
 
-clean:
-	cargo clean
+fmt: ## Format the code (cargo fmt)
+	cargo fmt
 
-run:
-	cargo run --bin crest-synth
+tone: ## Run the tone_test proof
+	cargo run --bin tone_test
 
-lint:
-	cargo clippy -- -D warnings
+smoke: ## Run the audible self-check against the default MIDI file
+	cargo run --bin synth_ui -- --smoke --play "$(DEFAULT_MIDI)"
 
-fmt:
-	cargo fmt -- --check
+play: ## Play a MIDI file (FILE=path/to.mid), defaults to midi/Megalovania.mid
+	cargo run --bin synth_ui -- --play "$(if $(FILE),$(FILE),$(DEFAULT_MIDI))"
 
-demo-midi:
-	cargo run --bin midi_play -- $(FILE)
+ui: ## Launch the synth_ui app windowed (set FILE=path/to.mid to also play it)
+ifdef FILE
+	cargo run --bin synth_ui -- --play "$(FILE)"
+else
+	cargo run --bin synth_ui
+endif
 
-demo-voices:
+demo-voices: ## Run the voice allocation proof (voice_demo)
 	cargo run --bin voice_demo
 
-check-live:
-	cargo run --bin midi_play_live -- --no-device-dry-run
-
-check-gamepad:
-	cargo run --bin gamepad_demo
-
-demo-mixer:
-	cargo run --bin mixer_demo
-
-ui-smoke:
-	cargo run --bin synth_ui -- --smoke
-
-play-midi: demo-midi
-	afplay midi-play.wav
-
-play-voices: demo-voices
-	afplay voice-demo.wav
-
-play-tone:
-	cargo run --bin crest-synth
-	afplay tone-test.wav
-
-play-midi-live:
-	cargo run --bin midi_play_live -- $(FILE)
-
-demo-patches:
-	cargo run --bin patch_play -- $(FILE)
-
-play-patches: demo-patches
-	afplay patch-play.wav
-
-demo-mod:
-	cargo run --bin mod_play -- $(FILE)
-
-play-mod: demo-mod
-	afplay mod-play.wav
-
-demo-samples:
+demo-samples: ## Run the sample playback proof (sample_demo)
 	cargo run --bin sample_demo
 
-play-samples: demo-samples
-	afplay sample-demo.wav
+demo-effects: ## Run the effects chain proof (effects_demo)
+	cargo run --bin effects_demo
 
-demo-effects:
-	cargo run --bin effects_demo -- $(FILE)
+demo-mod: ## Run the modulation matrix proof (mod_play)
+	cargo run --bin mod_play
 
-play-effects: demo-effects
-	afplay effects-demo.wav
+demo-patches: ## Run the patch dispatch proof (patch_play)
+	cargo run --bin patch_play
 
-demo-presets:
+demo-presets: ## Run the preset save/load proof (preset_demo)
 	cargo run --bin preset_demo
 
-play-presets: demo-presets
-	afplay preset-demo.wav
+demo-midi: ## Render a MIDI file offline to WAV (midi_play)
+	cargo run --bin midi_play
 
-ui:
-	cargo run --bin synth_ui -- --play "midi/Corridors of Time - Chrono Trigger.mid"
+check-live: ## Verify the live MIDI player's real-time pipeline wiring, no audio device required (midi_play_live --no-device-dry-run)
+	cargo run --bin midi_play_live -- --no-device-dry-run
 
-autopilot:
+ui-smoke: ## Run the enriched hermetic self-check covering the mixer view + design system (no window/device/MIDI)
+	cargo run --bin synth_ui -- --smoke --play "$(DEFAULT_MIDI)"
+
+autopilot: ## Real end-to-end window+audio run that self-drives a scripted session and self-terminates
 	cargo run --bin synth_ui -- --autopilot --seconds 4
+
+demo-mixer: ## Headless prover for MixerView + its 16 ChannelStrip channels (mixer_demo)
+	cargo run --bin mixer_demo
+
+check-gamepad: ## Headless prover for GamepadNavigator/GlyphResolver (gamepad_demo)
+	cargo run --bin gamepad_demo
