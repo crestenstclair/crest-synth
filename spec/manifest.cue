@@ -1,173 +1,122 @@
 package crestsynth
 
-// Manifest — the crate manifest and the demo binary. This file is the ONLY
-// place in the spec where crate dependencies are named; everywhere else the
-// spec is language-profile-clean (adapters carry a framework name only).
-
+// Operational artifacts are first-class assets. `targets` is the dependency
+// field crest-spec follows when building generation context and execution waves.
 project: assets: RootCargoToml: {
-	kind:        "cargo-manifest"
-	description: "Cargo.toml for the crest-synth crate"
+	kind: "cargo-manifest"
+	description: "Cargo.toml for the standalone crest-synth crate and its proof binaries"
+	profile: {kind: "build_manifest", ecosystem: "cargo", constraint: "one library crate plus explicit src/bin proof and host targets"}
 	prompts: [
-		"File path: Cargo.toml",
-		"Package name crest-synth, edition 2021, a lib target plus binary targets under src/bin/.",
-		"Dependencies and why each exists: cpal (audio output), midir (MIDI input), eframe + egui (GUI), gilrs (gamepad input), rtrb (lock-free SPSC ring buffer), triple_buffer (lock-free latest-wins parameter sharing), basedrop (deferred deallocation for real-time), serde + serde_json (preset/session serialization), symphonia (audio file decoding), midly (Standard MIDI File parsing).",
-		#"CRITICAL eframe/egui version pin: depend on a CURRENT eframe/egui release — 0.28 or newer (prefer the latest 0.x line) — that transitively uses `objc2` 0.5+ and `winit` 0.30+. Do NOT use the eframe/egui 0.27 line: it pulls `winit` 0.29 → `objc2` 0.3-beta + `icrate` 0.0.4, which on current macOS aborts at window creation with a non-unwinding panic inside winit's `did_finish_launching` ("invalid message send to NSScreen countByEnumeratingWithState…: expected 'q', found 'Q'"). The crate builds fine and `ui-smoke` passes regardless (it opens no window), so this MUST be pinned here — the validation loop cannot catch a window-creation runtime panic."#,
-		"Choose current stable versions; the whole-tree gate (build/clippy/test) proves the resolution works.",
+		"File path: Cargo.toml. Package crest-synth, Rust 2021, one library plus binaries under src/bin.",
+		"Dependencies: cpal, midir, eframe/egui, gilrs, rtrb, triple_buffer, basedrop, serde/serde_json, symphonia, and midly. Do not add parallel frameworks for responsibilities these dependencies already cover.",
+		"Use an eframe/egui release whose winit/objc2 stack works on current macOS; never pin the known-broken eframe 0.27 / winit 0.29 / objc2 beta chain.",
 	]
+	validations: [{kind: "compiles", command: ["cargo", "metadata", "--no-deps"], description: "the manifest resolves and declares all targets"}]
 }
 
 project: assets: ToneTestMain: {
-	kind:        "rust-bin-target"
-	description: "src/bin/tone_test.rs: renders one second of A440 through the engine and asserts the output is audible"
-	uses: ["domainService.Engine.EngineRenderer", "valueObject.Kernel.Frequency", "valueObject.Kernel.AudioFrame"]
+	kind: "rust-bin-target"
+	description: "src/bin/tone_test.rs: fast measured virtual-analog render smoke"
+	profile: {kind: "verification_harness", witness: "audible bounded tone", failurePolicy: "non-zero for silence or clipping"}
+	targets: ["domainService.Engine.VoiceAllocator", "domainService.Engine.EngineRenderer", "valueObject.Kernel.AudioFrame"]
 	prompts: [
-		"File path: src/bin/tone_test.rs",
-		"Trigger a single A440 note through the engine, render one second of audio into a buffer, and MEASURE the peak absolute sample value of the rendered buffer.",
-		#"Print exactly one line `peak=<value>` with the measured peak, then exit non-zero unless 0.1 < peak <= 1.0 — a silent or clipping render must fail the run."#,
+		"File path: src/bin/tone_test.rs. Use canonical Engine and Kernel types; do not define a local voice, renderer, frequency, or audio-frame type.",
+		"Trigger A440, render one second, calculate the absolute stereo peak, print `peak=<value>`, and exit non-zero unless 0.1 < peak <= 1.0.",
 	]
-	validations: [
-		{kind: "integration", command: ["cargo", "run", "--bin", "tone_test"], description: "renders an audible, non-clipping tone", assertions: [
-			{kind: "exit_code", expected: 0},
-			{kind: "stdout_contains", pattern: "peak="},
-		]},
-	]
-	contributesTo: [{capability: "capability.render_expressive_sound", contribution: "provides a fast audible, non-clipping engine smoke proof"}]
+	validations: [{kind: "integration", command: ["cargo", "run", "--bin", "tone_test"], description: "the canonical engine produces audible bounded audio", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "peak="}]}]
+	contributesTo: [{capability: "capability.polyphonic_sound_generation", contribution: "provides a fast non-silent render smoke over the canonical engine"}]
 }
 
 project: assets: SynthUiMain: {
-	kind:        "rust-bin-target"
-	description: "src/bin/synth_ui.rs: the standalone synthesizer application — window, GUI views, gamepad navigation, and MIDI playback through the full engine"
-	uses: [
-		"port.Shell.AppWindow", "port.Shell.GuiRenderer", "port.Shell.GamepadInput",
-		"port.Shell.AudioOutput", "port.Shell.MidiInput",
-		"domainService.Engine.EngineRenderer", "domainService.Mixer.MixEngine",
-		"domainService.Patch.MidiDispatcher", "domainService.MidiFile.Sequencer",
-		"aggregate.Mixer.MixerView", "valueObject.Mixer.MixerViewEvent", "valueObject.Mixer.MixerParam",
-		"aggregate.Mixer.ChannelStrip", "aggregate.Mixer.MixBus",
-		"port.DesignSystem.Theme", "valueObject.DesignSystem.SemanticToken", "valueObject.DesignSystem.Rgba",
-		"domainService.DesignSystem.DefaultTheme",
-		"domainService.Engine.VoiceAllocator",
-		"port.RealTime.ParameterBridge", "valueObject.RealTime.ParameterSnapshot",
-		"aggregate.Loop.AppState", "domainService.Loop.StateProjector",
-		"domainService.Loop.SceneRunner", "valueObject.Loop.Scene",
+	kind: "rust-bin-target"
+	description: "src/bin/synth_ui.rs: thin CLI and eframe composition root for the mixer-only standalone application"
+	profile: {kind: "verification_harness", witness: "standalone live, smoke, and autopilot host", failurePolicy: "unknown or contradictory modes fail clearly"}
+	targets: [
+		"applicationService.Loop.StandaloneApplication", "applicationService.Loop.SceneRunner",
+		"adapter.CpalAudioOutput", "adapter.MidirMidiInput", "adapter.EframeAppWindow", "adapter.EguiRenderer", "adapter.GilrsGamepadInput",
+		"adapter.RtrbEventRing", "adapter.TripleBufferParameterBridge", "adapter.BasedropDeferredDeallocator",
+		"adapter.MidlyMidiFileReader", "adapter.SerdeSnapshotCodec", "domainService.DesignSystem.DefaultTheme",
 	]
 	prompts: [
-		"File path: src/bin/synth_ui.rs",
-		"The standalone app: open the audio output and the window, render the GUI views, poll the gamepad for navigation, and play notes from connected MIDI inputs and/or a MIDI file through the full engine-to-mixer signal path.",
-		"ONE-WAY LOOP: every input path (MIDI, gamepad, editor keys) emits AppEvents into the single AppState apply loop; views render from AppState only; the audio thread receives changes exclusively via StateProjector -> ParameterBridge. No input handler mutates state directly.",
-		#"--scene <FILE> [--loop-scene]: LIVE scene playback for human observation — drive the running app from a scene file: apply each step's event through the SAME AppState/MixerView apply path the UI uses, at real-time pacing (each step's renderBlocks elapse at the device sample rate), with the window open and audio audible. Combinable with --play so music runs underneath while the scene manipulates the app. Log each applied event as a one-line caption to stdout AND to the on-screen log panel, so the observer can correlate what they see and hear with the event that caused it. At scene end (or each loop pass), print the summary line `scene=<name> events_applied=<N> rejections=<M>`. In --smoke mode, --scene applies the whole scene headlessly through the same path (no window/device) and still prints the scene= summary line."#,
-		#"--play <FILE.mid>: load the file via the MidiFileReader port and sequence it through the engine, looping until quit."#,
-		#"--smoke: headless self-check with no window and no audio device — build the full stack (dispatcher, engine, mixer), sequence the first seconds of the --play file (or a synthetic note-on if none was given), render blocks through the SAME render path the live app uses, MEASURE the peak absolute sample and the count of dispatched events, print exactly one line `peak=<value>` and one line `events=<count>`, and exit non-zero unless 0.05 < peak <= 1.0 and events > 0."#,
-		"MIXER VIEW SCOPE (editor increment): this app's GUI is the MIXER VIEW (aggregate.Mixer.MixerView over its 16 aggregate.Mixer.ChannelStrip channels) and nothing else — do NOT add view-switching or other screens yet. INPUT IS KEYBOARD + GAMEPAD ONLY: do NOT implement any mouse or touch interaction — no clickable widgets, no draggable sliders, no hover behavior (mouse/touch may be added later; not now). This is a MIXER, not a performance surface: there is NO on-screen keyboard and NO note triggering of any kind from the UI. All note performance comes from EXTERNAL MIDI hardware via port.Shell.MidiInput.",
-		#"Key bindings (keyboard): W = up, S = down, A = left, D = right. Holding J = edit mode (momentary: edit mode is active only while J is held; releasing J returns to navigate mode). A DOUBLE-TAP of J (two presses within a short window) emits ToggleFocusedParam. The input layer reads raw egui key state each frame and translates it into semantic MixerViewEvents (NavUp/NavDown/NavLeft/NavRight on key-press edges; EnterEditMode/ExitEditMode on the J hold transitions; ToggleFocusedParam on a J double-tap). The double-tap/hold timing lives ONLY in this input layer — never in MixerView. The gamepad adapter behind port.Shell.GamepadInput maps its d-pad navigation action to the same Nav events, its select action to EnterEditMode/ExitEditMode, and a double-tap of that action to ToggleFocusedParam, so keyboard and gamepad emit IDENTICAL MixerViewEvents."#,
-		"ONE-WAY EVENT LOOP: the only way UI input changes state is by emitting MixerViewEvents and calling MixerView::apply on them. The egui draw code is a PURE VIEW over MixerView — it never mutates state directly and never reads or writes a channel parameter except through MixerView / the ChannelStrip channels it wraps.",
-		#"RENDER THE MIXER VIEW: draw all 6 currently-visible channel strips (the window MixerView exposes via its viewportOffset) SIDE BY SIDE in a single horizontal row — all six must be visible at once, not just the first. Each strip is vertical with these rows top-to-bottom: Volume, Reverb send, Echo send, Pan, Mute, Solo. The VOLUME control IS the level strip: a vertical strip, dark at rest, that animates to show that channel's live peak level (read each channel's `peak` field from its ChannelStrip) — it both sets volume and meters. Every channel meters independently and metering is UNAFFECTED by solo (a channel silenced by another's solo still shows its own level). Highlight the cursor's (channel, parameter) cell. While Edit (J) is held, the cursor changes color, and when the focused row is Volume the full box containing the level strip is highlighted. Show Mute/Solo as toggle indicators."#,
-		#"STRIP LAYOUT — each visible channel strip MUST occupy a FIXED width (e.g. a STRIP_WIDTH constant around 120 px), laid out left-to-right inside one horizontal container, so all 6 strips fit on screen at once. NEVER size a strip, a row, or a separator by `ui.available_width()` — inside the per-strip vertical that returns the whole remaining window width, which makes the FIRST strip consume all horizontal space and pushes strips 2–6 off-screen (this is the single-channel bug; do not reintroduce it). Give each strip its own fixed-width sub-region (e.g. `ui.allocate_ui_with_layout(vec2(STRIP_WIDTH, ...), ...)` or a child ui with `set_width(STRIP_WIDTH)`); the vertical separator between strips is 1 px wide and STRIP-tall, never available_width-wide. Set the window's default inner size wide enough for all 6 strips plus the row labels (at least ~6*STRIP_WIDTH + label gutter, e.g. 820x520) via NativeOptions/viewport so they are visible without resizing."#,
-		#"STYLE THROUGH THE DESIGN SYSTEM: the draw code is a SKIN. Construct one DefaultTheme (the DesignSystem::Theme port) once at app construction and resolve EVERY color through `theme.color(SemanticToken::…)`, converting the returned Rgba to egui Color32 only at the point of use (never a hand-written Color32::from_rgb). Use each SemanticToken for the intent its own type defines — the variant set and per-variant meanings live in the SemanticToken value object (FocusRing=focused cell, EditActive=focused-and-edit-mode, ValueFill=continuous value bar, MeterPeak=live peak overlay, ToggleOn/ToggleOff=toggle state, TextDefault/TextMuted=text, PanelBg/Separator=chrome), not restated here. The 'no literal color in draw code; swap the Theme to restyle' rule is the standaloneEditor and designSystem invariants."#,
-		"Seed 16 aggregate.Mixer.ChannelStrip channels wired into the live engine and wrap them in a MixerView. Map the 16 mixer channels to the engine's 16 MIDI channels: editing a channel's Volume/Reverb send/Echo send/Pan/Mute/Solo updates the addressed ChannelStrip via MixerView; after each event-loop tick, publish the current per-channel mixer values to the audio engine as a ParameterSnapshot via port.RealTime.ParameterBridge (no locks/alloc/blocking on the audio callback), and read back each channel's live peak level for the meters.",
-		"HOST THE LIVE ENGINE — THE AUDIO PATH MUST ACTUALLY PRODUCE SOUND, not a stub. Open external MIDI input via port.Shell.MidiInput and an audio output stream via port.Shell.AudioOutput. The RenderCallback you pass to AudioOutput.open runs on the audio thread (per the port's own contract note) and is invoked by the adapter every time it needs more samples — you MUST render real engine audio into the buffer it hands you on every invocation; returning silence, zeros, or a stub buffer fails this requirement.",
-		"THREADING — the stream object behind port.Shell.AudioOutput is NOT Send on macOS (CoreAudio); you CANNOT move it into a thread::spawn closure (that fails to compile with \"*mut () cannot be sent between threads safely\"). So call AudioOutput.open from the thread that owns the engine state (the main/UI thread) and let its RenderCallback closure capture what it needs to render. Own the VoiceAllocator/EngineRenderer/MixEngine/16 ChannelStrip channels/master MixBus on the main thread; in the eframe update tick drain pending MIDI events and apply them to the VoiceAllocator (note-on allocates/steals; note-off releases). Inside the RenderCallback, render AudioFrames via VoiceAllocator -> EngineRenderer -> MixEngine over the 16 ChannelStrip channels (per-channel volume/pan/solo/mute + peak metering) -> master MixBus applying the current mixer values, and read back each channel's peak from its ChannelStrip for the UI meters. These engine objects must be OWNED and DRIVEN here — never unused/`_`-prefixed. Do NOT spawn a thread that holds the Stream or the engine. Call ctx.request_repaint() each update so the UI loop keeps running.",
-		"AUDIO CALLBACK CORRECTNESS: the RenderCallback given to AudioOutput.open is invoked by the adapter on cpal's own audio-thread schedule and must synchronously render exactly the frame count it is asked for on every call — do NOT pace it by wall-clock elapsed time, do NOT prime a separate buffer and copy from it in fixed guessed chunks, and do NOT special-case a constant block size. Render precisely the requested span each call so the engine advances at exactly real time with no gaps (heard as silence or a gating buzz) and no overflow/drops.",
-		"MIDI sources feed the main-thread render via Send channels only: the port.Shell.MidiInput connection's event callback and the optional --play sequencer (domainService.MidiFile.Sequencer) each SEND MidiEvents (which are Send) over a channel (e.g. std::sync::mpsc, or an rtrb whose Producer is Send) to the main thread, which drains them every update tick or inside the RenderCallback as appropriate. Only Send data (MidiEvents) crosses a thread boundary — never the Stream, never the engine.",
-		"CLI: `synth_ui [--smoke] [--autopilot] [--seconds <N>] [--play <FILE.mid>] [--tour]`. Default mode opens the window and runs the loop. Parse args yourself; treat any unknown flag as a clear stderr error with non-zero exit. `--smoke` and `--autopilot` are mutually exclusive (error if both given).",
-		#"`--autopilot [--seconds <N>]` is the REAL end-to-end run (N defaults to 4) and it must PROVE the app works, not just exit cleanly. It is NOT hermetic: it opens the SAME real window and the SAME audio output (via port.Shell.AppWindow / port.Shell.AudioOutput) and runs the EXACT same update/render/audio path as the default window mode — only input, a built-in note source, and termination are automated. It must be self-contained: it does NOT depend on --play or any external MIDI or file (if --play is also given, honor it, but never depend on it)."#,
-		#"AUTOPILOT — BUILT-IN NOTES + REAL AUDIO ASSERTION (catches a silent engine for real, unlike the --smoke in-memory check): autopilot drives its OWN deterministic note sequence — each tick (or on a fixed schedule) inject synthetic MidiEvents (note-on/note-off across a few pitches on a couple of MIDI channels) into the SAME VoiceAllocator the live path uses, so the real engine->MixEngine->ChannelStrip->MixBus->audio-device path produces sound. Track the PEAK absolute sample of the AudioFrames ACTUALLY rendered into the RenderCallback's buffer across the whole run — the real device-bound audio, not a separate in-memory render. Just before closing, print EXACTLY `autopilot audio peak: <peak>` (the measured peak) and ASSERT IN CODE that peak > 0.0; if it is 0.0 (silent real output) the process MUST exit non-zero (panic with a clear message). This is the assertion that fails when nothing plays."#,
-		#"AUTOPILOT — DRIVE THE CONTROL PLANE + ASSERT THE LAYOUT (catches the single-channel bug for real): drive a deterministic scripted sequence of MixerViewEvents through MixerView::apply over the run — navigate across ALL 16 channels (enough NavRight then NavLeft to force viewport edge-scrolling both directions and visit every channel), enter edit mode and nudge a continuous row by fine and coarse steps, and double-tap to toggle a Mute and a Solo — so the live skin renders every state through the DefaultTheme. The draw code must COUNT how many channel strips it actually lays out fully within the window's visible width on a frame (a strip whose allocated rect's right edge exceeds the panel width is NOT visible) and expose that count; just before closing, print EXACTLY `autopilot strips visible: <n>` and ASSERT IN CODE that n == 6. If fewer than 6 strips fit on screen (the off-screen-strip bug), the process MUST exit non-zero. Also save a screenshot of a rendered frame to `autopilot.png` (request it via eframe's screenshot API, e.g. `ViewportCommand::Screenshot` / `frame.screenshot()`, and write the PNG) so the layout has a real artifact."#,
-		#"AUTOPILOT — SELF-TERMINATE: after N seconds of wall-clock and after the audio-peak and strips-visible assertions have been evaluated and the screenshot written, CLOSE THE WINDOW ITSELF via `ctx.send_viewport_cmd(egui::ViewportCommand::Close)` so the window's run loop returns and the process exits 0. It must terminate on its own within roughly N seconds; a non-self-terminating autopilot is a bug. Print `autopilot complete: <K> events` (K = scripted MixerViewEvents applied) as the final line. Exit 0 ONLY if every in-code assertion passed (real audio peak > 0 AND strips visible == 6); any failure or panic is a non-zero exit. `--autopilot` requires a display and a default audio output device (run locally, not headless CI)."#,
-		#"`--ui-smoke` behavior — enrich the EXISTING `--smoke` hermetic self-check (do not add a second, separate flag) to ALSO cover the mixer view and design system in addition to the engine peak=/events= checks it already performs: construct the ENTIRE mixer-view app state exactly as the window path would — the MixerView wrapping its seeded 16 ChannelStrip channels, the engine objects (VoiceAllocator/EngineRenderer/MixEngine/master MixBus), and the audio stream-CONFIG value (sample rate / channels / buffer) — but do NOT open a window, do NOT open or start any audio stream or device, and do NOT open any MIDI device. Drive a few MixerViewEvents through MixerView::apply (e.g. navigate channels, enter edit mode, nudge a volume) to confirm the loop is wired, print EXACTLY `ui smoke ok: app constructed`, and continue to the audio-render self-check below."#,
-		#"`--smoke` MIXER AUDIO SELF-CHECK (this is what catches a silent engine path without any audio device): after constructing state, apply a synthetic note-on (e.g. middle C at full velocity) to the VoiceAllocator and render one block through the EXACT SAME render function the live RenderCallback uses (VoiceAllocator -> EngineRenderer -> MixEngine -> ChannelStrip channels -> master MixBus). Compute the block's peak absolute sample. If peak > 0 (audible) print EXACTLY `render non-silent: true`; otherwise print `render non-silent: false`. Because the render path runs through the ChannelStrip channels, the channel carrying that note must also record a non-zero peak: if any channel's metered peak is > 0 print EXACTLY `channel metered: true`, otherwise `channel metered: false`. Then exit 0. This must call the real render path (NOT a hardcoded constant) so that if the engine graph or the per-channel metering is not actually wired, the check prints false and the validation fails."#,
-		#"`--smoke` THEME SELF-CHECK (proves the design-system seam is wired and exhaustive without a window): build the SAME DefaultTheme the draw path uses, resolve EVERY SemanticToken variant through it (iterate the full variant set — FocusRing, EditActive, ValueFill, MeterPeak, ToggleOn, ToggleOff, TextDefault, TextMuted, PanelBg, Separator — calling theme.color(t) on each), and count how many resolved to an Rgba with no panic and no fallback. Print EXACTLY `theme tokens resolved: N` where N is that count; N MUST equal the number of SemanticToken variants (10). This must drive the real Theme port (not a hardcoded N) so that an unwired or non-exhaustive theme prints the wrong count and fails the validation."#,
-		"In --smoke mode never touch audio/MIDI device-opening APIs and never enter the window event loop; it must return 0 quickly and deterministically on any machine (including CI with no display, no audio, no MIDI). Building config/value objects and rendering audio blocks in-memory is allowed; opening devices or windows is NOT. The tokens `ui smoke ok`, `render non-silent: true`, `channel metered: true`, and `theme tokens resolved: 10` must all appear verbatim in stdout on success, alongside the existing `peak=`/`events=` tokens.",
-		#"OPTIONAL `--tour` flag (design goal carried forward from the original spec's UP-NEXT.md backlog rather than a previously-generated prompt — no prior implementation exists to port verbatim): a `--tour` flag, plus a runtime `T` key toggle, that runs a captioned auto-tour demonstrating every mixer-view feature (navigation, edit-mode, fine/coarse adjust, mute/solo double-tap toggle, viewport edge-scrolling) while looping the --play MIDI file if one was given, mirroring its captions to both an on-screen log panel and stdout. No validation is required for --tour in this increment."#,
+		"File path: src/bin/synth_ui.rs. Keep this file a thin argument parser, adapter constructor, and eframe/cpal host. Application state, event handling, MIDI dispatch, rendering, smoke logic, and scene execution belong to the targeted application services.",
+		"Do not declare another AppState, scene parser, audio graph, MIDI event, patch, channel strip, or render function. Do not mutate MixerView or ChannelStrip directly: translate input into AppEvent and call StandaloneApplication.handleEvent.",
+		"Current GUI scope is exactly one mixer view: sixteen channels through a six-contiguous-strip viewport. There is no view switching, patch/preset/modulation screen, on-screen keyboard, mouse interaction, or touch interaction.",
+		"Keyboard W/S/A/D and gamepad d-pad emit identical navigation events. Holding J / gamepad select is momentary edit mode; double-tap emits ToggleFocusedParam. Timing is adapter state, while mixer behavior remains in MixerView.",
+		"Draw six fixed-width complete strips side-by-side: Volume meter/control, Reverb send, Echo send, Pan, Mute, Solo. Never size a strip or separator from the remaining full-window width. Meter every channel before solo gating.",
+		"Resolve every draw color through Theme/SemanticToken. UI code is a pure projection of AppState and reports semantic events only.",
+		"The cpal callback synchronously renders exactly its requested frame slice through StandaloneApplication.renderAudio. It never uses wall-clock pacing, guessed blocks, silence stubs, locks, allocation, I/O, or callback deallocation. The non-Send stream remains on its owning thread.",
+		"CLI: synth_ui [--smoke | --autopilot] [--seconds N] [--play FILE.mid] [--scene FILE] [--loop-scene] [--observe] [--degenerate-stub]. Reject unknown and contradictory options.",
+		"--smoke opens no device/window and calls StandaloneApplication.runSmoke. Use real MIDI-file events when supplied or a synthetic note otherwise; assert events > 0, 0.05 < peak <= 1, at least one channel meters, reducer frame advances, and all theme tokens resolve. Print stable human-readable lines plus the declared CREST_OBSERVATION JSON in --observe mode.",
+		"--autopilot opens the real window/audio path, injects deterministic notes and AppEvents through the same facade, visits all sixteen channels, proves exactly six strips fit, captures autopilot.png, reports the device-bound peak, and self-terminates after assertions.",
+		"--scene decodes via SnapshotCodec and delegates to SceneRunner. Windowed mode paces captions for observation; smoke mode runs headlessly. Combining --play and --scene means the MIDI song is the audio source while scene events manipulate the mixer.",
+		"--degenerate-stub is accepted only with --observe and deliberately replaces one seam with a schema-compatible no-op so crest-spec theater detection can reject it.",
 	]
 	validations: [
-		{kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--play", "midi/Megalovania.mid"], description: "headless smoke: a real MIDI file drives audible, non-clipping output through the full engine", assertions: [
-			{kind: "exit_code", expected: 0},
-			{kind: "stdout_contains", pattern: "peak="},
-			{kind: "stdout_contains", pattern: "events="},
-		]},
-		{kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--scene", "scenes/showcase.json", "--play", "midi/Megalovania.mid"], description: "scene-driven playback plumbing: the showcase scene applies through the live app loop while music plays (headless proof; windowed liveness is human-observed via make watch)", assertions: [
-			{kind: "exit_code", expected: 0},
-			{kind: "stdout_contains", pattern: "scene="},
-			{kind: "stdout_contains", pattern: "peak="},
-		]},
-		{kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--play", "midi/Corridors of Time - Chrono Trigger.mid"], description: "format-1 multi-track SMF: notes in non-first tracks must sound (regression: events=0 when only the conductor track was read)", assertions: [
-			{kind: "exit_code", expected: 0},
-			{kind: "stdout_contains", pattern: "peak="},
-		]},
-		{kind: "integration", command: ["make", "ui-smoke"], description: "mixer-view app constructs headlessly AND renders a non-silent audio block through the ChannelStrip channels with live per-channel metering and a fully-resolved design-system theme (catches a stubbed/silent engine path or an unwired meter/theme without a device)", assertions: [
-			{kind: "exit_code", expected: 0},
-			{kind: "stdout_contains", pattern: "ui smoke ok"},
-			{kind: "stdout_contains", pattern: "render non-silent: true"},
-			{kind: "stdout_contains", pattern: "channel metered: true"},
-			{kind: "stdout_contains", pattern: "theme tokens resolved: 10"},
-		]},
-		{kind: "integration", command: ["make", "autopilot"], description: "REAL end-to-end autopilot run: opens the actual window + audio device, drives built-in notes through the live engine and a scripted MixerViewEvent session through the skin, then ASSERTS IN CODE that real device-bound audio was non-silent (peak > 0) and that all 6 channel strips fit on screen — exiting non-zero if the app is silent or only one channel renders. Self-terminates. (macOS-local, needs a display + audio device.)", assertions: [
-			{kind: "exit_code", expected: 0},
-			{kind: "stdout_contains", pattern: "autopilot audio peak:"},
-			{kind: "stdout_contains", pattern: "autopilot strips visible: 6"},
-			{kind: "stdout_contains", pattern: "autopilot complete:"},
-			{kind: "file_exists", path: "autopilot.png"},
-		]},
+		{kind: "integration", command: ["make", "ui-smoke"], description: "headless application construction, reducer dispatch, theme, metering, and production render path work", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "render non-silent: true"}, {kind: "stdout_contains", pattern: "channel metered: true"}, {kind: "stdout_contains", pattern: "theme tokens resolved: 10"}]},
+		{kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--play", "midi/Corridors of Time - Chrono Trigger.mid"], description: "format-1 multitrack events outside the conductor track reach audio", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "events="}, {kind: "stdout_contains", pattern: "peak="}]},
 	]
 	contributesTo: [
-		{capability: "capability.operate_audio_and_midi_devices", contribution: "assembles the complete standalone window, MIDI, audio, and engine lifecycle"},
-		{capability: "capability.edit_without_pointer", contribution: "hosts the gamepad/keyboard mixer journey through the one-way application loop"},
-		{capability: "capability.mix_to_stereo", contribution: "connects the live polyphonic engine through independent strips to device-bound stereo output"},
-	]
-}
-
-project: assets: BuildMakefile: {
-	kind:        "makefile"
-	description: "Makefile: the human entry points for building, testing, and hearing the synth"
-	uses: ["asset.SynthUiMain", "asset.ToneTestMain", "asset.VoiceDemoMain", "asset.SamplePlayDemoMain", "asset.EffectsDemoMain", "asset.ModPlayMain", "asset.PatchPlayMain", "asset.PresetRoundtripDemoMain", "asset.MidiPlayMain", "asset.MidiPlayLiveMain", "asset.MixerDemoMain", "asset.GamepadNavDemoMain"]
-	prompts: [
-		"File path: Makefile",
-		"Targets, each with a one-line ## comment shown by a default `help` target: build (cargo build), test (cargo test), lint (cargo clippy --all-targets -- -D warnings), fmt (cargo fmt), tone (run the tone_test proof), smoke (run synth_ui --smoke --play midi/Megalovania.mid), play (run synth_ui --play $(FILE), FILE defaulting to midi/Megalovania.mid), ui (launch the synth_ui app windowed, no --play unless FILE is set), plus demo-scenes (run scenes/check.sh), scene (run scene_run --scene \"$(FILE)\" --dump-every-step), and watch (LIVE human observation: synth_ui --scene \"$(if $(FILE),$(FILE),scenes/showcase.json)\" --play \"$(DEFAULT_MIDI)\" --loop-scene — window open, audio on, captions streaming), and one target per proof binary, named EXACTLY as the demo validations invoke them: demo-voices (voice_demo), demo-samples (sample_demo), demo-effects (effects_demo), demo-mod (mod_play), demo-patches (patch_play), demo-presets (preset_demo), demo-midi (midi_play, offline WAV render), check-live (midi_play_live) — each simply cargo-runs its binary with the arguments its validation expects.",
-		"Additional targets (editor increment, original names ported from the source spec): ui-smoke (cargo run --bin synth_ui -- --smoke --play midi/Megalovania.mid — the enriched hermetic self-check covering the mixer view + design system, asserting `ui smoke ok`, `render non-silent: true`, `channel metered: true`, `theme tokens resolved: 10`, in addition to the existing peak=/events= tokens); autopilot (cargo run --bin synth_ui -- --autopilot --seconds 4 — the real end-to-end window+audio run that self-drives a scripted MixerViewEvent session, asserts real audio + 6 visible strips in code, writes autopilot.png, and self-terminates; opens a real window/device, no afplay, but IS used by a validation because it is self-driving and self-terminating); demo-mixer (cargo run --bin mixer_demo — headless prover for MixerView + its 16 ChannelStrip channels; opens no device or window); check-gamepad (cargo run --bin gamepad_demo — headless prover for GamepadNavigator/GlyphResolver; opens no device or window).",
-		"Plain portable Makefile: .PHONY where appropriate, no shell-specific tricks. Always quote \"$(FILE)\" and any path variable in recipes — MIDI file paths contain spaces.",
-	]
-	validations: [
-		{kind: "custom", command: ["make", "-n", "ui"], description: "ui target exists"},
-		{kind: "custom", command: ["make", "-n", "ui-smoke"], description: "ui-smoke target exists"},
-		{kind: "custom", command: ["make", "-n", "autopilot"], description: "autopilot target exists"},
-		{kind: "custom", command: ["make", "-n", "demo-mixer"], description: "demo-mixer target exists"},
-		{kind: "custom", command: ["make", "-n", "check-gamepad"], description: "check-gamepad target exists"},
-		{kind: "integration", command: ["make", "smoke"], description: "make smoke runs the audible self-check", assertions: [
-			{kind: "exit_code", expected: 0},
-			{kind: "stdout_contains", pattern: "peak="},
-		]},
+		{capability: "capability.external_midi_performance", contribution: "hosts MIDI and device adapters around the standalone application facade"},
+		{capability: "capability.pointer_free_mixer_control", contribution: "renders the current six-strip mixer and translates keyboard/gamepad input into AppEvents"},
+		{capability: "capability.behavioral_proof_harness", contribution: "provides hermetic smoke, real-device autopilot, and falsification-gated observation modes"},
 	]
 }
 
 project: assets: SceneRunMain: {
-	kind:        "rust-bin-target"
-	description: "src/bin/scene_run.rs: execute a scene file and emit snapshots for evaluation"
-	uses: ["domainService.Loop.SceneRunner", "port.Loop.SnapshotCodec"]
+	kind: "rust-bin-target"
+	description: "src/bin/scene_run.rs: thin headless CLI over SnapshotCodec and SceneRunner"
+	profile: {kind: "verification_harness", witness: "deterministic production-path scene replay", failurePolicy: "reject malformed scenes and any unexpected event rejection"}
+	targets: ["applicationService.Loop.SceneRunner", "adapter.SerdeSnapshotCodec"]
 	prompts: [
-		"File path: src/bin/scene_run.rs",
-		"scene_run --scene <FILE> [--dump-every-step] [--out <FILE>]: load the scene, run it through SceneRunner, print the FINAL StateSnapshot to stdout as one JSON document; with --dump-every-step print one snapshot JSON per step first.",
-		#"After the snapshot, print exactly one summary line: `events_applied=<N> rejections=<M> frames=<F> peak=<final rendered peak>` — measured from the run, and exit non-zero if any event was rejected (a scene that doesn't fully apply is a failed scene)."#,
+		"File path: src/bin/scene_run.rs. CLI: --scene FILE [--dump-every-step] [--observe] [--degenerate-stub]. Decode the canonical Scene and call SceneRunner; do not define a local event model, reducer, snapshot extractor, or renderer.",
+		"Print the canonical final StateSnapshot and `events_applied=<N> rejections=<M> blocks_rendered=<B> peak=<P>`. Exit non-zero for malformed input or unexpected rejection.",
+		"--observe executes the same scene twice and emits the declared SceneResult fields as CREST_OBSERVATION JSON. --degenerate-stub runs the same harness with an explicit no-op reducer/render seam so at least one predicate fails.",
 	]
-	validations: [
-		{kind: "integration", command: ["make", "demo-scenes"], description: "the starter scene library applies cleanly and asserts state facts", assertions: [
-			{kind: "exit_code", expected: 0},
-			{kind: "stdout_contains", pattern: "events_applied="},
-		]},
+	validations: [{kind: "integration", command: ["make", "demo-scenes"], description: "all committed scenes execute and assert measured facts", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "events_applied="}]}]
+	contributesTo: [
+		{capability: "capability.deterministic_scene_replay", contribution: "exposes the production SceneRunner as a reproducible headless command"},
+		{capability: "capability.behavioral_proof_harness", contribution: "emits measured observations and a falsifiable no-op comparison"},
 	]
 }
 
 project: assets: SceneLibrary: {
-	kind:        "scene-library"
-	description: "scenes/: starter scenes proving one behavior each, plus scenes/check.sh asserting state facts from the snapshots"
-	uses: ["asset.SceneRunMain"]
+	kind: "scene-library"
+	description: "scenes/: five versioned scenarios that combine into the product showcase and assert the shared reducer/render path"
+	profile: {kind: "verification_harness", witness: "serialized application behavior", failurePolicy: "every assertion reads canonical snapshot or SceneResult data"}
+	targets: ["asset.SceneRunMain", "valueObject.Loop.Scene", "valueObject.Loop.SceneResult"]
 	prompts: [
-		"Directory: scenes/. Author FIVE scene files in the SnapshotCodec format plus a scenes/check.sh that runs each through scene_run and asserts snapshot facts with jq.",
-		"mixer-solo: solo one of three strips, assert the snapshot shows the other two muted=true and the soloed one muted=false (solo exclusivity).",
-		"volume-edit: navigate to a strip, enter edit mode, adjust volume down 6 dB, assert the snapshot volume field equals the expected value exactly.",
-		"voice-steal: configure polyphony 2 with oldest-steal, fire 3 note-ons with renders between, assert active voice count is 2 and the frame clock equals the step count.",
-		"preset-roundtrip: edit a patch, save preset, mutate again, load the preset, assert the snapshot's patch state equals the post-save snapshot's patch state.",
-		"showcase: a ~30-second scene WRITTEN TO BE WATCHED with music playing underneath (synth_ui --scene scenes/showcase.json --play <mid>): mixer moves one at a time with a beat of renderBlocks between each — solo strip 1 then unsolo, pan hard left then right, a volume dip and return, a mute toggle — each step audible and visible in the mixer view. Pace steps with renderBlocks so a human can follow. Assert it headlessly in check.sh too: events_applied equals the step count, rejections 0.",
-		"Every assertion reads a MEASURED value from the snapshot JSON — never a token the binary prints unconditionally.",
+		"Directory scenes/. Create five JSON Scene files in the SerdeSnapshotCodec format plus check.sh. A scene contains canonical AppEvents; phases are not product behavior and must not appear in scene names or formats.",
+		"mixer-solo.json: render non-zero signals, solo one strip, and assert solo isolation while all input strips continue to meter.",
+		"volume-edit.json: navigate through AppEvent::Mixer, enter edit mode, lower volume exactly 6 dB, and assert the canonical MixerView/ChannelStrip snapshot.",
+		"voice-steal.json: use AppEvent::Patch to configure polyphony 2 and oldest stealing, then AppEvent::Midi for three overlapping notes with render blocks; assert two active voices, at least one steal observation, and non-zero peak.",
+		"preset-roundtrip.json: edit complete patch/session state through AppEvent::Patch, save through AppEvent::Preset, mutate, restore, and assert the restored state equals the saved snapshot. This requires Patch and Preset variants; an event-vocabulary sweep is not a round-trip proof.",
+		"showcase.json: combine the supported behaviors into a paced mixer-focused journey for windowed observation with optional MIDI-file music: solo/unsolo, pan left/right, volume dip/restore, mute/unmute, captions, and renderBlocks between visible transitions.",
+		"check.sh runs scene_run and uses jq over StateSnapshot/SceneResult data. It asserts exact event counts, zero unexpected rejections, deterministic replay, changed state, rendered blocks, and non-zero audio where the scene claims sound. Never accept an unconditional success token.",
 	]
+	validations: [{kind: "integration", command: ["make", "demo-scenes"], description: "the combined scene fixture proves reducer, persistence, polyphony, mixer, and audio behavior", assertions: [{kind: "exit_code", expected: 0}]}]
+	contributesTo: [
+		{capability: "capability.deterministic_scene_replay", contribution: "provides inspectable scenarios over the complete AppEvent vocabulary"},
+		{capability: "capability.shared_control_reducer", contribution: "proves serialized and live-equivalent events share AppState semantics"},
+	]
+}
+
+project: assets: BuildMakefile: {
+	kind: "makefile"
+	description: "Makefile: stable build, run, proof, scene, and observation entry points"
+	profile: {kind: "configuration", ecosystem: "make", constraint: "portable recipes with quoted paths"}
+	targets: [
+		"asset.SynthUiMain", "asset.ToneTestMain", "asset.VoiceDemoMain", "asset.SamplePlayDemoMain", "asset.EffectsDemoMain",
+		"asset.ModPlayMain", "asset.PatchPlayMain", "asset.PresetRoundtripDemoMain", "asset.MidiPlayMain", "asset.MidiPlayLiveMain",
+		"asset.MixerDemoMain", "asset.GamepadNavDemoMain", "asset.SceneRunMain", "asset.SceneLibrary",
+	]
+	prompts: [
+		"File path: Makefile. Provide help, build, test, lint, fmt, ui, play, smoke, ui-smoke, autopilot, watch, scene, demo-scenes, tone, demo-voices, demo-samples, demo-effects, demo-mod, demo-patches, demo-presets, demo-midi, check-live, demo-mixer, check-gamepad, and proofs.",
+		"proofs runs every hermetic proof: test, tone, all demo-* targets, check-live, check-gamepad, ui-smoke, and demo-scenes. Autopilot is excluded from hermetic proofs because it requires a display and device, but retains its own target and goal validation.",
+		"watch runs synth_ui with scenes/showcase.json and the default MIDI file for human observation. Quote every path variable because MIDI filenames contain spaces.",
+	]
+	validations: [
+		{kind: "custom", command: ["make", "-n", "proofs"], description: "the aggregate proof target exists"},
+		{kind: "integration", command: ["make", "smoke"], description: "the stable smoke entry point produces measured audio", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "peak="}]},
+	]
+	contributesTo: [{capability: "capability.behavioral_proof_harness", contribution: "provides the stable aggregate command that executes every hermetic subsystem and vertical-slice proof"}]
 }

@@ -1,279 +1,372 @@
 package crestsynth
 
-// Product intent for crest-synth. These outcomes describe the complete
-// standalone instrument; DDD resources below this layer explain how the
-// product is implemented.
+// Product intent is deliberately separate from the DDD model.
+//
+// Goals and capabilities describe observable vertical slices: what a musician
+// or maintainer can do and what evidence proves it. The context files retain
+// ownership of domain state, contracts, invariants, and implementation
+// boundaries. A contribution edge connects those two views without turning a
+// capability into a second aggregate or making it a dependency-graph node.
 project: {
-	mission: "A standalone, gamepad-friendly MIDI synthesizer built in Rust — designed for the Steam Deck, runs on any desktop. Hexagonal architecture around a hard real-time audio thread: the audio callback has a hard deadline and must never allocate, lock, or block. Two threads — real-time audio and UI/MIDI — communicate only across a lock-free boundary (ring buffer for events, latest-wins snapshots for parameters, deferred deallocation for retired memory)."
+	mission: "A standalone, controller-first MIDI synthesizer for Steam Deck and desktop. A musician performs from external MIDI while crest-synth renders a stable stereo signal and exposes a six-strip live mixer that is fully operable from keyboard or gamepad. The same one-way application loop must be replayable through deterministic scenes so humans and coding agents can inspect what happened, hear the result, and mechanically falsify broken implementations."
 
 	actors: {
-		performer: {
-			description: "a musician playing crest-synth from external MIDI hardware"
+		musician: {
+			description: "a musician who performs from external MIDI and adjusts the live mixer without relying on a pointer"
 		}
-		sound_designer: {
-			description: "a musician creating, editing, mixing, and recalling playable sounds"
+		maintainer: {
+			description: "a developer or coding agent regenerating crest-synth and evaluating the resulting system through executable proofs"
 		}
 	}
 
 	goals: {
-		perform_live: {
-			description: "A performer can play expressive, multitimbral sounds from external MIDI and hear a stable, non-clipping stereo output"
+		perform_through_standalone: {
+			description: "A musician can send MIDI performance events into the standalone application and hear audible, bounded stereo output without violating the audio callback deadline"
 			priority: "required"
-			actors: ["actor.performer"]
+			actors: ["actor.musician"]
 			capabilities: [
-				"capability.accept_external_midi",
-				"capability.render_expressive_sound",
-				"capability.mix_to_stereo",
-				"capability.operate_audio_and_midi_devices",
-				"capability.preserve_realtime_safety",
+				"capability.external_midi_performance",
+				"capability.polyphonic_sound_generation",
+				"capability.stereo_mix_pipeline",
+				"capability.realtime_safe_execution",
 			]
 			requirements: [
-				"requirement.external_performance_input",
+				"requirement.external_midi_is_performance_input",
 				"requirement.hard_realtime_callback",
 				"requirement.canonical_signal_flow",
 			]
 		}
-		design_playable_sounds: {
-			description: "A sound designer can create complete playable patches from synthesis or samples, modulation, effects, MIDI routing, and mixer configuration"
+		operate_live_mixer: {
+			description: "A musician can see, navigate, and edit all sixteen mixer channels from the six-strip viewport using keyboard or gamepad, and accepted edits affect the live audio path"
 			priority: "required"
-			actors: ["actor.sound_designer"]
-			dependsOn: ["goal.perform_live"]
+			actors: ["actor.musician"]
+			dependsOn: ["goal.perform_through_standalone"]
 			capabilities: [
-				"capability.configure_complete_patch",
-				"capability.mix_to_stereo",
-				"capability.edit_without_pointer",
+				"capability.pointer_free_mixer_control",
+				"capability.shared_control_reducer",
+				"capability.stereo_mix_pipeline",
 			]
 			requirements: [
-				"requirement.canonical_signal_flow",
-				"requirement.complete_patch_definition",
-				"requirement.gamepad_keyboard_operation",
+				"requirement.mixer_only_ui_scope",
+				"requirement.single_control_mutation_path",
+				"requirement.gamepad_keyboard_parity",
 			]
 		}
-		preserve_work: {
-			description: "A sound designer can organize, save, migrate, and restore patches, banks, and complete sessions without losing the current instrument state"
+		exercise_supported_sound_architecture: {
+			description: "Every currently supported synthesis subsystem is executable as a coherent path: voices, samples, modulation, patches, effects, buses, and MIDI-file input produce measured non-theatrical results"
 			priority: "required"
-			actors: ["actor.sound_designer"]
-			dependsOn: ["goal.design_playable_sounds"]
-			capabilities: ["capability.save_and_restore_sound_library"]
+			actors: ["actor.maintainer"]
+			capabilities: [
+				"capability.polyphonic_sound_generation",
+				"capability.configurable_instrument_graph",
+				"capability.stereo_mix_pipeline",
+				"capability.behavioral_proof_harness",
+			]
+			requirements: [
+				"requirement.current_sound_scope",
+				"requirement.measured_proofs",
+				"requirement.canonical_resource_types",
+			]
+		}
+		preserve_reproducible_sound_state: {
+			description: "A complete patch or session can be versioned, restored, and rendered equivalently, while malformed or unsupported data leaves the active state untouched"
+			priority: "required"
+			actors: ["actor.musician", "actor.maintainer"]
+			dependsOn: ["goal.exercise_supported_sound_architecture"]
+			capabilities: [
+				"capability.configurable_instrument_graph",
+				"capability.versioned_sound_state",
+			]
 			requirements: ["requirement.versioned_atomic_restore"]
 		}
-		operate_standalone: {
-			description: "A musician can operate the complete instrument on a Steam Deck or desktop using external MIDI plus keyboard or gamepad controls"
+		inspect_and_replay_behavior: {
+			description: "A maintainer can run a serialized scenario through the same reducer and render path used by the application, inspect deterministic state and audio observations, and distinguish real behavior from a no-op implementation"
 			priority: "required"
-			actors: ["actor.performer", "actor.sound_designer"]
-			dependsOn: ["goal.perform_live", "goal.design_playable_sounds"]
+			actors: ["actor.maintainer"]
+			dependsOn: ["goal.perform_through_standalone", "goal.operate_live_mixer"]
 			capabilities: [
-				"capability.operate_audio_and_midi_devices",
-				"capability.edit_without_pointer",
+				"capability.shared_control_reducer",
+				"capability.deterministic_scene_replay",
+				"capability.behavioral_proof_harness",
 			]
-			requirements: ["requirement.gamepad_keyboard_operation"]
+			requirements: [
+				"requirement.single_control_mutation_path",
+				"requirement.deterministic_observation",
+				"requirement.measured_proofs",
+			]
 		}
 	}
 
 	capabilities: {
-		accept_external_midi: {
-			description: "Normalize incoming MIDI, preserve channel and per-note expression, and dispatch each event to exactly the matching patches"
-			goals: ["goal.perform_live"]
-			acceptance: routed_performance: {
-				description: "External note and expression events reach every intentionally layered patch and no unrelated patch"
-				actor: "actor.performer"
+		external_midi_performance: {
+			description: "Normalize raw MIDI, preserve channel and note identity, route intentional layers exactly once, and deliver the resulting events to the standalone render graph"
+			goals: ["goal.perform_through_standalone"]
+			acceptance: routed_note_to_audio: {
+				description: "A note entering through the MIDI input contract reaches only matching patches and produces device-bound audio through the same path used by the standalone application"
+				actor: "actor.musician"
 				steps: [
-					{action: "send note, controller, pitch, and pressure events on a configured address", observes: "all patches mapped to that address receive normalized events with stable note identity"},
-					{action: "send the same events on an unmapped address", observes: "unrelated patches remain unchanged"},
+					{action: "deliver note-on, expression, and note-off bytes on a configured MIDI address", observes: "the bytes normalize to stable addressed MidiEvents and every intentionally layered matching patch receives one copy"},
+					{action: "render the resulting voices through the standalone graph", observes: "the measured stereo peak is audible and bounded and an unmapped patch remains unchanged"},
 				]
-				evidence: ["evidence.midi_routing_contract"]
+				evidence: ["evidence.standalone_runtime"]
 			}
 		}
-		render_expressive_sound: {
-			description: "Render bounded polyphonic voices from virtual-analog, wavetable, FM, or sample sources with envelopes, filtering, and per-note expression"
-			goals: ["goal.perform_live"]
-			acceptance: expressive_polyphony: {
-				description: "An over-polyphonic expressive passage produces audible stereo output while applying the configured voice-stealing policy"
-				actor: "actor.performer"
+		polyphonic_sound_generation: {
+			description: "Render virtual-analog voices with oscillator, filter, ADSR envelopes, bounded polyphony, configured voice stealing, and per-note expression; exercise sample playback through its dedicated subsystem proof"
+			goals: ["goal.perform_through_standalone", "goal.exercise_supported_sound_architecture"]
+			acceptance: audible_over_polyphony: {
+				description: "An overlapping passage beyond the configured voice limit remains audible and applies the selected stealing and expression behavior"
+				actor: "actor.maintainer"
 				steps: [
-					{action: "play more simultaneous notes than the patch polyphony limit", observes: "voices are allocated and stolen according to the selected policy"},
-					{action: "apply pitch and pressure expression while rendering", observes: "the output remains audible, bounded, and responds per note"},
+					{action: "hold more notes than the configured polyphony limit", observes: "active voice count remains bounded and a measurable steal occurs according to policy"},
+					{action: "apply expression to one NoteId and render", observes: "only the matching voice changes and output remains non-silent and unclipped"},
 				]
 				evidence: ["evidence.polyphonic_render"]
 			}
 		}
-		configure_complete_patch: {
-			description: "Create and edit a playable patch containing engine or sample configuration, modulation routes, MIDI mapping, and a mixer-strip assignment"
-			goals: ["goal.design_playable_sounds"]
-			acceptance: complete_patch_edit: {
-				description: "Editing each part of a patch changes the intended sound without changing unrelated patch state"
-				actor: "actor.sound_designer"
+		stereo_mix_pipeline: {
+			description: "Route independent patch signals through strip inserts, volume and pan, send taps, aux returns, master processing, limiting, and per-strip metering"
+			goals: ["goal.perform_through_standalone", "goal.operate_live_mixer", "goal.exercise_supported_sound_architecture"]
+			acceptance: independent_strips_to_master: {
+				description: "Multiple addressed signals remain independently controllable while following the canonical strip-to-master signal path"
+				actor: "actor.musician"
 				steps: [
-					{action: "configure a sound source, envelopes, filter, modulation routes, channel mapping, and mixer strip", observes: "the patch contains a coherent playable configuration"},
-					{action: "play the edited patch beside a second patch", observes: "only the edited patch reflects its new configuration"},
+					{action: "render non-zero signals on multiple strips and solo one", observes: "only the soloed strip is audible while every strip continues to meter its own pre-solo signal"},
+					{action: "process inserts, sends, aux returns, and master output", observes: "processors run in declared order and the final stereo signal remains bounded"},
 				]
-				evidence: ["evidence.patch_configuration"]
+				evidence: ["evidence.mixer_behavior"]
 			}
 		}
-		mix_to_stereo: {
-			description: "Process patch output through ordered inserts, volume and pan, sends, aux buses, master inserts, and the limiter"
-			goals: ["goal.perform_live", "goal.design_playable_sounds"]
-			acceptance: multitimbral_signal_path: {
-				description: "Multiple patches remain independently controllable while following the canonical signal path to bounded stereo output"
-				actor: "actor.sound_designer"
+		realtime_safe_execution: {
+			description: "Move discrete events, latest parameter snapshots, and retired memory across the audio boundary without locks, blocking, I/O, callback allocation, or callback deallocation"
+			goals: ["goal.perform_through_standalone"]
+			acceptance: lock_free_boundary: {
+				description: "The real-time seam delivers events, exposes the newest snapshot, and reclaims retired state away from the simulated audio thread"
+				actor: "actor.maintainer"
 				steps: [
-					{action: "route differently addressed patches through separate strips and effects", observes: "each strip controls only its assigned patch output"},
-					{action: "send strips through aux and master processing", observes: "processors run in declared order and the limiter keeps the final output bounded"},
+					{action: "push an event and publish two distinct snapshots", observes: "the consumer receives the event and reads only the newest complete snapshot without blocking"},
+					{action: "retire tracked state from the audio side and collect it", observes: "destruction occurs on the non-audio side"},
 				]
-				evidence: ["evidence.mixer_and_effects_path"]
+				evidence: ["evidence.realtime_boundary"]
 			}
 		}
-		save_and_restore_sound_library: {
-			description: "Browse and persist versioned presets and banks, and atomically replace the complete instrument from a saved session"
-			goals: ["goal.preserve_work"]
-			acceptance: versioned_round_trip: {
-				description: "Saved sound and session state round-trips across versions without partial restoration"
-				actor: "actor.sound_designer"
+		pointer_free_mixer_control: {
+			description: "Render exactly six contiguous mixer strips, reach all sixteen channels, and edit volume, two sends, pan, mute, and solo using the shared keyboard/gamepad event vocabulary"
+			goals: ["goal.operate_live_mixer"]
+			acceptance: navigate_and_edit_mixer: {
+				description: "Keyboard and gamepad actions drive the same reducer semantics across navigation, edit mode, toggles, viewport scrolling, and bounded values"
+				actor: "actor.musician"
 				steps: [
-					{action: "save and reload a configured patch and session", observes: "patch, mixer, routing, tempo, and time-signature state is equivalent"},
-					{action: "attempt to restore malformed or unsupported data", observes: "the previous complete session remains active and unchanged"},
+					{action: "navigate past both visible viewport edges", observes: "the viewport moves across all sixteen channels while exactly six full strips remain visible"},
+					{action: "hold edit and apply fine and coarse adjustments, then double-tap edit on mute and solo", observes: "only the focused channel and parameter change, continuous values clamp, and toggles never react to directional input"},
 				]
-				evidence: ["evidence.preset_and_session_roundtrip"]
+				evidence: ["evidence.mixer_behavior", "evidence.standalone_runtime"]
 			}
 		}
-		operate_audio_and_midi_devices: {
-			description: "Select and connect external MIDI input, open the desktop audio stream, and drive the same host-agnostic engine used by offline verification"
-			goals: ["goal.perform_live", "goal.operate_standalone"]
-			acceptance: live_standalone_pipeline: {
-				description: "The standalone shell connects MIDI input to the real-time engine and delivers its frames to the selected audio output"
-				actor: "actor.performer"
+		shared_control_reducer: {
+			description: "Apply MIDI, gamepad, editor, mixer, patch, and preset events through one authoritative AppState reducer and project accepted state to the audio model"
+			goals: ["goal.operate_live_mixer", "goal.inspect_and_replay_behavior"]
+			acceptance: one_event_path: {
+				description: "Live input and scene input produce identical state transitions through the same reducer"
+				actor: "actor.maintainer"
 				steps: [
-					{action: "select a MIDI input and audio output, then play an external note", observes: "the event crosses the real-time seam and the device callback receives non-silent frames"},
-					{action: "close the application", observes: "device streams and MIDI connections shut down cleanly"},
+					{action: "apply the same event sequence through the live-input facade and through SceneRunner", observes: "both paths produce byte-identical snapshots and identical rejection records"},
+					{action: "apply an invalid event", observes: "the reducer returns a typed rejection and changes neither domain state nor event-sequence frame"},
 				]
-				evidence: ["evidence.live_standalone_pipeline"]
+				evidence: ["evidence.scene_replay"]
 			}
 		}
-		preserve_realtime_safety: {
-			description: "Move events, parameter snapshots, and retired memory across the audio boundary without allocation, locks, blocking I/O, or audio-thread deallocation"
-			goals: ["goal.perform_live"]
-			acceptance: realtime_boundary: {
-				description: "Continuous performance and parameter editing remain within the declared lock-free audio-thread contract"
-				actor: "actor.performer"
+		configurable_instrument_graph: {
+			description: "Compose patches from canonical engine, sample, modulation, MIDI mapping, effects, and mixer resources without parallel substitute types"
+			goals: ["goal.exercise_supported_sound_architecture", "goal.preserve_reproducible_sound_state"]
+			acceptance: subsystem_vertical_slices: {
+				description: "Each supported subsystem participates in a measured executable slice and all slices use the same canonical resource types"
+				actor: "actor.maintainer"
 				steps: [
-					{action: "publish parameter snapshots and MIDI events while audio renders", observes: "the callback reads the latest snapshot and consumes events without blocking"},
-					{action: "replace owned audio state", observes: "retired memory is reclaimed away from the audio thread"},
+					{action: "run the voice, sample, modulation, patch, effects, mixer, MIDI, and preset proof targets", observes: "each target exits successfully after asserting measured behavior rather than merely printing a success token"},
+					{action: "inspect the compiled crate interfaces", observes: "a spec resource has one canonical public Rust type and consumers import it instead of redeclaring local substitutes"},
 				]
-				evidence: ["evidence.realtime_boundary_contract"]
+				evidence: ["evidence.sound_subsystem_suite"]
 			}
 		}
-		edit_without_pointer: {
-			description: "Navigate every instrument view and edit bounded parameters from keyboard or gamepad without mouse, touch, or an on-screen performance keyboard"
-			goals: ["goal.design_playable_sounds", "goal.operate_standalone"]
-			acceptance: complete_gamepad_journey: {
-				description: "A gamepad can reach patch, mixer, preset, modulation, and MIDI configuration and perform the same edits as the keyboard controls"
-				actor: "actor.sound_designer"
+		versioned_sound_state: {
+			description: "Encode complete patches and sessions with explicit versions, migrate supported versions, and replace active state atomically only after full validation"
+			goals: ["goal.preserve_reproducible_sound_state"]
+			acceptance: equivalent_atomic_roundtrip: {
+				description: "A restored setup equals and re-renders the saved setup, and a failed restore cannot partially mutate the running application"
+				actor: "actor.maintainer"
 				steps: [
-					{action: "navigate across all instrument views using only gamepad actions", observes: "focus reaches every editable control and clearly identifies its current mode"},
-					{action: "enter momentary edit mode and adjust a bounded value", observes: "the value remains in range and the published parameter snapshot changes"},
-					{action: "save and reload the edited setup", observes: "the complete journey succeeds without pointer or touch input"},
+					{action: "encode and decode a complete multi-patch session", observes: "the restored patch, routing, mixer, tempo, and time-signature state is equal and a fixed passage renders bit-identically"},
+					{action: "attempt to decode malformed and unsupported-version bytes", observes: "the operation fails and the previously active AppState snapshot remains byte-identical"},
 				]
-				evidence: ["evidence.gamepad_editor_journey"]
+				evidence: ["evidence.sound_state_roundtrip"]
+			}
+		}
+		deterministic_scene_replay: {
+			description: "Serialize complete AppEvents, replay them in order through the production reducer and renderer, and emit deterministic snapshots plus measured render observations"
+			goals: ["goal.inspect_and_replay_behavior"]
+			acceptance: replay_inspect_compare: {
+				description: "A scene is both a headless executable acceptance scenario and a paced live observation script"
+				actor: "actor.maintainer"
+				steps: [
+					{action: "run a scene twice against the same initial state", observes: "event results, final snapshot bytes, rendered-block count, and measured peak are identical"},
+					{action: "run the showcase scene in the window with MIDI-file playback", observes: "the same ordered mixer transitions are visible and audible with captions identifying each event"},
+				]
+				evidence: ["evidence.scene_replay"]
+			}
+		}
+		behavioral_proof_harness: {
+			description: "Provide hermetic demos, smokes, scenes, and falsification-gated observation modes that fail on silent, bypassed, lossy, or no-op implementations"
+			goals: ["goal.exercise_supported_sound_architecture", "goal.inspect_and_replay_behavior"]
+			acceptance: regenerate_then_prove: {
+				description: "A blank regeneration can be accepted only after the whole crate and every supported vertical slice prove their behavior"
+				actor: "actor.maintainer"
+				steps: [
+					{action: "run the complete proof target after regeneration", observes: "every proof asserts measured state or audio and exits non-zero for its explicit degenerate path"},
+					{action: "execute each declared behavioral witness through crest-spec", observes: "the committed real implementation passes and the schema-equivalent degenerate case fails"},
+				]
+				evidence: ["evidence.sound_subsystem_suite", "evidence.scene_replay"]
 			}
 		}
 	}
 
 	requirements: {
-		external_performance_input: {
+		external_midi_is_performance_input: {
 			kind: "functional"
-			description: "Performance notes originate from external MIDI hardware; routing supports layering and non-overlapping MPE zones"
-			goals: ["goal.perform_live"]
-			capabilities: ["capability.accept_external_midi"]
+			description: "The UI never originates notes; performance notes enter through external MIDI. MIDI-file and built-in note playback are demonstration and verification inputs only."
+			goals: ["goal.perform_through_standalone"]
+			capabilities: ["capability.external_midi_performance"]
 		}
 		hard_realtime_callback: {
 			kind: "nonfunctional"
-			description: "The audio callback never allocates, locks, blocks, performs I/O, or frees retired memory"
-			goals: ["goal.perform_live"]
-			capabilities: ["capability.preserve_realtime_safety", "capability.operate_audio_and_midi_devices"]
+			description: "The audio callback allocates no heap memory, acquires no lock, performs no blocking I/O, and never destroys retired owned state."
+			goals: ["goal.perform_through_standalone"]
+			capabilities: ["capability.realtime_safe_execution"]
 		}
 		canonical_signal_flow: {
 			kind: "functional"
-			description: "Audio follows engine or sample source through strip inserts, volume and pan, sends and buses, master inserts, limiter, and output"
-			goals: ["goal.perform_live", "goal.design_playable_sounds"]
-			capabilities: ["capability.mix_to_stereo"]
+			description: "Audio flows from the selected engine or sample source through strip inserts, volume and pan, send taps, aux returns, master inserts, limiter, and stereo output."
+			goals: ["goal.perform_through_standalone"]
+			capabilities: ["capability.stereo_mix_pipeline"]
 		}
-		complete_patch_definition: {
+		mixer_only_ui_scope: {
 			kind: "functional"
-			description: "A patch owns its sound source, voice behavior, optional samples, modulation, MIDI mapping, and mixer assignment as one playable instrument"
-			goals: ["goal.design_playable_sounds"]
-			capabilities: ["capability.configure_complete_patch"]
+			description: "The current standalone GUI is the live mixer and no other screen: six of sixteen channel strips, no view switching, no patch/preset/modulation editor, and no on-screen keyboard."
+			goals: ["goal.operate_live_mixer"]
+			capabilities: ["capability.pointer_free_mixer_control"]
+		}
+		single_control_mutation_path: {
+			kind: "nonfunctional"
+			description: "All live, automated, and scene inputs become AppEvents applied by the same AppState reducer; views render state and never maintain an independent mutable model."
+			goals: ["goal.operate_live_mixer", "goal.inspect_and_replay_behavior"]
+			capabilities: ["capability.shared_control_reducer", "capability.deterministic_scene_replay"]
+		}
+		gamepad_keyboard_parity: {
+			kind: "functional"
+			description: "Keyboard and gamepad adapters emit the same semantic mixer events for navigation, momentary edit mode, fine/coarse adjustment, and double-tap toggles."
+			goals: ["goal.operate_live_mixer"]
+			capabilities: ["capability.pointer_free_mixer_control"]
+		}
+		current_sound_scope: {
+			kind: "functional"
+			description: "The completion scope is the existing executable system: virtual-analog polyphony, zoned sample playback, modulation, patch routing, effects chains, mixing, MIDI files, presets, and sessions. Wavetable and FM discriminators may remain forward-compatible but are not claimed as rendered engines until dedicated resources and proofs exist."
+			goals: ["goal.exercise_supported_sound_architecture"]
+			capabilities: ["capability.polyphonic_sound_generation", "capability.configurable_instrument_graph"]
 		}
 		versioned_atomic_restore: {
 			kind: "functional"
-			description: "Persisted formats are explicitly versioned and a failed session restore leaves all prior state unchanged"
-			goals: ["goal.preserve_work"]
-			capabilities: ["capability.save_and_restore_sound_library"]
+			description: "Preset and session payloads include an explicit version; decoding and migration finish successfully before the active AppState is replaced."
+			goals: ["goal.preserve_reproducible_sound_state"]
+			capabilities: ["capability.versioned_sound_state"]
 		}
-		gamepad_keyboard_operation: {
-			kind: "functional"
-			description: "Every instrument editing action is reachable from keyboard and gamepad without requiring mouse or touch input"
-			goals: ["goal.design_playable_sounds", "goal.operate_standalone"]
-			capabilities: ["capability.edit_without_pointer"]
+		deterministic_observation: {
+			kind: "nonfunctional"
+			description: "Identical initial AppState plus identical scene bytes produces byte-identical snapshots and equal render observations; snapshots contain no wall-clock or unordered-map state."
+			goals: ["goal.inspect_and_replay_behavior"]
+			capabilities: ["capability.deterministic_scene_replay"]
+		}
+		measured_proofs: {
+			kind: "nonfunctional"
+			description: "A proof asserts measured state, routing, samples, or audio in code and exits non-zero when the claim is false; unconditional success text is never sufficient evidence."
+			goals: ["goal.exercise_supported_sound_architecture", "goal.inspect_and_replay_behavior"]
+			capabilities: ["capability.behavioral_proof_harness"]
+		}
+		canonical_resource_types: {
+			kind: "nonfunctional"
+			description: "Each spec resource owns one canonical public Rust type in its module. Other resources import that type; they never recreate sibling value objects, ports, aggregates, or local lookalikes."
+			goals: ["goal.exercise_supported_sound_architecture"]
+			capabilities: ["capability.configurable_instrument_graph"]
 		}
 	}
 
 	evidence: {
-		midi_routing_contract: {
-			kind: "integration_validation"
-			description: "Normalized MIDI dispatch proves exact address matching, intentional layering, and isolated MPE zones"
+		standalone_runtime: {
+			kind: "behavioral_witness"
+			description: "The hermetic standalone composition consumes normalized events through AppState and produces bounded, metered audio through the production render function."
+			validations: ["validation.ui_smoke", "validation.midi_multitrack_regression"]
+			witnesses: ["witness.standalone_runtime"]
 		}
 		polyphonic_render: {
 			kind: "behavioral_witness"
-			description: "A rendered expressive passage proves audible bounded output, envelope behavior, and voice stealing"
+			description: "A committed over-polyphonic engine run proves audible output, voice stealing, and isolated per-note expression; its silent/no-expression baseline fails."
+			witnesses: ["witness.expressive_polyphony"]
 		}
-		patch_configuration: {
-			kind: "integration_validation"
-			description: "A complete patch configuration drives its sound source, modulation, routing, and mixer assignment together"
-		}
-		mixer_and_effects_path: {
+		mixer_behavior: {
 			kind: "behavioral_witness"
-			description: "A multitimbral render proves independent strips, ordered effects, sends, aux returns, master processing, and limiting"
+			description: "A headless mixer run proves navigation, bounded editing, solo isolation, ordered stereo mixing, and metering independence."
+			validations: ["validation.mixer_integration", "validation.autopilot"]
+			witnesses: ["witness.mixer_control_path"]
 		}
-		preset_and_session_roundtrip: {
+		realtime_boundary: {
 			kind: "behavioral_witness"
-			description: "Versioned patch and complete-session round trips prove equivalence and failed-load atomicity"
+			description: "Instrumented boundary execution proves event delivery, latest-wins snapshots, and off-audio-thread reclamation."
+			validations: ["validation.realtime_contract"]
+			witnesses: ["witness.realtime_boundary"]
 		}
-		live_standalone_pipeline: {
-			kind: "integration_validation"
-			description: "The live pipeline wires external MIDI through the lock-free engine to desktop audio output"
+		sound_subsystem_suite: {
+			kind: "project_validation"
+			description: "The complete proof suite exercises the supported voice, sample, modulation, patch, effect, mixer, MIDI, and persistence slices."
+			validations: ["validation.proof_suite"]
 		}
-		realtime_boundary_contract: {
+		sound_state_roundtrip: {
 			kind: "behavioral_witness"
-			description: "Instrumented execution proves event, snapshot, and deferred-deallocation behavior against the accepted implementation"
+			description: "A complete versioned session restores equivalently, re-renders identically, and rejects corrupt state atomically."
+			validations: ["validation.preset_roundtrip"]
+			witnesses: ["witness.preset_session_roundtrip"]
 		}
-		gamepad_editor_journey: {
+		scene_replay: {
 			kind: "behavioral_witness"
-			description: "A headless keyboard/gamepad journey edits bounded state, publishes it to audio, and saves the resulting setup"
+			description: "The same serialized events drive the authoritative reducer and renderer twice with deterministic snapshots and measured non-silent results; a no-op reducer fails."
+			validations: ["validation.scene_suite"]
+			witnesses: ["witness.scene_replay"]
 		}
 	}
 
 	nonGoals: {
-		plugin_formats: "crest-synth is a standalone instrument; CLAP, VST3, AU, and other DAW plug-in formats are outside the product"
-		onscreen_performance: "The editor does not trigger notes and has no on-screen keyboard; performance input comes from external MIDI hardware"
-		midi_sequencing: "MIDI-file playback is verification and demonstration input, not the product's performance workflow"
-		mouse_touch_ui: "The instrument is intentionally operable without mouse or touch input"
-		cloud_library: "Online accounts and cloud synchronization for presets or sessions are outside crest-synth"
+		plugin_hosting: "Plugin, VST, CLAP, AU, and third-party-effect hosting were explicitly removed; the generated Effects context is the current effects system."
+		additional_editor_screens: "Patch, preset-browser, modulation-matrix, and MIDI-configuration screens are future work; the current standalone GUI is intentionally mixer-only."
+		onscreen_instrument: "The UI is not a performance surface and does not provide an on-screen keyboard or originate notes."
+		sequencer_product: "Standard MIDI File playback and built-in note schedules are proof/demo inputs, not a composition or sequencing feature."
+		pointer_input: "Mouse and touch interaction are outside the current controller-first mixer scope."
+		unproven_engine_modes: "Wavetable and FM may remain modeled identifiers, but project completion does not claim working renderers until each has explicit configuration, integration, and behavioral evidence."
 	}
 
 	completion: {
 		requiredGoals: [
-			"goal.perform_live",
-			"goal.design_playable_sounds",
-			"goal.preserve_work",
-			"goal.operate_standalone",
+			"goal.perform_through_standalone",
+			"goal.operate_live_mixer",
+			"goal.exercise_supported_sound_architecture",
+			"goal.preserve_reproducible_sound_state",
+			"goal.inspect_and_replay_behavior",
 		]
 		projectChecks: [
 			"validation.format",
 			"validation.clippy",
 			"validation.build",
 			"validation.test",
-			"validation.live_pipeline",
 			"validation.ui_smoke",
+			"validation.scene_suite",
+			"validation.proof_suite",
 		]
 	}
 }

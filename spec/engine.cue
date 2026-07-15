@@ -1,13 +1,14 @@
 package crestsynth
 
-// Engine — polyphonic synthesis. Multiple engine types (virtual analog,
-// wavetable, sample playback, FM) share one voice lifecycle.
+// Engine — the currently proven virtual-analog polyphonic source. EngineType
+// preserves forward-compatible discriminators, but completion does not claim
+// wavetable or FM rendering until dedicated resources and proofs are added.
 
 project: contexts: Engine: purpose: "core sound generation: voices, oscillators, filters, envelopes, and voice allocation with stealing"
 
 project: contexts: Engine: valueObjects: {
-	EngineType: {description: "which synthesis engine a patch uses: virtual analog, wavetable, sample playback (delegates to the Sample context), or FM"}
-	Waveform: {description: "oscillator waveform: sine, saw, square, triangle, noise, or wavetable"}
+	EngineType: {description: "source discriminator: VirtualAnalog is implemented here; Sample delegates to Sample; Wavetable and FM are reserved and must return an explicit unsupported error until implemented"}
+	Waveform: {description: "implemented virtual-analog oscillator waveform: sine, saw, square, triangle, or noise"}
 	OscillatorConfig: {
 		state: {waveform: "Waveform", detuneCents: "f64", pulseWidth: "f64", unisonVoices: "u8", unisonSpread: "f64"}
 		description: "oscillator settings for one voice"
@@ -30,7 +31,7 @@ project: contexts: Engine: valueObjects: {
 		description: "complete per-patch voice configuration"
 		invariants: [
 			"maxPolyphony must be positive (typically 8-64)",
-			"engineType is the Engine context's canonical EngineType — every one of its four documented variants is accepted at construction and preserved unchanged when read back",
+		"engineType is the canonical EngineType; unsupported reserved modes are preserved by persistence but cannot silently fall back to virtual analog",
 		]
 	}
 }
@@ -54,7 +55,8 @@ project: contexts: Engine: aggregates: Voice: {
 		"a voice is reclaimable only when its amp envelope has reached Idle",
 		"per-note expression affects only the voice with the matching NoteId",
 	]
-	contributesTo: [{capability: "capability.render_expressive_sound", contribution: "owns the oscillator, filter, envelope, and per-note-expression lifecycle for one sounding note"}]
+	validations: [{kind: "test", command: ["cargo", "test", "voice"], description: "envelope lifecycle and NoteId-scoped expression are correct"}]
+	contributesTo: [{capability: "capability.polyphonic_sound_generation", contribution: "owns the oscillator, filter, envelope, and per-note-expression lifecycle for one sounding note"}]
 }
 
 project: contexts: Engine: ports: {
@@ -84,7 +86,8 @@ project: contexts: Engine: domainServices: {
 		purpose: "assigns incoming notes to voices, stealing per the configured policy when polyphony is exhausted"
 		uses: ["aggregate.Engine.Voice"]
 		meta: notes: "the steal policy parameter is the Engine context's canonical StealPolicy — never a private duplicate type. Each documented variant is observably honored through the public interface: Refuse declines the allocation when full; Oldest/Quietest/LowestVelocity each select their respective victim, and the chosen victim differs across variants when the candidates differ."
-		contributesTo: [{capability: "capability.render_expressive_sound", contribution: "keeps polyphony bounded and applies the configured voice-stealing policy"}]
+		validations: [{kind: "test", command: ["cargo", "test", "voice_allocator"], description: "all policies select the documented victim and Refuse leaves the pool unchanged"}]
+		contributesTo: [{capability: "capability.polyphonic_sound_generation", contribution: "keeps polyphony bounded and applies the configured voice-stealing policy"}]
 	}
 	VoiceRenderer: {
 		purpose: "renders one voice for one buffer: oscillator → filter → envelopes"
@@ -93,6 +96,7 @@ project: contexts: Engine: domainServices: {
 	EngineRenderer: {
 		purpose: "iterates all active voices and sums their output to stereo"
 		uses: ["domainService.Engine.VoiceRenderer", "domainService.Engine.VoiceAllocator"]
-		contributesTo: [{capability: "capability.render_expressive_sound", contribution: "renders active voices into the stereo stream consumed by the mixer"}]
+		validations: [{kind: "test", command: ["cargo", "test", "engine_renderer"], description: "active virtual-analog voices produce bounded stereo AudioFrames"}]
+		contributesTo: [{capability: "capability.polyphonic_sound_generation", contribution: "renders active voices into the stereo stream consumed by the mixer"}]
 	}
 }

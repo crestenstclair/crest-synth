@@ -16,7 +16,7 @@ project: contexts: Mixer: valueObjects: {
 project: contexts: Mixer: aggregates: ChannelStrip: {
 	root:    true
 	purpose: "one patch's channel: input gain, insert chain, volume, pan, mute/solo, and up to 8 send taps"
-	state: {inputGain: "Amplitude", volumeDb: "Decibel", pan: "Pan", mute: "bool", solo: "bool", sends: "list<SendTap>", peak: "PeakLevel"}
+	state: {inputGain: "Amplitude", inserts: "EffectChain", volumeDb: "Decibel", pan: "Pan", mute: "bool", solo: "bool", sends: "list<SendTap>", peak: "PeakLevel"}
 	commands: {
 		SetVolume: {volumeDb: "Decibel"}
 		SetPan: {pan: "Pan"}
@@ -30,10 +30,10 @@ project: contexts: Mixer: aggregates: ChannelStrip: {
 	}
 	invariants: [
 		"a strip has at most 8 send taps",
-		"peak metering reflects the level after volume and pan are applied",
+		"peak metering is measured after strip processing and before mute/solo audibility gating, so every input remains observable",
 	]
 	validations: [{kind: "test", command: ["cargo", "test", "channel_strip"], description: "ChannelStrip unit tests pass"}]
-	contributesTo: [{capability: "capability.mix_to_stereo", contribution: "provides independent gain, inserts, pan, mute, solo, sends, and metering for one patch"}]
+	contributesTo: [{capability: "capability.stereo_mix_pipeline", contribution: "provides independent gain, inserts, pan, mute, solo, sends, and pre-gate metering for one patch"}]
 }
 
 project: contexts: Mixer: aggregates: MixBus: {
@@ -51,14 +51,15 @@ project: contexts: Mixer: aggregates: MixBus: {
 		"aux buses feed the master bus, never each other",
 	]
 	validations: [{kind: "test", command: ["cargo", "test", "mix_bus"], description: "MixBus unit tests pass"}]
-	contributesTo: [{capability: "capability.mix_to_stereo", contribution: "owns aux and master summing, ordered processing, and final output limiting"}]
+	contributesTo: [{capability: "capability.stereo_mix_pipeline", contribution: "owns aux and master summing, ordered processing, and final output limiting"}]
 }
 
 project: contexts: Mixer: domainServices: {
 	MixEngine: {
 		purpose: "one full mix pass: render strips, collect send taps into aux buses, process aux inserts, sum into the master bus, process master inserts and the limiter"
 		uses: ["aggregate.Mixer.ChannelStrip", "aggregate.Mixer.MixBus", "domainService.Effects.ChainRenderer"]
-		contributesTo: [{capability: "capability.mix_to_stereo", contribution: "coordinates the complete strip-to-aux-to-master signal path and final limiting"}]
+		validations: [{kind: "test", command: ["cargo", "test", "mix_engine"], description: "strip, sends, aux, master, limiter, solo, and metering order are correct"}]
+		contributesTo: [{capability: "capability.stereo_mix_pipeline", contribution: "coordinates the complete strip-to-aux-to-master signal path and final limiting"}]
 	}
 }
 
@@ -69,7 +70,8 @@ project: contexts: Mixer: applicationServices: {
 		operations: {
 			setSolo: {input: {strip: "u32", solo: "bool"}}
 		}
-		contributesTo: [{capability: "capability.mix_to_stereo", contribution: "coordinates user-visible strip solo and bus operations without bypassing mixer invariants"}]
+		validations: [{kind: "test", command: ["cargo", "test", "mixer_controller"], description: "solo groups and bus operations preserve mixer invariants"}]
+		contributesTo: [{capability: "capability.stereo_mix_pipeline", contribution: "coordinates user-visible strip solo and bus operations without bypassing mixer invariants"}]
 	}
 }
 
@@ -77,8 +79,7 @@ project: contexts: Mixer: applicationServices: {
 // non-soloed strips are muted. Enforced by MixerController, observable at
 // MixEngine output.
 
-// ── Mixer additions (editor increment) ──────────────────
-// The Mixer VIEW: the first real GUI view. A controller/keyboard-driven view
+// The Mixer VIEW is the current GUI: a controller/keyboard-driven view
 // over the channel-strip mixer (aggregate.Mixer.ChannelStrip). Like the
 // Editor view, it is a one-way (Flux) store — MixerView — with a single
 // mutation entry point that reduces semantic MixerViewEvents. The egui/synth_ui
@@ -91,23 +92,8 @@ project: contexts: Mixer: applicationServices: {
 // viewport. The view edits the ChannelStrip channels; metering is read back
 // from them.
 //
-// PORTING NOTE (see NOTES.md for detail): the original spec's mixer view sat
-// on top of a single `aggregate.Patch.ChannelMixer` — a bespoke 16-slot array
-// aggregate with its own ChannelStrip value object (volume/reverbSend/echoSend/
-// pan/mute/solo as raw f64 0.0-1.0 fields) and a sibling `GlobalMixer`/
-// `PatchMixer`. None of those three exist on the clean base. The clean base
-// already has an analogous — but architecturally different — `ChannelStrip`
-// AGGREGATE (one per patch: inputGain/insertChain/volumeDb/pan/mute/solo/sends/
-// peak) plus a `MixBus` aggregate (bus 0 = master) and a `MixEngine` domain
-// service that performs the mix pass. This file re-targets MixerView at that
-// existing machinery instead of re-declaring ChannelMixer: MixerView now wraps
-// a fixed list of 16 `aggregate.Mixer.ChannelStrip` instances (preserving the
-// original's "16 channels, 6 visible" invariant at the view layer, since no
-// aggregate on the clean base fixes the count at 16 by itself). The two
-// continuous send rows (ReverbSend/EchoSend) are kept as named MixerParam rows
-// verbatim from the original and map onto the first two entries of each
-// ChannelStrip's `sends: list<SendTap>` (SendTap already has `bus` + `level` +
-// `preFader`, a superset of the original's raw two-float sends).
+// It deliberately reuses ChannelStrip; there is no ChannelMixer, PatchMixer,
+// GlobalMixer, or parallel strip model. ReverbSend/EchoSend address sends 0/1.
 
 project: contexts: Mixer: ubiquitousLanguage: {
 	MixerView:      "the single store for the mixer view: owns the cursor (channel + parameter row), the viewport offset, the edit-mode flag, and the 16 ChannelStrip channels it edits"
@@ -148,13 +134,13 @@ project: contexts: Mixer: aggregates: MixerView: {
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with MixerView"},
 		{kind: "test", command: ["cargo", "test", "mixer_view"], description: "MixerView reducer unit tests pass (nav, edge-scroll, edit-mode, fine/coarse, toggle)"},
 	]
-	contributesTo: [{capability: "capability.edit_without_pointer", contribution: "provides the six-strip, keyboard/gamepad-driven mixer editing journey"}]
+	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "provides the six-strip, keyboard/gamepad-driven mixer editing journey"}]
 }
 
 // ── Invariants ─────────────────────────────────────────
 
 project: invariants: mixerView: [
-	{text: "the mixer view is a pure view over its 16 ChannelStrip channels; it mutates state only by emitting MixerViewEvents applied to MixerView, never by touching a ChannelStrip's fields directly from draw code", meta: rationale: "one-way data flow keeps the control plane hermetically testable, identical to the Editor view"},
+	{text: "the mixer skin is a pure view over the MixerView inside AppState; it requests changes only by emitting AppEvent::Mixer into AppState.apply and never mutates MixerView or ChannelStrip directly", meta: rationale: "one authoritative reducer makes live input and scene replay identical"},
 	{text: "double-tap detection and Edit-hold timing live in the input adapter, which emits clean semantic events (ToggleFocusedParam / EnterEditMode / ExitEditMode); the store is timing-free", meta: rationale: "keeps MixerView a pure reducer that unit tests can drive with event sequences"},
 	{text: "metering is independent of solo and mute: a channel silenced by another channel's solo still meters its own level", meta: rationale: "the volume strip doubles as the channel's peak meter and must show real signal even when inaudible"},
 	{text: "keyboard and gamepad emit identical MixerViewEvents, so the two input paths are interchangeable", meta: rationale: "controller-first parity with the rest of the app"},

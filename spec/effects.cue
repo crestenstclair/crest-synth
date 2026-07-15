@@ -72,13 +72,14 @@ project: contexts: Effects: aggregates: EffectChain: {
 		"the chain never exceeds maxSlots slots",
 	]
 	validations: [{kind: "test", command: ["cargo", "test", "effect_chain"], description: "EffectChain unit tests pass"}]
-	contributesTo: [{capability: "capability.mix_to_stereo", contribution: "owns the ordered, bypassable insert processing used by strips, aux buses, and the master"}]
+	contributesTo: [{capability: "capability.stereo_mix_pipeline", contribution: "owns the ordered, bypassable insert processing used by strips, aux buses, and the master"}]
 }
 
 project: contexts: Effects: domainServices: {
 	ChainRenderer: {
 		purpose: "processes a buffer through every non-bypassed slot of a chain in order"
 		uses: ["aggregate.Effects.EffectChain", "port.Effects.EffectProcessor"]
-		contributesTo: [{capability: "capability.mix_to_stereo", contribution: "executes effect slots in canonical signal-flow order"}]
+		validations: [{kind: "test", command: ["cargo", "test", "chain_renderer"], description: "non-commutative slots execute in order and bypass is bit-transparent"}]
+		contributesTo: [{capability: "capability.stereo_mix_pipeline", contribution: "executes effect slots in canonical signal-flow order over Kernel AudioFrames"}]
 	}
 }

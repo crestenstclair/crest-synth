@@ -40,7 +40,9 @@ project: contexts: Kernel: valueObjects: {
 
 	// Identifiers
 	PatchId: {from: "u32", description: "identifies a Patch"}
+	SampleSetId: {from: "u32", description: "identifies a SampleSet"}
 	PresetId: {from: "u32", description: "identifies a Preset"}
+	SessionId: {from: "u32", description: "identifies a complete saved Session"}
 	BankId: {from: "u32", description: "identifies a Bank"}
 	BusId: {from: "u32", description: "identifies a mixer bus; bus 0 is reserved for the master"}
 }

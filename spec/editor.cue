@@ -1,26 +1,14 @@
 package crestsynth
 
-// ── Editor ─────────────────────────────────────────────
-// Keyboard/gamepad-driven parameter editor: a one-way (Elm/Flux) event loop
-// over a single store (EditorState) that edits live engine parameters. The
-// standalone editor app hosts the live engine (external MIDI in via the Shell
-// MidiInput port, audio out via the Shell AudioOutput port) and is hermetically
-// smoke-testable with no window/device.
+// Editor is host-neutral bounded parameter-editing behavior retained inside
+// AppState. It is not a separately visible screen in the current mixer-only UI.
 //
 // EditorState is the single store. The egui shell and the gamepad adapter both
 // emit the SAME EditorEvents into it, so keyboard and gamepad are interchangeable
 // and the whole control plane is hermetically testable: feed an event sequence,
 // assert focus / edit-mode / field values — no window, no device.
 //
-// PORTING NOTE: on the original spec this context predates the Mixer view and
-// was superseded by it (see spec/mixer.cue's MixerView, added in
-// mixer-additions.cue) — the original's own StandaloneUiMain asset says the
-// mixer view "REPLACES the previous parameter-list editor that used to live
-// here." EditorEvent/ParamField/EditorState are ported here verbatim as the
-// original declared them; no asset in this increment references them (see
-// NOTES.md).
-
-project: contexts: Editor: purpose: "keyboard/gamepad-driven parameter editor: a one-way event loop over a single store that edits live engine parameters"
+project: contexts: Editor: purpose: "host-neutral one-way reducer for bounded parameter lists; reusable application state but not a current GUI surface"
 project: contexts: Editor: ubiquitousLanguage: {
 	EditorEvent: "a semantic input event (navigate or edit-mode change) emitted by the keyboard/gamepad adapter — the only thing that mutates editor state"
 	EditorState: "the single store: focus position, edit-mode flag, and the list of editable parameter fields"
@@ -49,7 +37,7 @@ project: contexts: Editor: aggregates: EditorState: {
 	purpose: "the single editor store: owns focus, edit-mode, and the editable parameter fields; the one entry point that reacts to EditorEvents"
 	state: {fields: "Vec<ParamField>", focus: "usize", editMode: "bool"}
 	invariants: [
-		"apply(EditorEvent) is the ONLY way to mutate editor state; no setters, pure and allocation-free (no I/O, rendering, or audio)",
+		"apply(EditorEvent) is the only mutation API; it is deterministic and performs no I/O, rendering, or audio",
 		"focus always stays within the fields range; navigate-mode directional events move focus by one, saturating at the ends (no wrap)",
 		"in navigate mode directional events move focus; in edit mode they adjust the focused field's value instead",
 		"in edit mode NavRight = +fine and NavLeft = -fine (one unit); NavUp = +coarse and NavDown = -coarse (ten units = 10x fine)",
@@ -59,7 +47,6 @@ project: contexts: Editor: aggregates: EditorState: {
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with EditorState"},
 		{kind: "test", command: ["cargo", "test", "editor_state"], description: "EditorState event-reducer unit tests pass (nav, edit-mode, fine/coarse, clamping)"},
 	]
-	contributesTo: [{capability: "capability.edit_without_pointer", contribution: "owns the deterministic keyboard/gamepad reducer for bounded parameter editing"}]
 }
 
 // ── DesignSystem ───────────────────────────────────────
@@ -111,9 +98,9 @@ project: contexts: DesignSystem: valueObjects: Rgba: {
 // asks the Theme to resolve a SemanticToken. Concretions (DefaultTheme, future
 // alternate themes) implement this, so the whole app re-skins by swapping one.
 project: contexts: DesignSystem: ports: Theme: {
+	direction: "outbound"
 	contract: {color: "SemanticToken -> Rgba"}
 	meta: notes: "Skins take a Theme (trait object or generic bound) and resolve every color through `color(token)`. No skin reads an Rgba except via the Theme. This is the seam that makes restyling/dark-mode/alternate-skins free."
-	validations: [{kind: "compiles", command: ["cargo", "build"], description: "crate builds with Theme port"}]
 }
 
 // The default concretion of Theme: binds every SemanticToken to a raw Rgba (a
@@ -125,7 +112,7 @@ project: contexts: DesignSystem: domainServices: DefaultTheme: {
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with DefaultTheme"},
 		{kind: "test", command: ["cargo", "test", "default_theme"], description: "DefaultTheme resolves every SemanticToken variant to an Rgba (exhaustive, no panic/fallback)"},
 	]
-	contributesTo: [{capability: "capability.edit_without_pointer", contribution: "provides exhaustive semantic styling for every navigable instrument surface"}]
+	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "provides exhaustive semantic styling for the keyboard/gamepad mixer surface"}]
 }
 
 // ── Invariants ─────────────────────────────────────────
@@ -133,7 +120,7 @@ project: contexts: DesignSystem: domainServices: DefaultTheme: {
 project: invariants: standaloneEditor: [
 	{text: "the standalone UI is keyboard/gamepad driven only — no mouse or touch input in this implementation", meta: rationale: "keeps the initial implementation clean; pointer input can be added later without changing the event-loop core"},
 	{text: "the standalone UI is not a performance surface: it originates no notes; all note performance comes from external MIDI", meta: rationale: "the UI's job is mixing/editing, not playing"},
-	{text: "the UI mutates state only by emitting MixerViewEvents applied to MixerView; egui draw code is a pure view that reads channel values and per-channel peak levels from the ChannelStrip channels it wraps", meta: rationale: "one-way data flow keeps state changes traceable and the control plane hermetically testable"},
+	{text: "the UI mutates state only by emitting AppEvent::Mixer into AppState.apply; egui draw code is a pure projection of canonical mixer state and peak levels", meta: rationale: "one application reducer keeps live input and scenes traceable and comparable"},
 	{text: "the audio model consumes external MIDI plus a published parameter snapshot across the RealTime seam and never observes MixerViewEvents", meta: rationale: "keeps the engine host-agnostic and the realtime path decoupled from the UI event loop"},
 	{text: "the ui smoke path opens no window, no audio device, and no MIDI device; it only constructs state and drives the event loop", meta: rationale: "keeps the standalone app mechanically checkable with no display or hardware"},
 	{text: "the mixer draw code is a skin: it holds no literal color and resolves every color through a DesignSystem Theme by SemanticToken; the only raw-color touch is converting the Theme's returned Rgba to egui Color32", meta: rationale: "the behavior÷skin÷token seam — swapping the Theme restyles the whole mixer with zero draw-code change (the DesignSystem invariant applied to its first consumer)"},
@@ -143,7 +130,7 @@ project: invariants: standaloneEditor: [
 ]
 
 project: invariants: designSystem: [
-	{text: "every interactive primitive is a pure reducer (State + Event + apply); its behavior layer never touches egui, performs no I/O, and is allocation-free", meta: rationale: "behavior must be unit-testable headlessly and reusable across any renderer — the same discipline MixerView already follows"},
+	{text: "every interactive primitive is a deterministic reducer (State + Event + apply); its behavior layer never touches egui or performs I/O", meta: rationale: "behavior must be unit-testable headlessly and reusable across renderers"},
 	{text: "a skin reads colors only by resolving a SemanticToken through the Theme port; no literal color value or hard-coded size appears in draw code", meta: rationale: "this single seam is what lets the whole app be restyled by swapping the Theme, with zero behavior change (the JUCE LookAndFeel property)"},
 	{text: "every primitive's behavior is proven by feeding Events and asserting State with no window and no device, exactly as the mixer demo proves MixerView", meta: rationale: "keeps the control plane hermetically testable and decoupled from egui/gilrs/cpal"},
 	{text: "a primitive reports focus only via its view-model flags (focused, editing); it never decides where focus is — the consuming view owns cursor traversal and edit-mode, the skin renders the flags via FocusRing/EditActive", meta: rationale: "traversal rules are layout-specific (a 2D channel×param grid scrolls unlike a 1D list), so views own traversal while focus still LOOKS identical everywhere through two tokens"},

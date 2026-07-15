@@ -39,13 +39,15 @@ project: contexts: Modulation: aggregates: ModMatrix: {
 		"the matrix never exceeds maxRoutes routes",
 		"there are exactly 4 LFOs",
 	]
-	contributesTo: [{capability: "capability.configure_complete_patch", contribution: "owns the modulation routes and LFO configuration contained by a playable patch"}]
+	validations: [{kind: "test", command: ["cargo", "test", "mod_matrix"], description: "route limits, LFO count, and canonical source/destination values are enforced"}]
+	contributesTo: [{capability: "capability.configurable_instrument_graph", contribution: "owns the modulation routes and LFO configuration contained by a playable patch"}]
 }
 
 project: contexts: Modulation: domainServices: {
 	ModProcessor: {
 		purpose: "evaluates every source, applies every route through its curve and via-depth, and produces per-sample parameter offsets"
 		uses: ["aggregate.Modulation.ModMatrix"]
-		contributesTo: [{capability: "capability.render_expressive_sound", contribution: "applies MIDI, MPE, envelope, and LFO expression to rendered sound"}]
+		validations: [{kind: "test", command: ["cargo", "test", "mod_processor"], description: "enabled routes measurably alter only their addressed destinations"}]
+		contributesTo: [{capability: "capability.configurable_instrument_graph", contribution: "applies MIDI, MPE, envelope, and LFO sources to canonical render parameters"}]
 	}
 }

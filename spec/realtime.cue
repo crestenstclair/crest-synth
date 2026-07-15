@@ -12,48 +12,54 @@ project: contexts: RealTime: valueObjects: {
 
 project: contexts: RealTime: ports: {
 	EventRing: {
+		direction: "inbound"
 		contract: {
 			push: "(message: BoundaryMessage) -> result<(), RingFull>"
 			pop:  "() -> option<BoundaryMessage>"
 		}
 		meta: notes: "single producer (UI/MIDI thread), single consumer (audio thread)"
-		contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "defines the non-blocking event path into the audio callback"}]
 	}
 	ParameterBridge: {
+		direction: "inbound"
 		contract: {
 			publish: "(snapshot: ParameterSnapshot) -> ()"
 			read:    "() -> ParameterSnapshot"
 		}
 		meta: notes: "writer publishes; reader always gets the latest snapshot without blocking"
-		contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "defines latest-wins parameter publication without sharing mutable state"}]
 	}
 	DeferredDeallocator: {
+		direction: "outbound"
 		contract: {
 			retire:  "(allocation: Retired) -> ()"
 			collect: "() -> u32"
 		}
 		meta: notes: "the audio thread retires; a background thread frees"
-		contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "keeps destruction and allocator work off the audio thread"}]
 	}
 }
 
 project: adapters: RtrbEventRing: {
 	implements: "port.RealTime.EventRing"
 	layer:      "infrastructure"
+	profile: {kind: "in_process", topology: "single-producer-single-consumer"}
 	meta: framework: "rtrb"
-	contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "implements the accepted lock-free SPSC event boundary"}]
+	validations: [{kind: "test", command: ["cargo", "test", "rtrb_event_ring"], description: "full/empty behavior is non-blocking and preserves event order"}]
+	contributesTo: [{capability: "capability.realtime_safe_execution", contribution: "implements the accepted lock-free SPSC event boundary"}]
 }
 
 project: adapters: TripleBufferParameterBridge: {
 	implements: "port.RealTime.ParameterBridge"
 	layer:      "infrastructure"
+	profile: {kind: "in_process", topology: "single-writer-latest-reader"}
 	meta: framework: "triple_buffer"
-	contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "implements latest-wins lock-free parameter snapshots"}]
+	validations: [{kind: "test", command: ["cargo", "test", "triple_buffer_parameter_bridge"], description: "read returns the newest complete published snapshot without blocking"}]
+	contributesTo: [{capability: "capability.realtime_safe_execution", contribution: "implements latest-wins lock-free parameter snapshots"}]
 }
 
 project: adapters: BasedropDeferredDeallocator: {
 	implements: "port.RealTime.DeferredDeallocator"
 	layer:      "infrastructure"
+	profile: {kind: "in_process", topology: "audio-retire-control-collect"}
 	meta: framework: "basedrop"
-	contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "implements off-audio-thread reclamation of retired state"}]
+	validations: [{kind: "test", command: ["cargo", "test", "basedrop_deferred_deallocator"], description: "tracked state is destroyed only by control-side collection"}]
+	contributesTo: [{capability: "capability.realtime_safe_execution", contribution: "implements off-audio-thread reclamation of retired state"}]
 }
