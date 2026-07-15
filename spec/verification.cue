@@ -56,13 +56,35 @@ project: witnesses: mixer_control_path: {
 	negativeCommand: ["cargo", "run", "--bin", "mixer_demo", "--", "--observe", "--degenerate-stub"]
 	timeout: "60s"
 	artifacts: ["target/debug/mixer_demo"]
-	observation: {kind: "json_stdout", marker: "CREST_OBSERVATION ", schema: {peak: "number", bounded_edit: "bool", edge_scroll: "bool", solo_isolation: "bool", all_channels_metered: "bool"}}
+	observation: {kind: "json_stdout", marker: "CREST_OBSERVATION ", schema: {peak: "number", bounded_edit: "bool", all_tracks_visible: "bool", inspector_consistent: "bool", solo_isolation: "bool", all_channels_metered: "bool"}}
 	predicates: [
 		{field: "peak", op: "gt", value: 0},
 		{field: "bounded_edit", op: "eq", value: true},
-		{field: "edge_scroll", op: "eq", value: true},
+		{field: "all_tracks_visible", op: "eq", value: true},
+		{field: "inspector_consistent", op: "eq", value: true},
 		{field: "solo_isolation", op: "eq", value: true},
 		{field: "all_channels_metered", op: "eq", value: true},
+	]
+}
+
+project: witnesses: midi_instrument_partition: {
+	scope: "goal"
+	goal: "goal.exercise_supported_sound_architecture"
+	capability: "capability.instrument_partitioned_test_playback"
+	resources: ["adapter.MidlyMidiFileReader", "applicationService.MidiFile.TestPlaybackAssembler", "domainService.MidiFile.Sequencer", "applicationService.Loop.RenderCoordinator", "asset.MidiPlayMain"]
+	evidence: ["evidence.midi_instrument_partition"]
+	command: ["cargo", "run", "--bin", "midi_play", "--", "midi/Corridors of Time - Chrono Trigger.mid", "--observe"]
+	negativeCommand: ["cargo", "run", "--bin", "midi_play", "--", "midi/Corridors of Time - Chrono Trigger.mid", "--observe", "--degenerate-stub"]
+	timeout: "60s"
+	artifacts: ["target/debug/midi_play", "midi-play.wav"]
+	observation: {kind: "json_stdout", marker: "CREST_OBSERVATION ", schema: {instrument_parts: "number", one_patch_per_instrument: "bool", round_robin_assignment: "bool", all_events_targeted: "bool", peak: "number"}}
+	predicates: [
+		{field: "instrument_parts", op: "gt", value: 1},
+		{field: "one_patch_per_instrument", op: "eq", value: true},
+		{field: "round_robin_assignment", op: "eq", value: true},
+		{field: "all_events_targeted", op: "eq", value: true},
+		{field: "peak", op: "gt", value: 0},
+		{field: "peak", op: "lte", value: 1},
 	]
 }
 

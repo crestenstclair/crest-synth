@@ -6,7 +6,7 @@ package crestsynth
 project: contexts: Loop: {
 	purpose: "the app-wide one-way control and render loop shared by the standalone host, smoke mode, autopilot, and deterministic scenes"
 	ubiquitousLanguage: {
-		AppEvent: "a closed semantic union over MIDI, gamepad, editor, mixer, patch, and preset commands"
+		AppEvent: "a closed semantic union over MIDI, gamepad, editor, mixer, patch, and preset commands; MIDI may carry an explicit patch target only for prepared test playback"
 		AppState: "the authoritative non-audio application state composed from canonical Patch, MixerView, EditorState, and Session values"
 		StateSnapshot: "a deterministic serialized projection of AppState, never a second state model"
 		Scene: "a versioned sequence of AppEvents and render-block advances"
@@ -16,12 +16,13 @@ project: contexts: Loop: {
 
 project: contexts: Loop: valueObjects: {
 	AppEvent: {
-		state: {variant: "Midi(MidiEvent) | Gamepad(GamepadAction) | Editor(EditorEvent) | Mixer(MixerViewEvent) | Patch(PatchCommand) | Preset(PresetCommand)"}
-		description: "the losslessly serializable event vocabulary used by every live and replay input; PatchCommand covers create/delete/config/mapping/sample/MPE changes and PresetCommand covers save/load/session restore"
+		state: {variant: "Midi { event: MidiEvent, targetPatch: option<PatchId> } | Gamepad(GamepadAction) | Editor(EditorEvent) | Mixer(MixerViewEvent) | Patch(PatchCommand) | Preset(PresetCommand)"}
+		description: "the losslessly serializable event vocabulary used by every live and replay input; targetPatch is Some only for a prepared MIDI-file test event, while external MIDI supplies None and follows normal channel mapping"
 		invariants: [
 			"the union is closed and exhaustively matched",
 			"scene serialization preserves every variant and payload exactly",
 			"Scene is not an AppEvent variant; a scene supplies events to the loop",
+			"a targeted MIDI event is accepted only when its PatchId exists in AppState; it is delivered exactly once to that patch and never re-dispatched by channel",
 		]
 		validations: [{kind: "test", command: ["cargo", "test", "app_event_roundtrip"], description: "every event variant round-trips losslessly"}]
 	}
@@ -107,13 +108,17 @@ project: contexts: Loop: applicationServices: {
 			"valueObject.Kernel.AudioFrame",
 		]
 		operations: {
-			dispatchMidi: {input: {state: "&AppState", event: "MidiEvent"}, output: {deliveries: "u32"}}
+			dispatchMidi: {input: {state: "&AppState", event: "MidiEvent", targetPatch: "option<PatchId>"}, output: {deliveries: "result<u32, EventRejection>"}}
 			renderBlock: {input: {state: "&AppState", frames: "&mut [AudioFrame]"}, output: {observation: "RenderObservation"}}
 		}
-		meta: rules: ["standalone, smoke, autopilot, demos, and SceneRunner call these operations; none owns a substitute audio graph"]
+		meta: rules: [
+			"standalone, smoke, autopilot, demos, and SceneRunner call these operations; none owns a substitute audio graph",
+			"targetPatch None delegates to MidiDispatcher channel/layer mapping; Some delivers exactly once to the generated test patch after validating it exists",
+		]
 		validations: [{kind: "test", command: ["cargo", "test", "render_coordinator"], description: "multi-patch events produce bounded metered stereo audio through the declared signal path"}]
 		contributesTo: [
 			{capability: "capability.external_midi_performance", contribution: "connects normalized MIDI to independently owned patch renderers"},
+			{capability: "capability.instrument_partitioned_test_playback", contribution: "delivers each prepared MIDI-file event to its exact generated instrument patch without changing live MIDI routing"},
 			{capability: "capability.stereo_mix_pipeline", contribution: "provides the one production render function used by all hosts and proofs"},
 			{capability: "capability.configurable_instrument_graph", contribution: "composes supported sound resources without local substitute types"},
 		]
@@ -134,19 +139,24 @@ project: contexts: Loop: applicationServices: {
 		uses: [
 			"aggregate.Loop.AppState", "applicationService.Loop.RenderCoordinator", "applicationService.Loop.SceneRunner", "domainService.Loop.StateProjector",
 			"port.Shell.AudioOutput", "port.Shell.MidiInput", "port.Shell.AppWindow", "port.Shell.GuiRenderer", "port.Shell.GamepadInput",
-			"domainService.Shell.MidiNormalizer", "domainService.Shell.GamepadNavigator", "domainService.MidiFile.Sequencer",
+			"domainService.Shell.MidiNormalizer", "domainService.Shell.GamepadNavigator", "applicationService.MidiFile.TestPlaybackAssembler", "domainService.MidiFile.Sequencer",
 		]
 		operations: {
 			handleEvent: {input: {event: "AppEvent"}, output: {result: "result<u64, EventRejection>"}}
+			prepareMidiFilePlayback: {input: {song: "Song", basePatch: "Patch"}, output: {plan: "result<TestPlaybackPlan, PlaybackPlanError>"}}
 			renderAudio: {input: {frames: "&mut [AudioFrame]"}, output: {peak: "f64"}}
 			runSmoke: {output: {result: "StandaloneObservation"}}
 		}
-		meta: rules: ["device adapters translate at the edge; this service owns orchestration and exposes the same functions to every run mode"]
+		meta: rules: [
+			"device adapters translate at the edge; this service owns orchestration and exposes the same functions to every run mode",
+			"MIDI-file test playback prepares every instrument patch before sequencing and sends each ScheduledPatchEvent as AppEvent::Midi with its exact targetPatch",
+		]
 		validations: [{kind: "integration", command: ["make", "ui-smoke"], description: "the complete headless standalone stack dispatches events and renders non-silent metered audio"}]
 		contributesTo: [
 			{capability: "capability.external_midi_performance", contribution: "coordinates external MIDI through the authoritative state and production render path"},
 			{capability: "capability.pointer_free_mixer_control", contribution: "coordinates keyboard and gamepad mixer actions without view-owned mutation"},
 			{capability: "capability.shared_control_reducer", contribution: "gives every run mode one application facade over AppState"},
+			{capability: "capability.instrument_partitioned_test_playback", contribution: "orchestrates instrument discovery, canonical patch installation, targeted scheduling, and rendering through the normal application facade"},
 		]
 	}
 }

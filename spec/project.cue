@@ -69,9 +69,9 @@ project: validations: {
 	}
 	midi_multitrack_regression: {
 		scope: "regression", kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--play", "midi/Corridors of Time - Chrono Trigger.mid"]
-		resources: ["applicationService.Loop.StandaloneApplication", "domainService.Patch.MidiDispatcher", "domainService.MidiFile.Sequencer", "asset.SynthUiMain"]
-		capabilities: ["capability.external_midi_performance", "capability.stereo_mix_pipeline"]
-		goals: ["goal.perform_through_standalone"]
+		resources: ["adapter.MidlyMidiFileReader", "applicationService.MidiFile.TestPlaybackAssembler", "domainService.MidiFile.Sequencer", "applicationService.Loop.StandaloneApplication", "asset.SynthUiMain"]
+		capabilities: ["capability.instrument_partitioned_test_playback", "capability.configurable_instrument_graph", "capability.stereo_mix_pipeline"]
+		goals: ["goal.exercise_supported_sound_architecture"]
 	}
 	preset_roundtrip: {
 		scope: "goal", kind: "integration", command: ["make", "demo-presets"]

@@ -34,7 +34,7 @@ project: contexts: Patch: aggregates: Patch: {
 		ConfigChanged: {id: "PatchId"}
 		MappingChanged: {id: "PatchId"}
 	}
-	invariants: ["the optional sample set is used only when EngineType selects Sample"]
+	invariants: ["the optional sample set is used only when EngineType selects Sample", "mixerStrip is 0..=15; multiple patches may intentionally share a strip"]
 	validations: [{kind: "test", command: ["cargo", "test", "patch"], description: "all complete patch fields change only through commands and preserve source consistency"}]
 	contributesTo: [{capability: "capability.configurable_instrument_graph", contribution: "binds sound source, modulation, MIDI mapping, MPE zone, and mixer assignment into one playable instrument"}]
 }
@@ -50,16 +50,19 @@ project: contexts: Patch: domainServices: {
 
 project: contexts: Patch: applicationServices: {
 	PatchManager: {
-		purpose: "application-level patch collection: CRUD, complete configuration, unique IDs/strip assignments, and cross-patch MPE validation"
+		purpose: "application-level patch collection: CRUD, complete configuration, fresh IDs, valid mixer-strip assignments, and cross-patch MPE validation"
 		uses: ["aggregate.Patch.Patch"]
 		operations: {
-			createPatch: {output: {id: "PatchId"}}
+			createPatch: {input: {template: "Patch", name: "string", mixerStrip: "u32"}, output: {patch: "result<Patch, PatchError>"}}
 			deletePatch: {input: {id: "PatchId"}}
 			applyCommand: {input: {id: "PatchId", command: "PatchCommand"}}
 			validateMpeZones: {output: {result: "result<(), MpeOverlap>"}}
 		}
-		meta: rules: ["MPE non-overlap is a collection invariant enforced here, because one Patch cannot inspect its siblings"]
-		validations: [{kind: "test", command: ["cargo", "test", "patch_manager"], description: "CRUD is atomic and overlapping MPE zones are rejected across the collection"}]
+		meta: rules: [
+			"MPE non-overlap is a collection invariant enforced here, because one Patch cannot inspect its siblings",
+			"created patches receive fresh stable PatchIds; a caller may choose an already-valid mixer strip, including deterministic sharing for MIDI-file tests",
+		]
+		validations: [{kind: "test", command: ["cargo", "test", "patch_manager"], description: "CRUD is atomic, IDs are fresh, mixer strips are valid and shareable, and overlapping MPE zones are rejected"}]
 		contributesTo: [{capability: "capability.configurable_instrument_graph", contribution: "coordinates complete patch configuration and cross-patch routing invariants"}]
 	}
 }

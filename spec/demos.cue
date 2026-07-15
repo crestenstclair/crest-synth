@@ -65,7 +65,7 @@ project: assets: PatchPlayMain: {
 	prompts: [
 		"Create two or three canonical Patch aggregates with distinct virtual-analog configs, channel mappings, mixer strips, and independent VoiceAllocators. Use PatchManager to validate the collection and MidiDispatcher for every event.",
 		"The built-in timeline must address every patch and include an intentional layered address. Assert matching delivery exactly once, no delivery to an unmapped patch, independent peak voice counts, non-zero bounded stereo output, and at least one configured voice steal.",
-		"Optional MIDI input is read through MidlyMidiFileReader. Write patch-play.wav and print `Peak Voices` per patch from measured allocators.",
+		"This proof uses its built-in addressed timeline; MIDI-file instrument partitioning is proved separately by midi_play and synth_ui. Write patch-play.wav and print `Peak Voices` per patch from measured allocators.",
 	]
 	validations: [{kind: "integration", command: ["make", "demo-patches"], description: "MIDI dispatch, per-patch pools, and the global mix compose end to end", assertions: [{kind: "exit_code", expected: 0}, {kind: "file_exists", path: "patch-play.wav"}, {kind: "stdout_contains", pattern: "Peak Voices"}]}]
 	contributesTo: [
@@ -91,23 +91,26 @@ project: assets: PresetRoundtripDemoMain: {
 project: assets: MidiPlayMain: {
 	kind: "rust-bin-target"
 	description: "src/bin/midi_play.rs: offline Standard MIDI File to WAV proof"
-	profile: {kind: "verification_harness", witness: "multi-track scheduled MIDI render", failurePolicy: "empty event set or silent render fails"}
-	targets: ["adapter.MidlyMidiFileReader", "domainService.MidiFile.Sequencer", "applicationService.Loop.RenderCoordinator"]
+	profile: {kind: "verification_harness", witness: "instrument-partitioned MIDI render", failurePolicy: "empty parts, missing patches, invalid assignments, or silent render fails"}
+	targets: ["adapter.MidlyMidiFileReader", "applicationService.MidiFile.TestPlaybackAssembler", "domainService.MidiFile.Sequencer", "applicationService.Loop.RenderCoordinator"]
 	prompts: [
-		"Read an optional MIDI file with MidlyMidiFileReader or construct a built-in multi-channel Song. Sequence every track by absolute time through MidiFile.Sequencer and RenderCoordinator; do not define SineVoice/AudioRenderer fallback types.",
-		"Render stereo audio offline, assert events > 0, duration > 0, and 0 < peak <= 1, write midi-play.wav, and print `rendered seconds=<value>`.",
+		"CLI: midi_play [FILE.mid] [--observe] [--degenerate-stub]. The optional path defaults to the built-in multi-instrument Song; reject unknown or duplicate inputs clearly.",
+		"Read an optional MIDI file with MidlyMidiFileReader or construct a built-in Song with at least three bank/program identities plus percussion. Prepare it with TestPlaybackAssembler, then schedule each targeted part through Sequencer and RenderCoordinator; do not define local song, patch, mixer, or renderer substitutes.",
+		"Assert one generated Patch per InstrumentPart, unique patch IDs, part N assigned to mixer track N % 16, every event targeted to its part patch, events > 0, duration > 0, and 0 < peak <= 1. Include a >16-part unit case proving deterministic track sharing without dropped patches.",
+		"Write midi-play.wav and print `instrument parts=<N>`, `generated patches=<N>`, one `track assignment: <label> -> Txx` per part, and `rendered seconds=<value>`.",
+		"--observe emits instrument_parts, one_patch_per_instrument, round_robin_assignment, all_events_targeted, and peak. --degenerate-stub deliberately collapses parts, corrupts one assignment, or removes a target while preserving the observation schema.",
 	]
-	validations: [{kind: "integration", command: ["make", "demo-midi"], description: "a complete scheduled song renders audibly offline", assertions: [{kind: "exit_code", expected: 0}, {kind: "file_exists", path: "midi-play.wav"}, {kind: "stdout_contains", pattern: "rendered seconds="}]}]
-	contributesTo: [{capability: "capability.external_midi_performance", contribution: "proves time-ordered multi-track MIDI reaches the production render coordinator"}]
+	validations: [{kind: "integration", command: ["make", "demo-midi"], description: "instrument parts become round-robin-assigned patches and render audibly offline", assertions: [{kind: "exit_code", expected: 0}, {kind: "file_exists", path: "midi-play.wav"}, {kind: "stdout_contains", pattern: "instrument parts="}, {kind: "stdout_contains", pattern: "generated patches="}, {kind: "stdout_contains", pattern: "track assignment:"}, {kind: "stdout_contains", pattern: "rendered seconds="}]}]
+	contributesTo: [{capability: "capability.instrument_partitioned_test_playback", contribution: "proves real instrument partitioning, patch materialization, modulo-16 assignment, and targeted offline rendering"}]
 }
 
 project: assets: MidiPlayLiveMain: {
 	kind: "rust-bin-target"
 	description: "src/bin/midi_play_live.rs: live MIDI-file host and hermetic real-time-boundary proof"
 	profile: {kind: "verification_harness", witness: "event ring, latest snapshot, and deferred destruction", failurePolicy: "broken boundary facts fail witness predicates"}
-	targets: ["adapter.MidlyMidiFileReader", "adapter.CpalAudioOutput", "applicationService.Loop.RenderCoordinator", "adapter.RtrbEventRing", "adapter.TripleBufferParameterBridge", "adapter.BasedropDeferredDeallocator"]
+	targets: ["adapter.MidlyMidiFileReader", "applicationService.MidiFile.TestPlaybackAssembler", "domainService.MidiFile.Sequencer", "adapter.CpalAudioOutput", "applicationService.Loop.RenderCoordinator", "adapter.RtrbEventRing", "adapter.TripleBufferParameterBridge", "adapter.BasedropDeferredDeallocator"]
 	prompts: [
-		"Live mode reads a Song, sequences it through RenderCoordinator, and writes exactly each callback-requested stereo frame slice to CpalAudioOutput. Report unavailable devices clearly; never panic or move a non-Send stream across threads.",
+		"Live mode builds the same one-patch-per-instrument TestPlaybackPlan as offline/synth_ui playback, schedules its targeted events through RenderCoordinator, and writes exactly each callback-requested stereo frame slice to CpalAudioOutput. Report unavailable devices clearly; never panic or move a non-Send stream across threads.",
 		"--no-device-dry-run opens no device and performs concrete boundary facts: push/pop one event, publish two snapshots/read newest, retire tracked state on the simulated audio side and collect/drop it on the control side.",
 		"--observe emits event_delivered, latest_snapshot_read, reclaimed_off_audio_thread. --degenerate-stub breaks one boundary seam while preserving the schema.",
 	]
@@ -118,14 +121,14 @@ project: assets: MidiPlayLiveMain: {
 project: assets: MixerDemoMain: {
 	kind: "rust-bin-target"
 	description: "src/bin/mixer_demo.rs: headless mixer reducer and strip-to-master proof"
-	profile: {kind: "verification_harness", witness: "six-strip navigation, editing, solo, and metering", failurePolicy: "layout/state bounds or mix semantics failure exits non-zero"}
+	profile: {kind: "verification_harness", witness: "all-track navigation, inspector, editing, solo, and metering", failurePolicy: "missing track/inspector state, bounds, or mix semantics failure exits non-zero"}
 	targets: ["aggregate.Mixer.MixerView", "aggregate.Loop.AppState", "domainService.Mixer.MixEngine"]
 	prompts: [
-		"Open no GUI/device. Drive canonical AppEvent::Mixer values through AppState.apply, not MixerView directly. Prove all sixteen channels are reachable through the six-strip viewport, edge scrolling is correct, fine/coarse values clamp, and directional input cannot toggle booleans.",
+		"Open no GUI/device. Drive canonical AppEvent::Mixer values through AppState.apply, not MixerView directly. Prove T00-T0F labels all exist simultaneously, navigation saturates at each end, the derived inspector follows cursor track/parameter/patch, compact display values are correct, fine/coarse values clamp, and directional input cannot toggle booleans.",
 		"Render non-zero buffers on all strips through MixEngine, solo one, assert only it reaches master while every strip retains pre-solo metering.",
-		"--observe emits peak, bounded_edit, edge_scroll, solo_isolation, all_channels_metered. --degenerate-stub bypasses reducer or solo/meter logic.",
+		"--observe emits peak, bounded_edit, all_tracks_visible, inspector_consistent, solo_isolation, all_channels_metered. --degenerate-stub omits a track/inspector update or bypasses reducer/solo/meter logic.",
 	]
-	validations: [{kind: "integration", command: ["make", "demo-mixer"], description: "the authoritative reducer drives correct mixer control and audio semantics", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "edge scroll ok"}, {kind: "stdout_contains", pattern: "metering independent of solo: true"}]}]
+	validations: [{kind: "integration", command: ["make", "demo-mixer"], description: "the authoritative reducer drives all-track mixer control, inspector projection, and audio semantics", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "tracks visible: 16"}, {kind: "stdout_contains", pattern: "inspector follows cursor: true"}, {kind: "stdout_contains", pattern: "metering independent of solo: true"}]}]
 	contributesTo: [
 		{capability: "capability.pointer_free_mixer_control", contribution: "proves the complete headless mixer interaction journey through AppState"},
 		{capability: "capability.stereo_mix_pipeline", contribution: "falsifies incorrect solo gating and post-solo metering"},

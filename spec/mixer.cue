@@ -84,22 +84,30 @@ project: contexts: Mixer: applicationServices: {
 // Editor view, it is a one-way (Flux) store — MixerView — with a single
 // mutation entry point that reduces semantic MixerViewEvents. The egui/synth_ui
 // shell and the gamepad adapter both emit the SAME events, so the whole control
-// plane (cursor, viewport edge-scrolling, edit-mode, fine/coarse adjust,
+// plane (track/parameter cursor, edit-mode, fine/coarse adjust,
 // double-tap toggle) is hermetically testable with no window and no device.
 //
-// 16 channels exist; 6 are visible at once. A cursor selects one (channel,
-// parameter) cell; the remaining channels are reached by edge-scrolling the
-// viewport. The view edits the ChannelStrip channels; metering is read back
-// from them.
+// All 16 tracks are visible at once as narrow terminal-like columns. A cursor
+// selects one (track, parameter) cell and a derived inspector shows its patch,
+// instrument, value, mute, and solo state. The view edits canonical
+// ChannelStrips; metering is read back from them.
 //
 // It deliberately reuses ChannelStrip; there is no ChannelMixer, PatchMixer,
 // GlobalMixer, or parallel strip model. ReverbSend/EchoSend address sends 0/1.
 
 project: contexts: Mixer: ubiquitousLanguage: {
-	MixerView:      "the single store for the mixer view: owns the cursor (channel + parameter row), the viewport offset, the edit-mode flag, and the 16 ChannelStrip channels it edits"
+	MixerView:      "the single store for the mixer view: owns the track/parameter cursor, edit-mode flag, sixteen canonical ChannelStrips, and their patch/instrument labels"
 	MixerViewEvent: "a semantic input event (navigate, edit-mode change, or toggle) emitted by the keyboard/gamepad adapter — the only thing that mutates the mixer view"
-	MixerParam:     "which of a channel strip's six parameter rows the cursor is on: Volume, ReverbSend, EchoSend, Pan, Mute, Solo (top to bottom)"
-	Viewport:       "the window of 6 contiguous channels currently visible; edge-scrolls by one when the cursor pushes past a visible edge"
+	MixerParam:     "which of a track's six parameter rows the cursor is on: Volume, ReverbSend, EchoSend, Pan, Mute, Solo"
+	TrackCode:      "the stable two-hex-digit mixer label T00 through T0F"
+	Inspector:      "a derived textual panel for the selected track, patch/instrument, parameter value, mute, and solo state"
+}
+
+project: contexts: Mixer: valueObjects: MixerTrackLabel: {
+	state: {track: "u8", code: "string", patchId: "option<PatchId>", instrument: "string"}
+	description: "compact mixer header data: T00-T0F plus the assigned patch/instrument label, or an explicit empty marker"
+	invariants: ["track is 0..=15", "code is uppercase T00 through T0F and is derived from track", "instrument is terminal-safe single-line text"]
+	validations: [{kind: "test", command: ["cargo", "test", "mixer_track_label"], description: "all sixteen stable codes and empty/assigned labels render deterministically"}]
 }
 
 project: contexts: Mixer: valueObjects: MixerParam: {
@@ -117,24 +125,25 @@ project: contexts: Mixer: valueObjects: MixerViewEvent: {
 
 project: contexts: Mixer: aggregates: MixerView: {
 	root:    true
-	purpose: "the single mixer-view store: owns cursor (channel + parameter), viewport offset, edit-mode, and the 16 ChannelStrip channels; the one entry point that reacts to MixerViewEvents"
-	state: {channels: "[ChannelStrip; 16]", cursorChannel: "usize", cursorParam: "MixerParam", viewportOffset: "usize", editMode: "bool"}
+	purpose: "the terminal-style all-tracks mixer store: owns the cursor, labels, edit mode, and sixteen canonical ChannelStrips behind one reducer"
+	state: {tracks: "[ChannelStrip; 16]", labels: "[MixerTrackLabel; 16]", cursorTrack: "usize", cursorParam: "MixerParam", editMode: "bool"}
 	invariants: [
 		"apply(MixerViewEvent) is the ONLY way to mutate the mixer view",
-		"the view wraps exactly 16 ChannelStrip channels; MixerViewEvents addressed at an out-of-range channel index are ignored",
-		"exactly 6 channels are visible; the cursor is ALWAYS within the visible window [viewportOffset, viewportOffset+5]",
-		"cursorChannel stays in 0..=15 and viewportOffset stays in 0..=10",
-		"in navigate mode NavUp/NavDown move the parameter row (saturating) and NavLeft/NavRight move between channels",
-		"at a visible edge, pressing toward it scrolls the viewport by one and keeps the cursor on the SAME absolute channel (now one position inward); mirror at the opposite edge; no-op at channel 1 / channel 16",
+		"the view contains exactly 16 ChannelStrip tracks and all sixteen T00-T0F columns are present in the initial layout with no horizontal paging",
+		"cursorTrack stays in 0..=15; navigation saturates at T00 and T0F",
+		"the initial selection is T00 Volume and the derived inspector and bottom status row describe that same selection",
+		"in navigate mode NavUp/NavDown move the parameter row and NavLeft/NavRight move between tracks",
 		"in edit mode on a continuous param, Left/Right adjust by the fine step and Up/Down by the coarse step (= 10x fine), clamped by the addressed ChannelStrip",
 		"toggle params (Mute/Solo) change only via ToggleFocusedParam (double-tap Edit), never via directional input",
 		"EnterEditMode alone changes no parameter value (it is a no-op until directional input arrives)",
+		"volume and sends display compact 00-7F control values, pan displays L63..C..R63, and the domain values remain Decibel/Amplitude/Pan rather than hexadecimal storage",
+		"the selected-track inspector is derived from tracks, labels, cursorTrack, and cursorParam and never owns mutable duplicate state",
 	]
 	validations: [
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with MixerView"},
-		{kind: "test", command: ["cargo", "test", "mixer_view"], description: "MixerView reducer unit tests pass (nav, edge-scroll, edit-mode, fine/coarse, toggle)"},
+		{kind: "test", command: ["cargo", "test", "mixer_view"], description: "all-track layout state, saturating navigation, inspector projection, edit-mode, fine/coarse, and toggle tests pass"},
 	]
-	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "provides the six-strip, keyboard/gamepad-driven mixer editing journey"}]
+	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "provides the all-sixteen-track terminal-style keyboard/gamepad mixer journey"}]
 }
 
 // ── Invariants ─────────────────────────────────────────

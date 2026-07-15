@@ -8,7 +8,7 @@ package crestsynth
 // boundaries. A contribution edge connects those two views without turning a
 // capability into a second aggregate or making it a dependency-graph node.
 project: {
-	mission: "A standalone, controller-first MIDI synthesizer for Steam Deck and desktop. A musician performs from external MIDI while crest-synth renders a stable stereo signal and exposes a six-strip live mixer that is fully operable from keyboard or gamepad. The same one-way application loop must be replayable through deterministic scenes so humans and coding agents can inspect what happened, hear the result, and mechanically falsify broken implementations."
+	mission: "A standalone, controller-first MIDI synthesizer for Steam Deck and desktop. A musician performs from external MIDI while crest-synth renders a stable stereo signal and exposes all sixteen mixer tracks in a dense, terminal-like overview operable from keyboard or gamepad. The same one-way application loop must support deterministic scenes and instrument-partitioned MIDI-file test playback so humans and coding agents can inspect what happened, hear the result, and mechanically falsify broken implementations."
 
 	actors: {
 		musician: {
@@ -37,7 +37,7 @@ project: {
 			]
 		}
 		operate_live_mixer: {
-			description: "A musician can see, navigate, and edit all sixteen mixer channels from the six-strip viewport using keyboard or gamepad, and accepted edits affect the live audio path"
+			description: "A musician can see all sixteen mixer tracks at once, navigate their compact terminal-style controls using keyboard or gamepad, inspect the selected track, and hear accepted edits affect the live audio path"
 			priority: "required"
 			actors: ["actor.musician"]
 			dependsOn: ["goal.perform_through_standalone"]
@@ -50,6 +50,7 @@ project: {
 				"requirement.mixer_only_ui_scope",
 				"requirement.single_control_mutation_path",
 				"requirement.gamepad_keyboard_parity",
+				"requirement.terminal_mixer_presentation",
 			]
 		}
 		exercise_supported_sound_architecture: {
@@ -61,11 +62,13 @@ project: {
 				"capability.configurable_instrument_graph",
 				"capability.stereo_mix_pipeline",
 				"capability.behavioral_proof_harness",
+				"capability.instrument_partitioned_test_playback",
 			]
 			requirements: [
 				"requirement.current_sound_scope",
 				"requirement.measured_proofs",
 				"requirement.canonical_resource_types",
+				"requirement.deterministic_instrument_assignment",
 			]
 		}
 		preserve_reproducible_sound_state: {
@@ -151,13 +154,13 @@ project: {
 			}
 		}
 		pointer_free_mixer_control: {
-			description: "Render exactly six contiguous mixer strips, reach all sixteen channels, and edit volume, two sends, pan, mute, and solo using the shared keyboard/gamepad event vocabulary"
+			description: "Render all sixteen mixer tracks in one dense terminal-style grid and edit volume, two sends, pan, mute, and solo using the shared keyboard/gamepad event vocabulary"
 			goals: ["goal.operate_live_mixer"]
 			acceptance: navigate_and_edit_mixer: {
-				description: "Keyboard and gamepad actions drive the same reducer semantics across navigation, edit mode, toggles, viewport scrolling, and bounded values"
+				description: "Keyboard and gamepad actions drive the same reducer semantics across the full sixteen-track grid, edit mode, toggles, the selected-track inspector, and bounded values"
 				actor: "actor.musician"
 				steps: [
-					{action: "navigate past both visible viewport edges", observes: "the viewport moves across all sixteen channels while exactly six full strips remain visible"},
+					{action: "navigate from T00 through T0F and back", observes: "all sixteen narrow track columns remain visible while the cursor highlight, inspector, and status line follow the selected track"},
 					{action: "hold edit and apply fine and coarse adjustments, then double-tap edit on mute and solo", observes: "only the focused channel and parameter change, continuous values clamp, and toggles never react to directional input"},
 				]
 				evidence: ["evidence.mixer_behavior", "evidence.standalone_runtime"]
@@ -187,6 +190,20 @@ project: {
 					{action: "inspect the compiled crate interfaces", observes: "a spec resource has one canonical public Rust type and consumers import it instead of redeclaring local substitutes"},
 				]
 				evidence: ["evidence.sound_subsystem_suite"]
+			}
+		}
+		instrument_partitioned_test_playback: {
+			description: "For MIDI-file demonstrations, partition note events into deterministic instrument parts, create one canonical Patch per discovered instrument, and assign those patches to the sixteen mixer tracks round-robin"
+			goals: ["goal.exercise_supported_sound_architecture"]
+			acceptance: instrument_parts_become_patches: {
+				description: "A multi-instrument Standard MIDI File becomes independently metered patch parts without pretending the test player is a product sequencer"
+				actor: "actor.maintainer"
+				steps: [
+					{action: "load a file containing multiple program/bank identities and percussion", observes: "events are grouped by stable instrument identity, each sounding note-off remains with its note-on part, and one Patch is created per discovered part"},
+					{action: "order parts by first musical event and assign them", observes: "part N uses mixer track N modulo 16; more than sixteen parts share tracks deterministically without dropping patches"},
+					{action: "load a file with missing instrument metadata", observes: "the reader falls back deterministically to source-track/channel identity and records that fallback in the part label"},
+				]
+				evidence: ["evidence.midi_instrument_partition"]
 			}
 		}
 		versioned_sound_state: {
@@ -251,7 +268,13 @@ project: {
 		}
 		mixer_only_ui_scope: {
 			kind: "functional"
-			description: "The current standalone GUI is the live mixer and no other screen: six of sixteen channel strips, no view switching, no patch/preset/modulation editor, and no on-screen keyboard."
+			description: "The current standalone GUI is the live mixer and no other screen: all sixteen compact track columns, a selected-track inspector, and terminal-like status/help rows; no view switching, patch/preset/modulation editor, or on-screen keyboard."
+			goals: ["goal.operate_live_mixer"]
+			capabilities: ["capability.pointer_free_mixer_control"]
+		}
+		terminal_mixer_presentation: {
+			kind: "nonfunctional"
+			description: "The initial view uses a monospaced, hard-edged, low-decoration grid: T00-T0F headers with patch/instrument labels, narrow textual or segmented level displays, compact pan/mute/solo cells, a right-side cursor/value/state inspector, and bottom status plus command-hint rows. It avoids skeuomorphic knobs, glossy faders, ornamental animation, and oversized graphical controls."
 			goals: ["goal.operate_live_mixer"]
 			capabilities: ["capability.pointer_free_mixer_control"]
 		}
@@ -272,6 +295,12 @@ project: {
 			description: "The completion scope is the existing executable system: virtual-analog polyphony, zoned sample playback, modulation, patch routing, effects chains, mixing, MIDI files, presets, and sessions. Wavetable and FM discriminators may remain forward-compatible but are not claimed as rendered engines until dedicated resources and proofs exist."
 			goals: ["goal.exercise_supported_sound_architecture"]
 			capabilities: ["capability.polyphonic_sound_generation", "capability.configurable_instrument_graph"]
+		}
+		deterministic_instrument_assignment: {
+			kind: "functional"
+			description: "MIDI-file playback is test orchestration: identify parts by bank/program and percussion where possible, fall back to source-track/channel identity when metadata is absent, create one Patch per part, and assign first-seen parts to mixer tracks with index modulo 16."
+			goals: ["goal.exercise_supported_sound_architecture"]
+			capabilities: ["capability.instrument_partitioned_test_playback"]
 		}
 		versioned_atomic_restore: {
 			kind: "functional"
@@ -303,7 +332,7 @@ project: {
 		standalone_runtime: {
 			kind: "behavioral_witness"
 			description: "The hermetic standalone composition consumes normalized events through AppState and produces bounded, metered audio through the production render function."
-			validations: ["validation.ui_smoke", "validation.midi_multitrack_regression"]
+			validations: ["validation.ui_smoke"]
 			witnesses: ["witness.standalone_runtime"]
 		}
 		polyphonic_render: {
@@ -313,9 +342,15 @@ project: {
 		}
 		mixer_behavior: {
 			kind: "behavioral_witness"
-			description: "A headless mixer run proves navigation, bounded editing, solo isolation, ordered stereo mixing, and metering independence."
+			description: "A headless mixer run proves all-track visibility, cursor/inspector navigation, bounded editing, solo isolation, ordered stereo mixing, and metering independence."
 			validations: ["validation.mixer_integration", "validation.autopilot"]
 			witnesses: ["witness.mixer_control_path"]
+		}
+		midi_instrument_partition: {
+			kind: "behavioral_witness"
+			description: "A real multi-track MIDI file is partitioned into instrument parts, materialized as one patch each, assigned round-robin to mixer tracks, and rendered with independent patch/track observations."
+			validations: ["validation.midi_multitrack_regression"]
+			witnesses: ["witness.midi_instrument_partition"]
 		}
 		realtime_boundary: {
 			kind: "behavioral_witness"

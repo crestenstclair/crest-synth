@@ -41,7 +41,7 @@ project: contexts: Shell: ports: {
 		contract: {
 			render: "(view: ViewState) -> ()"
 		}
-		meta: notes: "renders only the current six-strip mixer view from AppState; additional screens are not part of the current product"
+		meta: notes: "renders only the current all-sixteen-track terminal-style mixer from AppState; additional screens are not part of the current product"
 	}
 	GamepadInput: {
 		direction: "inbound"
@@ -81,7 +81,7 @@ project: adapters: MidirMidiInput: {
 project: adapters: EframeAppWindow: {
 	implements: "port.Shell.AppWindow"
 	layer:      "infrastructure"
-	profile: {kind: "ui", surfaces: ["mixer"]}
+	profile: {kind: "ui", surfaces: ["terminal-style-mixer"]}
 	meta: framework: "eframe"
 	validations: [{kind: "compiles", command: ["cargo", "build", "--bin", "synth_ui"], description: "the current eframe host compiles on the supported desktop stack"}]
 }
@@ -89,10 +89,10 @@ project: adapters: EframeAppWindow: {
 project: adapters: EguiRenderer: {
 	implements: "port.Shell.GuiRenderer"
 	layer:      "infrastructure"
-	profile: {kind: "ui", surfaces: ["six-strip-mixer"], accessibility: ["keyboard", "gamepad"]}
+	profile: {kind: "ui", surfaces: ["sixteen-track-grid", "selected-track-inspector", "status-and-command-footer"], accessibility: ["keyboard", "gamepad"]}
 	meta: framework: "egui"
 	validations: [{kind: "integration", command: ["make", "ui-smoke"], description: "the pure mixer skin resolves all tokens and the host can construct without a window"}]
-	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "renders the six-strip mixer projection without owning or mutating application state"}]
+	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "renders the dense all-track grid, derived inspector, and command footer without owning or mutating application state"}]
 }
 
 project: adapters: GilrsGamepadInput: {
