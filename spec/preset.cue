@@ -15,6 +15,7 @@ project: contexts: Preset: valueObjects: {
 		state: {id: "PresetId", meta: "PresetMetadata", version: "u32"}
 		description: "a versioned snapshot of one patch's complete configuration (voice, sample, mod, mixer, sends, inserts)"
 			validations: [{kind: "test", command: ["cargo", "test", "preset"], description: "Preset unit tests pass"}]
+		contributesTo: [{capability: "capability.save_and_restore_sound_library", contribution: "defines the versioned representation of one complete patch"}]
 	}
 }
 
@@ -35,6 +36,7 @@ project: contexts: Preset: aggregates: Bank: {
 		"a read-only bank rejects all mutating commands",
 	]
 	validations: [{kind: "test", command: ["cargo", "test", "bank"], description: "Bank unit tests pass"}]
+	contributesTo: [{capability: "capability.save_and_restore_sound_library", contribution: "organizes durable, ordered sound libraries"}]
 }
 
 project: contexts: Preset: aggregates: Session: {
@@ -51,6 +53,7 @@ project: contexts: Preset: aggregates: Session: {
 		"restoring a session replaces all state atomically — a failed restore leaves prior state untouched",
 	]
 	validations: [{kind: "test", command: ["cargo", "test", "session"], description: "Session unit tests pass"}]
+	contributesTo: [{capability: "capability.save_and_restore_sound_library", contribution: "owns atomic replacement of the complete instrument state"}]
 }
 
 project: contexts: Preset: ports: {
@@ -75,10 +78,12 @@ project: contexts: Preset: applicationServices: {
 		purpose: "search and filter presets, preview with a test note, load into a patch, save from a patch, import SF2, export a bank"
 		uses: ["aggregate.Preset.Bank", "port.Preset.PresetCodec", "port.Preset.PresetStorage"]
 			validations: [{kind: "test", command: ["cargo", "test", "preset_browser"], description: "PresetBrowser unit tests pass"}]
+		contributesTo: [{capability: "capability.save_and_restore_sound_library", contribution: "coordinates browsing, previewing, importing, and exporting the sound library"}]
 	}
 	SessionManager: {
 		purpose: "save, load, list, and delete full sessions"
 		uses: ["aggregate.Preset.Session", "port.Preset.PresetStorage"]
+		contributesTo: [{capability: "capability.save_and_restore_sound_library", contribution: "coordinates complete-session persistence and restore"}]
 	}
 }
 
@@ -87,9 +92,11 @@ project: adapters: SerdePresetCodec: {
 	layer:      "infrastructure"
 	meta: framework: "serde"
 	validations: [{kind: "test", command: ["cargo", "test", "serde_preset_codec"], description: "SerdePresetCodec unit tests pass"}]
+	contributesTo: [{capability: "capability.save_and_restore_sound_library", contribution: "encodes versioned sound and session state without losing semantics"}]
 }
 
 project: adapters: FsPresetStorage: {
 	implements: "port.Preset.PresetStorage"
 	layer:      "infrastructure"
+	contributesTo: [{capability: "capability.save_and_restore_sound_library", contribution: "stores and retrieves accepted presets and sessions durably"}]
 }

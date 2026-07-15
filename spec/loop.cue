@@ -58,6 +58,7 @@ project: contexts: Loop: aggregates: AppState: {
 		"apply never panics: an inapplicable event yields an EventRejection value and leaves state unchanged",
 		"frame increments by exactly one per applied event — it is the event-sequence clock, not wall-clock",
 	]
+	contributesTo: [{capability: "capability.edit_without_pointer", contribution: "owns the one-way control-plane state and the only accepted mutation path"}]
 }
 
 project: contexts: Loop: ports: {
@@ -74,10 +75,15 @@ project: contexts: Loop: domainServices: {
 	StateProjector: {
 		purpose: "projects AppState into the ParameterSnapshot the audio thread reads — the one bridge from the loop to the RealTime boundary"
 		uses: ["aggregate.Loop.AppState", "port.RealTime.ParameterBridge"]
+		contributesTo: [
+			{capability: "capability.edit_without_pointer", contribution: "publishes accepted editor state changes to the audio model"},
+			{capability: "capability.preserve_realtime_safety", contribution: "projects immutable control state through the lock-free parameter seam"},
+		]
 	}
 	SceneRunner: {
 		purpose: "executes a Scene against a fresh AppState through the SAME apply path the live app uses: per step, apply the event, render the requested blocks, and (when asked) emit a StateSnapshot; produces the final snapshot plus per-step snapshots on demand"
 		uses: ["aggregate.Loop.AppState", "valueObject.Loop.Scene", "port.Loop.SnapshotCodec", "domainService.Loop.StateProjector", "domainService.Engine.EngineRenderer"]
+		contributesTo: [{capability: "capability.edit_without_pointer", contribution: "executes deterministic end-to-end user journeys through the live application reducer"}]
 	}
 }
 

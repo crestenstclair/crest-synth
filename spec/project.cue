@@ -30,12 +30,64 @@ project: meta: {
 // Formatting is NORMALIZED, never policed: `cargo fmt` auto-fixes the tree
 // and always passes. The gate blocks on design-level failures only —
 // lints, compilation, behavior.
-project: validations: [
-	{kind: "custom", command: ["cargo", "fmt"], description: "normalize formatting (auto-fix, never blocks)"},
-	{kind: "compiles", command: ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"], description: "clippy clean"},
-	{kind: "compiles", command: ["cargo", "build"], description: "crate builds"},
-	{kind: "test", command: ["cargo", "test"], description: "tests pass"},
-]
+project: validations: {
+	format: {
+		scope: "project"
+		kind: "custom"
+		command: ["cargo", "fmt"]
+		description: "normalize formatting (auto-fix, never blocks)"
+	}
+	clippy: {
+		scope: "project"
+		kind: "compiles"
+		command: ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
+		description: "all targets are clippy-clean with warnings denied"
+	}
+	build: {
+		scope: "project"
+		kind: "compiles"
+		command: ["cargo", "build"]
+		description: "the complete standalone crate builds"
+	}
+	test: {
+		scope: "project"
+		kind: "test"
+		command: ["cargo", "test"]
+		description: "the full deterministic test suite passes"
+	}
+	midi_routing: {
+		scope: "dependency_contract"
+		kind: "test"
+		command: ["cargo", "test", "midi_dispatcher"]
+		resources: ["domainService.Patch.MidiDispatcher", "aggregate.Patch.Patch", "domainService.Shell.MidiNormalizer"]
+		capabilities: ["capability.accept_external_midi"]
+		goals: ["goal.perform_live"]
+	}
+	patch_configuration: {
+		scope: "integration_wave"
+		kind: "test"
+		command: ["cargo", "test", "patch"]
+		resources: ["aggregate.Patch.Patch", "aggregate.Modulation.ModMatrix", "aggregate.Sample.SampleSet", "aggregate.Mixer.ChannelStrip"]
+		capabilities: ["capability.configure_complete_patch"]
+		goals: ["goal.design_playable_sounds"]
+	}
+	live_pipeline: {
+		scope: "goal"
+		kind: "integration"
+		command: ["make", "check-live"]
+		resources: ["asset.MidiPlayLiveMain", "adapter.CpalAudioOutput", "adapter.RtrbEventRing", "adapter.TripleBufferParameterBridge", "adapter.BasedropDeferredDeallocator"]
+		capabilities: ["capability.operate_audio_and_midi_devices", "capability.preserve_realtime_safety"]
+		goals: ["goal.perform_live", "goal.operate_standalone"]
+	}
+	ui_smoke: {
+		scope: "goal"
+		kind: "integration"
+		command: ["make", "ui-smoke"]
+		resources: ["asset.SynthUiMain", "aggregate.Loop.AppState", "aggregate.Mixer.MixerView", "domainService.DesignSystem.DefaultTheme"]
+		capabilities: ["capability.edit_without_pointer", "capability.mix_to_stereo"]
+		goals: ["goal.design_playable_sounds", "goal.operate_standalone"]
+	}
+}
 
 // Architectural invariants — behavioral rules, injected into every generator
 // prompt. Code that violates one is wrong even if it compiles and tests pass.

@@ -20,6 +20,7 @@ project: assets: VoiceDemoMain: {
 		"Print per-stage envelope markers so the envelope progression is observable: at minimum print a line for each envelope stage transition observed (Attack/Decay/Sustain/Release) at least once, and a per-section summary.",
 		#"ASSERT IN CODE that the measured total steal count is > 0: if it is 0, panic with a clear message (e.g. `panic!("voice_demo FAILED: passage forced no voice steals")`) so the process exits non-zero and the validation FAILS. Printing `steals=0` and exiting 0 is not acceptable — the in-code assertion on the measured count is what makes a zero-steal regression fail (the `steals=` token alone matches `steals=0`)."#,
 		#"Then print EXACTLY a line containing the token `steals=` followed by the integer total (verbatim, lowercase, no spaces around `=`, e.g. `steals=37`) so a human and the validation can see the measured count."#,
+		#"WITNESS CLI: also accept `--observe` and optional `--degenerate-stub`. In observe mode, measure peak absolute output, clipping (any abs sample > 1.0), total steals, and the non-zero rendered difference caused by applying per-note pitch/pressure expression to a matching NoteId. Emit exactly one line `CREST_OBSERVATION {\"peak\":<number>,\"clipped\":<bool>,\"steals\":<number>,\"expressive_delta\":<number>}`. The real case MUST compute these from the actual Voice/VoiceAllocator/EngineRenderer output. The degenerate case must run the same harness with an explicitly silent/non-expressive stub so the JSON is schema-valid but the behavioral predicates fail; it exits 0 so crest-spec, not the binary, classifies falsification."#,
 		"Write 16-bit mono WAV (default voice-demo.wav, or --out) using a pure-Rust WAV writer (no external WAV crate).",
 		"Exit 0 on success.",
 	]
@@ -31,6 +32,7 @@ project: assets: VoiceDemoMain: {
 			{kind: "stdout_contains", pattern: "steals="},
 		]},
 	]
+	contributesTo: [{capability: "capability.render_expressive_sound", contribution: "provides the falsification-gated expressive polyphony and voice-stealing witness"}]
 }
 
 project: assets: SamplePlayDemoMain: {
@@ -147,6 +149,8 @@ project: assets: PresetRoundtripDemoMain: {
 		#"Round-trip the Setup: serializeSetup -> Vec<u8> -> deserializeSetup -> Setup'. Assert in code that Setup' EQUALS the original Setup (derive PartialEq; panic with a clear message on mismatch). Print a verbatim line `setup roundtrip: equal`."#,
 		"Render a fixed built-in demo passage through the ORIGINAL Setup to an in-memory buffer, and the SAME passage through the RELOADED Setup' to a second buffer (same dispatcher -> per-patch pools -> PatchMixer -> GlobalMixer path, deterministic, fixed sample blocks).",
 		#"Assert in code the two rendered buffers are BIT-IDENTICAL sample-for-sample (panic if any sample differs) — this is the real proof that the preset reproduces the saved sound exactly. Print a verbatim line `render identical: true`."#,
+		#"ATOMIC FAILURE PROOF: attempt to restore malformed or unsupported-version session bytes and assert the previously active complete session is byte-for-byte unchanged after the error."#,
+		#"WITNESS CLI: also accept `--observe` and optional `--degenerate-stub`. Emit exactly one line `CREST_OBSERVATION {\"roundtrip_equal\":<bool>,\"render_identical\":<bool>,\"failed_restore_atomic\":<bool>}` from the measured comparisons. The degenerate case uses an explicit lossy/non-atomic codec stub through the same harness so at least one field is false while the schema remains valid; it exits 0 for crest-spec classification."#,
 		"Write the (identical) rendered audio to 16-bit mono WAV (default preset-demo.wav, or --out) with a pure-Rust WAV writer.",
 		"Print stats. The `setup roundtrip: equal` and `render identical: true` tokens MUST appear verbatim so a validation can assert both presetIntegrity invariants held.",
 		"Exit 0 on success (both in-code assertions must pass).",
@@ -160,6 +164,7 @@ project: assets: PresetRoundtripDemoMain: {
 			{kind: "stdout_contains", pattern: "render identical: true"},
 		]},
 	]
+	contributesTo: [{capability: "capability.save_and_restore_sound_library", contribution: "provides the falsification-gated versioned and atomic persistence witness"}]
 }
 
 project: assets: MidiPlayMain: {
@@ -188,7 +193,7 @@ project: assets: MidiPlayMain: {
 project: assets: MidiPlayLiveMain: {
 	kind:        "rust-bin-target"
 	description: "src/bin/midi_play_live.rs: live MIDI-file player — streams a .mid (or built-in demo tune) through the default output device via cpal"
-	uses: ["port.MidiFile.MidiFileReader", "adapter.CpalAudioOutput", "domainService.Engine.EngineRenderer", "aggregate.Engine.Voice"]
+	uses: ["port.MidiFile.MidiFileReader", "adapter.CpalAudioOutput", "domainService.Engine.EngineRenderer", "aggregate.Engine.Voice", "adapter.RtrbEventRing", "adapter.TripleBufferParameterBridge", "adapter.BasedropDeferredDeallocator"]
 	prompts: [
 		"File path: src/bin/midi_play_live.rs",
 		"CLI: `midi_play_live [FILE.mid] [--seconds N]`. If FILE is omitted, play the same built-in demo melody as midi_play. `--seconds N` optionally caps playback duration.",
@@ -197,6 +202,7 @@ project: assets: MidiPlayLiveMain: {
 		"If NO output device is available, exit with a clear non-zero status and a human-readable stderr message (e.g. \"no default output device\") — never panic.",
 		"Print a startup line (device name, event count, duration) before streaming. Do NOT write a WAV file — this binary is for live audio only.",
 		#"Support a `--no-device-dry-run` flag (mutually exclusive with live playback). In dry-run mode, parse the args and the timeline, and CONSTRUCT the full real-time pipeline objects — the rtrb event ring buffer, the triple_buffer ParameterBridge, and the basedrop DeferredDeallocator plumbing that the live path would use — WITHOUT opening any audio device. Then print EXACTLY a line containing the token `dry-run ok: pipeline constructed` and exit 0. This makes the realtime wiring mechanically checkable with no audio device present."#,
+		#"WITNESS CLI: dry-run also accepts `--observe` and optional `--degenerate-stub`. The real observation must push then pop a concrete event, publish two distinct snapshots then read the newest, and retire/collect a tracked value while recording that its destructor did not run on the simulated audio thread. Emit exactly one line `CREST_OBSERVATION {\"event_delivered\":<bool>,\"latest_snapshot_read\":<bool>,\"reclaimed_off_audio_thread\":<bool>}` from those measured facts. The degenerate case runs the same harness with an explicit broken boundary implementation so at least one fact is false, emits valid JSON, and exits 0."#,
 		"In dry-run mode never touch cpal's host/device APIs and never block on the wall clock; it must return 0 quickly and deterministically on any machine, including CI.",
 	]
 	validations: [
@@ -205,6 +211,10 @@ project: assets: MidiPlayLiveMain: {
 			{kind: "exit_code", expected: 0},
 			{kind: "stdout_contains", pattern: "dry-run ok"},
 		]},
+	]
+	contributesTo: [
+		{capability: "capability.operate_audio_and_midi_devices", contribution: "constructs the same standalone device pipeline used for live playback"},
+		{capability: "capability.preserve_realtime_safety", contribution: "provides the falsification-gated lock-free boundary witness"},
 	]
 }
 
@@ -227,7 +237,7 @@ project: assets: MidiPlayLiveMain: {
 project: assets: MixerDemoMain: {
 	kind:        "rust-bin-target"
 	description: "src/bin/mixer_demo.rs: headless prover for MixerView + its 16 ChannelStrip channels — scripted events drive cursor/viewport/edit, and a mixdown proves solo-vs-metering independence"
-	uses: ["aggregate.Mixer.MixerView", "valueObject.Mixer.MixerViewEvent", "valueObject.Mixer.MixerParam", "aggregate.Mixer.ChannelStrip"]
+	uses: ["aggregate.Mixer.MixerView", "valueObject.Mixer.MixerViewEvent", "valueObject.Mixer.MixerParam", "aggregate.Mixer.ChannelStrip", "aggregate.Mixer.MixBus", "domainService.Mixer.MixEngine"]
 	prompts: [
 		"File path: src/bin/mixer_demo.rs",
 		"CLI: `mixer_demo`. Takes no arguments and opens NO device and NO window — it is a headless harness over the Mixer view store and the ChannelStrip domain. Do NOT import gilrs, egui, eframe, cpal, or midir.",
@@ -235,6 +245,7 @@ project: assets: MixerDemoMain: {
 		#"FINE/COARSE PROOF: navigate to a continuous row (e.g. Volume) on some channel, EnterEditMode, then assert NavRight raises that channel's volume by the fine step and NavUp raises it by the coarse step (10x fine), and that values clamp at their upper and lower bounds (repeated NavUp never exceeds the max). Read the values back from the addressed ChannelStrip. Panic on mismatch. Print a verbatim line `fine/coarse ok`."#,
 		#"TOGGLE PROOF: navigate to the Mute row of a channel, feed ToggleFocusedParam and assert the channel's mute flips true; feed it again and assert it flips back. Then EnterEditMode on the Mute row and feed NavRight/NavUp and assert the mute flag is UNCHANGED (directional input is a no-op on a toggle). Panic on mismatch. Print a verbatim line `toggle ok`."#,
 		#"SOLO-VS-METERING PROOF (this is the one that catches a wrong gating implementation): on a fresh set of 16 ChannelStrip channels (as MixerView wraps them), build 16 small per-channel audio buffers each with a clearly non-zero signal. Solo exactly one channel (e.g. channel 3) via the view (navigate to its Solo row + ToggleFocusedParam). Run the mix pass over the 16 channels' buffers (e.g. via MixEngine, or an equivalent direct mixdown over the ChannelStrip list). Assert IN CODE: (a) the stereo mix equals ONLY channel 3's contribution — every other channel added zero (compare against a reference mix of channel 3 alone); (b) EVERY channel's peak level is still > 0, including the solo-silenced ones (so a channel inaudible due to another's solo still meters its own level). Panic with a clear message on either failure. Print the verbatim lines `solo mutes others: true` and `metering independent of solo: true`."#,
+		#"WITNESS CLI: also accept `--observe` and optional `--degenerate-stub`. Emit exactly one line `CREST_OBSERVATION {\"peak\":<number>,\"bounded\":<bool>,\"solo_isolation\":<bool>,\"all_channels_metered\":<bool>}` from the actual MixEngine output and per-strip meters. The degenerate case routes the same inputs through an explicit bypass/summing stub so isolation or metering fails while JSON remains valid; it exits 0 for crest-spec classification."#,
 		"Print a short summary. The tokens `edge scroll ok`, `fine/coarse ok`, `toggle ok`, `solo mutes others: true`, and `metering independent of solo: true` MUST appear verbatim so a validation can assert each behavior ran correctly with no device.",
 		"Exit 0 on success (all in-code assertions must pass).",
 	]
@@ -248,6 +259,10 @@ project: assets: MixerDemoMain: {
 			{kind: "stdout_contains", pattern: "solo mutes others: true"},
 			{kind: "stdout_contains", pattern: "metering independent of solo: true"},
 		]},
+	]
+	contributesTo: [
+		{capability: "capability.mix_to_stereo", contribution: "provides the falsification-gated strip-to-master mixing witness"},
+		{capability: "capability.edit_without_pointer", contribution: "proves the complete headless mixer editing event journey"},
 	]
 }
 
@@ -265,13 +280,14 @@ project: assets: MixerDemoMain: {
 project: assets: GamepadNavDemoMain: {
 	kind:        "rust-bin-target"
 	description: "src/bin/gamepad_demo.rs: headless prover for GamepadNavigator + GlyphResolver — scripted events -> GamepadActions -> cursor model, glyph resolution per controller type"
-	uses: ["domainService.Shell.GamepadNavigator", "domainService.Shell.GlyphResolver"]
+	uses: ["domainService.Shell.GamepadNavigator", "domainService.Shell.GlyphResolver", "aggregate.Mixer.MixerView", "aggregate.Loop.AppState", "domainService.Loop.StateProjector"]
 	prompts: [
 		"File path: src/bin/gamepad_demo.rs",
 		"CLI: `gamepad_demo`. Takes no arguments and opens NO device and NO window — it is a headless harness over the host-agnostic Shell domain services. Do NOT import gilrs, egui, or eframe.",
 		"Build a small app cursor/edit model (the app's OWN navigation state, not egui focus). Feed a SCRIPTED, deterministic sequence of raw GamepadEvents through the GamepadNavigator, which must translate them into GamepadActions and drive the cursor/edit model accordingly.",
 		#"Assert in code that the scripted events produce the EXPECTED GamepadActions and the EXPECTED final cursor position (panic with a clear message on mismatch). Print a verbatim line `nav actions ok: N` where N is the number of actions dispatched."#,
 		#"Drive the GlyphResolver for at least TWO different ControllerTypes (e.g. an Xbox-style and a PlayStation-style controller) and assert each resolves to a DIFFERENT glyph for the same logical button (panic if identical). Print a verbatim line `glyphs resolved: per-controller`."#,
+		#"WITNESS CLI: also accept `--observe` and optional `--degenerate-stub`. Drive translated gamepad actions through the real AppState/MixerView reducer, perform an out-of-range adjustment that must clamp, and publish the resulting state through StateProjector. Emit exactly one line `CREST_OBSERVATION {\"actions_dispatched\":<number>,\"state_changed\":<bool>,\"bounded_edit\":<bool>,\"state_published\":<bool>}` from measured state. The degenerate case deliberately bypasses the reducer or projector so a predicate fails while JSON remains valid; it exits 0."#,
 		"Print a short summary. The `nav actions ok:` and `glyphs resolved: per-controller` tokens MUST appear verbatim so a validation can assert the navigation + glyph logic ran correctly with no device.",
 		"Exit 0 on success (both in-code assertions must pass).",
 	]
@@ -283,4 +299,5 @@ project: assets: GamepadNavDemoMain: {
 			{kind: "stdout_contains", pattern: "glyphs resolved: per-controller"},
 		]},
 	]
+	contributesTo: [{capability: "capability.edit_without_pointer", contribution: "provides the falsification-gated gamepad-to-state-to-audio projection journey"}]
 }

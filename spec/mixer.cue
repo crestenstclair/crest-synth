@@ -33,6 +33,7 @@ project: contexts: Mixer: aggregates: ChannelStrip: {
 		"peak metering reflects the level after volume and pan are applied",
 	]
 	validations: [{kind: "test", command: ["cargo", "test", "channel_strip"], description: "ChannelStrip unit tests pass"}]
+	contributesTo: [{capability: "capability.mix_to_stereo", contribution: "provides independent gain, inserts, pan, mute, solo, sends, and metering for one patch"}]
 }
 
 project: contexts: Mixer: aggregates: MixBus: {
@@ -50,12 +51,14 @@ project: contexts: Mixer: aggregates: MixBus: {
 		"aux buses feed the master bus, never each other",
 	]
 	validations: [{kind: "test", command: ["cargo", "test", "mix_bus"], description: "MixBus unit tests pass"}]
+	contributesTo: [{capability: "capability.mix_to_stereo", contribution: "owns aux and master summing, ordered processing, and final output limiting"}]
 }
 
 project: contexts: Mixer: domainServices: {
 	MixEngine: {
 		purpose: "one full mix pass: render strips, collect send taps into aux buses, process aux inserts, sum into the master bus, process master inserts and the limiter"
 		uses: ["aggregate.Mixer.ChannelStrip", "aggregate.Mixer.MixBus", "domainService.Effects.ChainRenderer"]
+		contributesTo: [{capability: "capability.mix_to_stereo", contribution: "coordinates the complete strip-to-aux-to-master signal path and final limiting"}]
 	}
 }
 
@@ -66,6 +69,7 @@ project: contexts: Mixer: applicationServices: {
 		operations: {
 			setSolo: {input: {strip: "u32", solo: "bool"}}
 		}
+		contributesTo: [{capability: "capability.mix_to_stereo", contribution: "coordinates user-visible strip solo and bus operations without bypassing mixer invariants"}]
 	}
 }
 
@@ -144,6 +148,7 @@ project: contexts: Mixer: aggregates: MixerView: {
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with MixerView"},
 		{kind: "test", command: ["cargo", "test", "mixer_view"], description: "MixerView reducer unit tests pass (nav, edge-scroll, edit-mode, fine/coarse, toggle)"},
 	]
+	contributesTo: [{capability: "capability.edit_without_pointer", contribution: "provides the six-strip, keyboard/gamepad-driven mixer editing journey"}]
 }
 
 // ── Invariants ─────────────────────────────────────────

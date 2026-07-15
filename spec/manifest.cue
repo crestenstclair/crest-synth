@@ -31,6 +31,7 @@ project: assets: ToneTestMain: {
 			{kind: "stdout_contains", pattern: "peak="},
 		]},
 	]
+	contributesTo: [{capability: "capability.render_expressive_sound", contribution: "provides a fast audible, non-clipping engine smoke proof"}]
 }
 
 project: assets: SynthUiMain: {
@@ -108,6 +109,11 @@ project: assets: SynthUiMain: {
 			{kind: "stdout_contains", pattern: "autopilot complete:"},
 			{kind: "file_exists", path: "autopilot.png"},
 		]},
+	]
+	contributesTo: [
+		{capability: "capability.operate_audio_and_midi_devices", contribution: "assembles the complete standalone window, MIDI, audio, and engine lifecycle"},
+		{capability: "capability.edit_without_pointer", contribution: "hosts the gamepad/keyboard mixer journey through the one-way application loop"},
+		{capability: "capability.mix_to_stereo", contribution: "connects the live polyphonic engine through independent strips to device-bound stereo output"},
 	]
 }
 

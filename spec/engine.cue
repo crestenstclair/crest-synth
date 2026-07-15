@@ -54,6 +54,7 @@ project: contexts: Engine: aggregates: Voice: {
 		"a voice is reclaimable only when its amp envelope has reached Idle",
 		"per-note expression affects only the voice with the matching NoteId",
 	]
+	contributesTo: [{capability: "capability.render_expressive_sound", contribution: "owns the oscillator, filter, envelope, and per-note-expression lifecycle for one sounding note"}]
 }
 
 project: contexts: Engine: ports: {
@@ -83,6 +84,7 @@ project: contexts: Engine: domainServices: {
 		purpose: "assigns incoming notes to voices, stealing per the configured policy when polyphony is exhausted"
 		uses: ["aggregate.Engine.Voice"]
 		meta: notes: "the steal policy parameter is the Engine context's canonical StealPolicy — never a private duplicate type. Each documented variant is observably honored through the public interface: Refuse declines the allocation when full; Oldest/Quietest/LowestVelocity each select their respective victim, and the chosen victim differs across variants when the candidates differ."
+		contributesTo: [{capability: "capability.render_expressive_sound", contribution: "keeps polyphony bounded and applies the configured voice-stealing policy"}]
 	}
 	VoiceRenderer: {
 		purpose: "renders one voice for one buffer: oscillator → filter → envelopes"
@@ -91,5 +93,6 @@ project: contexts: Engine: domainServices: {
 	EngineRenderer: {
 		purpose: "iterates all active voices and sums their output to stereo"
 		uses: ["domainService.Engine.VoiceRenderer", "domainService.Engine.VoiceAllocator"]
+		contributesTo: [{capability: "capability.render_expressive_sound", contribution: "renders active voices into the stereo stream consumed by the mixer"}]
 	}
 }

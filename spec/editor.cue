@@ -59,6 +59,7 @@ project: contexts: Editor: aggregates: EditorState: {
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with EditorState"},
 		{kind: "test", command: ["cargo", "test", "editor_state"], description: "EditorState event-reducer unit tests pass (nav, edit-mode, fine/coarse, clamping)"},
 	]
+	contributesTo: [{capability: "capability.edit_without_pointer", contribution: "owns the deterministic keyboard/gamepad reducer for bounded parameter editing"}]
 }
 
 // ── DesignSystem ───────────────────────────────────────
@@ -124,6 +125,7 @@ project: contexts: DesignSystem: domainServices: DefaultTheme: {
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with DefaultTheme"},
 		{kind: "test", command: ["cargo", "test", "default_theme"], description: "DefaultTheme resolves every SemanticToken variant to an Rgba (exhaustive, no panic/fallback)"},
 	]
+	contributesTo: [{capability: "capability.edit_without_pointer", contribution: "provides exhaustive semantic styling for every navigable instrument surface"}]
 }
 
 // ── Invariants ─────────────────────────────────────────

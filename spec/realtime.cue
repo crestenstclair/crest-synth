@@ -17,6 +17,7 @@ project: contexts: RealTime: ports: {
 			pop:  "() -> option<BoundaryMessage>"
 		}
 		meta: notes: "single producer (UI/MIDI thread), single consumer (audio thread)"
+		contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "defines the non-blocking event path into the audio callback"}]
 	}
 	ParameterBridge: {
 		contract: {
@@ -24,6 +25,7 @@ project: contexts: RealTime: ports: {
 			read:    "() -> ParameterSnapshot"
 		}
 		meta: notes: "writer publishes; reader always gets the latest snapshot without blocking"
+		contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "defines latest-wins parameter publication without sharing mutable state"}]
 	}
 	DeferredDeallocator: {
 		contract: {
@@ -31,6 +33,7 @@ project: contexts: RealTime: ports: {
 			collect: "() -> u32"
 		}
 		meta: notes: "the audio thread retires; a background thread frees"
+		contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "keeps destruction and allocator work off the audio thread"}]
 	}
 }
 
@@ -38,16 +41,19 @@ project: adapters: RtrbEventRing: {
 	implements: "port.RealTime.EventRing"
 	layer:      "infrastructure"
 	meta: framework: "rtrb"
+	contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "implements the accepted lock-free SPSC event boundary"}]
 }
 
 project: adapters: TripleBufferParameterBridge: {
 	implements: "port.RealTime.ParameterBridge"
 	layer:      "infrastructure"
 	meta: framework: "triple_buffer"
+	contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "implements latest-wins lock-free parameter snapshots"}]
 }
 
 project: adapters: BasedropDeferredDeallocator: {
 	implements: "port.RealTime.DeferredDeallocator"
 	layer:      "infrastructure"
 	meta: framework: "basedrop"
+	contributesTo: [{capability: "capability.preserve_realtime_safety", contribution: "implements off-audio-thread reclamation of retired state"}]
 }
