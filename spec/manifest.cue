@@ -162,7 +162,7 @@ project: assets: SceneLibrary: {
 	description: "scenes/: starter scenes proving one behavior each, plus scenes/check.sh asserting state facts from the snapshots"
 	uses: ["asset.SceneRunMain"]
 	prompts: [
-		"Directory: scenes/. Author FOUR scene files in the SnapshotCodec format plus a scenes/check.sh that runs each through scene_run and asserts snapshot facts with jq.",
+		"Directory: scenes/. Author FIVE scene files in the SnapshotCodec format plus a scenes/check.sh that runs each through scene_run and asserts snapshot facts with jq.",
 		"mixer-solo: solo one of three strips, assert the snapshot shows the other two muted=true and the soloed one muted=false (solo exclusivity).",
 		"volume-edit: navigate to a strip, enter edit mode, adjust volume down 6 dB, assert the snapshot volume field equals the expected value exactly.",
 		"voice-steal: configure polyphony 2 with oldest-steal, fire 3 note-ons with renders between, assert active voice count is 2 and the frame clock equals the step count.",
