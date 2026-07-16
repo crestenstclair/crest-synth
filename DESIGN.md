@@ -30,10 +30,11 @@ growth, string formatting, or owned-state destruction.
 
 ## Sound source
 
-SoundFontEngine is the synthesis port. HiDefSoundFontEngine is its only
-adapter and loads ./sf2/HiDef.sf2 on the control thread. Each Patch contains a
-SoundFont instrument identity and an assigned MIDI channel. There is no engine
-selector or fallback.
+SoundFontEngine is the synthesis port. The application constructs exactly one
+HiDefSoundFontEngine, which owns one synthesizer instance and loads
+./sf2/HiDef.sf2 once on the control thread. Each Patch contains a SoundFont
+instrument identity and an assigned MIDI channel that configure that shared
+engine. There is no per-Patch engine, engine selector, or fallback.
 
 ## MIDI test input
 

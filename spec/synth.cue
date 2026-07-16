@@ -61,6 +61,7 @@ project: contexts: Synth: {
 			"valueObject.RealTime.ParameterSnapshot",
 		]
 		invariants: [
+			"the running application owns exactly one SoundFontEngine instance",
 			"load and configurePatch run on the control thread before the Patch can receive a note",
 			"dispatch and render use bounded preallocated storage on the audio thread",
 			"render fills caller-owned frames and performs no allocation, locking, I/O, logging, or destruction",
@@ -81,9 +82,10 @@ project: adapters: HiDefSoundFontEngine: {
 		framework: "rustysynth"
 		rules: [
 			"expect exactly ./sf2/HiDef.sf2 and load it once on the control thread; return a clear startup error if it is missing or invalid",
+			"own exactly one rustysynth synthesizer instance and load one SoundFont bank; do not create per-Patch synthesizer instances",
 			"SoundFont is the only synthesis implementation; do not define EngineType, oscillator, virtual-analog, sampler, or fallback paths",
-			"configure each Patch from SoundFontInstrument bank, program, and percussion identity before notes are accepted",
-			"keep any per-Patch engine instances or voices internal to this adapter and preallocate all callback working storage",
+			"configure each Patch's assigned channel from SoundFontInstrument bank, program, and percussion identity; keep the fixed Patch-to-channel/preset lookup preallocated",
+			"when round-robin assignment reuses a channel, dispatch applies the targeted Patch's prepared preset to that channel before its MIDI message without allocation or locking",
 			"render into caller-owned stereo frames without callback allocation, locking, I/O, logging, or deallocation",
 		]
 	}

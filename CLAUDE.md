@@ -7,7 +7,7 @@ attempt.
 Preserve these boundaries:
 
 - one-way input -> AppEvent -> AppState.apply -> projections/effects;
-- SoundFont-only synthesis using ./sf2/HiDef.sf2;
+- exactly one SoundFont engine instance using ./sf2/HiDef.sf2;
 - automatic test input from Corridors of Time, with no sequencer or transport;
 - one global reverb and one global delay, with no other effects;
 - one plain text parameter view with W/S/A/D and K-modified editing;

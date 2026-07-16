@@ -27,7 +27,8 @@ The current signal path is:
       -> master gain
       -> stereo output
 
-There is one synthesis engine type, one shared reverb, and one shared delay.
+There is exactly one SoundFont engine instance, one shared reverb, and one
+shared delay.
 
 ## Architecture
 

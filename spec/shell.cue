@@ -40,7 +40,7 @@ project: contexts: Shell: {
 			runSmoke: {input: {degenerate: "Option<DegenerateMode>"}, output: {observation: "Result<SmokeObservation, ApplicationError>"}}
 		}
 		meta: rules: [
-			"startup loads ./sf2/HiDef.sf2, prepares AudioRenderer, initializes AutomaticMidiTest, opens audio, then opens the text window",
+			"startup constructs exactly one SoundFontEngine, loads ./sf2/HiDef.sf2 into it, prepares AudioRenderer, initializes AutomaticMidiTest, opens audio, then opens the text window",
 			"normal-mode MIDI begins automatically during startup; each window tick advances only the private test input and collects deferred data",
 			"keypress events are dispatched to AppLoop before a new TextProjection is requested",
 			"runSmoke uses the same services without a physical device or window and measures real control, routing, and rendered-sample results",

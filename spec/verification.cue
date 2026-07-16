@@ -22,6 +22,7 @@ project: witnesses: running_synth: {
 		marker: "CREST_OBSERVATION "
 		schema: {
 			soundfont_loaded: "bool"
+			soundfont_engine_instances: "number"
 			instrument_patches: "number"
 			presets_match: "bool"
 			round_robin_channels: "bool"
@@ -33,6 +34,7 @@ project: witnesses: running_synth: {
 	}
 	predicates: [
 		{field: "soundfont_loaded", op: "eq", value: true},
+		{field: "soundfont_engine_instances", op: "eq", value: 1},
 		{field: "instrument_patches", op: "gt", value: 1},
 		{field: "presets_match", op: "eq", value: true},
 		{field: "round_robin_channels", op: "eq", value: true},

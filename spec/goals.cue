@@ -121,7 +121,7 @@ project: {
 	}
 
 	requirements: {
-		soundfont_only: {kind: "functional", description: "SoundFont is the only synthesis engine type; there is no oscillator, virtual-analog, sample-engine alternative, layering engine, or EngineType union", goals: ["goal.play_test_song"], capabilities: ["capability.soundfont_audio"]}
+		soundfont_only: {kind: "functional", description: "The application owns exactly one SoundFont engine instance; there is no per-Patch engine instance, alternate synthesis engine, layering engine, or EngineType union", goals: ["goal.play_test_song"], capabilities: ["capability.soundfont_audio"]}
 		fixed_soundfont: {kind: "functional", description: "The SoundFont adapter expects ./sf2/HiDef.sf2 and startup fails clearly when it is absent or invalid", goals: ["goal.play_test_song"], capabilities: ["capability.soundfont_audio"]}
 		fixed_midi_fixture: {kind: "functional", description: "The automatic test module targets ./midi/Corridors of Time - Chrono Trigger.mid", goals: ["goal.play_test_song"], capabilities: ["capability.automatic_test_midi"]}
 		global_effects_only: {kind: "functional", description: "The signal path contains one shared reverb and one shared delay; channels expose sends to those processors and no other effect slots or processors exist", goals: ["goal.play_test_song"], capabilities: ["capability.global_mix"]}
