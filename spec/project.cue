@@ -12,7 +12,7 @@ project: layerRules: {
 
 project: meta: {
 	language: "rust"
-	style: "idiomatic Rust; explicit domain newtypes; small focused modules; keyboard/gamepad-first mixer UI; deterministic headless proofs"
+	style: "idiomatic Rust; explicit domain newtypes; small focused modules; disposable plain-text backend views; deterministic headless proofs"
 	rules: [
 		"one spec resource owns one canonical public Rust type in its module; every consumer imports it instead of declaring a local lookalike",
 		"an asset is a composition root or proof harness, not a second implementation of the resources it targets",
@@ -26,6 +26,7 @@ project: meta: {
 		"dynamic dispatch in the inner sample loop",
 		"parallel AppState, AudioFrame, MIDI, patch, session, or sample model types",
 		"view-owned mutable state or direct mutation from input adapters",
+		"designed panels, grids, tables, meters, faders, themes, custom widgets, custom painting, or other visual-system work in the current diagnostic UI",
 		"mouse, touch, on-screen-note input, or non-mixer screens in the current UI",
 		"unconditional success tokens presented as behavioral evidence",
 	]
@@ -51,13 +52,13 @@ project: validations: {
 	}
 	mixer_integration: {
 		scope: "integration_wave", kind: "integration", command: ["make", "demo-mixer"]
-		resources: ["aggregate.Mixer.MixerView", "aggregate.Mixer.ChannelStrip", "domainService.Mixer.MixEngine", "asset.MixerDemoMain"]
+		resources: ["aggregate.Mixer.MixerView", "valueObject.Mixer.MixerTextProjection", "aggregate.Mixer.ChannelStrip", "domainService.Loop.StateProjector", "adapter.SerdeSnapshotCodec", "adapter.TripleBufferParameterBridge", "applicationService.Loop.RenderCoordinator", "domainService.Mixer.MixEngine", "asset.MixerDemoMain"]
 		capabilities: ["capability.pointer_free_mixer_control", "capability.stereo_mix_pipeline"]
 		goals: ["goal.operate_live_mixer"]
 	}
 	ui_smoke: {
 		scope: "goal", kind: "integration", command: ["make", "ui-smoke"]
-		resources: ["applicationService.Loop.StandaloneApplication", "asset.SynthUiMain", "aggregate.Loop.AppState", "aggregate.Mixer.MixerView"]
+		resources: ["applicationService.Loop.StandaloneApplication", "asset.SynthUiMain", "adapter.EguiRenderer", "aggregate.Loop.AppState", "aggregate.Mixer.MixerView", "valueObject.Mixer.MixerTextProjection", "domainService.Loop.StateProjector"]
 		capabilities: ["capability.external_midi_performance", "capability.pointer_free_mixer_control", "capability.shared_control_reducer"]
 		goals: ["goal.perform_through_standalone", "goal.operate_live_mixer"]
 	}
@@ -69,7 +70,7 @@ project: validations: {
 	}
 	midi_multitrack_regression: {
 		scope: "regression", kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--play", "midi/Corridors of Time - Chrono Trigger.mid"]
-		resources: ["adapter.MidlyMidiFileReader", "applicationService.MidiFile.TestPlaybackAssembler", "domainService.MidiFile.Sequencer", "applicationService.Loop.StandaloneApplication", "asset.SynthUiMain"]
+		resources: ["adapter.MidlyMidiFileReader", "adapter.HiDefSoundFontPlugin", "applicationService.MidiFile.TestPlaybackAssembler", "aggregate.MidiFile.TestPlayback", "domainService.MidiFile.Sequencer", "domainService.Sample.SamplePlayer", "applicationService.Loop.StandaloneApplication", "asset.SynthUiMain"]
 		capabilities: ["capability.instrument_partitioned_test_playback", "capability.configurable_instrument_graph", "capability.stereo_mix_pipeline"]
 		goals: ["goal.exercise_supported_sound_architecture"]
 	}
@@ -100,6 +101,8 @@ project: invariants: core: [
 	{text: "MIDI dispatch reaches every intentionally matching patch exactly once and MPE zones do not overlap across the active patch collection", meta: rationale: "layering remains intentional and expression unambiguous"},
 	{text: "preset and session payloads are explicitly versioned and replace active state only after complete decode, migration, and validation", meta: rationale: "failed restore cannot corrupt live state"},
 	{text: "AppState.apply is the only control mutation path; views, adapters, demos, and scenes emit AppEvents", meta: rationale: "live and replay behavior must be comparable"},
+	{text: "an accepted AppEvent commits AppState before any serialization, text projection, parameter publication, sequencing, voice release, or rendering effect is derived; effects may enqueue new AppEvents but never mutate state", meta: rationale: "all inputs and effects preserve one-way state flow"},
+	{text: "MIDI-file test Patches use ./sf2/HiDef.sf2 through SoundFontPlugin and select presets from InstrumentIdentity; they never fall back to the virtual-analog source", meta: rationale: "the test player must audibly distinguish the instruments declared by the file"},
 	{text: "a canonical resource type is declared once and imported everywhere else", meta: rationale: "duplicate structural types made the generated system impossible to compose"},
 ]
 
@@ -122,7 +125,7 @@ project: contextMap: [
 	{from: "Loop", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
 	{from: "Shell", to: "Loop", kind: "anti-corruption", direction: "downstream"},
 	{from: "MidiFile", to: "Loop", kind: "anti-corruption", direction: "downstream"},
-	{from: "DesignSystem", to: "Shell", kind: "customer-supplier", direction: "upstream"},
+	{from: "Sample", to: "MidiFile", kind: "customer-supplier", direction: "upstream"},
 ]
 
 project: assetKinds: {

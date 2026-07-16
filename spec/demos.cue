@@ -92,15 +92,16 @@ project: assets: MidiPlayMain: {
 	kind: "rust-bin-target"
 	description: "src/bin/midi_play.rs: offline Standard MIDI File to WAV proof"
 	profile: {kind: "verification_harness", witness: "instrument-partitioned MIDI render", failurePolicy: "empty parts, missing patches, invalid assignments, or silent render fails"}
-	targets: ["adapter.MidlyMidiFileReader", "applicationService.MidiFile.TestPlaybackAssembler", "domainService.MidiFile.Sequencer", "applicationService.Loop.RenderCoordinator"]
+	targets: ["adapter.MidlyMidiFileReader", "adapter.HiDefSoundFontPlugin", "applicationService.MidiFile.TestPlaybackAssembler", "aggregate.MidiFile.TestPlayback", "domainService.MidiFile.Sequencer", "applicationService.Loop.RenderCoordinator"]
 	prompts: [
 		"CLI: midi_play [FILE.mid] [--observe] [--degenerate-stub]. The optional path defaults to the built-in multi-instrument Song; reject unknown or duplicate inputs clearly.",
-		"Read an optional MIDI file with MidlyMidiFileReader or construct a built-in Song with at least three bank/program identities plus percussion. Prepare it with TestPlaybackAssembler, then schedule each targeted part through Sequencer and RenderCoordinator; do not define local song, patch, mixer, or renderer substitutes.",
-		"Assert one generated Patch per InstrumentPart, unique patch IDs, part N assigned to mixer track N % 16, every event targeted to its part patch, events > 0, duration > 0, and 0 < peak <= 1. Include a >16-part unit case proving deterministic track sharing without dropped patches.",
-		"Write midi-play.wav and print `instrument parts=<N>`, `generated patches=<N>`, one `track assignment: <label> -> Txx` per part, and `rendered seconds=<value>`.",
-		"--observe emits instrument_parts, one_patch_per_instrument, round_robin_assignment, all_events_targeted, and peak. --degenerate-stub deliberately collapses parts, corrupts one assignment, or removes a target while preserving the observation schema.",
+		"Read an optional MIDI file with MidlyMidiFileReader or construct a built-in Song with at least three bank/program identities plus percussion. Prepare it with TestPlaybackAssembler and HiDefSoundFontPlugin using exactly ./sf2/HiDef.sf2, then schedule through the canonical AppEvent loop; do not define local song, patch, plugin, mixer, or renderer substitutes.",
+		"Assert one EngineType::Sample Patch per InstrumentPart, each SoundFont preset matches the part identity, unique PatchIds, part N assigned to mixer track N % 16, every event targeted, events > 0, duration > 0, and 0 < peak <= 1. Include a >16-part unit case.",
+		"Apply Playback(ToggleFromStart), advance/render, apply it again to stop/rewind/release notes, then apply it again and prove the first emitted event and position equal the first run. These state changes must go through AppState.apply.",
+		"Write midi-play.wav and print `soundfont=./sf2/HiDef.sf2`, `instrument parts=<N>`, `generated patches=<N>`, one resolved instrument/Patch/track assignment per part, and `restart from zero: true`.",
+		"--observe emits instrument_parts, soundfont_loaded, presets_match_instruments, one_patch_per_instrument, round_robin_assignment, all_events_targeted, restart_from_zero, stop_released_notes, and peak. --degenerate-stub breaks one claim while preserving the schema.",
 	]
-	validations: [{kind: "integration", command: ["make", "demo-midi"], description: "instrument parts become round-robin-assigned patches and render audibly offline", assertions: [{kind: "exit_code", expected: 0}, {kind: "file_exists", path: "midi-play.wav"}, {kind: "stdout_contains", pattern: "instrument parts="}, {kind: "stdout_contains", pattern: "generated patches="}, {kind: "stdout_contains", pattern: "track assignment:"}, {kind: "stdout_contains", pattern: "rendered seconds="}]}]
+	validations: [{kind: "integration", command: ["make", "demo-midi"], description: "HiDef instruments become round-robin sample Patches, restart from zero, and render audibly", assertions: [{kind: "exit_code", expected: 0}, {kind: "file_exists", path: "midi-play.wav"}, {kind: "stdout_contains", pattern: "soundfont=./sf2/HiDef.sf2"}, {kind: "stdout_contains", pattern: "instrument parts="}, {kind: "stdout_contains", pattern: "generated patches="}, {kind: "stdout_contains", pattern: "track assignment:"}, {kind: "stdout_contains", pattern: "restart from zero: true"}]}]
 	contributesTo: [{capability: "capability.instrument_partitioned_test_playback", contribution: "proves real instrument partitioning, patch materialization, modulo-16 assignment, and targeted offline rendering"}]
 }
 
@@ -108,9 +109,9 @@ project: assets: MidiPlayLiveMain: {
 	kind: "rust-bin-target"
 	description: "src/bin/midi_play_live.rs: live MIDI-file host and hermetic real-time-boundary proof"
 	profile: {kind: "verification_harness", witness: "event ring, latest snapshot, and deferred destruction", failurePolicy: "broken boundary facts fail witness predicates"}
-	targets: ["adapter.MidlyMidiFileReader", "applicationService.MidiFile.TestPlaybackAssembler", "domainService.MidiFile.Sequencer", "adapter.CpalAudioOutput", "applicationService.Loop.RenderCoordinator", "adapter.RtrbEventRing", "adapter.TripleBufferParameterBridge", "adapter.BasedropDeferredDeallocator"]
+	targets: ["adapter.MidlyMidiFileReader", "adapter.HiDefSoundFontPlugin", "applicationService.MidiFile.TestPlaybackAssembler", "aggregate.MidiFile.TestPlayback", "domainService.MidiFile.Sequencer", "adapter.CpalAudioOutput", "applicationService.Loop.RenderCoordinator", "adapter.RtrbEventRing", "adapter.TripleBufferParameterBridge", "adapter.BasedropDeferredDeallocator"]
 	prompts: [
-		"Live mode builds the same one-patch-per-instrument TestPlaybackPlan as offline/synth_ui playback, schedules its targeted events through RenderCoordinator, and writes exactly each callback-requested stereo frame slice to CpalAudioOutput. Report unavailable devices clearly; never panic or move a non-Send stream across threads.",
+		"Live mode builds the same HiDef.sf2-backed per-instrument TestPlaybackPlan as offline/synth_ui, starts it through Playback(ToggleFromStart), schedules targeted events through the AppEvent loop and RenderCoordinator, and writes exactly each callback-requested frame slice to CpalAudioOutput.",
 		"--no-device-dry-run opens no device and performs concrete boundary facts: push/pop one event, publish two snapshots/read newest, retire tracked state on the simulated audio side and collect/drop it on the control side.",
 		"--observe emits event_delivered, latest_snapshot_read, reclaimed_off_audio_thread. --degenerate-stub breaks one boundary seam while preserving the schema.",
 	]
@@ -121,14 +122,16 @@ project: assets: MidiPlayLiveMain: {
 project: assets: MixerDemoMain: {
 	kind: "rust-bin-target"
 	description: "src/bin/mixer_demo.rs: headless mixer reducer and strip-to-master proof"
-	profile: {kind: "verification_harness", witness: "all-track navigation, inspector, editing, solo, and metering", failurePolicy: "missing track/inspector state, bounds, or mix semantics failure exits non-zero"}
-	targets: ["aggregate.Mixer.MixerView", "aggregate.Loop.AppState", "domainService.Mixer.MixEngine"]
+	profile: {kind: "verification_harness", witness: "serialized Patch rows and edit-to-playback propagation", failurePolicy: "projection, roundtrip, publication, engine-consumption, bounds, or mix failure exits non-zero"}
+	targets: ["aggregate.Mixer.MixerView", "valueObject.Mixer.MixerTextProjection", "aggregate.Loop.AppState", "domainService.Loop.StateProjector", "adapter.SerdeSnapshotCodec", "adapter.TripleBufferParameterBridge", "applicationService.Loop.RenderCoordinator", "domainService.Mixer.MixEngine"]
 	prompts: [
-		"Open no GUI/device. Drive canonical AppEvent::Mixer values through AppState.apply, not MixerView directly. Prove T00-T0F labels all exist simultaneously, navigation saturates at each end, the derived inspector follows cursor track/parameter/patch, compact display values are correct, fine/coarse values clamp, and directional input cannot toggle booleans.",
+		"Open no GUI/device. Create multiple canonical Patches including two sharing a mixer track. Project the initial AppState to MixerTextProjection and assert every Patch/value appears exactly as canonical StateSnapshot serialization with ASCII separators and one `>` marker.",
+		"Drive bare W/S/A/D Navigate and K-equivalent Adjust events through AppState.apply. After every accepted edit, re-serialize, re-project, publish ParameterSnapshot, render through RenderCoordinator, and prove the selected typed value agrees across all stages. Rejected events change none of them.",
+		"Prove representative volume, pan, send, mute, and solo edits change the corresponding engine observation or rendered audio; K+direction values clamp and bare navigation never edits.",
 		"Render non-zero buffers on all strips through MixEngine, solo one, assert only it reaches master while every strip retains pre-solo metering.",
-		"--observe emits peak, bounded_edit, all_tracks_visible, inspector_consistent, solo_isolation, all_channels_metered. --degenerate-stub omits a track/inspector update or bypasses reducer/solo/meter logic.",
+		"--observe emits peak, bounded_edit, patch_rows_serialized, state_roundtrip, parameter_published, engine_consumed_edit, audio_changed, solo_isolation, all_channels_metered. --degenerate-stub disconnects one stage while preserving the schema.",
 	]
-	validations: [{kind: "integration", command: ["make", "demo-mixer"], description: "the authoritative reducer drives all-track mixer control, inspector projection, and audio semantics", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "tracks visible: 16"}, {kind: "stdout_contains", pattern: "inspector follows cursor: true"}, {kind: "stdout_contains", pattern: "metering independent of solo: true"}]}]
+	validations: [{kind: "integration", command: ["make", "demo-mixer"], description: "the authoritative reducer drives serialized text, parameter publication, and audible mixer behavior", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "patch rows serialized: true"}, {kind: "stdout_contains", pattern: "state roundtrip: true"}, {kind: "stdout_contains", pattern: "engine consumed edit: true"}, {kind: "stdout_contains", pattern: "metering independent of solo: true"}]}]
 	contributesTo: [
 		{capability: "capability.pointer_free_mixer_control", contribution: "proves the complete headless mixer interaction journey through AppState"},
 		{capability: "capability.stereo_mix_pipeline", contribution: "falsifies incorrect solo gating and post-solo metering"},
@@ -141,7 +144,7 @@ project: assets: GamepadNavDemoMain: {
 	profile: {kind: "verification_harness", witness: "gamepad translation and controller glyphs", failurePolicy: "wrong semantic action, state, or glyph mapping fails"}
 	targets: ["domainService.Shell.GamepadNavigator", "domainService.Shell.GlyphResolver", "aggregate.Loop.AppState", "domainService.Loop.StateProjector"]
 	prompts: [
-		"Open no device/window. Feed deterministic raw GamepadEvents through GamepadNavigator, translate the resulting actions into the same AppEvent::Mixer variants as keyboard input, and apply them to AppState.",
+		"Open no device/window. Feed deterministic raw GamepadEvents through GamepadNavigator, prove bare d-pad maps to the same Navigate events as W/S/A/D and edit-modified d-pad maps to the same Adjust events as K+direction, then apply them through AppState.",
 		"Assert expected actions, final mixer cursor/edit state, bounded values, and successful StateProjector publication. Resolve distinct glyphs for at least two controller families.",
 	]
 	validations: [{kind: "integration", command: ["make", "check-gamepad"], description: "controller-independent semantic actions reach authoritative state", assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "nav actions ok:"}, {kind: "stdout_contains", pattern: "glyphs resolved: per-controller"}]}]

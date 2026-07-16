@@ -6,8 +6,12 @@ package crestsynth
 project: contexts: RealTime: purpose: "the lock-free boundary: discrete events over a SPSC ring, latest-wins parameter snapshots, and deferred deallocation of memory retired by the audio thread"
 
 project: contexts: RealTime: valueObjects: {
-	BoundaryMessage: {description: "a discrete message crossing the boundary: NoteOn, NoteOff, ControlChange, PatchChange, PresetLoad, or ParameterUpdate"}
-	ParameterSnapshot: {description: "a complete, immutable snapshot of every audio-thread-readable parameter"}
+	BoundaryMessage: {description: "a discrete message crossing the boundary: NoteOn, NoteOff, ControlChange, PatchChange, PresetLoad, ParameterUpdate, or TestPlaybackGenerationReset/all-notes-off"}
+	ParameterSnapshot: {
+		description: "a complete immutable snapshot of every audio-thread-readable Patch, sample instrument, and mixer value, including volume, pan, sends, mute, solo, and mixer assignment"
+		invariants: ["a snapshot is derived from exactly one accepted AppState frame and contains no UI text, cursor, key, widget, or playback-clock state"]
+		validations: [{kind: "test", command: ["cargo", "test", "parameter_snapshot"], description: "every editable mixer value round-trips into the typed audio snapshot without loss"}]
+	}
 }
 
 project: contexts: RealTime: ports: {

@@ -54,6 +54,7 @@ project: contexts: Patch: applicationServices: {
 		uses: ["aggregate.Patch.Patch"]
 		operations: {
 			createPatch: {input: {template: "Patch", name: "string", mixerStrip: "u32"}, output: {patch: "result<Patch, PatchError>"}}
+			createSamplePatch: {input: {name: "string", sampleSet: "SampleSetId", mixerStrip: "u32", mapping: "ChannelMapping"}, output: {patch: "result<Patch, PatchError>"}}
 			deletePatch: {input: {id: "PatchId"}}
 			applyCommand: {input: {id: "PatchId", command: "PatchCommand"}}
 			validateMpeZones: {output: {result: "result<(), MpeOverlap>"}}
@@ -61,8 +62,9 @@ project: contexts: Patch: applicationServices: {
 		meta: rules: [
 			"MPE non-overlap is a collection invariant enforced here, because one Patch cannot inspect its siblings",
 			"created patches receive fresh stable PatchIds; a caller may choose an already-valid mixer strip, including deterministic sharing for MIDI-file tests",
+			"createSamplePatch always selects EngineType::Sample, assigns the provided SampleSetId, and never constructs a virtual-analog fallback",
 		]
-		validations: [{kind: "test", command: ["cargo", "test", "patch_manager"], description: "CRUD is atomic, IDs are fresh, mixer strips are valid and shareable, and overlapping MPE zones are rejected"}]
+		validations: [{kind: "test", command: ["cargo", "test", "patch_manager"], description: "CRUD is atomic, IDs are fresh, mixer strips are valid/shareable, SoundFont sample Patches cannot fall back to another engine, and overlapping MPE zones are rejected"}]
 		contributesTo: [{capability: "capability.configurable_instrument_graph", contribution: "coordinates complete patch configuration and cross-patch routing invariants"}]
 	}
 }

@@ -79,35 +79,33 @@ project: contexts: Mixer: applicationServices: {
 // non-soloed strips are muted. Enforced by MixerController, observable at
 // MixEngine output.
 
-// The Mixer VIEW is the current GUI: a controller/keyboard-driven view
-// over the channel-strip mixer (aggregate.Mixer.ChannelStrip). Like the
-// Editor view, it is a one-way (Flux) store — MixerView — with a single
-// mutation entry point that reduces semantic MixerViewEvents. The egui/synth_ui
-// shell and the gamepad adapter both emit the SAME events, so the whole control
-// plane (track/parameter cursor, edit-mode, fine/coarse adjust,
-// double-tap toggle) is hermetically testable with no window and no device.
-//
-// All 16 tracks are visible at once as narrow terminal-like columns. A cursor
-// selects one (track, parameter) cell and a derived inspector shows its patch,
-// instrument, value, mute, and solo state. The view edits canonical
-// ChannelStrips; metering is read back from them.
+// The current Mixer VIEW is a disposable backend diagnostic, not a designed
+// control surface. It prints every Patch and its canonical mixer values as a
+// vertical wall of text. The egui shell uses only default labels and a scroll
+// area; all behavior lives in MixerView/AppState and is proven headlessly.
 //
 // It deliberately reuses ChannelStrip; there is no ChannelMixer, PatchMixer,
 // GlobalMixer, or parallel strip model. ReverbSend/EchoSend address sends 0/1.
 
 project: contexts: Mixer: ubiquitousLanguage: {
-	MixerView:      "the single store for the mixer view: owns the track/parameter cursor, edit-mode flag, sixteen canonical ChannelStrips, and their patch/instrument labels"
-	MixerViewEvent: "a semantic input event (navigate, edit-mode change, or toggle) emitted by the keyboard/gamepad adapter — the only thing that mutates the mixer view"
-	MixerParam:     "which of a track's six parameter rows the cursor is on: Volume, ReverbSend, EchoSend, Pan, Mute, Solo"
-	TrackCode:      "the stable two-hex-digit mixer label T00 through T0F"
-	Inspector:      "a derived textual panel for the selected track, patch/instrument, parameter value, mute, and solo state"
+	MixerView: "the host-neutral navigation state over canonical Patch and ChannelStrip values; it contains no rendering or styled-widget state"
+	MixerViewEvent: "Navigate(direction) or Adjust(direction), emitted after the input adapter interprets plain W/S/A/D versus K+W/S/A/D"
+	MixerParam: "which serialized Patch mixer value is selected: Volume, ReverbSend, EchoSend, Pan, Mute, Solo"
+	MixerTextProjection: "a deterministic wall-of-text rendering of canonical AppState and its StateSnapshot hash"
 }
 
-project: contexts: Mixer: valueObjects: MixerTrackLabel: {
-	state: {track: "u8", code: "string", patchId: "option<PatchId>", instrument: "string"}
-	description: "compact mixer header data: T00-T0F plus the assigned patch/instrument label, or an explicit empty marker"
-	invariants: ["track is 0..=15", "code is uppercase T00 through T0F and is derived from track", "instrument is terminal-safe single-line text"]
-	validations: [{kind: "test", command: ["cargo", "test", "mixer_track_label"], description: "all sixteen stable codes and empty/assigned labels render deterministically"}]
+project: contexts: Mixer: valueObjects: MixerTextProjection: {
+	state: {body: "string", patchCount: "usize", selectedPatch: "option<PatchId>", selectedParam: "MixerParam", stateSnapshotHash: "string"}
+	description: "the complete plain-text backend view served to any shell; it is derived from canonical AppState and never stores editable values"
+	invariants: [
+		"body begins with serialized TestPlayback status, positionSeconds, and soundFontPath followed by the literal `KEYS: W/S values | A/D patches | K+direction edit | L start/stop from start` reminder",
+		"every Patch appears exactly once in stable AppState order",
+		"each Patch block contains id, name, mixerStrip, volume, reverbSend, echoSend, pan, mute, and solo using the same serialized values encoded in StateSnapshot",
+		"Patch blocks are separated by the literal ASCII rule `------------------------------------------------------------`",
+		"exactly one selected value is prefixed by `>` when any Patch exists; all other value lines begin with a space",
+		"stateSnapshotHash equals the hash of the canonical StateSnapshot from which body was projected",
+	]
+	validations: [{kind: "test", command: ["cargo", "test", "mixer_text_projection"], description: "multi-patch text, separators, selection, exact serialized values, and snapshot hash are deterministic"}]
 }
 
 project: contexts: Mixer: valueObjects: MixerParam: {
@@ -119,38 +117,36 @@ project: contexts: Mixer: valueObjects: MixerParam: {
 
 project: contexts: Mixer: valueObjects: MixerViewEvent: {
 	from:        "enum"
-	description: "NavUp, NavDown, NavLeft, NavRight, EnterEditMode, ExitEditMode, ToggleFocusedParam — the semantic input vocabulary of the mixer view. Keyboard and gamepad adapters both emit ONLY these. EnterEditMode/ExitEditMode track the Edit modifier (J / a face button) hold; ToggleFocusedParam is emitted by the adapter on a DOUBLE-TAP of Edit (the timing/double-tap detection lives in the adapter, never in the store)."
+	description: "NavigateUp, NavigateDown, NavigateLeft, NavigateRight, AdjustUp, AdjustDown, AdjustLeft, AdjustRight. Bare W/S/A/D and d-pad emit Navigate; holding K or the gamepad edit modifier emits Adjust. The reducer never receives raw key state."
 	validations: [{kind: "compiles", command: ["cargo", "build"], description: "crate builds with MixerViewEvent"}]
 }
 
 project: contexts: Mixer: aggregates: MixerView: {
 	root:    true
-	purpose: "the terminal-style all-tracks mixer store: owns the cursor, labels, edit mode, and sixteen canonical ChannelStrips behind one reducer"
-	state: {tracks: "[ChannelStrip; 16]", labels: "[MixerTrackLabel; 16]", cursorTrack: "usize", cursorParam: "MixerParam", editMode: "bool"}
+	purpose: "the host-neutral backend mixer store: owns sixteen canonical ChannelStrips and a Patch/parameter selection behind one reducer"
+	state: {tracks: "[ChannelStrip; 16]", selectedPatch: "option<PatchId>", cursorParam: "MixerParam"}
 	invariants: [
-		"apply(MixerViewEvent) is the ONLY way to mutate the mixer view",
-		"the view contains exactly 16 ChannelStrip tracks and all sixteen T00-T0F columns are present in the initial layout with no horizontal paging",
-		"cursorTrack stays in 0..=15; navigation saturates at T00 and T0F",
-		"the initial selection is T00 Volume and the derived inspector and bottom status row describe that same selection",
-		"in navigate mode NavUp/NavDown move the parameter row and NavLeft/NavRight move between tracks",
-		"in edit mode on a continuous param, Left/Right adjust by the fine step and Up/Down by the coarse step (= 10x fine), clamped by the addressed ChannelStrip",
-		"toggle params (Mute/Solo) change only via ToggleFocusedParam (double-tap Edit), never via directional input",
-		"EnterEditMode alone changes no parameter value (it is a no-op until directional input arrives)",
-		"volume and sends display compact 00-7F control values, pan displays L63..C..R63, and the domain values remain Decibel/Amplitude/Pan rather than hexadecimal storage",
-		"the selected-track inspector is derived from tracks, labels, cursorTrack, and cursorParam and never owns mutable duplicate state",
+		"AppState.apply(AppEvent::Mixer(MixerViewEvent)) is the only mutation path and atomically resolves selectedPatch against AppState.patches before touching its assigned ChannelStrip",
+		"the view contains exactly 16 canonical ChannelStrip tracks; multiple Patches may share a track and every Patch remains independently listed",
+		"NavigateUp/NavigateDown move through MixerParam in declared order; NavigateLeft/NavigateRight move through stable AppState Patch order; all navigation saturates",
+		"the initial selection is the first Patch in AppState order and Volume, or no Patch when the collection is empty",
+		"AdjustLeft/AdjustRight decrement/increment a continuous value by its fine step; AdjustDown/AdjustUp decrement/increment by ten fine steps; every result clamps",
+		"for Mute and Solo, AdjustLeft/AdjustDown set false and AdjustRight/AdjustUp set true; bare navigation never changes a value",
+		"pressing K without a direction emits no event and changes nothing",
+		"MixerView contains no copied Patch name, serialized string, widget, panel, meter, scroll, color, or layout state",
 	]
 	validations: [
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with MixerView"},
-		{kind: "test", command: ["cargo", "test", "mixer_view"], description: "all-track layout state, saturating navigation, inspector projection, edit-mode, fine/coarse, and toggle tests pass"},
+		{kind: "test", command: ["cargo", "test", "mixer_view"], description: "Patch/parameter navigation, K-modified fine/coarse adjustment, boolean setting, clamping, shared tracks, and empty state pass"},
 	]
-	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "provides the all-sixteen-track terminal-style keyboard/gamepad mixer journey"}]
+	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "provides backend Patch selection and typed adjustment semantics independently of the disposable text renderer"}]
 }
 
 // ── Invariants ─────────────────────────────────────────
 
 project: invariants: mixerView: [
-	{text: "the mixer skin is a pure view over the MixerView inside AppState; it requests changes only by emitting AppEvent::Mixer into AppState.apply and never mutates MixerView or ChannelStrip directly", meta: rationale: "one authoritative reducer makes live input and scene replay identical"},
-	{text: "double-tap detection and Edit-hold timing live in the input adapter, which emits clean semantic events (ToggleFocusedParam / EnterEditMode / ExitEditMode); the store is timing-free", meta: rationale: "keeps MixerView a pure reducer that unit tests can drive with event sequences"},
+	{text: "the text renderer receives only MixerTextProjection and emits MixerViewEvents; it never mutates AppState, MixerView, Patch, or ChannelStrip directly", meta: rationale: "the disposable shell must prove the backend rather than become another backend"},
+	{text: "K-modifier state lives in the input adapter, which converts K+direction into Adjust and bare direction into Navigate; MixerView is timing- and device-free", meta: rationale: "the reducer remains hermetically testable with semantic event sequences"},
 	{text: "metering is independent of solo and mute: a channel silenced by another channel's solo still meters its own level", meta: rationale: "the volume strip doubles as the channel's peak meter and must show real signal even when inaudible"},
 	{text: "keyboard and gamepad emit identical MixerViewEvents, so the two input paths are interchangeable", meta: rationale: "controller-first parity with the rest of the app"},
 ]

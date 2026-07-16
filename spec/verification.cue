@@ -50,18 +50,21 @@ project: witnesses: mixer_control_path: {
 	scope: "goal"
 	goal: "goal.operate_live_mixer"
 	capability: "capability.pointer_free_mixer_control"
-	resources: ["aggregate.Mixer.MixerView", "aggregate.Mixer.ChannelStrip", "domainService.Mixer.MixEngine", "asset.MixerDemoMain"]
+	resources: ["aggregate.Mixer.MixerView", "valueObject.Mixer.MixerTextProjection", "aggregate.Mixer.ChannelStrip", "domainService.Loop.StateProjector", "adapter.SerdeSnapshotCodec", "adapter.TripleBufferParameterBridge", "applicationService.Loop.RenderCoordinator", "domainService.Mixer.MixEngine", "asset.MixerDemoMain"]
 	evidence: ["evidence.mixer_behavior"]
 	command: ["cargo", "run", "--bin", "mixer_demo", "--", "--observe"]
 	negativeCommand: ["cargo", "run", "--bin", "mixer_demo", "--", "--observe", "--degenerate-stub"]
 	timeout: "60s"
 	artifacts: ["target/debug/mixer_demo"]
-	observation: {kind: "json_stdout", marker: "CREST_OBSERVATION ", schema: {peak: "number", bounded_edit: "bool", all_tracks_visible: "bool", inspector_consistent: "bool", solo_isolation: "bool", all_channels_metered: "bool"}}
+	observation: {kind: "json_stdout", marker: "CREST_OBSERVATION ", schema: {peak: "number", bounded_edit: "bool", patch_rows_serialized: "bool", state_roundtrip: "bool", parameter_published: "bool", engine_consumed_edit: "bool", audio_changed: "bool", solo_isolation: "bool", all_channels_metered: "bool"}}
 	predicates: [
 		{field: "peak", op: "gt", value: 0},
 		{field: "bounded_edit", op: "eq", value: true},
-		{field: "all_tracks_visible", op: "eq", value: true},
-		{field: "inspector_consistent", op: "eq", value: true},
+		{field: "patch_rows_serialized", op: "eq", value: true},
+		{field: "state_roundtrip", op: "eq", value: true},
+		{field: "parameter_published", op: "eq", value: true},
+		{field: "engine_consumed_edit", op: "eq", value: true},
+		{field: "audio_changed", op: "eq", value: true},
 		{field: "solo_isolation", op: "eq", value: true},
 		{field: "all_channels_metered", op: "eq", value: true},
 	]
@@ -71,18 +74,22 @@ project: witnesses: midi_instrument_partition: {
 	scope: "goal"
 	goal: "goal.exercise_supported_sound_architecture"
 	capability: "capability.instrument_partitioned_test_playback"
-	resources: ["adapter.MidlyMidiFileReader", "applicationService.MidiFile.TestPlaybackAssembler", "domainService.MidiFile.Sequencer", "applicationService.Loop.RenderCoordinator", "asset.MidiPlayMain"]
+	resources: ["adapter.MidlyMidiFileReader", "adapter.HiDefSoundFontPlugin", "applicationService.MidiFile.TestPlaybackAssembler", "aggregate.MidiFile.TestPlayback", "domainService.MidiFile.Sequencer", "applicationService.Loop.RenderCoordinator", "asset.MidiPlayMain"]
 	evidence: ["evidence.midi_instrument_partition"]
 	command: ["cargo", "run", "--bin", "midi_play", "--", "midi/Corridors of Time - Chrono Trigger.mid", "--observe"]
 	negativeCommand: ["cargo", "run", "--bin", "midi_play", "--", "midi/Corridors of Time - Chrono Trigger.mid", "--observe", "--degenerate-stub"]
 	timeout: "60s"
 	artifacts: ["target/debug/midi_play", "midi-play.wav"]
-	observation: {kind: "json_stdout", marker: "CREST_OBSERVATION ", schema: {instrument_parts: "number", one_patch_per_instrument: "bool", round_robin_assignment: "bool", all_events_targeted: "bool", peak: "number"}}
+	observation: {kind: "json_stdout", marker: "CREST_OBSERVATION ", schema: {instrument_parts: "number", soundfont_loaded: "bool", presets_match_instruments: "bool", one_patch_per_instrument: "bool", round_robin_assignment: "bool", all_events_targeted: "bool", restart_from_zero: "bool", stop_released_notes: "bool", peak: "number"}}
 	predicates: [
 		{field: "instrument_parts", op: "gt", value: 1},
+		{field: "soundfont_loaded", op: "eq", value: true},
+		{field: "presets_match_instruments", op: "eq", value: true},
 		{field: "one_patch_per_instrument", op: "eq", value: true},
 		{field: "round_robin_assignment", op: "eq", value: true},
 		{field: "all_events_targeted", op: "eq", value: true},
+		{field: "restart_from_zero", op: "eq", value: true},
+		{field: "stop_released_notes", op: "eq", value: true},
 		{field: "peak", op: "gt", value: 0},
 		{field: "peak", op: "lte", value: 1},
 	]

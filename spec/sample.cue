@@ -9,6 +9,12 @@ project: contexts: Sample: valueObjects: {
 	LoopMode: {description: "playback looping: no loop, forward, ping-pong, or release (loop until note-off then play to end)"}
 	KeyRange: {state: {low: "NoteNumber", high: "NoteNumber"}, description: "inclusive note range a zone responds to", invariants: ["low must be <= high"], validations: [{kind: "test", command: ["cargo", "test", "key_range"], description: "KeyRange unit tests pass"}]}
 	VelocityRange: {state: {low: "Velocity", high: "Velocity"}, description: "inclusive velocity range a zone responds to", invariants: ["low must be <= high"], validations: [{kind: "test", command: ["cargo", "test", "velocity_range"], description: "VelocityRange unit tests pass"}]}
+	SoundFontInstrument: {
+		state: {bank: "u16", program: "u8", percussion: "bool", name: "string"}
+		description: "the SF2 preset selector derived from a MIDI InstrumentIdentity; bank/program values select one instrument in HiDef.sf2"
+		invariants: ["program is 0..=127", "percussion selects the SoundFont percussion bank when present", "name records the resolved SF2 preset name"]
+		validations: [{kind: "test", command: ["cargo", "test", "soundfont_instrument"], description: "melodic, banked, percussion, and fallback selectors are stable"}]
+	}
 	SampleData: {
 		state: {channels: "u16", sampleRate: "SampleRate", frames: "Arc<[AudioFrame]>"}
 		description: "immutable decoded PCM shared by zones and players"
@@ -44,8 +50,15 @@ project: contexts: Sample: ports: {
 		direction: "outbound"
 		contract: {
 			loadWav: "(path: Path) -> result<SampleSet, LoadError>"
-			loadSf2: "(path: Path) -> result<list<SampleSet>, LoadError>"
 		}
+	}
+	SoundFontPlugin: {
+		direction: "outbound"
+		contract: {
+			open: "(path: Path) -> result<SoundFontHandle, SoundFontError>"
+			loadInstrument: "(font: &SoundFontHandle, instrument: SoundFontInstrument) -> result<SampleSet, SoundFontError>"
+		}
+		meta: notes: "a built-in instrument-source plugin, not VST/CLAP/AU hosting; file parsing and preset materialization occur on the control thread"
 	}
 	SampleStore: {
 		direction: "outbound"
@@ -76,4 +89,20 @@ project: adapters: SymphoniaSampleLoader: {
 	profile: {kind: "persistence", medium: "user-selected audio file"}
 	meta: framework: "symphonia"
 	validations: [{kind: "test", command: ["cargo", "test", "symphonia_sample_loader"], description: "decoded mono/stereo PCM becomes canonical SampleData without duplicate sample models"}]
+}
+
+project: adapters: HiDefSoundFontPlugin: {
+	implements: "port.Sample.SoundFontPlugin"
+	layer: "infrastructure"
+	profile: {kind: "in_process", medium: "SoundFont 2"}
+	meta: {
+		framework: "rustysynth"
+			rules: [
+			"open exactly ./sf2/HiDef.sf2 once on the control thread for a playback plan and fail clearly when it is missing or invalid",
+			"resolve the requested bank/program or percussion preset before rendering; never substitute a virtual-analog oscillator",
+			"load/index on the control thread and expose immutable prepared sample data to SamplePlayer; no file I/O, allocation, lock, or destruction occurs in the audio callback",
+		]
+	}
+	validations: [{kind: "integration", command: ["cargo", "test", "hidef_soundfont_plugin"], description: "HiDef.sf2 resolves two distinct melodic instruments plus percussion and each renders non-silent bounded samples through SamplePlayer"}]
+	contributesTo: [{capability: "capability.instrument_partitioned_test_playback", contribution: "materializes each MIDI instrument from the fixed HiDef.sf2 SoundFont for test playback"}]
 }

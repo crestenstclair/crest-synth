@@ -10,7 +10,7 @@ project: contexts: Shell: valueObjects: {
 	MidiPortInfo: {state: {name: "string", index: "u32"}, description: "one connectable MIDI input port"}
 	GamepadButton: {description: "host-neutral logical controller button used for action mapping and glyph lookup"}
 	ControllerType: {description: "recognized controller family used only to select display glyphs"}
-	GamepadAction: {description: "current semantic mixer input: NavUp/NavDown/NavLeft/NavRight, EnterEditMode, ExitEditMode, ToggleFocusedParam; it maps one-to-one onto MixerViewEvent"}
+	GamepadAction: {description: "current semantic mixer input: Navigate(direction) or Adjust(direction); the adapter emits Adjust while the gamepad edit modifier is held, exactly as K modifies keyboard directions"}
 }
 
 project: contexts: Shell: ports: {
@@ -39,9 +39,9 @@ project: contexts: Shell: ports: {
 	GuiRenderer: {
 		direction: "outbound"
 		contract: {
-			render: "(view: ViewState) -> ()"
+			render: "(projection: MixerTextProjection) -> list<AppEvent>"
 		}
-		meta: notes: "renders only the current all-sixteen-track terminal-style mixer from AppState; additional screens are not part of the current product"
+		meta: notes: "renders one scrollable wall of text with default labels and returns semantic events; it owns no editable values and provides no substantial visual UI"
 	}
 	GamepadInput: {
 		direction: "inbound"
@@ -81,7 +81,7 @@ project: adapters: MidirMidiInput: {
 project: adapters: EframeAppWindow: {
 	implements: "port.Shell.AppWindow"
 	layer:      "infrastructure"
-	profile: {kind: "ui", surfaces: ["terminal-style-mixer"]}
+	profile: {kind: "ui", surfaces: ["plain-text-backend-diagnostic"]}
 	meta: framework: "eframe"
 	validations: [{kind: "compiles", command: ["cargo", "build", "--bin", "synth_ui"], description: "the current eframe host compiles on the supported desktop stack"}]
 }
@@ -89,10 +89,18 @@ project: adapters: EframeAppWindow: {
 project: adapters: EguiRenderer: {
 	implements: "port.Shell.GuiRenderer"
 	layer:      "infrastructure"
-	profile: {kind: "ui", surfaces: ["sixteen-track-grid", "selected-track-inspector", "status-and-command-footer"], accessibility: ["keyboard", "gamepad"]}
-	meta: framework: "egui"
-	validations: [{kind: "integration", command: ["make", "ui-smoke"], description: "the pure mixer skin resolves all tokens and the host can construct without a window"}]
-	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "renders the dense all-track grid, derived inspector, and command footer without owning or mutating application state"}]
+	profile: {kind: "ui", surfaces: ["single-scrollable-text-list"], accessibility: ["keyboard", "gamepad"]}
+	meta: {
+		framework: "egui"
+		rules: [
+			"use only a default central container, one vertical ScrollArea, monospace Label text, and automatic scrolling to the selected line",
+			"do not create panels, columns, tables, grids, meters, faders, inspectors, toolbars, menus, custom widgets, custom painting, theme abstractions, animation, icons, or layout systems",
+			"render MixerTextProjection.body verbatim except for the minimum selection emphasis available on a stock Label",
+			"bare W/S/A/D emit AppEvent::Mixer Navigate variants, K+W/S/A/D emit AppEvent::Mixer Adjust variants, and L emits AppEvent::Playback(ToggleFromStart); the adapter never performs the action itself",
+		]
+	}
+	validations: [{kind: "integration", command: ["make", "ui-smoke"], description: "the stock-label renderer presents the complete text projection and returns semantic keyboard events without a window"}]
+	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "provides a disposable wall-of-text shell over the serialized backend projection"}]
 }
 
 project: adapters: GilrsGamepadInput: {
@@ -100,7 +108,7 @@ project: adapters: GilrsGamepadInput: {
 	layer:      "infrastructure"
 	profile: {kind: "device_input", device: "game controller"}
 	meta: framework: "gilrs"
-	validations: [{kind: "test", command: ["cargo", "test", "gilrs_gamepad_input"], description: "raw controller edges and hold/double-tap timing produce semantic actions"}]
+	validations: [{kind: "test", command: ["cargo", "test", "gilrs_gamepad_input"], description: "bare d-pad emits Navigate and edit-modified d-pad emits Adjust without leaking device state"}]
 	contributesTo: [{capability: "capability.pointer_free_mixer_control", contribution: "converts physical controller input into the same mixer actions emitted by keyboard input"}]
 }
 
@@ -118,7 +126,7 @@ project: contexts: Shell: valueObjects: ControllerGlyph: {
 }
 
 project: contexts: Shell: domainServices: GamepadNavigator: {
-	purpose: "translates raw gamepad events into GamepadActions and drives the cursor/edit model"
+	purpose: "translates bare d-pad input into Navigate and edit-modified d-pad input into Adjust, matching W/S/A/D and K+direction"
 	uses: ["port.Shell.GamepadInput", "valueObject.Shell.GamepadAction"]
 	validations: [
 		{kind: "compiles", command: ["cargo", "build"], description: "crate builds with GamepadNavigator"},
@@ -143,5 +151,5 @@ project: contexts: Shell: domainServices: GlyphResolver: {
 project: invariants: shellDesign: [
 	{text: "the engine library is host-agnostic; no audio driver, window, or controller code exists in domain modules", meta: rationale: "the standalone shell remains replaceable and mechanically testable"},
 	{text: "the UI is a pure view over engine state; no audio logic lives in the GUI layer", meta: rationale: "keeps DSP and voice logic testable in isolation"},
-	{text: "all gamepad navigation uses the app's own cursor/edit model, not egui's built-in focus", meta: rationale: "generic focus traversal doesn't fit a controller-first workflow"},
+	{text: "keyboard and gamepad use the app's semantic Navigate/Adjust model, not egui focus or widget editing", meta: rationale: "the disposable renderer must exercise the canonical reducer rather than framework-owned UI state"},
 ]
