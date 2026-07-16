@@ -7,6 +7,9 @@
 .mcp.json
 .claude/
 .superpowers/
+/.agents/
+/.codex/
+/sf2/
 
 # autopilot validation artifact (regenerated each run)
 autopilot.png

@@ -1,136 +1,97 @@
 package crestsynth
 
-// The goals file owns product intent. This file owns the architectural rules
-// and whole-project gates that keep independently generated resources coherent.
-project: name: "crest-synth"
+project: {
+	name: "crest-synth"
+	layers: ["domain", "application", "infrastructure"]
+	layerRules: {
+		application: {dependsOn: ["domain"]}
+		infrastructure: {dependsOn: ["domain", "application"]}
+	}
 
-project: layers: ["domain", "application", "infrastructure"]
-project: layerRules: {
-	application: {dependsOn: ["domain"]}
-	infrastructure: {dependsOn: ["domain", "application"]}
-}
+	meta: {
+		language: "rust"
+		style: "idiomatic Rust; explicit domain types; small modules; ports at external and real-time boundaries"
+		rules: [
+			"one resource owns each public type and consumers import that type",
+			"the standalone binary is a composition root; behavior lives behind domain and application abstractions",
+			"test support uses the same ports, reducer, parameter bridge, event ring, engine, mixer, and audio callback as the running application",
+		]
+		avoid: [
+			"synthesis engines other than SoundFont",
+			"effects other than the one global reverb and one global delay",
+			"sequencer, transport, timeline, pattern, clip, or song-editing domain models",
+			"presets, sessions, modulation matrices, per-channel inserts, effect chains, buses, or plugin hosting",
+			"panels, dashboards, meters, faders, custom widgets, custom drawing, themes, or multiple screens",
+		]
+	}
 
-project: meta: {
-	language: "rust"
-	style: "idiomatic Rust; explicit domain newtypes; small focused modules; disposable plain-text backend views; deterministic headless proofs"
-	rules: [
-		"one spec resource owns one canonical public Rust type in its module; every consumer imports it instead of declaring a local lookalike",
-		"an asset is a composition root or proof harness, not a second implementation of the resources it targets",
-		"the standalone binary is thin: application orchestration belongs to StandaloneApplication and all state changes go through AppState.apply",
-		"live input, smoke runs, autopilot, and scenes call the same reducer and audio-render functions",
-		"tests and demos exercise production resource types; they do not replace missing behavior with local substitutes",
-		"proof output is calculated from state, routing, or rendered samples and must fail for an explicit no-op or lossy implementation",
+	validations: {
+		format: {
+			scope: "project"
+			kind: "custom"
+			command: ["cargo", "fmt", "--all", "--", "--check"]
+			description: "Rust formatting is canonical"
+		}
+		clippy: {
+			scope: "project"
+			kind: "compiles"
+			command: ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
+			description: "all targets compile without warnings"
+		}
+		test: {
+			scope: "project"
+			kind: "test"
+			command: ["cargo", "test", "--all-targets"]
+			description: "domain, reducer, adapter, and integration tests pass"
+		}
+		smoke: {
+			scope: "project"
+			kind: "integration"
+			command: ["cargo", "run", "--bin", "crest-synth", "--", "--smoke"]
+			timeout: "180s"
+			resources: [
+				"adapter.HiDefSoundFontEngine",
+				"adapter.CorridorsMidiEventSource",
+				"applicationService.Testing.AutomaticMidiTest",
+				"applicationService.Shell.StandaloneApplication",
+				"asset.CrestSynthMain",
+			]
+			capabilities: [
+				"capability.soundfont_audio",
+				"capability.automatic_test_midi",
+				"capability.one_way_parameter_control",
+				"capability.realtime_execution",
+			]
+			goals: ["goal.play_test_song", "goal.control_synth"]
+			description: "the fixed MIDI fixture drives the real SoundFont, control, mixer, and audio path"
+		}
+	}
+
+	invariants: core: [
+		{text: "AppState.apply is the only control-state mutation path", meta: rationale: "every input follows one reducer path"},
+		{text: "input and view adapters emit AppEvents and never mutate application or engine state", meta: rationale: "adapters remain replaceable"},
+		{text: "after an event is accepted, the application commits AppState before deriving serialized state, text, parameter snapshots, or audio commands", meta: rationale: "effects always describe accepted state"},
+		{text: "the audio callback never allocates, locks, blocks, performs file or device discovery I/O, logs, or destroys owned state", meta: rationale: "the callback has a hard deadline"},
+		{text: "AudioBoundary carries discrete MIDI commands, latest control values, and deferred destruction through bounded lock-free primitives", meta: rationale: "the real-time seam is explicit"},
+		{text: "the only synthesis source is a SoundFont engine configured from ./sf2/HiDef.sf2", meta: rationale: "patch behavior has one unambiguous source"},
+		{text: "the only effects are one reverb and one delay shared globally by every channel", meta: rationale: "the signal path stays small"},
+		{text: "the MIDI-file module is an automatic test input adapter, not a sequencer or product transport", meta: rationale: "crest-synth remains an instrument"},
 	]
-	avoid: [
-		"heap allocation, locks, blocking I/O, or deallocation on the audio callback",
-		"dynamic dispatch in the inner sample loop",
-		"parallel AppState, AudioFrame, MIDI, patch, session, or sample model types",
-		"view-owned mutable state or direct mutation from input adapters",
-		"designed panels, grids, tables, meters, faders, themes, custom widgets, custom painting, or other visual-system work in the current diagnostic UI",
-		"mouse, touch, on-screen-note input, or non-mixer screens in the current UI",
-		"unconditional success tokens presented as behavioral evidence",
+
+	contextMap: [
+		{from: "Kernel", to: "Synth", kind: "shared-kernel"},
+		{from: "Kernel", to: "Control", kind: "shared-kernel"},
+		{from: "Synth", to: "Control", kind: "customer-supplier", direction: "upstream"},
+		{from: "Mixer", to: "Control", kind: "customer-supplier", direction: "upstream"},
+		{from: "Control", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
+		{from: "Testing", to: "Control", kind: "anti-corruption", direction: "downstream"},
+		{from: "Shell", to: "Control", kind: "anti-corruption", direction: "downstream"},
+		{from: "Shell", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
 	]
-}
 
-// Stable IDs let goals and evidence refer to executable checks directly.
-project: validations: {
-	format: {scope: "project", kind: "custom", command: ["cargo", "fmt"], description: "normalize Rust formatting"}
-	clippy: {scope: "project", kind: "compiles", command: ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"], description: "all targets are warning-free"}
-	build: {scope: "project", kind: "compiles", command: ["cargo", "build", "--all-targets"], description: "the complete standalone crate and proof binaries build"}
-	test: {scope: "project", kind: "test", command: ["cargo", "test", "--all-targets"], description: "all deterministic unit and integration tests pass"}
-	midi_routing_contract: {
-		scope: "dependency_contract", kind: "test", command: ["cargo", "test", "midi_dispatcher"]
-		resources: ["domainService.Patch.MidiDispatcher", "aggregate.Patch.Patch", "domainService.Shell.MidiNormalizer"]
-		capabilities: ["capability.external_midi_performance"]
-		goals: ["goal.perform_through_standalone"]
+	assetKinds: {
+		"cargo-manifest": {description: "Cargo.toml", filePattern: "Cargo.toml"}
+		"rust-library-root": {description: "Rust library root", filePattern: "src/lib.rs"}
+		"rust-bin-target": {description: "Rust executable composition root", filePattern: "src/bin/*.rs"}
 	}
-	realtime_contract: {
-		scope: "integration_wave", kind: "integration", command: ["make", "check-live"]
-		resources: ["adapter.RtrbEventRing", "adapter.TripleBufferParameterBridge", "adapter.BasedropDeferredDeallocator", "asset.MidiPlayLiveMain"]
-		capabilities: ["capability.realtime_safe_execution"]
-		goals: ["goal.perform_through_standalone"]
-	}
-	mixer_integration: {
-		scope: "integration_wave", kind: "integration", command: ["make", "demo-mixer"]
-		resources: ["aggregate.Mixer.MixerView", "valueObject.Mixer.MixerTextProjection", "aggregate.Mixer.ChannelStrip", "domainService.Loop.StateProjector", "adapter.SerdeSnapshotCodec", "adapter.TripleBufferParameterBridge", "applicationService.Loop.RenderCoordinator", "domainService.Mixer.MixEngine", "asset.MixerDemoMain"]
-		capabilities: ["capability.pointer_free_mixer_control", "capability.stereo_mix_pipeline"]
-		goals: ["goal.operate_live_mixer"]
-	}
-	ui_smoke: {
-		scope: "goal", kind: "integration", command: ["make", "ui-smoke"]
-		resources: ["applicationService.Loop.StandaloneApplication", "asset.SynthUiMain", "adapter.EguiRenderer", "aggregate.Loop.AppState", "aggregate.Mixer.MixerView", "valueObject.Mixer.MixerTextProjection", "domainService.Loop.StateProjector"]
-		capabilities: ["capability.external_midi_performance", "capability.pointer_free_mixer_control", "capability.shared_control_reducer"]
-		goals: ["goal.perform_through_standalone", "goal.operate_live_mixer"]
-	}
-	autopilot: {
-		scope: "goal", kind: "integration", command: ["make", "autopilot"], timeout: "30s"
-		resources: ["applicationService.Loop.StandaloneApplication", "asset.SynthUiMain"]
-		capabilities: ["capability.pointer_free_mixer_control", "capability.stereo_mix_pipeline"]
-		goals: ["goal.operate_live_mixer"]
-	}
-	midi_multitrack_regression: {
-		scope: "regression", kind: "integration", command: ["cargo", "run", "--bin", "synth_ui", "--", "--smoke", "--play", "midi/Corridors of Time - Chrono Trigger.mid"]
-		resources: ["adapter.MidlyMidiFileReader", "adapter.HiDefSoundFontPlugin", "applicationService.MidiFile.TestPlaybackAssembler", "aggregate.MidiFile.TestPlayback", "domainService.MidiFile.Sequencer", "domainService.Sample.SamplePlayer", "applicationService.Loop.StandaloneApplication", "asset.SynthUiMain"]
-		capabilities: ["capability.instrument_partitioned_test_playback", "capability.configurable_instrument_graph", "capability.stereo_mix_pipeline"]
-		goals: ["goal.exercise_supported_sound_architecture"]
-	}
-	preset_roundtrip: {
-		scope: "goal", kind: "integration", command: ["make", "demo-presets"]
-		resources: ["valueObject.Preset.Preset", "aggregate.Preset.Session", "adapter.SerdePresetCodec", "asset.PresetRoundtripDemoMain"]
-		capabilities: ["capability.versioned_sound_state"]
-		goals: ["goal.preserve_reproducible_sound_state"]
-	}
-	scene_suite: {
-		scope: "goal", kind: "integration", command: ["make", "demo-scenes"]
-		resources: ["applicationService.Loop.SceneRunner", "asset.SceneRunMain", "asset.SceneLibrary"]
-		capabilities: ["capability.shared_control_reducer", "capability.deterministic_scene_replay"]
-		goals: ["goal.inspect_and_replay_behavior"]
-	}
-	proof_suite: {
-		scope: "project", kind: "integration", command: ["make", "proofs"]
-		capabilities: ["capability.behavioral_proof_harness", "capability.configurable_instrument_graph"]
-		goals: ["goal.exercise_supported_sound_architecture", "goal.inspect_and_replay_behavior"]
-		description: "every supported subsystem and vertical slice produces measured evidence"
-	}
-}
-
-project: invariants: core: [
-	{text: "the audio callback never allocates, locks, blocks, performs I/O, or destroys retired owned state", meta: rationale: "all five operations have unbounded latency"},
-	{text: "all control changes cross the real-time boundary through EventRing or ParameterBridge and retired memory returns through DeferredDeallocator", meta: rationale: "one auditable thread seam"},
-	{text: "signal flows source -> strip inserts -> volume/pan -> send taps -> aux returns -> master inserts -> limiter -> output", meta: rationale: "one canonical stereo path"},
-	{text: "MIDI dispatch reaches every intentionally matching patch exactly once and MPE zones do not overlap across the active patch collection", meta: rationale: "layering remains intentional and expression unambiguous"},
-	{text: "preset and session payloads are explicitly versioned and replace active state only after complete decode, migration, and validation", meta: rationale: "failed restore cannot corrupt live state"},
-	{text: "AppState.apply is the only control mutation path; views, adapters, demos, and scenes emit AppEvents", meta: rationale: "live and replay behavior must be comparable"},
-	{text: "an accepted AppEvent commits AppState before any serialization, text projection, parameter publication, sequencing, voice release, or rendering effect is derived; effects may enqueue new AppEvents but never mutate state", meta: rationale: "all inputs and effects preserve one-way state flow"},
-	{text: "MIDI-file test Patches use ./sf2/HiDef.sf2 through SoundFontPlugin and select presets from InstrumentIdentity; they never fall back to the virtual-analog source", meta: rationale: "the test player must audibly distinguish the instruments declared by the file"},
-	{text: "a canonical resource type is declared once and imported everywhere else", meta: rationale: "duplicate structural types made the generated system impossible to compose"},
-]
-
-project: contextMap: [
-	{from: "Kernel", to: "Engine", kind: "shared-kernel"},
-	{from: "Kernel", to: "Sample", kind: "shared-kernel"},
-	{from: "Kernel", to: "Effects", kind: "shared-kernel"},
-	{from: "Kernel", to: "Mixer", kind: "shared-kernel"},
-	{from: "Kernel", to: "Patch", kind: "shared-kernel"},
-	{from: "Kernel", to: "Preset", kind: "shared-kernel"},
-	{from: "Engine", to: "Patch", kind: "customer-supplier", direction: "upstream"},
-	{from: "Sample", to: "Patch", kind: "customer-supplier", direction: "upstream"},
-	{from: "Modulation", to: "Patch", kind: "customer-supplier", direction: "upstream"},
-	{from: "Effects", to: "Mixer", kind: "customer-supplier", direction: "upstream"},
-	{from: "Patch", to: "Preset", kind: "customer-supplier", direction: "upstream"},
-	{from: "Mixer", to: "Loop", kind: "customer-supplier", direction: "upstream"},
-	{from: "Patch", to: "Loop", kind: "customer-supplier", direction: "upstream"},
-	{from: "Preset", to: "Loop", kind: "customer-supplier", direction: "upstream"},
-	{from: "Editor", to: "Loop", kind: "customer-supplier", direction: "upstream"},
-	{from: "Loop", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
-	{from: "Shell", to: "Loop", kind: "anti-corruption", direction: "downstream"},
-	{from: "MidiFile", to: "Loop", kind: "anti-corruption", direction: "downstream"},
-	{from: "Sample", to: "MidiFile", kind: "customer-supplier", direction: "upstream"},
-]
-
-project: assetKinds: {
-	"cargo-manifest": {description: "the Rust workspace/package manifest", filePattern: "Cargo.toml"}
-	"rust-bin-target": {description: "a thin executable composition root or behavioral proof", filePattern: "src/bin/*.rs"}
-	"makefile": {description: "stable human and automation entry points", filePattern: "Makefile"}
-	"scene-library": {description: "versioned deterministic AppEvent scenarios", filePattern: "scenes/*"}
 }
