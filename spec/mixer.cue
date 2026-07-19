@@ -16,6 +16,8 @@ project: contexts: Mixer: {
 			"pan is in -1.0..=1.0",
 			"reverbSend and delaySend are in 0.0..=1.0",
 			"values are finite",
+			"a production-owned typed surface descriptor enumerates these four fields, bounds, and fine/coarse steps; DemoScene consumes it instead of duplicating parameter-name strings",
+			"the descriptor contains each field exactly once before set conversion and is the independent pre-dispatch oracle for bounds and step sizes",
 		]
 		contributesTo: [
 			{capability: "capability.global_mix", contribution: "provides the complete editable per-Patch mix surface"},
@@ -39,6 +41,8 @@ project: contexts: Mixer: {
 			"room size, damping, returns, and feedback are in 0.0..=1.0",
 			"delayMilliseconds is in 1.0..=2000.0",
 			"values are finite",
+			"a production-owned typed surface descriptor enumerates these seven fields, bounds, and fine/coarse steps; AppState, StateProjector, and DemoScene consume the same descriptor",
+			"the descriptor contains each field exactly once before set conversion and is the independent pre-dispatch oracle for bounds and step sizes",
 		]
 		contributesTo: [
 			{capability: "capability.global_mix", contribution: "configures the one shared reverb, one shared delay, and master level"},
@@ -55,6 +59,7 @@ project: contexts: Mixer: {
 		invariants: [
 			"the implementation contains exactly one reverb and one delay shared by every Patch",
 			"prepare allocates all effect storage and process is allocation-free and lock-free",
+			"production and verification implementations derive wet excitation only from reverbInput and delayInput; dry output is never treated as an implicit send, and zero inputs cannot create a wet return",
 		]
 		contributesTo: [{capability: "capability.global_mix", contribution: "defines the complete replaceable boundary for the two global effects"}]
 	}
@@ -64,14 +69,24 @@ project: contexts: Mixer: {
 		uses: [
 			"valueObject.Mixer.ChannelParameters",
 			"valueObject.Mixer.GlobalParameters",
+			"valueObject.RealTime.PatchAudioBlock",
 			"port.Mixer.GlobalEffectsProcessor",
 		]
 		meta: rules: [
-			"for each Patch apply gain and pan, add its reverbSend to one preallocated reverb input, add its delaySend to one preallocated delay input, then sum both global returns and apply masterGainDb",
+			"accept one independently rendered stereo stem per active Patch, matched by PatchId and ParameterSnapshot index",
+			"for each Patch apply only that Patch's gain and pan to its stem, add only that stem scaled by reverbSend to one preallocated reverb input, add only that stem scaled by delaySend to one preallocated delay input, then sum dry audio and both global returns and apply masterGainDb",
+			"changing Patch N gain, pan, reverbSend, or delaySend must not change any other Patch's dry contribution or send contribution",
+			"reject or silence a missing or mismatched stem; never substitute a combined master stream or the first Patch's parameters",
 			"there are no inserts, per-channel effects, effect slots, effect chains, auxiliary buses, EQ, compression, chorus, distortion, or limiter",
 			"all scratch buffers are fixed-capacity and prepared before the audio callback",
+			"behavioral tests establish measured nonzero reverb and delay inputs through Patch sends before comparing wet controls and render paired cases from identical reset effect state so unrelated tail evolution cannot satisfy a predicate",
+			"paired sensitivity cases independently vary reverbRoomSize, reverbDamping, reverbReturn, delayMilliseconds, delayFeedback, and delayReturn through adapter.GlobalReverbDelay with nonzero routed input, identical reset state, and exact send restoration",
 		]
-		validations: [{kind: "test", command: ["cargo", "test", "global_mix"], description: "gain, pan, both sends, both returns, and master gain affect only their declared signal path"}]
+		validations: [
+			{kind: "test", command: ["cargo", "test", "global_mix"], description: "with two distinct simultaneous stems, editing either Patch's gain, pan, or sends changes only that Patch's declared dry/send path while global controls affect the complete mix"},
+			{kind: "test", command: ["cargo", "test", "faithful_effects_nonzero_sends_and_baseline_restoration"], description: "effect observations use nonzero routed sends, identical initial effect state, zero-input silence, and exact parameter/send baseline restoration"},
+			{kind: "test", command: ["cargo", "test", "global_effects_parameter_sensitivity"], description: "each reverb and delay parameter causes its own measured response from nonzero routed input using paired identical effect state"},
+		]
 		contributesTo: [
 			{capability: "capability.global_mix", contribution: "implements the complete channel-to-global-effects-to-master signal path"},
 			{capability: "capability.realtime_execution", contribution: "mixes through preallocated callback-owned buffers"},

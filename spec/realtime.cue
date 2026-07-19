@@ -12,13 +12,34 @@ project: contexts: RealTime: {
 			global: "GlobalParameters"
 		}
 		invariants: [
-			"MAX_PATCHES is a compile-time bound",
+			"MAX_PATCHES equals the 16 unique MIDI channels available to the SoundFont adapter",
 			"unused entries are inactive",
 			"the snapshot is fully owned, fixed-size, and readable without allocation",
+			"a production-owned typed leaf descriptor covers generation, patchCount, every active PatchId/channel parameter, and every global parameter and exactly matches the StateTree parameters projection",
 		]
 		contributesTo: [
 			{capability: "capability.one_way_parameter_control", contribution: "carries accepted AppState values to audio"},
 			{capability: "capability.realtime_execution", contribution: "provides a fixed-size latest-wins callback input"},
+		]
+	}
+
+	valueObjects: PatchAudioBlock: {
+		description: "caller-owned prepared stereo stems that preserve Patch identity between SoundFont rendering and mixing"
+		state: {
+			patchCount: "usize"
+			frameCount: "usize"
+			stems: "[PatchStereoStem; MAX_PATCHES]"
+		}
+		invariants: [
+			"capacity for MAX_PATCHES and maxFrames is allocated only by AudioRenderer.prepare",
+			"each active stem is keyed by the same PatchId and index as ParameterSnapshot.patches",
+			"one stem contains only audio produced by that Patch's assigned SoundFont lane",
+			"clearing, filling, and reading active frames are allocation-free",
+		]
+		contributesTo: [
+			{capability: "capability.soundfont_audio", contribution: "preserves Patch identity after synthesis instead of collapsing all voices to one master stream"},
+			{capability: "capability.global_mix", contribution: "gives MixEngine an independently controllable signal for every Patch"},
+			{capability: "capability.realtime_execution", contribution: "provides prepared callback-owned synthesis scratch storage"},
 		]
 	}
 
@@ -30,6 +51,9 @@ project: contexts: RealTime: {
 			message: "Option<MidiMessage>"
 		}
 		invariants: ["contains no heap-owned data", "PatchMidi contains both patchId and message"]
+		meta: rules: [
+			"PatchMidi carrying MidiMessageKind::AllNotesOff and the separate AudioCommand::AllNotesOff variant are distinct typed cases and both are asserted; coverage for one never credits the other",
+		]
 		contributesTo: [
 			{capability: "capability.soundfont_audio", contribution: "targets MIDI at the configured Patch"},
 			{capability: "capability.realtime_execution", contribution: "is safe to copy through the event ring"},
@@ -72,10 +96,11 @@ project: contexts: RealTime: {
 		}
 		meta: rules: [
 			"prepare all engine, mixer, effect, and scratch storage on the control thread",
-			"render drains only currently available AudioCommands, reads one latest ParameterSnapshot, renders Patch audio, applies MixEngine, and returns",
+			"render drains only currently available AudioCommands, reads one latest ParameterSnapshot, asks SoundFontEngine to fill one PatchAudioBlock stem per active Patch, passes all matching stems and parameters to MixEngine, and returns",
+			"PatchId and Patch index remain aligned from AudioCommand through the synthesis stem and ChannelParameters; a combined engine master buffer must never be treated as one Patch's input",
 			"render never allocates, locks, blocks, performs I/O, logs, formats strings, grows a collection, or destroys owned state",
 		]
-		validations: [{kind: "test", command: ["cargo", "test", "audio_renderer_realtime_contract"], description: "an instrumented callback consumes commands and latest parameters with zero callback allocations"}]
+		validations: [{kind: "test", command: ["cargo", "test", "audio_renderer_realtime_contract"], description: "an instrumented callback consumes commands and latest parameters with zero callback allocations and preserves two simultaneous Patch stems into the mixer"}]
 		contributesTo: [
 			{capability: "capability.soundfont_audio", contribution: "joins the SoundFont and global mixer into the callback"},
 			{capability: "capability.realtime_execution", contribution: "owns the hard real-time render operation"},

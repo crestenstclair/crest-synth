@@ -1,0 +1,24 @@
+[package]
+name = "crest-synth"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "crest-synth"
+path = "src/bin/crest_synth.rs"
+
+[dependencies]
+midly = "0.5.3"
+cpal = "0.18.1"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+eframe = "0.32.3"
+rustysynth = "1.3.6"
+rtrb = "0.3.4"
+triple_buffer = "9.0.0"
+basedrop = "0.1.3"
+anyhow = "1.0"
+thiserror = "2.0"

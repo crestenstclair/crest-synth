@@ -1,17 +1,17 @@
-# Working in crest-synth
+# Working in Crest Synth
 
-The CUE files in spec/ are the source of truth. Generate implementation through
-crest-spec; do not hand-write Rust outside a governed crest-spec candidate
-attempt.
+Read `DESIGN.md` before changing product behavior or architecture. It is the master design; its linked Figma file is the visual and interaction reference.
+
+The CUE files in `spec/` are executable implementation declarations. Reconcile them to `DESIGN.md` before generation. A deliberately narrow implementation slice must not redefine the product. Generate governed Rust through crest-spec instead of hand-writing competing implementation paths.
 
 Preserve these boundaries:
 
-- one-way input -> AppEvent -> AppState.apply -> projections/effects;
-- exactly one SoundFont engine instance using ./sf2/HiDef.sf2;
-- automatic test input from Corridors of Time, with no sequencer or transport;
-- one global reverb and one global delay, with no other effects;
-- one plain text parameter view with W/S/A/D and K-modified editing;
-- no allocation, locks, blocking, I/O, logging, or destruction in the audio
-  callback;
-- ports and adapters at SoundFont, MIDI input, audio output, view, and
-  control/audio boundaries.
+- physical input → semantic action/event → `AppState::apply` → view/audio projections;
+- a hard real-time callback with bounded, preallocated work and no allocation, locking, blocking, I/O, logging, panic, or destruction;
+- separate RT transports for discrete events, latest scalar snapshots, and prepared structural graph changes;
+- SoundFont and other engines behind capability ports, with no silent fallback;
+- a schema-driven controller UI with PATCH and MIXER as the only top-level contexts;
+- one canonical type per concept and thin UI, MIDI, device, controller, asset, and persistence adapters;
+- measured, falsifiable proofs using the production reducer and render path.
+
+Figma example engines, effects, patches, and values are design fixtures, not an exhaustive feature list. Put durable decisions in `DESIGN.md`; use issues or commits for temporary plans and handoffs.

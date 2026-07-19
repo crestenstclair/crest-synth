@@ -14,7 +14,7 @@ project: contexts: Kernel: {
 		description: "the assigned MIDI channel used by a Patch"
 		state: value: "u8"
 		invariants: ["value is in 0..=15"]
-		contributesTo: [{capability: "capability.automatic_test_midi", contribution: "represents the fixture's round-robin channel assignment"}]
+		contributesTo: [{capability: "capability.automatic_test_midi", contribution: "represents the fixture's unique Patch-to-channel assignment"}]
 	}
 
 	valueObjects: MidiMessage: {

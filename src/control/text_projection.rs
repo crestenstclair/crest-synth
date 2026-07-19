@@ -1,0 +1,73 @@
+/// The immutable text view derived from one accepted state snapshot.
+///
+/// Formatting and selection are calculated by the state projector. This value
+/// keeps the rendered body, its selected line, and the originating snapshot
+/// hash together so view adapters cannot observe mismatched projection parts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextProjection {
+    body: String,
+    selected_line: usize,
+    state_hash: String,
+}
+
+impl TextProjection {
+    /// Collects the complete deterministic projection derived by the state
+    /// projector from a single snapshot.
+    pub fn new(body: String, selected_line: usize, state_hash: String) -> Self {
+        Self {
+            body,
+            selected_line,
+            state_hash,
+        }
+    }
+
+    /// Returns the complete single-screen wall of text.
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
+    /// Returns the zero-based body line carrying the selection marker.
+    pub const fn selected_line(&self) -> usize {
+        self.selected_line
+    }
+
+    /// Returns the hash of the state snapshot used to derive this projection.
+    pub fn state_hash(&self) -> &str {
+        &self.state_hash
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TextProjection;
+
+    const HEADER: &str = "KEYS: W/S parameters | A/D channels | K+direction edit";
+    const SEPARATOR: &str = "------------------------------------------------------------";
+
+    #[test]
+    fn projection_keeps_one_snapshot_body_selection_and_hash_together() {
+        let body = format!(
+            "{HEADER}\nPATCH id=lead name=Lead channel=1 bank=0 program=80 percussion=false\n> gainDb=-6 pan=0 reverbSend=0.2 delaySend=0.1\n{SEPARATOR}\nGLOBAL\n masterGainDb=-3 reverbRoomSize=0.5 reverbDamping=0.4 reverbReturn=0.2 delayMilliseconds=250 delayFeedback=0.3 delayReturn=0.1"
+        );
+        let projection = TextProjection::new(body.clone(), 2, "accepted-state-hash".to_owned());
+
+        assert_eq!(projection.body(), body);
+        assert_eq!(projection.selected_line(), 2);
+        assert_eq!(
+            projection.body().lines().nth(2),
+            Some("> gainDb=-6 pan=0 reverbSend=0.2 delaySend=0.1")
+        );
+        assert_eq!(projection.state_hash(), "accepted-state-hash");
+    }
+
+    #[test]
+    fn cloning_preserves_the_atomic_projection_value() {
+        let projection = TextProjection::new(
+            format!("{HEADER}\nGLOBAL\n> masterGainDb=0"),
+            2,
+            "snapshot-42".to_owned(),
+        );
+
+        assert_eq!(projection.clone(), projection);
+    }
+}

@@ -8,14 +8,14 @@ project: {
 		infrastructure: {dependsOn: ["domain", "application"]}
 	}
 
-	meta: {
+		meta: {
 		language: "rust"
 		style: "idiomatic Rust; explicit domain types; small modules; ports at external and real-time boundaries"
-		rules: [
+			rules: [
 			"one resource owns each public type and consumers import that type",
 			"the standalone binary is a composition root; behavior lives behind domain and application abstractions",
 			"test support uses the same ports, reducer, parameter bridge, event ring, engine, mixer, and audio callback as the running application",
-		]
+			]
 		avoid: [
 			"synthesis engines other than SoundFont",
 			"effects other than the one global reverb and one global delay",
@@ -44,7 +44,7 @@ project: {
 			command: ["cargo", "test", "--all-targets"]
 			description: "domain, reducer, adapter, and integration tests pass"
 		}
-		smoke: {
+			smoke: {
 			scope: "project"
 			kind: "integration"
 			command: ["cargo", "run", "--bin", "crest-synth", "--", "--smoke"]
@@ -63,9 +63,139 @@ project: {
 				"capability.realtime_execution",
 			]
 			goals: ["goal.play_test_song", "goal.control_synth"]
-			description: "the fixed MIDI fixture drives the real SoundFont, control, mixer, and audio path"
+				description: "the fixed MIDI fixture drives the real SoundFont, control, mixer, and audio path"
+			}
+			demo_scene: {
+				scope: "project"
+				kind: "integration"
+				command: ["cargo", "test", "--test", "exhaustive_demo_scene", "--", "--nocapture"]
+				assertions: [
+					{kind: "exit_code", expected: 0},
+					{kind: "stdout_contains", pattern: "CREST_ACCEPTANCE exhaustive_demo_scene passed"},
+				]
+				timeout: "180s"
+				resources: [
+					"valueObject.Control.AppEvent",
+					"valueObject.Control.EventRecord",
+					"valueObject.Control.EventLog",
+					"valueObject.Control.StateTree",
+					"valueObject.Control.TextProjection",
+					"aggregate.Control.AppState",
+					"domainService.Control.StateProjector",
+					"applicationService.Control.AppLoop",
+					"valueObject.Shell.WindowInput",
+					"applicationService.Shell.KeyboardInputTranslator",
+					"adapter.EframeTextWindow",
+					"valueObject.Mixer.ChannelParameters",
+					"valueObject.Mixer.GlobalParameters",
+					"port.Mixer.GlobalEffectsProcessor",
+					"adapter.GlobalReverbDelay",
+					"domainService.Mixer.MixEngine",
+					"valueObject.RealTime.ParameterSnapshot",
+					"valueObject.RealTime.AudioCommand",
+					"valueObject.RealTime.PatchAudioBlock",
+					"applicationService.RealTime.AudioRenderer",
+					"valueObject.Testing.DemoScene",
+					"valueObject.Testing.DemoSceneReport",
+					"applicationService.Testing.ExhaustiveGuiDemo",
+					"applicationService.Shell.StandaloneApplication",
+					"asset.CrestSynthMain",
+					"asset.BehavioralAcceptanceTests",
+				]
+				capabilities: [
+					"capability.observable_demo_scene",
+					"capability.one_way_parameter_control",
+					"capability.global_mix",
+				]
+				goals: ["goal.observe_synth"]
+				description: "the exhaustive deterministic GUI scene covers every current event, editable parameter, serialized property, projection, and downstream effect"
+			}
+			schema_surface: {
+				scope: "project"
+				kind: "integration"
+				command: ["cargo", "test", "--test", "schema_surface", "--", "--nocapture"]
+				assertions: [
+					{kind: "exit_code", expected: 0},
+					{kind: "stdout_contains", pattern: "CREST_ACCEPTANCE schema_surface passed"},
+				]
+				resources: [
+					"valueObject.Shell.WindowInput",
+					"valueObject.Kernel.MidiMessage",
+					"valueObject.Control.AppEvent",
+					"valueObject.Control.EventRecord",
+					"valueObject.Control.EventLog",
+					"valueObject.Control.StateTree",
+					"valueObject.Control.TextProjection",
+					"domainService.Control.StateProjector",
+					"valueObject.Mixer.ChannelParameters",
+					"valueObject.Mixer.GlobalParameters",
+					"valueObject.RealTime.ParameterSnapshot",
+					"valueObject.Testing.DemoScene",
+					"applicationService.Testing.ExhaustiveGuiDemo",
+					"asset.BehavioralAcceptanceTests",
+				]
+				capabilities: ["capability.observable_demo_scene"]
+				goals: ["goal.observe_synth"]
+				description: "typed production surface descriptors and discovered serialized leaves are exactly equal with no missing or unexpected identifiers"
+			}
+			egui_context: {
+				scope: "project"
+				kind: "integration"
+				command: ["cargo", "test", "--test", "eframe_context", "--", "--nocapture"]
+				assertions: [
+					{kind: "exit_code", expected: 0},
+					{kind: "stdout_contains", pattern: "CREST_ACCEPTANCE eframe_context passed"},
+				]
+				resources: [
+					"valueObject.Shell.WindowInput",
+					"applicationService.Shell.KeyboardInputTranslator",
+					"adapter.EframeTextWindow",
+					"aggregate.Control.AppState",
+					"applicationService.Control.AppLoop",
+					"valueObject.Control.EventLog",
+					"domainService.Control.StateProjector",
+					"asset.BehavioralAcceptanceTests",
+				]
+				capabilities: ["capability.observable_demo_scene", "capability.one_way_parameter_control"]
+				goals: ["goal.observe_synth", "goal.control_synth"]
+				description: "a headless egui Context dispatches real RawInput through EframeApplication.update into AppLoop and proves the next frame, event record, accepted state, exact projection values, selection, and scroll target all reflect that event"
+			}
+			mutation_harness: {
+				scope: "project"
+				kind: "integration"
+				command: ["cargo", "test", "--test", "behavioral_mutation_harness", "--", "--nocapture"]
+				assertions: [
+					{kind: "exit_code", expected: 0},
+					{kind: "stdout_contains", pattern: "CREST_ACCEPTANCE behavioral_mutation_harness passed"},
+				]
+				resources: [
+					"applicationService.Testing.BehavioralMutationHarness",
+					"applicationService.Testing.ExhaustiveGuiDemo",
+					"applicationService.Shell.KeyboardInputTranslator",
+					"aggregate.Control.AppState",
+					"applicationService.Control.AppLoop",
+					"valueObject.Control.EventRecord",
+					"valueObject.Control.EventLog",
+					"valueObject.Control.StateTree",
+					"domainService.Control.StateProjector",
+					"valueObject.RealTime.AudioCommand",
+					"valueObject.RealTime.ParameterSnapshot",
+					"valueObject.RealTime.PatchAudioBlock",
+					"adapter.LockFreeAudioBoundary",
+					"applicationService.RealTime.AudioRenderer",
+					"valueObject.Mixer.ChannelParameters",
+					"valueObject.Mixer.GlobalParameters",
+					"domainService.Mixer.MixEngine",
+					"port.Mixer.GlobalEffectsProcessor",
+					"adapter.GlobalReverbDelay",
+					"asset.BehavioralWitnessMain",
+					"asset.BehavioralAcceptanceTests",
+				]
+				capabilities: ["capability.observable_demo_scene", "capability.one_way_parameter_control", "capability.global_mix"]
+				goals: ["goal.observe_synth"]
+				description: "six isolated real-seam mutants cover dropped edits, cross-Patch parameter leakage, MIDI misrouting, schema omission, dry-to-wet bypass, and zero rendering with schema-valid measured counterexamples"
+			}
 		}
-	}
 
 	invariants: core: [
 		{text: "AppState.apply is the only control-state mutation path", meta: rationale: "every input follows one reducer path"},
@@ -85,13 +215,16 @@ project: {
 		{from: "Mixer", to: "Control", kind: "customer-supplier", direction: "upstream"},
 		{from: "Control", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
 		{from: "Testing", to: "Control", kind: "anti-corruption", direction: "downstream"},
+		{from: "Testing", to: "Shell", kind: "anti-corruption", direction: "downstream"},
 		{from: "Shell", to: "Control", kind: "anti-corruption", direction: "downstream"},
 		{from: "Shell", to: "RealTime", kind: "anti-corruption", direction: "downstream"},
 	]
 
 	assetKinds: {
 		"cargo-manifest": {description: "Cargo.toml", filePattern: "Cargo.toml"}
+		"makefile": {description: "GNU Makefile exposing stable human entry points", filePattern: "Makefile"}
 		"rust-library-root": {description: "Rust library root", filePattern: "src/lib.rs"}
 		"rust-bin-target": {description: "Rust executable composition root", filePattern: "src/bin/*.rs"}
+		"rust-integration-tests": {description: "Named Cargo integration-test targets", filePattern: "tests/*.rs"}
 	}
 }

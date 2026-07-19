@@ -3,6 +3,46 @@ package crestsynth
 project: contexts: Shell: {
 	purpose: "keyboard/text and audio-device boundaries around the application services"
 
+	valueObjects: WindowInput: {
+		description: "a normalized window-boundary input used by both eframe and deterministic GUI scenes"
+		state: {
+			kind: "KeyDown | KeyUp | FocusLost"
+			key: "W | S | A | D | K | Other"
+			surfaceDescriptor: "typed exhaustive descriptors for every valid normalized kind/key combination, including key-down, key-up, focus loss, and unrelated input"
+		}
+		invariants: [
+			"platform key codes are normalized at the eframe boundary before translation",
+			"WindowInput is shell data and never enters AppState or the audio boundary",
+			"the deterministic demo feeds the same values to the same translator as the real window",
+			"surfaceDescriptor is defined beside WindowInput and is the only GUI-input vocabulary consumed by DemoScene and acceptance tests; no test owns a second list of W/S/A/D/K, key-up, focus-loss, or unrelated-input strings",
+			"surfaceDescriptor contains exactly 13 unique valid values before any set conversion: KeyDown and KeyUp for W, S, A, D, K, and Other plus FocusLost with no key payload",
+		]
+		contributesTo: [{capability: "capability.observable_demo_scene", contribution: "lets automated scenes exercise the actual current GUI input vocabulary"}]
+	}
+
+	applicationServices: KeyboardInputTranslator: {
+		purpose: "translate normalized W/S/A/D/K window input and focus changes into the closed AppEvent vocabulary"
+		uses: [
+			"valueObject.Shell.WindowInput",
+			"valueObject.Control.AppEvent",
+		]
+		operations: {
+			translate: {input: {event: "WindowInput"}, output: {event: "Option<AppEvent>"}}
+		}
+		meta: rules: [
+			"bare W/S/A/D key-down emits Navigate Up/Down/Left/Right and key-up emits nothing",
+			"K key-down enters modifier state; while held W/S/A/D key-down emits Adjust Up/Down/Left/Right; K key-up exits modifier state",
+			"FocusLost clears modifier state and emits nothing",
+			"Other input emits nothing",
+			"translation owns no Patch, selection, parameter, projection, or audio state",
+		]
+		validations: [{kind: "test", command: ["cargo", "test", "keyboard_input_translator"], description: "every WindowInput and direction mapping, K transition, focus loss, key release, and unrelated key is deterministic"}]
+		contributesTo: [
+			{capability: "capability.one_way_parameter_control", contribution: "keeps physical keyboard normalization outside the reducer"},
+			{capability: "capability.observable_demo_scene", contribution: "is the single translator shared by the eframe window and exhaustive scene runner"},
+		]
+	}
+
 	ports: AppWindow: {
 		direction: "outbound"
 		contract: {
@@ -12,6 +52,7 @@ project: contexts: Shell: {
 		invariants: [
 			"the window receives immutable TextProjection and emits AppEvent",
 			"the window owns raw key and K-modifier state but no synth parameter or selection state",
+			"an AppEvent rejection does not close the window or disable later input",
 		]
 		contributesTo: [{capability: "capability.one_way_parameter_control", contribution: "keeps the disposable text view outside application state"}]
 	}
@@ -21,15 +62,20 @@ project: contexts: Shell: {
 		contract: {
 			open: "(render: FnMut(&mut [f32], sampleRate: f32)) -> Result<AudioStream, AudioOutputError>"
 		}
-		invariants: ["the device callback forwards its exact caller-owned buffer to AudioRenderer", "device setup occurs before the callback starts"]
+		invariants: [
+			"AudioRenderer always receives interleaved stereo f32 frames; a native stereo f32 device may forward its exact caller-owned buffer",
+			"a device with more than two channels uses bounded preallocated callback storage, writes stereo to its first two output channels, and silences every surplus channel",
+			"device setup occurs before the callback starts",
+		]
 		contributesTo: [{capability: "capability.realtime_execution", contribution: "connects the hard real-time renderer to a stereo device"}]
 	}
 
 	applicationServices: StandaloneApplication: {
-		purpose: "compose the control loop, automatic MIDI fixture, audio renderer, text window, and device output"
+		purpose: "compose the control loop, automatic MIDI fixture, exhaustive GUI demo, audio renderer, text window, and device output"
 		uses: [
 			"applicationService.Control.AppLoop",
 			"applicationService.Testing.AutomaticMidiTest",
+			"applicationService.Testing.ExhaustiveGuiDemo",
 			"applicationService.RealTime.AudioRenderer",
 			"port.Shell.AppWindow",
 			"port.Shell.AudioOutput",
@@ -38,18 +84,29 @@ project: contexts: Shell: {
 		operations: {
 			run: {input: {}, output: {result: "Result<(), ApplicationError>"}}
 			runSmoke: {input: {degenerate: "Option<DegenerateMode>"}, output: {observation: "Result<SmokeObservation, ApplicationError>"}}
+			runDemoScene: {input: {degenerate: "Option<DegenerateMode>"}, output: {result: "Result<DemoSceneReport, ApplicationError>"}}
 		}
 		meta: rules: [
 			"startup constructs exactly one SoundFontEngine, loads ./sf2/HiDef.sf2 into it, prepares AudioRenderer, initializes AutomaticMidiTest, opens audio, then opens the text window",
 			"normal-mode MIDI begins automatically during startup; each window tick advances only the private test input and collects deferred data",
 			"keypress events are dispatched to AppLoop before a new TextProjection is requested",
+			"ParameterAtBoundary and every other EventRejection caused by ordinary user input are nonfatal no-ops: keep the window and audio running, preserve the current projection, and accept the next key event",
+			"run returns ApplicationError only for startup, adapter, audio-device, window-runtime, automatic-input, or real-time boundary failures; it never promotes a rejected user edit to an application failure",
 			"runSmoke uses the same services without a physical device or window and measures real control, routing, and rendered-sample results",
+			"runDemoScene initializes the real fixture, then drives normalized WindowInputs through KeyboardInputTranslator and the production AppLoop; it never mutates state or projections directly",
+			"demo execution retains the complete EventLog and final StateTree and reports zero missing coverage before returning success",
+			"verification-only demo degeneracy is injected before observation at exactly one real seam: control drops one translated Adjust before AppLoop, audio clears the rendered buffer after AudioRenderer; neither mode edits coverage, a completed DemoSceneReport, or any measured observation field",
+		]
+		validations: [
+			{kind: "integration", command: ["cargo", "test", "standalone_application"], description: "a boundary adjustment on a non-first Patch is ignored without terminating the window, and a following valid edit is accepted"},
+			{kind: "integration", command: ["cargo", "test", "standalone_exhaustive_gui_demo"], description: "the composed headless application emits a complete event log, state tree, coverage matrix, and audio observations"},
 		]
 		contributesTo: [
 			{capability: "capability.soundfont_audio", contribution: "composes the running SoundFont audio path"},
 			{capability: "capability.automatic_test_midi", contribution: "starts the fixed test input automatically"},
 			{capability: "capability.one_way_parameter_control", contribution: "joins keyboard events to the shared reducer and immutable text projection"},
 			{capability: "capability.realtime_execution", contribution: "starts control and audio sides in the correct preparation order"},
+			{capability: "capability.observable_demo_scene", contribution: "composes the exhaustive scene against production input, reducer, projection, boundary, engine, and mixer services"},
 		]
 	}
 }
@@ -58,17 +115,27 @@ project: adapters: EframeTextWindow: {
 	implements: "port.Shell.AppWindow"
 	layer: "infrastructure"
 	profile: {kind: "ui", surfaces: ["keyboard", "single_text_view"]}
-	meta: {
+		meta: {
 		framework: "eframe/egui"
-		rules: [
-			"render exactly one vertical scroll area containing TextProjection.body in a stock monospace text label",
-			"keep selectedLine visible and add no panels, menus, columns, grids, tables, meters, faders, controls, widgets, custom painting, theme, or second screen",
-			"bare W/S emit Navigate Up/Down; bare A/D emit Navigate Left/Right",
-			"while K is held W/S/A/D emit Adjust Up/Down/Left/Right; releasing K ends modifier state",
-			"key handling emits AppEvents only and never mutates view selection, Patch values, AppState, snapshots, or audio",
+			rules: [
+				"render exactly one vertical scroll area containing TextProjection.body in a stock monospace text label",
+				"keep selectedLine visible and add no panels, menus, columns, grids, tables, meters, faders, controls, widgets, custom painting, theme, or second screen",
+				"normalize egui key presses, releases, and focus loss into WindowInput and delegate every W/S/A/D/K decision to KeyboardInputTranslator",
+				"do not retain a second private keyboard state machine or duplicate the translator in tests",
+				"key handling emits AppEvents only and never mutates view selection, Patch values, AppState, snapshots, event logs, or audio",
+				"the headless adapter contract drives real egui RawInput through an egui Context and EframeApplication.update with the production on_input callback wired to AppLoop.dispatch, then runs the next frame from AppLoop.currentText; capturing a callback without applying it is not acceptance evidence",
+				"the next frame must prove the event-log record, accepted generation, selected parameter value, every unrelated value, TextProjection body/stateHash/selectedLine, and selected-line scroll target all reflect that same dispatched GUI event",
+				"the headless adapter contract begins with a projection containing discriminating values for every Patch and global parameter and inspects egui output for the exact values; calling normalize_egui_event directly or rendering an unrelated supplied projection is not sufficient integration evidence",
+			]
+		}
+		validations: [
+			{kind: "test", command: ["cargo", "test", "eframe_text_window"], description: "the adapter normalizes the complete egui input vocabulary through the shared translator"},
+			{kind: "integration", command: ["cargo", "test", "--test", "eframe_context", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE eframe_context passed"}], description: "a headless egui Context executes EframeApplication.update, invokes the real callback, renders exact projection values, and targets the exact selected line without a native window"},
 		]
-	}
-	contributesTo: [{capability: "capability.one_way_parameter_control", contribution: "implements the single text screen and exact keyboard vocabulary"}]
+	contributesTo: [
+		{capability: "capability.one_way_parameter_control", contribution: "implements the single text screen and exact keyboard vocabulary"},
+		{capability: "capability.observable_demo_scene", contribution: "shares its production input translator with the deterministic scene"},
+	]
 }
 
 project: adapters: CpalAudioOutput: {
@@ -78,9 +145,10 @@ project: adapters: CpalAudioOutput: {
 	meta: {
 		framework: "cpal"
 		rules: [
-			"select and open the default stereo output on the control thread",
-			"the callback directly forwards the device buffer to AudioRenderer and performs no pacing, allocation, locking, I/O, logging, format construction, or deallocation",
-			"convert sample formats in place with bounded arithmetic when the device is not f32",
+			"select and open the default PCM output with at least two channels on the control thread",
+			"use a direct callback fast path for native stereo f32; otherwise render into fixed-capacity stereo scratch storage, map left and right to device channels 1 and 2, and write silence to surplus device channels",
+			"the callback performs no pacing, allocation, locking, I/O, logging, format construction, or deallocation",
+			"convert sample formats with bounded arithmetic when the device is not f32",
 		]
 	}
 	contributesTo: [{capability: "capability.realtime_execution", contribution: "implements the physical low-latency stereo output"}]
