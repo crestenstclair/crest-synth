@@ -331,8 +331,13 @@ impl BehavioralMutationHarness {
             }
         };
 
+        let exit_code = if observation.satisfies_witness() {
+            0
+        } else {
+            1
+        };
         BehavioralMutationRun {
-            exit_code: if mutant_enabled { 1 } else { 0 },
+            exit_code,
             observation,
         }
     }
@@ -531,7 +536,7 @@ fn published_matches_tree(snapshot: &ParameterSnapshot, tree: &Value) -> bool {
 fn numeric_leaf_matches(tree: &Value, pointer: &str, expected: f32) -> bool {
     tree.pointer(pointer)
         .and_then(Value::as_f64)
-        .is_some_and(|actual| approximately_equal(actual, f64::from(expected)))
+        .is_some_and(|actual| actual as f32 == expected)
 }
 
 fn run_dropped_adjustment(mutant_enabled: bool) -> DroppedAdjustmentObservation {
@@ -1444,6 +1449,30 @@ mod tests {
             assert!(mutant.observation().falsifies_witness(), "{case:?}");
             assert_eq!(keys(healthy.observation()), keys(mutant.observation()));
         }
+    }
+
+    #[test]
+    fn faithful_effects_nonzero_sends_and_baseline_restoration() {
+        let observation = BehavioralMutationHarness::new()
+            .run(BehavioralMutationCase::DryToWetBypass, false)
+            .into_observation();
+        let BehavioralMutationObservation::DryToWetBypass(observation) = observation else {
+            panic!("the dry-to-wet case retains its typed schema");
+        };
+
+        assert!(observation.dry_input_energy > 0.0);
+        assert!(super::approximately_zero(
+            observation.zero_send_reverb_input_energy
+        ));
+        assert!(super::approximately_zero(
+            observation.zero_send_delay_input_energy
+        ));
+        assert!(observation.nonzero_send_reverb_input_energy > 0.0);
+        assert!(observation.nonzero_send_delay_input_energy > 0.0);
+        assert!(observation.nonzero_send_wet_output_energy > 0.0);
+        assert!(observation.identical_effect_state);
+        assert!(observation.dry_bypass_absent);
+        assert!(observation.baseline_restored);
     }
 
     #[test]

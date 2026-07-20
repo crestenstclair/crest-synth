@@ -220,8 +220,13 @@ fn allocate_zeros(length: usize) -> Result<Vec<f32>, EffectError> {
 #[cfg(test)]
 mod tests {
     use super::GlobalReverbDelay;
+    use crate::kernel::patch_id::PatchId;
+    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mix_engine::MixEngine;
+    use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
+    use crate::real_time::patch_audio_block::PatchAudioBlock;
 
     fn parameters(reverb_return: f32, delay_return: f32) -> GlobalParameters {
         GlobalParameters::new(0.0, 0.6, 0.25, reverb_return, 10.0, 0.5, delay_return)
@@ -325,5 +330,56 @@ mod tests {
 
         assert_eq!(muted_output[20], 0.0);
         assert!(audible_output[20] > 0.0);
+    }
+
+    fn render_global_parameters(parameters: GlobalParameters) -> Vec<f32> {
+        const FRAME_COUNT: usize = 256;
+        let patch_id = PatchId::new(1).unwrap();
+        let snapshot = ParameterSnapshot::new(
+            1,
+            parameters,
+            &[RtPatchParameters::new(
+                patch_id,
+                ChannelParameters::new(-12.0, 0.0, 0.7, 0.6).unwrap(),
+            )],
+        )
+        .unwrap();
+        let mut block = PatchAudioBlock::prepare(FRAME_COUNT).unwrap();
+        block.begin_render(&snapshot, FRAME_COUNT).unwrap();
+        let stem = block.stem_mut(0, patch_id).unwrap();
+        stem[0] = 0.2;
+        stem[1] = -0.1;
+
+        let mut mixer = MixEngine::new(GlobalReverbDelay::new());
+        mixer.prepare(1_000.0, FRAME_COUNT).unwrap();
+        let mut output = vec![0.0; FRAME_COUNT * 2];
+        mixer.mix(&block, &snapshot, &mut output);
+        output
+    }
+
+    #[test]
+    fn global_effects_parameter_sensitivity() {
+        let baseline = GlobalParameters::new(0.0, 0.5, 0.3, 0.6, 10.0, 0.4, 0.6).unwrap();
+        let baseline_output = render_global_parameters(baseline);
+
+        for descriptor in GlobalParameters::surface_descriptor() {
+            let parameter = descriptor.parameter();
+            let current = baseline.value(parameter);
+            let changed = if current + descriptor.coarse_step() <= descriptor.maximum() {
+                current + descriptor.coarse_step()
+            } else {
+                current - descriptor.coarse_step()
+            };
+            let variant = baseline.with_value(parameter, changed).unwrap();
+            let variant_output = render_global_parameters(variant);
+            assert!(
+                baseline_output
+                    .iter()
+                    .zip(&variant_output)
+                    .any(|(left, right)| (left - right).abs() > 1.0e-7),
+                "{} must change measured output from identical fresh effect state",
+                descriptor.name()
+            );
+        }
     }
 }

@@ -2,8 +2,7 @@ use crest_synth::testing::{BehavioralMutationCase, BehavioralMutationHarness};
 use std::fmt::{Display, Formatter};
 
 const OBSERVATION_MARKER: &str = "CREST_MUTATION_OBSERVATION ";
-const USAGE: &str =
-    "usage: crest-synth-witness --case <case> --mutant <none|matching-case>";
+const USAGE: &str = "usage: crest-synth-witness --case <case> --mutant <none|matching-case>";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CliArguments {
@@ -51,9 +50,10 @@ where
                     return Err(CliError::new(format!("duplicate --case option; {USAGE}")));
                 }
                 let value = next_value(&mut arguments, "--case")?;
-                selected_case = Some(BehavioralMutationCase::from_cli(&value).ok_or_else(|| {
-                    CliError::new(format!("unsupported case {value:?}; {USAGE}"))
-                })?);
+                selected_case =
+                    Some(BehavioralMutationCase::from_cli(&value).ok_or_else(|| {
+                        CliError::new(format!("unsupported case {value:?}; {USAGE}"))
+                    })?);
             }
             "--mutant" => {
                 if selected_mutant.is_some() {
@@ -77,9 +77,8 @@ where
     let mutant_enabled = if mutant == "none" {
         false
     } else {
-        let mutant_case = BehavioralMutationCase::from_cli(&mutant).ok_or_else(|| {
-            CliError::new(format!("unsupported mutant {mutant:?}; {USAGE}"))
-        })?;
+        let mutant_case = BehavioralMutationCase::from_cli(&mutant)
+            .ok_or_else(|| CliError::new(format!("unsupported mutant {mutant:?}; {USAGE}")))?;
         if mutant_case != case {
             return Err(CliError::new(format!(
                 "mutant {mutant:?} does not match case {:?}; {USAGE}",
@@ -167,27 +166,12 @@ mod tests {
             "none",
         ])
         .is_err());
-        assert!(parse_arguments([
-            "--case",
-            "unknown",
-            "--mutant",
-            "none",
-        ])
-        .is_err());
-        assert!(parse_arguments([
-            "--case",
-            "dropped-adjustment",
-            "--mutant",
-            "unknown",
-        ])
-        .is_err());
-        assert!(parse_arguments([
-            "--case",
-            "dropped-adjustment",
-            "--mutant",
-            "zero-renderer",
-        ])
-        .is_err());
+        assert!(parse_arguments(["--case", "unknown", "--mutant", "none",]).is_err());
+        assert!(parse_arguments(["--case", "dropped-adjustment", "--mutant", "unknown",]).is_err());
+        assert!(
+            parse_arguments(["--case", "dropped-adjustment", "--mutant", "zero-renderer",])
+                .is_err()
+        );
         assert!(parse_arguments([
             "--case",
             "dropped-adjustment",

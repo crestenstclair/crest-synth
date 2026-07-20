@@ -67,6 +67,24 @@ project: {
 				"requirement.seam_mutation_falsifiability",
 			]
 		}
+		observe_live_synth: {
+			description: "The maintainer can launch the real standalone UI and audio device, watch a paced autonomous scene exercise every current editable parameter, hear the SoundFont result, and inspect coherent live checkpoints"
+			priority: "required"
+			actors: ["actor.player", "actor.maintainer"]
+			dependsOn: ["goal.observe_synth"]
+			capabilities: [
+				"capability.live_observable_demo",
+			]
+			requirements: [
+				"requirement.separate_live_demo",
+				"requirement.paced_production_path",
+				"requirement.live_current_surface",
+				"requirement.canonical_live_projection",
+				"requirement.bounded_audio_observation",
+				"requirement.live_demo_completion",
+				"requirement.headless_demo_preserved",
+			]
+		}
 	}
 
 	capabilities: {
@@ -155,6 +173,30 @@ project: {
 				evidence: ["evidence.mutation_resistance"]
 			}
 		}
+		live_observable_demo: {
+			description: "Run a paced autonomous scene inside the real standalone window and physical audio stream while preserving the canonical reducer, projection, publication, and event-log path"
+			goals: ["goal.observe_live_synth"]
+			acceptance: live_scene: {
+				description: "one command opens the real UI and audio output, exercises every current editable parameter, and leaves the completed state visible"
+				actor: "actor.player"
+				steps: [
+					{action: "run make demo-live", observes: "the normal eframe window and physical CPAL output open with HiDef.sf2 and the existing Corridors of Time fixture"},
+					{action: "watch and listen to the paced scene", observes: "every editable parameter instance changes through AppEvent and AppState.apply, remains visible for at least one rendered frame and the declared dwell, and reaches audio through the published ParameterSnapshot"},
+					{action: "wait for the scene to complete", observes: "accepted and rejected events are present in EventLog, all active notes are stopped through semantic MIDI events, and the final canonical projection remains visible until the window is closed by the user"},
+				]
+				evidence: ["evidence.live_demo_contract"]
+			}
+			acceptance: coherent_live_trace: {
+				description: "each declared live checkpoint correlates its planned input with one accepted generation, exact projections, emitted effects, and a bounded audio-thread observation"
+				actor: "actor.maintainer"
+				steps: [
+					{action: "inspect CREST_LIVE_CHECKPOINT records while the window remains responsive", observes: "each record contains the input, expected transition, EventRecord outcome, accepted generation, projected value, emitted effects, and an AudioObservationSnapshot that has consumed that generation"},
+					{action: "inspect the final live outputs", observes: "CREST_LIVE_EVENT_LOG, CREST_LIVE_STATE_TREE, CREST_LIVE_COVERAGE, and CREST_LIVE_SUMMARY agree on the final generation and report no missing or unexpected editable parameters"},
+					{action: "run the existing make demo and project checks", observes: "the deterministic headless proof and its schema, mutation, real-time, and project gates remain unchanged and pass"},
+				]
+				evidence: ["evidence.live_demo_contract", "evidence.exhaustive_demo_scene"]
+			}
+		}
 		realtime_execution: {
 			description: "Render audio through fixed-capacity lock-free boundaries without callback allocation, locking, blocking, I/O, logging, or destruction"
 			goals: ["goal.play_test_song", "goal.control_synth"]
@@ -188,6 +230,13 @@ project: {
 		faithful_audio_observation: {kind: "nonfunctional", description: "Audio proof uses only the reverb and delay inputs supplied through GlobalEffectsProcessor, establishes nonzero sends before wet-parameter comparisons, isolates each comparison from effect-tail evolution, and restores every edited value and send exactly to its captured baseline", goals: ["goal.observe_synth"], capabilities: ["capability.observable_demo_scene", "capability.global_mix"]}
 		egui_context_verification: {kind: "functional", description: "A headless egui Context processes real egui key/focus events through EframeApplication update with its callback wired to AppLoop, then proves the next frame, EventLog, accepted state, exact TextProjection values, and scroll target all reflect that event without opening a native window", goals: ["goal.observe_synth"], capabilities: ["capability.observable_demo_scene", "capability.one_way_parameter_control"]}
 		seam_mutation_falsifiability: {kind: "nonfunctional", description: "Six isolated verification-only mutants—dropped adjustment, cross-Patch parameter leak, PatchId misroute, omitted StateTree leaf, dry-to-wet bypass, and zeroed renderer output—must each falsify its own typed witness without manufacturing coverage gaps or altering a completed report", goals: ["goal.observe_synth"], capabilities: ["capability.observable_demo_scene"]}
+		separate_live_demo: {kind: "functional", description: "make demo-live invokes a dedicated --demo-live interactive option that opens the normal eframe window and physical CPAL stream; make demo retains its exact headless command and behavior", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo"]}
+		paced_production_path: {kind: "nonfunctional", description: "The live scene advances incrementally on control-side window ticks, dispatches autonomous actions only as AppEvents through AppLoop, and never mutates UI, AppState, engine, mixer, or audio state directly", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.one_way_parameter_control"]}
+		live_current_surface: {kind: "functional", description: "The expected live coverage set is derived from the production ChannelParameters and GlobalParameters descriptors plus installed Patch identities; every editable parameter instance changes at least once and remains at its accepted value for at least 500 ms while the fixture is audible", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.global_mix"]}
+		canonical_live_projection: {kind: "nonfunctional", description: "The visible frame, EventRecord, StateTree, TextProjection, and ParameterSnapshot at each live checkpoint all derive from the same accepted AppState generation; the live runner has no UI-owned or engine-owned state copy", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.one_way_parameter_control"]}
+		bounded_audio_observation: {kind: "nonfunctional", description: "The callback publishes only fixed-size numeric AudioObservationSnapshots through a lock-free latest-value transport; it never logs, formats, allocates, locks, blocks, performs I/O, or destroys state, and the control side correlates observations by parameter generation and monotonically increasing block sequence", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.realtime_execution"]}
+		live_demo_completion: {kind: "functional", description: "The live runner emits structured checkpoints plus the final EventLog, StateTree, exact editable-parameter coverage, and human-readable summary; it dispatches all-notes-off through AppLoop for every installed Patch, waits for the audio observation to acknowledge zero active notes, then becomes inert without closing the window", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo"]}
+		headless_demo_preserved: {kind: "nonfunctional", description: "Phase 1 does not alter the deterministic timing, outputs, command line, coverage universe, or acceptance predicates of make demo and introduces no Patch page, ADSR, preset selection, Plaits, static Patch effects, modulation, or redesigned interface behavior", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.observable_demo_scene"]}
 	}
 
 		evidence: {
@@ -195,6 +244,7 @@ project: {
 		control_path: {kind: "behavioral", description: "a keyboard-equivalent edit on a non-first Patch changes only its serialized value and audio contribution, while a boundary no-op remains nonfatal", validations: ["validation.smoke", "validation.test"], witnesses: ["witness.control_path"]}
 		exhaustive_demo_scene: {kind: "behavioral", description: "the schema-derived current GUI/event/state/audio surface is exhaustively exercised with exact projection values, faithful causal audio comparisons, a lossless journal, and a complete state tree", validations: ["validation.demo_scene", "validation.schema_surface", "validation.egui_context", "validation.test"], witnesses: ["witness.exhaustive_demo_scene"]}
 		mutation_resistance: {kind: "behavioral", description: "independent production-seam mutants for dropped adjustment, cross-Patch parameter leakage, Patch misrouting, StateTree leaf omission, dry-to-wet bypass, and zero renderer output are each rejected by a typed engine-executed witness", validations: ["validation.mutation_harness", "validation.test"], witnesses: ["witness.dropped_adjustment_mutant", "witness.cross_patch_parameter_leak_mutant", "witness.patch_misroute_mutant", "witness.omitted_state_tree_leaf_mutant", "witness.dry_to_wet_bypass_mutant", "witness.zero_renderer_mutant"]}
+		live_demo_contract: {kind: "behavioral", description: "the paced interactive orchestration is verified against the production reducer, projections, event log, render publication, and bounded audio observations without requiring a native CI window or device", validations: ["validation.live_demo", "validation.test"]}
 	}
 
 	nonGoals: {
@@ -204,10 +254,11 @@ project: {
 		elaborate_ui: "crest-synth does not provide dashboards, panels, meters, faders, custom widgets, themes, multiple screens, mouse interaction, or graphical editing"
 		sound_library: "crest-synth does not provide preset, session, bank, sample-library, or patch-browser persistence"
 		live_midi_adapter: "a physical MIDI device adapter is not included; the automatic file fixture implements the MIDI input port used by the application"
+		later_roadmap_phases: "Phase 1 does not introduce the Patch page, working ADSR, SoundFont preset browsing, Plaits, per-Patch effects, modulation, dynamic graph editing, or the Figma-derived replacement interface"
 	}
 
 	completion: {
-		requiredGoals: ["goal.play_test_song", "goal.control_synth", "goal.observe_synth"]
-		projectChecks: ["validation.format", "validation.clippy", "validation.test", "validation.smoke", "validation.demo_scene", "validation.schema_surface", "validation.egui_context", "validation.mutation_harness"]
+		requiredGoals: ["goal.play_test_song", "goal.control_synth", "goal.observe_synth", "goal.observe_live_synth"]
+		projectChecks: ["validation.format", "validation.clippy", "validation.test", "validation.smoke", "validation.demo_scene", "validation.schema_surface", "validation.egui_context", "validation.mutation_harness", "validation.live_demo"]
 	}
 }

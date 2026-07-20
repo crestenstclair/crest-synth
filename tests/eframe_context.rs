@@ -224,7 +224,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
     let selected_rect = selected_row.rect().translate(text_shape.pos.to_vec2());
     assert!(
         clip_rect.contains(selected_rect.center()),
-        "the exact selected line must be the scroll target"
+        "the exact selected line must be the scroll target: clip={clip_rect:?}, selected={selected_rect:?}"
     );
     assert_eq!(tick_count.get(), 2);
 

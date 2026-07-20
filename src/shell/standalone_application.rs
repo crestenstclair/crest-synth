@@ -1,3 +1,4 @@
+use crate::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_loop::AppLoop;
 use crate::control::app_state::{AppState, EventRejection};
@@ -15,6 +16,7 @@ use crate::real_time::audio_boundary::{
     AudioBoundary, AudioThreadBoundary, BoundaryFull, ControlAudioBoundary,
 };
 use crate::real_time::audio_command::AudioCommand;
+use crate::real_time::audio_observation::AudioObservation;
 use crate::real_time::audio_renderer::{AudioError, AudioRenderer};
 use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
 use crate::real_time::patch_audio_block::PatchAudioBlock;
@@ -30,6 +32,10 @@ use crate::testing::demo_scene::{DemoScene, DemoSceneError};
 use crate::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport, DemoSceneReportError};
 use crate::testing::exhaustive_gui_demo::{ExhaustiveGuiDemo, ExhaustiveGuiDemoError};
 use crate::testing::midi_event_source::MidiEventSource;
+use crate::testing::{
+    LiveDemoCheckpoint, LiveDemoError, LiveDemoReport, LiveDemoRunner, LiveDemoScene,
+    LiveDemoSceneError,
+};
 use core::fmt;
 use serde::Serialize;
 use std::cell::RefCell;
@@ -42,6 +48,8 @@ pub const STANDALONE_SOUNDFONT_PATH: &str = "./sf2/HiDef.sf2";
 
 const SMOKE_TICK_COUNT: usize = 256;
 const SMOKE_TICK_DURATION: Duration = Duration::from_millis(20);
+const LIVE_EVENT_LOG_CAPACITY: usize = 65_536;
+const LIVE_FIXTURE_EVENT_ALLOWANCE: usize = 60_000;
 const CHANNEL_SEPARATOR: &str = "------------------------------------------------------------";
 
 /// Fixed startup values shared by normal and headless execution.
@@ -138,6 +146,10 @@ pub enum ApplicationError {
     DemoScene(DemoSceneError),
     ExhaustiveDemo(ExhaustiveGuiDemoError),
     DemoReport(DemoSceneReportError),
+    LiveDemoScene(LiveDemoSceneError),
+    LiveDemo(LiveDemoError),
+    LiveDemoIncomplete,
+    LiveEventLogCapacity,
     Audio(AudioError),
     AudioOutput(AudioOutputError),
     Window(WindowError),
@@ -159,6 +171,16 @@ impl fmt::Display for ApplicationError {
             Self::DemoScene(error) => write!(formatter, "demo scene creation failed: {error}"),
             Self::ExhaustiveDemo(error) => write!(formatter, "exhaustive GUI demo failed: {error}"),
             Self::DemoReport(error) => write!(formatter, "demo report creation failed: {error}"),
+            Self::LiveDemoScene(error) => {
+                write!(formatter, "live demo scene creation failed: {error}")
+            }
+            Self::LiveDemo(error) => write!(formatter, "live demo failed: {error}"),
+            Self::LiveDemoIncomplete => {
+                formatter.write_str("live demo window closed before successful completion")
+            }
+            Self::LiveEventLogCapacity => formatter.write_str(
+                "declared live EventLog capacity is insufficient for the frozen scene and fixture allowance",
+            ),
             Self::Audio(error) => write!(formatter, "audio renderer preparation failed: {error}"),
             Self::AudioOutput(error) => write!(formatter, "audio output failed: {error}"),
             Self::Window(error) => write!(formatter, "application window failed: {error}"),
@@ -186,14 +208,18 @@ impl std::error::Error for ApplicationError {
             Self::DemoScene(error) => Some(error),
             Self::ExhaustiveDemo(error) => Some(error),
             Self::DemoReport(error) => Some(error),
+            Self::LiveDemoScene(error) => Some(error),
+            Self::LiveDemo(error) => Some(error),
             Self::Audio(error) => Some(error),
             Self::AudioOutput(error) => Some(error),
             Self::Window(error) => Some(error),
             Self::Control(error) => Some(error),
             Self::AudioBoundaryFull(error) => Some(error),
-            Self::ObservationOverflow | Self::ObservationUnavailable | Self::FixtureUnavailable => {
-                None
-            }
+            Self::LiveDemoIncomplete
+            | Self::LiveEventLogCapacity
+            | Self::ObservationOverflow
+            | Self::ObservationUnavailable
+            | Self::FixtureUnavailable => None,
         }
     }
 }
@@ -231,6 +257,18 @@ impl From<ExhaustiveGuiDemoError> for ApplicationError {
 impl From<DemoSceneReportError> for ApplicationError {
     fn from(error: DemoSceneReportError) -> Self {
         Self::DemoReport(error)
+    }
+}
+
+impl From<LiveDemoSceneError> for ApplicationError {
+    fn from(error: LiveDemoSceneError) -> Self {
+        Self::LiveDemoScene(error)
+    }
+}
+
+impl From<LiveDemoError> for ApplicationError {
+    fn from(error: LiveDemoError) -> Self {
+        Self::LiveDemo(error)
     }
 }
 
@@ -360,6 +398,102 @@ where
         Ok(())
     }
 
+    /// Runs the paced observable scene through the normal physical audio and
+    /// native-window lifetime. The callbacks execute only on the control side.
+    pub fn run_live_demo<OnCheckpoint, OnComplete>(
+        self,
+        on_checkpoint: OnCheckpoint,
+        on_complete: OnComplete,
+    ) -> Result<(), ApplicationError>
+    where
+        OnCheckpoint: FnMut(&LiveDemoCheckpoint) + 'static,
+        OnComplete: FnOnce(&LiveDemoReport) + 'static,
+    {
+        let Self {
+            boundary,
+            mut engine,
+            effects,
+            source,
+            window,
+            audio_output,
+            config,
+        } = self;
+
+        engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
+        let (control_boundary, audio_boundary) = boundary.into_handles();
+        let event_log = EventLog::new(LIVE_EVENT_LOG_CAPACITY)
+            .expect("the declared live EventLog capacity is nonzero");
+        let mut app_loop = AppLoop::with_event_log(
+            AppState::new(config.global_parameters()),
+            StateProjector::new(),
+            control_boundary,
+            event_log,
+        )?;
+        let mut automatic = AutomaticMidiTest::new(source);
+        automatic.initialize(&mut engine, &mut app_loop)?;
+        let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())?;
+        if app_loop.event_log().capacity()
+            < scene.required_event_log_capacity(LIVE_FIXTURE_EVENT_ALLOWANCE)
+        {
+            return Err(ApplicationError::LiveEventLogCapacity);
+        }
+
+        let observation = AtomicAudioObservation::default();
+        let (observation_writer, observation_reader) = observation.into_handles();
+        let mut renderer = AudioRenderer::with_observation(
+            audio_boundary,
+            engine,
+            MixEngine::new(effects),
+            observation_writer,
+        );
+        renderer.prepare(config.max_frames(), config.sample_rate())?;
+        let render: AudioRenderCallback =
+            Box::new(move |buffer, _sample_rate| renderer.render(buffer));
+        let audio_stream: AudioStream = audio_output.open(render)?;
+
+        let runner = LiveDemoRunner::start(scene, automatic, observation_reader);
+        let runtime = Rc::new(RefCell::new(LiveControlRuntime {
+            runner,
+            app_loop,
+            on_checkpoint,
+            on_complete: Some(on_complete),
+            completion_emitted: false,
+            error: None,
+        }));
+        let on_input = live_input_callback(Rc::clone(&runtime));
+        let projection = live_projection_callback(Rc::clone(&runtime));
+        let on_tick = live_tick_callback(Rc::clone(&runtime));
+
+        let window_result = window.run(on_input, projection, on_tick);
+        let runtime_error = {
+            let mut runtime = runtime.borrow_mut();
+            if runtime.runner.completed_report().is_none() {
+                let LiveControlRuntime {
+                    runner,
+                    app_loop,
+                    error,
+                    ..
+                } = &mut *runtime;
+                if let Err(cleanup_error) = runner.cleanup_before_close(app_loop) {
+                    if error.is_none() {
+                        *error = Some(cleanup_error.into());
+                    }
+                }
+                if error.is_none() {
+                    *error = Some(ApplicationError::LiveDemoIncomplete);
+                }
+            }
+            runtime.error.take()
+        };
+        drop(audio_stream);
+        window_result?;
+
+        if let Some(error) = runtime_error {
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Runs the real initialized fixture through the deterministic normalized
     /// GUI scene without opening a physical device or native window.
     pub fn run_demo_scene(
@@ -378,16 +512,20 @@ where
 
         engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
         let (control_boundary, audio_boundary) = boundary.into_handles();
+        let global_parameters = config.global_parameters();
         let mut app_loop = AppLoop::new(
-            AppState::new(config.global_parameters()),
+            AppState::new(global_parameters),
             StateProjector::new(),
             control_boundary,
         )?;
         let mut automatic = AutomaticMidiTest::new(source);
         automatic.initialize(&mut engine, &mut app_loop)?;
+        automatic.tick(Duration::from_millis(20), &mut app_loop)?;
+        app_loop.dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::System)?;
+        app_loop.dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::System)?;
 
         let installed_patches = installed_patches_from_log(&app_loop.event_log())?;
-        let scene = DemoScene::exhaustive(&installed_patches)?;
+        let scene = DemoScene::exhaustive(&installed_patches, &global_parameters)?;
         if degenerate != Some(DegenerateMode::Audio) {
             queue_demo_notes(&installed_patches, &mut app_loop)?;
         }
@@ -1014,6 +1152,107 @@ where
     })
 }
 
+struct LiveControlRuntime<Source, Boundary, OnCheckpoint, OnComplete>
+where
+    Source: MidiEventSource,
+    Boundary: ControlAudioBoundary,
+    OnCheckpoint: FnMut(&LiveDemoCheckpoint),
+    OnComplete: FnOnce(&LiveDemoReport),
+{
+    runner: LiveDemoRunner<
+        Source,
+        crate::adapter::atomic_audio_observation::AtomicAudioObservationReader,
+    >,
+    app_loop: AppLoop<Boundary>,
+    on_checkpoint: OnCheckpoint,
+    on_complete: Option<OnComplete>,
+    completion_emitted: bool,
+    error: Option<ApplicationError>,
+}
+
+fn live_input_callback<Source, Boundary, OnCheckpoint, OnComplete>(
+    runtime: Rc<RefCell<LiveControlRuntime<Source, Boundary, OnCheckpoint, OnComplete>>>,
+) -> AppInputCallback
+where
+    Source: MidiEventSource + 'static,
+    Boundary: ControlAudioBoundary + 'static,
+    OnCheckpoint: FnMut(&LiveDemoCheckpoint) + 'static,
+    OnComplete: FnOnce(&LiveDemoReport) + 'static,
+{
+    Box::new(move |event| {
+        let mut runtime = runtime.borrow_mut();
+        if runtime.error.is_some() {
+            return;
+        }
+        match runtime.app_loop.dispatch_from(event, EventSource::Keyboard) {
+            Ok(result) => {
+                if let Some(error) = result.boundary_full() {
+                    runtime.error = Some(error.into());
+                }
+            }
+            Err(_nonfatal_user_rejection) => {}
+        }
+    })
+}
+
+fn live_projection_callback<Source, Boundary, OnCheckpoint, OnComplete>(
+    runtime: Rc<RefCell<LiveControlRuntime<Source, Boundary, OnCheckpoint, OnComplete>>>,
+) -> ProjectionCallback
+where
+    Source: MidiEventSource + 'static,
+    Boundary: ControlAudioBoundary + 'static,
+    OnCheckpoint: FnMut(&LiveDemoCheckpoint) + 'static,
+    OnComplete: FnOnce(&LiveDemoReport) + 'static,
+{
+    Box::new(move || runtime.borrow().app_loop.current_text())
+}
+
+fn live_tick_callback<Source, Boundary, OnCheckpoint, OnComplete>(
+    runtime: Rc<RefCell<LiveControlRuntime<Source, Boundary, OnCheckpoint, OnComplete>>>,
+) -> TickCallback
+where
+    Source: MidiEventSource + 'static,
+    Boundary: ControlAudioBoundary + 'static,
+    OnCheckpoint: FnMut(&LiveDemoCheckpoint) + 'static,
+    OnComplete: FnOnce(&LiveDemoReport) + 'static,
+{
+    Box::new(move |elapsed| {
+        let mut runtime = runtime.borrow_mut();
+        if runtime.error.is_some() {
+            return;
+        }
+
+        let LiveControlRuntime {
+            runner,
+            app_loop,
+            on_checkpoint,
+            on_complete,
+            completion_emitted,
+            error,
+        } = &mut *runtime;
+        match runner.advance(elapsed, app_loop) {
+            Ok(Some(checkpoint)) => on_checkpoint(&checkpoint),
+            Ok(None) => {}
+            Err(failure) => {
+                *error = Some(failure.into());
+                return;
+            }
+        }
+
+        if !*completion_emitted {
+            if let Some(report) = runner.completed_report() {
+                if let Some(callback) = on_complete.take() {
+                    callback(report);
+                }
+                *completion_emitted = true;
+                if !report.complete() {
+                    *error = Some(ApplicationError::LiveDemoIncomplete);
+                }
+            }
+        }
+    })
+}
+
 fn count_patch_rows(text: &str) -> usize {
     text.lines()
         .filter(|line| line.starts_with("PATCH "))
@@ -1262,6 +1501,20 @@ mod tests {
         projection: Arc<Mutex<Option<TextProjection>>>,
     }
 
+    struct EarlyCloseWindow;
+
+    impl AppWindow for EarlyCloseWindow {
+        fn run(
+            &self,
+            _on_input: AppInputCallback,
+            projection: ProjectionCallback,
+            _on_tick: TickCallback,
+        ) -> Result<(), WindowError> {
+            let _visible_initial_state = projection();
+            Ok(())
+        }
+    }
+
     impl AppWindow for TestWindow {
         fn run(
             &self,
@@ -1291,6 +1544,66 @@ mod tests {
             let mut buffer = [0.0; 32];
             render(&mut buffer, 48_000.0);
             Ok(AudioStream::new(()))
+        }
+    }
+
+    type SharedRender = Arc<Mutex<Option<AudioRenderCallback>>>;
+
+    struct LiveTestOutput {
+        render: SharedRender,
+    }
+
+    impl AudioOutput for LiveTestOutput {
+        fn open(&self, render: AudioRenderCallback) -> Result<AudioStream, AudioOutputError> {
+            *self.render.lock().unwrap() = Some(render);
+            Ok(AudioStream::new(()))
+        }
+    }
+
+    struct LiveTestWindow {
+        render: SharedRender,
+        reports: Arc<Mutex<Vec<crate::testing::LiveDemoReport>>>,
+        final_projection: Arc<Mutex<Option<TextProjection>>>,
+        post_completion_ticks: Arc<Mutex<usize>>,
+    }
+
+    impl AppWindow for LiveTestWindow {
+        fn run(
+            &self,
+            _on_input: AppInputCallback,
+            projection: ProjectionCallback,
+            mut on_tick: TickCallback,
+        ) -> Result<(), WindowError> {
+            let mut completed_projection = None;
+            for _ in 0..800 {
+                on_tick(Duration::from_millis(100));
+                {
+                    let mut render = self.render.lock().unwrap();
+                    let render = render
+                        .as_mut()
+                        .ok_or_else(|| WindowError::new("live audio callback was not opened"))?;
+                    let mut buffer = [0.0_f32; 32];
+                    render(&mut buffer, 48_000.0);
+                }
+
+                let current = projection();
+                if !self.reports.lock().unwrap().is_empty() {
+                    if let Some(expected) = completed_projection.as_ref() {
+                        assert_eq!(&current, expected);
+                        let mut ticks = self.post_completion_ticks.lock().unwrap();
+                        *ticks += 1;
+                        if *ticks == 3 {
+                            *self.final_projection.lock().unwrap() = Some(current);
+                            return Ok(());
+                        }
+                    } else {
+                        completed_projection = Some(current);
+                    }
+                }
+            }
+            Err(WindowError::new(
+                "live deterministic window did not observe completion",
+            ))
         }
     }
 
@@ -1361,6 +1674,86 @@ mod tests {
         )
     }
 
+    fn live_application(
+        due: Vec<TargetedMidiEvent>,
+        engine_state: Arc<Mutex<EngineState>>,
+        reports: Arc<Mutex<Vec<crate::testing::LiveDemoReport>>>,
+        final_projection: Arc<Mutex<Option<TextProjection>>>,
+        post_completion_ticks: Arc<Mutex<usize>>,
+    ) -> StandaloneApplication<
+        TestBoundary,
+        TestEngine,
+        TestEffects,
+        TestSource,
+        LiveTestWindow,
+        LiveTestOutput,
+    > {
+        let render = Arc::new(Mutex::new(None));
+        StandaloneApplication::new(
+            TestBoundary {
+                bus: Arc::new(Mutex::new(Bus {
+                    commands: VecDeque::new(),
+                    parameters: parameters(),
+                })),
+            },
+            TestEngine {
+                state: engine_state,
+            },
+            TestEffects,
+            TestSource {
+                parts: parts(),
+                due,
+                started: false,
+            },
+            LiveTestWindow {
+                render: Arc::clone(&render),
+                reports,
+                final_projection,
+                post_completion_ticks,
+            },
+            LiveTestOutput { render },
+            ApplicationConfig::new(
+                48_000.0,
+                16,
+                ApplicationConfig::default().global_parameters(),
+            ),
+        )
+    }
+
+    fn early_close_application() -> StandaloneApplication<
+        TestBoundary,
+        TestEngine,
+        TestEffects,
+        TestSource,
+        EarlyCloseWindow,
+        TestOutput,
+    > {
+        StandaloneApplication::new(
+            TestBoundary {
+                bus: Arc::new(Mutex::new(Bus {
+                    commands: VecDeque::new(),
+                    parameters: parameters(),
+                })),
+            },
+            TestEngine {
+                state: Arc::new(Mutex::new(EngineState::default())),
+            },
+            TestEffects,
+            TestSource {
+                parts: parts(),
+                due: vec![TargetedMidiEvent::new(0, message())],
+                started: false,
+            },
+            EarlyCloseWindow,
+            TestOutput,
+            ApplicationConfig::new(
+                48_000.0,
+                16,
+                ApplicationConfig::default().global_parameters(),
+            ),
+        )
+    }
+
     #[test]
     fn normal_run_loads_once_and_joins_window_input_to_the_shared_loop() {
         let engine_state = Arc::new(Mutex::new(EngineState::default()));
@@ -1402,6 +1795,65 @@ mod tests {
         assert_eq!(report.final_state_tree().patch_count(), 2);
         assert!(report.checkpoints().len() > 10);
         assert!(engine_state.lock().unwrap().dispatched > 0);
+    }
+
+    #[test]
+    fn standalone_live_demo_composition_emits_once_and_never_auto_closes() {
+        let engine_state = Arc::new(Mutex::new(EngineState::default()));
+        let reports = Arc::new(Mutex::new(Vec::new()));
+        let checkpoints = Arc::new(Mutex::new(Vec::new()));
+        let final_projection = Arc::new(Mutex::new(None));
+        let post_completion_ticks = Arc::new(Mutex::new(0));
+        let checkpoints_for_callback = Arc::clone(&checkpoints);
+        let reports_for_callback = Arc::clone(&reports);
+
+        live_application(
+            vec![TargetedMidiEvent::new(0, message())],
+            Arc::clone(&engine_state),
+            Arc::clone(&reports),
+            Arc::clone(&final_projection),
+            Arc::clone(&post_completion_ticks),
+        )
+        .run_live_demo(
+            move |checkpoint| {
+                checkpoints_for_callback
+                    .lock()
+                    .unwrap()
+                    .push(checkpoint.clone())
+            },
+            move |report| reports_for_callback.lock().unwrap().push(report.clone()),
+        )
+        .unwrap();
+
+        let reports = reports.lock().unwrap();
+        assert_eq!(reports.len(), 1);
+        let report = &reports[0];
+        assert!(report.complete(), "{}", report.summary());
+        assert_eq!(checkpoints.lock().unwrap().as_slice(), report.checkpoints());
+        assert_eq!(*post_completion_ticks.lock().unwrap(), 3);
+        let projection = final_projection.lock().unwrap();
+        let projection = projection.as_ref().unwrap();
+        assert_eq!(projection.state_hash(), report.state_tree().state_hash());
+        assert!(engine_state.lock().unwrap().dispatched > 0);
+    }
+
+    #[test]
+    fn standalone_live_demo_early_close_is_typed_and_never_reports_success() {
+        let checkpoints = Arc::new(Mutex::new(0_usize));
+        let reports = Arc::new(Mutex::new(0_usize));
+        let checkpoints_for_callback = Arc::clone(&checkpoints);
+        let reports_for_callback = Arc::clone(&reports);
+
+        let error = early_close_application()
+            .run_live_demo(
+                move |_| *checkpoints_for_callback.lock().unwrap() += 1,
+                move |_| *reports_for_callback.lock().unwrap() += 1,
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, super::ApplicationError::LiveDemoIncomplete));
+        assert_eq!(*checkpoints.lock().unwrap(), 0);
+        assert_eq!(*reports.lock().unwrap(), 0);
     }
 
     #[test]

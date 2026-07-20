@@ -186,6 +186,16 @@ where
     pub fn event_log(&self) -> EventLog {
         self.event_log.clone()
     }
+
+    /// Enqueues a bounded system-recovery command without inventing a state
+    /// transition. Deterministic verification uses this for the renderer-wide
+    /// all-notes-off command, which is distinct from Patch-scoped MIDI.
+    pub(crate) fn push_recovery_command(
+        &mut self,
+        command: crate::real_time::audio_command::AudioCommand,
+    ) -> Result<(), BoundaryFull> {
+        self.boundary.push_command(command)
+    }
 }
 
 #[cfg(test)]

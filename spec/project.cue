@@ -88,6 +88,7 @@ project: {
 					"adapter.EframeTextWindow",
 					"valueObject.Mixer.ChannelParameters",
 					"valueObject.Mixer.GlobalParameters",
+					"valueObject.Mixer.MixObservation",
 					"port.Mixer.GlobalEffectsProcessor",
 					"adapter.GlobalReverbDelay",
 					"domainService.Mixer.MixEngine",
@@ -109,6 +110,54 @@ project: {
 				]
 				goals: ["goal.observe_synth"]
 				description: "the exhaustive deterministic GUI scene covers every current event, editable parameter, serialized property, projection, and downstream effect"
+			}
+			live_demo: {
+				scope: "project"
+				kind: "integration"
+				command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"]
+				assertions: [
+					{kind: "exit_code", expected: 0},
+					{kind: "stdout_contains", pattern: "CREST_ACCEPTANCE live_demo_scene passed"},
+				]
+				timeout: "180s"
+				resources: [
+					"valueObject.Control.AppEvent",
+					"valueObject.Control.EventRecord",
+					"valueObject.Control.EventLog",
+					"valueObject.Control.StateTree",
+					"valueObject.Control.TextProjection",
+					"aggregate.Control.AppState",
+					"domainService.Control.StateProjector",
+					"applicationService.Control.AppLoop",
+					"valueObject.Mixer.ChannelParameters",
+					"valueObject.Mixer.GlobalParameters",
+					"valueObject.Mixer.MixObservation",
+					"valueObject.RealTime.ParameterSnapshot",
+					"valueObject.RealTime.AudioObservationSnapshot",
+					"port.RealTime.AudioObservation",
+					"adapter.AtomicAudioObservation",
+					"applicationService.RealTime.AudioRenderer",
+					"applicationService.Testing.AutomaticMidiTest",
+					"valueObject.Testing.LiveDemoScene",
+					"valueObject.Testing.LiveDemoCheckpoint",
+					"valueObject.Testing.LiveDemoReport",
+					"applicationService.Testing.LiveDemoRunner",
+					"port.Shell.AppWindow",
+					"adapter.EframeTextWindow",
+					"port.Shell.AudioOutput",
+					"adapter.CpalAudioOutput",
+					"applicationService.Shell.StandaloneApplication",
+					"asset.CrestSynthMain",
+					"asset.BuildMakefile",
+					"asset.BehavioralAcceptanceTests",
+				]
+				capabilities: [
+					"capability.live_observable_demo",
+					"capability.one_way_parameter_control",
+					"capability.realtime_execution",
+				]
+				goals: ["goal.observe_live_synth"]
+				description: "a deterministic-clock harness proves the live runner's pacing, exact editable-parameter coverage, coherent checkpoints, bounded audio observations, semantic all-notes-off completion, and inert final state without substituting a second reducer or renderer"
 			}
 			schema_surface: {
 				scope: "project"

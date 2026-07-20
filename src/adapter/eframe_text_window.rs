@@ -54,7 +54,9 @@ impl AppWindow for EframeTextWindow {
     }
 }
 
-struct EframeApplication {
+/// Production eframe application used by both the native window and the
+/// headless egui-context acceptance target.
+pub struct EframeApplication {
     on_input: AppInputCallback,
     projection: ProjectionCallback,
     on_tick: TickCallback,
@@ -63,7 +65,8 @@ struct EframeApplication {
 }
 
 impl EframeApplication {
-    fn new(
+    /// Creates the production GUI adapter around the application callbacks.
+    pub fn new(
         on_input: AppInputCallback,
         projection: ProjectionCallback,
         on_tick: TickCallback,
@@ -102,19 +105,19 @@ impl eframe::App for EframeApplication {
 
         let projection = (self.projection)();
         egui::CentralPanel::default().show(context, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let response = ui.label(egui::RichText::new(projection.body()).monospace());
-                let selected_line = projection
-                    .selected_line()
-                    .min(projection.body().lines().count().saturating_sub(1));
-                let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
-                let selected_top = response.rect.top() + line_height * selected_line as f32;
-                let selected_rect = egui::Rect::from_min_size(
-                    egui::pos2(response.rect.left(), selected_top),
-                    egui::vec2(response.rect.width(), line_height),
-                );
-                ui.scroll_to_rect(selected_rect, Some(egui::Align::Center));
-            });
+            let selected_line = projection
+                .selected_line()
+                .min(projection.body().lines().count().saturating_sub(1));
+            let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+            let selected_center = line_height * (selected_line as f32 + 0.5);
+            let scroll_offset = (selected_center - ui.available_height() * 0.5).max(0.0);
+
+            egui::ScrollArea::vertical()
+                .id_salt("crest-synth-parameters")
+                .vertical_scroll_offset(scroll_offset)
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(projection.body()).monospace());
+                });
         });
 
         context.request_repaint();

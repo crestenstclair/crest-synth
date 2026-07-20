@@ -12,6 +12,7 @@ pub struct EventCoverage {
     expected: Vec<String>,
     exercised: Vec<String>,
     missing: Vec<String>,
+    unexpected: Vec<String>,
 }
 
 impl EventCoverage {
@@ -32,6 +33,7 @@ impl EventCoverage {
             missing: expected.clone(),
             expected,
             exercised: Vec::new(),
+            unexpected: Vec::new(),
         }
     }
 
@@ -50,6 +52,11 @@ impl EventCoverage {
         &self.missing
     }
 
+    /// Returns observed identifiers outside the declared surface.
+    pub fn unexpected(&self) -> &[String] {
+        &self.unexpected
+    }
+
     /// Marks one identifier as exercised.
     ///
     /// The return value is true only for the first observation. Unexpected
@@ -62,13 +69,15 @@ impl EventCoverage {
 
         if let Ok(index) = self.missing.binary_search(&identifier) {
             self.missing.remove(index);
+        } else if self.expected.binary_search(&identifier).is_err() {
+            insert_sorted_unique(&mut self.unexpected, identifier);
         }
         true
     }
 
     /// Reports whether all expected coverage has been exercised.
     pub fn is_complete(&self) -> bool {
-        self.missing.is_empty()
+        self.missing.is_empty() && self.unexpected.is_empty()
     }
 }
 
@@ -138,6 +147,21 @@ pub struct EventLog {
 impl EventLog {
     /// The stable schema version emitted in every serialized log.
     pub const SCHEMA_VERSION: u32 = 1;
+    pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
+        "schemaVersion",
+        "totalObserved",
+        "droppedRecords",
+        "records",
+        "coverage.expected",
+        "coverage.exercised",
+        "coverage.missing",
+        "coverage.unexpected",
+    ];
+
+    /// Returns the production-owned serialized journal property surface.
+    pub const fn serialized_property_descriptor() -> &'static [&'static str] {
+        Self::SERIALIZED_PROPERTY_DESCRIPTOR
+    }
 
     /// Creates an empty bounded journal without predeclared coverage.
     pub fn new(capacity: usize) -> Result<Self, EventLogError> {
@@ -377,6 +401,10 @@ mod tests {
         assert_eq!(
             json["coverage"]["missing"],
             serde_json::json!(["event.adjust.right"])
+        );
+        assert_eq!(
+            json["coverage"]["unexpected"],
+            serde_json::json!(["event.unexpected"])
         );
     }
 

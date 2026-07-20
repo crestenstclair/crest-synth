@@ -14,6 +14,10 @@ pub enum Direction {
     Right,
 }
 
+impl Direction {
+    pub const ALL: [Self; 4] = [Self::Up, Self::Down, Self::Left, Self::Right];
+}
+
 /// The payload types carried by non-directional application events.
 ///
 /// Keeping these shapes typed avoids a second string-based event schema in

@@ -11,6 +11,14 @@ pub struct TextProjection {
 }
 
 impl TextProjection {
+    pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] =
+        &["body", "selectedLine", "stateHash"];
+
+    /// Returns the production-owned serialized projection property surface.
+    pub const fn serialized_property_descriptor() -> &'static [&'static str] {
+        Self::SERIALIZED_PROPERTY_DESCRIPTOR
+    }
+
     /// Collects the complete deterministic projection derived by the state
     /// projector from a single snapshot.
     pub fn new(body: String, selected_line: usize, state_hash: String) -> Self {

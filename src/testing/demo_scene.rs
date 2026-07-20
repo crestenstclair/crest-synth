@@ -1,25 +1,21 @@
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::EventRejection;
+use crate::control::event_log::EventLog;
+use crate::control::event_record::EventRecord;
+use crate::control::state_tree::StateTree;
+use crate::control::text_projection::TextProjection;
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
+use crate::mixer::channel_parameters::ChannelParameters;
+use crate::mixer::global_parameters::GlobalParameters;
+use crate::real_time::audio_command::AudioCommand;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 use crate::synth::patch::Patch;
 use core::fmt;
 use std::time::Duration;
 
 const TICK_DURATION: Duration = Duration::from_millis(10);
-const PATCH_PARAMETERS: [&str; 4] = ["gainDb", "pan", "reverbSend", "delaySend"];
-const GLOBAL_PARAMETERS: [&str; 7] = [
-    "masterGainDb",
-    "reverbRoomSize",
-    "reverbDamping",
-    "reverbReturn",
-    "delayMilliseconds",
-    "delayFeedback",
-    "delayReturn",
-];
-
 /// An immutable point at which a scene runner records coherent projections.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DemoCheckpoint {
@@ -101,6 +97,7 @@ impl MidiProbe {
 pub enum DemoSceneStep {
     WindowInput(WindowInput),
     MidiProbe(MidiProbe),
+    AudioCommandProbe(AudioCommand),
     Tick(Duration),
     Checkpoint(DemoCheckpoint),
 }
@@ -122,7 +119,10 @@ impl DemoScene {
     ///
     /// At least two Patches are required because routing and mixer observations
     /// must discriminate the edited Patch from an unaffected Patch.
-    pub fn exhaustive(installed_patches: &[Patch]) -> Result<Self, DemoSceneError> {
+    pub fn exhaustive(
+        installed_patches: &[Patch],
+        global_parameters: &GlobalParameters,
+    ) -> Result<Self, DemoSceneError> {
         if installed_patches.len() < 2 {
             return Err(DemoSceneError::InsufficientPatches {
                 actual: installed_patches.len(),
@@ -132,7 +132,7 @@ impl DemoScene {
         Ok(Self {
             name: Self::NAME.to_owned(),
             schema_version: Self::SCHEMA_VERSION,
-            steps: build_steps(installed_patches),
+            steps: build_steps(installed_patches, global_parameters),
             expected_coverage: build_expected_coverage(installed_patches),
         })
     }
@@ -182,12 +182,12 @@ impl fmt::Display for DemoSceneError {
 
 impl std::error::Error for DemoSceneError {}
 
-fn build_steps(patches: &[Patch]) -> Vec<DemoSceneStep> {
+fn build_steps(patches: &[Patch], global_parameters: &GlobalParameters) -> Vec<DemoSceneStep> {
     let mut steps = Vec::new();
     push_checkpoint(&mut steps, DemoCheckpoint::new("scene.start"));
 
     for input in complete_window_vocabulary() {
-        steps.push(DemoSceneStep::WindowInput(input));
+        steps.push(DemoSceneStep::WindowInput(*input));
     }
 
     // Prove that focus loss clears modifier state. The following W/S pair is
@@ -200,16 +200,27 @@ fn build_steps(patches: &[Patch]) -> Vec<DemoSceneStep> {
     push_key_press(&mut steps, WindowKey::S);
     push_checkpoint(&mut steps, DemoCheckpoint::new("input.vocabulary"));
 
-    push_boundary_probe(&mut steps);
-
-    for patch in patches {
-        for parameter in PATCH_PARAMETERS {
+    for (patch_index, patch) in patches.iter().enumerate() {
+        for descriptor in ChannelParameters::surface_descriptor() {
+            let parameter = descriptor.parameter();
+            if patch_index == 0 {
+                push_parameter_boundary_probe(
+                    &mut steps,
+                    &format!("patch.{}.{}", patch.id().value(), descriptor.name()),
+                    patch.parameters().value(parameter),
+                    descriptor.minimum(),
+                    descriptor.maximum(),
+                    descriptor.fine_step(),
+                    descriptor.coarse_step(),
+                );
+            }
             push_reversible_adjustments(&mut steps);
             push_checkpoint(
                 &mut steps,
                 DemoCheckpoint::new(format!(
-                    "patch.{}.parameter.{parameter}",
-                    patch.id().value()
+                    "patch.{}.parameter.{}",
+                    patch.id().value(),
+                    descriptor.name()
                 )),
             );
             push_key_press(&mut steps, WindowKey::S);
@@ -217,11 +228,21 @@ fn build_steps(patches: &[Patch]) -> Vec<DemoSceneStep> {
         push_key_press(&mut steps, WindowKey::D);
     }
 
-    for parameter in GLOBAL_PARAMETERS {
+    for descriptor in GlobalParameters::surface_descriptor() {
+        let parameter = descriptor.parameter();
+        push_parameter_boundary_probe(
+            &mut steps,
+            &format!("global.{}", descriptor.name()),
+            global_parameters.value(parameter),
+            descriptor.minimum(),
+            descriptor.maximum(),
+            descriptor.fine_step(),
+            descriptor.coarse_step(),
+        );
         push_reversible_adjustments(&mut steps);
         push_checkpoint(
             &mut steps,
-            DemoCheckpoint::new(format!("global.parameter.{parameter}")),
+            DemoCheckpoint::new(format!("global.parameter.{}", descriptor.name())),
         );
         push_key_press(&mut steps, WindowKey::S);
     }
@@ -249,6 +270,12 @@ fn build_steps(patches: &[Patch]) -> Vec<DemoSceneStep> {
         );
     }
 
+    steps.push(DemoSceneStep::AudioCommandProbe(
+        AudioCommand::all_notes_off(),
+    ));
+    steps.push(DemoSceneStep::Tick(TICK_DURATION));
+    push_checkpoint(&mut steps, DemoCheckpoint::new("audioCommand.allNotesOff"));
+
     let unknown_patch = first_unknown_patch_id(patches);
     let unknown_message = midi_message(patches[0].channel(), MidiMessageKind::NoteOn, 67, 91);
     steps.push(DemoSceneStep::MidiProbe(MidiProbe::rejected(
@@ -265,22 +292,8 @@ fn build_steps(patches: &[Patch]) -> Vec<DemoSceneStep> {
     steps
 }
 
-fn complete_window_vocabulary() -> [WindowInput; 13] {
-    [
-        WindowInput::key_down(WindowKey::W),
-        WindowInput::key_up(WindowKey::W),
-        WindowInput::key_down(WindowKey::S),
-        WindowInput::key_up(WindowKey::S),
-        WindowInput::key_down(WindowKey::A),
-        WindowInput::key_up(WindowKey::A),
-        WindowInput::key_down(WindowKey::D),
-        WindowInput::key_up(WindowKey::D),
-        WindowInput::key_down(WindowKey::K),
-        WindowInput::key_up(WindowKey::K),
-        WindowInput::key_down(WindowKey::Other),
-        WindowInput::key_up(WindowKey::Other),
-        WindowInput::focus_lost(),
-    ]
+fn complete_window_vocabulary() -> &'static [WindowInput] {
+    WindowInput::surface_descriptor()
 }
 
 fn push_key_press(steps: &mut Vec<DemoSceneStep>, key: WindowKey) {
@@ -302,62 +315,93 @@ fn push_reversible_adjustments(steps: &mut Vec<DemoSceneStep>) {
     )));
 }
 
-fn push_boundary_probe(steps: &mut Vec<DemoSceneStep>) {
-    push_checkpoint(steps, DemoCheckpoint::new("boundary.start"));
+#[allow(clippy::too_many_arguments)]
+fn push_parameter_boundary_probe(
+    steps: &mut Vec<DemoSceneStep>,
+    identifier: &str,
+    initial: f32,
+    minimum: f32,
+    maximum: f32,
+    fine_step: f32,
+    coarse_step: f32,
+) {
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!("boundary.{identifier}.start")),
+    );
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
         WindowKey::K,
     )));
 
-    // Fixture Patch gain starts at 0 dB. One coarse increase reaches 6 dB and
-    // the second proves an unchanged upper-bound rejection.
-    push_key_press(steps, WindowKey::W);
+    for _ in 0..steps_to_boundary(initial, maximum, coarse_step) {
+        push_key_press(steps, WindowKey::W);
+    }
     push_key_press(steps, WindowKey::W);
     push_checkpoint(
         steps,
         DemoCheckpoint::after_rejection(
-            "boundary.patchGain.upper",
+            format!("boundary.{identifier}.upper"),
             EventRejection::ParameterAtBoundary,
         ),
     );
 
-    // Return to 0 dB, reach -60 dB in ten deterministic coarse steps, reject
-    // one further decrement, then return exactly to the fixture baseline.
-    push_key_press(steps, WindowKey::S);
-    for _ in 0..10 {
+    for _ in 0..steps_to_boundary(maximum, minimum, coarse_step) {
         push_key_press(steps, WindowKey::S);
     }
     push_key_press(steps, WindowKey::S);
     push_checkpoint(
         steps,
         DemoCheckpoint::after_rejection(
-            "boundary.patchGain.lower",
+            format!("boundary.{identifier}.lower"),
             EventRejection::ParameterAtBoundary,
         ),
     );
-    for _ in 0..10 {
+
+    let (coarse_restoration_steps, fine_restoration_steps) =
+        restoration_steps(minimum, initial, fine_step, coarse_step);
+    for _ in 0..coarse_restoration_steps {
         push_key_press(steps, WindowKey::W);
+    }
+    for _ in 0..fine_restoration_steps {
+        push_key_press(steps, WindowKey::D);
     }
 
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
         WindowKey::K,
     )));
-    push_checkpoint(steps, DemoCheckpoint::new("boundary.restored"));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!("boundary.{identifier}.restored")),
+    );
+}
+
+fn steps_to_boundary(from: f32, to: f32, step: f32) -> usize {
+    (((to - from).abs() / step).ceil()) as usize
+}
+
+fn restoration_steps(from: f32, to: f32, fine_step: f32, coarse_step: f32) -> (usize, usize) {
+    let fine_units = ((to - from).abs() / fine_step).round() as usize;
+    let coarse_units = (coarse_step / fine_step).round() as usize;
+    (fine_units / coarse_units, fine_units % coarse_units)
 }
 
 fn push_checkpoint(steps: &mut Vec<DemoSceneStep>, checkpoint: DemoCheckpoint) {
     steps.push(DemoSceneStep::Checkpoint(checkpoint));
 }
 
-fn midi_messages(channel: MidiChannel) -> [MidiMessage; 7] {
-    [
-        midi_message(channel, MidiMessageKind::NoteOn, 60, 96),
-        midi_message(channel, MidiMessageKind::NoteOff, 60, 0),
-        midi_message(channel, MidiMessageKind::ControlChange, 1, 64),
-        midi_message(channel, MidiMessageKind::ProgramChange, 10, 0),
-        midi_message(channel, MidiMessageKind::ChannelPressure, 70, 0),
-        midi_message(channel, MidiMessageKind::PitchBend, 0, 64),
-        MidiMessage::all_notes_off(channel),
-    ]
+fn midi_messages(channel: MidiChannel) -> Vec<MidiMessage> {
+    MidiMessageKind::surface_descriptor()
+        .iter()
+        .map(|kind| match kind {
+            MidiMessageKind::NoteOn => midi_message(channel, *kind, 60, 96),
+            MidiMessageKind::NoteOff => midi_message(channel, *kind, 60, 0),
+            MidiMessageKind::ControlChange => midi_message(channel, *kind, 1, 64),
+            MidiMessageKind::ProgramChange => midi_message(channel, *kind, 10, 0),
+            MidiMessageKind::ChannelPressure => midi_message(channel, *kind, 70, 0),
+            MidiMessageKind::PitchBend => midi_message(channel, *kind, 0, 64),
+            MidiMessageKind::AllNotesOff => MidiMessage::all_notes_off(channel),
+        })
+        .collect()
 }
 
 fn midi_message(channel: MidiChannel, kind: MidiMessageKind, data1: u8, data2: u8) -> MidiMessage {
@@ -373,21 +417,25 @@ fn first_unknown_patch_id(patches: &[Patch]) -> PatchId {
 }
 
 fn build_expected_coverage(patches: &[Patch]) -> Vec<String> {
-    let sample_message = midi_messages(patches[0].channel())[0];
-    let representative_events = [
-        AppEvent::InstallPatches(Vec::new()),
-        AppEvent::Navigate(Direction::Up),
-        AppEvent::Adjust(Direction::Up),
-        AppEvent::Midi {
-            patch_id: patches[0].id(),
-            message: sample_message,
-        },
-    ];
-
-    let mut expected = representative_events
-        .iter()
-        .map(|event| format!("event.{}", event_identifier(event)))
-        .collect::<Vec<_>>();
+    let mut expected = Vec::new();
+    for descriptor in AppEvent::surface_descriptor() {
+        match descriptor {
+            crate::control::app_event::AppEventSurfaceDescriptor::Navigate { direction } => {
+                expected.push("event.navigate".to_owned());
+                expected.push(format!("direction.{}", direction_identifier(*direction)));
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::Adjust { direction } => {
+                expected.push("event.adjust".to_owned());
+                expected.push(format!("direction.{}", direction_identifier(*direction)));
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::InstallPatches { .. } => {
+                expected.push("event.installPatches".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::Midi { .. } => {
+                expected.push("event.midi".to_owned());
+            }
+        }
+    }
 
     expected.extend(
         complete_window_vocabulary()
@@ -396,14 +444,9 @@ fn build_expected_coverage(patches: &[Patch]) -> Vec<String> {
     );
 
     expected.extend(
-        [
-            Direction::Up,
-            Direction::Down,
-            Direction::Left,
-            Direction::Right,
-        ]
-        .into_iter()
-        .map(|direction| format!("direction.{}", direction_identifier(direction))),
+        Direction::ALL
+            .into_iter()
+            .map(|direction| format!("direction.{}", direction_identifier(direction))),
     );
 
     expected.extend(
@@ -413,7 +456,8 @@ fn build_expected_coverage(patches: &[Patch]) -> Vec<String> {
     );
 
     for patch in patches {
-        for parameter in PATCH_PARAMETERS {
+        for descriptor in ChannelParameters::surface_descriptor() {
+            let parameter = descriptor.name();
             expected.push(format!(
                 "parameter.patch.{}.{parameter}",
                 patch.id().value()
@@ -446,7 +490,8 @@ fn build_expected_coverage(patches: &[Patch]) -> Vec<String> {
         }
     }
 
-    for parameter in GLOBAL_PARAMETERS {
+    for descriptor in GlobalParameters::surface_descriptor() {
+        let parameter = descriptor.name();
         expected.push(format!("parameter.global.{parameter}"));
         expected.push(format!("effect.parameterSnapshot.global.{parameter}"));
         expected.push(format!("property.stateTree.global.{parameter}"));
@@ -454,18 +499,29 @@ fn build_expected_coverage(patches: &[Patch]) -> Vec<String> {
     }
 
     expected.extend(
-        SERIALIZED_PROPERTIES
-            .into_iter()
-            .map(|property| format!("property.{property}")),
+        EventLog::serialized_property_descriptor()
+            .iter()
+            .map(|property| format!("property.eventLog.{property}")),
     );
     expected.extend(
-        [
-            EventRejection::InstallationClosed,
-            EventRejection::UnknownPatch,
-            EventRejection::ParameterAtBoundary,
-        ]
-        .into_iter()
-        .map(|rejection| format!("rejection.{}", rejection_identifier(rejection))),
+        EventRecord::serialized_property_descriptor()
+            .iter()
+            .map(|property| format!("property.eventRecord.{property}")),
+    );
+    expected.extend(
+        StateTree::serialized_property_descriptor()
+            .iter()
+            .map(|property| format!("property.stateTree.{property}")),
+    );
+    expected.extend(
+        TextProjection::serialized_property_descriptor()
+            .iter()
+            .map(|property| format!("property.textProjection.{property}")),
+    );
+    expected.extend(
+        EventRejection::surface_descriptor()
+            .iter()
+            .map(|descriptor| format!("rejection.{}", descriptor.name())),
     );
     expected.extend(EMITTED_EFFECTS.into_iter().map(str::to_owned));
 
@@ -474,61 +530,12 @@ fn build_expected_coverage(patches: &[Patch]) -> Vec<String> {
     expected
 }
 
-const SERIALIZED_PROPERTIES: [&str; 37] = [
-    "eventLog.schemaVersion",
-    "eventLog.totalObserved",
-    "eventLog.droppedRecords",
-    "eventLog.records",
-    "eventLog.coverage.expected",
-    "eventLog.coverage.exercised",
-    "eventLog.coverage.missing",
-    "eventRecord.sequence",
-    "eventRecord.source",
-    "eventRecord.input",
-    "eventRecord.outcome",
-    "eventRecord.rejection",
-    "eventRecord.generationBefore",
-    "eventRecord.generationAfter",
-    "eventRecord.stateHashBefore",
-    "eventRecord.stateHashAfter",
-    "eventRecord.emittedEvents",
-    "eventRecord.parameterGeneration",
-    "eventRecord.selectedLine",
-    "eventRecord.projectionStateHash",
-    "stateTree.schemaVersion",
-    "stateTree.generation",
-    "stateTree.patches",
-    "stateTree.global",
-    "stateTree.selection.section",
-    "stateTree.selection.patchIndex",
-    "stateTree.selection.parameterIndex",
-    "stateTree.projection.body",
-    "stateTree.projection.selectedLine",
-    "stateTree.projection.stateHash",
-    "stateTree.parameters.generation",
-    "stateTree.parameters.patchCount",
-    "stateTree.parameters.patches",
-    "stateTree.parameters.global",
-    "textProjection.body",
-    "textProjection.selectedLine",
-    "textProjection.stateHash",
-];
-
 const EMITTED_EFFECTS: [&str; 4] = [
     "effect.emitted.stateAccepted",
     "effect.emitted.parameterSnapshotPublished",
     "effect.emitted.audioCommand.patchMidi",
     "effect.emitted.audioCommand.allNotesOff",
 ];
-
-fn event_identifier(event: &AppEvent) -> &'static str {
-    match event {
-        AppEvent::Navigate(_) => "navigate",
-        AppEvent::Adjust(_) => "adjust",
-        AppEvent::InstallPatches(_) => "installPatches",
-        AppEvent::Midi { .. } => "midi",
-    }
-}
 
 fn direction_identifier(direction: Direction) -> &'static str {
     match direction {
@@ -569,30 +576,15 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
     }
 }
 
-fn rejection_identifier(rejection: EventRejection) -> &'static str {
-    match rejection {
-        EventRejection::InstallationClosed => "installationClosed",
-        EventRejection::TooManyPatches => "tooManyPatches",
-        EventRejection::DuplicateMidiChannel => "duplicateMidiChannel",
-        EventRejection::NoPatchesInstalled => "noPatchesInstalled",
-        EventRejection::UnknownPatch => "unknownPatch",
-        EventRejection::InvalidSelection => "invalidSelection",
-        EventRejection::ParameterAtBoundary => "parameterAtBoundary",
-        EventRejection::InvalidParameterValue => "invalidParameterValue",
-        EventRejection::GenerationOverflow => "generationOverflow",
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        DemoScene, DemoSceneError, DemoSceneStep, MidiProbe, GLOBAL_PARAMETERS, PATCH_PARAMETERS,
-    };
+    use super::{DemoScene, DemoSceneError, DemoSceneStep, MidiProbe};
     use crate::control::app_state::EventRejection;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessageKind;
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
+    use crate::mixer::global_parameters::GlobalParameters;
     use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
@@ -611,14 +603,18 @@ mod tests {
         vec![patch(1, 2), patch(7, 9)]
     }
 
+    fn globals() -> GlobalParameters {
+        GlobalParameters::new(0.0, 0.5, 0.4, 0.35, 250.0, 0.3, 0.25).unwrap()
+    }
+
     #[test]
     fn requires_discriminating_multi_patch_input() {
         assert_eq!(
-            DemoScene::exhaustive(&[]),
+            DemoScene::exhaustive(&[], &globals()),
             Err(DemoSceneError::InsufficientPatches { actual: 0 })
         );
         assert_eq!(
-            DemoScene::exhaustive(&[patch(1, 0)]),
+            DemoScene::exhaustive(&[patch(1, 0)], &globals()),
             Err(DemoSceneError::InsufficientPatches { actual: 1 })
         );
     }
@@ -626,18 +622,22 @@ mod tests {
     #[test]
     fn derives_patch_specific_parameters_and_midi_from_the_fixture() {
         let patches = patches();
-        let scene = DemoScene::exhaustive(&patches).unwrap();
+        let scene = DemoScene::exhaustive(&patches, &globals()).unwrap();
 
         for patch in &patches {
-            for parameter in PATCH_PARAMETERS {
-                let identifier = format!("parameter.patch.{}.{parameter}", patch.id().value());
+            for descriptor in ChannelParameters::surface_descriptor() {
+                let identifier = format!(
+                    "parameter.patch.{}.{}",
+                    patch.id().value(),
+                    descriptor.name()
+                );
                 assert!(scene.expected_coverage().contains(&identifier));
             }
         }
-        for parameter in GLOBAL_PARAMETERS {
+        for descriptor in GlobalParameters::surface_descriptor() {
             assert!(scene
                 .expected_coverage()
-                .contains(&format!("parameter.global.{parameter}")));
+                .contains(&format!("parameter.global.{}", descriptor.name())));
         }
 
         let probes = scene
@@ -679,8 +679,39 @@ mod tests {
     }
 
     #[test]
+    fn schema_derived_current_surface() {
+        let patches = patches();
+        let scene = DemoScene::exhaustive(&patches, &globals()).unwrap();
+        assert!(scene
+            .expected_coverage()
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
+        assert_eq!(WindowInput::surface_descriptor().len(), 13);
+        assert_eq!(
+            crate::control::app_event::AppEvent::surface_descriptor().len(),
+            10
+        );
+        assert_eq!(
+            crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),
+            7
+        );
+        assert_eq!(ChannelParameters::surface_descriptor().len(), 4);
+        assert_eq!(GlobalParameters::surface_descriptor().len(), 7);
+        assert_eq!(EventRejection::surface_descriptor().len(), 9);
+        for patch in &patches {
+            for descriptor in ChannelParameters::surface_descriptor() {
+                assert!(scene.expected_coverage().contains(&format!(
+                    "parameter.patch.{}.{}",
+                    patch.id().value(),
+                    descriptor.name()
+                )));
+            }
+        }
+    }
+
+    #[test]
     fn includes_every_normalized_window_input_and_focus_reset() {
-        let scene = DemoScene::exhaustive(&patches()).unwrap();
+        let scene = DemoScene::exhaustive(&patches(), &globals()).unwrap();
         let inputs = scene
             .steps()
             .iter()
@@ -709,7 +740,7 @@ mod tests {
 
     #[test]
     fn boundary_checkpoints_name_nonfatal_rejections_and_restoration() {
-        let scene = DemoScene::exhaustive(&patches()).unwrap();
+        let scene = DemoScene::exhaustive(&patches(), &globals()).unwrap();
         let checkpoints = scene
             .steps()
             .iter()
@@ -719,24 +750,28 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(checkpoints.iter().any(|checkpoint| {
-            checkpoint.name() == "boundary.patchGain.upper"
-                && checkpoint.expected_last_rejection() == Some(EventRejection::ParameterAtBoundary)
-        }));
-        assert!(checkpoints.iter().any(|checkpoint| {
-            checkpoint.name() == "boundary.patchGain.lower"
-                && checkpoint.expected_last_rejection() == Some(EventRejection::ParameterAtBoundary)
-        }));
-        assert!(checkpoints
+        let boundary_rejections = checkpoints
             .iter()
-            .any(|checkpoint| checkpoint.name() == "boundary.restored"));
+            .filter(|checkpoint| {
+                checkpoint.expected_last_rejection() == Some(EventRejection::ParameterAtBoundary)
+            })
+            .count();
+        assert_eq!(boundary_rejections, 22);
+        assert_eq!(
+            checkpoints
+                .iter()
+                .filter(|checkpoint| checkpoint.name().starts_with("boundary.")
+                    && checkpoint.name().ends_with(".restored"))
+                .count(),
+            11
+        );
     }
 
     #[test]
     fn construction_and_coverage_order_are_deterministic() {
         let patches = patches();
-        let first = DemoScene::exhaustive(&patches).unwrap();
-        let second = DemoScene::exhaustive(&patches).unwrap();
+        let first = DemoScene::exhaustive(&patches, &globals()).unwrap();
+        let second = DemoScene::exhaustive(&patches, &globals()).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(first.name(), DemoScene::NAME);

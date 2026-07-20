@@ -320,6 +320,27 @@ pub struct EventRecord {
 }
 
 impl EventRecord {
+    pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
+        "sequence",
+        "source",
+        "input",
+        "outcome",
+        "rejection",
+        "generationBefore",
+        "generationAfter",
+        "stateHashBefore",
+        "stateHashAfter",
+        "emittedEvents",
+        "parameterGeneration",
+        "selectedLine",
+        "projectionStateHash",
+    ];
+
+    /// Returns the stable top-level properties of every serialized event record.
+    pub const fn serialized_property_descriptor() -> &'static [&'static str] {
+        Self::SERIALIZED_PROPERTY_DESCRIPTOR
+    }
+
     /// Every normalized leaf path emitted by the EventRecord serializer.
     ///
     /// Object components are separated by `.`, and `[]` denotes any element
@@ -921,4 +942,3 @@ mod tests {
         );
     }
 }
-

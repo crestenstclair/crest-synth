@@ -78,6 +78,27 @@ pub struct StateTree {
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
     pub const SCHEMA_VERSION: u32 = 1;
+    pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
+        "schemaVersion",
+        "generation",
+        "patches",
+        "global",
+        "selection.section",
+        "selection.patchIndex",
+        "selection.parameterIndex",
+        "projection.body",
+        "projection.selectedLine",
+        "projection.stateHash",
+        "parameters.generation",
+        "parameters.patchCount",
+        "parameters.patches",
+        "parameters.global",
+    ];
+
+    /// Returns the production-owned stable StateTree property surface.
+    pub const fn serialized_property_descriptor() -> &'static [&'static str] {
+        Self::SERIALIZED_PROPERTY_DESCRIPTOR
+    }
 
     /// Builds one observation tree from a state snapshot and its GUI/audio
     /// projections.

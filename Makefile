@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo clean
+.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live clean
 
 help: ## Show the available project commands
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -40,6 +40,9 @@ observe: ## Print the structured headless behavioral observation
 
 demo: ## Run the exhaustive GUI demo and structured trace
 	cargo run --bin crest-synth -- --smoke --observe --demo-scene
+
+demo-live: ## Run the paced demo in the real window with physical audio
+	cargo run --bin crest-synth -- --demo-live
 
 clean: ## Remove Cargo build output
 	cargo clean

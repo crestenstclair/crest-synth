@@ -1,12 +1,14 @@
 use core::fmt;
+use serde::Serialize;
 
 /// Stable identity assigned to one instrument patch.
 ///
 /// Patch identifiers are strictly non-zero, so a successfully constructed value
 /// can be passed between control, synthesis, and audio boundaries without
 /// repeated validation.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[repr(transparent)]
+#[serde(transparent)]
 pub struct PatchId(u32);
 
 impl PatchId {

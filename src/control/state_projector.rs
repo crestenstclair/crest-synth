@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_projection_copies_every_audio_value() {
+    fn state_projector_exact_projection_values() {
         let state = installed_state();
         let snapshot = StateProjector::new().parameter_snapshot(&state).unwrap();
 

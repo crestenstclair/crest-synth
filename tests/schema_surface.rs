@@ -13,20 +13,26 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
         .report
         .coverage()
         .group(DemoCoverageGroup::SerializedProperties);
+    let projections = run.report.coverage().group(DemoCoverageGroup::Projections);
     let expected = serialized
         .expected()
         .iter()
+        .chain(projections.expected())
         .cloned()
         .collect::<BTreeSet<_>>();
     let exercised = serialized
         .exercised()
         .iter()
+        .chain(projections.exercised())
         .cloned()
         .collect::<BTreeSet<_>>();
 
     assert!(!expected.is_empty());
     assert_eq!(expected, exercised);
     assert!(serialized.missing().is_empty());
+    assert!(serialized.unexpected().is_empty());
+    assert!(projections.missing().is_empty());
+    assert!(projections.unexpected().is_empty());
     assert!(expected
         .iter()
         .any(|identifier| identifier.starts_with("property.stateTree.")));

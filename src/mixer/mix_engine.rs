@@ -1,4 +1,5 @@
 use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
+use crate::mixer::mix_observation::MixObservation;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::patch_audio_block::PatchAudioBlock;
 
@@ -9,6 +10,7 @@ pub struct MixEngine<E> {
     effects: E,
     reverb_input: Vec<f32>,
     delay_input: Vec<f32>,
+    dry_output: Vec<f32>,
     max_frames: usize,
     prepared: bool,
 }
@@ -24,6 +26,7 @@ where
             effects,
             reverb_input: Vec::new(),
             delay_input: Vec::new(),
+            dry_output: Vec::new(),
             max_frames: 0,
             prepared: false,
         }
@@ -38,12 +41,14 @@ where
             .ok_or(EffectError::StorageAllocationFailed)?;
         let reverb_input = allocate_zeros(sample_capacity)?;
         let delay_input = allocate_zeros(sample_capacity)?;
+        let dry_output = allocate_zeros(sample_capacity)?;
 
         self.effects
             .prepare(sample_rate, max_frames, MAX_DELAY_MILLISECONDS)?;
 
         self.reverb_input = reverb_input;
         self.delay_input = delay_input;
+        self.dry_output = dry_output;
         self.max_frames = max_frames;
         self.prepared = true;
         Ok(())
@@ -59,10 +64,10 @@ where
         patch_audio: &PatchAudioBlock,
         parameters: &ParameterSnapshot,
         output: &mut [f32],
-    ) {
+    ) -> MixObservation {
         output.fill(0.0);
         if !self.prepared {
-            return;
+            return MixObservation::default();
         }
 
         let frame_count = (output.len() / 2).min(self.max_frames);
@@ -70,18 +75,18 @@ where
         if patch_audio.frame_count() != frame_count
             || patch_audio.patch_count() != parameters.patch_count()
         {
-            return;
+            return MixObservation::default();
         }
 
         for (index, patch) in parameters.patches().iter().enumerate() {
             let Some(patch_id) = patch.patch_id() else {
-                return;
+                return MixObservation::default();
             };
             let Some(stem) = patch_audio.stem(index, patch_id) else {
-                return;
+                return MixObservation::default();
             };
             if stem.frame_count() != frame_count {
-                return;
+                return MixObservation::default();
             }
         }
 
@@ -120,6 +125,8 @@ where
             }
         }
 
+        self.dry_output[..sample_count].copy_from_slice(&output[..sample_count]);
+
         self.effects.process(
             &self.reverb_input[..sample_count],
             &self.delay_input[..sample_count],
@@ -131,6 +138,94 @@ where
         for sample in &mut output[..sample_count] {
             *sample *= master_gain;
         }
+
+        observe_mix(
+            &self.reverb_input[..sample_count],
+            &self.delay_input[..sample_count],
+            &self.dry_output[..sample_count],
+            &output[..sample_count],
+            master_gain,
+        )
+    }
+}
+
+fn observe_mix(
+    reverb_input: &[f32],
+    delay_input: &[f32],
+    dry_output: &[f32],
+    output: &[f32],
+    master_gain: f32,
+) -> MixObservation {
+    let mut left_peak = 0.0_f32;
+    let mut right_peak = 0.0_f32;
+    let mut output_energy = 0.0_f64;
+    let mut reverb_energy = 0.0_f64;
+    let mut delay_energy = 0.0_f64;
+    let mut wet_energy = 0.0_f64;
+    let mut non_finite_samples = 0_u64;
+    let mut clipped_samples = 0_u64;
+
+    for (index, (((output_sample, dry_sample), reverb_sample), delay_sample)) in output
+        .iter()
+        .zip(dry_output)
+        .zip(reverb_input)
+        .zip(delay_input)
+        .enumerate()
+    {
+        let finite_output = if output_sample.is_finite() {
+            *output_sample
+        } else {
+            non_finite_samples = non_finite_samples.saturating_add(1);
+            0.0
+        };
+        if finite_output.abs() > 1.0 {
+            clipped_samples = clipped_samples.saturating_add(1);
+        }
+        if index % 2 == 0 {
+            left_peak = left_peak.max(finite_output.abs());
+        } else {
+            right_peak = right_peak.max(finite_output.abs());
+        }
+
+        let finite_reverb = finite_or_zero(*reverb_sample);
+        let finite_delay = finite_or_zero(*delay_sample);
+        let wet_before_master = if master_gain.is_finite() && master_gain > 0.0 {
+            finite_output / master_gain - finite_or_zero(*dry_sample)
+        } else {
+            0.0
+        };
+
+        output_energy += f64::from(finite_output) * f64::from(finite_output);
+        reverb_energy += f64::from(finite_reverb) * f64::from(finite_reverb);
+        delay_energy += f64::from(finite_delay) * f64::from(finite_delay);
+        wet_energy += f64::from(wet_before_master) * f64::from(wet_before_master);
+    }
+
+    MixObservation::new(
+        left_peak,
+        right_peak,
+        rms(output_energy, output.len()),
+        rms(reverb_energy, reverb_input.len()),
+        rms(delay_energy, delay_input.len()),
+        rms(wet_energy, output.len()),
+        non_finite_samples,
+        clipped_samples,
+    )
+}
+
+fn finite_or_zero(value: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn rms(energy: f64, sample_count: usize) -> f32 {
+    if sample_count == 0 {
+        0.0
+    } else {
+        (energy / sample_count as f64).sqrt() as f32
     }
 }
 
@@ -332,6 +427,7 @@ mod tests {
         mixer.prepare(48_000.0, 2).expect("mixer prepares");
         let reverb_capacity = mixer.reverb_input.capacity();
         let delay_capacity = mixer.delay_input.capacity();
+        let dry_capacity = mixer.dry_output.capacity();
         let parameters = snapshot(&[(9, channel(0.0, 0.0, 0.5, 0.5))], globals(0.0, 1.0, 1.0));
         let patch = [1.0; 4];
         let block = audio_block(&parameters, &[&patch]);
@@ -341,6 +437,49 @@ mod tests {
 
         assert_eq!(mixer.reverb_input.capacity(), reverb_capacity);
         assert_eq!(mixer.delay_input.capacity(), delay_capacity);
+        assert_eq!(mixer.dry_output.capacity(), dry_capacity);
         assert_eq!(output[4..], [0.0; 4]);
+    }
+
+    #[test]
+    fn mix_observation_measures_owned_stages_without_changing_output() {
+        let mut mixer = MixEngine::new(TestEffects::default());
+        mixer.prepare(48_000.0, 1).expect("mixer prepares");
+        let parameters = snapshot(&[(7, channel(0.0, 0.0, 0.5, 0.25))], globals(0.0, 0.4, 0.8));
+        let patch = [1.0, 1.0];
+        let block = audio_block(&parameters, &[&patch]);
+        let mut output = [0.0; 2];
+
+        let observation = mixer.mix(&block, &parameters, &mut output);
+
+        assert!(output
+            .iter()
+            .all(|sample| (*sample - 1.4).abs() < 0.000_001));
+        assert!((observation.left_peak() - 1.4).abs() < 0.000_001);
+        assert!((observation.right_peak() - 1.4).abs() < 0.000_001);
+        assert!((observation.output_rms() - 1.4).abs() < 0.000_001);
+        assert!((observation.reverb_input_rms() - 0.5).abs() < 0.000_001);
+        assert!((observation.delay_input_rms() - 0.25).abs() < 0.000_001);
+        assert!((observation.wet_output_rms() - 0.4).abs() < 0.000_001);
+        assert_eq!(observation.non_finite_samples(), 0);
+        assert_eq!(observation.clipped_samples(), 2);
+    }
+
+    #[test]
+    fn mix_observation_counts_non_finite_output_without_non_finite_metrics() {
+        let mut mixer = MixEngine::new(TestEffects::default());
+        mixer.prepare(48_000.0, 1).expect("mixer prepares");
+        let parameters = snapshot(&[(7, channel(0.0, 0.0, 0.0, 0.0))], globals(0.0, 0.0, 0.0));
+        let patch = [f32::NAN, f32::INFINITY];
+        let block = audio_block(&parameters, &[&patch]);
+        let mut output = [0.0; 2];
+
+        let observation = mixer.mix(&block, &parameters, &mut output);
+
+        assert_eq!(observation.non_finite_samples(), 2);
+        assert_eq!(observation.left_peak(), 0.0);
+        assert_eq!(observation.right_peak(), 0.0);
+        assert_eq!(observation.output_rms(), 0.0);
+        assert!(observation.wet_output_rms().is_finite());
     }
 }

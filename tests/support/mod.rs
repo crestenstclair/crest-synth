@@ -27,12 +27,14 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 
-const FRAME_COUNT: usize = 32;
-const SAMPLE_RATE: f32 = 48_000.0;
+pub const FRAME_COUNT: usize = 32;
+pub const SAMPLE_RATE: f32 = 48_000.0;
 
 pub struct DemoRun {
     pub report: DemoSceneReport,
+    #[allow(dead_code)]
     pub baseline: Value,
+    #[allow(dead_code)]
     pub expected_coverage: Vec<String>,
 }
 
@@ -74,14 +76,14 @@ fn scene_patches() -> Vec<Patch> {
         .collect()
 }
 
-struct FixtureMidiSource {
+pub struct FixtureMidiSource {
     parts: Vec<InstrumentPart>,
     emitted: bool,
     started: bool,
 }
 
 impl FixtureMidiSource {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             parts: parts(),
             emitted: false,
@@ -155,7 +157,7 @@ impl SoundFontEngine for FixtureEngine {
     }
 }
 
-struct FixtureEffects;
+pub struct FixtureEffects;
 
 impl GlobalEffectsProcessor for FixtureEffects {
     fn prepare(
@@ -191,17 +193,18 @@ impl GlobalEffectsProcessor for FixtureEffects {
 
 pub fn run_demo() -> DemoRun {
     let patches = scene_patches();
-    let scene =
-        DemoScene::exhaustive(&patches).expect("the fixture contains two discriminating Patches");
+    let global_parameters = globals();
+    let scene = DemoScene::exhaustive(&patches, &global_parameters)
+        .expect("the fixture contains two discriminating Patches");
     let expected_coverage = scene.expected_coverage().to_vec();
     let initial_parameters =
-        ParameterSnapshot::new(0, globals(), &[]).expect("initial parameters are valid");
+        ParameterSnapshot::new(0, global_parameters, &[]).expect("initial parameters are valid");
     let boundary = LockFreeAudioBoundary::<()>::new(16, initial_parameters);
     let (control, audio) = boundary.into_handles();
     let event_log = EventLog::new(scene.event_log_capacity().saturating_add(16))
         .expect("fixture EventLog capacity is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(globals()),
+        AppState::new(global_parameters),
         StateProjector::new(),
         control,
         event_log,

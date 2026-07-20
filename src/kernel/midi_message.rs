@@ -15,6 +15,22 @@ pub enum MidiMessageKind {
     AllNotesOff,
 }
 
+impl MidiMessageKind {
+    pub const ALL: [Self; 7] = [
+        Self::NoteOn,
+        Self::NoteOff,
+        Self::ControlChange,
+        Self::ProgramChange,
+        Self::ChannelPressure,
+        Self::PitchBend,
+        Self::AllNotesOff,
+    ];
+
+    pub const fn surface_descriptor() -> &'static [Self] {
+        &Self::ALL
+    }
+}
+
 /// A normalized channel MIDI message accepted by the synthesizer.
 ///
 /// Data bytes are validated at construction so the value can cross the

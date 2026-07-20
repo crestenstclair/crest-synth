@@ -24,6 +24,7 @@ pub struct DemoCoverageSet {
     expected: Vec<String>,
     exercised: Vec<String>,
     missing: Vec<String>,
+    unexpected: Vec<String>,
 }
 
 impl DemoCoverageSet {
@@ -41,6 +42,7 @@ impl DemoCoverageSet {
             missing: expected.clone(),
             expected,
             exercised: Vec::new(),
+            unexpected: Vec::new(),
         }
     }
 
@@ -59,6 +61,11 @@ impl DemoCoverageSet {
         &self.missing
     }
 
+    /// Returns exercised identifiers outside the declared group surface.
+    pub fn unexpected(&self) -> &[String] {
+        &self.unexpected
+    }
+
     /// Records an identifier, returning true only for its first observation.
     pub fn mark_exercised(&mut self, identifier: impl Into<String>) -> bool {
         let identifier = identifier.into();
@@ -67,13 +74,15 @@ impl DemoCoverageSet {
         }
         if let Ok(index) = self.missing.binary_search(&identifier) {
             self.missing.remove(index);
+        } else if self.expected.binary_search(&identifier).is_err() {
+            insert_sorted_unique(&mut self.unexpected, identifier);
         }
         true
     }
 
     /// Reports whether every declared identifier was exercised.
     pub fn is_complete(&self) -> bool {
-        self.missing.is_empty()
+        self.missing.is_empty() && self.unexpected.is_empty()
     }
 }
 
@@ -160,6 +169,14 @@ impl DemoSceneCoverage {
         self.groups()
             .iter()
             .map(|group| group.missing().len())
+            .sum()
+    }
+
+    /// Returns the number of observed identifiers outside declared groups.
+    pub fn unexpected_count(&self) -> usize {
+        self.groups()
+            .iter()
+            .map(|group| group.unexpected().len())
             .sum()
     }
 

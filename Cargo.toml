@@ -10,6 +10,10 @@ path = "src/lib.rs"
 name = "crest-synth"
 path = "src/bin/crest_synth.rs"
 
+[[bin]]
+name = "crest-synth-witness"
+path = "src/bin/crest_synth_witness.rs"
+
 [dependencies]
 midly = "0.5.3"
 cpal = "0.18.1"

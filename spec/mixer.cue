@@ -50,6 +50,30 @@ project: contexts: Mixer: {
 		]
 	}
 
+	valueObjects: MixObservation: {
+		description: "fixed-size callback-local measurements produced by MixEngine from its owned dry, send, wet, and final-output buffers"
+		state: {
+			leftPeak: "f32"
+			rightPeak: "f32"
+			outputRms: "f32"
+			reverbInputRms: "f32"
+			delayInputRms: "f32"
+			wetOutputRms: "f32"
+			nonFiniteSamples: "u64"
+			clippedSamples: "u64"
+		}
+		invariants: [
+			"the value is Copy, fixed-size, numeric, and created from the exact callback buffers already owned by MixEngine without allocation, logging, formatting, locking, blocking, or I/O",
+			"reverbInputRms and delayInputRms measure only their declared Patch-send sums; wetOutputRms measures only the shared effect return before final master gain",
+			"peak and RMS fields are finite and nonnegative; non-finite or clipped output increments its bounded counter instead of panicking or hiding the condition",
+			"the observation never feeds back into mixing decisions and is not a second owner of audio or parameter state",
+		]
+		contributesTo: [
+			{capability: "capability.live_observable_demo", contribution: "provides causal send, wet, and output measurements from the mixer-owned buffers"},
+			{capability: "capability.realtime_execution", contribution: "keeps callback measurements fixed-size and local before latest-value publication"},
+		]
+	}
+
 	ports: GlobalEffectsProcessor: {
 		direction: "outbound"
 		contract: {
@@ -69,7 +93,9 @@ project: contexts: Mixer: {
 		uses: [
 			"valueObject.Mixer.ChannelParameters",
 			"valueObject.Mixer.GlobalParameters",
+			"valueObject.Mixer.MixObservation",
 			"valueObject.RealTime.PatchAudioBlock",
+			"valueObject.RealTime.ParameterSnapshot",
 			"port.Mixer.GlobalEffectsProcessor",
 		]
 		meta: rules: [
@@ -79,6 +105,7 @@ project: contexts: Mixer: {
 			"reject or silence a missing or mismatched stem; never substitute a combined master stream or the first Patch's parameters",
 			"there are no inserts, per-channel effects, effect slots, effect chains, auxiliary buses, EQ, compression, chorus, distortion, or limiter",
 			"all scratch buffers are fixed-capacity and prepared before the audio callback",
+			"the mix operation returns one MixObservation measured from the mixer-owned reverb input, delay input, wet return, and final output buffers; callers never inspect or borrow those private buffers directly",
 			"behavioral tests establish measured nonzero reverb and delay inputs through Patch sends before comparing wet controls and render paired cases from identical reset effect state so unrelated tail evolution cannot satisfy a predicate",
 			"paired sensitivity cases independently vary reverbRoomSize, reverbDamping, reverbReturn, delayMilliseconds, delayFeedback, and delayReturn through adapter.GlobalReverbDelay with nonzero routed input, identical reset state, and exact send restoration",
 		]
@@ -86,10 +113,12 @@ project: contexts: Mixer: {
 			{kind: "test", command: ["cargo", "test", "global_mix"], description: "with two distinct simultaneous stems, editing either Patch's gain, pan, or sends changes only that Patch's declared dry/send path while global controls affect the complete mix"},
 			{kind: "test", command: ["cargo", "test", "faithful_effects_nonzero_sends_and_baseline_restoration"], description: "effect observations use nonzero routed sends, identical initial effect state, zero-input silence, and exact parameter/send baseline restoration"},
 			{kind: "test", command: ["cargo", "test", "global_effects_parameter_sensitivity"], description: "each reverb and delay parameter causes its own measured response from nonzero routed input using paired identical effect state"},
+			{kind: "test", command: ["cargo", "test", "mix_observation"], description: "dry, reverb-input, delay-input, wet-return, final-output, finite, and clipping measurements come from their declared mixer-owned buffers without changing output"},
 		]
 		contributesTo: [
 			{capability: "capability.global_mix", contribution: "implements the complete channel-to-global-effects-to-master signal path"},
 			{capability: "capability.realtime_execution", contribution: "mixes through preallocated callback-owned buffers"},
+			{capability: "capability.live_observable_demo", contribution: "measures the exact mixer-owned signal stages needed by live checkpoints"},
 		]
 	}
 }

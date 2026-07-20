@@ -1,8 +1,10 @@
 use core::fmt;
 use core::ops::RangeInclusive;
+use serde::Serialize;
 
 /// Identifies one editable value in a Patch's channel mix surface.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ChannelParameter {
     GainDb,
     Pan,
@@ -11,27 +13,100 @@ pub enum ChannelParameter {
 }
 
 impl ChannelParameter {
-    fn bounds(self) -> RangeInclusive<f32> {
+    /// Returns the stable serialized and projected field name.
+    pub const fn name(self) -> &'static str {
         match self {
-            Self::GainDb => ChannelParameters::MIN_GAIN_DB..=ChannelParameters::MAX_GAIN_DB,
-            Self::Pan => ChannelParameters::MIN_PAN..=ChannelParameters::MAX_PAN,
-            Self::ReverbSend | Self::DelaySend => {
-                ChannelParameters::MIN_SEND..=ChannelParameters::MAX_SEND
-            }
+            Self::GainDb => "gainDb",
+            Self::Pan => "pan",
+            Self::ReverbSend => "reverbSend",
+            Self::DelaySend => "delaySend",
         }
+    }
+
+    /// Returns this field's production-owned bounds and edit steps.
+    pub const fn descriptor(self) -> &'static ChannelParameterDescriptor {
+        match self {
+            Self::GainDb => &CHANNEL_PARAMETER_SURFACE_DESCRIPTOR[0],
+            Self::Pan => &CHANNEL_PARAMETER_SURFACE_DESCRIPTOR[1],
+            Self::ReverbSend => &CHANNEL_PARAMETER_SURFACE_DESCRIPTOR[2],
+            Self::DelaySend => &CHANNEL_PARAMETER_SURFACE_DESCRIPTOR[3],
+        }
+    }
+
+    fn bounds(self) -> RangeInclusive<f32> {
+        let descriptor = self.descriptor();
+        descriptor.minimum()..=descriptor.maximum()
     }
 }
 
 impl fmt::Display for ChannelParameter {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::GainDb => "gainDb",
-            Self::Pan => "pan",
-            Self::ReverbSend => "reverbSend",
-            Self::DelaySend => "delaySend",
-        })
+        formatter.write_str(self.name())
     }
 }
+
+/// The independent pre-dispatch oracle for one Patch parameter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChannelParameterDescriptor {
+    parameter: ChannelParameter,
+    minimum: f32,
+    maximum: f32,
+    fine_step: f32,
+    coarse_step: f32,
+}
+
+impl ChannelParameterDescriptor {
+    const fn new(
+        parameter: ChannelParameter,
+        minimum: f32,
+        maximum: f32,
+        fine_step: f32,
+        coarse_step: f32,
+    ) -> Self {
+        Self {
+            parameter,
+            minimum,
+            maximum,
+            fine_step,
+            coarse_step,
+        }
+    }
+
+    pub const fn parameter(&self) -> ChannelParameter {
+        self.parameter
+    }
+
+    pub const fn name(&self) -> &'static str {
+        self.parameter.name()
+    }
+
+    pub const fn minimum(&self) -> f32 {
+        self.minimum
+    }
+
+    pub const fn maximum(&self) -> f32 {
+        self.maximum
+    }
+
+    pub const fn fine_step(&self) -> f32 {
+        self.fine_step
+    }
+
+    pub const fn coarse_step(&self) -> f32 {
+        self.coarse_step
+    }
+
+    pub fn contains(&self, value: f32) -> bool {
+        value.is_finite() && (self.minimum..=self.maximum).contains(&value)
+    }
+}
+
+const CHANNEL_PARAMETER_SURFACE_DESCRIPTOR: [ChannelParameterDescriptor; 4] = [
+    ChannelParameterDescriptor::new(ChannelParameter::GainDb, -60.0, 6.0, 1.0, 6.0),
+    ChannelParameterDescriptor::new(ChannelParameter::Pan, -1.0, 1.0, 0.01, 0.1),
+    ChannelParameterDescriptor::new(ChannelParameter::ReverbSend, 0.0, 1.0, 0.01, 0.1),
+    ChannelParameterDescriptor::new(ChannelParameter::DelaySend, 0.0, 1.0, 0.01, 0.1),
+];
 
 /// The reason a set of channel parameters could not be constructed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,6 +161,11 @@ impl ChannelParameters {
     pub const MIN_SEND: f32 = 0.0;
     pub const MAX_SEND: f32 = 1.0;
 
+    /// Returns each editable field exactly once in canonical projection order.
+    pub const fn surface_descriptor() -> &'static [ChannelParameterDescriptor] {
+        &CHANNEL_PARAMETER_SURFACE_DESCRIPTOR
+    }
+
     /// Creates a complete channel parameter value when all fields are finite
     /// and within their declared inclusive ranges.
     pub fn new(
@@ -121,6 +201,32 @@ impl ChannelParameters {
 
     pub const fn delay_send(&self) -> f32 {
         self.delay_send
+    }
+
+    /// Returns the current value of one typed Patch parameter.
+    pub const fn value(&self, parameter: ChannelParameter) -> f32 {
+        match parameter {
+            ChannelParameter::GainDb => self.gain_db,
+            ChannelParameter::Pan => self.pan,
+            ChannelParameter::ReverbSend => self.reverb_send,
+            ChannelParameter::DelaySend => self.delay_send,
+        }
+    }
+
+    /// Replaces one field after validating it against the shared descriptor.
+    pub fn with_value(
+        mut self,
+        parameter: ChannelParameter,
+        value: f32,
+    ) -> Result<Self, ChannelParametersError> {
+        validate(parameter, value)?;
+        match parameter {
+            ChannelParameter::GainDb => self.gain_db = value,
+            ChannelParameter::Pan => self.pan = value,
+            ChannelParameter::ReverbSend => self.reverb_send = value,
+            ChannelParameter::DelaySend => self.delay_send = value,
+        }
+        Ok(self)
     }
 }
 

@@ -1,7 +1,7 @@
 package crestsynth
 
 project: contexts: Testing: {
-	purpose: "automatic MIDI input used to exercise the synth through production ports"
+	purpose: "automatic MIDI input and bounded demo support used to exercise the synth through production ports"
 	meta: rules: [
 		"this context is input test support, not a sequencing or transport domain",
 		"its timing and MIDI-file parsing types are private implementation details",
@@ -49,6 +49,73 @@ project: contexts: Testing: {
 			"two independent complete runs from freshly constructed identical fixtures produce byte-identical EventLog, StateTree, coverage, checkpoints, and report JSON with no excluded fields",
 		]
 		contributesTo: [{capability: "capability.observable_demo_scene", contribution: "packages the event log, state tree, checkpoints, and explicit coverage gaps for an LLM"}]
+	}
+
+	valueObjects: LiveDemoScene: {
+		description: "a bounded paced plan of semantic navigation, parameter edits, fixture advancement, rejection probes, checkpoints, and note cleanup for the real standalone application"
+		state: {
+			name: "String"
+			schemaVersion: "u32"
+			minimumParameterDwell: "Duration"
+			steps: "Vec<{input: AppEvent | FixtureTick | Checkpoint | Finish, expectedTransition, editableParameterId?, requireAudibleObservation}>"
+			expectedEditableParameters: "ordered unique identifiers derived from ChannelParameters and GlobalParameters descriptors plus installed PatchIds"
+		}
+		invariants: [
+			"construction begins only after AutomaticMidiTest installs the real Corridors of Time fixture Patches and freezes the expected editable-parameter set before any live action is dispatched",
+			"the plan derives every Patch parameter instance and global parameter from production-owned typed descriptors; it contains no duplicate hand-maintained list of field-name strings",
+			"every expected editable parameter has at least one planned accepted value change, one checkpoint, a minimum dwell of 500 ms, and an audible observation requirement",
+			"navigation and adjustment steps contain AppEvents and expected transitions only; the scene contains no mutable AppState, TextProjection, ParameterSnapshot, SoundFont engine, mixer, audio buffer, UI widget, or device handle",
+			"at least one planned boundary adjustment is rejected as ParameterAtBoundary and is followed by a valid accepted adjustment proving the live scene remains active",
+			"Finish contains one Patch-targeted semantic all-notes-off Midi AppEvent for every installed Patch and no direct AudioCommand",
+			"the live scene is test/demo support around the existing MIDI fixture and exposes no transport, sequencer, song, clip, timeline, recording, or playback-control product model",
+		]
+		contributesTo: [{capability: "capability.live_observable_demo", contribution: "declares the bounded human-paced production-path scene without changing the exhaustive headless scene"}]
+	}
+
+	valueObjects: LiveDemoCheckpoint: {
+		description: "one immutable correlation between a planned live input, its canonical control transition, visible projection, emitted effects, and measured audio observation"
+		state: {
+			step: "usize"
+			input: "AppEvent"
+			expectedTransition: "typed expected outcome and exact values captured before dispatch"
+			outcome: "Accepted | Rejected"
+			generation: "u64"
+			stateHash: "String"
+			projectedValue: "typed selected TextProjection and ParameterSnapshot value"
+			parameterGeneration: "u64"
+			emittedEffects: "bounded EventRecord effect descriptors"
+			audioObservation: "AudioObservationSnapshot"
+			audioPredicate: "typed parameter-specific predicate and measured result"
+		}
+		invariants: [
+			"expectedTransition is computed and frozen before input dispatch; no actual state, projection, effect, or audio value can define its own expectation",
+			"all control fields come from one production EventRecord and the canonical projections for that record's accepted generation or unchanged rejected generation",
+			"audioObservation is copied from the bounded callback-to-control port only after its sequence advances and its parameterGeneration matches the checkpoint generation",
+			"the checkpoint is constructed and serialized only on the control side and contains no device, callback, engine, mixer, window, or mutable-state handle",
+		]
+		contributesTo: [{capability: "capability.live_observable_demo", contribution: "is the canonical structured live checkpoint returned to the standalone output adapter"}]
+	}
+
+	valueObjects: LiveDemoReport: {
+		description: "the control-side structured checkpoints and final result of one live observable demo"
+		state: {
+			scene: "String"
+			schemaVersion: "u32"
+			complete: "bool"
+			checkpoints: "Vec<LiveDemoCheckpoint>"
+			eventLog: "EventLog"
+			stateTree: "StateTree"
+			coverage: "{expectedEditableParameters, exercisedEditableParameters, missingEditableParameters, unexpectedEditableParameters}"
+			summary: "String"
+		}
+		invariants: [
+			"each checkpoint captures its expected transition before dispatch and then copies the actual outcome, generation, state hash, projected value, parameter generation, and emitted effects from the production EventRecord and canonical projections",
+			"each accepted parameter checkpoint requires an AudioObservationSnapshot whose sequence advanced after dispatch, whose parameterGeneration equals the accepted generation, whose output is finite, and whose parameter-specific audible predicate passed while fixture audio was nonzero",
+			"complete is true only when every expected editable parameter changed, missing and unexpected are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, all semantic all-notes-off events were accepted, and a later audio observation reports zero active notes",
+			"eventLog and stateTree are the existing canonical Control values, not live-demo copies; stateTree.generation equals the final checkpoint and EventLog chain endpoint",
+			"summary is human-readable control-side text derived from the structured report after completion and is never constructed or printed in the audio callback",
+		]
+		contributesTo: [{capability: "capability.live_observable_demo", contribution: "packages coherent live checkpoints, exact coverage, final canonical state, and a readable summary"}]
 	}
 
 	valueObjects: InstrumentPart: {
@@ -163,6 +230,49 @@ project: contexts: Testing: {
 			{capability: "capability.one_way_parameter_control", contribution: "proves all current editable values use the one reducer and projection path"},
 			{capability: "capability.global_mix", contribution: "measures every current Patch and global mix parameter case"},
 			{capability: "capability.realtime_execution", contribution: "observes parameter and command effects through the real-time boundary"},
+		]
+	}
+
+	applicationServices: LiveDemoRunner: {
+		purpose: "advance the human-observable scene on window ticks and correlate canonical control projections with bounded audio observations"
+		uses: [
+			"valueObject.Testing.LiveDemoScene",
+			"valueObject.Testing.LiveDemoCheckpoint",
+			"valueObject.Testing.LiveDemoReport",
+			"applicationService.Testing.AutomaticMidiTest",
+			"applicationService.Control.AppLoop",
+			"valueObject.Control.AppEvent",
+			"valueObject.Control.EventLog",
+			"valueObject.Control.StateTree",
+			"valueObject.Mixer.ChannelParameters",
+			"valueObject.Mixer.GlobalParameters",
+			"port.RealTime.AudioObservation",
+			"valueObject.RealTime.AudioObservationSnapshot",
+		]
+		operations: {
+			start: {input: {scene: "LiveDemoScene"}, output: {result: "Result<(), LiveDemoError>"}}
+			advance: {input: {elapsed: "Duration"}, output: {checkpoint: "Result<Option<LiveDemoCheckpoint>, LiveDemoError>"}}
+			completedReport: {input: {}, output: {report: "Option<&LiveDemoReport>"}}
+		}
+		meta: rules: [
+			"start runs on the control thread after the fixture Patches, audio observation handles, bounded EventLog capacity, physical audio stream, and window application are prepared; it never opens a device or mutates canonical state",
+			"advance is called by the real window tick with monotonic elapsed time and never sleeps or blocks the UI thread; it advances AutomaticMidiTest through its existing tick operation and dispatches at most one due autonomous AppEvent through AppLoop.dispatchFrom with EventSource::DemoScene",
+			"before each dispatch compute the exact expected generation, selected parameter value, StateTree value, TextProjection value, ParameterSnapshot value, outcome, and emitted effects from the captured prior canonical state and the owning typed descriptor",
+			"after an accepted edit wait until the projection has been available across a rendered frame, at least 500 ms has elapsed, and AudioObservation has advanced to the exact accepted ParameterSnapshot generation before returning one LiveDemoCheckpoint to the caller",
+			"audible predicates use actual finite observation fields from the physical render path: gain and master edits observe output level, pan observes left/right balance, sends observe their exact wet inputs, and reverb/delay controls observe wet output; fixture timing is recorded so unrelated musical evolution cannot be presented as the parameter consequence",
+			"a rejected event is read from the existing EventLog, leaves generation and all projections unchanged, emits no effects, does not close the window, and does not skip the following valid scene step",
+			"expected and exercised editable-parameter identifiers are compared in both directions; an added, removed, duplicated, unmodified, unprojected, inaudible, or unexpected parameter makes the report incomplete",
+			"completion dispatches Patch-targeted MidiMessageKind::AllNotesOff AppEvents through AppLoop for every installed Patch, waits for a newer AudioObservationSnapshot with zero active notes, captures the final EventLog and StateTree, exposes one completed LiveDemoReport, and then performs no more actions",
+			"completion never requests window close; the final TextProjection continues to come from AppLoop.currentText until the user closes the real window",
+			"the runner never calls AppState.apply directly, edits a projection or report to manufacture agreement, publishes ParameterSnapshot or AudioCommand directly, invokes SoundFontEngine or MixEngine directly, writes an audio buffer, prints output, or logs from the callback",
+		]
+		validations: [
+			{kind: "integration", command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE live_demo_scene passed"}], description: "a deterministic-clock harness drives the live runner through production events, projections, rendered observations, rejection recovery, exact current-surface coverage, all-notes-off, and inert completion without opening CI devices"},
+		]
+		contributesTo: [
+			{capability: "capability.live_observable_demo", contribution: "orchestrates the paced real-window scene and returns its coherent control-side evidence"},
+			{capability: "capability.one_way_parameter_control", contribution: "routes autonomous actions through the same AppLoop as keyboard and fixture input"},
+			{capability: "capability.realtime_execution", contribution: "reads only bounded generation-tagged callback observations"},
 		]
 	}
 

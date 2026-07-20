@@ -1,12 +1,12 @@
 use crate::control::app_event::{AppEvent, Direction};
-use crate::mixer::channel_parameters::ChannelParameters;
+use crate::mixer::channel_parameters::{ChannelParameter, ChannelParameters};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::audio_command::AudioCommand;
 use crate::synth::patch::Patch;
 use core::fmt;
 
-const PATCH_PARAMETER_COUNT: usize = 4;
-const GLOBAL_PARAMETER_COUNT: usize = 7;
+const PATCH_PARAMETER_COUNT: usize = ChannelParameters::surface_descriptor().len();
+const GLOBAL_PARAMETER_COUNT: usize = GlobalParameters::surface_descriptor().len();
 const MAX_PATCH_COUNT: usize = 16;
 
 /// The kind of section selected in the single text view.
@@ -106,6 +106,118 @@ pub enum EventRejection {
     GenerationOverflow,
 }
 
+/// Identifies whether a rejection is reachable in the installed production
+/// scene or requires an isolated reducer-table state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventRejectionReachability {
+    Scene,
+    ReducerTable,
+}
+
+/// One production-owned entry in the closed rejection surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventRejectionDescriptor {
+    rejection: EventRejection,
+    name: &'static str,
+    reachability: EventRejectionReachability,
+}
+
+impl EventRejectionDescriptor {
+    const fn new(
+        rejection: EventRejection,
+        name: &'static str,
+        reachability: EventRejectionReachability,
+    ) -> Self {
+        Self {
+            rejection,
+            name,
+            reachability,
+        }
+    }
+
+    pub const fn rejection(self) -> EventRejection {
+        self.rejection
+    }
+
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    pub const fn reachability(self) -> EventRejectionReachability {
+        self.reachability
+    }
+}
+
+const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 9] = [
+    EventRejectionDescriptor::new(
+        EventRejection::InstallationClosed,
+        "installationClosed",
+        EventRejectionReachability::Scene,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::TooManyPatches,
+        "tooManyPatches",
+        EventRejectionReachability::ReducerTable,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::DuplicateMidiChannel,
+        "duplicateMidiChannel",
+        EventRejectionReachability::ReducerTable,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::NoPatchesInstalled,
+        "noPatchesInstalled",
+        EventRejectionReachability::ReducerTable,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::UnknownPatch,
+        "unknownPatch",
+        EventRejectionReachability::Scene,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::InvalidSelection,
+        "invalidSelection",
+        EventRejectionReachability::ReducerTable,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::ParameterAtBoundary,
+        "parameterAtBoundary",
+        EventRejectionReachability::Scene,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::InvalidParameterValue,
+        "invalidParameterValue",
+        EventRejectionReachability::ReducerTable,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::GenerationOverflow,
+        "generationOverflow",
+        EventRejectionReachability::ReducerTable,
+    ),
+];
+
+impl EventRejection {
+    /// Returns every rejection exactly once with its verification reachability.
+    pub const fn surface_descriptor() -> &'static [EventRejectionDescriptor] {
+        &EVENT_REJECTION_SURFACE_DESCRIPTOR
+    }
+
+    /// Returns the stable serialized coverage identifier suffix.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::InstallationClosed => "installationClosed",
+            Self::TooManyPatches => "tooManyPatches",
+            Self::DuplicateMidiChannel => "duplicateMidiChannel",
+            Self::NoPatchesInstalled => "noPatchesInstalled",
+            Self::UnknownPatch => "unknownPatch",
+            Self::InvalidSelection => "invalidSelection",
+            Self::ParameterAtBoundary => "parameterAtBoundary",
+            Self::InvalidParameterValue => "invalidParameterValue",
+            Self::GenerationOverflow => "generationOverflow",
+        }
+    }
+}
+
 impl fmt::Display for EventRejection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
@@ -124,6 +236,82 @@ impl fmt::Display for EventRejection {
 }
 
 impl std::error::Error for EventRejection {}
+
+/// Exercises rejection variants that cannot occur after the fixed scene has
+/// installed its valid Patch set. The exhaustive verifier unions these measured
+/// reducer-table outcomes with the scene's public rejection records.
+pub(crate) fn exercise_reducer_table_rejections() -> [EventRejection; 6] {
+    fn probe_patch(id: u32, channel: u8) -> Patch {
+        Patch::new(
+            crate::kernel::patch_id::PatchId::new(id).expect("probe PatchId is valid"),
+            format!("Reducer probe {id}"),
+            crate::synth::sound_font_instrument::SoundFontInstrument::new(0, 0, false)
+                .expect("probe instrument is valid"),
+            crate::kernel::midi_channel::MidiChannel::new(channel).expect("probe channel is valid"),
+            ChannelParameters::default(),
+        )
+    }
+
+    let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5)
+        .expect("reducer probe globals are valid");
+
+    let mut oversized = AppState::new(global);
+    let too_many = oversized
+        .apply(AppEvent::InstallPatches(
+            (1..=17)
+                .map(|id| probe_patch(id, ((id - 1) % 16) as u8))
+                .collect(),
+        ))
+        .expect_err("seventeen Patches exceed the reducer bound");
+
+    let mut duplicate = AppState::new(global);
+    let duplicate_channel = duplicate
+        .apply(AppEvent::InstallPatches(vec![
+            probe_patch(1, 0),
+            probe_patch(2, 0),
+        ]))
+        .expect_err("duplicate channels violate installation");
+
+    let mut no_patches = AppState::new(global);
+    no_patches.selection = Selection::patch(0);
+    let no_patch = no_patches
+        .apply(AppEvent::Adjust(Direction::Right))
+        .expect_err("an invalid Patch selection has no installed Patch");
+
+    let mut invalid_selection = AppState {
+        patches: vec![probe_patch(1, 0)],
+        global,
+        selection: Selection {
+            section: SelectionSection::Patch,
+            patch_index: 0,
+            parameter_index: PATCH_PARAMETER_COUNT,
+        },
+        generation: 0,
+    };
+    let invalid_selection = invalid_selection
+        .apply(AppEvent::Adjust(Direction::Right))
+        .expect_err("an out-of-range parameter index is rejected");
+
+    let invalid_parameter = ChannelParameters::default()
+        .with_value(ChannelParameter::GainDb, f32::NAN)
+        .map_err(|_| EventRejection::InvalidParameterValue)
+        .expect_err("a non-finite typed value is rejected");
+
+    let mut overflow = AppState::new(global);
+    overflow.generation = u64::MAX;
+    let generation_overflow = overflow
+        .apply(AppEvent::Navigate(Direction::Down))
+        .expect_err("the accepted generation cannot overflow");
+
+    [
+        too_many,
+        duplicate_channel,
+        no_patch,
+        invalid_selection,
+        invalid_parameter,
+        generation_overflow,
+    ]
+}
 
 /// The single source of mutable control state.
 ///
@@ -296,114 +484,49 @@ impl AppState {
 
     fn adjust_patch(&mut self, direction: Direction) -> Result<(), EventRejection> {
         let parameter_index = self.selection.parameter_index;
-        if parameter_index >= PATCH_PARAMETER_COUNT {
-            return Err(EventRejection::InvalidSelection);
-        }
+        let descriptor = ChannelParameters::surface_descriptor()
+            .get(parameter_index)
+            .ok_or(EventRejection::InvalidSelection)?;
         let patch = self
             .patches
             .get_mut(self.selection.patch_index)
             .ok_or(EventRejection::NoPatchesInstalled)?;
         let parameters = patch.parameters();
-
-        let mut gain_db = parameters.gain_db();
-        let mut pan = parameters.pan();
-        let mut reverb_send = parameters.reverb_send();
-        let mut delay_send = parameters.delay_send();
-
-        match parameter_index {
-            0 => {
-                gain_db = adjusted_value(gain_db, -60.0, 6.0, direction, 1.0, 6.0)?;
-            }
-            1 => {
-                pan = adjusted_value(pan, -1.0, 1.0, direction, 0.01, 0.1)?;
-            }
-            2 => {
-                reverb_send = adjusted_value(reverb_send, 0.0, 1.0, direction, 0.01, 0.1)?;
-            }
-            3 => {
-                delay_send = adjusted_value(delay_send, 0.0, 1.0, direction, 0.01, 0.1)?;
-            }
-            _ => return Err(EventRejection::InvalidSelection),
-        }
-
-        let updated: ChannelParameters =
-            ChannelParameters::new(gain_db, pan, reverb_send, delay_send)
-                .into_domain_value()
-                .ok_or(EventRejection::InvalidParameterValue)?;
+        let parameter = descriptor.parameter();
+        let value = adjusted_value(
+            parameters.value(parameter),
+            descriptor.minimum(),
+            descriptor.maximum(),
+            direction,
+            descriptor.fine_step(),
+            descriptor.coarse_step(),
+        )?;
+        let updated = parameters
+            .with_value(parameter, value)
+            .map_err(|_| EventRejection::InvalidParameterValue)?;
         patch.set_parameters(updated);
         Ok(())
     }
 
     fn adjust_global(&mut self, direction: Direction) -> Result<(), EventRejection> {
         let parameter_index = self.selection.parameter_index;
-        if parameter_index >= GLOBAL_PARAMETER_COUNT {
-            return Err(EventRejection::InvalidSelection);
-        }
-
-        let mut master_gain_db = self.global.master_gain_db();
-        let mut reverb_room_size = self.global.reverb_room_size();
-        let mut reverb_damping = self.global.reverb_damping();
-        let mut reverb_return = self.global.reverb_return();
-        let mut delay_milliseconds = self.global.delay_milliseconds();
-        let mut delay_feedback = self.global.delay_feedback();
-        let mut delay_return = self.global.delay_return();
-
-        match parameter_index {
-            0 => {
-                master_gain_db = adjusted_value(master_gain_db, -60.0, 6.0, direction, 1.0, 6.0)?;
-            }
-            1 => {
-                reverb_room_size =
-                    adjusted_value(reverb_room_size, 0.0, 1.0, direction, 0.01, 0.1)?;
-            }
-            2 => {
-                reverb_damping = adjusted_value(reverb_damping, 0.0, 1.0, direction, 0.01, 0.1)?;
-            }
-            3 => {
-                reverb_return = adjusted_value(reverb_return, 0.0, 1.0, direction, 0.01, 0.1)?;
-            }
-            4 => {
-                delay_milliseconds =
-                    adjusted_value(delay_milliseconds, 1.0, 2000.0, direction, 1.0, 100.0)?;
-            }
-            5 => {
-                delay_feedback = adjusted_value(delay_feedback, 0.0, 1.0, direction, 0.01, 0.1)?;
-            }
-            6 => {
-                delay_return = adjusted_value(delay_return, 0.0, 1.0, direction, 0.01, 0.1)?;
-            }
-            _ => return Err(EventRejection::InvalidSelection),
-        }
-
-        let updated: GlobalParameters = GlobalParameters::new(
-            master_gain_db,
-            reverb_room_size,
-            reverb_damping,
-            reverb_return,
-            delay_milliseconds,
-            delay_feedback,
-            delay_return,
-        )
-        .into_domain_value()
-        .ok_or(EventRejection::InvalidParameterValue)?;
-        self.global = updated;
+        let descriptor = GlobalParameters::surface_descriptor()
+            .get(parameter_index)
+            .ok_or(EventRejection::InvalidSelection)?;
+        let parameter = descriptor.parameter();
+        let value = adjusted_value(
+            self.global.value(parameter),
+            descriptor.minimum(),
+            descriptor.maximum(),
+            direction,
+            descriptor.fine_step(),
+            descriptor.coarse_step(),
+        )?;
+        self.global = self
+            .global
+            .with_value(parameter, value)
+            .map_err(|_| EventRejection::InvalidParameterValue)?;
         Ok(())
-    }
-}
-
-trait IntoDomainValue<T> {
-    fn into_domain_value(self) -> Option<T>;
-}
-
-impl<T> IntoDomainValue<T> for T {
-    fn into_domain_value(self) -> Option<T> {
-        Some(self)
-    }
-}
-
-impl<T, E> IntoDomainValue<T> for Result<T, E> {
-    fn into_domain_value(self) -> Option<T> {
-        self.ok()
     }
 }
 
@@ -424,18 +547,30 @@ fn adjusted_value(
     fine_step: f32,
     coarse_step: f32,
 ) -> Result<f32, EventRejection> {
-    let delta = match direction {
-        Direction::Left => -fine_step,
-        Direction::Right => fine_step,
-        Direction::Down => -coarse_step,
-        Direction::Up => coarse_step,
+    let scale = decimal_scale(fine_step);
+    let current_units = (current * scale).round();
+    let fine_units = (fine_step * scale).round();
+    let coarse_units = (coarse_step * scale).round();
+    let delta_units = match direction {
+        Direction::Left => -fine_units,
+        Direction::Right => fine_units,
+        Direction::Down => -coarse_units,
+        Direction::Up => coarse_units,
     };
-    let adjusted = (current + delta).clamp(minimum, maximum);
+    let adjusted = ((current_units + delta_units) / scale).clamp(minimum, maximum);
     if adjusted == current {
         Err(EventRejection::ParameterAtBoundary)
     } else {
         Ok(adjusted)
     }
+}
+
+fn decimal_scale(step: f32) -> f32 {
+    let mut scale = 1.0;
+    while scale < 1_000_000.0 && (step * scale - (step * scale).round()).abs() > f32::EPSILON {
+        scale *= 10.0;
+    }
+    scale
 }
 
 #[cfg(test)]
@@ -512,6 +647,24 @@ mod tests {
             adjusted_value(-1.0, -1.0, 1.0, Direction::Down, 0.01, 0.1),
             Err(EventRejection::ParameterAtBoundary)
         );
+    }
+
+    #[test]
+    fn rejection_descriptor_is_unique_and_reducer_table_exercises_its_partition() {
+        let descriptor = EventRejection::surface_descriptor();
+        assert_eq!(descriptor.len(), 9);
+        for (index, entry) in descriptor.iter().enumerate() {
+            assert!(!descriptor[..index].iter().any(|prior| prior.rejection()
+                == entry.rejection()
+                || prior.name() == entry.name()));
+        }
+
+        let expected = descriptor
+            .iter()
+            .filter(|entry| entry.reachability() == EventRejectionReachability::ReducerTable)
+            .map(|entry| entry.rejection())
+            .collect::<Vec<_>>();
+        assert_eq!(exercise_reducer_table_rejections().as_slice(), expected);
     }
 
     #[test]

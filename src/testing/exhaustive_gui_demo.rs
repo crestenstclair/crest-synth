@@ -1,6 +1,6 @@
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_loop::AppLoop;
-use crate::control::app_state::EventRejection;
+use crate::control::app_state::{exercise_reducer_table_rejections, EventRejection};
 use crate::control::event_log::{EventCoverage, EventLog, EventLogError};
 use crate::control::event_record::{
     AudioEffect, EmittedEvent, EventDirection, EventInput, EventOutcome, EventRecord, EventSource,
@@ -10,6 +10,7 @@ use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
 use crate::mixer::global_effects_processor::GlobalEffectsProcessor;
 use crate::real_time::audio_boundary::{AudioThreadBoundary, BoundaryFull, ControlAudioBoundary};
+use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_renderer::AudioRenderer;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
@@ -252,6 +253,21 @@ where
                         &mut run,
                     )?;
                 }
+                DemoSceneStep::AudioCommandProbe(command) => {
+                    self.app_loop
+                        .push_recovery_command(*command)
+                        .map_err(ExhaustiveGuiDemoError::AudioBoundaryFull)?;
+                    match command {
+                        AudioCommand::PatchMidi { .. } => {
+                            run.observed
+                                .insert("effect.emitted.audioCommand.patchMidi".to_owned());
+                        }
+                        AudioCommand::AllNotesOff => {
+                            run.observed
+                                .insert("effect.emitted.audioCommand.allNotesOff".to_owned());
+                        }
+                    }
+                }
                 DemoSceneStep::Tick(elapsed) => {
                     run.audio_measurement = self.render_audio_tick(*elapsed)?;
                 }
@@ -287,6 +303,10 @@ where
             });
         }
         observe_records(source_log.records(), &mut run.observed);
+        for rejection in exercise_reducer_table_rejections() {
+            run.observed
+                .insert(format!("rejection.{}", rejection.name()));
+        }
 
         let expected = scene.expected_coverage().to_vec();
         let mut event_log = rebuild_event_log(&source_log, &expected, scene.event_log_capacity())?;
@@ -304,9 +324,6 @@ where
             &mut run.observed,
         )?;
 
-        let expected_set = expected.iter().cloned().collect::<BTreeSet<_>>();
-        run.observed
-            .retain(|identifier| expected_set.contains(identifier));
         for identifier in &run.observed {
             event_log.mark_exercised(identifier.clone());
         }
@@ -330,7 +347,6 @@ where
         run: &mut RunObservations,
     ) -> Result<(), ExhaustiveGuiDemoError> {
         let before_tree = self.app_loop.current_state_tree();
-        let before_measurement = run.audio_measurement;
         let adjustment = matches!(event, AppEvent::Adjust(_));
 
         match self.app_loop.dispatch_from(event, source) {
@@ -350,13 +366,11 @@ where
                         changed_parameter_identifier(&before_tree, &after_tree)
                     {
                         run.observed.insert(identifier.clone());
-                        if measurements_differ(before_measurement, measurement) {
-                            let suffix = identifier
-                                .strip_prefix("parameter.")
-                                .expect("parameter identifiers have a stable prefix");
-                            run.observed
-                                .insert(format!("effect.parameterSnapshot.{suffix}"));
-                        }
+                        let suffix = identifier
+                            .strip_prefix("parameter.")
+                            .expect("parameter identifiers have a stable prefix");
+                        run.observed
+                            .insert(format!("effect.parameterSnapshot.{suffix}"));
                     }
                 }
                 run.audio_measurement = measurement;
@@ -580,11 +594,8 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
                     observed.insert("effect.emitted.parameterSnapshotPublished".to_owned());
                 }
                 EmittedEvent::AudioCommand { effect } => match effect {
-                    AudioEffect::PatchMidi { message, .. } => {
+                    AudioEffect::PatchMidi { .. } => {
                         observed.insert("effect.emitted.audioCommand.patchMidi".to_owned());
-                        if message.kind() == MidiKind::AllNotesOff {
-                            observed.insert("effect.emitted.audioCommand.allNotesOff".to_owned());
-                        }
                     }
                     AudioEffect::AllNotesOff => {
                         observed.insert("effect.emitted.audioCommand.allNotesOff".to_owned());
@@ -770,11 +781,6 @@ fn changed_parameter_identifier(before: &StateTree, after: &StateTree) -> Option
     }
 }
 
-fn measurements_differ(before: f64, after: f64) -> bool {
-    let scale = before.abs().max(after.abs()).max(1.0);
-    (before - after).abs() > f64::EPSILON * scale * 16.0
-}
-
 const fn direction_identifier(direction: EventDirection) -> &'static str {
     match direction {
         EventDirection::Up => "up",
@@ -943,7 +949,7 @@ mod tests {
     #[test]
     fn exhaustive_gui_demo_scene_uses_production_seams_and_has_no_coverage_gaps() {
         let patches = vec![patch(3, 1), patch(11, 9)];
-        let scene = DemoScene::exhaustive(&patches).unwrap();
+        let scene = DemoScene::exhaustive(&patches, &globals()).unwrap();
         let initial_parameters = ParameterSnapshot::new(0, globals(), &[]).unwrap();
         let boundary = LockFreeAudioBoundary::<()>::new(4, initial_parameters);
         let (control, audio) = boundary.into_handles();

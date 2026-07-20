@@ -44,8 +44,13 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
     let second = support::run_demo();
     let report = &first.report;
 
-    assert!(report.is_complete(), "coverage report contains a gap");
+    assert!(
+        report.is_complete(),
+        "coverage report contains a gap: {:?}",
+        report.coverage()
+    );
     assert_eq!(report.coverage().missing_count(), 0);
+    assert_eq!(report.coverage().unexpected_count(), 0);
     assert_eq!(
         report.coverage().expected_count(),
         report.coverage().exercised_count()
@@ -60,6 +65,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         let coverage = report.coverage().group(group);
         assert_eq!(coverage.expected(), coverage.exercised(), "{group:?}");
         assert!(coverage.missing().is_empty(), "{group:?}");
+        assert!(coverage.unexpected().is_empty(), "{group:?}");
     }
 
     let expected = first
@@ -115,7 +121,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         .count();
     assert!(
         boundary_rejections >= 22,
-        "each of eleven typed parameters needs lower and upper boundary evidence"
+        "each of eleven typed parameters needs lower and upper boundary evidence; observed {boundary_rejections}"
     );
     for (index, record) in report.event_log().records().iter().enumerate() {
         if record.rejection() == Some(EventRejection::ParameterAtBoundary) {
