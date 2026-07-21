@@ -1,9 +1,9 @@
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::channel_parameters::ChannelParameters;
-use crate::synth::sound_font_instrument::SoundFontInstrument;
+use crate::synth::instrument_capability::InstrumentConfig;
 
-/// One installed, playable SoundFont instrument.
+/// One installed, playable instrument capability configuration.
 ///
 /// A patch's identity, display name, instrument, and assigned MIDI channel are
 /// fixed at construction time. Only its channel parameters can change after
@@ -12,7 +12,7 @@ use crate::synth::sound_font_instrument::SoundFontInstrument;
 pub struct Patch {
     id: PatchId,
     name: String,
-    instrument: SoundFontInstrument,
+    instrument: InstrumentConfig,
     channel: MidiChannel,
     parameters: ChannelParameters,
 }
@@ -22,7 +22,7 @@ impl Patch {
     pub fn new(
         id: PatchId,
         name: String,
-        instrument: SoundFontInstrument,
+        instrument: InstrumentConfig,
         channel: MidiChannel,
         parameters: ChannelParameters,
     ) -> Self {
@@ -45,8 +45,8 @@ impl Patch {
         &self.name
     }
 
-    /// Returns the immutable SoundFont preset identity.
-    pub const fn instrument(&self) -> &SoundFontInstrument {
+    /// Returns the immutable generic instrument configuration.
+    pub const fn instrument_config(&self) -> &InstrumentConfig {
         &self.instrument
     }
 
@@ -74,17 +74,32 @@ impl Patch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synth::capability_id::CapabilityId;
 
     #[test]
     fn public_api_keeps_configuration_read_only() {
-        let _: fn(PatchId, String, SoundFontInstrument, MidiChannel, ChannelParameters) -> Patch =
+        let _: fn(PatchId, String, InstrumentConfig, MidiChannel, ChannelParameters) -> Patch =
             Patch::new;
         let _: fn(&Patch) -> PatchId = Patch::id;
         let _: for<'a> fn(&'a Patch) -> &'a str = Patch::name;
-        let _: for<'a> fn(&'a Patch) -> &'a SoundFontInstrument = Patch::instrument;
+        let _: for<'a> fn(&'a Patch) -> &'a InstrumentConfig = Patch::instrument_config;
         let _: fn(&Patch) -> MidiChannel = Patch::channel;
         let _: for<'a> fn(&'a Patch) -> &'a ChannelParameters = Patch::parameters;
         let _: for<'a> fn(&'a mut Patch) -> &'a mut ChannelParameters = Patch::parameters_mut;
         let _: fn(&mut Patch, ChannelParameters) = Patch::set_parameters;
+
+        let config = InstrumentConfig::from_parts(
+            CapabilityId::new("instrument.test").unwrap(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let patch = Patch::new(
+            PatchId::new(1).unwrap(),
+            "Test".to_owned(),
+            config.clone(),
+            MidiChannel::new(0).unwrap(),
+            ChannelParameters::default(),
+        );
+        assert_eq!(patch.instrument_config(), &config);
     }
 }

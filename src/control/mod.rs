@@ -1,6 +1,7 @@
 pub mod app_event;
 pub mod app_state;
 pub mod event_record;
+mod serialized_state;
 pub mod state_projector;
 pub mod state_snapshot;
 pub mod text_projection;

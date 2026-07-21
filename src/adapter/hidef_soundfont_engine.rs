@@ -1,7 +1,13 @@
+use crate::adapter::hidef_soundfont_capability::{
+    HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID, SOUNDFONT_FILE_PARAMETER_ID,
+    SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+};
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::parameter_snapshot::{ParameterSnapshot, MAX_PATCHES};
 use crate::real_time::patch_audio_block::PatchAudioBlock;
+use crate::synth::instrument_capability::{AssetKind, ParameterValue};
+use crate::synth::parameter_id::ParameterId;
 use crate::synth::patch::Patch;
 use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
@@ -104,7 +110,7 @@ impl SoundFontEngine for HiDefSoundFontEngine {
             });
         }
 
-        let prepared = PreparedPatch::from_patch(patch);
+        let prepared = PreparedPatch::try_from_patch(patch)?;
         if self.lanes[..self.patch_count]
             .iter()
             .flatten()
@@ -212,33 +218,72 @@ struct PreparedPatch {
 }
 
 impl PreparedPatch {
-    fn from_patch(patch: &Patch) -> Self {
-        let instrument = patch.instrument();
-        let numeric_bank = i32::from(instrument.bank());
-        let effective_bank = if instrument.percussion() {
+    fn try_from_patch(patch: &Patch) -> Result<Self, SoundFontError> {
+        let config = patch.instrument_config();
+        if config.capability_id().as_str() != HIDEF_CAPABILITY_ID {
+            return Err(SoundFontError::UnsupportedCapability {
+                patch_id: patch.id(),
+            });
+        }
+        let parameter_id = |value: &str| {
+            ParameterId::new(value).expect("HiDef parameter constants are valid stable ids")
+        };
+        let bank = match config.value(&parameter_id(SOUNDFONT_BANK_PARAMETER_ID)) {
+            Some(ParameterValue::Stepped(value)) => u16::try_from(*value).ok(),
+            _ => None,
+        };
+        let program = match config.value(&parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID)) {
+            Some(ParameterValue::Stepped(value)) => u8::try_from(*value).ok(),
+            _ => None,
+        };
+        let percussion = match config.value(&parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID)) {
+            Some(ParameterValue::Toggle(value)) => Some(*value),
+            _ => None,
+        };
+        let file = config.asset_reference(&parameter_id(SOUNDFONT_FILE_PARAMETER_ID));
+        let (Some(bank), Some(program), Some(percussion), Some(file)) =
+            (bank, program, percussion, file)
+        else {
+            return Err(SoundFontError::InvalidInstrumentConfig {
+                patch_id: patch.id(),
+            });
+        };
+        if program > 127
+            || file.kind() != AssetKind::SoundFont
+            || file.locator() != HIDEF_SOUNDFONT_PATH
+            || config.values().len() != 3
+            || config.asset_references().len() != 1
+        {
+            return Err(SoundFontError::InvalidInstrumentConfig {
+                patch_id: patch.id(),
+            });
+        }
+
+        let numeric_bank = i32::from(bank);
+        let effective_bank = if percussion {
             numeric_bank | PERCUSSION_BANK_FLAG
         } else {
             numeric_bank & !PERCUSSION_BANK_FLAG
         };
-        let internal_channel = if instrument.percussion() {
+        let internal_channel = if percussion {
             Synthesizer::PERCUSSION_CHANNEL as i32
         } else {
             MELODIC_CHANNEL
         };
-        let bank_select_value = if instrument.percussion() {
+        let bank_select_value = if percussion {
             effective_bank - PERCUSSION_BANK_FLAG
         } else {
             effective_bank
         };
 
-        Self {
+        Ok(Self {
             patch_id: patch.id(),
             logical_channel: i32::from(patch.channel().value()),
             internal_channel,
             effective_bank,
             bank_select_value,
-            program: i32::from(instrument.program()),
-        }
+            program: i32::from(program),
+        })
     }
 
     fn apply_to(self, synthesizer: &mut Synthesizer) {
@@ -280,6 +325,9 @@ mod tests {
         bounded_sample, midi_data, HiDefSoundFontEngine, PreparedPatch, HIDEF_SOUNDFONT_PATH,
         MELODIC_CHANNEL,
     };
+    use crate::adapter::hidef_soundfont_capability::{
+        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
+    };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -290,14 +338,21 @@ mod tests {
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::{CapabilityId, InstrumentConfig};
+    use crate::testing::automatic_midi_test::create_soundfont_config;
     use rustysynth::Synthesizer;
     use std::path::Path;
 
     fn patch(id: u32, channel: u8, bank: u16, program: u8, percussion: bool) -> Patch {
+        let provider = HiDefSoundFontCapability::new().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
-            SoundFontInstrument::new(bank, program, percussion).unwrap(),
+            create_soundfont_config(
+                &provider,
+                SoundFontInstrument::new(bank, program, percussion).unwrap(),
+            )
+            .unwrap(),
             MidiChannel::new(channel).unwrap(),
             ChannelParameters::default(),
         )
@@ -337,8 +392,8 @@ mod tests {
 
     #[test]
     fn hidef_soundfont_engine_uses_independent_melodic_and_percussion_channels() {
-        let melodic = PreparedPatch::from_patch(&patch(1, 3, 128, 42, false));
-        let percussion = PreparedPatch::from_patch(&patch(2, 4, 128, 42, true));
+        let melodic = PreparedPatch::try_from_patch(&patch(1, 3, 128, 42, false)).unwrap();
+        let percussion = PreparedPatch::try_from_patch(&patch(2, 4, 128, 42, true)).unwrap();
         assert_eq!(melodic.effective_bank, 0);
         assert_eq!(melodic.internal_channel, MELODIC_CHANNEL);
         assert_eq!(percussion.effective_bank, 128);
@@ -348,6 +403,45 @@ mod tests {
             Synthesizer::PERCUSSION_CHANNEL as i32
         );
         assert_ne!(melodic, percussion);
+    }
+
+    #[test]
+    fn hidef_soundfont_engine_rejects_other_and_malformed_capability_configs_without_fallback() {
+        let unsupported = Patch::new(
+            PatchId::new(7).unwrap(),
+            "Unsupported".to_owned(),
+            InstrumentConfig::from_parts(
+                CapabilityId::new("instrument.other").unwrap(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            MidiChannel::new(0).unwrap(),
+            ChannelParameters::default(),
+        );
+        assert_eq!(
+            PreparedPatch::try_from_patch(&unsupported),
+            Err(SoundFontError::UnsupportedCapability {
+                patch_id: unsupported.id()
+            })
+        );
+
+        let malformed = Patch::new(
+            PatchId::new(8).unwrap(),
+            "Malformed".to_owned(),
+            InstrumentConfig::from_parts(
+                CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            MidiChannel::new(1).unwrap(),
+            ChannelParameters::default(),
+        );
+        assert_eq!(
+            PreparedPatch::try_from_patch(&malformed),
+            Err(SoundFontError::InvalidInstrumentConfig {
+                patch_id: malformed.id()
+            })
+        );
     }
 
     #[test]

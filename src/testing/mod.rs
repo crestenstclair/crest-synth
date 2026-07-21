@@ -33,7 +33,9 @@ pub mod live_demo_checkpoint;
 pub use live_demo_checkpoint::{LiveDemoCheckpoint, LiveDemoCheckpointError, LiveProjectedValue};
 
 pub mod live_demo_report;
-pub use live_demo_report::{LiveDemoCoverage, LiveDemoReport, LiveDemoReportError};
+pub use live_demo_report::{
+    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveEventLogSummary,
+};
 
 pub mod live_demo_runner;
 pub use live_demo_runner::{LiveDemoError, LiveDemoRunner};

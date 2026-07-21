@@ -32,15 +32,19 @@ The demo and table-driven verification SHALL cover every declared semantic event
 - **THEN** Patch-scoped MIDI all-notes-off and the separate renderer all-notes-off command each have a unique covered identity and measured consequence
 
 ### Requirement: Production-derived coverage schema
-The expected coverage universe SHALL be derived from production-owned input and typed semantic and parameter descriptors plus discovered serialized leaves; a separately hand-maintained string list SHALL NOT define a passing universe.
+The expected coverage universe SHALL be derived from production-owned input, installed capability and capability-parameter descriptors, other typed semantic and parameter descriptors, and discovered serialized leaves; a separately hand-maintained string list SHALL NOT define a passing universe.
 
 #### Scenario: Required serialized leaf is removed
-- **WHEN** a schema test removes one required discovered leaf
+- **WHEN** a schema test removes one required capability, config, or other discovered leaf
 - **THEN** exact schema equality fails and reports that leaf as missing
 
 #### Scenario: Unexpected serialized leaf is inserted
 - **WHEN** a schema test inserts one undeclared leaf
 - **THEN** exact schema equality fails and reports that leaf as unexpected
+
+#### Scenario: Capability descriptor differs from coverage expectation
+- **WHEN** an installed descriptor adds, removes, renames, duplicates, or reorders a parameter
+- **THEN** the production descriptor defines the expected surface and any stale duplicate expectation fails verification
 
 ### Requirement: Exact causal event records
 Every scene input SHALL produce one accepted or rejected event record containing its source, tagged payload, outcome or rejection, before and after generations and state hashes, exact emitted effects, parameter generation, projection identity, and selected line as observed from the production transition.
@@ -50,11 +54,15 @@ Every scene input SHALL produce one accepted or rejected event record containing
 - **THEN** its event record matches an oracle fixed before dispatch and its state, projection, command, and audio consequences agree causally
 
 ### Requirement: Exact state and projection observation
-The state tree SHALL contain every current Patch identity, instrument and parameter, every global parameter, all selection properties, every text projection property, and every parameter snapshot property with exact values from the same accepted generation.
+The state tree SHALL contain the complete installed capability registry, every Patch generic instrument config and asset reference, every Patch identity and editable parameter, every global parameter, all selection properties, every text projection property, and every parameter snapshot property with exact values from the same accepted generation.
 
 #### Scenario: State tree is compared with projections
 - **WHEN** an accepted transition produces new projections
-- **THEN** each required property exists with its exact expected value and the state tree, text projection, and parameter snapshot agree for that generation
+- **THEN** each required descriptor, config, and current control property exists with its exact expected value and the state tree, text projection, and parameter snapshot agree for that generation
+
+#### Scenario: Capability config is malformed
+- **WHEN** verification attempts unknown, duplicate, missing, undeclared, wrong-kind, dependency-invalid, or out-of-range config data
+- **THEN** production installation rejects it without partial state change or fallback and the rejection is asserted before any acceptance marker is printed
 
 ### Requirement: Faithful audio evidence and restoration
 Audio evidence SHALL use only supplied Patch stems and effect-send inputs, SHALL establish discriminating nonzero signals before comparisons, SHALL begin paired comparisons from identical engine and effect state, and SHALL restore every reversible parameter, send, selection, and projection exactly to baseline.
@@ -93,19 +101,23 @@ The demo SHALL NOT report acceptance solely because components were constructed,
 - **THEN** the capability is considered unproven and verification fails
 
 ### Requirement: Headless demo remains an independent deterministic proof
-Adding the live observable demo SHALL NOT change the `make demo` command, its headless/no-device/no-window execution, deterministic timing, two-run equality, structured output markers, expected coverage universe, mutation cases, or acceptance predicates.
+Adding the Phase 2 capability model SHALL preserve the `make demo` command, its headless/no-device/no-window execution, deterministic timing, two-run equality, structured output markers, mutation cases, and behavioral acceptance predicates. Its production-derived schema universe SHALL deliberately expand to include the installed capability descriptors and generic Patch configs.
 
-#### Scenario: Existing headless demo runs after live mode is added
+#### Scenario: Headless demo runs after capability polymorphism is added
 - **WHEN** the maintainer runs `make demo`
-- **THEN** the existing exhaustive scene produces its current deterministic event log, state tree, observation, exact coverage, and controlled-negative behavior without opening a native window or physical device
+- **THEN** the exhaustive scene produces a deterministic event log, state tree, observation, exact descriptor-derived coverage, and controlled-negative behavior without opening a native window or physical device
 
-#### Scenario: Live-only observation fields are introduced
-- **WHEN** live checkpoints or callback-to-control observations are added to the implementation
-- **THEN** they do not expand, satisfy, or alter the headless demo's production-derived coverage universe or completed report schema
+#### Scenario: Capability schema changes
+- **WHEN** the canonical registry or Patch config serialization changes
+- **THEN** both runs agree byte-for-byte on the new schema and exact production-derived coverage fails if any declared or discovered field is absent or unexpected
 
 ### Requirement: Existing verification gates remain required
-Phase 1 completion SHALL require the existing exhaustive-demo, schema-surface, GUI-context, mutation, real-time, smoke, format, lint, and all-target checks in addition to the new live-demo contract test.
+Phase 2 increment 1 completion SHALL require the named capability-schema test in addition to the exhaustive-demo, schema-surface, live-demo, GUI-context, mutation, real-time, smoke, format, lint, and all-target checks.
 
-#### Scenario: Live behavior passes but an existing gate fails
-- **WHEN** the live-demo test passes and any existing required headless or project check fails
-- **THEN** the Phase 1 change is incomplete and cannot be accepted
+#### Scenario: Capability behavior passes but another gate fails
+- **WHEN** the capability-schema test passes and any existing required behavioral or project check fails
+- **THEN** the Phase 2 increment is incomplete and cannot be accepted
+
+#### Scenario: Existing behavior passes but capability schema fails
+- **WHEN** existing Phase 1 gates pass but exact descriptor/config or no-fallback assertions fail
+- **THEN** the Phase 2 increment is incomplete and cannot be accepted

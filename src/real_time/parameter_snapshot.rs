@@ -153,6 +153,12 @@ impl ParameterSnapshot {
             .iter()
             .find(|patch| patch.patch_id() == Some(patch_id))
     }
+
+    /// Reuses identical bounded parameter values for a MIDI-only generation.
+    pub(crate) const fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
+    }
 }
 
 #[cfg(test)]

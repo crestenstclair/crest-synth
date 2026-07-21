@@ -2,9 +2,10 @@ package crestsynth
 
 project: assets: CargoManifest: {
 	kind: "cargo-manifest"
-	description: "Cargo.toml for the standalone SoundFont synth"
+	description: "Cargo.toml for the capability-configured standalone synth whose current renderer is SoundFont"
 	profile: {kind: "configuration", ecosystem: "cargo"}
 	targets: [
+		"adapter.HiDefSoundFontCapability",
 		"adapter.HiDefSoundFontEngine",
 		"adapter.GlobalReverbDelay",
 		"adapter.LockFreeAudioBoundary",
@@ -34,7 +35,7 @@ project: assets: BuildMakefile: {
 	]
 	prompts: [
 		"Create the project-root Makefile. The default target is help, which lists every public target and its one-line ## description.",
-		"Provide these Cargo-backed targets: build (cargo build), check (cargo check --all-targets), test (cargo test --all-targets), lint (cargo clippy --all-targets -- -D warnings), fmt (cargo fmt --all), fmt-check (cargo fmt --all -- --check), run (cargo run --bin crest-synth), smoke (cargo run --bin crest-synth -- --smoke), observe (cargo run --bin crest-synth -- --smoke --observe), demo (cargo run --bin crest-synth -- --smoke --observe --demo-scene), demo-live (cargo run --bin crest-synth -- --demo-live), and clean (cargo clean).",
+		"Provide these Cargo-backed targets: build (cargo build), check (cargo check --all-targets), test (cargo test --all-targets), lint (cargo clippy --all-targets -- -D warnings), fmt (cargo fmt --all), fmt-check (cargo fmt --all -- --check), run (cargo run --bin crest-synth), smoke (cargo run --bin crest-synth -- --smoke), observe (cargo run --bin crest-synth -- --smoke --observe), demo (cargo run --bin crest-synth -- --smoke --observe --demo-scene), demo-live (cargo run --release --bin crest-synth -- --demo-live), and clean (cargo clean).",
 		"Provide play and ui as documented aliases for run because normal startup automatically plays the fixed MIDI fixture in the text window.",
 		"Keep demo exactly headless and deterministic. demo-live is the only autonomous target that opens the real window and physical audio device; it stays open after scene completion until the user closes it.",
 		"Use portable Make syntax and declare non-file targets phony. Do not reference removed proof binaries, alternate MIDI files, afplay, or obsolete synth_ui commands.",
@@ -57,7 +58,17 @@ project: assets: LibraryRoot: {
 		"valueObject.Kernel.PatchId",
 		"valueObject.Kernel.MidiChannel",
 		"valueObject.Kernel.MidiMessage",
+		"valueObject.Synth.CapabilityId",
+		"valueObject.Synth.ParameterId",
+		"valueObject.Synth.AssetReference",
+		"valueObject.Synth.ParameterValue",
+		"valueObject.Synth.ParameterAssignment",
+		"valueObject.Synth.ParameterSpec",
+		"valueObject.Synth.CapabilityDescriptor",
+		"valueObject.Synth.InstrumentConfig",
+		"valueObject.Synth.CapabilityRegistry",
 		"aggregate.Synth.Patch",
+		"port.Synth.InstrumentCapabilityProvider",
 		"port.Synth.SoundFontEngine",
 		"valueObject.Mixer.ChannelParameters",
 		"valueObject.Mixer.GlobalParameters",
@@ -84,8 +95,9 @@ project: assets: LibraryRoot: {
 		"valueObject.Testing.DemoSceneReport",
 		"applicationService.Testing.ExhaustiveGuiDemo",
 		"valueObject.Testing.LiveDemoScene",
-		"valueObject.Testing.LiveDemoCheckpoint",
-		"valueObject.Testing.LiveDemoReport",
+			"valueObject.Testing.LiveDemoCheckpoint",
+			"valueObject.Testing.LiveDemoReport",
+			"valueObject.Testing.LiveEventLogSummary",
 		"applicationService.Testing.LiveDemoRunner",
 		"applicationService.Testing.BehavioralMutationHarness",
 		"applicationService.Shell.StandaloneApplication",
@@ -132,6 +144,10 @@ project: assets: BehavioralAcceptanceTests: {
 	description: "named integration-test targets whose absence cannot pass as a zero-test filter match"
 	profile: {kind: "verification_harness", witness: "compiled black-box acceptance targets", failurePolicy: "a missing target or unexecuted assertion fails cargo before evidence can pass"}
 	targets: [
+		"valueObject.Synth.CapabilityRegistry",
+		"port.Synth.InstrumentCapabilityProvider",
+		"adapter.HiDefSoundFontCapability",
+		"aggregate.Synth.Patch",
 		"applicationService.Testing.ExhaustiveGuiDemo",
 		"applicationService.Testing.LiveDemoRunner",
 		"applicationService.Testing.BehavioralMutationHarness",
@@ -151,15 +167,18 @@ project: assets: BehavioralAcceptanceTests: {
 		"adapter.GlobalReverbDelay",
 	]
 	prompts: [
-		"Create five explicit Cargo integration-test targets: tests/exhaustive_demo_scene.rs, tests/live_demo_scene.rs, tests/schema_surface.rs, tests/eframe_context.rs, and tests/behavioral_mutation_harness.rs. Project validations invoke them with cargo test --test, so a missing target is a hard failure.",
+		"Create seven explicit Cargo integration-test targets: tests/capability_schema.rs, tests/control_dispatch_performance.rs, tests/exhaustive_demo_scene.rs, tests/live_demo_scene.rs, tests/schema_surface.rs, tests/eframe_context.rs, and tests/behavioral_mutation_harness.rs. Project validations invoke them with cargo test --test, so a missing target is a hard failure.",
 		"Each target must call the public production seam it verifies. It may assemble deterministic fixtures, but it must not duplicate reducer, routing, state projection, GUI update, render, coverage, or mutation-verdict logic inside the test file.",
-		"exhaustive_demo_scene asserts bidirectionally exact input/event/state/projection/audio coverage, every typed parameter boundary, and exact baseline restoration; schema_surface asserts bidirectional equality between production-owned typed descriptors and observed serialized leaves.",
+		"capability_schema constructs the production HiDefSoundFontCapability and CapabilityRegistry, converts discriminating fixture instruments into generic Patch configs, installs them through AppState, and asserts exact descriptor/config serialization plus generic text projection; it must also prove unknown, duplicate, missing, undeclared, wrong-kind, and out-of-range mutations fail without fallback. exhaustive_demo_scene asserts bidirectionally exact input/event/state/projection/audio coverage, every typed parameter boundary, and exact baseline restoration; schema_surface asserts bidirectional equality between production-owned typed descriptors and observed serialized leaves including the installed capability schema.",
 		"live_demo_scene uses a deterministic monotonic clock, a frame-observation harness, and the production renderer plus AtomicAudioObservation to prove pacing, one accepted change and audible generation-tagged observation for every current editable parameter instance, exact checkpoint agreement, rejection recovery, semantic all-notes-off, zero missing or unexpected coverage, and an inert completed runner. It must not duplicate AppState::apply, projection, render, coverage, or report logic, and it must not open or skip based on a native window or physical device.",
+		"control_dispatch_performance installs fifteen descriptor-configured Patches, sends 512 MIDI events through the production AppState, StateProjector, StateTree, EventLog, and ControlAudioBoundary path, requires completion within 50 ms in the unoptimized test profile, and relies on the projector unit equivalence proof that deferred snapshot/tree JSON equals eager canonical output.",
 		"eframe_context drives real egui RawInput through EframeApplication.update with its callback wired to AppLoop.dispatch, then proves the next frame and EventLog reflect the exact accepted value and projection; rendering a separately supplied projection is forbidden. behavioral_mutation_harness executes every healthy/mutant pair and asserts the measured predicate that each named seam falsifies.",
 		"Every target contains at least one ordinary #[test] function with concrete assertions and prints its exact CREST_ACCEPTANCE <target> passed marker only after all behavioral assertions succeed. Validations run with --nocapture and require that marker, so a target with zero executed tests cannot pass.",
 		"No ignored tests, snapshot auto-acceptance, environment-dependent skip, success-on-missing-fixture branch, pre-assertion success marker, or assertion-free smoke test is permitted.",
 	]
 	validations: [
+		{kind: "integration", command: ["cargo", "test", "--test", "capability_schema", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE capability_schema passed"}], description: "the named capability-schema target proves generic registry/config behavior and typed no-fallback rejection"},
+		{kind: "integration", command: ["cargo", "test", "--test", "control_dispatch_performance", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE control_dispatch_performance passed"}], description: "the named control-performance target proves responsive sustained MIDI dispatch through every production control seam"},
 		{kind: "integration", command: ["cargo", "test", "--test", "exhaustive_demo_scene", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE exhaustive_demo_scene passed"}], description: "the named exhaustive acceptance target executes behavioral assertions and passes"},
 		{kind: "integration", command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE live_demo_scene passed"}], description: "the named live-demo contract target executes pacing, canonical-path, audio-observation, coverage, cleanup, and final-state assertions"},
 		{kind: "integration", command: ["cargo", "test", "--test", "schema_surface", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE schema_surface passed"}], description: "the named schema-equality target executes behavioral assertions and passes"},
@@ -167,6 +186,7 @@ project: assets: BehavioralAcceptanceTests: {
 		{kind: "integration", command: ["cargo", "test", "--test", "behavioral_mutation_harness", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE behavioral_mutation_harness passed"}], description: "the named six-mutant target executes behavioral assertions and passes"},
 	]
 	contributesTo: [
+		{capability: "capability.instrument_capability_model", contribution: "provides the named executable acceptance target for generic descriptors, configs, projection, and explicit failure"},
 		{capability: "capability.observable_demo_scene", contribution: "makes every existing headless acceptance gate structurally executable and impossible to satisfy with zero matched tests"},
 		{capability: "capability.live_observable_demo", contribution: "provides an executable deterministic harness for the interactive live orchestration contract"},
 	]
@@ -181,6 +201,7 @@ project: assets: CrestSynthMain: {
 		"applicationService.Testing.ExhaustiveGuiDemo",
 		"applicationService.Testing.LiveDemoRunner",
 		"adapter.AtomicAudioObservation",
+		"adapter.HiDefSoundFontCapability",
 		"adapter.HiDefSoundFontEngine",
 		"adapter.GlobalReverbDelay",
 		"adapter.LockFreeAudioBoundary",
@@ -189,11 +210,12 @@ project: assets: CrestSynthMain: {
 		"adapter.CpalAudioOutput",
 	]
 	prompts: [
-		"Create src/bin/crest_synth.rs as composition only. Construct the concrete adapters, inject them into StandaloneApplication, and call run.",
+		"Create src/bin/crest_synth.rs as composition only. Construct HiDefSoundFontCapability, freeze its exact descriptor in CapabilityRegistry, construct the remaining concrete adapters, inject them into StandaloneApplication, and call run.",
+		"Fail startup for duplicate, missing, unknown, or mismatched capability registration. Install exactly instrument.soundfont.hidef in this increment and never choose or substitute a fallback descriptor, config, asset, preset, provider, or renderer.",
 		"Normal invocation expects ./sf2/HiDef.sf2 and ./midi/Corridors of Time - Chrono Trigger.mid and begins MIDI automatically. There is no play command, transport, file chooser, alternate engine, or alternate effect selection.",
 		"Support --smoke for headless deterministic execution, --observe to print one CREST_OBSERVATION JSON object, --demo-scene only with --smoke --observe to run the exhaustive current-GUI scene, --demo-live by itself to run the paced scene in the normal window and physical audio stream, and verification-only --degenerate-audio or --degenerate-control only with --smoke --observe for behavioral falsification. Reject duplicate, mixed, or other options; --demo-live is mutually exclusive with every headless, observation, demo-scene, and degenerate flag.",
 		"When --demo-scene is present, print exactly one single-line CREST_EVENT_LOG JSON object, one single-line CREST_STATE_TREE JSON object, and one single-line CREST_OBSERVATION JSON object. Use stable Serialize data, never Debug output or Markdown; the ordinary interactive run emits no trace unless explicitly requested.",
-		"When --demo-live is present, pass StandaloneApplication.runLiveDemo control-side callbacks that print each returned checkpoint as CREST_LIVE_CHECKPOINT JSON, then print exactly one CREST_LIVE_EVENT_LOG JSON, CREST_LIVE_STATE_TREE JSON, CREST_LIVE_COVERAGE JSON, and CREST_LIVE_SUMMARY human-readable line from the completed report after note cleanup; never print or format from the runner or audio callback.",
+			"When --demo-live is present, pass StandaloneApplication.runLiveDemo control-side callbacks that print each returned checkpoint as CREST_LIVE_CHECKPOINT JSON, then print exactly one compact CREST_LIVE_EVENT_LOG_SUMMARY JSON with lossless counts and chain endpoints, CREST_LIVE_STATE_TREE JSON, CREST_LIVE_COVERAGE JSON, and CREST_LIVE_SUMMARY human-readable line from the completed report after note cleanup; retain the complete EventLog in LiveDemoReport verification and never dump every performance MIDI record or print/format from the runner or audio callback.",
 		"The live option uses the same HiDef.sf2, Corridors of Time source, AppLoop, EframeTextWindow, CpalAudioOutput, AudioRenderer, engine, and mixer as normal interactive execution. It has no fake window, null device, offline-only renderer, silent fallback, direct state edit, or alternate demo reducer.",
 		"After live completion keep the physical stream and normal window alive with the final AppLoop.currentText projection until the user closes it; do not exit automatically or send a viewport-close command.",
 		"The smoke path loads the real fixed SoundFont and MIDI fixture, installs all instrument Patches, applies keyboard-equivalent navigation and adjustment events, renders bounded audio blocks, and reports measurements from the production services.",
@@ -207,6 +229,7 @@ project: assets: CrestSynthMain: {
 		{kind: "custom", command: ["make", "-n", "demo-live"], description: "the dedicated live option is reachable through one stable human command"},
 	]
 	contributesTo: [
+		{capability: "capability.instrument_capability_model", contribution: "composes the one installed provider and immutable capability registry without owning their behavior"},
 		{capability: "capability.soundfont_audio", contribution: "starts the concrete SoundFont synth"},
 		{capability: "capability.automatic_test_midi", contribution: "starts the fixed MIDI test input without transport controls"},
 		{capability: "capability.one_way_parameter_control", contribution: "hosts the text control loop without owning behavior"},

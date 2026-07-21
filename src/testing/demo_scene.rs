@@ -11,6 +11,7 @@ use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::audio_command::AudioCommand;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
+use crate::synth::instrument_capability::CapabilityRegistry;
 use crate::synth::patch::Patch;
 use core::fmt;
 use std::time::Duration;
@@ -120,6 +121,7 @@ impl DemoScene {
     /// At least two Patches are required because routing and mixer observations
     /// must discriminate the edited Patch from an unaffected Patch.
     pub fn exhaustive(
+        capabilities: &CapabilityRegistry,
         installed_patches: &[Patch],
         global_parameters: &GlobalParameters,
     ) -> Result<Self, DemoSceneError> {
@@ -128,12 +130,19 @@ impl DemoScene {
                 actual: installed_patches.len(),
             });
         }
+        if installed_patches.iter().any(|patch| {
+            capabilities
+                .validate_config(patch.instrument_config())
+                .is_err()
+        }) {
+            return Err(DemoSceneError::InvalidInstrumentConfig);
+        }
 
         Ok(Self {
             name: Self::NAME.to_owned(),
             schema_version: Self::SCHEMA_VERSION,
             steps: build_steps(installed_patches, global_parameters),
-            expected_coverage: build_expected_coverage(installed_patches),
+            expected_coverage: build_expected_coverage(capabilities, installed_patches),
         })
     }
 
@@ -167,6 +176,7 @@ impl DemoScene {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemoSceneError {
     InsufficientPatches { actual: usize },
+    InvalidInstrumentConfig,
 }
 
 impl fmt::Display for DemoSceneError {
@@ -176,6 +186,9 @@ impl fmt::Display for DemoSceneError {
                 formatter,
                 "the exhaustive demo requires at least two installed Patches, got {actual}"
             ),
+            Self::InvalidInstrumentConfig => {
+                formatter.write_str("installed Patch config does not match the capability registry")
+            }
         }
     }
 }
@@ -416,7 +429,7 @@ fn first_unknown_patch_id(patches: &[Patch]) -> PatchId {
     PatchId::new(candidate).expect("the candidate search starts at one")
 }
 
-fn build_expected_coverage(patches: &[Patch]) -> Vec<String> {
+fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch]) -> Vec<String> {
     let mut expected = Vec::new();
     for descriptor in AppEvent::surface_descriptor() {
         match descriptor {
@@ -475,18 +488,85 @@ fn build_expected_coverage(patches: &[Patch]) -> Vec<String> {
                 patch.id().value()
             ));
         }
-        for property in [
-            "id",
-            "name",
-            "channel",
-            "instrument.bank",
-            "instrument.program",
-            "instrument.percussion",
-        ] {
+        for property in ["id", "name", "channel", "instrument.capabilityId"] {
             expected.push(format!(
                 "property.stateTree.patch.{}.{property}",
                 patch.id().value()
             ));
+        }
+        for assignment in patch.instrument_config().values() {
+            for property in ["parameterId", "value.kind", "value.value"] {
+                expected.push(format!(
+                    "property.stateTree.patch.{}.instrument.value.{}.{property}",
+                    patch.id().value(),
+                    assignment.parameter_id()
+                ));
+            }
+        }
+        for assignment in patch.instrument_config().asset_references() {
+            for property in ["parameterId", "reference.kind", "reference.locator"] {
+                expected.push(format!(
+                    "property.stateTree.patch.{}.instrument.asset.{}.{property}",
+                    patch.id().value(),
+                    assignment.parameter_id()
+                ));
+            }
+        }
+    }
+
+    for descriptor in capabilities.descriptors() {
+        for property in [
+            "id",
+            "label",
+            "semanticAccent",
+            "voiceLimit",
+            "supportedMidiKinds",
+        ] {
+            expected.push(format!(
+                "property.stateTree.capability.{}.{property}",
+                descriptor.id()
+            ));
+        }
+        for section in descriptor.sections() {
+            for property in ["id", "label"] {
+                expected.push(format!(
+                    "property.stateTree.capability.{}.section.{}.{property}",
+                    descriptor.id(),
+                    section.id()
+                ));
+            }
+            for parameter in section.parameters() {
+                for property in [
+                    "id",
+                    "label",
+                    "kind",
+                    "update",
+                    "defaultValue",
+                    "range",
+                    "choices",
+                    "fineStep",
+                    "coarseStep",
+                    "unit",
+                    "formatter",
+                    "enabledWhen",
+                    "visibleWhen",
+                ] {
+                    expected.push(format!(
+                        "property.stateTree.capability.{}.parameter.{}.{property}",
+                        descriptor.id(),
+                        parameter.id()
+                    ));
+                }
+            }
+        }
+        for requirement in descriptor.asset_requirements() {
+            for property in ["parameterId", "required"] {
+                expected.push(format!(
+                    "property.stateTree.capability.{}.asset.{}.{property}",
+                    descriptor.id(),
+                    requirement.parameter_id()
+                ));
+            }
         }
     }
 
@@ -579,6 +659,7 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{DemoScene, DemoSceneError, DemoSceneStep, MidiProbe};
+    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::control::app_state::EventRejection;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessageKind;
@@ -588,12 +669,18 @@ mod tests {
     use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn patch(id: u32, channel: u8) -> Patch {
+        let provider = HiDefSoundFontCapability::new().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
-            SoundFontInstrument::new(0, id as u8, false).unwrap(),
+            create_soundfont_config(
+                &provider,
+                SoundFontInstrument::new(0, id as u8, false).unwrap(),
+            )
+            .unwrap(),
             MidiChannel::new(channel).unwrap(),
             ChannelParameters::default(),
         )
@@ -607,14 +694,18 @@ mod tests {
         GlobalParameters::new(0.0, 0.5, 0.4, 0.35, 250.0, 0.3, 0.25).unwrap()
     }
 
+    fn registry() -> crate::synth::CapabilityRegistry {
+        HiDefSoundFontCapability::new().unwrap().registry().unwrap()
+    }
+
     #[test]
     fn requires_discriminating_multi_patch_input() {
         assert_eq!(
-            DemoScene::exhaustive(&[], &globals()),
+            DemoScene::exhaustive(&registry(), &[], &globals()),
             Err(DemoSceneError::InsufficientPatches { actual: 0 })
         );
         assert_eq!(
-            DemoScene::exhaustive(&[patch(1, 0)], &globals()),
+            DemoScene::exhaustive(&registry(), &[patch(1, 0)], &globals()),
             Err(DemoSceneError::InsufficientPatches { actual: 1 })
         );
     }
@@ -622,7 +713,7 @@ mod tests {
     #[test]
     fn derives_patch_specific_parameters_and_midi_from_the_fixture() {
         let patches = patches();
-        let scene = DemoScene::exhaustive(&patches, &globals()).unwrap();
+        let scene = DemoScene::exhaustive(&registry(), &patches, &globals()).unwrap();
 
         for patch in &patches {
             for descriptor in ChannelParameters::surface_descriptor() {
@@ -681,7 +772,7 @@ mod tests {
     #[test]
     fn schema_derived_current_surface() {
         let patches = patches();
-        let scene = DemoScene::exhaustive(&patches, &globals()).unwrap();
+        let scene = DemoScene::exhaustive(&registry(), &patches, &globals()).unwrap();
         assert!(scene
             .expected_coverage()
             .windows(2)
@@ -697,7 +788,7 @@ mod tests {
         );
         assert_eq!(ChannelParameters::surface_descriptor().len(), 4);
         assert_eq!(GlobalParameters::surface_descriptor().len(), 7);
-        assert_eq!(EventRejection::surface_descriptor().len(), 9);
+        assert_eq!(EventRejection::surface_descriptor().len(), 10);
         for patch in &patches {
             for descriptor in ChannelParameters::surface_descriptor() {
                 assert!(scene.expected_coverage().contains(&format!(
@@ -711,7 +802,7 @@ mod tests {
 
     #[test]
     fn includes_every_normalized_window_input_and_focus_reset() {
-        let scene = DemoScene::exhaustive(&patches(), &globals()).unwrap();
+        let scene = DemoScene::exhaustive(&registry(), &patches(), &globals()).unwrap();
         let inputs = scene
             .steps()
             .iter()
@@ -740,7 +831,7 @@ mod tests {
 
     #[test]
     fn boundary_checkpoints_name_nonfatal_rejections_and_restoration() {
-        let scene = DemoScene::exhaustive(&patches(), &globals()).unwrap();
+        let scene = DemoScene::exhaustive(&registry(), &patches(), &globals()).unwrap();
         let checkpoints = scene
             .steps()
             .iter()
@@ -770,8 +861,8 @@ mod tests {
     #[test]
     fn construction_and_coverage_order_are_deterministic() {
         let patches = patches();
-        let first = DemoScene::exhaustive(&patches, &globals()).unwrap();
-        let second = DemoScene::exhaustive(&patches, &globals()).unwrap();
+        let first = DemoScene::exhaustive(&registry(), &patches, &globals()).unwrap();
+        let second = DemoScene::exhaustive(&registry(), &patches, &globals()).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(first.name(), DemoScene::NAME);

@@ -17,7 +17,7 @@ project: {
 			"test support uses the same ports, reducer, parameter bridge, event ring, engine, mixer, and audio callback as the running application",
 			]
 		avoid: [
-			"synthesis engines other than SoundFont",
+			"alternate running synthesis engines, the Braids C++/FFI wrapper, a prepared multi-engine rack, engine selection, or synthesis fallback in this increment",
 			"effects other than the one global reverb and one global delay",
 			"sequencer, transport, timeline, pattern, clip, or song-editing domain models",
 			"presets, sessions, modulation matrices, per-channel inserts, effect chains, buses, or plugin hosting",
@@ -65,7 +65,60 @@ project: {
 			goals: ["goal.play_test_song", "goal.control_synth"]
 				description: "the fixed MIDI fixture drives the real SoundFont, control, mixer, and audio path"
 			}
-			demo_scene: {
+				capability_schema: {
+				scope: "project"
+				kind: "integration"
+				command: ["cargo", "test", "--test", "capability_schema", "--", "--nocapture"]
+				assertions: [
+					{kind: "exit_code", expected: 0},
+					{kind: "stdout_contains", pattern: "CREST_ACCEPTANCE capability_schema passed"},
+				]
+				resources: [
+					"valueObject.Synth.CapabilityId",
+					"valueObject.Synth.ParameterId",
+					"valueObject.Synth.AssetReference",
+					"valueObject.Synth.ParameterValue",
+					"valueObject.Synth.ParameterAssignment",
+					"valueObject.Synth.ParameterSpec",
+					"valueObject.Synth.CapabilityDescriptor",
+					"valueObject.Synth.InstrumentConfig",
+					"valueObject.Synth.CapabilityRegistry",
+					"port.Synth.InstrumentCapabilityProvider",
+					"adapter.HiDefSoundFontCapability",
+					"aggregate.Synth.Patch",
+					"aggregate.Control.AppState",
+					"domainService.Control.StateProjector",
+					"applicationService.Testing.AutomaticMidiTest",
+					"asset.BehavioralAcceptanceTests",
+				]
+				capabilities: ["capability.instrument_capability_model", "capability.one_way_parameter_control", "capability.soundfont_audio"]
+				goals: ["goal.control_synth"]
+					description: "the exact installed SoundFont descriptor and generic fixture Patch configs survive reducer installation, serialization, and projection while malformed and unknown configs fail without fallback"
+				}
+				control_dispatch_performance: {
+					scope: "project"
+					kind: "integration"
+					command: ["cargo", "test", "--test", "control_dispatch_performance", "--", "--nocapture"]
+					assertions: [
+						{kind: "exit_code", expected: 0},
+						{kind: "stdout_contains", pattern: "CREST_ACCEPTANCE control_dispatch_performance passed"},
+					]
+					resources: [
+						"aggregate.Control.AppState",
+						"domainService.Control.StateProjector",
+						"applicationService.Control.AppLoop",
+						"valueObject.Control.EventLog",
+						"valueObject.Control.StateSnapshot",
+						"valueObject.Control.StateTree",
+						"valueObject.Control.TextProjection",
+						"valueObject.RealTime.ParameterSnapshot",
+						"asset.BehavioralAcceptanceTests",
+					]
+					capabilities: ["capability.one_way_parameter_control", "capability.live_observable_demo"]
+					goals: ["goal.control_synth", "goal.observe_live_synth"]
+					description: "the production fifteen-Patch reducer/projector/journal/publication path dispatches 512 MIDI events within 50 ms while lazy materialization remains exactly equal to eager canonical projections"
+				}
+				demo_scene: {
 				scope: "project"
 				kind: "integration"
 				command: ["cargo", "test", "--test", "exhaustive_demo_scene", "--", "--nocapture"]
@@ -104,6 +157,7 @@ project: {
 					"asset.BehavioralAcceptanceTests",
 				]
 				capabilities: [
+					"capability.instrument_capability_model",
 					"capability.observable_demo_scene",
 					"capability.one_way_parameter_control",
 					"capability.global_mix",
@@ -183,8 +237,8 @@ project: {
 					"applicationService.Testing.ExhaustiveGuiDemo",
 					"asset.BehavioralAcceptanceTests",
 				]
-				capabilities: ["capability.observable_demo_scene"]
-				goals: ["goal.observe_synth"]
+				capabilities: ["capability.instrument_capability_model", "capability.observable_demo_scene"]
+				goals: ["goal.control_synth", "goal.observe_synth"]
 				description: "typed production surface descriptors and discovered serialized leaves are exactly equal with no missing or unexpected identifiers"
 			}
 			egui_context: {
@@ -252,7 +306,7 @@ project: {
 		{text: "after an event is accepted, the application commits AppState before deriving serialized state, text, parameter snapshots, or audio commands", meta: rationale: "effects always describe accepted state"},
 		{text: "the audio callback never allocates, locks, blocks, performs file or device discovery I/O, logs, or destroys owned state", meta: rationale: "the callback has a hard deadline"},
 		{text: "AudioBoundary carries discrete MIDI commands, latest control values, and deferred destruction through bounded lock-free primitives", meta: rationale: "the real-time seam is explicit"},
-		{text: "the only synthesis source is a SoundFont engine configured from ./sf2/HiDef.sf2", meta: rationale: "patch behavior has one unambiguous source"},
+		{text: "Patch and instrument config are capability-polymorphic, while the only installed renderer in this increment is the SoundFont engine configured from ./sf2/HiDef.sf2; unknown capabilities fail without fallback", meta: rationale: "the domain can evolve without pretending an unavailable engine can render"},
 		{text: "the only effects are one reverb and one delay shared globally by every channel", meta: rationale: "the signal path stays small"},
 		{text: "the MIDI-file module is an automatic test input adapter, not a sequencer or product transport", meta: rationale: "crest-synth remains an instrument"},
 	]

@@ -44,7 +44,7 @@ project: contexts: Control: {
 			"accepted records increment generation exactly once and their stateHashAfter, parameterGeneration, projectionStateHash, and emitted StateAccepted generation agree",
 			"rejected records keep generation and state hash identical and emit no parameter publication or audio command",
 			"records contain domain identifiers and bounded numeric payloads, never raw window objects, device handles, audio buffers, or nondeterministic timestamps",
-			"serializedLeafDescriptor is compared against the union of discriminating accepted and rejected EventRecords covering every input tag, Direction payload, MIDI payload, Patch installation field, rejection, and emitted-event tag; discovery from one convenient record is invalid",
+			"serializedLeafDescriptor is compared against the union of discriminating accepted and rejected EventRecords covering every input tag, Direction payload, MIDI payload, Patch installation capability/config field, rejection, and emitted-event tag; discovery from one convenient record is invalid",
 		]
 		contributesTo: [{capability: "capability.observable_demo_scene", contribution: "makes every input, reducer decision, and emitted effect machine-readable for debugging"}]
 	}
@@ -74,7 +74,8 @@ project: contexts: Control: {
 		state: {
 			schemaVersion: "u32"
 			generation: "u64"
-			patches: "Vec<{id, name, channel, instrument: {bank, program, percussion}, parameters: {gainDb, pan, reverbSend, delaySend}}>"
+			capabilities: "Vec<CapabilityDescriptor>"
+			patches: "Vec<{id, name, channel, instrument: {capabilityId, values: Vec<{parameterId, value}>, assetReferences: Vec<{parameterId, reference}>}, parameters: {gainDb, pan, reverbSend, delaySend}}>"
 			global: "{masterGainDb, reverbRoomSize, reverbDamping, reverbReturn, delayMilliseconds, delayFeedback, delayReturn}"
 			selection: "{section, patchIndex, parameterIndex}"
 			projection: "{body, selectedLine, stateHash}"
@@ -82,13 +83,17 @@ project: contexts: Control: {
 			serializedLeafDescriptor: "typed stable paths derived beside the StateTree serializer"
 		}
 		invariants: [
-			"the tree contains every currently serialized AppState, Patch, SoundFontInstrument, ChannelParameters, GlobalParameters, Selection, TextProjection, and ParameterSnapshot property without an opaque debug-string substitute",
+			"the tree contains every currently serialized CapabilityDescriptor, ParameterSpec, Patch, InstrumentConfig, ParameterAssignment, AssetReference, ChannelParameters, GlobalParameters, Selection, TextProjection, and ParameterSnapshot property without an opaque debug-string substitute",
+			"capabilities exactly equal the installed CapabilityRegistry in stable order and every Patch InstrumentConfig resolves to exactly one listed descriptor",
 			"patch order and numeric values exactly match StateSnapshot and ParameterSnapshot",
 			"projection.stateHash equals the canonical StateSnapshot hash and parameters.generation equals generation",
 			"serialization is deterministic JSON with a version field and stable property names",
 			"serializedLeafDescriptor exactly equals recursively discovered JSON leaf paths in both directions for a discriminating multi-Patch tree",
 		]
-		contributesTo: [{capability: "capability.observable_demo_scene", contribution: "exposes the complete state/projection tree for LLM observation and diagnosis"}]
+		contributesTo: [
+			{capability: "capability.instrument_capability_model", contribution: "exposes the installed descriptors and generic Patch configs as exact canonical data"},
+			{capability: "capability.observable_demo_scene", contribution: "exposes the complete state/projection tree for LLM observation and diagnosis"},
+		]
 	}
 
 	valueObjects: StateSnapshot: {
@@ -97,7 +102,11 @@ project: contexts: Control: {
 			json: "String"
 			hash: "String"
 		}
-		invariants: ["JSON contains every Patch, every ChannelParameters value, GlobalParameters, and Selection", "decode(encode(state)) equals state"]
+			invariants: [
+				"JSON contains the complete installed CapabilityRegistry, every Patch InstrumentConfig and asset reference, every ChannelParameters value, GlobalParameters, and Selection",
+				"decode(encode(state)) equals state",
+				"a MIDI-only accepted generation may share the immutable canonical JSON suffix and defer full String materialization, but requested JSON and its hash exactly equal eager serialization of the same AppState",
+			]
 		contributesTo: [{capability: "capability.one_way_parameter_control", contribution: "makes accepted state serialization explicit and testable"}]
 	}
 
@@ -111,7 +120,8 @@ project: contexts: Control: {
 		}
 		invariants: [
 			"the body begins with KEYS: W/S parameters | A/D channels | K+direction edit",
-			"each Patch appears once in stable AppState order with id, name, channel, bank, program, percussion, gainDb, pan, reverbSend, and delaySend",
+			"each Patch appears once in stable AppState order with id, name, channel, capability id and label, every InstrumentConfig value/asset rendered in CapabilityDescriptor order, gainDb, pan, reverbSend, and delaySend",
+			"the text projector walks CapabilityDescriptor and InstrumentConfig generically and contains no SoundFont/Braids capability-id branch or duplicate engine-specific field list",
 			"Patch sections are separated by the literal ------------------------------------------------------------",
 			"the final GLOBAL section lists masterGainDb, reverbRoomSize, reverbDamping, reverbReturn, delayMilliseconds, delayFeedback, and delayReturn",
 			"the selected line begins with > and every other parameter line begins with one space",
@@ -122,8 +132,9 @@ project: contexts: Control: {
 
 	aggregates: AppState: {
 		root: true
-		purpose: "own installed Patches, global parameters, selection, and the accepted generation"
+		purpose: "own the immutable installed capability registry, installed Patches, global parameters, selection, and accepted generation"
 		state: {
+			capabilities: "CapabilityRegistry"
 			patches: "Vec<Patch>"
 			global: "GlobalParameters"
 			selection: "Selection { section: Patch | Global, patchIndex: usize, parameterIndex: usize }"
@@ -133,46 +144,57 @@ project: contexts: Control: {
 		events: StateAccepted: {generation: "u64"}
 		invariants: [
 			"Apply is the only mutation method",
+			"CapabilityRegistry is supplied at construction, is nonempty, remains immutable, and the current increment contains exactly instrument.soundfont.hidef",
 			"Navigate changes only Selection",
 			"bare Up/Down moves between parameters and bare Left/Right moves between Patch sections plus the GLOBAL section",
 			"Adjust changes exactly one selected value and clamps it to the owning value object's invariant",
 			"Adjust toward a boundary when the selected value is already at that boundary is rejected as ParameterAtBoundary and leaves state identical",
 			"Adjust Left/Right is the fine decrement/increment and Adjust Down/Up is the coarse decrement/increment",
-			"InstallPatches preserves fixture discovery order, rejects duplicate MidiChannels or more than 16 Patches, and is rejected after startup",
-			"Midi does not mutate synth parameters; it yields one AudioCommand effect after state acceptance",
+			"InstallPatches preserves fixture discovery order, rejects duplicate MidiChannels, more than 16 Patches, unknown CapabilityIds, undeclared/missing/invalid parameter assignments, invalid asset references, or duplicate ParameterIds as InvalidInstrumentConfig, and is rejected after startup",
+				"Midi validates its Patch target read-only, preserves the exact CapabilityRegistry and Patch storage, changes only generation, and yields one AudioCommand effect after state acceptance",
 			"every accepted event increments generation once and every rejected event leaves state identical",
 		]
 		meta: rules: [
 			"publish one typed EventRejection descriptor beside the enum with a unique stable name and reachability of Scene or ReducerTable",
-			"classify InstallationClosed, TooManyPatches, DuplicateMidiChannel, UnknownPatch, and ParameterAtBoundary as externally constructible; classify NoPatchesInstalled, InvalidSelection, InvalidParameterValue, and GenerationOverflow as controlled reducer-table cases",
+			"classify InstallationClosed, TooManyPatches, DuplicateMidiChannel, InvalidInstrumentConfig, UnknownPatch, and ParameterAtBoundary as externally constructible; classify NoPatchesInstalled, InvalidSelection, InvalidParameterValue, and GenerationOverflow as controlled reducer-table cases",
 			"the exact descriptor set must equal the enum set before scene/table partitioning, and each variant is asserted by exactly one declared test path",
 		]
-		validations: [{kind: "test", command: ["cargo", "test", "app_state"], description: "navigation, K-modified adjustment, bounds, installation, and MIDI effects are deterministic"}]
-		contributesTo: [{capability: "capability.one_way_parameter_control", contribution: "is the single source of mutable control state"}]
+		validations: [{kind: "test", command: ["cargo", "test", "app_state"], description: "capability-aware installation, navigation, K-modified adjustment, bounds, and MIDI effects are deterministic"}]
+		contributesTo: [
+			{capability: "capability.instrument_capability_model", contribution: "validates every installed Patch against one immutable descriptor registry through the canonical reducer"},
+			{capability: "capability.one_way_parameter_control", contribution: "is the single source of mutable control state"},
+		]
 	}
 
 	domainServices: StateProjector: {
 		purpose: "derive serialization, text, fixed real-time parameters, and the canonical observation tree from one accepted AppState"
 		uses: [
 			"aggregate.Control.AppState",
+			"valueObject.Synth.CapabilityRegistry",
+			"valueObject.Synth.CapabilityDescriptor",
+			"valueObject.Synth.InstrumentConfig",
 			"valueObject.Control.StateSnapshot",
 			"valueObject.Control.TextProjection",
 			"valueObject.Control.StateTree",
 			"valueObject.RealTime.ParameterSnapshot",
 		]
-		meta: rules: [
-			"serialize AppState deterministically with serde_json and verify round-trip identity in tests",
-			"derive TextProjection only from StateSnapshot plus the typed selection",
-			"copy every audio parameter into a fixed-capacity ParameterSnapshot and reject startup if Patch count exceeds MAX_PATCHES",
-			"derive StateTree from the exact same StateSnapshot, TextProjection, and ParameterSnapshot without reading or mutating any second state copy",
-			"for a discriminating projection, compare every Patch identity/instrument/parameter value, every global value, the selection marker, selectedLine, and stateHash exactly against the accepted state; nonempty text or mere property presence is not sufficient",
+			meta: rules: [
+				"construct one canonical borrowed serialized-state view per eager projection, serialize AppState deterministically with serde_json, and verify round-trip identity in tests rather than deserializing Crest's own JSON on the production dispatch path",
+				"derive TextProjection only from StateSnapshot, the installed CapabilityRegistry, and typed selection; render instrument values by descriptor order and ParameterId rather than capability-specific matching",
+				"copy every audio parameter into a fixed-capacity ParameterSnapshot and reject startup if Patch count exceeds MAX_PATCHES",
+				"derive StateTree from the exact same StateSnapshot, TextProjection, and ParameterSnapshot without reading or mutating any second state copy",
+				"when accepted Midi changes only generation, share the prior immutable state suffix, text body, and StateTree template; advance snapshot, text, fixed parameters, and tree coherently and materialize large JSON only on observation",
+				"force generation-only snapshot and tree JSON to materialize in equivalence tests and require byte-for-byte equality with an eager projection from the same accepted AppState",
+			"for a discriminating projection, compare every installed capability/parameter descriptor, Patch identity, InstrumentConfig value/asset, Patch parameter value, global value, selection marker, selectedLine, and stateHash exactly against accepted state; nonempty text or mere property presence is not sufficient",
 			"publish production-owned typed surface/leaf descriptors beside their enum or serializer and require exact equality with recursively discovered EventLog, EventRecord, StateTree, TextProjection, and ParameterSnapshot paths",
 		]
-		validations: [
-			{kind: "test", command: ["cargo", "test", "state_projector_exact_projection_values"], description: "every rendered Patch/global value, selection marker, selected line, and hash exactly matches one accepted state"},
-			{kind: "test", command: ["cargo", "test", "schema_derived_current_surface"], description: "production-owned typed descriptors exactly equal discovered serialized leaves with no missing or unexpected paths"},
+			validations: [
+				{kind: "test", command: ["cargo", "test", "state_projector_exact_projection_values"], description: "every rendered Patch/global value, selection marker, selected line, and hash exactly matches one accepted state"},
+				{kind: "integration", command: ["cargo", "test", "--test", "control_dispatch_performance", "--", "--nocapture"], description: "the complete fifteen-Patch production control path dispatches 512 MIDI events within 50 ms and deferred projections equal eager canonical output"},
+				{kind: "test", command: ["cargo", "test", "schema_derived_current_surface"], description: "production-owned typed descriptors exactly equal discovered serialized leaves with no missing or unexpected paths"},
 		]
 		contributesTo: [
+			{capability: "capability.instrument_capability_model", contribution: "derives generic descriptor/config serialization and text from one accepted state"},
 			{capability: "capability.one_way_parameter_control", contribution: "keeps text and audio projections consistent with serialized accepted state"},
 			{capability: "capability.realtime_execution", contribution: "converts control-owned collections into bounded callback values"},
 			{capability: "capability.observable_demo_scene", contribution: "builds the canonical complete tree from one coherent accepted generation"},
@@ -202,8 +224,10 @@ project: contexts: Control: {
 			"record every accepted and rejected input exactly once on the control thread; observation occurs after the outcome is known and never runs in the audio callback",
 			"on rejection perform no state serialization, parameter publication, command enqueue, or view change, but append one rejected EventRecord proving generation and state hash were unchanged",
 			"EventRejection is a nonfatal domain result for an input event; callers may report or ignore it but must remain able to dispatch later events",
-			"accepted EventRecords include the input, StateAccepted generation, snapshot hashes, parameter publication, projection identity, and any AudioCommand descriptor",
-			"currentStateTree is derived from the same accepted state and projections without exposing mutable AppState",
+				"accepted EventRecords include the input, StateAccepted generation, snapshot hashes, parameter publication, projection identity, and any AudioCommand descriptor",
+				"accepted Midi still passes through AppState.apply and produces every generation-coherent logical projection, but AppLoop selects the projector's generation-only sharing path because no canonical parameter, selection, capability, or Patch data changed",
+				"currentStateTree is derived from the same accepted state and projections without exposing mutable AppState",
+				"control-side verifiers borrow EventLog for repeated reads and clone the complete retained history only when an owned final report is required",
 			"views and input adapters can call only dispatch and immutable currentText/currentStateTree/eventLog reads; they never receive mutable AppState",
 		]
 		validations: [
@@ -211,6 +235,7 @@ project: contexts: Control: {
 			{kind: "test", command: ["cargo", "test", "control_observation_trace"], description: "accepted and rejected event records form an exact hash/generation chain and the state tree contains every current property"},
 		]
 		contributesTo: [
+			{capability: "capability.instrument_capability_model", contribution: "keeps capability-aware Patch installation and projection inside the existing one-way loop"},
 			{capability: "capability.one_way_parameter_control", contribution: "orchestrates the complete reducer-to-projection-to-audio flow"},
 			{capability: "capability.realtime_execution", contribution: "publishes through the two explicit real-time ports"},
 			{capability: "capability.observable_demo_scene", contribution: "records the production reducer's complete event/state/effect trace"},

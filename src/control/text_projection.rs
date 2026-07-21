@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 /// The immutable text view derived from one accepted state snapshot.
 ///
 /// Formatting and selection are calculated by the state projector. This value
@@ -5,9 +7,9 @@
 /// hash together so view adapters cannot observe mismatched projection parts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextProjection {
-    body: String,
+    body: Arc<str>,
     selected_line: usize,
-    state_hash: String,
+    state_hash: Arc<str>,
 }
 
 impl TextProjection {
@@ -23,9 +25,18 @@ impl TextProjection {
     /// projector from a single snapshot.
     pub fn new(body: String, selected_line: usize, state_hash: String) -> Self {
         Self {
-            body,
+            body: Arc::from(body),
             selected_line,
-            state_hash,
+            state_hash: Arc::from(state_hash),
+        }
+    }
+
+    /// Reuses an unchanged body for a MIDI-only accepted generation.
+    pub(crate) fn with_state_hash(&self, state_hash: String) -> Self {
+        Self {
+            body: Arc::clone(&self.body),
+            selected_line: self.selected_line,
+            state_hash: Arc::from(state_hash),
         }
     }
 

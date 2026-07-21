@@ -2,6 +2,7 @@ use crate::control::app_event::{AppEvent, Direction};
 use crate::mixer::channel_parameters::{ChannelParameter, ChannelParameters};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::audio_command::AudioCommand;
+use crate::synth::instrument_capability::CapabilityRegistry;
 use crate::synth::patch::Patch;
 use core::fmt;
 
@@ -98,6 +99,7 @@ pub enum EventRejection {
     InstallationClosed,
     TooManyPatches,
     DuplicateMidiChannel,
+    InvalidInstrumentConfig,
     NoPatchesInstalled,
     UnknownPatch,
     InvalidSelection,
@@ -148,7 +150,7 @@ impl EventRejectionDescriptor {
     }
 }
 
-const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 9] = [
+const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 10] = [
     EventRejectionDescriptor::new(
         EventRejection::InstallationClosed,
         "installationClosed",
@@ -163,6 +165,11 @@ const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 9] = [
         EventRejection::DuplicateMidiChannel,
         "duplicateMidiChannel",
         EventRejectionReachability::ReducerTable,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::InvalidInstrumentConfig,
+        "invalidInstrumentConfig",
+        EventRejectionReachability::Scene,
     ),
     EventRejectionDescriptor::new(
         EventRejection::NoPatchesInstalled,
@@ -208,6 +215,7 @@ impl EventRejection {
             Self::InstallationClosed => "installationClosed",
             Self::TooManyPatches => "tooManyPatches",
             Self::DuplicateMidiChannel => "duplicateMidiChannel",
+            Self::InvalidInstrumentConfig => "invalidInstrumentConfig",
             Self::NoPatchesInstalled => "noPatchesInstalled",
             Self::UnknownPatch => "unknownPatch",
             Self::InvalidSelection => "invalidSelection",
@@ -224,6 +232,9 @@ impl fmt::Display for EventRejection {
             Self::InstallationClosed => "patch installation is permitted only at startup",
             Self::TooManyPatches => "no more than 16 Patches may be installed",
             Self::DuplicateMidiChannel => "installed Patches must use distinct MIDI channels",
+            Self::InvalidInstrumentConfig => {
+                "an installed Patch instrument config does not match the capability registry"
+            }
             Self::NoPatchesInstalled => "no Patch is available for the selected operation",
             Self::UnknownPatch => "the MIDI event targets a Patch that is not installed",
             Self::InvalidSelection => "the current selection is outside the installed state",
@@ -240,13 +251,19 @@ impl std::error::Error for EventRejection {}
 /// Exercises rejection variants that cannot occur after the fixed scene has
 /// installed its valid Patch set. The exhaustive verifier unions these measured
 /// reducer-table outcomes with the scene's public rejection records.
-pub(crate) fn exercise_reducer_table_rejections() -> [EventRejection; 6] {
-    fn probe_patch(id: u32, channel: u8) -> Patch {
+pub(crate) fn exercise_reducer_table_rejections(
+    capabilities: &CapabilityRegistry,
+    instrument_config: &crate::synth::instrument_capability::InstrumentConfig,
+) -> [EventRejection; 7] {
+    fn probe_patch(
+        id: u32,
+        channel: u8,
+        instrument_config: &crate::synth::instrument_capability::InstrumentConfig,
+    ) -> Patch {
         Patch::new(
             crate::kernel::patch_id::PatchId::new(id).expect("probe PatchId is valid"),
             format!("Reducer probe {id}"),
-            crate::synth::sound_font_instrument::SoundFontInstrument::new(0, 0, false)
-                .expect("probe instrument is valid"),
+            instrument_config.clone(),
             crate::kernel::midi_channel::MidiChannel::new(channel).expect("probe channel is valid"),
             ChannelParameters::default(),
         )
@@ -255,31 +272,47 @@ pub(crate) fn exercise_reducer_table_rejections() -> [EventRejection; 6] {
     let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5)
         .expect("reducer probe globals are valid");
 
-    let mut oversized = AppState::new(global);
+    let mut oversized = AppState::new(capabilities.clone(), global);
     let too_many = oversized
         .apply(AppEvent::InstallPatches(
             (1..=17)
-                .map(|id| probe_patch(id, ((id - 1) % 16) as u8))
+                .map(|id| probe_patch(id, ((id - 1) % 16) as u8, instrument_config))
                 .collect(),
         ))
         .expect_err("seventeen Patches exceed the reducer bound");
 
-    let mut duplicate = AppState::new(global);
+    let mut duplicate = AppState::new(capabilities.clone(), global);
     let duplicate_channel = duplicate
         .apply(AppEvent::InstallPatches(vec![
-            probe_patch(1, 0),
-            probe_patch(2, 0),
+            probe_patch(1, 0, instrument_config),
+            probe_patch(2, 0, instrument_config),
         ]))
         .expect_err("duplicate channels violate installation");
 
-    let mut no_patches = AppState::new(global);
+    let invalid_config = crate::synth::instrument_capability::InstrumentConfig::from_parts(
+        crate::synth::capability_id::CapabilityId::new("instrument.unknown")
+            .expect("probe capability id is valid"),
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut invalid = AppState::new(capabilities.clone(), global);
+    let invalid_instrument = invalid
+        .apply(AppEvent::InstallPatches(vec![probe_patch(
+            1,
+            0,
+            &invalid_config,
+        )]))
+        .expect_err("unknown config violates registry installation");
+
+    let mut no_patches = AppState::new(capabilities.clone(), global);
     no_patches.selection = Selection::patch(0);
     let no_patch = no_patches
         .apply(AppEvent::Adjust(Direction::Right))
         .expect_err("an invalid Patch selection has no installed Patch");
 
     let mut invalid_selection = AppState {
-        patches: vec![probe_patch(1, 0)],
+        capabilities: capabilities.clone(),
+        patches: vec![probe_patch(1, 0, instrument_config)],
         global,
         selection: Selection {
             section: SelectionSection::Patch,
@@ -297,7 +330,7 @@ pub(crate) fn exercise_reducer_table_rejections() -> [EventRejection; 6] {
         .map_err(|_| EventRejection::InvalidParameterValue)
         .expect_err("a non-finite typed value is rejected");
 
-    let mut overflow = AppState::new(global);
+    let mut overflow = AppState::new(capabilities.clone(), global);
     overflow.generation = u64::MAX;
     let generation_overflow = overflow
         .apply(AppEvent::Navigate(Direction::Down))
@@ -306,6 +339,7 @@ pub(crate) fn exercise_reducer_table_rejections() -> [EventRejection; 6] {
     [
         too_many,
         duplicate_channel,
+        invalid_instrument,
         no_patch,
         invalid_selection,
         invalid_parameter,
@@ -315,10 +349,12 @@ pub(crate) fn exercise_reducer_table_rejections() -> [EventRejection; 6] {
 
 /// The single source of mutable control state.
 ///
-/// All state transitions are transactional: apply reduces into a clone and
-/// replaces self only after the complete event has been accepted.
+/// State-changing transitions are transactional: apply reduces into a clone and
+/// replaces self only after the complete event has been accepted. MIDI validates
+/// its target read-only, then commits only the next generation and one command.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
+    capabilities: CapabilityRegistry,
     patches: Vec<Patch>,
     global: GlobalParameters,
     selection: Selection,
@@ -327,8 +363,9 @@ pub struct AppState {
 
 impl AppState {
     /// Creates startup state before the fixture Patch set is installed.
-    pub fn new(global: GlobalParameters) -> Self {
+    pub fn new(capabilities: CapabilityRegistry, global: GlobalParameters) -> Self {
         Self {
+            capabilities,
             patches: Vec::new(),
             global,
             selection: Selection::global(),
@@ -338,6 +375,10 @@ impl AppState {
 
     pub fn patches(&self) -> &[Patch] {
         &self.patches
+    }
+
+    pub const fn capabilities(&self) -> &CapabilityRegistry {
+        &self.capabilities
     }
 
     pub const fn global(&self) -> &GlobalParameters {
@@ -361,6 +402,17 @@ impl AppState {
             .generation
             .checked_add(1)
             .ok_or(EventRejection::GenerationOverflow)?;
+
+        if let AppEvent::Midi { patch_id, message } = event {
+            if !self.patches.iter().any(|patch| patch.id() == patch_id) {
+                return Err(EventRejection::UnknownPatch);
+            }
+            self.generation = generation;
+            return Ok(ApplyOutcome {
+                accepted: StateAccepted { generation },
+                audio_command: Some(AudioCommand::PatchMidi { patch_id, message }),
+            });
+        }
 
         let mut next = self.clone();
         let audio_command = next.reduce(event)?;
@@ -387,12 +439,7 @@ impl AppState {
                 self.install_patches(patches)?;
                 Ok(None)
             }
-            AppEvent::Midi { patch_id, message } => {
-                if !self.patches.iter().any(|patch| patch.id() == patch_id) {
-                    return Err(EventRejection::UnknownPatch);
-                }
-                Ok(Some(AudioCommand::PatchMidi { patch_id, message }))
-            }
+            AppEvent::Midi { .. } => unreachable!("MIDI is reduced by apply's read-only fast path"),
         }
     }
 
@@ -402,6 +449,13 @@ impl AppState {
         }
         if patches.len() > MAX_PATCH_COUNT {
             return Err(EventRejection::TooManyPatches);
+        }
+        if patches.iter().any(|patch| {
+            self.capabilities
+                .validate_config(patch.instrument_config())
+                .is_err()
+        }) {
+            return Err(EventRejection::InvalidInstrumentConfig);
         }
         for (index, patch) in patches.iter().enumerate() {
             if patches[..index]
@@ -576,10 +630,20 @@ fn decimal_scale(step: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::testing::automatic_midi_test::create_soundfont_config;
+
+    fn provider() -> HiDefSoundFontCapability {
+        HiDefSoundFontCapability::new().unwrap()
+    }
+
+    fn registry() -> CapabilityRegistry {
+        provider().registry().unwrap()
+    }
 
     fn global_parameters() -> GlobalParameters {
         GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap()
@@ -593,14 +657,18 @@ mod tests {
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
-            SoundFontInstrument::new(0, id as u8, false).unwrap(),
+            create_soundfont_config(
+                &provider(),
+                SoundFontInstrument::new(0, id as u8, false).unwrap(),
+            )
+            .unwrap(),
             MidiChannel::new(channel).unwrap(),
             ChannelParameters::new(gain_db, 0.0, 0.0, 0.0).unwrap(),
         )
     }
 
     fn installed_state() -> AppState {
-        let mut state = AppState::new(global_parameters());
+        let mut state = AppState::new(registry(), global_parameters());
         state
             .apply(AppEvent::InstallPatches(vec![
                 patch(1, 0.0),
@@ -652,7 +720,7 @@ mod tests {
     #[test]
     fn rejection_descriptor_is_unique_and_reducer_table_exercises_its_partition() {
         let descriptor = EventRejection::surface_descriptor();
-        assert_eq!(descriptor.len(), 9);
+        assert_eq!(descriptor.len(), 10);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(!descriptor[..index].iter().any(|prior| prior.rejection()
                 == entry.rejection()
@@ -661,10 +729,21 @@ mod tests {
 
         let expected = descriptor
             .iter()
-            .filter(|entry| entry.reachability() == EventRejectionReachability::ReducerTable)
+            .filter(|entry| {
+                entry.reachability() == EventRejectionReachability::ReducerTable
+                    || entry.rejection() == EventRejection::InvalidInstrumentConfig
+            })
             .map(|entry| entry.rejection())
             .collect::<Vec<_>>();
-        assert_eq!(exercise_reducer_table_rejections().as_slice(), expected);
+        let state = installed_state();
+        assert_eq!(
+            exercise_reducer_table_rejections(
+                state.capabilities(),
+                state.patches()[0].instrument_config(),
+            )
+            .as_slice(),
+            expected
+        );
     }
 
     #[test]
@@ -681,7 +760,7 @@ mod tests {
 
     #[test]
     fn app_state_installation_preserves_order_and_is_startup_only() {
-        let mut state = AppState::new(global_parameters());
+        let mut state = AppState::new(registry(), global_parameters());
         let outcome = state
             .apply(AppEvent::InstallPatches(vec![
                 patch(2, -3.0),
@@ -704,7 +783,7 @@ mod tests {
 
     #[test]
     fn app_state_installation_rejects_duplicate_midi_channels() {
-        let mut state = AppState::new(global_parameters());
+        let mut state = AppState::new(registry(), global_parameters());
         let initial = state.clone();
 
         assert_eq!(
@@ -718,8 +797,38 @@ mod tests {
     }
 
     #[test]
+    fn app_state_rejects_invalid_instrument_config_atomically_and_remains_processable() {
+        let mut state = AppState::new(registry(), global_parameters());
+        let initial = state.clone();
+        let invalid_config = crate::synth::InstrumentConfig::from_parts(
+            crate::synth::CapabilityId::new("instrument.unknown").unwrap(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let invalid_patch = Patch::new(
+            PatchId::new(1).unwrap(),
+            "Invalid".to_owned(),
+            invalid_config,
+            MidiChannel::new(0).unwrap(),
+            ChannelParameters::default(),
+        );
+
+        assert_eq!(
+            state.apply(AppEvent::InstallPatches(vec![invalid_patch])),
+            Err(EventRejection::InvalidInstrumentConfig)
+        );
+        assert_eq!(state, initial);
+
+        let accepted = state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert_eq!(accepted.accepted().generation(), 1);
+        assert_eq!(state.generation(), 1);
+        assert_eq!(state.capabilities(), initial.capabilities());
+        assert!(state.patches().is_empty());
+    }
+
+    #[test]
     fn app_state_installation_rejects_more_than_sixteen_patches() {
-        let mut state = AppState::new(global_parameters());
+        let mut state = AppState::new(registry(), global_parameters());
         let initial = state.clone();
         let patches = (1..=17)
             .map(|id| patch_on_channel(id, 0.0, ((id - 1) % 16) as u8))
@@ -793,6 +902,8 @@ mod tests {
         .unwrap();
         let patches = state.patches().to_vec();
         let global = *state.global();
+        let registry_address = state.capabilities() as *const CapabilityRegistry;
+        let patch_storage_address = state.patches().as_ptr();
 
         let outcome = state.apply(AppEvent::Midi { patch_id, message }).unwrap();
 
@@ -803,6 +914,8 @@ mod tests {
         );
         assert_eq!(state.patches(), patches.as_slice());
         assert_eq!(*state.global(), global);
+        assert_eq!(state.capabilities() as *const _, registry_address);
+        assert_eq!(state.patches().as_ptr(), patch_storage_address);
 
         let accepted = state.clone();
         assert_eq!(
@@ -813,5 +926,13 @@ mod tests {
             Err(EventRejection::UnknownPatch)
         );
         assert_eq!(state, accepted);
+
+        state.generation = u64::MAX;
+        let overflow = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Midi { patch_id, message }),
+            Err(EventRejection::GenerationOverflow)
+        );
+        assert_eq!(state, overflow);
     }
 }

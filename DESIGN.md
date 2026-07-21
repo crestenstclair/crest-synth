@@ -114,6 +114,16 @@ Views receive an immutable view model and event sink, never mutable application 
 
 MIDI APIs may invoke their own callbacks. Each producer gets its own SPSC queue, or events are merged on the control side. A single-producer queue must never be shared casually by UI, MIDI, and worker producers.
 
+The control loop is outside the hard-real-time callback, but it is still a
+performance path. Accepted performance MIDI must not deep-clone immutable
+capability/Patch state, deserialize JSON produced by the same process, rebuild
+an unchanged text body, or eagerly serialize a complete observation tree for
+every note. It validates through `AppState::apply`, advances the canonical
+generation, publishes the fixed parameter snapshot and discrete command, and
+derives generation-consistent snapshot/text/tree values by sharing immutable
+projection storage. If an observer requests deferred JSON, it must be
+byte-for-byte equal to an eager projection of that same `AppState`.
+
 ### Real-time boundary
 
 Different data has different delivery semantics:
@@ -172,6 +182,14 @@ At supported buffer sizes:
 - a 30-minute performance-and-edit soak has no underruns on reference hardware;
 - all output is finite, bounded, and denormal-safe;
 - MIDI ordering is preserved and events use sample offsets inside the block.
+
+The production control-path acceptance fixture installs fifteen Patches and
+dispatches 512 MIDI events through the reducer, projector, journal, and audio
+publication boundary in at most 50 ms in Cargo's unoptimized test profile. This
+is a regression ceiling, not the desired operating point: the ordinary result
+should be comfortably below it so one 256-event overdue fixture batch does not
+stall a visible frame. The acceptance test must also force a deferred snapshot
+and state tree to materialize and compare exactly with eager canonical output.
 
 The callback updates only bounded counters for underruns, high-water render time, queue pressure, active voices, and clipped/non-finite samples. The UI polls those counters and decimated meters.
 
@@ -243,6 +261,8 @@ MidiEvent {
 `NoteId` keeps note-on, expression, and note-off attached to the same voice. Patch matching is exact; intentional layering produces one delivery per matching patch.
 
 Hardware MIDI is performance input. Standard MIDI files are deterministic fixture/demo inputs, not a hidden sequencer domain. Parsing, tempo conversion, and instrument partitioning stay private to the adapter. The existing fixture may create one patch per bank/program/percussion identity and assign parts to sixteen output tracks deterministically.
+
+Fixture polling uses caller-owned fixed-capacity batches. If control-side work delays a poll so that more events are due than one batch can hold, the adapter fills the available capacity and retains the remaining overdue events for later polls in source order; elapsed-time catch-up must not drop events, allocate in the audio callback, or fail merely because one control tick spans a dense interval.
 
 ### Signal flow
 
@@ -465,6 +485,19 @@ A completed behavior must be distinguishable from a no-op:
 
 Offline render is the deterministic audio proof. Device smoke tests separately validate negotiation and underruns. Construction-only tests, success-token logs, and silent output are not evidence.
 
+`make demo-live` keeps the complete lossless `EventLog` in its typed report for
+verification, but terminal output emits a compact
+`CREST_LIVE_EVENT_LOG_SUMMARY` with counts and chain endpoints. Dumping every
+performance MIDI record into an interactive terminal is not part of the live
+experience; deterministic tests inspect the complete retained journal in
+memory.
+
+The interactive window schedules its next idle frame after 16 ms instead of
+requesting an immediate perpetual repaint. Input and native window events may
+still wake it sooner. `make demo-live` uses the optimized release profile so a
+physical listening demo measures product behavior rather than debug-build
+overhead; deterministic acceptance remains in the unoptimized test profile.
+
 An architecture change must preserve the one-way state path and callback contract, use canonical types, update this document when a durable decision changes, add falsifiable proof, and remove the superseded path in the same change.
 
 ## Durable decisions
@@ -475,6 +508,11 @@ An architecture change must preserve the one-way state path and callback contrac
 - SoundFont is the first concrete engine, not a reason to couple the domain to one library.
 - Braids is the second concrete engine; its C++ DSP remains behind the generic capability and prepared-renderer boundaries.
 - Live input, fixtures, and UI share the canonical reducer/projector path.
+- High-rate MIDI projections share immutable generation-only state and
+  materialize large JSON only when observed; the materialized form remains
+  exactly equal to eager canonical serialization.
+- Interactive rendering is event-driven with a 16 ms idle-frame cadence, and
+  the physical `demo-live` target runs the optimized binary.
 - Discrete events, scalar snapshots, and structural graphs cross the RT boundary differently.
 - Structural audio state is prepared and destroyed off the callback.
 - The authored mixer has sixteen tracks; patch and voice capacity remain explicit runtime bounds.

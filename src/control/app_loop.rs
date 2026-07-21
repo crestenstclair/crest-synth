@@ -7,6 +7,7 @@ use crate::control::state_snapshot::StateSnapshot;
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
+use crate::synth::instrument_capability::CapabilityRegistry;
 
 const DEFAULT_EVENT_LOG_CAPACITY: usize = 1024;
 
@@ -55,7 +56,9 @@ where
     state: AppState,
     projector: StateProjector,
     boundary: Boundary,
+    current_snapshot: StateSnapshot,
     current_text: TextProjection,
+    current_parameters: crate::real_time::parameter_snapshot::ParameterSnapshot,
     current_state_tree: StateTree,
     event_log: EventLog,
 }
@@ -86,7 +89,7 @@ where
         mut boundary: Boundary,
         event_log: EventLog,
     ) -> Result<Self, StateProjectionError> {
-        let (_, current_text, parameters, current_state_tree) =
+        let (current_snapshot, current_text, parameters, current_state_tree) =
             projector.project_with_tree(&state)?;
         boundary.publish_parameters(parameters);
 
@@ -94,7 +97,9 @@ where
             state,
             projector,
             boundary,
+            current_snapshot,
             current_text,
+            current_parameters: parameters,
             current_state_tree,
             event_log,
         })
@@ -113,6 +118,7 @@ where
     ) -> Result<DispatchResult, EventRejection> {
         let generation_before = self.state.generation();
         let state_hash_before = self.current_state_tree.state_hash().to_owned();
+        let midi_generation_only = matches!(event, AppEvent::Midi { .. });
 
         let outcome = match self.state.apply(event.clone()) {
             Ok(outcome) => outcome,
@@ -135,10 +141,21 @@ where
             }
         };
 
-        let (snapshot, text, parameters, state_tree) = self
-            .projector
-            .project_with_tree(&self.state)
-            .expect("an accepted AppState must produce coherent projections");
+        let (snapshot, text, parameters, state_tree) = if midi_generation_only {
+            self.projector
+                .project_midi_generation(
+                    &self.state,
+                    &self.current_snapshot,
+                    &self.current_text,
+                    self.current_parameters,
+                    &self.current_state_tree,
+                )
+                .expect("accepted MIDI must advance coherent generation-only projections")
+        } else {
+            self.projector
+                .project_with_tree(&self.state)
+                .expect("an accepted AppState must produce coherent projections")
+        };
         let accepted = outcome.accepted();
         let audio_command = outcome.audio_command().copied();
         let record = EventRecord::accepted(
@@ -158,7 +175,9 @@ where
         self.boundary.publish_parameters(parameters);
         let boundary_full =
             audio_command.and_then(|command| self.boundary.push_command(command).err());
+        self.current_snapshot = snapshot.clone();
         self.current_text = text;
+        self.current_parameters = parameters;
         self.current_state_tree = state_tree;
         self.boundary.collect();
         self.event_log
@@ -182,9 +201,24 @@ where
         self.current_state_tree.clone()
     }
 
+    /// Returns the immutable capability metadata installed in canonical state.
+    pub const fn capabilities(&self) -> &CapabilityRegistry {
+        self.state.capabilities()
+    }
+
+    pub(crate) const fn state(&self) -> &AppState {
+        &self.state
+    }
+
     /// Returns an immutable snapshot of the bounded control event journal.
     pub fn event_log(&self) -> EventLog {
         self.event_log.clone()
+    }
+
+    /// Borrows the immutable journal for control-side verification without
+    /// cloning retained history.
+    pub const fn event_log_ref(&self) -> &EventLog {
+        &self.event_log
     }
 
     /// Enqueues a bounded system-recovery command without inventing a state
@@ -201,6 +235,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{AppLoop, DispatchResult};
+    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::control::app_event::{AppEvent, Direction};
     use crate::control::app_state::{AppState, EventRejection};
     use crate::control::event_record::{EventOutcome, EventSource};
@@ -215,6 +250,7 @@ mod tests {
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::testing::automatic_midi_test::create_soundfont_config;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Debug, Default, PartialEq)]
@@ -265,17 +301,23 @@ mod tests {
     }
 
     fn patch(id: u32, gain_db: f32) -> Patch {
+        let provider = HiDefSoundFontCapability::new().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
-            SoundFontInstrument::new(0, (id - 1) as u8, false).unwrap(),
+            create_soundfont_config(
+                &provider,
+                SoundFontInstrument::new(0, (id - 1) as u8, false).unwrap(),
+            )
+            .unwrap(),
             MidiChannel::new(((id - 1) % 16) as u8).unwrap(),
             ChannelParameters::new(gain_db, 0.0, 0.0, 0.0).unwrap(),
         )
     }
 
     fn installed_state_with_gains(gains: &[f32]) -> AppState {
-        let mut state = AppState::new(global_parameters());
+        let provider = HiDefSoundFontCapability::new().unwrap();
+        let mut state = AppState::new(provider.registry().unwrap(), global_parameters());
         let patches = gains
             .iter()
             .enumerate()

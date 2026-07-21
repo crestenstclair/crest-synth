@@ -77,6 +77,8 @@ project: contexts: Shell: {
 	applicationServices: StandaloneApplication: {
 		purpose: "compose the control loop, automatic MIDI fixture, exhaustive GUI demo, audio renderer, text window, and device output"
 		uses: [
+			"valueObject.Synth.CapabilityRegistry",
+			"port.Synth.InstrumentCapabilityProvider",
 			"applicationService.Control.AppLoop",
 			"applicationService.Testing.AutomaticMidiTest",
 			"applicationService.Testing.ExhaustiveGuiDemo",
@@ -97,7 +99,8 @@ project: contexts: Shell: {
 			runDemoScene: {input: {degenerate: "Option<DegenerateMode>"}, output: {result: "Result<DemoSceneReport, ApplicationError>"}}
 		}
 		meta: rules: [
-			"startup constructs exactly one SoundFontEngine, loads ./sf2/HiDef.sf2 into it, prepares AudioRenderer, initializes AutomaticMidiTest, opens audio, then opens the text window",
+			"startup obtains the installed CapabilityDescriptor from exactly one InstrumentCapabilityProvider, validates and freezes the CapabilityRegistry in AppState, constructs exactly one SoundFontEngine, loads ./sf2/HiDef.sf2 into it, prepares AudioRenderer, initializes AutomaticMidiTest, opens audio, then opens the text window",
+			"startup fails visibly on duplicate, missing, unknown, or mismatched capability registration and never chooses or substitutes a fallback provider, config, asset, preset, or engine",
 			"normal-mode MIDI begins automatically during startup; each window tick advances only the private test input and collects deferred data",
 			"runLiveDemo uses the exact normal startup order, real EframeTextWindow, physical CpalAudioOutput, HiDef.sf2, and Corridors of Time fixture, then starts LiveDemoRunner on the control side and advances it from the existing window-tick callback",
 			"runLiveDemo injects the same AppLoop into keyboard input, AutomaticMidiTest, LiveDemoRunner, and immutable projection callbacks; none receives mutable AppState and no live-specific reducer, engine, mixer, window, or audio-output implementation exists",
@@ -120,6 +123,7 @@ project: contexts: Shell: {
 			{kind: "integration", command: ["cargo", "test", "standalone_live_demo_composition"], description: "the live mode wires the real window/audio lifetime to the paced runner while a deterministic harness proves final output and no auto-close"},
 		]
 		contributesTo: [
+			{capability: "capability.instrument_capability_model", contribution: "constructs the immutable descriptor registry and injects the provider into the fixture installation path"},
 			{capability: "capability.soundfont_audio", contribution: "composes the running SoundFont audio path"},
 			{capability: "capability.automatic_test_midi", contribution: "starts the fixed test input automatically"},
 			{capability: "capability.one_way_parameter_control", contribution: "joins keyboard events to the shared reducer and immutable text projection"},
@@ -146,6 +150,7 @@ project: adapters: EframeTextWindow: {
 				"the next frame must prove the event-log record, accepted generation, selected parameter value, every unrelated value, TextProjection body/stateHash/selectedLine, and selected-line scroll target all reflect that same dispatched GUI event",
 				"the headless adapter contract begins with a projection containing discriminating values for every Patch and global parameter and inspects egui output for the exact values; calling normalize_egui_event directly or rendering an unrelated supplied projection is not sufficient integration evidence",
 				"in --demo-live, invoke the injected tick without blocking, then render only the newest AppLoop.currentText projection; the adapter never receives LiveDemoScene, LiveDemoReport, AudioObservationSnapshot, or mutable state",
+				"schedule the next idle repaint after 16 ms instead of requesting an immediate perpetual repaint; native input and window events may wake the event loop sooner",
 				"after live completion continue requesting and painting the final canonical projection until the user closes the native window; completion never sends a viewport-close command",
 			]
 		}

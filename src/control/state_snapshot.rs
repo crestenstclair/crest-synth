@@ -4,24 +4,55 @@
 /// deterministic serde_json output to StateSnapshot::new. The snapshot then
 /// provides one stable fingerprint for downstream text and real-time
 /// projections without exposing any mutable state.
-#[derive(Clone, Debug, Eq, PartialEq)]
+use std::sync::{Arc, OnceLock};
+
+#[derive(Clone, Debug)]
 pub struct StateSnapshot {
-    json: String,
+    json: StateJson,
     hash: String,
+}
+
+#[derive(Clone, Debug)]
+enum StateJson {
+    Ready(Arc<str>),
+    Generation {
+        template: Arc<GenerationTemplate>,
+        generation: u64,
+        rendered: Arc<OnceLock<String>>,
+    },
+}
+
+#[derive(Debug)]
+struct GenerationTemplate {
+    suffix: Arc<str>,
+    suffix_hash: u64,
+    suffix_factor: u64,
 }
 
 impl StateSnapshot {
     /// Captures canonical JSON and computes its deterministic content hash.
     pub fn new(json: impl Into<String>) -> Self {
         let json = json.into();
-        let hash = hash_json(json.as_bytes());
+        let hash = format_hash(hash_bytes(json.as_bytes()));
 
-        Self { json, hash }
+        Self {
+            json: StateJson::Ready(Arc::from(json)),
+            hash,
+        }
     }
 
     /// Returns the complete canonical JSON document.
     pub fn json(&self) -> &str {
-        &self.json
+        match &self.json {
+            StateJson::Ready(json) => json,
+            StateJson::Generation {
+                template,
+                generation,
+                rendered,
+            } => {
+                rendered.get_or_init(|| format!("{{\"generation\":{generation}{}", template.suffix))
+            }
+        }
     }
 
     /// Returns the stable lowercase hexadecimal fingerprint of the JSON.
@@ -31,23 +62,86 @@ impl StateSnapshot {
 
     /// Consumes the snapshot and returns its canonical JSON document.
     pub fn into_json(self) -> String {
-        self.json
+        self.json().to_owned()
+    }
+
+    /// Advances a snapshot whose accepted state changed only by generation.
+    ///
+    /// The canonical suffix and its hash contribution are shared across the
+    /// MIDI stream. Full JSON is rendered only if an observer requests it.
+    pub(crate) fn with_generation(&self, generation: u64) -> Option<Self> {
+        let template = match &self.json {
+            StateJson::Generation { template, .. } => Arc::clone(template),
+            StateJson::Ready(json) => Arc::new(GenerationTemplate::from_json(json)?),
+        };
+        let prefix = format!("{{\"generation\":{generation}");
+        let prefix_hash = hash_bytes(prefix.as_bytes());
+        let hash = prefix_hash
+            .wrapping_mul(template.suffix_factor)
+            .wrapping_add(template.suffix_hash);
+
+        Some(Self {
+            json: StateJson::Generation {
+                template,
+                generation,
+                rendered: Arc::new(OnceLock::new()),
+            },
+            hash: format_hash(hash),
+        })
     }
 }
 
-/// FNV-1a gives the snapshot a stable, platform-independent content identity.
+impl PartialEq for StateSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.json() == other.json()
+    }
+}
+
+impl Eq for StateSnapshot {}
+
+impl GenerationTemplate {
+    fn from_json(json: &str) -> Option<Self> {
+        const PREFIX: &str = "{\"generation\":";
+        let after_prefix = json.strip_prefix(PREFIX)?;
+        let suffix_offset = after_prefix.find(',')?;
+        let suffix = &after_prefix[suffix_offset..];
+        let (suffix_hash, suffix_factor) = suffix_hash(suffix.as_bytes());
+        Some(Self {
+            suffix: Arc::from(suffix),
+            suffix_hash,
+            suffix_factor,
+        })
+    }
+}
+
+/// A polynomial hash gives the snapshot a stable, platform-independent content identity
+/// and lets an immutable JSON suffix contribute in constant time.
 ///
 /// This is an identity fingerprint, not a security boundary.
-fn hash_json(bytes: &[u8]) -> String {
+fn hash_bytes(bytes: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
 
     let mut hash = OFFSET_BASIS;
     for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(PRIME);
+        hash = hash.wrapping_mul(PRIME).wrapping_add(u64::from(*byte) + 1);
     }
 
+    hash
+}
+
+fn suffix_hash(bytes: &[u8]) -> (u64, u64) {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = 0_u64;
+    let mut factor = 1_u64;
+    for byte in bytes {
+        hash = hash.wrapping_mul(PRIME).wrapping_add(u64::from(*byte) + 1);
+        factor = factor.wrapping_mul(PRIME);
+    }
+    (hash, factor)
+}
+
+fn format_hash(hash: u64) -> String {
     format!("{hash:016x}")
 }
 
@@ -82,5 +176,20 @@ mod tests {
         let right = StateSnapshot::new(r#"{"channels":[]}"#);
 
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn generation_successor_matches_eager_canonical_json_and_hash() {
+        let first = StateSnapshot::new(
+            r#"{"generation":41,"capabilities":{"descriptors":[]},"patches":[]}"#,
+        );
+        let successor = first.with_generation(42).unwrap();
+        let eager = StateSnapshot::new(
+            r#"{"generation":42,"capabilities":{"descriptors":[]},"patches":[]}"#,
+        );
+
+        assert_eq!(successor.hash(), eager.hash());
+        assert_eq!(successor.json(), eager.json());
+        assert_eq!(successor, eager);
     }
 }

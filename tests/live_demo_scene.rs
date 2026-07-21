@@ -2,6 +2,7 @@
 mod support;
 
 use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
+use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
@@ -30,8 +31,12 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     let boundary = LockFreeAudioBoundary::<()>::new(512, initial);
     let (control, audio) = boundary.into_handles();
     let event_log = EventLog::new(4096).expect("live test journal capacity is valid");
+    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(global),
+        AppState::new(
+            provider.registry().expect("fixture registry is valid"),
+            global,
+        ),
         StateProjector::new(),
         control,
         event_log,
@@ -41,7 +46,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     let mut engine = FixtureEngine;
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
     automatic
-        .initialize(&mut engine, &mut app_loop)
+        .initialize(&provider, &mut engine, &mut app_loop)
         .expect("fixture initializes through AppLoop");
     let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())
         .expect("installed fixture produces a live scene");
@@ -161,6 +166,16 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
             .generation_after()
     );
     assert!(report.to_json().unwrap().contains("\"complete\":true"));
+    let event_log_summary = serde_json::to_value(report.event_log_summary()).unwrap();
+    assert_eq!(event_log_summary["lossless"], true);
+    assert_eq!(
+        event_log_summary["totalObserved"],
+        report.event_log().total_observed()
+    );
+    assert_eq!(
+        event_log_summary["generationAfter"],
+        report.state_tree().generation()
+    );
 
     let final_log = app_loop.event_log().to_json().unwrap();
     let final_tree = app_loop.current_state_tree().into_json();
@@ -184,8 +199,9 @@ fn early_close_uses_semantic_cleanup_without_success_report() {
     let initial = ParameterSnapshot::new(0, global, &[]).unwrap();
     let boundary = LockFreeAudioBoundary::<()>::new(64, initial);
     let (control, _audio) = boundary.into_handles();
+    let provider = HiDefSoundFontCapability::new().unwrap();
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(global),
+        AppState::new(provider.registry().unwrap(), global),
         StateProjector::new(),
         control,
         EventLog::new(256).unwrap(),
@@ -193,7 +209,9 @@ fn early_close_uses_semantic_cleanup_without_success_report() {
     .unwrap();
     let mut engine = FixtureEngine;
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
-    automatic.initialize(&mut engine, &mut app_loop).unwrap();
+    automatic
+        .initialize(&provider, &mut engine, &mut app_loop)
+        .unwrap();
     let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree()).unwrap();
     let cleanup_count = scene.patch_ids().len();
     let observation = AtomicAudioObservation::default();

@@ -1,3 +1,4 @@
+use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crate::adapter::lock_free_audio_boundary::{
     LockFreeAudioBoundary, LockFreeAudioHandle, LockFreeControlHandle,
 };
@@ -23,6 +24,7 @@ use crate::shell::window_input::{WindowInput, WindowKey};
 use crate::synth::patch::Patch;
 use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
 use crate::synth::sound_font_instrument::SoundFontInstrument;
+use crate::testing::automatic_midi_test::create_soundfont_config;
 use serde::Serialize;
 use serde_json::Value;
 use std::cell::Cell;
@@ -351,11 +353,16 @@ fn fixture_globals() -> GlobalParameters {
 }
 
 fn fixture_patch(id: u32, parameters: ChannelParameters) -> Patch {
+    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
     Patch::new(
         PatchId::new(id).expect("fixture PatchId is nonzero"),
         format!("Fixture {id}"),
-        SoundFontInstrument::new(0, (id * 8) as u8, false)
-            .expect("fixture SoundFont instrument is valid"),
+        create_soundfont_config(
+            &provider,
+            SoundFontInstrument::new(0, (id * 8) as u8, false)
+                .expect("fixture SoundFont instrument is valid"),
+        )
+        .expect("fixture config matches the production descriptor"),
         MidiChannel::new((id - 1) as u8).expect("fixture MIDI channel is valid"),
         parameters,
     )
@@ -377,7 +384,11 @@ fn route_state() -> AppState {
 }
 
 fn state_with_parameters(first: ChannelParameters, second: ChannelParameters) -> AppState {
-    let mut state = AppState::new(fixture_globals());
+    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+    let mut state = AppState::new(
+        provider.registry().expect("fixture registry is valid"),
+        fixture_globals(),
+    );
     state
         .apply(AppEvent::InstallPatches(vec![
             fixture_patch(1, first),

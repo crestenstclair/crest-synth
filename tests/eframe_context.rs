@@ -1,4 +1,5 @@
 use crest_synth::adapter::eframe_text_window::EframeApplication;
+use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_loop::AppLoop;
@@ -13,11 +14,13 @@ use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::shell::app_window::{AppInputCallback, ProjectionCallback, TickCallback};
 use crest_synth::synth::patch::Patch;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
+use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use eframe::egui;
 use eframe::App;
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 fn globals() -> GlobalParameters {
     GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.25)
@@ -25,17 +28,26 @@ fn globals() -> GlobalParameters {
 }
 
 fn patch(id: u32, channel: u8, parameters: ChannelParameters) -> Patch {
+    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
     Patch::new(
         PatchId::new(id).expect("fixture PatchId is valid"),
         format!("Egui Fixture {id}"),
-        SoundFontInstrument::new(0, id as u8 * 8, false).expect("fixture instrument is valid"),
+        create_soundfont_config(
+            &provider,
+            SoundFontInstrument::new(0, id as u8 * 8, false).expect("fixture instrument is valid"),
+        )
+        .expect("fixture config matches the descriptor"),
         MidiChannel::new(channel).expect("fixture channel is valid"),
         parameters,
     )
 }
 
 fn installed_state() -> AppState {
-    let mut state = AppState::new(globals());
+    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+    let mut state = AppState::new(
+        provider.registry().expect("fixture registry is valid"),
+        globals(),
+    );
     state
         .apply(AppEvent::InstallPatches(vec![
             patch(
@@ -64,12 +76,13 @@ fn key_event(key: egui::Key) -> egui::Event {
     }
 }
 
-fn raw_input(events: Vec<egui::Event>) -> egui::RawInput {
+fn raw_input(events: Vec<egui::Event>, time_seconds: f64) -> egui::RawInput {
     egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(1_400.0, 140.0),
         )),
+        time: Some(time_seconds),
         events,
         ..Default::default()
     }
@@ -140,13 +153,21 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
     events.push(key_event(egui::Key::K));
     events.push(key_event(egui::Key::D));
 
-    context.begin_pass(raw_input(events));
+    context.begin_pass(raw_input(events, 0.0));
     application.update(&context, &mut frame);
     let _first_output = context.end_pass();
 
-    context.begin_pass(raw_input(Vec::new()));
+    context.begin_pass(raw_input(Vec::new(), 0.25));
     application.update(&context, &mut frame);
     let output = context.end_pass();
+
+    let mut idle_output = None;
+    for frame_index in 2..6 {
+        context.begin_pass(raw_input(Vec::new(), f64::from(frame_index) * 0.25));
+        application.update(&context, &mut frame);
+        idle_output = Some(context.end_pass());
+    }
+    let idle_output = idle_output.expect("the idle egui fixture renders a steady frame");
 
     let app_loop = shared.borrow();
     let after_tree = app_loop.current_state_tree();
@@ -226,7 +247,13 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         clip_rect.contains(selected_rect.center()),
         "the exact selected line must be the scroll target: clip={clip_rect:?}, selected={selected_rect:?}"
     );
-    assert_eq!(tick_count.get(), 2);
+    assert_eq!(tick_count.get(), 6);
+    assert_eq!(
+        idle_output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+        Duration::from_millis(16),
+        "an idle live frame must schedule its successor instead of requesting an immediate repaint; causes={:?}",
+        context.repaint_causes()
+    );
 
     println!("CREST_ACCEPTANCE eframe_context passed");
 }

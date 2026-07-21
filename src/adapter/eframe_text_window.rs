@@ -5,7 +5,9 @@ use crate::shell::app_window::{
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::window_input::{WindowInput, WindowKey};
 use eframe::egui;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 /// The eframe/egui adapter for crest-synth's single keyboard-controlled text view.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,7 +122,9 @@ impl eframe::App for EframeApplication {
                 });
         });
 
-        context.request_repaint();
+        let predicted_frame_time = context
+            .input(|input| Duration::try_from_secs_f32(input.predicted_dt).unwrap_or_default());
+        context.request_repaint_after(FRAME_INTERVAL.saturating_add(predicted_frame_time));
     }
 }
 

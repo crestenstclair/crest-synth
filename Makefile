@@ -41,8 +41,8 @@ observe: ## Print the structured headless behavioral observation
 demo: ## Run the exhaustive GUI demo and structured trace
 	cargo run --bin crest-synth -- --smoke --observe --demo-scene
 
-demo-live: ## Run the paced demo in the real window with physical audio
-	cargo run --bin crest-synth -- --demo-live
+demo-live: ## Run the optimized paced demo with a real window and physical audio
+	cargo run --release --bin crest-synth -- --demo-live
 
 clean: ## Remove Cargo build output
 	cargo clean

@@ -1,14 +1,15 @@
 use crate::control::app_state::{AppState, Selection, SelectionSection};
+use crate::control::serialized_state::SerializedState;
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::state_tree::{StateTree, StateTreeError};
 use crate::control::text_projection::TextProjection;
-use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::parameter_snapshot::{
     ParameterSnapshot, ParameterSnapshotError, RtPatchParameters, MAX_PATCHES,
 };
-use crate::synth::patch::Patch;
+use crate::synth::instrument_capability::{
+    InstrumentConfig, ParameterDefault, ParameterKind, ParameterSpec, ParameterValue,
+};
 use core::fmt;
-use serde::{Deserialize, Serialize};
 
 const HEADER: &str = "KEYS: W/S parameters | A/D channels | K+direction edit";
 const SEPARATOR: &str = "------------------------------------------------------------";
@@ -18,9 +19,10 @@ const SEPARATOR: &str = "-------------------------------------------------------
 pub enum StateProjectionError {
     StateSerialization,
     StateDeserialization,
-    StateRoundTripMismatch,
+    StateGenerationTemplateMismatch,
     SelectionDoesNotMatchSnapshot,
     InvalidSelection,
+    InvalidInstrumentConfig,
     ParameterSnapshot(ParameterSnapshotError),
     StateTree(StateTreeError),
 }
@@ -34,14 +36,16 @@ impl fmt::Display for StateProjectionError {
             Self::StateDeserialization => {
                 formatter.write_str("control state snapshot could not be decoded")
             }
-            Self::StateRoundTripMismatch => {
-                formatter.write_str("decoded control state does not equal the encoded state")
-            }
+            Self::StateGenerationTemplateMismatch => formatter
+                .write_str("canonical state snapshot cannot advance a generation-only projection"),
             Self::SelectionDoesNotMatchSnapshot => {
                 formatter.write_str("typed selection does not match the state snapshot")
             }
             Self::InvalidSelection => {
                 formatter.write_str("selection is outside the projected control state")
+            }
+            Self::InvalidInstrumentConfig => {
+                formatter.write_str("instrument config does not resolve through the registry")
             }
             Self::ParameterSnapshot(error) => error.fmt(formatter),
             Self::StateTree(error) => error.fmt(formatter),
@@ -89,8 +93,9 @@ impl StateProjector {
         &self,
         state: &AppState,
     ) -> Result<(StateSnapshot, TextProjection, ParameterSnapshot), StateProjectionError> {
-        let snapshot = self.state_snapshot(state)?;
-        let text = self.text_projection(&snapshot, state.selection())?;
+        let serialized = SerializedState::from(state);
+        let snapshot = self.snapshot_from_serialized(&serialized)?;
+        let text = self.text_from_serialized(&serialized, state.selection(), snapshot.hash())?;
         let parameters = self.parameter_snapshot(state)?;
 
         Ok((snapshot, text, parameters))
@@ -102,8 +107,11 @@ impl StateProjector {
         state: &AppState,
     ) -> Result<(StateSnapshot, TextProjection, ParameterSnapshot, StateTree), StateProjectionError>
     {
-        let (snapshot, text, parameters) = self.project(state)?;
-        let tree = self.state_tree(&snapshot, &text, &parameters)?;
+        let serialized = SerializedState::from(state);
+        let snapshot = self.snapshot_from_serialized(&serialized)?;
+        let text = self.text_from_serialized(&serialized, state.selection(), snapshot.hash())?;
+        let parameters = self.parameter_snapshot(state)?;
+        let tree = StateTree::from_serialized_state(&serialized, &snapshot, &text, &parameters)?;
 
         Ok((snapshot, text, parameters, tree))
     }
@@ -118,19 +126,13 @@ impl StateProjector {
         StateTree::new(snapshot, text, parameters).map_err(StateProjectionError::from)
     }
 
-    /// Serializes every AppState field and verifies decode/encode identity.
+    /// Serializes every AppState field through the canonical borrowed state view.
+    ///
+    /// Decode/encode identity is verified outside this hot production path by
+    /// tests that deserialize the emitted snapshot into the same canonical type.
     pub fn state_snapshot(&self, state: &AppState) -> Result<StateSnapshot, StateProjectionError> {
         let encoded_state = SerializedState::from(state);
-        let json = serde_json::to_string(&encoded_state)
-            .map_err(|_| StateProjectionError::StateSerialization)?;
-        let decoded_state: SerializedState =
-            serde_json::from_str(&json).map_err(|_| StateProjectionError::StateDeserialization)?;
-
-        if decoded_state != encoded_state {
-            return Err(StateProjectionError::StateRoundTripMismatch);
-        }
-
-        Ok(StateSnapshot::new(json))
+        self.snapshot_from_serialized(&encoded_state)
     }
 
     /// Renders text exclusively from one snapshot and its typed selection.
@@ -139,14 +141,9 @@ impl StateProjector {
         snapshot: &StateSnapshot,
         selection: Selection,
     ) -> Result<TextProjection, StateProjectionError> {
-        let state: SerializedState = serde_json::from_str(snapshot.json())
+        let state: SerializedState<'_> = serde_json::from_str(snapshot.json())
             .map_err(|_| StateProjectionError::StateDeserialization)?;
-
-        if !state.selection.matches(selection) {
-            return Err(StateProjectionError::SelectionDoesNotMatchSnapshot);
-        }
-
-        render_text(&state, selection, snapshot.hash())
+        self.text_from_serialized(&state, selection, snapshot.hash())
     }
 
     /// Copies every audio parameter into bounded, fully owned storage.
@@ -171,10 +168,58 @@ impl StateProjector {
         ParameterSnapshot::new(state.generation(), *state.global(), &patches)
             .map_err(StateProjectionError::from)
     }
+
+    /// Advances all coherent projections after a validated MIDI event changed
+    /// only AppState generation and emitted one discrete audio command.
+    pub(crate) fn project_midi_generation(
+        &self,
+        state: &AppState,
+        previous_snapshot: &StateSnapshot,
+        previous_text: &TextProjection,
+        previous_parameters: ParameterSnapshot,
+        previous_tree: &StateTree,
+    ) -> Result<(StateSnapshot, TextProjection, ParameterSnapshot, StateTree), StateProjectionError>
+    {
+        let generation = state.generation();
+        if previous_parameters.generation().checked_add(1) != Some(generation)
+            || previous_tree.generation().checked_add(1) != Some(generation)
+        {
+            return Err(StateProjectionError::StateGenerationTemplateMismatch);
+        }
+
+        let snapshot = previous_snapshot
+            .with_generation(generation)
+            .ok_or(StateProjectionError::StateGenerationTemplateMismatch)?;
+        let text = previous_text.with_state_hash(snapshot.hash().to_owned());
+        let parameters = previous_parameters.with_generation(generation);
+        let tree = previous_tree.with_midi_generation(&snapshot, &text, &parameters)?;
+        Ok((snapshot, text, parameters, tree))
+    }
+
+    fn snapshot_from_serialized(
+        &self,
+        state: &SerializedState<'_>,
+    ) -> Result<StateSnapshot, StateProjectionError> {
+        let json =
+            serde_json::to_string(state).map_err(|_| StateProjectionError::StateSerialization)?;
+        Ok(StateSnapshot::new(json))
+    }
+
+    fn text_from_serialized(
+        &self,
+        state: &SerializedState<'_>,
+        selection: Selection,
+        state_hash: &str,
+    ) -> Result<TextProjection, StateProjectionError> {
+        if !state.selection.matches(selection) {
+            return Err(StateProjectionError::SelectionDoesNotMatchSnapshot);
+        }
+        render_text(state, selection, state_hash)
+    }
 }
 
 fn render_text(
-    state: &SerializedState,
+    state: &SerializedState<'_>,
     selection: Selection,
     state_hash: &str,
 ) -> Result<TextProjection, StateProjectionError> {
@@ -186,10 +231,29 @@ fn render_text(
             lines.push(SEPARATOR.to_owned());
         }
 
+        let descriptor = state
+            .capabilities
+            .descriptor(patch.instrument.capability_id())
+            .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
         lines.push(format!(
-            "PATCH id={} name={} channel={} bank={} program={} percussion={}",
-            patch.id, patch.name, patch.channel, patch.bank, patch.program, patch.percussion
+            "PATCH id={} name={} channel={} capability={} ({})",
+            patch.id,
+            patch.name,
+            patch.channel,
+            descriptor.label(),
+            descriptor.id()
         ));
+        for section in descriptor.sections() {
+            lines.push(format!(
+                "  INSTRUMENT {} ({})",
+                section.label(),
+                section.id()
+            ));
+            for spec in section.parameters() {
+                let value = format_instrument_value(spec, patch.instrument.as_ref())?;
+                lines.push(format!("  {} ({})={value}", spec.label(), spec.id()));
+            }
+        }
 
         let parameters = [
             ("gainDb", patch.gain_db),
@@ -233,6 +297,48 @@ fn render_text(
     ))
 }
 
+fn format_instrument_value(
+    spec: &ParameterSpec,
+    config: &InstrumentConfig,
+) -> Result<String, StateProjectionError> {
+    if spec.kind() == ParameterKind::Asset {
+        let reference = config
+            .asset_reference(spec.id())
+            .or_else(|| match spec.default_value() {
+                ParameterDefault::Asset(reference) => Some(reference),
+                ParameterDefault::Value(_) => None,
+            })
+            .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
+        return Ok(match spec.formatter() {
+            "asset" => format!(
+                "{}:{}",
+                format!("{:?}", reference.kind()).to_lowercase(),
+                reference.locator()
+            ),
+            _ => reference.locator().to_owned(),
+        });
+    }
+
+    let value = config
+        .value(spec.id())
+        .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
+    let formatted = match (spec.formatter(), value) {
+        ("integer", ParameterValue::Stepped(value)) => value.to_string(),
+        ("toggle", ParameterValue::Toggle(value)) => value.to_string(),
+        (_, ParameterValue::Continuous(value)) => {
+            if let Some(unit) = spec.unit() {
+                format!("{value}{unit}")
+            } else {
+                value.to_string()
+            }
+        }
+        (_, ParameterValue::Stepped(value)) => value.to_string(),
+        (_, ParameterValue::Choice(value)) => value.clone(),
+        (_, ParameterValue::Toggle(value)) => value.to_string(),
+    };
+    Ok(formatted)
+}
+
 fn push_parameter_line(
     lines: &mut Vec<String>,
     selected_line: &mut Option<usize>,
@@ -247,149 +353,46 @@ fn push_parameter_line(
     lines.push(format!("{marker} {name}={value}"));
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SerializedState {
-    generation: u64,
-    patches: Vec<SerializedPatch>,
-    global: SerializedGlobalParameters,
-    selection: SerializedSelection,
-}
-
-impl From<&AppState> for SerializedState {
-    fn from(state: &AppState) -> Self {
-        Self {
-            generation: state.generation(),
-            patches: state.patches().iter().map(SerializedPatch::from).collect(),
-            global: SerializedGlobalParameters::from(state.global()),
-            selection: SerializedSelection::from(state.selection()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SerializedPatch {
-    id: u32,
-    name: String,
-    channel: u8,
-    bank: u16,
-    program: u8,
-    percussion: bool,
-    gain_db: f32,
-    pan: f32,
-    reverb_send: f32,
-    delay_send: f32,
-}
-
-impl From<&Patch> for SerializedPatch {
-    fn from(patch: &Patch) -> Self {
-        Self {
-            id: patch.id().value(),
-            name: patch.name().to_owned(),
-            channel: patch.channel().value(),
-            bank: patch.instrument().bank(),
-            program: patch.instrument().program(),
-            percussion: patch.instrument().percussion(),
-            gain_db: patch.parameters().gain_db(),
-            pan: patch.parameters().pan(),
-            reverb_send: patch.parameters().reverb_send(),
-            delay_send: patch.parameters().delay_send(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SerializedGlobalParameters {
-    master_gain_db: f32,
-    reverb_room_size: f32,
-    reverb_damping: f32,
-    reverb_return: f32,
-    delay_milliseconds: f32,
-    delay_feedback: f32,
-    delay_return: f32,
-}
-
-impl From<&GlobalParameters> for SerializedGlobalParameters {
-    fn from(parameters: &GlobalParameters) -> Self {
-        Self {
-            master_gain_db: parameters.master_gain_db(),
-            reverb_room_size: parameters.reverb_room_size(),
-            reverb_damping: parameters.reverb_damping(),
-            reverb_return: parameters.reverb_return(),
-            delay_milliseconds: parameters.delay_milliseconds(),
-            delay_feedback: parameters.delay_feedback(),
-            delay_return: parameters.delay_return(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SerializedSelection {
-    section: SerializedSelectionSection,
-    patch_index: usize,
-    parameter_index: usize,
-}
-
-impl SerializedSelection {
-    fn matches(self, selection: Selection) -> bool {
-        self == Self::from(selection)
-    }
-}
-
-impl From<Selection> for SerializedSelection {
-    fn from(selection: Selection) -> Self {
-        Self {
-            section: SerializedSelectionSection::from(selection.section()),
-            patch_index: selection.patch_index(),
-            parameter_index: selection.parameter_index(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-enum SerializedSelectionSection {
-    Patch,
-    Global,
-}
-
-impl From<SelectionSection> for SerializedSelectionSection {
-    fn from(section: SelectionSection) -> Self {
-        match section {
-            SelectionSection::Patch => Self::Patch,
-            SelectionSection::Global => Self::Global,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::hidef_soundfont_capability::{
+        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID,
+    };
     use crate::control::app_event::{AppEvent, Direction};
     use crate::control::app_state::EventRejection;
+    use crate::control::serialized_state::{SerializedSelectionSection, SerializedState};
     use crate::kernel::midi_channel::MidiChannel;
+    use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
+    use crate::mixer::global_parameters::GlobalParameters;
+    use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn global_parameters() -> GlobalParameters {
         GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap()
     }
 
     fn patch(id: u32, gain_db: f32) -> Patch {
+        let provider = HiDefSoundFontCapability::new().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
-            SoundFontInstrument::new(128, (id - 1) as u8, (id & 1) == 0).unwrap(),
+            create_soundfont_config(
+                &provider,
+                SoundFontInstrument::new(128, (id - 1) as u8, (id & 1) == 0).unwrap(),
+            )
+            .unwrap(),
             MidiChannel::new(((id - 1) % 16) as u8).unwrap(),
             ChannelParameters::new(gain_db, 0.1, 0.2, 0.3).unwrap(),
         )
     }
 
     fn installed_state() -> AppState {
-        let mut state = AppState::new(global_parameters());
+        let provider = HiDefSoundFontCapability::new().unwrap();
+        let mut state = AppState::new(provider.registry().unwrap(), global_parameters());
         state
             .apply(AppEvent::InstallPatches(vec![
                 patch(1, -6.0),
@@ -412,7 +415,17 @@ mod tests {
         assert_eq!(decoded.generation, 1);
         assert_eq!(decoded.patches.len(), 2);
         assert_eq!(decoded.patches[0].name, "Patch 1");
-        assert_eq!(decoded.patches[0].bank, 128);
+        assert_eq!(decoded.capabilities.descriptors().len(), 1);
+        assert_eq!(
+            decoded.patches[0].instrument.capability_id().as_str(),
+            HIDEF_CAPABILITY_ID
+        );
+        assert_eq!(
+            decoded.patches[0]
+                .instrument
+                .value(&crate::synth::ParameterId::new(SOUNDFONT_BANK_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Stepped(128))
+        );
         assert_eq!(decoded.patches[0].gain_db, -6.0);
         assert_eq!(decoded.global.delay_milliseconds, 375.0);
         assert_eq!(decoded.selection.section, SerializedSelectionSection::Patch);
@@ -434,12 +447,21 @@ mod tests {
         assert!(text.body().starts_with(HEADER));
         assert!(text
             .body()
-            .contains("PATCH id=1 name=Patch 1 channel=0 bank=128 program=0 percussion=false"));
+            .contains("PATCH id=1 name=Patch 1 channel=0 capability=HiDef SoundFont (instrument.soundfont.hidef)"));
+        assert!(text.body().contains("Bank (soundfont.bank)=128"));
+        assert!(text
+            .body()
+            .contains("SoundFont File (soundfont.file)=soundfont:./sf2/HiDef.sf2"));
         assert!(text.body().contains("> gainDb=-6"));
         assert!(!text.body().contains("gainDb=-5.99"));
         assert!(text.body().contains(SEPARATOR));
         assert!(text.body().contains("GLOBAL"));
-        assert_eq!(text.selected_line(), 2);
+        assert_eq!(
+            text.body()
+                .lines()
+                .position(|line| line.starts_with("> gainDb=")),
+            Some(text.selected_line())
+        );
         assert_eq!(text.state_hash(), snapshot.hash());
     }
 
@@ -471,7 +493,8 @@ mod tests {
 
     #[test]
     fn rejects_oversized_patch_installation_before_projection() {
-        let mut state = AppState::new(global_parameters());
+        let provider = HiDefSoundFontCapability::new().unwrap();
+        let mut state = AppState::new(provider.registry().unwrap(), global_parameters());
         let patches = (1..=(MAX_PATCHES as u32 + 1))
             .map(|id| patch(id, -6.0))
             .collect();
@@ -506,6 +529,32 @@ mod tests {
                 .generation,
             parameters.generation()
         );
+    }
+
+    #[test]
+    fn midi_generation_projection_is_exactly_equal_to_eager_projection() {
+        let mut state = installed_state();
+        let projector = StateProjector::new();
+        let (snapshot, text, parameters, tree) = projector.project_with_tree(&state).unwrap();
+        let patch_id = state.patches()[0].id();
+        let message = MidiMessage::try_new(
+            state.patches()[0].channel(),
+            MidiMessageKind::NoteOn,
+            60,
+            100,
+        )
+        .unwrap();
+        state.apply(AppEvent::Midi { patch_id, message }).unwrap();
+
+        let fast = projector
+            .project_midi_generation(&state, &snapshot, &text, parameters, &tree)
+            .unwrap();
+        let eager = projector.project_with_tree(&state).unwrap();
+
+        assert_eq!(fast.0, eager.0);
+        assert_eq!(fast.1, eager.1);
+        assert_eq!(fast.2, eager.2);
+        assert_eq!(fast.3, eager.3);
     }
 
     #[test]

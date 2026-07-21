@@ -303,7 +303,16 @@ where
             });
         }
         observe_records(source_log.records(), &mut run.observed);
-        for rejection in exercise_reducer_table_rejections() {
+        let probe_patch = self
+            .app_loop
+            .state()
+            .patches()
+            .first()
+            .expect("the exhaustive scene requires an installed Patch");
+        for rejection in exercise_reducer_table_rejections(
+            self.app_loop.capabilities(),
+            probe_patch.instrument_config(),
+        ) {
             run.observed
                 .insert(format!("rejection.{}", rejection.name()));
         }
@@ -645,6 +654,9 @@ fn property_present(
     if let Some(rest) = property.strip_prefix("stateTree.patch.") {
         return dynamic_patch_property(tree, rest, false);
     }
+    if let Some(rest) = property.strip_prefix("stateTree.capability.") {
+        return dynamic_capability_property(tree, rest);
+    }
     if let Some(rest) = property.strip_prefix("stateTree.parameters.patch.") {
         return dynamic_patch_property(tree, rest, true);
     }
@@ -703,9 +715,83 @@ fn dynamic_patch_property(tree: &Value, rest: &str, parameter_projection: bool) 
 
     if parameter_projection {
         json_path_exists(patch, &format!("parameters.{path}"))
+    } else if let Some(rest) = path.strip_prefix("instrument.value.") {
+        semantic_array_property(
+            patch
+                .get("instrument")
+                .and_then(|instrument| instrument.get("values")),
+            rest,
+        )
+    } else if let Some(rest) = path.strip_prefix("instrument.asset.") {
+        semantic_array_property(
+            patch
+                .get("instrument")
+                .and_then(|instrument| instrument.get("assetReferences")),
+            rest,
+        )
     } else {
         json_path_exists(patch, path)
     }
+}
+
+fn dynamic_capability_property(tree: &Value, rest: &str) -> bool {
+    let Some(descriptors) = tree
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("descriptors"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    let Some((descriptor, path)) = semantic_object(descriptors, rest) else {
+        return false;
+    };
+
+    if let Some(rest) = path.strip_prefix("section.") {
+        let Some(sections) = descriptor.get("sections").and_then(Value::as_array) else {
+            return false;
+        };
+        let Some((section, path)) = semantic_object(sections, rest) else {
+            return false;
+        };
+        return json_path_exists(section, path);
+    }
+    if let Some(rest) = path.strip_prefix("parameter.") {
+        let Some(sections) = descriptor.get("sections").and_then(Value::as_array) else {
+            return false;
+        };
+        for section in sections {
+            if semantic_array_property(section.get("parameters"), rest) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if let Some(rest) = path.strip_prefix("asset.") {
+        return semantic_array_property(descriptor.get("assetRequirements"), rest);
+    }
+    json_path_exists(descriptor, path)
+}
+
+fn semantic_array_property(array: Option<&Value>, rest: &str) -> bool {
+    let Some(array) = array.and_then(Value::as_array) else {
+        return false;
+    };
+    let Some((value, path)) = semantic_object(array, rest) else {
+        return false;
+    };
+    json_path_exists(value, path)
+}
+
+fn semantic_object<'a>(array: &'a [Value], rest: &'a str) -> Option<(&'a Value, &'a str)> {
+    array.iter().find_map(|value| {
+        let id = value
+            .get("id")
+            .or_else(|| value.get("parameterId"))?
+            .as_str()?;
+        rest.strip_prefix(id)
+            .and_then(|suffix| suffix.strip_prefix('.'))
+            .map(|path| (value, path))
+    })
 }
 
 fn json_path_exists(value: &Value, path: &str) -> bool {
@@ -807,6 +893,7 @@ const fn rejection_identifier(rejection: EventRejection) -> &'static str {
         EventRejection::InstallationClosed => "installationClosed",
         EventRejection::TooManyPatches => "tooManyPatches",
         EventRejection::DuplicateMidiChannel => "duplicateMidiChannel",
+        EventRejection::InvalidInstrumentConfig => "invalidInstrumentConfig",
         EventRejection::NoPatchesInstalled => "noPatchesInstalled",
         EventRejection::UnknownPatch => "unknownPatch",
         EventRejection::InvalidSelection => "invalidSelection",
@@ -837,6 +924,7 @@ const fn window_input_identifier(input: WindowInput) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::ExhaustiveGuiDemo;
+    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
     use crate::control::app_event::AppEvent;
     use crate::control::app_loop::AppLoop;
@@ -858,6 +946,7 @@ mod tests {
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::testing::automatic_midi_test::create_soundfont_config;
     use crate::testing::demo_scene::DemoScene;
     use crate::testing::demo_scene_report::DemoCoverageGroup;
     use std::path::Path;
@@ -867,10 +956,15 @@ mod tests {
     }
 
     fn patch(id: u32, channel: u8) -> Patch {
+        let provider = HiDefSoundFontCapability::new().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Fixture {id}"),
-            SoundFontInstrument::new(0, id as u8, false).unwrap(),
+            create_soundfont_config(
+                &provider,
+                SoundFontInstrument::new(0, id as u8, false).unwrap(),
+            )
+            .unwrap(),
             MidiChannel::new(channel).unwrap(),
             ChannelParameters::new(0.0, 0.0, 0.3, 0.2).unwrap(),
         )
@@ -949,14 +1043,16 @@ mod tests {
     #[test]
     fn exhaustive_gui_demo_scene_uses_production_seams_and_has_no_coverage_gaps() {
         let patches = vec![patch(3, 1), patch(11, 9)];
-        let scene = DemoScene::exhaustive(&patches, &globals()).unwrap();
+        let provider = HiDefSoundFontCapability::new().unwrap();
+        let scene =
+            DemoScene::exhaustive(&provider.registry().unwrap(), &patches, &globals()).unwrap();
         let initial_parameters = ParameterSnapshot::new(0, globals(), &[]).unwrap();
         let boundary = LockFreeAudioBoundary::<()>::new(4, initial_parameters);
         let (control, audio) = boundary.into_handles();
 
         let event_log = EventLog::new(scene.event_log_capacity().saturating_add(2)).unwrap();
         let mut app_loop = AppLoop::with_event_log(
-            AppState::new(globals()),
+            AppState::new(provider.registry().unwrap(), globals()),
             StateProjector::new(),
             control,
             event_log,

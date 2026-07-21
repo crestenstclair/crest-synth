@@ -1,0 +1,323 @@
+use crest_synth::adapter::hidef_soundfont_capability::{
+    HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, HIDEF_VOICE_LIMIT, SOUNDFONT_BANK_PARAMETER_ID,
+    SOUNDFONT_FILE_PARAMETER_ID, SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+};
+use crest_synth::adapter::hidef_soundfont_engine::HIDEF_SOUNDFONT_PATH;
+use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+use crest_synth::control::app_event::{AppEvent, Direction};
+use crest_synth::control::app_loop::AppLoop;
+use crest_synth::control::app_state::{AppState, EventRejection};
+use crest_synth::control::event_record::EventSource;
+use crest_synth::control::state_projector::StateProjector;
+use crest_synth::kernel::midi_channel::MidiChannel;
+use crest_synth::kernel::midi_message::MidiMessageKind;
+use crest_synth::kernel::patch_id::PatchId;
+use crest_synth::mixer::channel_parameters::ChannelParameters;
+use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::real_time::audio_boundary::AudioBoundary;
+use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
+use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
+use crest_synth::synth::{
+    CapabilityDescriptor, CapabilityError, CapabilityId, CapabilityRegistry, CapabilitySection,
+    InstrumentCapabilityProvider, InstrumentConfig, ParameterAssignment, ParameterDefault,
+    ParameterId, ParameterKind, ParameterPredicate, ParameterRange, ParameterSpec, ParameterUpdate,
+    ParameterValue, Patch,
+};
+use crest_synth::testing::automatic_midi_test::create_soundfont_config;
+use serde_json::Value;
+
+fn globals() -> GlobalParameters {
+    GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap()
+}
+
+fn parameter_id(value: &str) -> ParameterId {
+    ParameterId::new(value).unwrap()
+}
+
+fn patch(id: u32, channel: u8, name: &str, config: InstrumentConfig) -> Patch {
+    Patch::new(
+        PatchId::new(id).unwrap(),
+        name.to_owned(),
+        config,
+        MidiChannel::new(channel).unwrap(),
+        ChannelParameters::default(),
+    )
+}
+
+fn app_loop(
+    registry: CapabilityRegistry,
+) -> (
+    AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle<()>>,
+    crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioHandle<()>,
+) {
+    let initial = ParameterSnapshot::new(0, globals(), &[]).unwrap();
+    let boundary = LockFreeAudioBoundary::<()>::new(16, initial);
+    let (control, audio) = boundary.into_handles();
+    (
+        AppLoop::new(
+            AppState::new(registry, globals()),
+            StateProjector::new(),
+            control,
+        )
+        .unwrap(),
+        audio,
+    )
+}
+
+fn candidate(valid: &InstrumentConfig, values: Vec<ParameterAssignment>) -> InstrumentConfig {
+    InstrumentConfig::from_parts(
+        valid.capability_id().clone(),
+        values,
+        valid.asset_references().to_vec(),
+    )
+}
+
+#[test]
+fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
+    let provider = HiDefSoundFontCapability::new().unwrap();
+    let descriptor = provider.descriptor();
+    let registry = provider.registry().unwrap();
+
+    assert_eq!(registry.descriptors(), std::slice::from_ref(&descriptor));
+    assert_eq!(descriptor.id().as_str(), HIDEF_CAPABILITY_ID);
+    assert_eq!(descriptor.label(), "HiDef SoundFont");
+    assert_eq!(descriptor.semantic_accent(), "instrument.soundfont");
+    assert_eq!(descriptor.voice_limit(), HIDEF_VOICE_LIMIT);
+    assert_eq!(descriptor.supported_midi_kinds(), MidiMessageKind::ALL);
+    let parameters = descriptor.sections()[0].parameters();
+    assert_eq!(
+        parameters
+            .iter()
+            .map(|parameter| parameter.id().as_str())
+            .collect::<Vec<_>>(),
+        [
+            SOUNDFONT_BANK_PARAMETER_ID,
+            SOUNDFONT_PROGRAM_PARAMETER_ID,
+            SOUNDFONT_PERCUSSION_PARAMETER_ID,
+            SOUNDFONT_FILE_PARAMETER_ID,
+        ]
+    );
+    assert!(parameters
+        .iter()
+        .all(|parameter| parameter.update() == ParameterUpdate::Structural));
+    assert_eq!(parameters[0].range().unwrap().maximum(), u16::MAX as f64);
+    assert_eq!(parameters[0].fine_step(), Some(1.0));
+    assert_eq!(parameters[1].range().unwrap().maximum(), 127.0);
+    assert_eq!(parameters[2].kind(), ParameterKind::Toggle);
+    assert_eq!(parameters[3].kind(), ParameterKind::Asset);
+    assert_eq!(
+        parameters[3].default_value(),
+        &ParameterDefault::Asset(
+            crest_synth::synth::AssetReference::new(
+                crest_synth::synth::AssetKind::SoundFont,
+                HIDEF_SOUNDFONT_PATH,
+            )
+            .unwrap()
+        )
+    );
+
+    let lead = create_soundfont_config(&provider, SoundFontInstrument::new(0, 80, false).unwrap())
+        .unwrap();
+    let drums = create_soundfont_config(&provider, SoundFontInstrument::new(128, 0, true).unwrap())
+        .unwrap();
+    registry.validate_config(&lead).unwrap();
+    registry.validate_config(&drums).unwrap();
+    assert_ne!(lead, drums);
+    assert_eq!(
+        lead.value(&parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID)),
+        Some(&ParameterValue::Stepped(80))
+    );
+    assert_eq!(
+        drums.value(&parameter_id(SOUNDFONT_BANK_PARAMETER_ID)),
+        Some(&ParameterValue::Stepped(128))
+    );
+    assert_eq!(
+        drums.value(&parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID)),
+        Some(&ParameterValue::Toggle(true))
+    );
+
+    let (mut installed, _audio) = app_loop(registry.clone());
+    installed
+        .dispatch_from(
+            AppEvent::InstallPatches(vec![
+                patch(1, 0, "Lead", lead.clone()),
+                patch(2, 1, "Drums", drums.clone()),
+            ]),
+            EventSource::Startup,
+        )
+        .unwrap();
+    let tree: Value = serde_json::from_str(installed.current_state_tree().json()).unwrap();
+    assert_eq!(tree["schemaVersion"], 2);
+    assert_eq!(
+        tree["capabilities"]["descriptors"][0]["id"],
+        HIDEF_CAPABILITY_ID
+    );
+    assert_eq!(
+        tree["patches"][0]["instrument"],
+        serde_json::to_value(&lead).unwrap()
+    );
+    assert_eq!(
+        tree["patches"][1]["instrument"],
+        serde_json::to_value(&drums).unwrap()
+    );
+    let text = installed.current_text().body().to_owned();
+    let bank = text.find("Bank (soundfont.bank)=0").unwrap();
+    let program = text.find("Program (soundfont.program)=80").unwrap();
+    let percussion = text
+        .find("Percussion (soundfont.percussion)=false")
+        .unwrap();
+    let file = text.find("SoundFont File (soundfont.file)=").unwrap();
+    assert!(bank < program && program < percussion && percussion < file);
+    assert!(!text.lines().any(|line| {
+        line.starts_with('>') && (line.contains("soundfont.") || line.contains("SoundFont File"))
+    }));
+
+    let valid_values = lead.values().to_vec();
+    let mut duplicate = valid_values.clone();
+    duplicate.push(valid_values[0].clone());
+    assert!(matches!(
+        registry.validate_config(&candidate(&lead, duplicate)),
+        Err(CapabilityError::DuplicateAssignment(_))
+    ));
+    assert!(matches!(
+        registry.validate_config(&candidate(&lead, valid_values[1..].to_vec())),
+        Err(CapabilityError::MissingParameter(_))
+    ));
+    let mut undeclared = valid_values.clone();
+    undeclared.push(ParameterAssignment::new(
+        parameter_id("soundfont.unknown"),
+        ParameterValue::Stepped(1),
+    ));
+    assert!(matches!(
+        registry.validate_config(&candidate(&lead, undeclared)),
+        Err(CapabilityError::UndeclaredParameter(_))
+    ));
+    let mut wrong_kind = valid_values.clone();
+    wrong_kind[0] = ParameterAssignment::new(
+        parameter_id(SOUNDFONT_BANK_PARAMETER_ID),
+        ParameterValue::Toggle(false),
+    );
+    assert!(matches!(
+        registry.validate_config(&candidate(&lead, wrong_kind)),
+        Err(CapabilityError::WrongValueKind(_))
+    ));
+    let mut out_of_range = valid_values;
+    out_of_range[1] = ParameterAssignment::new(
+        parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID),
+        ParameterValue::Stepped(128),
+    );
+    assert!(matches!(
+        registry.validate_config(&candidate(&lead, out_of_range)),
+        Err(CapabilityError::ValueOutOfRange(_))
+    ));
+    let missing_asset = InstrumentConfig::from_parts(
+        lead.capability_id().clone(),
+        lead.values().to_vec(),
+        Vec::new(),
+    );
+    assert!(matches!(
+        registry.validate_config(&missing_asset),
+        Err(CapabilityError::MissingAsset(_))
+    ));
+    let unknown = InstrumentConfig::from_parts(
+        CapabilityId::new("instrument.unknown").unwrap(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(matches!(
+        registry.validate_config(&unknown),
+        Err(CapabilityError::UnknownCapability(_))
+    ));
+
+    let (mut rejected, _audio) = app_loop(registry.clone());
+    let before_tree = rejected.current_state_tree();
+    let before_text = rejected.current_text();
+    assert_eq!(
+        rejected.dispatch_from(
+            AppEvent::InstallPatches(vec![patch(9, 4, "Invalid", unknown)]),
+            EventSource::Startup,
+        ),
+        Err(EventRejection::InvalidInstrumentConfig)
+    );
+    assert_eq!(rejected.current_state_tree(), before_tree);
+    assert_eq!(rejected.current_text(), before_text);
+    let rejected_log = rejected.event_log();
+    let rejection = &rejected_log.records()[0];
+    assert_eq!(
+        rejection.rejection(),
+        Some(EventRejection::InvalidInstrumentConfig)
+    );
+    assert!(rejection.emitted_events().is_empty());
+    rejected
+        .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::System)
+        .unwrap();
+    assert_eq!(rejected.current_state_tree().generation(), 1);
+
+    let dependency_descriptor = dependency_descriptor();
+    let dependency_registry = CapabilityRegistry::new(vec![dependency_descriptor.clone()]).unwrap();
+    let dependency_config = InstrumentConfig::from_parts(
+        dependency_descriptor.id().clone(),
+        vec![
+            ParameterAssignment::new(
+                parameter_id("dependent.enabled"),
+                ParameterValue::Toggle(false),
+            ),
+            ParameterAssignment::new(parameter_id("dependent.value"), ParameterValue::Stepped(1)),
+        ],
+        Vec::new(),
+    );
+    assert!(matches!(
+        dependency_registry.validate_config(&dependency_config),
+        Err(CapabilityError::DependencyUnsatisfied(_))
+    ));
+
+    println!("CREST_ACCEPTANCE capability_schema passed");
+}
+
+fn dependency_descriptor() -> CapabilityDescriptor {
+    let enabled = ParameterSpec::new(
+        parameter_id("dependent.enabled"),
+        "Enabled",
+        ParameterKind::Toggle,
+        ParameterUpdate::Structural,
+        ParameterDefault::Value(ParameterValue::Toggle(false)),
+        None,
+        Vec::new(),
+        None,
+        None,
+        None,
+        "toggle",
+        None,
+        None,
+    )
+    .unwrap();
+    let value = ParameterSpec::new(
+        parameter_id("dependent.value"),
+        "Value",
+        ParameterKind::Stepped,
+        ParameterUpdate::Structural,
+        ParameterDefault::Value(ParameterValue::Stepped(0)),
+        Some(ParameterRange::new(0.0, 8.0).unwrap()),
+        Vec::new(),
+        Some(1.0),
+        Some(2.0),
+        None,
+        "integer",
+        Some(ParameterPredicate::new(
+            parameter_id("dependent.enabled"),
+            ParameterValue::Toggle(true),
+        )),
+        None,
+    )
+    .unwrap();
+    CapabilityDescriptor::new(
+        CapabilityId::new("instrument.dependent").unwrap(),
+        "Dependent",
+        "instrument.dependent",
+        vec![CapabilitySection::new("main", "Main", vec![enabled, value]).unwrap()],
+        Vec::new(),
+        1,
+        vec![MidiMessageKind::NoteOn],
+    )
+    .unwrap()
+}

@@ -66,11 +66,15 @@ Each accepted parameter checkpoint SHALL use finite measurements from the actual
 - **THEN** the checkpoint remains pending or fails rather than crediting the parameter as audibly exercised
 
 ### Requirement: Live completion, cleanup, and persistent final state
-After all parameter checkpoints, the live demo SHALL dispatch one Patch-targeted semantic all-notes-off event for every installed Patch, wait for a newer observation reporting zero active notes, emit exactly one final event log, state tree, coverage result, and human-readable summary from the control side, become inert, and continue showing the final canonical projection until the user closes the window.
+After all parameter checkpoints, the live demo SHALL dispatch one Patch-targeted semantic all-notes-off event for every installed Patch, wait for a newer observation reporting zero active notes, retain the complete final EventLog in its typed `LiveDemoReport`, emit exactly one compact event-log summary, state tree, coverage result, and human-readable summary from the control side, become inert, and continue showing the final canonical projection until the user closes the window. Interactive output SHALL NOT dump every retained performance MIDI record.
 
 #### Scenario: Scene completes successfully
 - **WHEN** all checkpoints agree, coverage is exact, no event records were dropped, cleanup events are accepted, and zero active notes are observed
-- **THEN** the application emits `CREST_LIVE_EVENT_LOG`, `CREST_LIVE_STATE_TREE`, `CREST_LIVE_COVERAGE`, and `CREST_LIVE_SUMMARY` exactly once and leaves the final UI visible without further autonomous actions
+- **THEN** the application emits `CREST_LIVE_EVENT_LOG_SUMMARY`, `CREST_LIVE_STATE_TREE`, `CREST_LIVE_COVERAGE`, and `CREST_LIVE_SUMMARY` exactly once, the compact summary reports lossless counts and canonical chain endpoints, and the final UI remains visible without further autonomous actions
+
+#### Scenario: Complete event evidence is verified
+- **WHEN** deterministic verification inspects the completed `LiveDemoReport`
+- **THEN** the complete retained EventLog remains available in memory and agrees with the compact summary and final StateTree endpoint
 
 #### Scenario: User closes before completion
 - **WHEN** the user closes the window before the final report is complete
@@ -90,3 +94,10 @@ Automated verification SHALL exercise the live runner with a deterministic monot
 #### Scenario: Test environment lacks a native device
 - **WHEN** the automated live contract test runs in CI without a native window or physical output
 - **THEN** it still executes the production control and render seams and does not skip or claim physical-device acceptance
+
+### Requirement: Responsive physical live window
+The physical live demo SHALL use the optimized application binary and SHALL schedule each next idle eframe repaint after 16 ms instead of driving an immediate perpetual repaint loop. Native input and window events MAY wake the event loop sooner.
+
+#### Scenario: Live demo idles between frames
+- **WHEN** `make demo-live` launches the physical demo and no native event requests an earlier frame
+- **THEN** Cargo uses the release profile and the eframe adapter schedules its next repaint after 16 ms while continuing to advance the canonical control-side tick

@@ -120,13 +120,11 @@ fn emit_demo_scene(report: &DemoSceneReport, two_run_trace_equal: bool) -> Resul
 }
 
 fn emit_live_report(report: &LiveDemoReport) {
-    let event_log = report
-        .event_log()
-        .to_json()
-        .expect("completed live EventLog has a stable serializable schema");
+    let event_log_summary = serde_json::to_string(&report.event_log_summary())
+        .expect("completed live EventLog summary has a stable serializable schema");
     let coverage = serde_json::to_string(report.coverage())
         .expect("completed live coverage has a stable serializable schema");
-    println!("CREST_LIVE_EVENT_LOG {event_log}");
+    println!("CREST_LIVE_EVENT_LOG_SUMMARY {event_log_summary}");
     println!("CREST_LIVE_STATE_TREE {}", report.state_tree().json());
     println!("CREST_LIVE_COVERAGE {coverage}");
     println!("CREST_LIVE_SUMMARY {}", report.summary());

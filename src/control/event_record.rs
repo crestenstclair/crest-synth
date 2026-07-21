@@ -4,6 +4,7 @@ use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::real_time::audio_command::AudioCommand;
+use crate::synth::instrument_capability::InstrumentConfig;
 use crate::synth::patch::Patch;
 use core::fmt;
 use serde::{Serialize, Serializer};
@@ -121,9 +122,7 @@ pub struct PatchInput {
     id: u32,
     name: String,
     channel: u8,
-    bank: u16,
-    program: u8,
-    percussion: bool,
+    instrument: InstrumentConfig,
     gain_db: f32,
     pan: f32,
     reverb_send: f32,
@@ -143,16 +142,8 @@ impl PatchInput {
         self.channel
     }
 
-    pub const fn bank(&self) -> u16 {
-        self.bank
-    }
-
-    pub const fn program(&self) -> u8 {
-        self.program
-    }
-
-    pub const fn percussion(&self) -> bool {
-        self.percussion
+    pub const fn instrument_config(&self) -> &InstrumentConfig {
+        &self.instrument
     }
 
     pub const fn gain_db(&self) -> f32 {
@@ -178,9 +169,7 @@ impl From<&Patch> for PatchInput {
             id: patch.id().value(),
             name: patch.name().to_owned(),
             channel: patch.channel().value(),
-            bank: patch.instrument().bank(),
-            program: patch.instrument().program(),
-            percussion: patch.instrument().percussion(),
+            instrument: patch.instrument_config().clone(),
             gain_db: patch.parameters().gain_db(),
             pan: patch.parameters().pan(),
             reverb_send: patch.parameters().reverb_send(),
@@ -365,15 +354,19 @@ impl EventRecord {
         "input.message.data2",
         "input.message.kind",
         "input.patchId",
-        "input.patches[].bank",
         "input.patches[].channel",
         "input.patches[].delaySend",
         "input.patches[].gainDb",
         "input.patches[].id",
+        "input.patches[].instrument.assetReferences[].parameterId",
+        "input.patches[].instrument.assetReferences[].reference.kind",
+        "input.patches[].instrument.assetReferences[].reference.locator",
+        "input.patches[].instrument.capabilityId",
+        "input.patches[].instrument.values[].parameterId",
+        "input.patches[].instrument.values[].value.kind",
+        "input.patches[].instrument.values[].value.value",
         "input.patches[].name",
         "input.patches[].pan",
-        "input.patches[].percussion",
-        "input.patches[].program",
         "input.patches[].reverbSend",
         "outcome",
         "parameterGeneration",
@@ -579,6 +572,7 @@ const fn rejection_name(rejection: EventRejection) -> &'static str {
         EventRejection::InstallationClosed => "installationClosed",
         EventRejection::TooManyPatches => "tooManyPatches",
         EventRejection::DuplicateMidiChannel => "duplicateMidiChannel",
+        EventRejection::InvalidInstrumentConfig => "invalidInstrumentConfig",
         EventRejection::NoPatchesInstalled => "noPatchesInstalled",
         EventRejection::UnknownPatch => "unknownPatch",
         EventRejection::InvalidSelection => "invalidSelection",
@@ -594,6 +588,10 @@ mod tests {
         AudioEffect, EmittedEvent, EventDirection, EventInput, EventOutcome, EventRecord,
         EventRecordError, EventSource, MidiInput, MidiKind, PatchInput,
     };
+    use crate::adapter::hidef_soundfont_capability::{
+        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID,
+        SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+    };
     use crate::control::app_event::{AppEvent, Direction};
     use crate::control::app_state::{AppState, EventRejection};
     use crate::control::state_snapshot::StateSnapshot;
@@ -605,22 +603,32 @@ mod tests {
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::{ParameterId, ParameterValue};
+    use crate::testing::automatic_midi_test::create_soundfont_config;
     use serde_json::Value;
     use std::collections::BTreeSet;
 
     fn patch(id: u32) -> Patch {
+        let provider = HiDefSoundFontCapability::new().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
-            SoundFontInstrument::new(128, (id - 1) as u8, false).unwrap(),
+            create_soundfont_config(
+                &provider,
+                SoundFontInstrument::new(128, (id - 1) as u8, false).unwrap(),
+            )
+            .unwrap(),
             MidiChannel::new((id - 1) as u8).unwrap(),
             ChannelParameters::new(-6.0, 0.25, 0.5, 0.75).unwrap(),
         )
     }
 
     fn installed_state() -> AppState {
-        let mut state =
-            AppState::new(GlobalParameters::new(-3.0, 0.5, 0.4, 0.25, 250.0, 0.3, 0.2).unwrap());
+        let provider = HiDefSoundFontCapability::new().unwrap();
+        let mut state = AppState::new(
+            provider.registry().unwrap(),
+            GlobalParameters::new(-3.0, 0.5, 0.4, 0.25, 250.0, 0.3, 0.2).unwrap(),
+        );
         state
             .apply(AppEvent::InstallPatches(vec![patch(1)]))
             .unwrap();
@@ -662,13 +670,16 @@ mod tests {
     }
 
     fn discriminating_schema_records() -> Vec<EventRecord> {
+        let provider = HiDefSoundFontCapability::new().unwrap();
         let patch = PatchInput {
             id: 7,
             name: "Schema Patch".to_owned(),
             channel: 3,
-            bank: 128,
-            program: 11,
-            percussion: false,
+            instrument: create_soundfont_config(
+                &provider,
+                SoundFontInstrument::new(128, 11, false).unwrap(),
+            )
+            .unwrap(),
             gain_db: -4.0,
             pan: 0.25,
             reverb_send: 0.5,
@@ -902,9 +913,28 @@ mod tests {
         assert_eq!(installed.id(), 3);
         assert_eq!(installed.name(), "Patch 3");
         assert_eq!(installed.channel(), 2);
-        assert_eq!(installed.bank(), 128);
-        assert_eq!(installed.program(), 2);
-        assert!(!installed.percussion());
+        assert_eq!(
+            installed.instrument_config().capability_id().as_str(),
+            HIDEF_CAPABILITY_ID
+        );
+        assert_eq!(
+            installed
+                .instrument_config()
+                .value(&ParameterId::new(SOUNDFONT_BANK_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Stepped(128))
+        );
+        assert_eq!(
+            installed
+                .instrument_config()
+                .value(&ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Stepped(2))
+        );
+        assert_eq!(
+            installed
+                .instrument_config()
+                .value(&ParameterId::new(SOUNDFONT_PERCUSSION_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Toggle(false))
+        );
         assert_eq!(installed.gain_db(), -6.0);
         assert_eq!(installed.pan(), 0.25);
         assert_eq!(installed.reverb_send(), 0.5);

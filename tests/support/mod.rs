@@ -1,3 +1,4 @@
+use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::app_loop::AppLoop;
@@ -15,7 +16,7 @@ use crest_synth::real_time::patch_audio_block::PatchAudioBlock;
 use crest_synth::synth::patch::Patch;
 use crest_synth::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
-use crest_synth::testing::automatic_midi_test::AutomaticMidiTest;
+use crest_synth::testing::automatic_midi_test::{create_soundfont_config, AutomaticMidiTest};
 use crest_synth::testing::demo_scene::DemoScene;
 use crest_synth::testing::demo_scene_report::DemoSceneReport;
 use crest_synth::testing::instrument_part::InstrumentPart;
@@ -59,6 +60,7 @@ fn parts() -> Vec<InstrumentPart> {
 }
 
 fn scene_patches() -> Vec<Patch> {
+    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
     parts()
         .into_iter()
         .enumerate()
@@ -68,7 +70,8 @@ fn scene_patches() -> Vec<Patch> {
             Patch::new(
                 patch_id,
                 part.name().to_owned(),
-                part.instrument(),
+                create_soundfont_config(&provider, part.instrument())
+                    .expect("fixture config matches the production descriptor"),
                 part.assigned_channel(),
                 crest_synth::mixer::channel_parameters::ChannelParameters::default(),
             )
@@ -192,10 +195,15 @@ impl GlobalEffectsProcessor for FixtureEffects {
 }
 
 pub fn run_demo() -> DemoRun {
+    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
     let patches = scene_patches();
     let global_parameters = globals();
-    let scene = DemoScene::exhaustive(&patches, &global_parameters)
-        .expect("the fixture contains two discriminating Patches");
+    let scene = DemoScene::exhaustive(
+        &provider.registry().expect("fixture registry is valid"),
+        &patches,
+        &global_parameters,
+    )
+    .expect("the fixture contains two discriminating Patches");
     let expected_coverage = scene.expected_coverage().to_vec();
     let initial_parameters =
         ParameterSnapshot::new(0, global_parameters, &[]).expect("initial parameters are valid");
@@ -204,7 +212,10 @@ pub fn run_demo() -> DemoRun {
     let event_log = EventLog::new(scene.event_log_capacity().saturating_add(16))
         .expect("fixture EventLog capacity is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(global_parameters),
+        AppState::new(
+            provider.registry().expect("fixture registry is valid"),
+            global_parameters,
+        ),
         StateProjector::new(),
         control,
         event_log,
@@ -214,7 +225,7 @@ pub fn run_demo() -> DemoRun {
     let mut engine = FixtureEngine;
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
     automatic
-        .initialize(&mut engine, &mut app_loop)
+        .initialize(&provider, &mut engine, &mut app_loop)
         .expect("automatic fixture initializes through AppLoop");
     automatic
         .tick(Duration::from_millis(10), &mut app_loop)

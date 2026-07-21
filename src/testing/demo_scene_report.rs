@@ -513,6 +513,7 @@ mod tests {
         DemoCoverageGroup, DemoSceneCheckpoint, DemoSceneCoverage, DemoSceneReport,
         DemoSceneReportError,
     };
+    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::control::app_event::{AppEvent, Direction};
     use crate::control::app_state::EventRejection;
     use crate::control::event_log::{EventCoverage, EventLog};
@@ -524,10 +525,56 @@ mod tests {
     use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
+    use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::testing::automatic_midi_test::create_soundfont_config;
+    use serde_json::json;
 
     fn snapshot() -> StateSnapshot {
+        let provider = HiDefSoundFontCapability::new().unwrap();
         StateSnapshot::new(
-            r#"{"generation":4,"patches":[{"id":7,"name":"Lead","channel":2,"bank":0,"program":80,"percussion":false,"gainDb":-6.0,"pan":-0.25,"reverbSend":0.2,"delaySend":0.1},{"id":9,"name":"Drums","channel":9,"bank":128,"program":0,"percussion":true,"gainDb":-12.0,"pan":0.5,"reverbSend":0.4,"delaySend":0.3}],"global":{"masterGainDb":-3.0,"reverbRoomSize":0.7,"reverbDamping":0.4,"reverbReturn":0.25,"delayMilliseconds":375.0,"delayFeedback":0.35,"delayReturn":0.2},"selection":{"section":"Patch","patchIndex":1,"parameterIndex":2}}"#,
+            json!({
+                "generation": 4,
+                "capabilities": provider.registry().unwrap(),
+                "patches": [
+                    {
+                        "id": 7,
+                        "name": "Lead",
+                        "channel": 2,
+                        "instrument": create_soundfont_config(
+                            &provider,
+                            SoundFontInstrument::new(0, 80, false).unwrap()
+                        ).unwrap(),
+                        "gainDb": -6.0,
+                        "pan": -0.25,
+                        "reverbSend": 0.2,
+                        "delaySend": 0.1
+                    },
+                    {
+                        "id": 9,
+                        "name": "Drums",
+                        "channel": 9,
+                        "instrument": create_soundfont_config(
+                            &provider,
+                            SoundFontInstrument::new(128, 0, true).unwrap()
+                        ).unwrap(),
+                        "gainDb": -12.0,
+                        "pan": 0.5,
+                        "reverbSend": 0.4,
+                        "delaySend": 0.3
+                    }
+                ],
+                "global": {
+                    "masterGainDb": -3.0,
+                    "reverbRoomSize": 0.7,
+                    "reverbDamping": 0.4,
+                    "reverbReturn": 0.25,
+                    "delayMilliseconds": 375.0,
+                    "delayFeedback": 0.35,
+                    "delayReturn": 0.2
+                },
+                "selection": {"section": "Patch", "patchIndex": 1, "parameterIndex": 2}
+            })
+            .to_string(),
         )
     }
 

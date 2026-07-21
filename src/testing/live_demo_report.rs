@@ -113,6 +113,52 @@ pub struct LiveDemoReport {
     summary: String,
 }
 
+/// Compact terminal evidence for a potentially large retained live journal.
+///
+/// The complete EventLog remains available on LiveDemoReport and is exercised
+/// by deterministic verification; interactive output reports its lossless
+/// bounds and canonical endpoints without printing every performance event.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveEventLogSummary {
+    schema_version: u32,
+    event_log_schema_version: u32,
+    total_observed: u64,
+    retained_records: usize,
+    dropped_records: u64,
+    first_sequence: Option<u64>,
+    last_sequence: Option<u64>,
+    generation_before: Option<u64>,
+    generation_after: Option<u64>,
+    state_hash_before: Option<String>,
+    state_hash_after: Option<String>,
+    lossless: bool,
+}
+
+impl LiveEventLogSummary {
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    fn from_event_log(event_log: &EventLog) -> Self {
+        let first = event_log.records().first();
+        let last = event_log.records().last();
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            event_log_schema_version: event_log.schema_version(),
+            total_observed: event_log.total_observed(),
+            retained_records: event_log.records().len(),
+            dropped_records: event_log.dropped_records(),
+            first_sequence: first.map(|record| record.sequence()),
+            last_sequence: last.map(|record| record.sequence()),
+            generation_before: first.map(|record| record.generation_before()),
+            generation_after: last.map(|record| record.generation_after()),
+            state_hash_before: first.map(|record| record.state_hash_before().to_owned()),
+            state_hash_after: last.map(|record| record.state_hash_after().to_owned()),
+            lossless: event_log.dropped_records() == 0
+                && event_log.total_observed() == event_log.records().len() as u64,
+        }
+    }
+}
+
 impl LiveDemoReport {
     pub const SCHEMA_VERSION: u32 = 1;
 
@@ -221,6 +267,10 @@ impl LiveDemoReport {
 
     pub const fn event_log(&self) -> &EventLog {
         &self.event_log
+    }
+
+    pub fn event_log_summary(&self) -> LiveEventLogSummary {
+        LiveEventLogSummary::from_event_log(&self.event_log)
     }
 
     pub const fn state_tree(&self) -> &StateTree {

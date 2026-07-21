@@ -1,3 +1,8 @@
+use crate::adapter::hidef_soundfont_capability::{
+    HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID, SOUNDFONT_FILE_PARAMETER_ID,
+    SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+};
+use crate::adapter::hidef_soundfont_engine::HIDEF_SOUNDFONT_PATH;
 use crate::control::app_event::AppEvent;
 use crate::control::app_loop::AppLoop;
 use crate::control::app_state::EventRejection;
@@ -5,8 +10,15 @@ use crate::control::event_record::EventSource;
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::channel_parameters::ChannelParameters;
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
+use crate::synth::instrument_capability::{
+    AssetAssignment, AssetKind, AssetReference, CapabilityError, InstrumentConfig,
+    ParameterAssignment, ParameterValue,
+};
+use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
+use crate::synth::parameter_id::ParameterId;
 use crate::synth::patch::Patch;
 use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
+use crate::synth::sound_font_instrument::SoundFontInstrument;
 use crate::testing::midi_event_source::{FixedEventBatch, MidiEventSource, MidiSourceError};
 use core::fmt;
 use std::time::Duration;
@@ -16,6 +28,7 @@ use std::time::Duration;
 pub enum TestInputError {
     Source(MidiSourceError),
     SoundFont(SoundFontError),
+    Capability(CapabilityError),
     Control(EventRejection),
     AudioBoundaryFull(BoundaryFull),
     PatchIdentityOverflow { position: usize },
@@ -33,6 +46,12 @@ impl fmt::Display for TestInputError {
                 write!(
                     formatter,
                     "automatic MIDI patch configuration failed: {error}"
+                )
+            }
+            Self::Capability(error) => {
+                write!(
+                    formatter,
+                    "automatic MIDI capability configuration failed: {error}"
                 )
             }
             Self::Control(error) => {
@@ -70,6 +89,7 @@ impl std::error::Error for TestInputError {
         match self {
             Self::Source(error) => Some(error),
             Self::SoundFont(error) => Some(error),
+            Self::Capability(error) => Some(error),
             Self::Control(error) => Some(error),
             Self::AudioBoundaryFull(error) => Some(error),
             Self::PatchIdentityOverflow { .. }
@@ -90,6 +110,12 @@ impl From<MidiSourceError> for TestInputError {
 impl From<SoundFontError> for TestInputError {
     fn from(error: SoundFontError) -> Self {
         Self::SoundFont(error)
+    }
+}
+
+impl From<CapabilityError> for TestInputError {
+    fn from(error: CapabilityError) -> Self {
+        Self::Capability(error)
     }
 }
 
@@ -134,17 +160,33 @@ where
 
     /// Prepares every fixture Patch, installs it through AppLoop, and starts
     /// automatic input immediately.
-    pub fn initialize<Engine, Boundary>(
+    pub fn initialize<Provider, Engine, Boundary>(
         &mut self,
+        provider: &Provider,
         engine: &mut Engine,
         app_loop: &mut AppLoop<Boundary>,
     ) -> Result<(), TestInputError>
     where
+        Provider: InstrumentCapabilityProvider,
         Engine: SoundFontEngine,
         Boundary: ControlAudioBoundary,
     {
         if self.initialized {
             return Err(TestInputError::AlreadyInitialized);
+        }
+
+        let provider_descriptor = provider.descriptor();
+        let registered_descriptor = app_loop
+            .capabilities()
+            .descriptor(provider_descriptor.id())
+            .ok_or_else(|| {
+                CapabilityError::ProviderRegistryMismatch(provider_descriptor.id().clone())
+            })?;
+        if registered_descriptor != &provider_descriptor {
+            return Err(CapabilityError::ProviderRegistryMismatch(
+                provider_descriptor.id().clone(),
+            )
+            .into());
         }
 
         let parts = self.source.prepare()?;
@@ -178,10 +220,14 @@ where
                 .map_err(|_| TestInputError::PatchIdentityOverflow { position })?;
             let patch_id = PatchId::new(patch_number)
                 .expect("a one-based fixture position always produces a non-zero PatchId");
+            let instrument_config = create_soundfont_config(provider, part.instrument())?;
+            app_loop
+                .capabilities()
+                .validate_config(&instrument_config)?;
             let patch = Patch::new(
                 patch_id,
                 part.name().to_owned(),
-                part.instrument(),
+                instrument_config,
                 part.assigned_channel(),
                 ChannelParameters::default(),
             );
@@ -246,9 +292,53 @@ where
     }
 }
 
+/// Translates the fixed MIDI fixture's source identity into generic assignments.
+///
+/// The provider boundary remains generic; this narrow testing service owns all
+/// knowledge of the legacy SoundFont fixture shape.
+pub fn create_soundfont_config<Provider>(
+    provider: &Provider,
+    instrument: SoundFontInstrument,
+) -> Result<InstrumentConfig, CapabilityError>
+where
+    Provider: InstrumentCapabilityProvider,
+{
+    let descriptor = provider.descriptor();
+    if descriptor.id().as_str() != HIDEF_CAPABILITY_ID {
+        return Err(CapabilityError::ProviderRegistryMismatch(
+            descriptor.id().clone(),
+        ));
+    }
+    let parameter_id = |value: &str| {
+        ParameterId::new(value)
+            .map_err(|_| CapabilityError::InvalidMetadataIdentifier(value.to_owned()))
+    };
+    provider.create_config(
+        &[
+            ParameterAssignment::new(
+                parameter_id(SOUNDFONT_BANK_PARAMETER_ID)?,
+                ParameterValue::Stepped(i64::from(instrument.bank())),
+            ),
+            ParameterAssignment::new(
+                parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID)?,
+                ParameterValue::Stepped(i64::from(instrument.program())),
+            ),
+            ParameterAssignment::new(
+                parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID)?,
+                ParameterValue::Toggle(instrument.percussion()),
+            ),
+        ],
+        &[AssetAssignment::new(
+            parameter_id(SOUNDFONT_FILE_PARAMETER_ID)?,
+            AssetReference::new(AssetKind::SoundFont, HIDEF_SOUNDFONT_PATH)?,
+        )],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AutomaticMidiTest, TestInputError};
+    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::control::app_loop::AppLoop;
     use crate::control::app_state::AppState;
     use crate::control::event_record::EventSource;
@@ -391,9 +481,10 @@ mod tests {
 
     fn app_loop() -> (AppLoop<TestBoundary>, Arc<Mutex<Observations>>) {
         let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap();
+        let provider = HiDefSoundFontCapability::new().unwrap();
         let observations = Arc::new(Mutex::new(Observations::default()));
         let app_loop = AppLoop::new(
-            AppState::new(global),
+            AppState::new(provider.registry().unwrap(), global),
             StateProjector::new(),
             TestBoundary {
                 observations: Arc::clone(&observations),
@@ -412,8 +503,11 @@ mod tests {
         let mut service = AutomaticMidiTest::new(source);
         let mut engine = TestEngine::default();
         let (mut app_loop, observations) = app_loop();
+        let provider = HiDefSoundFontCapability::new().unwrap();
 
-        service.initialize(&mut engine, &mut app_loop).unwrap();
+        service
+            .initialize(&provider, &mut engine, &mut app_loop)
+            .unwrap();
 
         let event_log = app_loop.event_log();
         assert_eq!(event_log.records().len(), 1);
@@ -447,7 +541,10 @@ mod tests {
         let mut service = AutomaticMidiTest::new(source);
         let mut engine = TestEngine::default();
         let (mut app_loop, observations) = app_loop();
-        service.initialize(&mut engine, &mut app_loop).unwrap();
+        let provider = HiDefSoundFontCapability::new().unwrap();
+        service
+            .initialize(&provider, &mut engine, &mut app_loop)
+            .unwrap();
 
         service
             .tick(Duration::from_millis(10), &mut app_loop)
@@ -478,8 +575,11 @@ mod tests {
         let mut service = AutomaticMidiTest::new(source);
         let mut engine = TestEngine::default();
         let (mut app_loop, _) = app_loop();
+        let provider = HiDefSoundFontCapability::new().unwrap();
 
-        let error = service.initialize(&mut engine, &mut app_loop).unwrap_err();
+        let error = service
+            .initialize(&provider, &mut engine, &mut app_loop)
+            .unwrap_err();
 
         assert_eq!(error, TestInputError::DuplicatePartIndex { part_index: 7 });
         assert!(engine.configured.is_empty());
@@ -493,7 +593,10 @@ mod tests {
         let mut service = AutomaticMidiTest::new(source);
         let mut engine = TestEngine::default();
         let (mut app_loop, observations) = app_loop();
-        service.initialize(&mut engine, &mut app_loop).unwrap();
+        let provider = HiDefSoundFontCapability::new().unwrap();
+        service
+            .initialize(&provider, &mut engine, &mut app_loop)
+            .unwrap();
 
         let error = service
             .tick(Duration::from_millis(1), &mut app_loop)

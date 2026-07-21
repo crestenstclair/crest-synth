@@ -1,10 +1,12 @@
 use crate::kernel::midi_channel::MidiChannel;
 use core::fmt;
+use serde::{Deserialize, Serialize};
 
 const MAX_DATA_BYTE: u8 = 0x7f;
 
 /// The normalized kind of a channel MIDI message.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum MidiMessageKind {
     NoteOn,
     NoteOff,

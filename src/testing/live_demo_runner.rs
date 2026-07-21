@@ -129,7 +129,7 @@ where
             observed_value,
         )?;
         let audio_sequence_before = self.observation.read_latest_on_control().sequence();
-        let records_before = app_loop.event_log().total_observed();
+        let records_before = app_loop.event_log_ref().total_observed();
         let dispatch = app_loop.dispatch_from(step.event().clone(), EventSource::DemoScene);
 
         match (step.expected_outcome(), dispatch) {
@@ -155,7 +155,7 @@ where
             }
         }
 
-        let event_log = app_loop.event_log();
+        let event_log = app_loop.event_log_ref();
         if event_log.total_observed() != records_before.saturating_add(1) {
             return Err(LiveDemoError::MissingEventRecord);
         }

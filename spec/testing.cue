@@ -13,12 +13,12 @@ project: contexts: Testing: {
 			name: "String"
 			schemaVersion: "u32"
 			steps: "Vec<WindowInput | MidiProbe | Tick | Checkpoint>"
-			surfaceDescriptor: "typed WindowInput kind/key, AppEvent, Direction, MidiMessageKind, editable-parameter, rejection, emitted-effect, and serialized-leaf descriptors from production owners"
+			surfaceDescriptor: "typed WindowInput kind/key, AppEvent, Direction, MidiMessageKind, installed capability, capability-parameter, editable-parameter, rejection, emitted-effect, and serialized-leaf descriptors from production owners"
 			rejectionDescriptor: "typed unique EventRejection cases partitioned into Scene and ReducerTable reachability"
 			expectedCoverage: "the exact normalized identifier set derived from surfaceDescriptor plus installed Patch identities"
 		}
 		invariants: [
-			"the exhaustive scene is derived from typed descriptors owned beside WindowInput, the production enums, parameter schemas, emitted effects, and serializers plus the installed fixture Patch list; it never defines a second hand-maintained list of GUI inputs or field-name strings",
+			"the exhaustive scene is derived from typed descriptors owned beside WindowInput, the production enums, the installed CapabilityRegistry, parameter schemas, emitted effects, and serializers plus the installed fixture Patch list; it never defines a second hand-maintained list of GUI inputs or field-name strings",
 			"a contract test discovers the serialized EventLog, EventRecord, StateTree, TextProjection, and ParameterSnapshot leaf paths and requires exact bidirectional set equality with surfaceDescriptor, so an added, removed, renamed, duplicated, or unexercised item fails",
 			"descriptor uniqueness is asserted before converting to sets, and expectedCoverage is frozen before the first event so actual post-state, discovered output, or coverage observations can never define their own expected values",
 			"every expected state value is computed before dispatch from the captured baseline plus the typed owner descriptor's bound and step; it is never copied from the actual post-dispatch StateTree, TextProjection, ParameterSnapshot, or rendered audio",
@@ -113,9 +113,34 @@ project: contexts: Testing: {
 			"each accepted parameter checkpoint requires an AudioObservationSnapshot whose sequence advanced after dispatch, whose parameterGeneration equals the accepted generation, whose output is finite, and whose parameter-specific audible predicate passed while fixture audio was nonzero",
 			"complete is true only when every expected editable parameter changed, missing and unexpected are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, all semantic all-notes-off events were accepted, and a later audio observation reports zero active notes",
 			"eventLog and stateTree are the existing canonical Control values, not live-demo copies; stateTree.generation equals the final checkpoint and EventLog chain endpoint",
+			"the complete EventLog remains retained for deterministic report verification while interactive terminal output uses one compact LiveEventLogSummary containing lossless counts and canonical first/last chain endpoints",
 			"summary is human-readable control-side text derived from the structured report after completion and is never constructed or printed in the audio callback",
 		]
 		contributesTo: [{capability: "capability.live_observable_demo", contribution: "packages coherent live checkpoints, exact coverage, final canonical state, and a readable summary"}]
+	}
+
+	valueObjects: LiveEventLogSummary: {
+		description: "compact interactive evidence for a potentially large complete live EventLog"
+		state: {
+			schemaVersion: "u32"
+			eventLogSchemaVersion: "u32"
+			totalObserved: "u64"
+			retainedRecords: "usize"
+			droppedRecords: "u64"
+			firstSequence: "Option<u64>"
+			lastSequence: "Option<u64>"
+			generationBefore: "Option<u64>"
+			generationAfter: "Option<u64>"
+			stateHashBefore: "Option<String>"
+			stateHashAfter: "Option<String>"
+			lossless: "bool"
+		}
+		invariants: [
+			"lossless is true exactly when droppedRecords is zero and totalObserved equals retainedRecords",
+			"the first and last fields are copied from the retained canonical EventLog chain rather than recomputed from UI or audio state",
+			"serialization and printing occur only on the control side after successful live completion",
+		]
+		contributesTo: [{capability: "capability.live_observable_demo", contribution: "keeps final interactive proof bounded without discarding the complete typed report journal"}]
 	}
 
 	valueObjects: InstrumentPart: {
@@ -133,6 +158,7 @@ project: contexts: Testing: {
 		]
 		contributesTo: [
 			{capability: "capability.automatic_test_midi", contribution: "defines the one-Patch-per-instrument and one-channel-per-Patch assignment"},
+			{capability: "capability.instrument_capability_model", contribution: "retains SoundFontInstrument only as fixture source identity before provider conversion"},
 			{capability: "capability.soundfont_audio", contribution: "carries the SoundFont preset required by the Patch"},
 		]
 	}
@@ -148,7 +174,7 @@ project: contexts: Testing: {
 		consumes: ["valueObject.Testing.InstrumentPart", "valueObject.Kernel.MidiMessage"]
 		invariants: [
 			"prepare and start run outside the audio callback",
-			"poll appends due Patch-targeted MIDI messages to caller-owned bounded storage",
+			"poll appends due Patch-targeted MIDI messages in source order until caller-owned bounded storage is full and retains any remaining overdue messages for later polls without treating elapsed-time catch-up as an error",
 			"the port exposes no seek, pause, record, loop, timeline, edit, song, clip, pattern, or transport operation",
 		]
 		contributesTo: [{capability: "capability.automatic_test_midi", contribution: "keeps automatic file input replaceable by later input adapters without adding a sequencer"}]
@@ -159,6 +185,8 @@ project: contexts: Testing: {
 		uses: [
 			"port.Testing.MidiEventSource",
 			"aggregate.Synth.Patch",
+			"valueObject.Synth.CapabilityRegistry",
+			"port.Synth.InstrumentCapabilityProvider",
 			"port.Synth.SoundFontEngine",
 			"applicationService.Control.AppLoop",
 			"valueObject.Testing.InstrumentPart",
@@ -168,12 +196,14 @@ project: contexts: Testing: {
 			tick: {input: {elapsed: "Duration"}, output: {result: "Result<(), TestInputError>"}}
 		}
 		meta: rules: [
-			"initialize prepares the source, assigns stable PatchIds and default ChannelParameters, configures exactly one Patch per InstrumentPart through SoundFontEngine, dispatches one InstallPatches AppEvent, then starts the source immediately",
+			"initialize prepares the source, translates each SoundFontInstrument into the stable soundfont.bank, soundfont.program, soundfont.percussion, and soundfont.file generic assignments declared by the provider descriptor, asks InstrumentCapabilityProvider to create a schema-valid InstrumentConfig, assigns stable PatchIds and default ChannelParameters, configures exactly one Patch per InstrumentPart through SoundFontEngine, dispatches one InstallPatches AppEvent, then starts the source immediately",
+			"initialization rejects a missing provider, registry/provider descriptor mismatch, invalid config, or non-SoundFont capability before installation; it never substitutes a descriptor, config, preset, asset, or engine",
 			"tick polls into reusable bounded storage and dispatches each item as AppEvent::Midi through AppLoop",
 			"no transport state or playback controls are added to AppState",
 		]
 		contributesTo: [
 			{capability: "capability.automatic_test_midi", contribution: "starts Corridors of Time automatically and sends all test input through the production reducer"},
+			{capability: "capability.instrument_capability_model", contribution: "creates all fixture Patch configs through the installed capability provider"},
 			{capability: "capability.one_way_parameter_control", contribution: "uses the same AppEvent/AppState path as keyboard input"},
 		]
 	}
@@ -197,7 +227,8 @@ project: contexts: Testing: {
 			run: {input: {scene: "DemoScene"}, output: {report: "Result<DemoSceneReport, DemoSceneError>"}}
 		}
 		meta: rules: [
-			"begin after AutomaticMidiTest installs the real fixture Patches so the state tree contains every current Patch identity and parameter set",
+			"begin after AutomaticMidiTest installs the real fixture Patches so the state tree contains the immutable installed capability registry and every current Patch identity, generic instrument config, asset reference, and mixer parameter set",
+			"prove the registry contains exactly instrument.soundfont.hidef and every installed Patch config matches that descriptor; unknown, duplicate, missing, undeclared, wrong-kind, and out-of-range config mutations must fail without fallback or partial installation",
 			"exercise InstallPatches, Navigate, Adjust, and Midi; Navigate and Adjust each exercise Up, Down, Left, and Right; for every installed Patch, MIDI probes cover note-on, note-off, control-change, program-change, channel-pressure, pitch-bend, and PatchMidi all-notes-off semantics with exact channel/data bytes",
 			"exercise every valid normalized WindowInput from its production-owned descriptor through KeyboardInputTranslator and prove each emits the exact expected AppEvent or no event",
 			"for every installed Patch select each typed ChannelParameters field and perform reversible fine and coarse edits through GUI inputs; at every step assert the exact expected bounded value, exact selected line/text value, exact ParameterSnapshot value, and exact equality of every unrelated Patch/global value",
@@ -207,7 +238,7 @@ project: contexts: Testing: {
 			"cover Patch-to-Patch, Patch-to-GLOBAL, GLOBAL-to-Patch, parameter wrap, section wrap, and selected-line projection movement in both directions",
 			"explicitly prove the differing parameter-count clamp: GLOBAL parameter indexes 4, 5, and 6 each move to Patch parameter index 3, while Patch index 3 moves to GLOBAL index 3; do not infer this from generic section-wrap coverage",
 			"for each of gainDb, pan, reverbSend, delaySend, masterGainDb, reverbRoomSize, reverbDamping, reverbReturn, delayMilliseconds, delayFeedback, and delayReturn, drive the selected value to its typed lower and upper boundary, record ParameterAtBoundary as a nonfatal unchanged transition at each boundary, then prove a valid subsequent edit succeeds",
-			"derive the expected surface from the production-owned typed descriptors and discovered serialization leaves; require exact expected-versus-observed set equality and report both missing and unexpected identifiers",
+			"derive the expected surface from the production-owned installed capability/parameter descriptors, other typed descriptors, and discovered serialization leaves; require exact expected-versus-observed set equality and report both missing and unexpected identifiers",
 			"observe and compare every current StateTree value, TextProjection line/value/selection marker, and ParameterSnapshot value against the same accepted AppState generation; property existence or a nonempty body alone is insufficient",
 			"verify all publicly reachable EventRejection outcomes in the scene and cover internal-only rejection variants with a table-driven reducer test; no rejection terminates later scene steps",
 			"for every scene step compare the complete EventRecord source, tagged input payload, outcome/rejection, generations, state hashes, emitted-event payloads, parameter generation, projection hash, and selected line against an oracle fixed before dispatch",
@@ -227,6 +258,7 @@ project: contexts: Testing: {
 		]
 		contributesTo: [
 			{capability: "capability.observable_demo_scene", contribution: "runs exhaustive stateful GUI and event coverage through production seams"},
+			{capability: "capability.instrument_capability_model", contribution: "proves registry/config serialization, generic projection, and explicit no-fallback rejection through production seams"},
 			{capability: "capability.one_way_parameter_control", contribution: "proves all current editable values use the one reducer and projection path"},
 			{capability: "capability.global_mix", contribution: "measures every current Patch and global mix parameter case"},
 			{capability: "capability.realtime_execution", contribution: "observes parameter and command effects through the real-time boundary"},
@@ -264,7 +296,7 @@ project: contexts: Testing: {
 			"expected and exercised editable-parameter identifiers are compared in both directions; an added, removed, duplicated, unmodified, unprojected, inaudible, or unexpected parameter makes the report incomplete",
 			"completion dispatches Patch-targeted MidiMessageKind::AllNotesOff AppEvents through AppLoop for every installed Patch, waits for a newer AudioObservationSnapshot with zero active notes, captures the final EventLog and StateTree, exposes one completed LiveDemoReport, and then performs no more actions",
 			"completion never requests window close; the final TextProjection continues to come from AppLoop.currentText until the user closes the real window",
-			"the runner never calls AppState.apply directly, edits a projection or report to manufacture agreement, publishes ParameterSnapshot or AudioCommand directly, invokes SoundFontEngine or MixEngine directly, writes an audio buffer, prints output, or logs from the callback",
+			"the runner never calls AppState.apply directly, edits the immutable capability registry or Patch instrument config, edits a projection or report to manufacture agreement, publishes ParameterSnapshot or AudioCommand directly, invokes SoundFontEngine or MixEngine directly, writes an audio buffer, prints output, or logs from the callback",
 		]
 		validations: [
 			{kind: "integration", command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE live_demo_scene passed"}], description: "a deterministic-clock harness drives the live runner through production events, projections, rendered observations, rejection recovery, exact current-surface coverage, all-notes-off, and inert completion without opening CI devices"},

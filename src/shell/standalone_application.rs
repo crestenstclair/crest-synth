@@ -1,4 +1,5 @@
 use crate::adapter::atomic_audio_observation::AtomicAudioObservation;
+use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_loop::AppLoop;
 use crate::control::app_state::{AppState, EventRejection};
@@ -24,9 +25,9 @@ use crate::shell::app_window::{
     AppInputCallback, AppWindow, ProjectionCallback, TickCallback, WindowError,
 };
 use crate::shell::audio_output::{AudioOutput, AudioOutputError, AudioRenderCallback, AudioStream};
+use crate::synth::instrument_capability::CapabilityError;
 use crate::synth::patch::Patch;
 use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
-use crate::synth::sound_font_instrument::SoundFontInstrument;
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::demo_scene::{DemoScene, DemoSceneError};
 use crate::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport, DemoSceneReportError};
@@ -140,6 +141,7 @@ pub struct SmokeObservation {
 /// A startup, control, fixture, device, or window failure.
 #[derive(Debug)]
 pub enum ApplicationError {
+    Capability(CapabilityError),
     SoundFont(SoundFontError),
     StateProjection(StateProjectionError),
     TestInput(TestInputError),
@@ -163,6 +165,7 @@ pub enum ApplicationError {
 impl fmt::Display for ApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Capability(error) => write!(formatter, "capability setup failed: {error}"),
             Self::SoundFont(error) => write!(formatter, "SoundFont startup failed: {error}"),
             Self::StateProjection(error) => {
                 write!(formatter, "initial control projection failed: {error}")
@@ -202,6 +205,7 @@ impl fmt::Display for ApplicationError {
 impl std::error::Error for ApplicationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Capability(error) => Some(error),
             Self::SoundFont(error) => Some(error),
             Self::StateProjection(error) => Some(error),
             Self::TestInput(error) => Some(error),
@@ -227,6 +231,12 @@ impl std::error::Error for ApplicationError {
 impl From<SoundFontError> for ApplicationError {
     fn from(error: SoundFontError) -> Self {
         Self::SoundFont(error)
+    }
+}
+
+impl From<CapabilityError> for ApplicationError {
+    fn from(error: CapabilityError) -> Self {
+        Self::Capability(error)
     }
 }
 
@@ -363,14 +373,16 @@ where
         } = self;
 
         engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
+        let provider = HiDefSoundFontCapability::new()?;
+        let capabilities = provider.registry()?;
         let (control_boundary, audio_boundary) = boundary.into_handles();
         let mut app_loop = AppLoop::new(
-            AppState::new(config.global_parameters()),
+            AppState::new(capabilities, config.global_parameters()),
             StateProjector::new(),
             control_boundary,
         )?;
         let mut automatic = AutomaticMidiTest::new(source);
-        automatic.initialize(&mut engine, &mut app_loop)?;
+        automatic.initialize(&provider, &mut engine, &mut app_loop)?;
 
         let mut renderer = AudioRenderer::new(audio_boundary, engine, MixEngine::new(effects));
         renderer.prepare(config.max_frames(), config.sample_rate())?;
@@ -420,17 +432,19 @@ where
         } = self;
 
         engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
+        let provider = HiDefSoundFontCapability::new()?;
+        let capabilities = provider.registry()?;
         let (control_boundary, audio_boundary) = boundary.into_handles();
         let event_log = EventLog::new(LIVE_EVENT_LOG_CAPACITY)
             .expect("the declared live EventLog capacity is nonzero");
         let mut app_loop = AppLoop::with_event_log(
-            AppState::new(config.global_parameters()),
+            AppState::new(capabilities, config.global_parameters()),
             StateProjector::new(),
             control_boundary,
             event_log,
         )?;
         let mut automatic = AutomaticMidiTest::new(source);
-        automatic.initialize(&mut engine, &mut app_loop)?;
+        automatic.initialize(&provider, &mut engine, &mut app_loop)?;
         let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())?;
         if app_loop.event_log().capacity()
             < scene.required_event_log_capacity(LIVE_FIXTURE_EVENT_ALLOWANCE)
@@ -511,21 +525,27 @@ where
         } = self;
 
         engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
+        let provider = HiDefSoundFontCapability::new()?;
+        let capabilities = provider.registry()?;
         let (control_boundary, audio_boundary) = boundary.into_handles();
         let global_parameters = config.global_parameters();
         let mut app_loop = AppLoop::new(
-            AppState::new(global_parameters),
+            AppState::new(capabilities, global_parameters),
             StateProjector::new(),
             control_boundary,
         )?;
         let mut automatic = AutomaticMidiTest::new(source);
-        automatic.initialize(&mut engine, &mut app_loop)?;
+        automatic.initialize(&provider, &mut engine, &mut app_loop)?;
         automatic.tick(Duration::from_millis(20), &mut app_loop)?;
         app_loop.dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::System)?;
         app_loop.dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::System)?;
 
         let installed_patches = installed_patches_from_log(&app_loop.event_log())?;
-        let scene = DemoScene::exhaustive(&installed_patches, &global_parameters)?;
+        let scene = DemoScene::exhaustive(
+            app_loop.capabilities(),
+            &installed_patches,
+            &global_parameters,
+        )?;
         if degenerate != Some(DegenerateMode::Audio) {
             queue_demo_notes(&installed_patches, &mut app_loop)?;
         }
@@ -560,14 +580,16 @@ where
         } = self;
 
         engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
+        let provider = HiDefSoundFontCapability::new()?;
+        let capabilities = provider.registry()?;
         let (control_boundary, mut audio_boundary) = boundary.into_handles();
         let mut app_loop = AppLoop::new(
-            AppState::new(config.global_parameters()),
+            AppState::new(capabilities, config.global_parameters()),
             StateProjector::new(),
             control_boundary,
         )?;
         let mut automatic = AutomaticMidiTest::new(source);
-        automatic.initialize(&mut engine, &mut app_loop)?;
+        automatic.initialize(&provider, &mut engine, &mut app_loop)?;
 
         let initial_text = app_loop.current_text();
         let patch_rows = count_patch_rows(initial_text.body());
@@ -813,8 +835,7 @@ fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, Applic
                 PatchId::new(patch.id())
                     .expect("an accepted fixture record contains a valid PatchId"),
                 patch.name().to_owned(),
-                SoundFontInstrument::new(patch.bank(), patch.program(), patch.percussion())
-                    .expect("an accepted fixture record contains a valid SoundFont instrument"),
+                patch.instrument_config().clone(),
                 MidiChannel::new(patch.channel())
                     .expect("an accepted fixture record contains a valid MIDI channel"),
                 ChannelParameters::new(

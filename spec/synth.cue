@@ -1,9 +1,9 @@
 package crestsynth
 
 project: contexts: Synth: {
-	purpose: "Patch identity and the SoundFont synthesis boundary"
+	purpose: "capability-polymorphic Patch identity and the current SoundFont synthesis boundary"
 	ubiquitousLanguage: {
-		Patch: "one playable instrument configuration"
+		Patch: "one playable instrument configuration identified by a capability rather than an engine-specific aggregate shape"
 		SoundFontInstrument: "the bank, program, and percussion identity selected in HiDef.sf2"
 	}
 
@@ -26,22 +26,25 @@ project: contexts: Synth: {
 
 	aggregates: Patch: {
 		root: true
-		purpose: "own one instrument's identity, SoundFont preset, assigned channel, and editable mixer parameters"
+		purpose: "own one instrument capability config, assigned MIDI channel, identity, and editable mixer parameters"
 		state: {
 			id: "PatchId"
 			name: "String"
-			instrument: "SoundFontInstrument"
+			instrument: "InstrumentConfig"
 			channel: "MidiChannel"
 			parameters: "ChannelParameters"
 		}
 		invariants: [
 			"id is stable for the process lifetime",
-			"instrument configuration is immutable after the Patch is installed",
+			"instrument capability and configuration are validated against the installed CapabilityRegistry before Patch construction",
+			"instrument configuration is immutable after the Patch is installed in this increment",
 			"channel is assigned by the input adapter and is in 0..=15",
 			"only ChannelParameters may be edited after installation",
+			"Patch contains no SoundFont-only field, engine object, descriptor copy, prepared renderer, decoded asset, UI state, or fallback configuration",
 		]
 		contributesTo: [
-			{capability: "capability.soundfont_audio", contribution: "binds one playable Patch to one HiDef.sf2 instrument"},
+			{capability: "capability.instrument_capability_model", contribution: "makes one canonical Patch aggregate support capability-owned instrument schemas"},
+			{capability: "capability.soundfont_audio", contribution: "binds the current playable Patch to the registered HiDef SoundFont capability"},
 			{capability: "capability.one_way_parameter_control", contribution: "is the unit listed and edited by the text view"},
 		]
 	}
@@ -64,13 +67,15 @@ project: contexts: Synth: {
 		invariants: [
 			"the running application owns exactly one SoundFontEngine instance",
 			"load and configurePatch run on the control thread before the Patch can receive a note",
+			"configurePatch accepts only a schema-valid InstrumentConfig whose capabilityId is instrument.soundfont.hidef and returns a typed error for every other capability without fallback",
 			"every configured Patch has a unique assigned MIDI channel and a unique output stem indexed by PatchId",
 			"dispatch and renderPatches use bounded preallocated storage on the audio thread",
 			"renderPatches fills caller-owned per-Patch stereo stems and never returns a combined master stream in place of those stems",
 			"renderPatches performs no allocation, locking, I/O, logging, or destruction",
 		]
 		contributesTo: [
-			{capability: "capability.soundfont_audio", contribution: "keeps SoundFont synthesis behind the engine abstraction later implementations must satisfy"},
+			{capability: "capability.instrument_capability_model", contribution: "consumes the generic Patch config while remaining the only concrete renderer in this increment"},
+			{capability: "capability.soundfont_audio", contribution: "keeps current SoundFont synthesis behind its engine boundary"},
 			{capability: "capability.realtime_execution", contribution: "makes the callback contract explicit at the synthesis boundary"},
 		]
 	}
@@ -87,8 +92,8 @@ project: adapters: HiDefSoundFontEngine: {
 			"expect exactly ./sf2/HiDef.sf2 and load it once on the control thread; return a clear startup error if it is missing or invalid",
 			"own exactly one HiDefSoundFontEngine adapter and parse one SoundFont bank shared by all render lanes; do not create per-Patch SoundFontEngine objects",
 			"because rustysynth 1.3 exposes only a combined stereo render, prepare one bounded rustysynth synthesizer lane per configured MIDI channel inside that adapter so each Patch is rendered into a distinct caller-owned stem",
-			"SoundFont is the only synthesis implementation; do not define EngineType, oscillator, virtual-analog, sampler, or fallback paths",
-			"configure each Patch's unique assigned channel lane from SoundFontInstrument bank, program, and percussion identity; keep the fixed PatchId-to-channel-to-stem lookup preallocated",
+			"SoundFont is the only installed synthesis implementation in this increment; do not define the Braids renderer, C++/FFI build, prepared engine rack, engine selector, layering path, or fallback",
+			"configure each Patch's unique assigned channel lane from its validated instrument.soundfont.hidef InstrumentConfig values and fixed asset reference; keep the fixed PatchId-to-channel-to-stem lookup preallocated",
 			"inside each independent lane use rustysynth's percussion channel for a percussion Patch and a melodic channel for every other Patch, regardless of the Patch's logical assigned channel",
 			"dispatch routes the targeted Patch's MIDI message only to its assigned lane and its prepared internal melodic or percussion channel without allocation or locking",
 			"render every active lane into its matching PatchAudioBlock stem; never render all lanes to one buffer and associate that buffer with the first Patch",
@@ -98,7 +103,8 @@ project: adapters: HiDefSoundFontEngine: {
 	}
 	validations: [{kind: "test", command: ["cargo", "test", "hidef_soundfont_engine"], description: "two simultaneous melodic or percussion Patches use unique lanes and produce distinct non-silent bounded stems; silencing one stem leaves the other unchanged"}]
 	contributesTo: [
-		{capability: "capability.soundfont_audio", contribution: "implements the only synthesis engine using ./sf2/HiDef.sf2"},
+		{capability: "capability.instrument_capability_model", contribution: "proves the existing renderer consumes a generic capability config without becoming the Patch model"},
+		{capability: "capability.soundfont_audio", contribution: "implements the only currently installed synthesis engine using ./sf2/HiDef.sf2"},
 		{capability: "capability.realtime_execution", contribution: "renders prepared SoundFont voices inside the callback contract"},
 	]
 }

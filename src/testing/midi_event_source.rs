@@ -87,6 +87,16 @@ impl FixedEventBatch {
         self.len == 0
     }
 
+    /// Reports whether no more events can be appended during this poll.
+    pub const fn is_full(&self) -> bool {
+        self.len == Self::CAPACITY
+    }
+
+    /// Returns the number of events that can still be appended without allocation.
+    pub const fn remaining_capacity(&self) -> usize {
+        Self::CAPACITY - self.len
+    }
+
     /// Returns an event by its append order.
     pub fn get(&self, index: usize) -> Option<&TargetedMidiEvent> {
         self.events.get(index).and_then(Option::as_ref)
@@ -145,7 +155,10 @@ pub trait MidiEventSource {
     /// Starts the prepared source automatically at elapsed zero.
     fn start(&mut self);
 
-    /// Appends all messages due through the supplied elapsed time.
+    /// Appends due messages in source order up to the output's fixed capacity.
+    ///
+    /// Implementations retain any remaining overdue messages for later polls;
+    /// elapsed-time catch-up alone is not a capacity error.
     fn poll(
         &mut self,
         elapsed: Duration,
@@ -189,8 +202,11 @@ mod tests {
 
         batch.clear();
         assert!(batch.is_empty());
+        assert_eq!(batch.remaining_capacity(), FixedEventBatch::CAPACITY);
         batch.try_push(event(7)).unwrap();
         assert_eq!(batch.get(0).copied(), Some(event(7)));
+        assert!(!batch.is_full());
+        assert_eq!(batch.remaining_capacity(), FixedEventBatch::CAPACITY - 1);
     }
 
     #[test]
@@ -200,6 +216,9 @@ mod tests {
         for index in 0..FIXED_EVENT_BATCH_CAPACITY {
             batch.try_push(event(index)).unwrap();
         }
+
+        assert!(batch.is_full());
+        assert_eq!(batch.remaining_capacity(), 0);
 
         let error = batch
             .try_push(event(FIXED_EVENT_BATCH_CAPACITY))

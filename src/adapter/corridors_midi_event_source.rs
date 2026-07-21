@@ -88,7 +88,7 @@ impl MidiEventSource for CorridorsMidiEventSource {
 
         self.elapsed = self.elapsed.saturating_add(elapsed);
         while let Some(event) = self.events.get(self.cursor) {
-            if event.due > self.elapsed {
+            if event.due > self.elapsed || output.is_full() {
                 break;
             }
 
@@ -701,6 +701,40 @@ mod tests {
         assert!(emitted_messages > 0);
         assert!(note_on_messages > 0);
         assert!(targeted_parts.len() > 1);
+    }
+
+    #[test]
+    fn corridors_midi_event_source_drains_delayed_input_in_bounded_ordered_batches() {
+        let mut source = CorridorsMidiEventSource::new();
+        source.prepare().expect("real fixture should prepare");
+        let expected = source
+            .events
+            .iter()
+            .map(|event| event.event)
+            .collect::<Vec<_>>();
+        assert!(expected.len() > FixedEventBatch::CAPACITY);
+        source.start();
+
+        let mut output = FixedEventBatch::new();
+        let mut actual = Vec::with_capacity(expected.len());
+        let mut elapsed = Duration::MAX;
+        let mut full_batches = 0_usize;
+        while !source.finished() {
+            output.clear();
+            source
+                .poll(elapsed, &mut output)
+                .expect("elapsed-time catch-up must retain rather than overflow");
+            elapsed = Duration::ZERO;
+            assert!(!output.is_empty());
+            assert!(output.len() <= FixedEventBatch::CAPACITY);
+            if output.is_full() {
+                full_batches += 1;
+            }
+            actual.extend(output.iter().copied());
+        }
+
+        assert!(full_batches > 0);
+        assert_eq!(actual, expected);
     }
 
     #[test]

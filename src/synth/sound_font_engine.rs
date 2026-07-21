@@ -18,6 +18,8 @@ pub enum SoundFontError {
     PatchCapacityExceeded { capacity: usize },
     PatchAlreadyConfigured { patch_id: PatchId },
     PatchConfigurationFailed { patch_id: PatchId },
+    UnsupportedCapability { patch_id: PatchId },
+    InvalidInstrumentConfig { patch_id: PatchId },
     UnknownPatch { patch_id: PatchId },
     MidiDispatchFailed { patch_id: PatchId },
 }
@@ -50,6 +52,18 @@ impl fmt::Display for SoundFontError {
                 write!(
                     formatter,
                     "SoundFont patch {patch_id} could not be configured"
+                )
+            }
+            Self::UnsupportedCapability { patch_id } => {
+                write!(
+                    formatter,
+                    "Patch {patch_id} is not a HiDef SoundFont capability"
+                )
+            }
+            Self::InvalidInstrumentConfig { patch_id } => {
+                write!(
+                    formatter,
+                    "Patch {patch_id} has an invalid SoundFont instrument config"
                 )
             }
             Self::UnknownPatch { patch_id } => {
@@ -106,6 +120,7 @@ pub trait SoundFontEngine: Send {
 #[cfg(test)]
 mod tests {
     use super::{SoundFontEngine, SoundFontError};
+    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -115,13 +130,16 @@ mod tests {
     use crate::real_time::patch_audio_block::PatchAudioBlock;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::testing::automatic_midi_test::create_soundfont_config;
     use std::path::Path;
 
     fn patch() -> Patch {
+        let provider = HiDefSoundFontCapability::new().unwrap();
         Patch::new(
             PatchId::new(7).unwrap(),
             "Strings".to_owned(),
-            SoundFontInstrument::new(128, 48, false).unwrap(),
+            create_soundfont_config(&provider, SoundFontInstrument::new(128, 48, false).unwrap())
+                .unwrap(),
             MidiChannel::new(2).unwrap(),
             ChannelParameters::new(-6.0, 0.1, 0.25, 0.15).unwrap(),
         )
