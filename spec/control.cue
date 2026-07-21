@@ -177,11 +177,12 @@ project: contexts: Control: {
 			"valueObject.Control.TextProjection",
 			"valueObject.Control.StateTree",
 			"valueObject.RealTime.ParameterSnapshot",
+			"valueObject.RealTime.GraphRevision",
 		]
 			meta: rules: [
 				"construct one canonical borrowed serialized-state view per eager projection, serialize AppState deterministically with serde_json, and verify round-trip identity in tests rather than deserializing Crest's own JSON on the production dispatch path",
 				"derive TextProjection only from StateSnapshot, the installed CapabilityRegistry, and typed selection; render instrument values by descriptor order and ParameterId rather than capability-specific matching",
-				"copy every audio parameter into a fixed-capacity ParameterSnapshot and reject startup if Patch count exceeds MAX_PATCHES",
+				"copy every audio parameter plus the caller-owned target GraphRevision into a fixed-capacity ParameterSnapshot and reject startup if Patch count exceeds MAX_PATCHES",
 				"derive StateTree from the exact same StateSnapshot, TextProjection, and ParameterSnapshot without reading or mutating any second state copy",
 				"when accepted Midi changes only generation, share the prior immutable state suffix, text body, and StateTree template; advance snapshot, text, fixed parameters, and tree coherently and materialize large JSON only on observation",
 				"force generation-only snapshot and tree JSON to materialize in equivalence tests and require byte-for-byte equality with an eager projection from the same accepted AppState",
@@ -207,6 +208,7 @@ project: contexts: Control: {
 			"aggregate.Control.AppState",
 			"domainService.Control.StateProjector",
 			"port.RealTime.AudioBoundary",
+			"valueObject.RealTime.GraphRevision",
 			"valueObject.Control.EventRecord",
 			"valueObject.Control.EventLog",
 			"valueObject.Control.StateTree",
@@ -219,7 +221,8 @@ project: contexts: Control: {
 			eventLog: {input: {}, output: {events: "EventLog"}}
 		}
 		meta: rules: [
-			"dispatch order is reduce AppEvent through AppState.apply, commit accepted AppState, derive StateSnapshot/TextProjection/ParameterSnapshot, publish parameters, then enqueue any AudioCommand",
+			"construction receives the nonzero GraphRevision assigned to the complete graph being prepared; the revision is runtime coordination metadata and never a second mutable copy of Patch configuration",
+			"dispatch order is reduce AppEvent through AppState.apply, commit accepted AppState, derive StateSnapshot/TextProjection/ParameterSnapshot tagged with the target GraphRevision, publish parameters, then enqueue any AudioCommand",
 			"dispatch preserves the existing API and delegates to dispatchFrom with a stable default source; production adapters and demo inputs call dispatchFrom with their exact source",
 			"record every accepted and rejected input exactly once on the control thread; observation occurs after the outcome is known and never runs in the audio callback",
 			"on rejection perform no state serialization, parameter publication, command enqueue, or view change, but append one rejected EventRecord proving generation and state hash were unchanged",
@@ -236,6 +239,7 @@ project: contexts: Control: {
 		]
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "keeps capability-aware Patch installation and projection inside the existing one-way loop"},
+			{capability: "capability.prepared_engine_rack", contribution: "tags fixed parameter projections with the complete prepared graph revision they target without exposing graph ownership"},
 			{capability: "capability.one_way_parameter_control", contribution: "orchestrates the complete reducer-to-projection-to-audio flow"},
 			{capability: "capability.realtime_execution", contribution: "publishes through the two explicit real-time ports"},
 			{capability: "capability.observable_demo_scene", contribution: "records the production reducer's complete event/state/effect trace"},

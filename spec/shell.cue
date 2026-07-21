@@ -79,6 +79,8 @@ project: contexts: Shell: {
 		uses: [
 			"valueObject.Synth.CapabilityRegistry",
 			"port.Synth.InstrumentCapabilityProvider",
+			"port.Synth.InstrumentPreparer",
+			"applicationService.Synth.PreparedEngineRackBuilder",
 			"applicationService.Control.AppLoop",
 			"applicationService.Testing.AutomaticMidiTest",
 			"applicationService.Testing.ExhaustiveGuiDemo",
@@ -87,10 +89,12 @@ project: contexts: Shell: {
 			"valueObject.Testing.LiveDemoCheckpoint",
 			"valueObject.Testing.LiveDemoReport",
 			"applicationService.RealTime.AudioRenderer",
+			"applicationService.RealTime.PreparedGraphBuilder",
+			"applicationService.RealTime.StructuralGraphCoordinator",
+			"port.RealTime.StructuralGraphBoundary",
 			"port.RealTime.AudioObservation",
 			"port.Shell.AppWindow",
 			"port.Shell.AudioOutput",
-			"port.Synth.SoundFontEngine",
 		]
 		operations: {
 			run: {input: {}, output: {result: "Result<(), ApplicationError>"}}
@@ -99,9 +103,10 @@ project: contexts: Shell: {
 			runDemoScene: {input: {degenerate: "Option<DegenerateMode>"}, output: {result: "Result<DemoSceneReport, ApplicationError>"}}
 		}
 		meta: rules: [
-			"startup obtains the installed CapabilityDescriptor from exactly one InstrumentCapabilityProvider, validates and freezes the CapabilityRegistry in AppState, constructs exactly one SoundFontEngine, loads ./sf2/HiDef.sf2 into it, prepares AudioRenderer, initializes AutomaticMidiTest, opens audio, then opens the text window",
-			"startup fails visibly on duplicate, missing, unknown, or mismatched capability registration and never chooses or substitutes a fallback provider, config, asset, preset, or engine",
-			"normal-mode MIDI begins automatically during startup; each window tick advances only the private test input and collects deferred data",
+			"startup obtains the installed CapabilityDescriptor from exactly one InstrumentCapabilityProvider, validates and freezes the CapabilityRegistry in AppState, initializes AutomaticMidiTest to install accepted Patches, resolves exactly one matching HiDef InstrumentPreparer, builds one complete initial PreparedGraph, constructs AudioRenderer from it, opens audio, then opens the text window",
+			"startup fails visibly before audio on duplicate, missing, unknown, or mismatched capability or preparer registration and never chooses or substitutes a fallback provider, preparer, prepared instrument, config, asset, preset, graph, or engine",
+			"normal-mode MIDI begins automatically only after the initial graph is fully prepared; each window tick advances only the private test input, polls GraphHandoffStatus, and collects returned graphs outside the callback",
+			"production startup installs only HiDef SoundFont instruments into PreparedEngineRack; the generic rack and structural handoff are real, but this increment exposes no runtime graph edit, engine choice, second production capability, or Braids adapter",
 			"runLiveDemo uses the exact normal startup order, real EframeTextWindow, physical CpalAudioOutput, HiDef.sf2, and Corridors of Time fixture, then starts LiveDemoRunner on the control side and advances it from the existing window-tick callback",
 			"runLiveDemo injects the same AppLoop into keyboard input, AutomaticMidiTest, LiveDemoRunner, and immutable projection callbacks; none receives mutable AppState and no live-specific reducer, engine, mixer, window, or audio-output implementation exists",
 			"in live mode only LiveDemoRunner advances AutomaticMidiTest; StandaloneApplication does not also tick the fixture and every due fixture event is dispatched exactly once",
@@ -124,6 +129,7 @@ project: contexts: Shell: {
 		]
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "constructs the immutable descriptor registry and injects the provider into the fixture installation path"},
+			{capability: "capability.prepared_engine_rack", contribution: "composes registered preparation, the complete initial graph, distinct structural handoff, and control-side retirement collection"},
 			{capability: "capability.soundfont_audio", contribution: "composes the running SoundFont audio path"},
 			{capability: "capability.automatic_test_midi", contribution: "starts the fixed test input automatically"},
 			{capability: "capability.one_way_parameter_control", contribution: "joins keyboard events to the shared reducer and immutable text projection"},

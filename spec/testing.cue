@@ -187,23 +187,25 @@ project: contexts: Testing: {
 			"aggregate.Synth.Patch",
 			"valueObject.Synth.CapabilityRegistry",
 			"port.Synth.InstrumentCapabilityProvider",
-			"port.Synth.SoundFontEngine",
 			"applicationService.Control.AppLoop",
 			"valueObject.Testing.InstrumentPart",
 		]
 		operations: {
 			initialize: {input: {}, output: {result: "Result<(), TestInputError>"}}
+			start: {input: {}, output: {result: "Result<(), TestInputError>"}}
 			tick: {input: {elapsed: "Duration"}, output: {result: "Result<(), TestInputError>"}}
 		}
 		meta: rules: [
-			"initialize prepares the source, translates each SoundFontInstrument into the stable soundfont.bank, soundfont.program, soundfont.percussion, and soundfont.file generic assignments declared by the provider descriptor, asks InstrumentCapabilityProvider to create a schema-valid InstrumentConfig, assigns stable PatchIds and default ChannelParameters, configures exactly one Patch per InstrumentPart through SoundFontEngine, dispatches one InstallPatches AppEvent, then starts the source immediately",
-			"initialization rejects a missing provider, registry/provider descriptor mismatch, invalid config, or non-SoundFont capability before installation; it never substitutes a descriptor, config, preset, asset, or engine",
+			"initialize prepares the source, translates each SoundFontInstrument into the stable soundfont.bank, soundfont.program, soundfont.percussion, and soundfont.file generic assignments declared by the provider descriptor, asks InstrumentCapabilityProvider to create a schema-valid InstrumentConfig, assigns stable PatchIds and default ChannelParameters, and dispatches one InstallPatches AppEvent without configuring or starting an engine",
+			"initialization rejects a missing provider, registry/provider descriptor mismatch, invalid config, or non-SoundFont capability before installation; it never substitutes a descriptor, config, preset, asset, preparer, prepared instrument, or engine",
+			"start is accepted exactly once after StandaloneApplication has successfully built the complete initial PreparedGraph; failed graph preparation leaves the source stopped",
 			"tick polls into reusable bounded storage and dispatches each item as AppEvent::Midi through AppLoop",
 			"no transport state or playback controls are added to AppState",
 		]
 		contributesTo: [
 			{capability: "capability.automatic_test_midi", contribution: "starts Corridors of Time automatically and sends all test input through the production reducer"},
 			{capability: "capability.instrument_capability_model", contribution: "creates all fixture Patch configs through the installed capability provider"},
+			{capability: "capability.prepared_engine_rack", contribution: "separates canonical Patch installation from later off-thread graph preparation and starts MIDI only after that graph is ready"},
 			{capability: "capability.one_way_parameter_control", contribution: "uses the same AppEvent/AppState path as keyboard input"},
 		]
 	}
@@ -296,7 +298,7 @@ project: contexts: Testing: {
 			"expected and exercised editable-parameter identifiers are compared in both directions; an added, removed, duplicated, unmodified, unprojected, inaudible, or unexpected parameter makes the report incomplete",
 			"completion dispatches Patch-targeted MidiMessageKind::AllNotesOff AppEvents through AppLoop for every installed Patch, waits for a newer AudioObservationSnapshot with zero active notes, captures the final EventLog and StateTree, exposes one completed LiveDemoReport, and then performs no more actions",
 			"completion never requests window close; the final TextProjection continues to come from AppLoop.currentText until the user closes the real window",
-			"the runner never calls AppState.apply directly, edits the immutable capability registry or Patch instrument config, edits a projection or report to manufacture agreement, publishes ParameterSnapshot or AudioCommand directly, invokes SoundFontEngine or MixEngine directly, writes an audio buffer, prints output, or logs from the callback",
+			"the runner never calls AppState.apply directly, edits the immutable capability registry or Patch instrument config, edits a projection or report to manufacture agreement, publishes ParameterSnapshot, AudioCommand, or PreparedGraph directly, invokes PreparedInstrument, PreparedEngineRack, or MixEngine directly, writes an audio buffer, prints output, or logs from the callback",
 		]
 		validations: [
 			{kind: "integration", command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE live_demo_scene passed"}], description: "a deterministic-clock harness drives the live runner through production events, projections, rendered observations, rejection recovery, exact current-surface coverage, all-notes-off, and inert completion without opening CI devices"},
@@ -305,6 +307,7 @@ project: contexts: Testing: {
 			{capability: "capability.live_observable_demo", contribution: "orchestrates the paced real-window scene and returns its coherent control-side evidence"},
 			{capability: "capability.one_way_parameter_control", contribution: "routes autonomous actions through the same AppLoop as keyboard and fixture input"},
 			{capability: "capability.realtime_execution", contribution: "reads only bounded generation-tagged callback observations"},
+			{capability: "capability.prepared_engine_rack", contribution: "observes the same rack-backed renderer without receiving graph ownership or preparation operations"},
 		]
 	}
 

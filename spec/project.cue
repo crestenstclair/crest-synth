@@ -17,7 +17,7 @@ project: {
 			"test support uses the same ports, reducer, parameter bridge, event ring, engine, mixer, and audio callback as the running application",
 			]
 		avoid: [
-			"alternate running synthesis engines, the Braids C++/FFI wrapper, a prepared multi-engine rack, engine selection, or synthesis fallback in this increment",
+			"the Braids C++/FFI wrapper, a second production synthesis capability, engine selection, layering, or synthesis fallback in this increment",
 			"effects other than the one global reverb and one global delay",
 			"sequencer, transport, timeline, pattern, clip, or song-editing domain models",
 			"presets, sessions, modulation matrices, per-channel inserts, effect chains, buses, or plugin hosting",
@@ -51,12 +51,18 @@ project: {
 			timeout: "180s"
 			resources: [
 				"adapter.HiDefSoundFontEngine",
+				"applicationService.Synth.PreparedEngineRackBuilder",
+				"applicationService.RealTime.PreparedGraphBuilder",
+				"aggregate.RealTime.PreparedEngineRack",
+				"aggregate.RealTime.PreparedGraph",
+				"adapter.LockFreeStructuralGraphBoundary",
 				"adapter.CorridorsMidiEventSource",
 				"applicationService.Testing.AutomaticMidiTest",
 				"applicationService.Shell.StandaloneApplication",
 				"asset.CrestSynthMain",
 			]
 			capabilities: [
+				"capability.prepared_engine_rack",
 				"capability.soundfont_audio",
 				"capability.automatic_test_midi",
 				"capability.one_way_parameter_control",
@@ -64,6 +70,34 @@ project: {
 			]
 			goals: ["goal.play_test_song", "goal.control_synth"]
 				description: "the fixed MIDI fixture drives the real SoundFont, control, mixer, and audio path"
+			}
+			prepared_engine_rack: {
+				scope: "project"
+				kind: "integration"
+				command: ["cargo", "test", "--test", "prepared_engine_rack", "--", "--nocapture"]
+				assertions: [
+					{kind: "exit_code", expected: 0},
+					{kind: "stdout_contains", pattern: "CREST_ACCEPTANCE prepared_engine_rack passed"},
+				]
+				resources: [
+					"port.Synth.PreparedInstrument",
+					"port.Synth.InstrumentPreparer",
+					"applicationService.Synth.PreparedEngineRackBuilder",
+					"aggregate.RealTime.PreparedEngineRack",
+					"valueObject.RealTime.GraphRevision",
+					"aggregate.RealTime.PreparedGraph",
+					"valueObject.RealTime.GraphHandoffStatus",
+					"port.RealTime.StructuralGraphBoundary",
+					"adapter.LockFreeStructuralGraphBoundary",
+					"applicationService.RealTime.PreparedGraphBuilder",
+					"applicationService.RealTime.StructuralGraphCoordinator",
+					"applicationService.RealTime.AudioRenderer",
+					"adapter.HiDefSoundFontEngine",
+					"asset.BehavioralAcceptanceTests",
+				]
+				capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution", "capability.soundfont_audio"]
+				goals: ["goal.play_test_song", "goal.control_synth"]
+				description: "the named rack target proves heterogeneous bounded dispatch, production SoundFont preparation, complete block-boundary graph replacement, acknowledgement, pressure recovery, and off-callback destruction"
 			}
 				capability_schema: {
 				scope: "project"
@@ -305,8 +339,8 @@ project: {
 		{text: "input and view adapters emit AppEvents and never mutate application or engine state", meta: rationale: "adapters remain replaceable"},
 		{text: "after an event is accepted, the application commits AppState before deriving serialized state, text, parameter snapshots, or audio commands", meta: rationale: "effects always describe accepted state"},
 		{text: "the audio callback never allocates, locks, blocks, performs file or device discovery I/O, logs, or destroys owned state", meta: rationale: "the callback has a hard deadline"},
-		{text: "AudioBoundary carries discrete MIDI commands, latest control values, and deferred destruction through bounded lock-free primitives", meta: rationale: "the real-time seam is explicit"},
-		{text: "Patch and instrument config are capability-polymorphic, while the only installed renderer in this increment is the SoundFont engine configured from ./sf2/HiDef.sf2; unknown capabilities fail without fallback", meta: rationale: "the domain can evolve without pretending an unavailable engine can render"},
+		{text: "AudioBoundary carries discrete MIDI commands and latest scalar values, while StructuralGraphBoundary uses distinct bounded queues for prepared and retired graph ownership plus fixed-size acknowledgement", meta: rationale: "each real-time datum uses its required delivery semantics"},
+		{text: "Patch and instrument config are capability-polymorphic and PreparedEngineRack is renderer-polymorphic, while the only production InstrumentPreparer remains HiDef SoundFont configured from ./sf2/HiDef.sf2; unknown capabilities fail without fallback", meta: rationale: "the runtime seam is real without pretending an unavailable engine exists"},
 		{text: "the only effects are one reverb and one delay shared globally by every channel", meta: rationale: "the signal path stays small"},
 		{text: "the MIDI-file module is an automatic test input adapter, not a sequencer or product transport", meta: rationale: "crest-synth remains an instrument"},
 	]

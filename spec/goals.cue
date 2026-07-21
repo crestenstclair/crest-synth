@@ -1,7 +1,7 @@
 package crestsynth
 
 project: {
-	mission: "crest-synth is a standalone controller-first instrument host. Its current executable slice plays MIDI through capability-configured HiDef SoundFont patches, mixes them to low-latency stereo audio, and exposes the current control surface in one keyboard-controlled text view."
+	mission: "crest-synth is a standalone controller-first instrument host. Its current executable slice prepares capability-configured HiDef SoundFont instruments into a bounded polymorphic engine rack, mixes them to low-latency stereo audio, and exposes the current control surface in one keyboard-controlled text view."
 
 	actors: {
 		player: {
@@ -19,6 +19,7 @@ project: {
 			actors: ["actor.player", "actor.maintainer"]
 			capabilities: [
 				"capability.instrument_capability_model",
+				"capability.prepared_engine_rack",
 				"capability.soundfont_audio",
 				"capability.automatic_test_midi",
 				"capability.global_mix",
@@ -26,6 +27,9 @@ project: {
 			]
 			requirements: [
 				"requirement.soundfont_only",
+				"requirement.prepared_instrument_boundary",
+				"requirement.structural_graph_handoff",
+				"requirement.off_callback_graph_retirement",
 				"requirement.fixed_soundfont",
 				"requirement.fixed_midi_fixture",
 				"requirement.global_effects_only",
@@ -40,6 +44,7 @@ project: {
 			dependsOn: ["goal.play_test_song"]
 			capabilities: [
 				"capability.instrument_capability_model",
+				"capability.prepared_engine_rack",
 				"capability.one_way_parameter_control",
 				"capability.global_mix",
 				"capability.realtime_execution",
@@ -94,7 +99,7 @@ project: {
 
 	capabilities: {
 		instrument_capability_model: {
-			description: "Represent installed instrument implementations through stable capability descriptors and generic Patch-owned configs without installing an alternate renderer yet"
+			description: "Represent installed instrument implementations through stable capability descriptors and generic Patch-owned configs while keeping preparation and prepared runtime ownership behind separate ports"
 			goals: ["goal.play_test_song", "goal.control_synth"]
 			acceptance: soundfont_is_one_capability: {
 				description: "the current SoundFont path is expressed as one validated capability rather than the universal Patch shape"
@@ -109,14 +114,14 @@ project: {
 			}
 		}
 		soundfont_audio: {
-			description: "Load HiDef.sf2, configure each Patch with its MIDI instrument, and render its notes through the SoundFont engine"
+			description: "Parse HiDef.sf2 once, prepare one independent SoundFont instrument per Patch, and render each through the capability-neutral rack"
 			goals: ["goal.play_test_song"]
 			acceptance: audible_patches: {
 				description: "different MIDI instruments become correctly configured audible SoundFont patches"
 				actor: "actor.maintainer"
 				steps: [
-					{action: "start the application with HiDef.sf2 present", observes: "the SoundFont loads once before audio rendering"},
-					{action: "play notes belonging to multiple instrument parts", observes: "each note reaches the Patch configured for that part's bank, program, or percussion instrument and produces bounded stereo samples"},
+					{action: "start the application with HiDef.sf2 present", observes: "the SoundFont parses once outside the callback and prepares one independent instrument for every accepted Patch"},
+					{action: "play notes belonging to multiple instrument parts", observes: "the generic rack targets only the prepared instrument for that Patch and produces one isolated bounded stereo stem"},
 				]
 				evidence: ["evidence.running_synth"]
 			}
@@ -170,7 +175,7 @@ project: {
 				description: "the deterministic demo proves every current input, event, editable parameter, serialized property, rejection path, and emitted effect"
 				actor: "actor.maintainer"
 				steps: [
-					{action: "run make demo", observes: "the real fixture initializes and normalized GUI inputs exercise the same translator, AppLoop, projections, real-time boundary, SoundFont engine, and mixer as the application"},
+					{action: "run make demo", observes: "the real fixture initializes and normalized GUI inputs exercise the same translator, AppLoop, projections, real-time boundaries, prepared SoundFont rack, complete graph, and mixer as the application"},
 					{action: "inspect CREST_EVENT_LOG", observes: "every input has one accepted or rejected record with a contiguous sequence, before/after generation and state hashes, emitted effects, parameter generation, and projection identity"},
 					{action: "inspect CREST_STATE_TREE", observes: "every current Patch identity/instrument/parameter, global parameter, selection property, text projection property, and parameter snapshot property is present with the exact value from the same accepted generation"},
 					{action: "inspect CREST_OBSERVATION coverage", observes: "the typed current-surface descriptor exactly equals the exercised normalized-input, event, direction, MIDI-kind, editable-parameter, state-tree leaf, projection, rejection, and emitted-effect set; missing and unexpected are both empty"},
@@ -217,15 +222,31 @@ project: {
 				evidence: ["evidence.live_demo_contract", "evidence.exhaustive_demo_scene"]
 			}
 		}
+		prepared_engine_rack: {
+			description: "Prepare one bounded capability-neutral instrument per Patch, render heterogeneous slots through one rack, and replace complete graphs through acknowledged ownership transfer"
+			goals: ["goal.play_test_song", "goal.control_synth"]
+			acceptance: rack_and_handoff: {
+				description: "the runtime owns no SoundFont-shaped dispatch path and graph replacement never prepares or destroys state on the callback"
+				actor: "actor.maintainer"
+				steps: [
+					{action: "build the production graph", observes: "each accepted Patch resolves through exactly one matching InstrumentPreparer into a unique bounded PreparedEngineRack slot without fallback"},
+					{action: "dispatch and render through a rack containing two distinct prepared test implementations", observes: "targeted MIDI reaches only the addressed Patch and each implementation fills only its own isolated stem with dynamic dispatch outside inner sample loops"},
+					{action: "publish a complete replacement graph", observes: "the callback swaps it only at a block boundary and reports its active GraphRevision through fixed-size acknowledgement"},
+					{action: "fill the retired return queue", observes: "the callback retains the old graph in bounded storage, retries without taking another replacement, and no destructor runs until control collection"},
+					{action: "attempt missing, duplicate, mismatched, or over-capacity preparation", observes: "the build fails atomically and no preparer, capability, graph, instrument, asset, or route is substituted"},
+				]
+				evidence: ["evidence.prepared_engine_rack_contract"]
+			}
+		}
 		realtime_execution: {
 			description: "Render audio through fixed-capacity lock-free boundaries without callback allocation, locking, blocking, I/O, logging, or destruction"
 			goals: ["goal.play_test_song", "goal.control_synth"]
 			acceptance: callback_contract: {
-				description: "the audio callback consumes ready commands and the newest complete parameters within its real-time constraints"
+				description: "the audio callback consumes ready commands and compatible latest parameters, swaps prepared graphs, and returns retired ownership within its real-time constraints"
 				actor: "actor.maintainer"
 				steps: [
-					{action: "publish control snapshots and MIDI commands while rendering", observes: "the callback reads them through the lock-free AudioBoundary without blocking"},
-					{action: "replace engine-owned state", observes: "retired data is destroyed on the control side through the same boundary"},
+					{action: "publish control snapshots and MIDI commands while rendering", observes: "the callback reads them through the dedicated command ring and latest-value snapshot transport without blocking"},
+					{action: "replace engine-owned state", observes: "a distinct structural boundary transfers the complete prepared graph in, returns its predecessor out, and acknowledges both without callback destruction"},
 				]
 				evidence: ["evidence.running_synth"]
 			}
@@ -233,11 +254,14 @@ project: {
 	}
 
 	requirements: {
-		soundfont_only: {kind: "functional", description: "The application installs exactly one instrument capability and owns exactly one SoundFontEngine adapter plus one shared parsed SoundFont bank; Patch/config types are capability-polymorphic, but this increment has no per-Patch engine object, alternate running renderer, layering engine, engine selector, or fallback", goals: ["goal.play_test_song"], capabilities: ["capability.soundfont_audio", "capability.instrument_capability_model"]}
+		soundfont_only: {kind: "functional", description: "The production application installs exactly one instrument capability and one HiDef SoundFont preparer with one shared parsed bank; it creates one prepared SoundFont instrument per Patch behind the generic rack, but exposes no Braids renderer, second product engine, layering, engine selector, or fallback", goals: ["goal.play_test_song"], capabilities: ["capability.soundfont_audio", "capability.instrument_capability_model", "capability.prepared_engine_rack"]}
+		prepared_instrument_boundary: {kind: "nonfunctional", description: "Each Patch is prepared outside the callback through exactly one CapabilityId-matched InstrumentPreparer into an object-safe PreparedInstrument; callback dispatch, all-notes-off, and rendering are bounded and capability-neutral, with dynamic dispatch outside inner sample loops", goals: ["goal.play_test_song", "goal.control_synth"], capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution"]}
+		structural_graph_handoff: {kind: "nonfunctional", description: "One complete PreparedGraph containing the bounded engine rack, mixer/effect state, routing, stems, and scratch crosses a dedicated bounded ownership queue, swaps only at a render-block boundary, and is correlated by GraphRevision and fixed-size acknowledgement; commands and scalar snapshots use separate transports", goals: ["goal.play_test_song", "goal.control_synth"], capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution"]}
+		off_callback_graph_retirement: {kind: "nonfunctional", description: "A replaced PreparedGraph enters a distinct bounded audio-to-control ownership queue; return pressure retains it in a preallocated callback slot and retries, while destructors run only after explicit control or worker collection and the prior handoff is acknowledged before another publication", goals: ["goal.play_test_song", "goal.control_synth"], capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution"]}
 		fixed_soundfont: {kind: "functional", description: "The SoundFont adapter expects ./sf2/HiDef.sf2 and startup fails clearly when it is absent or invalid", goals: ["goal.play_test_song"], capabilities: ["capability.soundfont_audio"]}
 		fixed_midi_fixture: {kind: "functional", description: "The automatic test module targets ./midi/Corridors of Time - Chrono Trigger.mid", goals: ["goal.play_test_song"], capabilities: ["capability.automatic_test_midi"]}
 		global_effects_only: {kind: "functional", description: "The signal path contains one shared reverb and one shared delay; channels expose sends to those processors and no other effect slots or processors exist", goals: ["goal.play_test_song"], capabilities: ["capability.global_mix"]}
-		hard_realtime_audio: {kind: "nonfunctional", description: "The audio callback uses preallocated bounded storage and performs no allocation, locks, blocking, I/O, logging, or destruction", goals: ["goal.play_test_song"], capabilities: ["capability.realtime_execution"]}
+		hard_realtime_audio: {kind: "nonfunctional", description: "The audio callback uses preallocated bounded storage and performs no allocation, deallocation, locks, blocking, I/O, logging, formatting, panic, unwinding, or destruction, including during prepared graph swap and retirement pressure", goals: ["goal.play_test_song"], capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution"]}
 		test_input_is_not_a_sequencer: {kind: "nonfunctional", description: "MIDI-file timing is private test-adapter behavior; the domain exposes no sequencer, transport, timeline, song, clip, pattern, recording, editing, or playback-control model", goals: ["goal.play_test_song"], capabilities: ["capability.automatic_test_midi"]}
 		one_way_loop: {kind: "nonfunctional", description: "Every input becomes an AppEvent; AppState.apply commits accepted state before serialization, view projection, parameter publication, or audio-command effects", goals: ["goal.control_synth"], capabilities: ["capability.one_way_parameter_control"]}
 		responsive_control_projection: {kind: "nonfunctional", description: "A fifteen-Patch production AppLoop dispatches 512 MIDI events through reducer, coherent logical projections, journal, and audio publication within 50 ms in the unoptimized acceptance profile; unchanged immutable projection storage is shared and deferred JSON remains byte-identical to eager canonical output", goals: ["goal.control_synth", "goal.observe_live_synth"], capabilities: ["capability.one_way_parameter_control", "capability.live_observable_demo"]}
@@ -246,7 +270,7 @@ project: {
 		generic_instrument_config: {kind: "functional", description: "Patch owns one InstrumentConfig containing a CapabilityId, ordered typed parameter assignments, and stable asset references; Patch contains no SoundFont-only fields, engine instance, descriptor copy, prepared state, or fallback config", goals: ["goal.control_synth"], capabilities: ["capability.instrument_capability_model"]}
 		descriptor_owned_instrument_schema: {kind: "nonfunctional", description: "Each installed InstrumentCapabilityProvider supplies one immutable CapabilityDescriptor whose ordered ParameterSpecs define ids, labels, kinds, Scalar or Structural update class, defaults, bounds or choices, dependencies, asset needs, voice capacity, and supported MIDI kinds; serialization, projection, validation, and coverage consume that schema", goals: ["goal.control_synth"], capabilities: ["capability.instrument_capability_model"]}
 		explicit_capability_failure: {kind: "nonfunctional", description: "Unknown or duplicate capability ids and missing, duplicate, undeclared, wrong-kind, dependency-invalid, or out-of-range assignments fail with typed errors; no capability, descriptor, parameter, asset, preset, or engine is silently substituted", goals: ["goal.control_synth"], capabilities: ["capability.instrument_capability_model"]}
-		evolvable_boundaries: {kind: "nonfunctional", description: "Instrument capability metadata, current SoundFont generation, MIDI input, audio output, text rendering, and the real-time boundary are expressed as ports with replaceable adapters", goals: ["goal.control_synth"], capabilities: ["capability.instrument_capability_model", "capability.one_way_parameter_control", "capability.realtime_execution"]}
+		evolvable_boundaries: {kind: "nonfunctional", description: "Instrument capability metadata, off-thread instrument preparation, capability-neutral prepared rendering, MIDI input, audio output, text rendering, discrete commands, scalar snapshots, and structural graph ownership are expressed as separate ports with replaceable adapters", goals: ["goal.control_synth"], capabilities: ["capability.instrument_capability_model", "capability.prepared_engine_rack", "capability.one_way_parameter_control", "capability.realtime_execution"]}
 		deterministic_demo_scene: {kind: "functional", description: "A headless demo scene drives the same normalized W/S/A/D/K input translator and production AppLoop as EframeTextWindow, with deterministic checkpoints and no native window or physical audio device", goals: ["goal.observe_synth"], capabilities: ["capability.observable_demo_scene"]}
 		llm_readable_trace: {kind: "functional", description: "Observation mode emits one deterministic JSON CREST_EVENT_LOG, one CREST_STATE_TREE, and one CREST_OBSERVATION summary with stable schema versions, explicit coverage gaps, and no opaque debug strings", goals: ["goal.observe_synth"], capabilities: ["capability.observable_demo_scene"]}
 		exhaustive_current_surface: {kind: "nonfunctional", description: "The demo and table-driven tests cover every declared AppEvent variant and direction, every supported MidiMessage kind, every current editable Patch parameter on every installed Patch, all seven global parameters, every serialized state/projection property, accepted and rejected outcomes, and measured downstream effects", goals: ["goal.observe_synth"], capabilities: ["capability.observable_demo_scene"]}
@@ -260,12 +284,13 @@ project: {
 		canonical_live_projection: {kind: "nonfunctional", description: "The visible frame, EventRecord, StateTree, TextProjection, and ParameterSnapshot at each live checkpoint all derive from the same accepted AppState generation; the live runner has no UI-owned or engine-owned state copy", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.one_way_parameter_control"]}
 		bounded_audio_observation: {kind: "nonfunctional", description: "The callback publishes only fixed-size numeric AudioObservationSnapshots through a lock-free latest-value transport; it never logs, formats, allocates, locks, blocks, performs I/O, or destroys state, and the control side correlates observations by parameter generation and monotonically increasing block sequence", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.realtime_execution"]}
 		live_demo_completion: {kind: "functional", description: "The live runner retains the complete final EventLog for typed verification and emits structured checkpoints plus a compact lossless EventLog summary, StateTree, exact editable-parameter coverage, and human-readable summary; it dispatches all-notes-off through AppLoop for every installed Patch, waits for the audio observation to acknowledge zero active notes, then becomes inert without closing the window", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo"]}
-		headless_demo_preserved: {kind: "nonfunctional", description: "Phase 2 increment 1 preserves the deterministic timing, command line, and behavioral acceptance predicates of make demo while deliberately extending its typed schema universe with capability descriptors and generic Patch configs; it introduces no Patch page, ADSR, preset selection, Braids renderer, static Patch effects, modulation, or redesigned interface behavior", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.observable_demo_scene", "capability.instrument_capability_model"]}
+		headless_demo_preserved: {kind: "nonfunctional", description: "Phase 2 increment 2 preserves the deterministic timing, command line, schema universe, and behavioral acceptance predicates of make demo while routing production audio through PreparedEngineRack and PreparedGraph; it introduces no Patch page, ADSR, preset selection, Braids renderer, static Patch effects, modulation, or redesigned interface behavior", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.observable_demo_scene", "capability.instrument_capability_model", "capability.prepared_engine_rack"]}
 	}
 
 		evidence: {
 		capability_model_contract: {kind: "behavioral", description: "the production registry, provider, Patch aggregate, reducer installation path, serializer, and projector agree on the exact SoundFont capability schema and reject invalid or unknown configs without fallback", validations: ["validation.capability_schema", "validation.schema_surface", "validation.test"]}
-		running_synth: {kind: "behavioral", description: "the real fixed MIDI and SoundFont path produces independently routed non-silent Patch stems without callback allocation", validations: ["validation.smoke", "validation.test"], witnesses: ["witness.running_synth"]}
+		prepared_engine_rack_contract: {kind: "behavioral", description: "the production preparation path and heterogeneous test rack prove exact CapabilityId matching, isolated per-Patch dispatch/rendering, complete block-boundary graph swap, one-in-flight acknowledgement, queue-pressure retention, and control-side destruction with no callback allocation or drop", validations: ["validation.prepared_engine_rack", "validation.test"]}
+		running_synth: {kind: "behavioral", description: "the real fixed MIDI and SoundFont path prepares through the generic rack and produces independently routed non-silent Patch stems without callback allocation or destruction", validations: ["validation.smoke", "validation.prepared_engine_rack", "validation.test"], witnesses: ["witness.running_synth"]}
 		control_path: {kind: "behavioral", description: "a keyboard-equivalent edit on a non-first Patch changes only its serialized value and audio contribution, a boundary no-op remains nonfatal, and sustained fifteen-Patch MIDI dispatch stays within its measured responsiveness ceiling", validations: ["validation.smoke", "validation.control_dispatch_performance", "validation.test"], witnesses: ["witness.control_path"]}
 		exhaustive_demo_scene: {kind: "behavioral", description: "the schema-derived current GUI/event/state/audio surface is exhaustively exercised with exact projection values, faithful causal audio comparisons, a lossless journal, and a complete state tree", validations: ["validation.demo_scene", "validation.schema_surface", "validation.egui_context", "validation.test"], witnesses: ["witness.exhaustive_demo_scene"]}
 		mutation_resistance: {kind: "behavioral", description: "independent production-seam mutants for dropped adjustment, cross-Patch parameter leakage, Patch misrouting, StateTree leaf omission, dry-to-wet bypass, and zero renderer output are each rejected by a typed engine-executed witness", validations: ["validation.mutation_harness", "validation.test"], witnesses: ["witness.dropped_adjustment_mutant", "witness.cross_patch_parameter_leak_mutant", "witness.patch_misroute_mutant", "witness.omitted_state_tree_leaf_mutant", "witness.dry_to_wet_bypass_mutant", "witness.zero_renderer_mutant"]}
@@ -274,16 +299,16 @@ project: {
 
 	nonGoals: {
 		sequencing: "crest-synth does not provide sequencing, transport, recording, arrangement, clips, patterns, a timeline, or song editing"
-		other_engines: "this increment defines the polymorphic instrument capability model but installs no Braids, oscillator, virtual-analog, standalone sampler, wavetable, FM, plugin, layering, or engine-selection renderer"
+		other_engines: "the prepared rack is implementation-polymorphic, but production still installs only HiDef SoundFont; no Braids, oscillator, virtual-analog, standalone sampler, wavetable, FM, plugin, layering, or engine-selection renderer is exposed"
 		additional_effects: "crest-synth does not provide channel inserts, effect chains, EQ, compression, chorus, distortion, or limiting"
 		elaborate_ui: "crest-synth does not provide dashboards, panels, meters, faders, custom widgets, themes, multiple screens, mouse interaction, or graphical editing"
 		sound_library: "crest-synth does not provide preset, session, bank, sample-library, or patch-browser persistence"
 		live_midi_adapter: "a physical MIDI device adapter is not included; the automatic file fixture implements the MIDI input port used by the application"
-		later_roadmap_phases: "Phase 2 increment 1 does not introduce the prepared multi-engine rack, Braids C++/FFI wrapper, simultaneous mixed-engine proof, Patch page, working ADSR, SoundFont preset browsing, per-Patch effects, modulation, dynamic graph editing, or the Figma-derived replacement interface"
+		later_roadmap_phases: "Phase 2 increment 2 does not introduce the Braids C++/FFI wrapper, a second production capability, simultaneous SoundFont/Braids proof, user-triggered structural edits, Patch page, working ADSR, SoundFont preset browsing, per-Patch effects, modulation, arbitrary graph editing, or the Figma-derived replacement interface"
 	}
 
 	completion: {
 		requiredGoals: ["goal.play_test_song", "goal.control_synth", "goal.observe_synth", "goal.observe_live_synth"]
-		projectChecks: ["validation.format", "validation.clippy", "validation.test", "validation.smoke", "validation.capability_schema", "validation.control_dispatch_performance", "validation.demo_scene", "validation.schema_surface", "validation.egui_context", "validation.mutation_harness", "validation.live_demo"]
+		projectChecks: ["validation.format", "validation.clippy", "validation.test", "validation.smoke", "validation.capability_schema", "validation.prepared_engine_rack", "validation.control_dispatch_performance", "validation.demo_scene", "validation.schema_surface", "validation.egui_context", "validation.mutation_harness", "validation.live_demo"]
 	}
 }

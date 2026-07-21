@@ -1,7 +1,7 @@
 package crestsynth
 
 project: contexts: Synth: {
-	purpose: "capability-polymorphic Patch identity and the current SoundFont synthesis boundary"
+	purpose: "capability-polymorphic Patch identity, off-thread instrument preparation, and bounded prepared rendering"
 	ubiquitousLanguage: {
 		Patch: "one playable instrument configuration identified by a capability rather than an engine-specific aggregate shape"
 		SoundFontInstrument: "the bank, program, and percussion identity selected in HiDef.sf2"
@@ -49,62 +49,104 @@ project: contexts: Synth: {
 		]
 	}
 
-	ports: SoundFontEngine: {
+	ports: PreparedInstrument: {
 		direction: "outbound"
 		contract: {
-			load: "(path: &Path) -> Result<(), SoundFontError>"
-			configurePatch: "(&Patch) -> Result<(), SoundFontError>"
-			dispatch: "(PatchId, MidiMessage) -> Result<(), SoundFontError>"
-			renderPatches: "(&mut PatchAudioBlock, &ParameterSnapshot)"
+			patchId: "() -> PatchId"
+			dispatch: "(MidiMessage) -> Result<(), PreparedInstrumentError>"
+			render: "(&mut [f32], frameCount: usize)"
 			allNotesOff: "()"
 		}
 		consumes: [
-			"aggregate.Synth.Patch",
 			"valueObject.Kernel.MidiMessage",
-			"valueObject.RealTime.ParameterSnapshot",
-			"valueObject.RealTime.PatchAudioBlock",
+			"valueObject.Kernel.PatchId",
 		]
 		invariants: [
-			"the running application owns exactly one SoundFontEngine instance",
-			"load and configurePatch run on the control thread before the Patch can receive a note",
-			"configurePatch accepts only a schema-valid InstrumentConfig whose capabilityId is instrument.soundfont.hidef and returns a typed error for every other capability without fallback",
-			"every configured Patch has a unique assigned MIDI channel and a unique output stem indexed by PatchId",
-			"dispatch and renderPatches use bounded preallocated storage on the audio thread",
-			"renderPatches fills caller-owned per-Patch stereo stems and never returns a combined master stream in place of those stems",
-			"renderPatches performs no allocation, locking, I/O, logging, or destruction",
+			"the port is object-safe and contains only callback-safe operations over one already prepared Patch instrument",
+			"patchId is fixed at preparation and the rack, not the implementation, selects the caller-owned stereo stem",
+			"dispatch and allNotesOff have bounded work and return only fixed-size typed status",
+			"render fills only the supplied interleaved stereo stem for at most its prepared maximum frame count",
+			"dispatch, allNotesOff, and render perform no allocation, deallocation, locking, blocking, I/O, logging, formatting, panic, unwinding, or destruction",
+			"dynamic dispatch may occur once per targeted message or once per Patch render block, never in an inner sample loop",
 		]
 		contributesTo: [
-			{capability: "capability.instrument_capability_model", contribution: "consumes the generic Patch config while remaining the only concrete renderer in this increment"},
-			{capability: "capability.soundfont_audio", contribution: "keeps current SoundFont synthesis behind its engine boundary"},
-			{capability: "capability.realtime_execution", contribution: "makes the callback contract explicit at the synthesis boundary"},
+			{capability: "capability.prepared_engine_rack", contribution: "gives the rack one capability-neutral callback contract per Patch"},
+			{capability: "capability.realtime_execution", contribution: "keeps capability implementation details outside the hard-real-time caller"},
+		]
+	}
+
+	ports: InstrumentPreparer: {
+		direction: "outbound"
+		contract: {
+			capabilityId: "() -> CapabilityId"
+			prepare: "(&Patch, sampleRate: f32, maxFrames: usize) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError>"
+		}
+		consumes: [
+			"aggregate.Synth.Patch",
+			"valueObject.Synth.CapabilityId",
+			"port.Synth.PreparedInstrument",
+		]
+		invariants: [
+			"all preparation runs outside the audio callback and may perform validated asset I/O, parsing, allocation, and warmup",
+			"capabilityId is stable and exactly matches the InstrumentConfig identities this preparer accepts",
+			"prepare rejects an unsupported capability, invalid config, unsupported sample rate or frame capacity, asset failure, and voice-capacity failure with typed errors",
+			"prepare never selects another capability, config, asset, preset, voice limit, or renderer as fallback",
+			"a successful result has finished every allocation and capacity decision before ownership can cross the structural boundary",
+		]
+		contributesTo: [
+			{capability: "capability.instrument_capability_model", contribution: "joins a validated capability config to its separate preparation port without putting a factory in Patch"},
+			{capability: "capability.prepared_engine_rack", contribution: "builds callback-ready instruments behind one generic preparation contract"},
+		]
+	}
+
+	applicationServices: PreparedEngineRackBuilder: {
+		purpose: "build one bounded capability-neutral prepared instrument slot for every accepted Patch outside the callback"
+		uses: [
+			"aggregate.Synth.Patch",
+			"valueObject.Synth.CapabilityRegistry",
+			"port.Synth.InstrumentPreparer",
+			"aggregate.RealTime.PreparedEngineRack",
+		]
+		operations: {
+			build: {input: {patches: "&[Patch]", registry: "&CapabilityRegistry", preparers: "&[Box<dyn InstrumentPreparer>]", sampleRate: "f32", maxFrames: "usize"}, output: {result: "Result<PreparedEngineRack, RackPreparationError>"}}
+		}
+		meta: rules: [
+			"resolve every Patch InstrumentConfig through the immutable CapabilityRegistry and exactly one matching InstrumentPreparer by CapabilityId",
+			"reject duplicate PatchIds, duplicate preparers, missing or extra capability preparation, capacity overflow, invalid audio format, or any preparer/config disagreement before constructing a rack",
+			"preserve accepted Patch order and assign one unique slot and output stem to every Patch",
+			"return no partial rack and never substitute a preparer, instrument, config, asset, or slot after any failure",
+			"the current production composition registers only the HiDef SoundFont preparer; heterogeneous test instruments prove the rack boundary without presenting an unavailable product engine",
+		]
+		validations: [{kind: "test", command: ["cargo", "test", "prepared_engine_rack_builder"], description: "exact preparation succeeds while missing, duplicate, mismatched, over-capacity, and partial configurations fail without fallback"}]
+		contributesTo: [
+			{capability: "capability.prepared_engine_rack", contribution: "constructs the bounded rack from canonical Patch configs and registered preparation ports"},
 		]
 	}
 
 }
 
 project: adapters: HiDefSoundFontEngine: {
-	implements: "port.Synth.SoundFontEngine"
+	implements: "port.Synth.InstrumentPreparer"
 	layer: "infrastructure"
 	profile: {kind: "in_process", medium: "sf2", system: "HiDef.sf2"}
 	meta: {
 		framework: "rustysynth"
 		rules: [
-			"expect exactly ./sf2/HiDef.sf2 and load it once on the control thread; return a clear startup error if it is missing or invalid",
-			"own exactly one HiDefSoundFontEngine adapter and parse one SoundFont bank shared by all render lanes; do not create per-Patch SoundFontEngine objects",
-			"because rustysynth 1.3 exposes only a combined stereo render, prepare one bounded rustysynth synthesizer lane per configured MIDI channel inside that adapter so each Patch is rendered into a distinct caller-owned stem",
-			"SoundFont is the only installed synthesis implementation in this increment; do not define the Braids renderer, C++/FFI build, prepared engine rack, engine selector, layering path, or fallback",
-			"configure each Patch's unique assigned channel lane from its validated instrument.soundfont.hidef InstrumentConfig values and fixed asset reference; keep the fixed PatchId-to-channel-to-stem lookup preallocated",
-			"inside each independent lane use rustysynth's percussion channel for a percussion Patch and a melodic channel for every other Patch, regardless of the Patch's logical assigned channel",
-			"dispatch routes the targeted Patch's MIDI message only to its assigned lane and its prepared internal melodic or percussion channel without allocation or locking",
-			"render every active lane into its matching PatchAudioBlock stem; never render all lanes to one buffer and associate that buffer with the first Patch",
+			"expect exactly ./sf2/HiDef.sf2 and parse it once outside the callback; return a clear preparation error if it is missing or invalid",
+			"own one HiDefSoundFontEngine preparer and share its immutable parsed SoundFont bank across the per-Patch PreparedInstrument values it creates; never parse or clone the full bank per Patch",
+			"prepare one bounded rustysynth synthesizer for each accepted instrument.soundfont.hidef Patch using its exact bank, program, percussion, channel, and fixed asset assignments",
+			"inside each prepared instrument use rustysynth's percussion channel for a percussion Patch and a melodic channel for every other Patch, regardless of the Patch's logical assigned channel",
+			"the private prepared value implements PreparedInstrument, routes only its own Patch MIDI, and renders only into the caller-owned stem selected by the rack",
 			"disable rustysynth's built-in reverb and chorus so the declared global effects are the only effects",
-			"renderPatches uses caller-owned stems without callback allocation, locking, I/O, logging, or deallocation",
+			"SoundFont remains the only production InstrumentPreparer in this increment; do not add Braids source, C++/FFI, engine selection, layering, PATCH-page behavior, or fallback",
+			"prepared dispatch, all-notes-off, and render use only bounded warmed state and perform no callback allocation, deallocation, locking, blocking, I/O, logging, formatting, panic, unwinding, or destruction",
 		]
 	}
-	validations: [{kind: "test", command: ["cargo", "test", "hidef_soundfont_engine"], description: "two simultaneous melodic or percussion Patches use unique lanes and produce distinct non-silent bounded stems; silencing one stem leaves the other unchanged"}]
+	validations: [{kind: "test", command: ["cargo", "test", "hidef_soundfont_engine"], description: "one parsed bank prepares independent melodic and percussion instruments whose targeted MIDI and bounded non-silent stems remain isolated behind PreparedInstrument"}]
 	contributesTo: [
-		{capability: "capability.instrument_capability_model", contribution: "proves the existing renderer consumes a generic capability config without becoming the Patch model"},
-		{capability: "capability.soundfont_audio", contribution: "implements the only currently installed synthesis engine using ./sf2/HiDef.sf2"},
-		{capability: "capability.realtime_execution", contribution: "renders prepared SoundFont voices inside the callback contract"},
+		{capability: "capability.instrument_capability_model", contribution: "prepares the existing renderer from a generic capability config without becoming the Patch model"},
+		{capability: "capability.prepared_engine_rack", contribution: "supplies the only production preparer and capability-neutral per-Patch prepared instruments"},
+		{capability: "capability.soundfont_audio", contribution: "preserves one parsed HiDef.sf2 bank while adapting SoundFont to the generic prepared boundary"},
+		{capability: "capability.realtime_execution", contribution: "keeps prepared SoundFont operations inside the callback contract"},
 	]
 }

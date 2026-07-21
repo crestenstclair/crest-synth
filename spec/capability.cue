@@ -141,8 +141,8 @@ project: contexts: Synth: {
 			"CapabilityIds are unique and descriptor order is stable",
 			"lookup and InstrumentConfig validation use CapabilityId and ParameterId rather than label or position",
 			"an unknown, duplicate, unavailable, or invalid capability produces a typed error; no descriptor or config is silently substituted",
-			"the current increment installs exactly the HiDef SoundFont descriptor and no Braids renderer, alternate engine, layering engine, engine selector, or fallback",
-			"the registry contains descriptors only; renderer factories and prepared state remain behind later ports and structural handoff work",
+			"the current production composition installs exactly the HiDef SoundFont descriptor and no Braids renderer, alternate product engine, layering engine, engine selector, or fallback",
+			"the registry contains descriptors only; InstrumentPreparer registration, PreparedInstrument ownership, PreparedEngineRack, and structural graph handoff remain behind their separate application and real-time ports",
 		]
 		validations: [{kind: "test", command: ["cargo", "test", "capability_registry"], description: "duplicate ids, invalid assignments, unknown capabilities, fallback attempts, and descriptor-order drift are rejected"}]
 		contributesTo: [{capability: "capability.instrument_capability_model", contribution: "makes the installed instrument schema explicit and deterministic without coupling AppState to an adapter"}]
@@ -180,12 +180,13 @@ project: adapters: HiDefSoundFontCapability: {
 			"declare soundfont.bank as Structural Stepped, soundfont.program as Structural Stepped, soundfont.percussion as Structural Toggle, and soundfont.file as a required Structural Asset fixed to ./sf2/HiDef.sf2",
 			"create InstrumentConfig from caller-supplied generic assignments and asset references without reading a file, loading an engine, changing a Patch, or inventing a second SoundFont preset model",
 			"return a typed error for invalid or unknown values and never substitute a preset, percussion identity, asset, descriptor, or engine",
-			"do not define Braids C++/FFI types, a prepared engine rack, engine selection, editable instrument parameters, ADSR, Patch-page behavior, or a renderer factory in this increment",
+			"own no InstrumentPreparer, PreparedInstrument, PreparedEngineRack, renderer factory closure, C++/FFI type, engine selection, editable instrument parameter, ADSR, or Patch-page behavior; preparation remains a separate port even when ids match",
 		]
 	}
 	validations: [{kind: "test", command: ["cargo", "test", "hidef_soundfont_capability"], description: "the descriptor and every fixture-derived config are exact, deterministic, schema-valid, and rejected when altered"}]
 	contributesTo: [
 		{capability: "capability.instrument_capability_model", contribution: "proves SoundFont is one registry entry rather than the universal Patch model"},
+		{capability: "capability.prepared_engine_rack", contribution: "provides the stable capability identity independently matched to the production SoundFont preparer"},
 		{capability: "capability.soundfont_audio", contribution: "preserves the fixed bank/program/percussion and HiDef.sf2 identity used by the existing renderer"},
 	]
 }
