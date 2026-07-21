@@ -197,6 +197,7 @@ CapabilityDescriptor
 ├── stable id, label, semantic accent
 ├── ordered sections and ParameterSpec[]
 ├── asset requirements
+├── voice limits and supported event semantics
 ├── off-thread preparation
 └── real-time renderer factory
 
@@ -204,10 +205,11 @@ ParameterSpec
 ├── stable id and label
 ├── kind: continuous | stepped | choice | toggle | asset
 ├── range, default, fine step, coarse step, unit, formatter
+├── update: scalar snapshot | prepared structural change
 └── optional enabled/visible dependency
 ```
 
-UI choices come from the installed registry. The Figma names are illustrative planned capabilities, not permission to expose placeholders. SoundFont is the first concrete registry entry. Later sample, physical-model, wavetable, FM, and effect implementations must satisfy the same preparation and callback contracts.
+UI choices come from the installed registry. The Figma names are illustrative planned capabilities, not permission to expose placeholders. SoundFont is the first concrete registry entry. Braids is the second concrete engine and is wrapped around the pinned Mutable Instruments C++ macro-oscillator implementation; it exists to prove that Patch state, projection, preparation, MIDI routing, rendering, and verification are capability-polymorphic before the Patch page is built. Later sample, physical-model, wavetable, FM, and effect implementations must satisfy the same preparation and callback contracts.
 
 ### SoundFont and sample pipeline
 
@@ -471,6 +473,7 @@ An architecture change must preserve the one-way state path and callback contrac
 - PATCH and MIXER are the only top-level contexts.
 - The UI is schema-driven; Figma example names are not a feature list.
 - SoundFont is the first concrete engine, not a reason to couple the domain to one library.
+- Braids is the second concrete engine; its C++ DSP remains behind the generic capability and prepared-renderer boundaries.
 - Live input, fixtures, and UI share the canonical reducer/projector path.
 - Discrete events, scalar snapshots, and structural graphs cross the RT boundary differently.
 - Structural audio state is prepared and destroyed off the callback.
