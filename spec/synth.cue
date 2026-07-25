@@ -125,7 +125,7 @@ project: contexts: Synth: {
 
 }
 
-project: adapters: HiDefSoundFontEngine: {
+project: adapters: HiDefSoundFontPreparer: {
 	implements: "port.Synth.InstrumentPreparer"
 	layer: "infrastructure"
 	profile: {kind: "in_process", medium: "sf2", system: "HiDef.sf2"}
@@ -133,7 +133,7 @@ project: adapters: HiDefSoundFontEngine: {
 		framework: "rustysynth"
 		rules: [
 			"expect exactly ./sf2/HiDef.sf2 and parse it once outside the callback; return a clear preparation error if it is missing or invalid",
-			"own one HiDefSoundFontEngine preparer and share its immutable parsed SoundFont bank across the per-Patch PreparedInstrument values it creates; never parse or clone the full bank per Patch",
+			"own one HiDefSoundFontPreparer and share its immutable parsed SoundFont bank across the per-Patch PreparedInstrument values it creates; never parse or clone the full bank per Patch",
 			"prepare one bounded rustysynth synthesizer for each accepted instrument.soundfont.hidef Patch using its exact bank, program, percussion, channel, and fixed asset assignments",
 			"inside each prepared instrument use rustysynth's percussion channel for a percussion Patch and a melodic channel for every other Patch, regardless of the Patch's logical assigned channel",
 			"the private prepared value implements PreparedInstrument, routes only its own Patch MIDI, and renders only into the caller-owned stem selected by the rack",
@@ -142,7 +142,7 @@ project: adapters: HiDefSoundFontEngine: {
 			"prepared dispatch, all-notes-off, and render use only bounded warmed state and perform no callback allocation, deallocation, locking, blocking, I/O, logging, formatting, panic, unwinding, or destruction",
 		]
 	}
-	validations: [{kind: "test", command: ["cargo", "test", "hidef_soundfont_engine"], description: "one parsed bank prepares independent melodic and percussion instruments whose targeted MIDI and bounded non-silent stems remain isolated behind PreparedInstrument"}]
+	validations: [{kind: "test", command: ["cargo", "test", "hidef_soundfont_preparer"], description: "one parsed bank prepares independent melodic and percussion instruments whose targeted MIDI and bounded non-silent stems remain isolated behind PreparedInstrument"}]
 	contributesTo: [
 		{capability: "capability.instrument_capability_model", contribution: "prepares the existing renderer from a generic capability config without becoming the Patch model"},
 		{capability: "capability.prepared_engine_rack", contribution: "supplies the only production preparer and capability-neutral per-Patch prepared instruments"},

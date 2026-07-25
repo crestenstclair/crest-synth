@@ -167,6 +167,7 @@ where
             accepted,
             &snapshot,
             parameters.generation(),
+            parameters.graph_revision(),
             &text,
             audio_command,
         )
@@ -179,7 +180,6 @@ where
         self.current_text = text;
         self.current_parameters = parameters;
         self.current_state_tree = state_tree;
-        self.boundary.collect();
         self.event_log
             .append(record)
             .expect("AppLoop must append a contiguous accepted event record");
@@ -204,6 +204,23 @@ where
     /// Returns the immutable capability metadata installed in canonical state.
     pub const fn capabilities(&self) -> &CapabilityRegistry {
         self.state.capabilities()
+    }
+
+    /// Returns the immutable accepted Patch set used to prepare audio graphs.
+    pub fn patches(&self) -> &[crate::synth::patch::Patch] {
+        self.state.patches()
+    }
+
+    /// Returns the latest complete scalar projection published to audio.
+    pub const fn current_parameters(
+        &self,
+    ) -> &crate::real_time::parameter_snapshot::ParameterSnapshot {
+        &self.current_parameters
+    }
+
+    /// Returns the prepared graph revision targeted by every runtime projection.
+    pub const fn graph_revision(&self) -> crate::real_time::GraphRevision {
+        self.projector.graph_revision()
     }
 
     pub(crate) const fn state(&self) -> &AppState {
@@ -258,7 +275,6 @@ mod tests {
         parameters: Vec<ParameterSnapshot>,
         commands: Vec<AudioCommand>,
         order: Vec<&'static str>,
-        collections: usize,
         reject_commands: bool,
     }
 
@@ -289,10 +305,6 @@ mod tests {
             let mut observations = self.observations.lock().unwrap();
             observations.order.push("parameters");
             observations.parameters.push(parameters);
-        }
-
-        fn collect(&mut self) {
-            self.observations.lock().unwrap().collections += 1;
         }
     }
 
@@ -417,7 +429,6 @@ mod tests {
         );
         assert_eq!(observations.commands.last(), Some(&command));
         assert!(result.audio_effects_published());
-        assert_eq!(observations.collections, 1);
     }
 
     #[test]

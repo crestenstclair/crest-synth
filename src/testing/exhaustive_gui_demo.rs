@@ -8,13 +8,13 @@ use crate::control::event_record::{
 };
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
-use crate::mixer::global_effects_processor::GlobalEffectsProcessor;
 use crate::real_time::audio_boundary::{AudioThreadBoundary, BoundaryFull, ControlAudioBoundary};
 use crate::real_time::audio_command::AudioCommand;
+use crate::real_time::audio_observation::CallbackAudioObservation;
 use crate::real_time::audio_renderer::AudioRenderer;
+use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
-use crate::synth::sound_font_engine::SoundFontEngine;
 use crate::testing::demo_scene::{DemoScene, DemoSceneStep};
 use crate::testing::demo_scene_report::{
     DemoCoverageGroup, DemoSceneCheckpoint, DemoSceneCheckpointError, DemoSceneCoverage,
@@ -167,31 +167,31 @@ impl From<DemoSceneReportError> for ExhaustiveGuiDemoError {
 /// The caller retains ownership of the already initialized production services.
 /// The scene runner performs only control-thread work and renders into caller-
 /// supplied storage that was allocated before the run.
-pub struct ExhaustiveGuiDemo<'a, ControlBoundary, RenderBoundary, Engine, Effects>
+pub struct ExhaustiveGuiDemo<'a, ControlBoundary, RenderBoundary, Structural, Observation>
 where
     ControlBoundary: ControlAudioBoundary,
     RenderBoundary: AudioThreadBoundary,
-    Engine: SoundFontEngine,
-    Effects: GlobalEffectsProcessor,
+    Structural: AudioStructuralGraphBoundary,
+    Observation: CallbackAudioObservation,
 {
     app_loop: &'a mut AppLoop<ControlBoundary>,
-    renderer: &'a mut AudioRenderer<RenderBoundary, Engine, Effects>,
+    renderer: &'a mut AudioRenderer<RenderBoundary, Structural, Observation>,
     audio_buffer: &'a mut [f32],
     translator: KeyboardInputTranslator,
 }
 
-impl<'a, ControlBoundary, RenderBoundary, Engine, Effects>
-    ExhaustiveGuiDemo<'a, ControlBoundary, RenderBoundary, Engine, Effects>
+impl<'a, ControlBoundary, RenderBoundary, Structural, Observation>
+    ExhaustiveGuiDemo<'a, ControlBoundary, RenderBoundary, Structural, Observation>
 where
     ControlBoundary: ControlAudioBoundary,
     RenderBoundary: AudioThreadBoundary,
-    Engine: SoundFontEngine,
-    Effects: GlobalEffectsProcessor,
+    Structural: AudioStructuralGraphBoundary,
+    Observation: CallbackAudioObservation,
 {
     /// Injects the already initialized control and callback-side production services.
     pub fn new(
         app_loop: &'a mut AppLoop<ControlBoundary>,
-        renderer: &'a mut AudioRenderer<RenderBoundary, Engine, Effects>,
+        renderer: &'a mut AudioRenderer<RenderBoundary, Structural, Observation>,
         audio_buffer: &'a mut [f32],
     ) -> Self {
         Self {
@@ -936,20 +936,20 @@ mod tests {
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
-    use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
     use crate::mixer::global_parameters::GlobalParameters;
-    use crate::mixer::mix_engine::MixEngine;
     use crate::real_time::audio_boundary::AudioBoundary;
     use crate::real_time::audio_renderer::AudioRenderer;
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
-    use crate::real_time::patch_audio_block::PatchAudioBlock;
-    use crate::synth::patch::Patch;
-    use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
+    use crate::real_time::prepared_graph_builder::PreparedGraphBuilder;
+    use crate::real_time::structural_graph_boundary::NoStructuralGraphChanges;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::{
+        CapabilityId, InstrumentPreparationError, InstrumentPreparer, Patch, PreparedInstrument,
+        PreparedInstrumentError,
+    };
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use crate::testing::demo_scene::DemoScene;
     use crate::testing::demo_scene_report::DemoCoverageGroup;
-    use std::path::Path;
 
     fn globals() -> GlobalParameters {
         GlobalParameters::new(0.0, 0.5, 0.4, 0.35, 250.0, 0.3, 0.25).unwrap()
@@ -970,74 +970,50 @@ mod tests {
         )
     }
 
-    #[derive(Default)]
-    struct TestEngine;
+    struct TestPreparer {
+        capability_id: CapabilityId,
+    }
 
-    impl SoundFontEngine for TestEngine {
-        fn load(&mut self, _path: &Path) -> Result<(), SoundFontError> {
-            Ok(())
+    impl InstrumentPreparer for TestPreparer {
+        fn capability_id(&self) -> &CapabilityId {
+            &self.capability_id
         }
 
-        fn configure_patch(&mut self, _patch: &Patch) -> Result<(), SoundFontError> {
-            Ok(())
-        }
-
-        fn dispatch(
-            &mut self,
-            _patch_id: PatchId,
-            _message: MidiMessage,
-        ) -> Result<(), SoundFontError> {
-            Ok(())
-        }
-
-        fn all_notes_off(&mut self) {}
-
-        fn render_patches(&mut self, output: &mut PatchAudioBlock, parameters: &ParameterSnapshot) {
-            for (index, patch) in parameters.patches().iter().enumerate() {
-                let Some(patch_id) = patch.patch_id() else {
-                    continue;
-                };
-                let Some(stem) = output.stem_mut(index, patch_id) else {
-                    continue;
-                };
-                let amplitude = 0.15 + index as f32 * 0.11;
-                for frame in stem.chunks_exact_mut(2) {
-                    frame[0] = amplitude;
-                    frame[1] = amplitude * (1.0 + index as f32 * 0.07);
-                }
-            }
+        fn prepare(
+            &self,
+            patch: &Patch,
+            _sample_rate: f32,
+            _max_frames: usize,
+        ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
+            Ok(Box::new(TestInstrument {
+                patch_id: patch.id(),
+            }))
         }
     }
 
-    struct TestEffects;
+    struct TestInstrument {
+        patch_id: PatchId,
+    }
 
-    impl GlobalEffectsProcessor for TestEffects {
-        fn prepare(
-            &mut self,
-            _sample_rate: f32,
-            _max_frames: usize,
-            _max_delay_milliseconds: f32,
-        ) -> Result<(), EffectError> {
+    impl PreparedInstrument for TestInstrument {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
             Ok(())
         }
 
-        fn process(
-            &mut self,
-            reverb_input: &[f32],
-            delay_input: &[f32],
-            output: &mut [f32],
-            parameters: &GlobalParameters,
-        ) {
-            let reverb_shape =
-                1.0 + parameters.reverb_room_size() * 0.31 + parameters.reverb_damping() * 0.17;
-            let delay_shape = 1.0
-                + parameters.delay_milliseconds() * 0.000_7
-                + parameters.delay_feedback() * 0.23;
-            for ((sample, reverb), delay) in output.iter_mut().zip(reverb_input).zip(delay_input) {
-                *sample += reverb * parameters.reverb_return() * reverb_shape
-                    + delay * parameters.delay_return() * delay_shape;
+        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+            let index = self.patch_id.value().saturating_sub(1) as usize;
+            let amplitude = 0.15 + index as f32 * 0.01;
+            for frame in output.chunks_exact_mut(2) {
+                frame[0] = amplitude;
+                frame[1] = amplitude * 1.07;
             }
         }
+
+        fn all_notes_off(&mut self) {}
     }
 
     #[test]
@@ -1047,7 +1023,7 @@ mod tests {
         let scene =
             DemoScene::exhaustive(&provider.registry().unwrap(), &patches, &globals()).unwrap();
         let initial_parameters = ParameterSnapshot::new(0, globals(), &[]).unwrap();
-        let boundary = LockFreeAudioBoundary::<()>::new(4, initial_parameters);
+        let boundary = LockFreeAudioBoundary::new(4, initial_parameters);
         let (control, audio) = boundary.into_handles();
 
         let event_log = EventLog::new(scene.event_log_capacity().saturating_add(2)).unwrap();
@@ -1065,8 +1041,19 @@ mod tests {
             )
             .unwrap();
 
-        let mut renderer = AudioRenderer::new(audio, TestEngine, MixEngine::new(TestEffects));
-        renderer.prepare(32, 48_000.0).unwrap();
+        let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(TestPreparer {
+            capability_id: CapabilityId::new("instrument.soundfont.hidef").unwrap(),
+        })];
+        let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
+            .build(
+                crate::real_time::GraphRevision::INITIAL,
+                app_loop.patches(),
+                *app_loop.current_parameters(),
+                48_000.0,
+                32,
+            )
+            .unwrap();
+        let mut renderer = AudioRenderer::new(audio, NoStructuralGraphChanges::new(), graph);
         let mut audio_buffer = vec![0.0; 64];
 
         let mut demo = ExhaustiveGuiDemo::new(&mut app_loop, &mut renderer, &mut audio_buffer);

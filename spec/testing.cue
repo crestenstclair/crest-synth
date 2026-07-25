@@ -106,12 +106,13 @@ project: contexts: Testing: {
 			eventLog: "EventLog"
 			stateTree: "StateTree"
 			coverage: "{expectedEditableParameters, exercisedEditableParameters, missingEditableParameters, unexpectedEditableParameters}"
+			runtimeAudio: "{parsedSoundfontBanks, preparedInstruments, activeGraphRevision, callbackDestructions}"
 			summary: "String"
 		}
 		invariants: [
 			"each checkpoint captures its expected transition before dispatch and then copies the actual outcome, generation, state hash, projected value, parameter generation, and emitted effects from the production EventRecord and canonical projections",
 			"each accepted parameter checkpoint requires an AudioObservationSnapshot whose sequence advanced after dispatch, whose parameterGeneration equals the accepted generation, whose output is finite, and whose parameter-specific audible predicate passed while fixture audio was nonzero",
-			"complete is true only when every expected editable parameter changed, missing and unexpected are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, all semantic all-notes-off events were accepted, and a later audio observation reports zero active notes",
+			"complete is true only when every expected editable parameter changed, missing and unexpected are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, all semantic all-notes-off events were accepted, a later audio observation reports zero active notes, and runtimeAudio reports one parsed bank, one prepared instrument per Patch, the StateTree graph revision, and zero callback destruction",
 			"eventLog and stateTree are the existing canonical Control values, not live-demo copies; stateTree.generation equals the final checkpoint and EventLog chain endpoint",
 			"the complete EventLog remains retained for deterministic report verification while interactive terminal output uses one compact LiveEventLogSummary containing lossless counts and canonical first/last chain endpoints",
 			"summary is human-readable control-side text derived from the structured report after completion and is never constructed or printed in the audio callback",
@@ -133,6 +134,7 @@ project: contexts: Testing: {
 			generationAfter: "Option<u64>"
 			stateHashBefore: "Option<String>"
 			stateHashAfter: "Option<String>"
+			activeGraphRevision: "GraphRevision"
 			lossless: "bool"
 		}
 		invariants: [

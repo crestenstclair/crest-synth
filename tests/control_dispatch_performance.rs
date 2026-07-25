@@ -36,8 +36,6 @@ impl ControlAudioBoundary for NoopBoundary {
     fn publish_parameters(&mut self, _parameters: ParameterSnapshot) {
         self.publications += 1;
     }
-
-    fn collect(&mut self) {}
 }
 
 fn globals() -> GlobalParameters {

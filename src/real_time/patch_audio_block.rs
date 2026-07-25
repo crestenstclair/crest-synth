@@ -45,7 +45,7 @@ impl fmt::Display for PatchAudioBlockError {
 
 impl std::error::Error for PatchAudioBlockError {}
 
-/// Prepared interleaved stereo storage for one SoundFont Patch lane.
+/// Prepared interleaved stereo storage for one instrument Patch slot.
 ///
 /// The identity and active frame count are assigned by PatchAudioBlock.
 /// Consumers can read only the active sample prefix, while synthesis receives
@@ -111,11 +111,11 @@ impl PatchStereoStem {
     }
 }
 
-/// Caller-owned SoundFont scratch storage preserving one stem per active Patch.
+/// Caller-owned synthesis storage preserving one stem per active Patch.
 ///
-/// prepare is the sole allocation point and is intended to be called by
-/// AudioRenderer::prepare on the control thread. After preparation, beginning,
-/// clearing, filling, and reading a block do not allocate.
+/// `prepare` is the sole allocation point and is called by
+/// `PreparedGraphBuilder` on the control/worker side. After preparation,
+/// beginning, clearing, filling, and reading a block do not allocate.
 #[derive(Debug)]
 pub struct PatchAudioBlock {
     frame_count: usize,

@@ -14,22 +14,27 @@ use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mix_engine::MixEngine;
-use crate::real_time::audio_boundary::{AudioBoundary, AudioThreadBoundary, RetiredAudioState};
+use crate::real_time::audio_boundary::{AudioBoundary, AudioThreadBoundary};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_renderer::AudioRenderer;
+use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
 use crate::real_time::patch_audio_block::PatchAudioBlock;
+use crate::real_time::prepared_graph_builder::PreparedGraphBuilder;
+use crate::real_time::structural_graph_boundary::NoStructuralGraphChanges;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::window_input::{WindowInput, WindowKey};
 use crate::synth::patch::Patch;
-use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
 use crate::synth::sound_font_instrument::SoundFontInstrument;
+use crate::synth::{
+    CapabilityId, InstrumentPreparationError, InstrumentPreparer, PreparedInstrument,
+    PreparedInstrumentError,
+};
 use crate::testing::automatic_midi_test::create_soundfont_config;
 use serde::Serialize;
 use serde_json::Value;
 use std::cell::Cell;
 use std::collections::BTreeSet;
-use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -345,7 +350,7 @@ impl BehavioralMutationHarness {
     }
 }
 
-type FixtureLoop = AppLoop<LockFreeControlHandle<()>>;
+type FixtureLoop = AppLoop<LockFreeControlHandle>;
 
 fn fixture_globals() -> GlobalParameters {
     GlobalParameters::new(0.0, 0.6, 0.4, 0.5, 250.0, 0.35, 0.5)
@@ -398,12 +403,12 @@ fn state_with_parameters(first: ChannelParameters, second: ChannelParameters) ->
     state
 }
 
-fn installed_loop(state: AppState) -> (FixtureLoop, LockFreeAudioHandle<()>) {
+fn installed_loop(state: AppState) -> (FixtureLoop, LockFreeAudioHandle) {
     let projector = StateProjector::new();
     let initial = projector
         .parameter_snapshot(&state)
         .expect("fixture parameters project");
-    let boundary = LockFreeAudioBoundary::<()>::new(16, initial);
+    let boundary = LockFreeAudioBoundary::new(16, initial);
     let (control, audio) = boundary.into_handles();
     let app_loop =
         AppLoop::new(state, projector, control).expect("fixture state has coherent projections");
@@ -470,11 +475,15 @@ fn app_projection_exact(app_loop: &FixtureLoop) -> bool {
 }
 
 fn published_matches_tree(snapshot: &ParameterSnapshot, tree: &Value) -> bool {
-    if snapshot.patch_count()
-        != tree
-            .pointer("/parameters/patchCount")
-            .and_then(Value::as_u64)
-            .unwrap_or(u64::MAX) as usize
+    if tree
+        .pointer("/parameters/graphRevision")
+        .and_then(Value::as_u64)
+        != Some(snapshot.graph_revision().value())
+        || snapshot.patch_count()
+            != tree
+                .pointer("/parameters/patchCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(u64::MAX) as usize
     {
         return false;
     }
@@ -936,8 +945,6 @@ impl<Boundary> AudioThreadBoundary for MisrouteBoundary<Boundary>
 where
     Boundary: AudioThreadBoundary,
 {
-    type RetiredState = Boundary::RetiredState;
-
     fn pop_command(&mut self) -> Option<AudioCommand> {
         let command = self.inner.pop_command()?;
         if !self.mutant_enabled || self.rewritten {
@@ -959,10 +966,6 @@ where
     fn read_latest_parameters(&mut self) -> ParameterSnapshot {
         self.inner.read_latest_parameters()
     }
-
-    fn retire(&mut self, state: RetiredAudioState<Self::RetiredState>) {
-        self.inner.retire(state);
-    }
 }
 
 #[derive(Default)]
@@ -970,66 +973,54 @@ struct EngineProbe {
     dispatched_patch: AtomicU32,
 }
 
-struct RoutedVerificationEngine {
+struct RoutedVerificationPreparer {
+    probe: Arc<EngineProbe>,
+    capability_id: CapabilityId,
+}
+
+impl InstrumentPreparer for RoutedVerificationPreparer {
+    fn capability_id(&self) -> &CapabilityId {
+        &self.capability_id
+    }
+
+    fn prepare(
+        &self,
+        patch: &Patch,
+        _sample_rate: f32,
+        _max_frames: usize,
+    ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
+        Ok(Box::new(RoutedVerificationInstrument {
+            patch_id: patch.id(),
+            probe: Arc::clone(&self.probe),
+        }))
+    }
+}
+
+struct RoutedVerificationInstrument {
+    patch_id: PatchId,
     probe: Arc<EngineProbe>,
 }
 
-impl SoundFontEngine for RoutedVerificationEngine {
-    fn load(&mut self, _path: &Path) -> Result<(), SoundFontError> {
-        Ok(())
+impl PreparedInstrument for RoutedVerificationInstrument {
+    fn patch_id(&self) -> PatchId {
+        self.patch_id
     }
 
-    fn configure_patch(&mut self, _patch: &Patch) -> Result<(), SoundFontError> {
-        Ok(())
-    }
-
-    fn dispatch(&mut self, patch_id: PatchId, _message: MidiMessage) -> Result<(), SoundFontError> {
+    fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
         self.probe
             .dispatched_patch
-            .store(patch_id.value(), Ordering::Release);
+            .store(self.patch_id.value(), Ordering::Release);
         Ok(())
+    }
+
+    fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+        if self.probe.dispatched_patch.load(Ordering::Acquire) == self.patch_id.value() {
+            output.fill(0.5);
+        }
     }
 
     fn all_notes_off(&mut self) {
         self.probe.dispatched_patch.store(0, Ordering::Release);
-    }
-
-    fn render_patches(&mut self, block: &mut PatchAudioBlock, parameters: &ParameterSnapshot) {
-        let active = self.probe.dispatched_patch.load(Ordering::Acquire);
-        for (index, patch) in parameters.patches().iter().enumerate() {
-            let patch_id = patch
-                .patch_id()
-                .expect("active parameters carry Patch identity");
-            if patch_id.value() == active {
-                block
-                    .stem_mut(index, patch_id)
-                    .expect("matching verification stem exists")
-                    .fill(0.5);
-            }
-        }
-    }
-}
-
-#[derive(Default)]
-struct NoopEffects;
-
-impl GlobalEffectsProcessor for NoopEffects {
-    fn prepare(
-        &mut self,
-        _sample_rate: f32,
-        _max_frames: usize,
-        _max_delay_milliseconds: f32,
-    ) -> Result<(), EffectError> {
-        Ok(())
-    }
-
-    fn process(
-        &mut self,
-        _reverb_input: &[f32],
-        _delay_input: &[f32],
-        _output: &mut [f32],
-        _parameters: &GlobalParameters,
-    ) {
     }
 }
 
@@ -1067,13 +1058,20 @@ fn render_routed_command(mutant_enabled: bool) -> RouteRender {
         rewritten: false,
     };
     let probe = Arc::new(EngineProbe::default());
-    let engine = RoutedVerificationEngine {
+    let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(RoutedVerificationPreparer {
         probe: Arc::clone(&probe),
-    };
-    let mut renderer = AudioRenderer::new(boundary, engine, MixEngine::new(NoopEffects));
-    renderer
-        .prepare(FRAME_COUNT, SAMPLE_RATE)
-        .expect("verification renderer prepares");
+        capability_id: CapabilityId::new("instrument.soundfont.hidef").unwrap(),
+    })];
+    let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
+        .build(
+            GraphRevision::INITIAL,
+            app_loop.patches(),
+            *app_loop.current_parameters(),
+            SAMPLE_RATE,
+            FRAME_COUNT,
+        )
+        .expect("verification graph prepares");
+    let mut renderer = AudioRenderer::new(boundary, NoStructuralGraphChanges::new(), graph);
     let mut output = [0.0_f32; FRAME_COUNT * 2];
     renderer.render(&mut output);
 
@@ -1249,40 +1247,6 @@ impl GlobalEffectsProcessor for DryWetEffects {
     }
 }
 
-struct ConstantVerificationEngine;
-
-impl SoundFontEngine for ConstantVerificationEngine {
-    fn load(&mut self, _path: &Path) -> Result<(), SoundFontError> {
-        Ok(())
-    }
-
-    fn configure_patch(&mut self, _patch: &Patch) -> Result<(), SoundFontError> {
-        Ok(())
-    }
-
-    fn dispatch(
-        &mut self,
-        _patch_id: PatchId,
-        _message: MidiMessage,
-    ) -> Result<(), SoundFontError> {
-        Ok(())
-    }
-
-    fn all_notes_off(&mut self) {}
-
-    fn render_patches(&mut self, block: &mut PatchAudioBlock, parameters: &ParameterSnapshot) {
-        for (index, patch) in parameters.patches().iter().enumerate() {
-            let patch_id = patch
-                .patch_id()
-                .expect("active parameters carry Patch identity");
-            block
-                .stem_mut(index, patch_id)
-                .expect("matching verification stem exists")
-                .fill(0.2 + index as f32 * 0.1);
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 struct DryWetMeasurement {
     dry: f64,
@@ -1294,8 +1258,6 @@ struct DryWetMeasurement {
 }
 
 fn render_dry_wet(parameters: ParameterSnapshot, mutant_enabled: bool) -> DryWetMeasurement {
-    let boundary = LockFreeAudioBoundary::<()>::new(1, parameters);
-    let (_control, audio) = boundary.into_handles();
     let probe = Rc::new(DryWetProbe::default());
     let effects = DryWetEffects {
         mutant_enabled,
@@ -1303,13 +1265,22 @@ fn render_dry_wet(parameters: ParameterSnapshot, mutant_enabled: bool) -> DryWet
         scratch: Vec::new(),
         probe: Rc::clone(&probe),
     };
-    let mut renderer =
-        AudioRenderer::new(audio, ConstantVerificationEngine, MixEngine::new(effects));
-    renderer
-        .prepare(FRAME_COUNT, SAMPLE_RATE)
-        .expect("verification renderer prepares");
+    let mut mixer = MixEngine::new(effects);
+    mixer
+        .prepare(SAMPLE_RATE, FRAME_COUNT)
+        .expect("verification mixer prepares");
+    let mut patch_audio = PatchAudioBlock::prepare(FRAME_COUNT).unwrap();
+    patch_audio.begin_render(&parameters, FRAME_COUNT).unwrap();
+    for (index, patch) in parameters.patches().iter().enumerate() {
+        let Some(patch_id) = patch.patch_id() else {
+            continue;
+        };
+        if let Some(stem) = patch_audio.stem_mut(index, patch_id) {
+            stem.fill(0.2 + index as f32 * 0.1);
+        }
+    }
     let mut output = [0.0_f32; FRAME_COUNT * 2];
-    renderer.render(&mut output);
+    mixer.mix(&patch_audio, &parameters, &mut output);
 
     DryWetMeasurement {
         dry: probe.dry_input_energy.get(),

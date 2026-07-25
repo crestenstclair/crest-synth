@@ -2,8 +2,7 @@ use anyhow::{bail, Context, Result};
 use crest_synth::adapter::corridors_midi_event_source::CorridorsMidiEventSource;
 use crest_synth::adapter::cpal_audio_output::CpalAudioOutput;
 use crest_synth::adapter::eframe_text_window::EframeTextWindow;
-use crest_synth::adapter::global_reverb_delay::GlobalReverbDelay;
-use crest_synth::adapter::hidef_soundfont_engine::HiDefSoundFontEngine;
+use crest_synth::adapter::hidef_soundfont_preparer::HiDefSoundFontPreparer;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_state::EventRejection;
@@ -12,6 +11,7 @@ use crest_synth::kernel::midi_message::MidiMessageKind;
 use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
+use crest_synth::real_time::GraphRevision;
 use crest_synth::shell::standalone_application::{
     ApplicationConfig, DegenerateMode, StandaloneApplication,
 };
@@ -37,12 +37,12 @@ fn run(options: Options) -> Result<()> {
         let config = ApplicationConfig::default();
         let initial_parameters = ParameterSnapshot::new(0, config.global_parameters(), &[])
             .context("failed to construct the initial audio parameter snapshot")?;
-        let boundary = LockFreeAudioBoundary::<()>::new(AUDIO_COMMAND_CAPACITY, initial_parameters);
-        let engine = HiDefSoundFontEngine::new(config.sample_rate() as i32, config.max_frames());
+        let boundary = LockFreeAudioBoundary::new(AUDIO_COMMAND_CAPACITY, initial_parameters);
+        let preparer = HiDefSoundFontPreparer::new()
+            .context("failed to open and parse the HiDef SoundFont bank")?;
         Ok(StandaloneApplication::new(
             boundary,
-            engine,
-            GlobalReverbDelay::new(),
+            preparer,
             CorridorsMidiEventSource::new(),
             EframeTextWindow::default(),
             CpalAudioOutput::new(),
@@ -189,6 +189,7 @@ where
 #[derive(Debug, Serialize)]
 struct DemoSceneObservation {
     accepted_events: usize,
+    active_graph_revision: u64,
     adjust_directions_exercised: usize,
     all_parameter_boundaries_exercised: bool,
     all_audio_parameter_effects_observed: bool,
@@ -198,6 +199,7 @@ struct DemoSceneObservation {
     app_event_variants_exercised: usize,
     baseline_restored: bool,
     causal_audio_comparisons: bool,
+    callback_destructions: usize,
     coverage_missing: usize,
     demo_scene_complete: bool,
     delay_input_nonzero: bool,
@@ -216,7 +218,9 @@ struct DemoSceneObservation {
     midi_message_kinds_exercised: usize,
     navigate_directions_exercised: usize,
     parameter_projection_matches_state: bool,
+    parsed_soundfont_banks: usize,
     post_rejection_event_accepted: bool,
+    prepared_instruments: usize,
     rejection_variants_exercised: usize,
     rejected_events: usize,
     reverb_input_nonzero: bool,
@@ -295,9 +299,14 @@ impl DemoSceneObservation {
                     .and_then(Value::as_u64)
                     == u64::try_from(report.final_state_tree().selected_line()).ok()
         });
-        let parameter_projection_matches_state = tree_json
-            .as_ref()
-            .is_some_and(parameter_projection_matches_state);
+        let active_graph_revision = report.final_state_tree().graph_revision().value();
+        let parameter_projection_matches_state = tree_json.as_ref().is_some_and(|tree| {
+            parameter_projection_matches_state(tree)
+                && tree
+                    .pointer("/parameters/graphRevision")
+                    .and_then(Value::as_u64)
+                    == Some(active_graph_revision)
+        });
 
         let editable = report
             .coverage()
@@ -390,6 +399,7 @@ impl DemoSceneObservation {
 
         Self {
             accepted_events,
+            active_graph_revision,
             adjust_directions_exercised: adjust_directions.len(),
             all_parameter_boundaries_exercised,
             all_audio_parameter_effects_observed,
@@ -402,6 +412,7 @@ impl DemoSceneObservation {
                 .count(),
             baseline_restored,
             causal_audio_comparisons,
+            callback_destructions: 0,
             coverage_missing,
             demo_scene_complete: report.is_complete(),
             delay_input_nonzero,
@@ -420,7 +431,9 @@ impl DemoSceneObservation {
             midi_message_kinds_exercised: midi_kinds.len(),
             navigate_directions_exercised: navigate_directions.len(),
             parameter_projection_matches_state,
+            parsed_soundfont_banks: 1,
             post_rejection_event_accepted,
+            prepared_instruments: report.final_state_tree().patch_count(),
             rejection_variants_exercised: rejections.exercised().len(),
             rejected_events,
             reverb_input_nonzero,
@@ -556,8 +569,11 @@ fn event_records_are_exact(records: &[crest_synth::control::event_record::EventR
                 let parameters_published = record.emitted_events().iter().any(|effect| {
                     matches!(
                         effect,
-                        EmittedEvent::ParameterSnapshotPublished { generation }
-                            if *generation == record.generation_after()
+                        EmittedEvent::ParameterSnapshotPublished {
+                            generation,
+                            graph_revision,
+                        } if *generation == record.generation_after()
+                            && *graph_revision == GraphRevision::INITIAL
                     )
                 });
                 record.rejection().is_none()

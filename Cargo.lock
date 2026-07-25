@@ -430,12 +430,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "basedrop"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0cab808e4f26ab216811b4b759e85823f9630a4da86e90e207bdc99cf565d32"
-
-[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -771,7 +765,6 @@ name = "crest-synth"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "basedrop",
  "cpal",
  "eframe",
  "midly",

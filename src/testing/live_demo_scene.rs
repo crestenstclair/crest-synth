@@ -9,6 +9,7 @@ use crate::mixer::channel_parameters::{ChannelParameter, ChannelParameters};
 use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
+use crate::real_time::GraphRevision;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -143,6 +144,7 @@ impl LiveExpectedTransition {
     pub(crate) fn for_step(
         step: &LiveDemoStep,
         generation_before: u64,
+        graph_revision: GraphRevision,
         selected_line: usize,
         observed_value: Option<f32>,
     ) -> Result<Self, LiveDemoSceneError> {
@@ -176,6 +178,7 @@ impl LiveExpectedTransition {
             });
             emitted_effects.push(EmittedEvent::ParameterSnapshotPublished {
                 generation: generation_after,
+                graph_revision,
             });
             if let AppEvent::Midi { patch_id, message } = &step.event {
                 emitted_effects.push(EmittedEvent::AudioCommand {

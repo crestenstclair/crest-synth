@@ -50,7 +50,7 @@ project: {
 			command: ["cargo", "run", "--bin", "crest-synth", "--", "--smoke"]
 			timeout: "180s"
 			resources: [
-				"adapter.HiDefSoundFontEngine",
+				"adapter.HiDefSoundFontPreparer",
 				"applicationService.Synth.PreparedEngineRackBuilder",
 				"applicationService.RealTime.PreparedGraphBuilder",
 				"aggregate.RealTime.PreparedEngineRack",
@@ -92,7 +92,7 @@ project: {
 					"applicationService.RealTime.PreparedGraphBuilder",
 					"applicationService.RealTime.StructuralGraphCoordinator",
 					"applicationService.RealTime.AudioRenderer",
-					"adapter.HiDefSoundFontEngine",
+					"adapter.HiDefSoundFontPreparer",
 					"asset.BehavioralAcceptanceTests",
 				]
 				capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution", "capability.soundfont_audio"]

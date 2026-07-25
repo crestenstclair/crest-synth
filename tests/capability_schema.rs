@@ -1,8 +1,8 @@
+use crest_synth::adapter::hidef_soundfont_capability::HIDEF_SOUNDFONT_PATH;
 use crest_synth::adapter::hidef_soundfont_capability::{
     HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, HIDEF_VOICE_LIMIT, SOUNDFONT_BANK_PARAMETER_ID,
     SOUNDFONT_FILE_PARAMETER_ID, SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
 };
-use crest_synth::adapter::hidef_soundfont_engine::HIDEF_SOUNDFONT_PATH;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::app_loop::AppLoop;
@@ -47,11 +47,11 @@ fn patch(id: u32, channel: u8, name: &str, config: InstrumentConfig) -> Patch {
 fn app_loop(
     registry: CapabilityRegistry,
 ) -> (
-    AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle<()>>,
-    crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioHandle<()>,
+    AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle>,
+    crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioHandle,
 ) {
     let initial = ParameterSnapshot::new(0, globals(), &[]).unwrap();
-    let boundary = LockFreeAudioBoundary::<()>::new(16, initial);
+    let boundary = LockFreeAudioBoundary::new(16, initial);
     let (control, audio) = boundary.into_handles();
     (
         AppLoop::new(
@@ -147,7 +147,8 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         )
         .unwrap();
     let tree: Value = serde_json::from_str(installed.current_state_tree().json()).unwrap();
-    assert_eq!(tree["schemaVersion"], 2);
+    assert_eq!(tree["schemaVersion"], 3);
+    assert_eq!(tree["parameters"]["graphRevision"], 1);
     assert_eq!(
         tree["capabilities"]["descriptors"][0]["id"],
         HIDEF_CAPABILITY_ID

@@ -176,7 +176,7 @@ project: adapters: HiDefSoundFontCapability: {
 	meta: {
 		framework: "rust"
 		rules: [
-			"provide the one installed descriptor with CapabilityId instrument.soundfont.hidef, label HiDef SoundFont, a stable semantic instrument accent, declared bounded voice capacity, and the MIDI kinds already supported by HiDefSoundFontEngine",
+			"provide the one installed descriptor with CapabilityId instrument.soundfont.hidef, label HiDef SoundFont, a stable semantic instrument accent, declared bounded voice capacity, and the MIDI kinds supported by HiDefSoundFontPreparer",
 			"declare soundfont.bank as Structural Stepped, soundfont.program as Structural Stepped, soundfont.percussion as Structural Toggle, and soundfont.file as a required Structural Asset fixed to ./sf2/HiDef.sf2",
 			"create InstrumentConfig from caller-supplied generic assignments and asset references without reading a file, loading an engine, changing a Patch, or inventing a second SoundFont preset model",
 			"return a typed error for invalid or unknown values and never substitute a preset, percussion identity, asset, descriptor, or engine",

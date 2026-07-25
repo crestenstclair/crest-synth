@@ -6,6 +6,7 @@ use crate::control::text_projection::TextProjection;
 use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
+use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{CapabilityRegistry, InstrumentConfig};
 use core::fmt;
 use serde::Serialize;
@@ -20,6 +21,8 @@ pub enum StateTreeError {
     ProjectionHashMismatch,
     /// The audio parameters did not originate from the accepted generation.
     GenerationMismatch,
+    /// A generation-only projection targeted a different prepared graph.
+    GraphRevisionMismatch,
     /// The state and real-time projections contained different Patch counts.
     PatchCountMismatch,
     /// A real-time Patch identity did not match the state at the same position.
@@ -45,6 +48,9 @@ impl fmt::Display for StateTreeError {
             }
             Self::GenerationMismatch => {
                 formatter.write_str("parameter generation does not match accepted state")
+            }
+            Self::GraphRevisionMismatch => {
+                formatter.write_str("parameter graph revision changed within one StateTree")
             }
             Self::PatchCountMismatch => {
                 formatter.write_str("parameter Patch count does not match accepted state")
@@ -80,6 +86,7 @@ impl std::error::Error for StateTreeError {}
 pub struct StateTree {
     json: TreeJson,
     generation: u64,
+    graph_revision: GraphRevision,
     patch_count: usize,
     selected_line: usize,
     state_hash: Arc<str>,
@@ -106,7 +113,7 @@ struct MidiTreeTemplate {
 
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
-    pub const SCHEMA_VERSION: u32 = 2;
+    pub const SCHEMA_VERSION: u32 = 3;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -120,6 +127,7 @@ impl StateTree {
         "projection.selectedLine",
         "projection.stateHash",
         "parameters.generation",
+        "parameters.graphRevision",
         "parameters.patchCount",
         "parameters.patches",
         "parameters.global",
@@ -187,6 +195,7 @@ impl StateTree {
         "projection.selectedLine",
         "projection.stateHash",
         "parameters.generation",
+        "parameters.graphRevision",
         "parameters.patchCount",
         "parameters.patches[].patchId",
         "parameters.patches[].parameters.gainDb",
@@ -247,6 +256,7 @@ impl StateTree {
         Ok(Self {
             json: TreeJson::Ready(Arc::from(json)),
             generation: state.generation,
+            graph_revision: parameters.graph_revision(),
             patch_count: state.patches.len(),
             selected_line: projection.selected_line(),
             state_hash: Arc::from(snapshot.hash()),
@@ -265,6 +275,9 @@ impl StateTree {
         }
         if parameters.generation() != self.generation.saturating_add(1) {
             return Err(StateTreeError::GenerationMismatch);
+        }
+        if parameters.graph_revision() != self.graph_revision {
+            return Err(StateTreeError::GraphRevisionMismatch);
         }
         if parameters.patch_count() != self.patch_count {
             return Err(StateTreeError::PatchCountMismatch);
@@ -291,6 +304,7 @@ impl StateTree {
                 rendered: Arc::new(OnceLock::new()),
             },
             generation,
+            graph_revision: self.graph_revision,
             patch_count: self.patch_count,
             selected_line: self.selected_line,
             state_hash,
@@ -305,6 +319,11 @@ impl StateTree {
     /// Returns the accepted AppState generation represented by the tree.
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Returns the prepared graph revision targeted by the parameter branch.
+    pub const fn graph_revision(&self) -> GraphRevision {
+        self.graph_revision
     }
 
     /// Returns the number of installed Patches represented by both projections.
@@ -345,6 +364,7 @@ impl StateTree {
 impl PartialEq for StateTree {
     fn eq(&self, other: &Self) -> bool {
         self.generation == other.generation
+            && self.graph_revision == other.graph_revision
             && self.patch_count == other.patch_count
             && self.selected_line == other.selected_line
             && self.state_hash == other.state_hash
@@ -354,7 +374,7 @@ impl PartialEq for StateTree {
 
 impl MidiTreeTemplate {
     fn from_json(json: &str, generation: u64, state_hash: &str) -> Option<Self> {
-        const ROOT_MARKER: &str = "{\"schemaVersion\":2,\"generation\":";
+        const ROOT_MARKER: &str = "{\"schemaVersion\":3,\"generation\":";
         const HASH_MARKER: &str = "\"stateHash\":\"";
         const PARAMETER_MARKER: &str = "\"parameters\":{\"generation\":";
 
@@ -478,6 +498,7 @@ impl<'a> SerializableStateTree<'a> {
             },
             parameters: TreeParameterSnapshot {
                 generation: parameters.generation(),
+                graph_revision: parameters.graph_revision(),
                 patch_count: parameters.patch_count(),
                 patches: parameters
                     .patches()
@@ -595,6 +616,7 @@ struct TreeProjection<'a> {
 #[serde(rename_all = "camelCase")]
 struct TreeParameterSnapshot {
     generation: u64,
+    graph_revision: GraphRevision,
     patch_count: usize,
     patches: Vec<TreeParameterPatch>,
     global: TreeGlobalParameters,
@@ -689,8 +711,9 @@ mod tests {
     }
 
     fn parameters() -> ParameterSnapshot {
-        ParameterSnapshot::new(
+        ParameterSnapshot::for_graph(
             42,
+            crate::real_time::GraphRevision::new(7).unwrap(),
             global(),
             &[
                 RtPatchParameters::new(
@@ -720,8 +743,9 @@ mod tests {
         let tree = StateTree::new(&snapshot, &projection(&snapshot), &parameters()).unwrap();
         let value: Value = serde_json::from_str(tree.json()).unwrap();
 
-        assert_eq!(tree.schema_version(), 2);
+        assert_eq!(tree.schema_version(), 3);
         assert_eq!(tree.generation(), 42);
+        assert_eq!(tree.graph_revision().value(), 7);
         assert_eq!(tree.patch_count(), 2);
         assert_eq!(tree.selected_line(), 1);
         assert_eq!(tree.state_hash(), snapshot.hash());
@@ -795,6 +819,7 @@ mod tests {
         assert_eq!(value["projection"]["selectedLine"], 1);
         assert_eq!(value["projection"]["stateHash"], snapshot.hash());
         assert_eq!(value["parameters"]["generation"], 42);
+        assert_eq!(value["parameters"]["graphRevision"], 7);
         assert_eq!(value["parameters"]["patchCount"], 2);
         assert_eq!(
             value["parameters"]["patches"][1],
@@ -821,7 +846,7 @@ mod tests {
         assert_eq!(first.json(), second.json());
         assert!(first
             .json()
-            .starts_with("{\"schemaVersion\":2,\"generation\":42,\"capabilities\":"));
+            .starts_with("{\"schemaVersion\":3,\"generation\":42,\"capabilities\":"));
         assert_eq!(first.clone().into_json(), first.json());
     }
 
@@ -837,6 +862,7 @@ mod tests {
             "capabilities.descriptors[].sections[].parameters[].defaultValue.value.kind",
             "patches[].instrument.values[].value.kind",
             "patches[].instrument.assetReferences[].reference.locator",
+            "parameters.graphRevision",
             "parameters.patches[].parameters.gainDb",
         ] {
             assert!(unique.contains(required), "missing {required}");

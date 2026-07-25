@@ -6,16 +6,19 @@ use crest_synth::control::app_state::AppState;
 use crest_synth::control::event_log::EventLog;
 use crest_synth::control::state_projector::StateProjector;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
-use crest_synth::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
 use crest_synth::mixer::global_parameters::GlobalParameters;
-use crest_synth::mixer::mix_engine::MixEngine;
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::real_time::audio_renderer::AudioRenderer;
+use crest_synth::real_time::graph_revision::GraphRevision;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
-use crest_synth::real_time::patch_audio_block::PatchAudioBlock;
+use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
+use crest_synth::real_time::structural_graph_boundary::NoStructuralGraphChanges;
 use crest_synth::synth::patch::Patch;
-use crest_synth::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
+use crest_synth::synth::{
+    CapabilityId, InstrumentPreparationError, InstrumentPreparer, PreparedInstrument,
+    PreparedInstrumentError,
+};
 use crest_synth::testing::automatic_midi_test::{create_soundfont_config, AutomaticMidiTest};
 use crest_synth::testing::demo_scene::DemoScene;
 use crest_synth::testing::demo_scene_report::DemoSceneReport;
@@ -25,7 +28,6 @@ use crest_synth::testing::midi_event_source::{
 };
 use crest_synth::testing::ExhaustiveGuiDemo;
 use serde_json::Value;
-use std::path::Path;
 use std::time::Duration;
 
 pub const FRAME_COUNT: usize = 32;
@@ -124,74 +126,90 @@ impl MidiEventSource for FixtureMidiSource {
     }
 }
 
-pub struct FixtureEngine;
+pub struct FixturePreparer {
+    capability_id: CapabilityId,
+}
 
-impl SoundFontEngine for FixtureEngine {
-    fn load(&mut self, _path: &Path) -> Result<(), SoundFontError> {
-        Ok(())
-    }
-
-    fn configure_patch(&mut self, _patch: &Patch) -> Result<(), SoundFontError> {
-        Ok(())
-    }
-
-    fn dispatch(
-        &mut self,
-        _patch_id: crest_synth::kernel::patch_id::PatchId,
-        _message: MidiMessage,
-    ) -> Result<(), SoundFontError> {
-        Ok(())
-    }
-
-    fn all_notes_off(&mut self) {}
-
-    fn render_patches(&mut self, output: &mut PatchAudioBlock, parameters: &ParameterSnapshot) {
-        for (index, patch) in parameters.patches().iter().enumerate() {
-            let patch_id = patch.patch_id().expect("active parameters carry a PatchId");
-            let stem = output
-                .stem_mut(index, patch_id)
-                .expect("renderer prepared the matching Patch stem");
-            let amplitude = 0.15 + index as f32 * 0.11;
-            for frame in stem.chunks_exact_mut(2) {
-                frame[0] = amplitude;
-                frame[1] = amplitude * (1.0 + index as f32 * 0.07);
-            }
+impl FixturePreparer {
+    pub fn new() -> Self {
+        Self {
+            capability_id: CapabilityId::new("instrument.soundfont.hidef")
+                .expect("fixture capability identity is valid"),
         }
     }
 }
 
-pub struct FixtureEffects;
+impl InstrumentPreparer for FixturePreparer {
+    fn capability_id(&self) -> &CapabilityId {
+        &self.capability_id
+    }
 
-impl GlobalEffectsProcessor for FixtureEffects {
+    fn prepared_shared_asset_count(&self) -> usize {
+        1
+    }
+
     fn prepare(
-        &mut self,
+        &self,
+        patch: &Patch,
         _sample_rate: f32,
         _max_frames: usize,
-        _max_delay_milliseconds: f32,
-    ) -> Result<(), EffectError> {
+    ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
+        if patch.id().value() % 2 == 1 {
+            Ok(Box::new(FixtureLeadInstrument {
+                patch_id: patch.id(),
+            }))
+        } else {
+            Ok(Box::new(FixturePadInstrument {
+                patch_id: patch.id(),
+            }))
+        }
+    }
+}
+
+struct FixtureLeadInstrument {
+    patch_id: crest_synth::kernel::patch_id::PatchId,
+}
+
+impl PreparedInstrument for FixtureLeadInstrument {
+    fn patch_id(&self) -> crest_synth::kernel::patch_id::PatchId {
+        self.patch_id
+    }
+
+    fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
         Ok(())
     }
 
-    fn process(
-        &mut self,
-        reverb_input: &[f32],
-        delay_input: &[f32],
-        output: &mut [f32],
-        parameters: &GlobalParameters,
-    ) {
-        let reverb_shape =
-            1.0 + parameters.reverb_room_size() * 0.31 + parameters.reverb_damping() * 0.17;
-        let delay_shape =
-            1.0 + parameters.delay_milliseconds() * 0.000_7 + parameters.delay_feedback() * 0.23;
-        for ((sample, reverb), delay) in output
-            .iter_mut()
-            .zip(reverb_input.iter())
-            .zip(delay_input.iter())
-        {
-            *sample += reverb * parameters.reverb_return() * reverb_shape
-                + delay * parameters.delay_return() * delay_shape;
+    fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+        for frame in output.chunks_exact_mut(2) {
+            frame[0] = 0.15;
+            frame[1] = 0.15;
         }
     }
+
+    fn all_notes_off(&mut self) {}
+}
+
+struct FixturePadInstrument {
+    patch_id: crest_synth::kernel::patch_id::PatchId,
+}
+
+impl PreparedInstrument for FixturePadInstrument {
+    fn patch_id(&self) -> crest_synth::kernel::patch_id::PatchId {
+        self.patch_id
+    }
+
+    fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+        Ok(())
+    }
+
+    fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+        for frame in output.chunks_exact_mut(2) {
+            frame[0] = 0.26;
+            frame[1] = 0.2782;
+        }
+    }
+
+    fn all_notes_off(&mut self) {}
 }
 
 pub fn run_demo() -> DemoRun {
@@ -207,7 +225,7 @@ pub fn run_demo() -> DemoRun {
     let expected_coverage = scene.expected_coverage().to_vec();
     let initial_parameters =
         ParameterSnapshot::new(0, global_parameters, &[]).expect("initial parameters are valid");
-    let boundary = LockFreeAudioBoundary::<()>::new(16, initial_parameters);
+    let boundary = LockFreeAudioBoundary::new(16, initial_parameters);
     let (control, audio) = boundary.into_handles();
     let event_log = EventLog::new(scene.event_log_capacity().saturating_add(16))
         .expect("fixture EventLog capacity is valid");
@@ -216,17 +234,30 @@ pub fn run_demo() -> DemoRun {
             provider.registry().expect("fixture registry is valid"),
             global_parameters,
         ),
-        StateProjector::new(),
+        StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         event_log,
     )
     .expect("initial state projects");
 
-    let mut engine = FixtureEngine;
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
     automatic
-        .initialize(&provider, &mut engine, &mut app_loop)
+        .initialize(&provider, &mut app_loop)
         .expect("automatic fixture initializes through AppLoop");
+    let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer::new())];
+    let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
+        .build(
+            GraphRevision::INITIAL,
+            app_loop.patches(),
+            *app_loop.current_parameters(),
+            SAMPLE_RATE,
+            FRAME_COUNT,
+        )
+        .expect("fixture graph prepares atomically");
+    let mut renderer = AudioRenderer::new(audio, NoStructuralGraphChanges::new(), graph);
+    automatic
+        .start()
+        .expect("automatic fixture starts after graph preparation");
     automatic
         .tick(Duration::from_millis(10), &mut app_loop)
         .expect("automatic fixture dispatches its due MIDI event");
@@ -240,10 +271,6 @@ pub fn run_demo() -> DemoRun {
 
     let baseline: Value = serde_json::from_str(app_loop.current_state_tree().json())
         .expect("baseline StateTree is valid JSON");
-    let mut renderer = AudioRenderer::new(audio, engine, MixEngine::new(FixtureEffects));
-    renderer
-        .prepare(FRAME_COUNT, SAMPLE_RATE)
-        .expect("fixture renderer prepares");
     let mut audio_buffer = vec![0.0_f32; FRAME_COUNT * 2];
     let mut demo = ExhaustiveGuiDemo::new(&mut app_loop, &mut renderer, &mut audio_buffer);
     let report = demo

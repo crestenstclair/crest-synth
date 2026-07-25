@@ -3,6 +3,7 @@ use crate::control::event_record::{EventInput, EventOutcome, EventSource, MidiKi
 use crate::control::state_tree::StateTree;
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
+use crate::real_time::GraphRevision;
 use crate::testing::live_demo_checkpoint::LiveDemoCheckpoint;
 use crate::testing::live_demo_scene::LiveEditableParameter;
 use core::fmt;
@@ -101,6 +102,48 @@ fn insert_sorted_unique(values: &mut Vec<String>, value: String) -> bool {
     }
 }
 
+/// Compact control-side evidence for the prepared runtime used by a live run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeAudioWitness {
+    parsed_soundfont_banks: usize,
+    prepared_instruments: usize,
+    active_graph_revision: GraphRevision,
+    callback_destructions: usize,
+}
+
+impl RuntimeAudioWitness {
+    pub const fn new(
+        parsed_soundfont_banks: usize,
+        prepared_instruments: usize,
+        active_graph_revision: GraphRevision,
+        callback_destructions: usize,
+    ) -> Self {
+        Self {
+            parsed_soundfont_banks,
+            prepared_instruments,
+            active_graph_revision,
+            callback_destructions,
+        }
+    }
+
+    pub const fn parsed_soundfont_banks(self) -> usize {
+        self.parsed_soundfont_banks
+    }
+
+    pub const fn prepared_instruments(self) -> usize {
+        self.prepared_instruments
+    }
+
+    pub const fn active_graph_revision(self) -> GraphRevision {
+        self.active_graph_revision
+    }
+
+    pub const fn callback_destructions(self) -> usize {
+        self.callback_destructions
+    }
+}
+
 /// The complete structured result of one live observable demo.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveDemoReport {
@@ -110,6 +153,7 @@ pub struct LiveDemoReport {
     event_log: EventLog,
     state_tree: StateTree,
     coverage: LiveDemoCoverage,
+    runtime_audio: RuntimeAudioWitness,
     summary: String,
 }
 
@@ -132,13 +176,14 @@ pub struct LiveEventLogSummary {
     generation_after: Option<u64>,
     state_hash_before: Option<String>,
     state_hash_after: Option<String>,
+    active_graph_revision: GraphRevision,
     lossless: bool,
 }
 
 impl LiveEventLogSummary {
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
 
-    fn from_event_log(event_log: &EventLog) -> Self {
+    fn from_event_log(event_log: &EventLog, active_graph_revision: GraphRevision) -> Self {
         let first = event_log.records().first();
         let last = event_log.records().last();
         Self {
@@ -153,6 +198,7 @@ impl LiveEventLogSummary {
             generation_after: last.map(|record| record.generation_after()),
             state_hash_before: first.map(|record| record.state_hash_before().to_owned()),
             state_hash_after: last.map(|record| record.state_hash_after().to_owned()),
+            active_graph_revision,
             lossless: event_log.dropped_records() == 0
                 && event_log.total_observed() == event_log.records().len() as u64,
         }
@@ -160,7 +206,7 @@ impl LiveEventLogSummary {
 }
 
 impl LiveDemoReport {
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -172,6 +218,7 @@ impl LiveDemoReport {
         installed_patches: &[PatchId],
         cleanup_sequence_before: u64,
         final_observation: AudioObservationSnapshot,
+        runtime_audio: RuntimeAudioWitness,
     ) -> Result<Self, LiveDemoReportError> {
         let scene = scene.into();
         if scene.trim().is_empty() {
@@ -217,6 +264,10 @@ impl LiveDemoReport {
             && final_observation.non_finite_samples() == 0;
         let checkpoints_agree =
             !checkpoints.is_empty() && checkpoints.iter().all(LiveDemoCheckpoint::agrees);
+        let runtime_complete = runtime_audio.parsed_soundfont_banks() == 1
+            && runtime_audio.prepared_instruments() == installed_patches.len()
+            && runtime_audio.active_graph_revision() == state_tree.graph_revision()
+            && runtime_audio.callback_destructions() == 0;
         let lossless = event_log.dropped_records() == 0
             && event_log.total_observed() == event_log.records().len() as u64;
         let complete = coverage.is_complete()
@@ -225,15 +276,20 @@ impl LiveDemoReport {
             && checkpoints_agree
             && lossless
             && cleanup_complete
-            && final_audio_complete;
+            && final_audio_complete
+            && runtime_complete;
         let summary = format!(
-            "live demo {}: {}/{} editable parameters, {} checkpoints, {} events, {} dropped, cleanup={}, activeNotes={}",
+            "live demo {}: {}/{} editable parameters, {} checkpoints, {} events, {} dropped, banks={}, instruments={}, graphRevision={}, callbackDestructions={}, cleanup={}, activeNotes={}",
             if complete { "complete" } else { "incomplete" },
             coverage.exercised().len(),
             coverage.expected().len(),
             checkpoints.len(),
             event_log.total_observed(),
             event_log.dropped_records(),
+            runtime_audio.parsed_soundfont_banks(),
+            runtime_audio.prepared_instruments(),
+            runtime_audio.active_graph_revision(),
+            runtime_audio.callback_destructions(),
             cleanup_complete,
             final_observation.active_notes(),
         );
@@ -245,6 +301,7 @@ impl LiveDemoReport {
             event_log,
             state_tree,
             coverage,
+            runtime_audio,
             summary,
         })
     }
@@ -270,7 +327,10 @@ impl LiveDemoReport {
     }
 
     pub fn event_log_summary(&self) -> LiveEventLogSummary {
-        LiveEventLogSummary::from_event_log(&self.event_log)
+        LiveEventLogSummary::from_event_log(
+            &self.event_log,
+            self.runtime_audio.active_graph_revision(),
+        )
     }
 
     pub const fn state_tree(&self) -> &StateTree {
@@ -279,6 +339,10 @@ impl LiveDemoReport {
 
     pub const fn coverage(&self) -> &LiveDemoCoverage {
         &self.coverage
+    }
+
+    pub const fn runtime_audio(&self) -> RuntimeAudioWitness {
+        self.runtime_audio
     }
 
     pub fn summary(&self) -> &str {
@@ -297,7 +361,7 @@ impl Serialize for LiveDemoReport {
     {
         let state_tree: serde_json::Value =
             serde_json::from_str(self.state_tree.json()).map_err(serde::ser::Error::custom)?;
-        let mut report = serializer.serialize_struct("LiveDemoReport", 8)?;
+        let mut report = serializer.serialize_struct("LiveDemoReport", 9)?;
         report.serialize_field("schemaVersion", &Self::SCHEMA_VERSION)?;
         report.serialize_field("scene", &self.scene)?;
         report.serialize_field("complete", &self.complete)?;
@@ -305,6 +369,7 @@ impl Serialize for LiveDemoReport {
         report.serialize_field("eventLog", &self.event_log)?;
         report.serialize_field("stateTree", &state_tree)?;
         report.serialize_field("coverage", &self.coverage)?;
+        report.serialize_field("runtimeAudio", &self.runtime_audio)?;
         report.serialize_field("summary", &self.summary)?;
         report.end()
     }

@@ -92,12 +92,13 @@ project: contexts: RealTime: {
 			retiredRevision: "GraphRevision"
 			swapsApplied: "u64"
 			retirementRetries: "u64"
+			incompatibleSnapshots: "u64"
 		}
 		invariants: [
 			"the value is Copy, numeric, fixed-size, and published through atomics or an equivalent coherent latest-value transport",
 			"activeRevision advances only after a complete graph swap at a block boundary",
 			"retiredRevision advances only after ownership of the replaced graph has entered the audio-to-control return queue",
-			"the callback reports counters without logging, formatting, allocation, or backpressure",
+			"the callback reports swap, retirement-pressure, and incompatible-snapshot counters without logging, formatting, allocation, or backpressure",
 		]
 		contributesTo: [{capability: "capability.prepared_engine_rack", contribution: "lets control throttle structural work until the prior graph is active and safely returned"}]
 	}
@@ -350,7 +351,7 @@ project: adapters: LockFreeStructuralGraphBoundary: {
 			"use coherent fixed-size atomics for GraphHandoffStatus and never serialize, allocate, block, or log from the callback handle",
 			"return ownership intact on queue pressure; never drop a PreparedGraph in push error handling on the callback",
 			"keep narrow control and audio handles so only control can publish, collect, and destroy and only audio can take, return, and acknowledge",
-			"remove the transitional basedrop retirement path once complete graph ownership return covers all replaced engine and effect state",
+			"complete graph ownership return is the only retirement path for replaced engine and effect state",
 		]
 	}
 	validations: [{kind: "test", command: ["cargo", "test", "lock_free_structural_graph_boundary"], description: "both directions are bounded FIFO ownership transfer, pressure preserves values, status is coherent, and destructors run only under explicit control collection"}]

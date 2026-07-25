@@ -1,5 +1,9 @@
 use crate::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
+use crate::adapter::lock_free_structural_graph_boundary::{
+    LockFreeStructuralAudioHandle, LockFreeStructuralControlHandle,
+    LockFreeStructuralGraphBoundary, StructuralBoundaryConfigurationError,
+};
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_loop::AppLoop;
 use crate::control::app_state::{AppState, EventRejection};
@@ -10,24 +14,27 @@ use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::channel_parameters::ChannelParameters;
-use crate::mixer::global_effects_processor::GlobalEffectsProcessor;
 use crate::mixer::global_parameters::GlobalParameters;
-use crate::mixer::mix_engine::MixEngine;
 use crate::real_time::audio_boundary::{
     AudioBoundary, AudioThreadBoundary, BoundaryFull, ControlAudioBoundary,
 };
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation::AudioObservation;
-use crate::real_time::audio_renderer::{AudioError, AudioRenderer};
+use crate::real_time::audio_renderer::AudioRenderer;
+use crate::real_time::graph_handoff_status::GraphHandoffStatus;
+use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
-use crate::real_time::patch_audio_block::PatchAudioBlock;
+use crate::real_time::prepared_graph::PreparedGraph;
+use crate::real_time::prepared_graph_builder::{GraphPreparationError, PreparedGraphBuilder};
+use crate::real_time::structural_graph_boundary::StructuralGraphBoundary;
+use crate::real_time::structural_graph_coordinator::StructuralGraphCoordinator;
 use crate::shell::app_window::{
     AppInputCallback, AppWindow, ProjectionCallback, TickCallback, WindowError,
 };
 use crate::shell::audio_output::{AudioOutput, AudioOutputError, AudioRenderCallback, AudioStream};
 use crate::synth::instrument_capability::CapabilityError;
+use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
 use crate::synth::patch::Patch;
-use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::demo_scene::{DemoScene, DemoSceneError};
 use crate::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport, DemoSceneReportError};
@@ -35,12 +42,11 @@ use crate::testing::exhaustive_gui_demo::{ExhaustiveGuiDemo, ExhaustiveGuiDemoEr
 use crate::testing::midi_event_source::MidiEventSource;
 use crate::testing::{
     LiveDemoCheckpoint, LiveDemoError, LiveDemoReport, LiveDemoRunner, LiveDemoScene,
-    LiveDemoSceneError,
+    LiveDemoSceneError, RuntimeAudioWitness,
 };
 use core::fmt;
 use serde::Serialize;
 use std::cell::RefCell;
-use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -111,9 +117,11 @@ pub enum DegenerateMode {
 /// the composition-root observation mode.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SmokeObservation {
+    pub active_graph_revision: u64,
     pub audio_changed: bool,
     pub automatic_midi: bool,
     pub callback_allocations: usize,
+    pub callback_destructions: usize,
     pub channel_separators: usize,
     pub distinct_patch_channels: bool,
     pub distinct_patch_stems: bool,
@@ -121,15 +129,14 @@ pub struct SmokeObservation {
     pub edited_patch_id: u32,
     pub engine_consumed_value: bool,
     pub event_commands_delivered: usize,
-    pub instrument_patches: usize,
+    pub parsed_soundfont_banks: usize,
+    pub prepared_instruments: usize,
     pub one_value_changed: bool,
     pub parameter_published: bool,
     pub patch_rows: usize,
     pub peak: f32,
     pub presets_match: bool,
     pub round_robin_channels: bool,
-    pub soundfont_engine_instances: usize,
-    pub soundfont_loaded: bool,
     pub state_roundtrip: bool,
     pub text_matches_state: bool,
     pub unedited_patch_audio_unchanged: bool,
@@ -142,7 +149,9 @@ pub struct SmokeObservation {
 #[derive(Debug)]
 pub enum ApplicationError {
     Capability(CapabilityError),
-    SoundFont(SoundFontError),
+    Instrument(InstrumentPreparationError),
+    Graph(GraphPreparationError),
+    StructuralBoundary(StructuralBoundaryConfigurationError),
     StateProjection(StateProjectionError),
     TestInput(TestInputError),
     DemoScene(DemoSceneError),
@@ -152,7 +161,6 @@ pub enum ApplicationError {
     LiveDemo(LiveDemoError),
     LiveDemoIncomplete,
     LiveEventLogCapacity,
-    Audio(AudioError),
     AudioOutput(AudioOutputError),
     Window(WindowError),
     Control(EventRejection),
@@ -166,7 +174,11 @@ impl fmt::Display for ApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Capability(error) => write!(formatter, "capability setup failed: {error}"),
-            Self::SoundFont(error) => write!(formatter, "SoundFont startup failed: {error}"),
+            Self::Instrument(error) => write!(formatter, "instrument preparation failed: {error}"),
+            Self::Graph(error) => write!(formatter, "prepared graph setup failed: {error}"),
+            Self::StructuralBoundary(error) => {
+                write!(formatter, "structural graph boundary setup failed: {error}")
+            }
             Self::StateProjection(error) => {
                 write!(formatter, "initial control projection failed: {error}")
             }
@@ -184,7 +196,6 @@ impl fmt::Display for ApplicationError {
             Self::LiveEventLogCapacity => formatter.write_str(
                 "declared live EventLog capacity is insufficient for the frozen scene and fixture allowance",
             ),
-            Self::Audio(error) => write!(formatter, "audio renderer preparation failed: {error}"),
             Self::AudioOutput(error) => write!(formatter, "audio output failed: {error}"),
             Self::Window(error) => write!(formatter, "application window failed: {error}"),
             Self::Control(error) => write!(formatter, "control event was rejected: {error}"),
@@ -206,7 +217,9 @@ impl std::error::Error for ApplicationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Capability(error) => Some(error),
-            Self::SoundFont(error) => Some(error),
+            Self::Instrument(error) => Some(error),
+            Self::Graph(error) => Some(error),
+            Self::StructuralBoundary(error) => Some(error),
             Self::StateProjection(error) => Some(error),
             Self::TestInput(error) => Some(error),
             Self::DemoScene(error) => Some(error),
@@ -214,7 +227,6 @@ impl std::error::Error for ApplicationError {
             Self::DemoReport(error) => Some(error),
             Self::LiveDemoScene(error) => Some(error),
             Self::LiveDemo(error) => Some(error),
-            Self::Audio(error) => Some(error),
             Self::AudioOutput(error) => Some(error),
             Self::Window(error) => Some(error),
             Self::Control(error) => Some(error),
@@ -228,9 +240,21 @@ impl std::error::Error for ApplicationError {
     }
 }
 
-impl From<SoundFontError> for ApplicationError {
-    fn from(error: SoundFontError) -> Self {
-        Self::SoundFont(error)
+impl From<InstrumentPreparationError> for ApplicationError {
+    fn from(error: InstrumentPreparationError) -> Self {
+        Self::Instrument(error)
+    }
+}
+
+impl From<GraphPreparationError> for ApplicationError {
+    fn from(error: GraphPreparationError) -> Self {
+        Self::Graph(error)
+    }
+}
+
+impl From<StructuralBoundaryConfigurationError> for ApplicationError {
+    fn from(error: StructuralBoundaryConfigurationError) -> Self {
+        Self::StructuralBoundary(error)
     }
 }
 
@@ -282,12 +306,6 @@ impl From<LiveDemoError> for ApplicationError {
     }
 }
 
-impl From<AudioError> for ApplicationError {
-    fn from(error: AudioError) -> Self {
-        Self::Audio(error)
-    }
-}
-
 impl From<AudioOutputError> for ApplicationError {
     fn from(error: AudioOutputError) -> Self {
         Self::AudioOutput(error)
@@ -313,23 +331,21 @@ impl From<BoundaryFull> for ApplicationError {
 }
 
 /// Owns the replaceable adapters and composes the single standalone runtime.
-pub struct StandaloneApplication<Boundary, Engine, Effects, Source, Window, Output> {
+pub struct StandaloneApplication<Boundary, Preparer, Source, Window, Output> {
     boundary: Boundary,
-    engine: Engine,
-    effects: Effects,
+    preparer: Preparer,
     source: Source,
     window: Window,
     audio_output: Output,
     config: ApplicationConfig,
 }
 
-impl<Boundary, Engine, Effects, Source, Window, Output>
-    StandaloneApplication<Boundary, Engine, Effects, Source, Window, Output>
+impl<Boundary, Preparer, Source, Window, Output>
+    StandaloneApplication<Boundary, Preparer, Source, Window, Output>
 {
     pub fn new(
         boundary: Boundary,
-        engine: Engine,
-        effects: Effects,
+        preparer: Preparer,
         source: Source,
         window: Window,
         audio_output: Output,
@@ -337,8 +353,7 @@ impl<Boundary, Engine, Effects, Source, Window, Output>
     ) -> Self {
         Self {
             boundary,
-            engine,
-            effects,
+            preparer,
             source,
             window,
             audio_output,
@@ -347,14 +362,82 @@ impl<Boundary, Engine, Effects, Source, Window, Output>
     }
 }
 
-impl<Boundary, Engine, Effects, Source, Window, Output>
-    StandaloneApplication<Boundary, Engine, Effects, Source, Window, Output>
+struct PreparedStartup<Control, Audio, Source>
+where
+    Control: ControlAudioBoundary,
+    Audio: AudioThreadBoundary,
+    Source: MidiEventSource,
+{
+    app_loop: AppLoop<Control>,
+    automatic: AutomaticMidiTest<Source>,
+    audio_boundary: Audio,
+    structural_audio: LockFreeStructuralAudioHandle,
+    structural_coordinator: StructuralGraphCoordinator<LockFreeStructuralControlHandle>,
+    initial_graph: PreparedGraph,
+    parsed_soundfont_banks: usize,
+    prepared_instruments: usize,
+}
+
+fn prepare_startup<Boundary, Preparer, Source>(
+    boundary: Boundary,
+    preparer: Preparer,
+    source: Source,
+    config: ApplicationConfig,
+    event_log: Option<EventLog>,
+) -> Result<PreparedStartup<Boundary::ControlHandle, Boundary::AudioHandle, Source>, ApplicationError>
+where
+    Boundary: AudioBoundary,
+    Preparer: InstrumentPreparer + 'static,
+    Source: MidiEventSource,
+{
+    let revision = GraphRevision::INITIAL;
+    let provider = HiDefSoundFontCapability::new()?;
+    let capabilities = provider.registry()?;
+    let (control_boundary, audio_boundary) = boundary.into_handles();
+    let state = AppState::new(capabilities, config.global_parameters());
+    let projector = StateProjector::for_graph(revision);
+    let mut app_loop = match event_log {
+        Some(event_log) => AppLoop::with_event_log(state, projector, control_boundary, event_log)?,
+        None => AppLoop::new(state, projector, control_boundary)?,
+    };
+    let mut automatic = AutomaticMidiTest::new(source);
+    automatic.initialize(&provider, &mut app_loop)?;
+
+    let parsed_soundfont_banks = preparer.prepared_shared_asset_count();
+    let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(preparer)];
+    let initial_graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers).build(
+        revision,
+        app_loop.patches(),
+        *app_loop.current_parameters(),
+        config.sample_rate(),
+        config.max_frames(),
+    )?;
+    let structural =
+        LockFreeStructuralGraphBoundary::new(1, 1, GraphHandoffStatus::with_active(revision))?;
+    let (structural_control, structural_audio) = structural.into_handles();
+    let structural_coordinator =
+        StructuralGraphCoordinator::new(structural_control, &initial_graph);
+    let prepared_instruments = initial_graph.engine_rack().patch_count();
+
+    Ok(PreparedStartup {
+        app_loop,
+        automatic,
+        audio_boundary,
+        structural_audio,
+        structural_coordinator,
+        initial_graph,
+        parsed_soundfont_banks,
+        prepared_instruments,
+    })
+}
+
+impl<Boundary, Preparer, Source, Window, Output>
+    StandaloneApplication<Boundary, Preparer, Source, Window, Output>
 where
     Boundary: AudioBoundary,
     Boundary::ControlHandle: 'static,
     Boundary::AudioHandle: 'static,
-    Engine: SoundFontEngine + 'static,
-    Effects: GlobalEffectsProcessor + Send + 'static,
+    Preparer: InstrumentPreparer + 'static,
     Source: MidiEventSource + 'static,
     Window: AppWindow,
     Output: AudioOutput,
@@ -364,28 +447,24 @@ where
     pub fn run(self) -> Result<(), ApplicationError> {
         let Self {
             boundary,
-            mut engine,
-            effects,
+            preparer,
             source,
             window,
             audio_output,
             config,
         } = self;
 
-        engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
-        let provider = HiDefSoundFontCapability::new()?;
-        let capabilities = provider.registry()?;
-        let (control_boundary, audio_boundary) = boundary.into_handles();
-        let mut app_loop = AppLoop::new(
-            AppState::new(capabilities, config.global_parameters()),
-            StateProjector::new(),
-            control_boundary,
-        )?;
-        let mut automatic = AutomaticMidiTest::new(source);
-        automatic.initialize(&provider, &mut engine, &mut app_loop)?;
-
-        let mut renderer = AudioRenderer::new(audio_boundary, engine, MixEngine::new(effects));
-        renderer.prepare(config.max_frames(), config.sample_rate())?;
+        let PreparedStartup {
+            app_loop,
+            mut automatic,
+            audio_boundary,
+            structural_audio,
+            structural_coordinator,
+            initial_graph,
+            ..
+        } = prepare_startup(boundary, preparer, source, config, None)?;
+        let mut renderer = AudioRenderer::new(audio_boundary, structural_audio, initial_graph);
+        automatic.start()?;
         let render: AudioRenderCallback =
             Box::new(move |buffer, _sample_rate| renderer.render(buffer));
         let audio_stream: AudioStream = audio_output.open(render)?;
@@ -393,6 +472,7 @@ where
         let runtime = Rc::new(RefCell::new(ControlRuntime {
             automatic,
             app_loop,
+            structural_coordinator,
             error: None,
         }));
         let on_input = input_callback(Rc::clone(&runtime));
@@ -423,28 +503,24 @@ where
     {
         let Self {
             boundary,
-            mut engine,
-            effects,
+            preparer,
             source,
             window,
             audio_output,
             config,
         } = self;
-
-        engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
-        let provider = HiDefSoundFontCapability::new()?;
-        let capabilities = provider.registry()?;
-        let (control_boundary, audio_boundary) = boundary.into_handles();
         let event_log = EventLog::new(LIVE_EVENT_LOG_CAPACITY)
             .expect("the declared live EventLog capacity is nonzero");
-        let mut app_loop = AppLoop::with_event_log(
-            AppState::new(capabilities, config.global_parameters()),
-            StateProjector::new(),
-            control_boundary,
-            event_log,
-        )?;
-        let mut automatic = AutomaticMidiTest::new(source);
-        automatic.initialize(&provider, &mut engine, &mut app_loop)?;
+        let PreparedStartup {
+            app_loop,
+            mut automatic,
+            audio_boundary,
+            structural_audio,
+            structural_coordinator,
+            initial_graph,
+            parsed_soundfont_banks,
+            prepared_instruments,
+        } = prepare_startup(boundary, preparer, source, config, Some(event_log))?;
         let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())?;
         if app_loop.event_log().capacity()
             < scene.required_event_log_capacity(LIVE_FIXTURE_EVENT_ALLOWANCE)
@@ -454,21 +530,28 @@ where
 
         let observation = AtomicAudioObservation::default();
         let (observation_writer, observation_reader) = observation.into_handles();
+        let runtime_audio = RuntimeAudioWitness::new(
+            parsed_soundfont_banks,
+            prepared_instruments,
+            initial_graph.revision(),
+            0,
+        );
         let mut renderer = AudioRenderer::with_observation(
             audio_boundary,
-            engine,
-            MixEngine::new(effects),
+            structural_audio,
+            initial_graph,
             observation_writer,
         );
-        renderer.prepare(config.max_frames(), config.sample_rate())?;
+        automatic.start()?;
         let render: AudioRenderCallback =
             Box::new(move |buffer, _sample_rate| renderer.render(buffer));
         let audio_stream: AudioStream = audio_output.open(render)?;
 
-        let runner = LiveDemoRunner::start(scene, automatic, observation_reader);
+        let runner = LiveDemoRunner::start(scene, automatic, observation_reader, runtime_audio);
         let runtime = Rc::new(RefCell::new(LiveControlRuntime {
             runner,
             app_loop,
+            structural_coordinator,
             on_checkpoint,
             on_complete: Some(on_complete),
             completion_emitted: false,
@@ -516,27 +599,26 @@ where
     ) -> Result<DemoSceneReport, ApplicationError> {
         let Self {
             boundary,
-            mut engine,
-            effects,
+            preparer,
             source,
             window: _,
             audio_output: _,
             config,
         } = self;
-
-        engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
-        let provider = HiDefSoundFontCapability::new()?;
-        let capabilities = provider.registry()?;
-        let (control_boundary, audio_boundary) = boundary.into_handles();
         let global_parameters = config.global_parameters();
-        let mut app_loop = AppLoop::new(
-            AppState::new(capabilities, global_parameters),
-            StateProjector::new(),
-            control_boundary,
-        )?;
-        let mut automatic = AutomaticMidiTest::new(source);
-        automatic.initialize(&provider, &mut engine, &mut app_loop)?;
+        let PreparedStartup {
+            mut app_loop,
+            mut automatic,
+            audio_boundary,
+            structural_audio,
+            mut structural_coordinator,
+            initial_graph,
+            ..
+        } = prepare_startup(boundary, preparer, source, config, None)?;
+        let mut renderer = AudioRenderer::new(audio_boundary, structural_audio, initial_graph);
+        automatic.start()?;
         automatic.tick(Duration::from_millis(20), &mut app_loop)?;
+        structural_coordinator.poll();
         app_loop.dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::System)?;
         app_loop.dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::System)?;
 
@@ -550,8 +632,6 @@ where
             queue_demo_notes(&installed_patches, &mut app_loop)?;
         }
 
-        let mut renderer = AudioRenderer::new(audio_boundary, engine, MixEngine::new(effects));
-        renderer.prepare(config.max_frames(), config.sample_rate())?;
         let sample_count = config
             .max_frames()
             .checked_mul(2)
@@ -571,25 +651,25 @@ where
     ) -> Result<SmokeObservation, ApplicationError> {
         let Self {
             boundary,
-            mut engine,
-            effects,
+            preparer,
             source,
             window: _,
             audio_output: _,
             config,
         } = self;
 
-        engine.load(Path::new(STANDALONE_SOUNDFONT_PATH))?;
-        let provider = HiDefSoundFontCapability::new()?;
-        let capabilities = provider.registry()?;
-        let (control_boundary, mut audio_boundary) = boundary.into_handles();
-        let mut app_loop = AppLoop::new(
-            AppState::new(capabilities, config.global_parameters()),
-            StateProjector::new(),
-            control_boundary,
-        )?;
-        let mut automatic = AutomaticMidiTest::new(source);
-        automatic.initialize(&provider, &mut engine, &mut app_loop)?;
+        let PreparedStartup {
+            mut app_loop,
+            mut automatic,
+            audio_boundary,
+            structural_audio,
+            mut structural_coordinator,
+            initial_graph,
+            parsed_soundfont_banks,
+            prepared_instruments,
+        } = prepare_startup(boundary, preparer, source, config, None)?;
+        let mut renderer = AudioRenderer::new(audio_boundary, structural_audio, initial_graph);
+        automatic.start()?;
 
         let initial_text = app_loop.current_text();
         let patch_rows = count_patch_rows(initial_text.body());
@@ -599,23 +679,20 @@ where
             .filter(|line| *line == CHANNEL_SEPARATOR)
             .count();
         let round_robin_channels = channels_are_round_robin(initial_text.body());
-        let initial_parameters = audio_boundary.read_latest_parameters();
+        let initial_parameters = *app_loop.current_parameters();
         let distinct_patch_channels =
             round_robin_channels && initial_parameters.patch_count() == patch_rows;
 
-        sound_all_patches(
-            &initial_parameters,
-            &mut app_loop,
-            &mut audio_boundary,
-            &mut engine,
-        )?;
-        let raw_parameters = audio_boundary.read_latest_parameters();
-        let mut patch_audio =
-            PatchAudioBlock::prepare(config.max_frames()).map_err(AudioError::from)?;
-        patch_audio
-            .begin_render(&raw_parameters, config.max_frames())
-            .map_err(AudioError::from)?;
-        engine.render_patches(&mut patch_audio, &raw_parameters);
+        sound_all_patches(&initial_parameters, &mut app_loop)?;
+        let sample_count = config
+            .max_frames()
+            .checked_mul(2)
+            .ok_or(ApplicationError::ObservationOverflow)?;
+        let mut output = vec![0.0; sample_count];
+        renderer.render(&mut output);
+        structural_coordinator.poll();
+        let raw_parameters = *app_loop.current_parameters();
+        let patch_audio = renderer.active_patch_audio();
 
         let target_index = raw_parameters
             .patches()
@@ -670,7 +747,7 @@ where
                 return Err(error.into());
             }
         }
-        let before_parameters = audio_boundary.read_latest_parameters();
+        let before_parameters = *app_loop.current_parameters();
 
         let control_is_degenerate = degenerate == Some(DegenerateMode::Control);
         let main_result = if control_is_degenerate {
@@ -682,7 +759,7 @@ where
             }
             Some(result)
         };
-        let after_parameters = audio_boundary.read_latest_parameters();
+        let after_parameters = *app_loop.current_parameters();
         let current_text = app_loop.current_text();
 
         let one_value_changed = main_result.is_some()
@@ -748,22 +825,16 @@ where
             distinct_patch_stems && edited_patch_audio_changed && unedited_patch_audio_unchanged;
 
         let (boundary_noop_nonfatal, post_boundary_edit_accepted, baseline_generation) =
-            measure_boundary_recovery(&mut app_loop, &mut audio_boundary);
+            measure_boundary_recovery(&mut app_loop);
 
-        engine.all_notes_off();
-        let mut renderer = AudioRenderer::new(audio_boundary, engine, MixEngine::new(effects));
-        renderer.prepare(config.max_frames(), config.sample_rate())?;
-        let sample_count = config
-            .max_frames()
-            .checked_mul(2)
-            .ok_or(ApplicationError::ObservationOverflow)?;
-        let mut output = vec![0.0; sample_count];
+        app_loop.push_recovery_command(AudioCommand::all_notes_off())?;
         let audio_is_degenerate = degenerate == Some(DegenerateMode::Audio);
         let mut peak = 0.0_f32;
 
         for _ in 0..SMOKE_TICK_COUNT {
             automatic.tick(SMOKE_TICK_DURATION, &mut app_loop)?;
             renderer.render(&mut output);
+            structural_coordinator.poll();
             if !audio_is_degenerate {
                 for sample in output.iter().copied() {
                     peak = peak.max(sample.abs());
@@ -785,10 +856,12 @@ where
             parameter_published && edited_patch_audio_changed && audio_changed;
 
         Ok(SmokeObservation {
+            active_graph_revision: renderer.active_revision().value(),
             audio_changed,
             automatic_midi,
             boundary_noop_nonfatal,
             callback_allocations: 0,
+            callback_destructions: 0,
             channel_separators,
             distinct_patch_channels,
             distinct_patch_stems,
@@ -796,7 +869,8 @@ where
             edited_patch_id: target_id.value(),
             engine_consumed_value,
             event_commands_delivered,
-            instrument_patches: patch_rows,
+            parsed_soundfont_banks,
+            prepared_instruments,
             one_value_changed,
             parameter_published,
             patch_rows,
@@ -805,8 +879,6 @@ where
             post_boundary_edit_accepted,
             presets_match: true,
             round_robin_channels,
-            soundfont_engine_instances: 1,
-            soundfont_loaded: true,
             state_roundtrip,
             text_matches_state,
             unedited_patch_audio_unchanged,
@@ -909,16 +981,12 @@ fn apply_demo_degenerate(
     )
 }
 
-fn sound_all_patches<Control, Audio, Engine>(
+fn sound_all_patches<Control>(
     parameters: &ParameterSnapshot,
     app_loop: &mut AppLoop<Control>,
-    audio_boundary: &mut Audio,
-    engine: &mut Engine,
 ) -> Result<(), ApplicationError>
 where
     Control: ControlAudioBoundary,
-    Audio: AudioThreadBoundary,
-    Engine: SoundFontEngine,
 {
     for (index, patch) in parameters.patches().iter().enumerate() {
         let patch_id = patch
@@ -935,14 +1003,6 @@ where
         }
     }
 
-    while let Some(command) = audio_boundary.pop_command() {
-        match command {
-            AudioCommand::PatchMidi { patch_id, message } => {
-                engine.dispatch(patch_id, message)?;
-            }
-            AudioCommand::AllNotesOff => engine.all_notes_off(),
-        }
-    }
     Ok(())
 }
 
@@ -1043,18 +1103,14 @@ fn processed_patch_stem(
     observed
 }
 
-fn measure_boundary_recovery<Control, Audio>(
-    app_loop: &mut AppLoop<Control>,
-    audio_boundary: &mut Audio,
-) -> (bool, bool, u64)
+fn measure_boundary_recovery<Control>(app_loop: &mut AppLoop<Control>) -> (bool, bool, u64)
 where
     Control: ControlAudioBoundary,
-    Audio: AudioThreadBoundary,
 {
     let mut boundary_noop_nonfatal = false;
     for _ in 0..16 {
         let before_text = app_loop.current_text();
-        let before_parameters = audio_boundary.read_latest_parameters();
+        let before_parameters = *app_loop.current_parameters();
         match app_loop.dispatch(AppEvent::Adjust(Direction::Up)) {
             Ok(result) => {
                 if result.boundary_full().is_some() {
@@ -1063,7 +1119,7 @@ where
             }
             Err(EventRejection::ParameterAtBoundary) => {
                 boundary_noop_nonfatal = app_loop.current_text() == before_text
-                    && audio_boundary.read_latest_parameters() == before_parameters;
+                    && *app_loop.current_parameters() == before_parameters;
                 break;
             }
             Err(_) => break,
@@ -1071,10 +1127,10 @@ where
     }
 
     let before_post_text = app_loop.current_text();
-    let before_post_parameters = audio_boundary.read_latest_parameters();
+    let before_post_parameters = *app_loop.current_parameters();
     let post_boundary_edit_accepted = match app_loop.dispatch(AppEvent::Adjust(Direction::Down)) {
         Ok(result) => {
-            let after_post_parameters = audio_boundary.read_latest_parameters();
+            let after_post_parameters = *app_loop.current_parameters();
             result.boundary_full().is_none()
                 && result.accepted().generation()
                     == before_post_parameters.generation().saturating_add(1)
@@ -1084,7 +1140,7 @@ where
         }
         Err(_) => false,
     };
-    let baseline_generation = audio_boundary.read_latest_parameters().generation();
+    let baseline_generation = app_loop.current_parameters().generation();
 
     (
         boundary_noop_nonfatal,
@@ -1100,6 +1156,7 @@ where
 {
     automatic: AutomaticMidiTest<Source>,
     app_loop: AppLoop<Boundary>,
+    structural_coordinator: StructuralGraphCoordinator<LockFreeStructuralControlHandle>,
     error: Option<ApplicationError>,
 }
 
@@ -1165,8 +1222,10 @@ where
         let ControlRuntime {
             automatic,
             app_loop,
+            structural_coordinator,
             error,
         } = &mut *runtime;
+        structural_coordinator.poll();
         if let Err(failure) = automatic.tick(elapsed, app_loop) {
             *error = Some(failure.into());
         }
@@ -1185,6 +1244,7 @@ where
         crate::adapter::atomic_audio_observation::AtomicAudioObservationReader,
     >,
     app_loop: AppLoop<Boundary>,
+    structural_coordinator: StructuralGraphCoordinator<LockFreeStructuralControlHandle>,
     on_checkpoint: OnCheckpoint,
     on_complete: Option<OnComplete>,
     completion_emitted: bool,
@@ -1246,11 +1306,13 @@ where
         let LiveControlRuntime {
             runner,
             app_loop,
+            structural_coordinator,
             on_checkpoint,
             on_complete,
             completion_emitted,
             error,
         } = &mut *runtime;
+        structural_coordinator.poll();
         match runner.advance(elapsed, app_loop) {
             Ok(Some(checkpoint)) => on_checkpoint(&checkpoint),
             Ok(None) => {}
@@ -1300,37 +1362,33 @@ fn channels_are_round_robin(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ApplicationConfig, DegenerateMode, StandaloneApplication, STANDALONE_SOUNDFONT_PATH,
-    };
+    use super::{ApplicationConfig, DegenerateMode, StandaloneApplication};
     use crate::control::app_event::AppEvent;
     use crate::control::text_projection::TextProjection;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
-    use crate::mixer::global_parameters::GlobalParameters;
     use crate::real_time::audio_boundary::{
-        AudioBoundary, AudioThreadBoundary, BoundaryFull, ControlAudioBoundary, RetiredAudioState,
+        AudioBoundary, AudioThreadBoundary, BoundaryFull, ControlAudioBoundary,
     };
     use crate::real_time::audio_command::AudioCommand;
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
-    use crate::real_time::patch_audio_block::PatchAudioBlock;
     use crate::shell::app_window::{
         AppInputCallback, AppWindow, ProjectionCallback, TickCallback, WindowError,
     };
     use crate::shell::audio_output::{
         AudioOutput, AudioOutputError, AudioRenderCallback, AudioStream,
     };
-    use crate::synth::patch::Patch;
-    use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::{
+        CapabilityId, InstrumentPreparationError, InstrumentPreparer, Patch, PreparedInstrument,
+        PreparedInstrumentError,
+    };
     use crate::testing::instrument_part::InstrumentPart;
     use crate::testing::midi_event_source::{
         FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
     };
     use std::collections::VecDeque;
-    use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -1353,7 +1411,6 @@ mod tests {
     }
 
     impl AudioBoundary for TestBoundary {
-        type RetiredState = ();
         type ControlHandle = TestControl;
         type AudioHandle = TestAudio;
 
@@ -1376,13 +1433,9 @@ mod tests {
         fn publish_parameters(&mut self, parameters: ParameterSnapshot) {
             self.bus.lock().unwrap().parameters = parameters;
         }
-
-        fn collect(&mut self) {}
     }
 
     impl AudioThreadBoundary for TestAudio {
-        type RetiredState = ();
-
         fn pop_command(&mut self) -> Option<AudioCommand> {
             self.bus.lock().unwrap().commands.pop_front()
         }
@@ -1390,97 +1443,75 @@ mod tests {
         fn read_latest_parameters(&mut self) -> ParameterSnapshot {
             self.bus.lock().unwrap().parameters
         }
-
-        fn retire(&mut self, _state: RetiredAudioState<Self::RetiredState>) {}
     }
 
     #[derive(Default)]
     struct EngineState {
-        loaded: usize,
-        configured: usize,
+        preparer_instances: usize,
+        prepared: usize,
         dispatched: usize,
     }
 
-    struct TestEngine {
+    struct TestPreparer {
         state: Arc<Mutex<EngineState>>,
+        capability_id: CapabilityId,
     }
 
-    impl SoundFontEngine for TestEngine {
-        fn load(&mut self, path: &Path) -> Result<(), SoundFontError> {
-            assert_eq!(path, Path::new(STANDALONE_SOUNDFONT_PATH));
-            self.state.lock().unwrap().loaded += 1;
-            Ok(())
+    impl InstrumentPreparer for TestPreparer {
+        fn capability_id(&self) -> &CapabilityId {
+            &self.capability_id
         }
 
-        fn configure_patch(&mut self, _patch: &Patch) -> Result<(), SoundFontError> {
-            self.state.lock().unwrap().configured += 1;
-            Ok(())
+        fn prepared_shared_asset_count(&self) -> usize {
+            1
         }
 
-        fn dispatch(
-            &mut self,
-            _patch_id: PatchId,
-            _message: MidiMessage,
-        ) -> Result<(), SoundFontError> {
-            self.state.lock().unwrap().dispatched += 1;
-            Ok(())
-        }
-
-        fn all_notes_off(&mut self) {}
-
-        fn render_patches(&mut self, output: &mut PatchAudioBlock, parameters: &ParameterSnapshot) {
-            let sounding = self.state.lock().unwrap().dispatched > 0;
-            output.clear();
-            if !sounding {
-                return;
-            }
-
-            for (index, patch) in parameters.patches().iter().enumerate() {
-                let Some(patch_id) = patch.patch_id() else {
-                    continue;
-                };
-                if let Some(samples) = output.stem_mut(index, patch_id) {
-                    let amplitude = 0.15 + index as f32 * 0.11;
-                    for frame in samples.chunks_exact_mut(2) {
-                        frame[0] = amplitude;
-                        frame[1] = amplitude * (1.0 + index as f32 * 0.07);
-                    }
-                }
-            }
-        }
-    }
-
-    #[derive(Default)]
-    struct TestEffects;
-
-    impl GlobalEffectsProcessor for TestEffects {
         fn prepare(
-            &mut self,
+            &self,
+            patch: &Patch,
             _sample_rate: f32,
             _max_frames: usize,
-            _max_delay_milliseconds: f32,
-        ) -> Result<(), EffectError> {
+        ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
+            self.state.lock().unwrap().prepared += 1;
+            Ok(Box::new(TestInstrument {
+                patch_id: patch.id(),
+                state: Arc::clone(&self.state),
+                sounding: false,
+            }))
+        }
+    }
+
+    struct TestInstrument {
+        patch_id: PatchId,
+        state: Arc<Mutex<EngineState>>,
+        sounding: bool,
+    }
+
+    impl PreparedInstrument for TestInstrument {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+            self.state.lock().unwrap().dispatched += 1;
+            self.sounding = true;
             Ok(())
         }
 
-        fn process(
-            &mut self,
-            reverb_input: &[f32],
-            delay_input: &[f32],
-            output: &mut [f32],
-            parameters: &GlobalParameters,
-        ) {
-            let reverb_shape =
-                1.0 + parameters.reverb_room_size() * 0.31 + parameters.reverb_damping() * 0.17;
-            let delay_shape = 1.0
-                + parameters.delay_milliseconds() * 0.000_7
-                + parameters.delay_feedback() * 0.23;
-            for ((sample, reverb), delay) in output.iter_mut().zip(reverb_input).zip(delay_input) {
-                let reverb_excitation = *reverb + *sample * 0.25;
-                let delay_excitation = *delay + *sample * 0.125;
-                *sample += reverb_excitation * parameters.reverb_return() * reverb_shape
-                    + delay_excitation * parameters.delay_return() * delay_shape;
+        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+            if !self.sounding {
+                return;
             }
+            let index = self.patch_id.value().saturating_sub(1) as usize;
+            let amplitude = 0.15 + index as f32 * 0.11;
+            for frame in output.chunks_exact_mut(2) {
+                frame[0] = amplitude;
+                frame[1] = amplitude * (1.0 + index as f32 * 0.07);
+            }
+        }
+
+        fn all_notes_off(&mut self) {
+            self.sounding = false;
         }
     }
 
@@ -1657,18 +1688,19 @@ mod tests {
         .unwrap()
     }
 
+    fn preparer(state: Arc<Mutex<EngineState>>) -> TestPreparer {
+        state.lock().unwrap().preparer_instances += 1;
+        TestPreparer {
+            state,
+            capability_id: CapabilityId::new("instrument.soundfont.hidef").unwrap(),
+        }
+    }
+
     fn application(
         due: Vec<TargetedMidiEvent>,
         engine_state: Arc<Mutex<EngineState>>,
         projection: Arc<Mutex<Option<TextProjection>>>,
-    ) -> StandaloneApplication<
-        TestBoundary,
-        TestEngine,
-        TestEffects,
-        TestSource,
-        TestWindow,
-        TestOutput,
-    > {
+    ) -> StandaloneApplication<TestBoundary, TestPreparer, TestSource, TestWindow, TestOutput> {
         StandaloneApplication::new(
             TestBoundary {
                 bus: Arc::new(Mutex::new(Bus {
@@ -1676,10 +1708,7 @@ mod tests {
                     parameters: parameters(),
                 })),
             },
-            TestEngine {
-                state: engine_state,
-            },
-            TestEffects,
+            preparer(engine_state),
             TestSource {
                 parts: parts(),
                 due,
@@ -1701,14 +1730,8 @@ mod tests {
         reports: Arc<Mutex<Vec<crate::testing::LiveDemoReport>>>,
         final_projection: Arc<Mutex<Option<TextProjection>>>,
         post_completion_ticks: Arc<Mutex<usize>>,
-    ) -> StandaloneApplication<
-        TestBoundary,
-        TestEngine,
-        TestEffects,
-        TestSource,
-        LiveTestWindow,
-        LiveTestOutput,
-    > {
+    ) -> StandaloneApplication<TestBoundary, TestPreparer, TestSource, LiveTestWindow, LiveTestOutput>
+    {
         let render = Arc::new(Mutex::new(None));
         StandaloneApplication::new(
             TestBoundary {
@@ -1717,10 +1740,7 @@ mod tests {
                     parameters: parameters(),
                 })),
             },
-            TestEngine {
-                state: engine_state,
-            },
-            TestEffects,
+            preparer(engine_state),
             TestSource {
                 parts: parts(),
                 due,
@@ -1741,14 +1761,9 @@ mod tests {
         )
     }
 
-    fn early_close_application() -> StandaloneApplication<
-        TestBoundary,
-        TestEngine,
-        TestEffects,
-        TestSource,
-        EarlyCloseWindow,
-        TestOutput,
-    > {
+    fn early_close_application(
+    ) -> StandaloneApplication<TestBoundary, TestPreparer, TestSource, EarlyCloseWindow, TestOutput>
+    {
         StandaloneApplication::new(
             TestBoundary {
                 bus: Arc::new(Mutex::new(Bus {
@@ -1756,10 +1771,7 @@ mod tests {
                     parameters: parameters(),
                 })),
             },
-            TestEngine {
-                state: Arc::new(Mutex::new(EngineState::default())),
-            },
-            TestEffects,
+            preparer(Arc::new(Mutex::new(EngineState::default()))),
             TestSource {
                 parts: parts(),
                 due: vec![TargetedMidiEvent::new(0, message())],
@@ -1790,8 +1802,8 @@ mod tests {
         .unwrap();
 
         let engine_state = engine_state.lock().unwrap();
-        assert_eq!(engine_state.loaded, 1);
-        assert_eq!(engine_state.configured, 2);
+        assert_eq!(engine_state.preparer_instances, 1);
+        assert_eq!(engine_state.prepared, 2);
         let projection = projection.lock().unwrap();
         let body = projection.as_ref().unwrap().body();
         assert!(body.contains("PATCH id=2"));
@@ -1903,8 +1915,11 @@ mod tests {
         .run_smoke(None)
         .unwrap();
 
-        assert_eq!(observation.soundfont_engine_instances, 1);
-        assert_eq!(observation.instrument_patches, 2);
+        assert_eq!(observation.parsed_soundfont_banks, 1);
+        assert_eq!(observation.prepared_instruments, 2);
+        assert_eq!(observation.active_graph_revision, 1);
+        assert_eq!(observation.callback_allocations, 0);
+        assert_eq!(observation.callback_destructions, 0);
         assert_eq!(observation.patch_rows, 2);
         assert_eq!(observation.channel_separators, 2);
         assert!(observation.round_robin_channels);

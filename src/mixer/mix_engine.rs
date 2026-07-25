@@ -94,13 +94,15 @@ where
         self.delay_input[..sample_count].fill(0.0);
 
         for (index, patch) in parameters.patches().iter().enumerate() {
-            let patch_id = patch
-                .patch_id()
-                .expect("active ParameterSnapshot entries have Patch identities");
-            let audio = patch_audio
-                .stem(index, patch_id)
-                .expect("Patch stems were validated before mixing")
-                .samples();
+            let Some(patch_id) = patch.patch_id() else {
+                output.fill(0.0);
+                return MixObservation::default();
+            };
+            let Some(stem) = patch_audio.stem(index, patch_id) else {
+                output.fill(0.0);
+                return MixObservation::default();
+            };
+            let audio = stem.samples();
             let channel = patch.parameters();
             let gain = db_to_linear(channel.gain_db());
             let (left_pan, right_pan) = pan_gains(channel.pan());

@@ -6,6 +6,7 @@ use crate::control::text_projection::TextProjection;
 use crate::real_time::parameter_snapshot::{
     ParameterSnapshot, ParameterSnapshotError, RtPatchParameters, MAX_PATCHES,
 };
+use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
     InstrumentConfig, ParameterDefault, ParameterKind, ParameterSpec, ParameterValue,
 };
@@ -80,12 +81,31 @@ impl From<StateTreeError> for StateProjectionError {
 /// This service never mutates AppState. Serialization and text rendering run on
 /// the control side, while the returned ParameterSnapshot is fully owned and
 /// fixed-size for publication to the audio boundary.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct StateProjector;
+#[derive(Clone, Copy, Debug)]
+pub struct StateProjector {
+    graph_revision: GraphRevision,
+}
+
+impl Default for StateProjector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl StateProjector {
     pub const fn new() -> Self {
-        Self
+        Self {
+            graph_revision: GraphRevision::INITIAL,
+        }
+    }
+
+    /// Creates a projector whose scalar output targets one prepared graph.
+    pub const fn for_graph(graph_revision: GraphRevision) -> Self {
+        Self { graph_revision }
+    }
+
+    pub const fn graph_revision(self) -> GraphRevision {
+        self.graph_revision
     }
 
     /// Derives the three coherent projections consumed after state acceptance.
@@ -123,6 +143,9 @@ impl StateProjector {
         text: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<StateTree, StateProjectionError> {
+        if parameters.graph_revision() != self.graph_revision {
+            return Err(StateTreeError::GraphRevisionMismatch.into());
+        }
         StateTree::new(snapshot, text, parameters).map_err(StateProjectionError::from)
     }
 
@@ -165,8 +188,13 @@ impl StateProjector {
             .map(|patch| RtPatchParameters::new(patch.id(), *patch.parameters()))
             .collect();
 
-        ParameterSnapshot::new(state.generation(), *state.global(), &patches)
-            .map_err(StateProjectionError::from)
+        ParameterSnapshot::for_graph(
+            state.generation(),
+            self.graph_revision,
+            *state.global(),
+            &patches,
+        )
+        .map_err(StateProjectionError::from)
     }
 
     /// Advances all coherent projections after a validated MIDI event changed
@@ -183,6 +211,8 @@ impl StateProjector {
         let generation = state.generation();
         if previous_parameters.generation().checked_add(1) != Some(generation)
             || previous_tree.generation().checked_add(1) != Some(generation)
+            || previous_parameters.graph_revision() != self.graph_revision
+            || previous_tree.graph_revision() != self.graph_revision
         {
             return Err(StateProjectionError::StateGenerationTemplateMismatch);
         }
@@ -514,12 +544,21 @@ mod tests {
     #[test]
     fn complete_projection_uses_one_accepted_generation() {
         let state = installed_state();
-        let (snapshot, text, parameters, tree) =
-            StateProjector::new().project_with_tree(&state).unwrap();
+        let revision = GraphRevision::new(17).unwrap();
+        let (snapshot, text, parameters, tree) = StateProjector::for_graph(revision)
+            .project_with_tree(&state)
+            .unwrap();
 
         assert_eq!(text.state_hash(), snapshot.hash());
         assert_eq!(parameters.generation(), state.generation());
+        assert_eq!(parameters.graph_revision(), revision);
         assert_eq!(tree.generation(), parameters.generation());
+        assert_eq!(tree.graph_revision(), revision);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(tree.json()).unwrap()["parameters"]
+                ["graphRevision"],
+            revision.value()
+        );
         assert_eq!(tree.state_hash(), snapshot.hash());
         assert_eq!(tree.selected_line(), text.selected_line());
         assert_eq!(tree.patch_count(), parameters.patch_count());
@@ -534,7 +573,7 @@ mod tests {
     #[test]
     fn midi_generation_projection_is_exactly_equal_to_eager_projection() {
         let mut state = installed_state();
-        let projector = StateProjector::new();
+        let projector = StateProjector::for_graph(GraphRevision::new(23).unwrap());
         let (snapshot, text, parameters, tree) = projector.project_with_tree(&state).unwrap();
         let patch_id = state.patches()[0].id();
         let message = MidiMessage::try_new(
@@ -555,6 +594,23 @@ mod tests {
         assert_eq!(fast.1, eager.1);
         assert_eq!(fast.2, eager.2);
         assert_eq!(fast.3, eager.3);
+        assert_eq!(fast.2.graph_revision(), GraphRevision::new(23).unwrap());
+        assert_eq!(fast.3.graph_revision(), GraphRevision::new(23).unwrap());
+    }
+
+    #[test]
+    fn projector_rejects_a_tree_projection_for_another_graph_revision() {
+        let state = installed_state();
+        let first = StateProjector::for_graph(GraphRevision::new(31).unwrap());
+        let second = StateProjector::for_graph(GraphRevision::new(32).unwrap());
+        let (snapshot, text, parameters) = first.project(&state).unwrap();
+
+        assert_eq!(
+            second.state_tree(&snapshot, &text, &parameters),
+            Err(StateProjectionError::StateTree(
+                StateTreeError::GraphRevisionMismatch
+            ))
+        );
     }
 
     #[test]

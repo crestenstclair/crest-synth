@@ -1,8 +1,7 @@
 use crate::adapter::hidef_soundfont_capability::{
-    HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID, SOUNDFONT_FILE_PARAMETER_ID,
-    SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+    HIDEF_CAPABILITY_ID, HIDEF_SOUNDFONT_PATH, SOUNDFONT_BANK_PARAMETER_ID,
+    SOUNDFONT_FILE_PARAMETER_ID, SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
 };
-use crate::adapter::hidef_soundfont_engine::HIDEF_SOUNDFONT_PATH;
 use crate::control::app_event::AppEvent;
 use crate::control::app_loop::AppLoop;
 use crate::control::app_state::EventRejection;
@@ -17,7 +16,6 @@ use crate::synth::instrument_capability::{
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::parameter_id::ParameterId;
 use crate::synth::patch::Patch;
-use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
 use crate::synth::sound_font_instrument::SoundFontInstrument;
 use crate::testing::midi_event_source::{FixedEventBatch, MidiEventSource, MidiSourceError};
 use core::fmt;
@@ -27,7 +25,6 @@ use std::time::Duration;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TestInputError {
     Source(MidiSourceError),
-    SoundFont(SoundFontError),
     Capability(CapabilityError),
     Control(EventRejection),
     AudioBoundaryFull(BoundaryFull),
@@ -36,18 +33,14 @@ pub enum TestInputError {
     UnknownPartIndex { part_index: usize },
     AlreadyInitialized,
     NotInitialized,
+    AlreadyStarted,
+    NotStarted,
 }
 
 impl fmt::Display for TestInputError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Source(error) => write!(formatter, "automatic MIDI source failed: {error}"),
-            Self::SoundFont(error) => {
-                write!(
-                    formatter,
-                    "automatic MIDI patch configuration failed: {error}"
-                )
-            }
             Self::Capability(error) => {
                 write!(
                     formatter,
@@ -80,6 +73,10 @@ impl fmt::Display for TestInputError {
             Self::NotInitialized => {
                 formatter.write_str("automatic MIDI test must be initialized before ticking")
             }
+            Self::AlreadyStarted => formatter.write_str("automatic MIDI source is already started"),
+            Self::NotStarted => {
+                formatter.write_str("automatic MIDI source must be started before ticking")
+            }
         }
     }
 }
@@ -88,7 +85,6 @@ impl std::error::Error for TestInputError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Source(error) => Some(error),
-            Self::SoundFont(error) => Some(error),
             Self::Capability(error) => Some(error),
             Self::Control(error) => Some(error),
             Self::AudioBoundaryFull(error) => Some(error),
@@ -96,7 +92,9 @@ impl std::error::Error for TestInputError {
             | Self::DuplicatePartIndex { .. }
             | Self::UnknownPartIndex { .. }
             | Self::AlreadyInitialized
-            | Self::NotInitialized => None,
+            | Self::NotInitialized
+            | Self::AlreadyStarted
+            | Self::NotStarted => None,
         }
     }
 }
@@ -104,12 +102,6 @@ impl std::error::Error for TestInputError {
 impl From<MidiSourceError> for TestInputError {
     fn from(error: MidiSourceError) -> Self {
         Self::Source(error)
-    }
-}
-
-impl From<SoundFontError> for TestInputError {
-    fn from(error: SoundFontError) -> Self {
-        Self::SoundFont(error)
     }
 }
 
@@ -142,6 +134,7 @@ pub struct AutomaticMidiTest<Source> {
     patch_ids: Vec<(usize, PatchId)>,
     events: FixedEventBatch,
     initialized: bool,
+    started: bool,
 }
 
 impl<Source> AutomaticMidiTest<Source>
@@ -155,20 +148,19 @@ where
             patch_ids: Vec::new(),
             events: FixedEventBatch::new(),
             initialized: false,
+            started: false,
         }
     }
 
-    /// Prepares every fixture Patch, installs it through AppLoop, and starts
-    /// automatic input immediately.
-    pub fn initialize<Provider, Engine, Boundary>(
+    /// Discovers every fixture Patch and installs it through AppLoop without
+    /// configuring a sound engine or starting the event source.
+    pub fn initialize<Provider, Boundary>(
         &mut self,
         provider: &Provider,
-        engine: &mut Engine,
         app_loop: &mut AppLoop<Boundary>,
     ) -> Result<(), TestInputError>
     where
         Provider: InstrumentCapabilityProvider,
-        Engine: SoundFontEngine,
         Boundary: ControlAudioBoundary,
     {
         if self.initialized {
@@ -236,15 +228,24 @@ where
             patches.push(patch);
         }
 
-        for patch in &patches {
-            engine.configure_patch(patch)?;
-        }
-
         app_loop.dispatch_from(AppEvent::InstallPatches(patches), EventSource::Startup)?;
-        self.source.start();
         self.patch_ids = patch_ids;
         self.events.clear();
         self.initialized = true;
+        Ok(())
+    }
+
+    /// Starts automatic MIDI only after the composition root has prepared and
+    /// installed complete audio graph ownership.
+    pub fn start(&mut self) -> Result<(), TestInputError> {
+        if !self.initialized {
+            return Err(TestInputError::NotInitialized);
+        }
+        if self.started {
+            return Err(TestInputError::AlreadyStarted);
+        }
+        self.source.start();
+        self.started = true;
         Ok(())
     }
 
@@ -260,6 +261,9 @@ where
     {
         if !self.initialized {
             return Err(TestInputError::NotInitialized);
+        }
+        if !self.started {
+            return Err(TestInputError::NotStarted);
         }
 
         self.events.clear();
@@ -350,15 +354,11 @@ mod tests {
     use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
     use crate::real_time::audio_command::AudioCommand;
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
-    use crate::real_time::patch_audio_block::PatchAudioBlock;
-    use crate::synth::patch::Patch;
-    use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::testing::instrument_part::InstrumentPart;
     use crate::testing::midi_event_source::{
         FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
     };
-    use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -397,40 +397,6 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct TestEngine {
-        configured: Vec<Patch>,
-    }
-
-    impl SoundFontEngine for TestEngine {
-        fn load(&mut self, _path: &Path) -> Result<(), SoundFontError> {
-            Ok(())
-        }
-
-        fn configure_patch(&mut self, patch: &Patch) -> Result<(), SoundFontError> {
-            self.configured.push(patch.clone());
-            Ok(())
-        }
-
-        fn dispatch(
-            &mut self,
-            _patch_id: PatchId,
-            _message: MidiMessage,
-        ) -> Result<(), SoundFontError> {
-            Ok(())
-        }
-
-        fn all_notes_off(&mut self) {}
-
-        fn render_patches(
-            &mut self,
-            output: &mut PatchAudioBlock,
-            _parameters: &ParameterSnapshot,
-        ) {
-            output.clear();
-        }
-    }
-
-    #[derive(Default)]
     struct Observations {
         parameters: Option<ParameterSnapshot>,
         commands: Vec<AudioCommand>,
@@ -449,8 +415,6 @@ mod tests {
         fn publish_parameters(&mut self, parameters: ParameterSnapshot) {
             self.observations.lock().unwrap().parameters = Some(parameters);
         }
-
-        fn collect(&mut self) {}
     }
 
     fn part(index: usize, name: &str, program: u8) -> InstrumentPart {
@@ -495,33 +459,21 @@ mod tests {
     }
 
     #[test]
-    fn initialize_configures_one_default_patch_per_part_then_starts() {
+    fn initialize_installs_one_default_patch_per_part_without_starting() {
         let source = source(
             vec![part(4, "Piano", 0), part(12, "Strings", 48)],
             Vec::new(),
         );
         let mut service = AutomaticMidiTest::new(source);
-        let mut engine = TestEngine::default();
         let (mut app_loop, observations) = app_loop();
         let provider = HiDefSoundFontCapability::new().unwrap();
 
-        service
-            .initialize(&provider, &mut engine, &mut app_loop)
-            .unwrap();
+        service.initialize(&provider, &mut app_loop).unwrap();
 
         let event_log = app_loop.event_log();
         assert_eq!(event_log.records().len(), 1);
         assert_eq!(event_log.records()[0].source(), EventSource::Startup);
-        assert!(service.source.started);
-        assert_eq!(engine.configured.len(), 2);
-        assert_eq!(engine.configured[0].id(), PatchId::new(1).unwrap());
-        assert_eq!(engine.configured[1].id(), PatchId::new(2).unwrap());
-        assert_eq!(engine.configured[0].name(), "Piano");
-        assert_eq!(engine.configured[1].name(), "Strings");
-        assert_eq!(engine.configured[0].channel().value(), 4);
-        assert_eq!(engine.configured[1].channel().value(), 12);
-        assert_eq!(*engine.configured[0].parameters(), Default::default());
-        assert_eq!(*engine.configured[1].parameters(), Default::default());
+        assert!(!service.source.started);
 
         let observations = observations.lock().unwrap();
         let parameters = observations.parameters.as_ref().unwrap();
@@ -532,6 +484,23 @@ mod tests {
     }
 
     #[test]
+    fn explicit_start_is_required_once_after_patch_installation() {
+        let mut service = AutomaticMidiTest::new(source(vec![part(4, "Piano", 0)], Vec::new()));
+        let (mut app_loop, _) = app_loop();
+        let provider = HiDefSoundFontCapability::new().unwrap();
+
+        assert_eq!(service.start(), Err(TestInputError::NotInitialized));
+        service.initialize(&provider, &mut app_loop).unwrap();
+        assert_eq!(
+            service.tick(Duration::from_millis(1), &mut app_loop),
+            Err(TestInputError::NotStarted)
+        );
+        service.start().unwrap();
+        assert!(service.source.started);
+        assert_eq!(service.start(), Err(TestInputError::AlreadyStarted));
+    }
+
+    #[test]
     fn tick_maps_part_identity_and_dispatches_through_app_loop() {
         let due = TargetedMidiEvent::new(12, message(12, 64));
         let source = source(
@@ -539,12 +508,10 @@ mod tests {
             vec![due],
         );
         let mut service = AutomaticMidiTest::new(source);
-        let mut engine = TestEngine::default();
         let (mut app_loop, observations) = app_loop();
         let provider = HiDefSoundFontCapability::new().unwrap();
-        service
-            .initialize(&provider, &mut engine, &mut app_loop)
-            .unwrap();
+        service.initialize(&provider, &mut app_loop).unwrap();
+        service.start().unwrap();
 
         service
             .tick(Duration::from_millis(10), &mut app_loop)
@@ -567,22 +534,18 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_part_indexes_are_rejected_before_configuration_or_start() {
+    fn duplicate_part_indexes_are_rejected_before_installation_or_start() {
         let source = source(
             vec![part(7, "First", 1), part(7, "Duplicate", 2)],
             Vec::new(),
         );
         let mut service = AutomaticMidiTest::new(source);
-        let mut engine = TestEngine::default();
         let (mut app_loop, _) = app_loop();
         let provider = HiDefSoundFontCapability::new().unwrap();
 
-        let error = service
-            .initialize(&provider, &mut engine, &mut app_loop)
-            .unwrap_err();
+        let error = service.initialize(&provider, &mut app_loop).unwrap_err();
 
         assert_eq!(error, TestInputError::DuplicatePartIndex { part_index: 7 });
-        assert!(engine.configured.is_empty());
         assert!(!service.source.started);
     }
 
@@ -591,12 +554,10 @@ mod tests {
         let due = TargetedMidiEvent::new(99, message(0, 60));
         let source = source(vec![part(0, "Piano", 0)], vec![due]);
         let mut service = AutomaticMidiTest::new(source);
-        let mut engine = TestEngine::default();
         let (mut app_loop, observations) = app_loop();
         let provider = HiDefSoundFontCapability::new().unwrap();
-        service
-            .initialize(&provider, &mut engine, &mut app_loop)
-            .unwrap();
+        service.initialize(&provider, &mut app_loop).unwrap();
+        service.start().unwrap();
 
         let error = service
             .tick(Duration::from_millis(1), &mut app_loop)

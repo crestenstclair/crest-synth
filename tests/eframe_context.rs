@@ -111,7 +111,7 @@ fn painted_projection<'a>(
 }
 
 fn tree_value(
-    app_loop: &AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle<()>>,
+    app_loop: &AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle>,
 ) -> Value {
     serde_json::from_str(app_loop.current_state_tree().json()).expect("StateTree is valid JSON")
 }
@@ -123,7 +123,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
     let initial = projector
         .parameter_snapshot(&state)
         .expect("fixture parameters project");
-    let boundary = LockFreeAudioBoundary::<()>::new(16, initial);
+    let boundary = LockFreeAudioBoundary::new(16, initial);
     let (control, _audio) = boundary.into_handles();
     let app_loop = AppLoop::new(state, projector, control).expect("fixture AppLoop initializes");
     let before = tree_value(&app_loop);

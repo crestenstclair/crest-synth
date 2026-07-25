@@ -8,7 +8,9 @@ use crate::real_time::audio_observation::ControlAudioObservation;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::live_demo_checkpoint::{LiveDemoCheckpoint, LiveDemoCheckpointError};
-use crate::testing::live_demo_report::{LiveDemoCoverage, LiveDemoReport, LiveDemoReportError};
+use crate::testing::live_demo_report::{
+    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, RuntimeAudioWitness,
+};
 use crate::testing::live_demo_scene::{
     selected_parameter_value, LiveDemoScene, LiveDemoSceneError, LiveDemoStep,
     LiveExpectedTransition,
@@ -31,6 +33,7 @@ pub struct LiveDemoRunner<Source, Observation> {
     coverage: LiveDemoCoverage,
     cleanup_sequence_before: Option<u64>,
     completed_report: Option<LiveDemoReport>,
+    runtime_audio: RuntimeAudioWitness,
     aborted: bool,
 }
 
@@ -45,6 +48,7 @@ where
         scene: LiveDemoScene,
         automatic_midi: AutomaticMidiTest<Source>,
         observation: Observation,
+        runtime_audio: RuntimeAudioWitness,
     ) -> Self {
         let coverage = LiveDemoCoverage::new(scene.expected_editable_parameters());
         Self {
@@ -60,6 +64,7 @@ where
             coverage,
             cleanup_sequence_before: None,
             completed_report: None,
+            runtime_audio,
             aborted: false,
         }
     }
@@ -125,6 +130,7 @@ where
         let expected = LiveExpectedTransition::for_step(
             &step,
             before_tree.generation(),
+            before_tree.graph_revision(),
             before_tree.selected_line(),
             observed_value,
         )?;
@@ -301,6 +307,7 @@ where
             &installed,
             cleanup_sequence_before,
             observation,
+            self.runtime_audio,
         )?);
         Ok(())
     }

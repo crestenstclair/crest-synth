@@ -1,4 +1,3 @@
-use crate::adapter::hidef_soundfont_engine::HIDEF_SOUNDFONT_PATH;
 use crate::kernel::midi_message::MidiMessageKind;
 use crate::synth::capability_id::CapabilityId;
 use crate::synth::instrument_capability::{
@@ -11,6 +10,7 @@ use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::parameter_id::ParameterId;
 
 pub const HIDEF_CAPABILITY_ID: &str = "instrument.soundfont.hidef";
+pub const HIDEF_SOUNDFONT_PATH: &str = "./sf2/HiDef.sf2";
 pub const SOUNDFONT_BANK_PARAMETER_ID: &str = "soundfont.bank";
 pub const SOUNDFONT_PROGRAM_PARAMETER_ID: &str = "soundfont.program";
 pub const SOUNDFONT_PERCUSSION_PARAMETER_ID: &str = "soundfont.percussion";

@@ -5,7 +5,7 @@ project: witnesses: running_synth: {
 	goal: "goal.play_test_song"
 	capability: "capability.soundfont_audio"
 	resources: [
-		"adapter.HiDefSoundFontEngine",
+		"adapter.HiDefSoundFontPreparer",
 		"adapter.CorridorsMidiEventSource",
 		"applicationService.Testing.AutomaticMidiTest",
 		"applicationService.RealTime.AudioRenderer",
@@ -14,7 +14,7 @@ project: witnesses: running_synth: {
 		"asset.CrestSynthMain",
 	]
 	repairResources: [
-		"adapter.HiDefSoundFontEngine",
+		"adapter.HiDefSoundFontPreparer",
 		"applicationService.Testing.AutomaticMidiTest",
 		"applicationService.RealTime.AudioRenderer",
 		"domainService.Mixer.MixEngine",
@@ -32,28 +32,30 @@ project: witnesses: running_synth: {
 		kind: "json_stdout"
 		marker: "CREST_OBSERVATION "
 		schema: {
-			soundfont_loaded: "bool"
-			soundfont_engine_instances: "number"
-			instrument_patches: "number"
+			parsed_soundfont_banks: "number"
+			prepared_instruments: "number"
+			active_graph_revision: "number"
 			presets_match: "bool"
 			distinct_patch_channels: "bool"
 			distinct_patch_stems: "bool"
 			automatic_midi: "bool"
 			event_commands_delivered: "number"
 			callback_allocations: "number"
+			callback_destructions: "number"
 			peak: "number"
 		}
 	}
 	predicates: [
-		{field: "soundfont_loaded", op: "eq", value: true},
-		{field: "soundfont_engine_instances", op: "eq", value: 1},
-		{field: "instrument_patches", op: "gt", value: 1},
+		{field: "parsed_soundfont_banks", op: "eq", value: 1},
+		{field: "prepared_instruments", op: "gt", value: 1},
+		{field: "active_graph_revision", op: "gt", value: 0},
 		{field: "presets_match", op: "eq", value: true},
 		{field: "distinct_patch_channels", op: "eq", value: true},
 		{field: "distinct_patch_stems", op: "eq", value: true},
 		{field: "automatic_midi", op: "eq", value: true},
 		{field: "event_commands_delivered", op: "gt", value: 0},
 		{field: "callback_allocations", op: "eq", value: 0},
+		{field: "callback_destructions", op: "eq", value: 0},
 		{field: "peak", op: "gt", value: 0.001},
 		{field: "peak", op: "lte", value: 1.0},
 	]
@@ -72,7 +74,7 @@ project: witnesses: control_path: {
 		"applicationService.Shell.StandaloneApplication",
 		"applicationService.RealTime.AudioRenderer",
 		"domainService.Mixer.MixEngine",
-		"adapter.HiDefSoundFontEngine",
+		"adapter.HiDefSoundFontPreparer",
 		"asset.CrestSynthMain",
 	]
 	repairResources: [
@@ -200,6 +202,10 @@ project: witnesses: exhaustive_demo_scene: {
 		marker: "CREST_OBSERVATION "
 			schema: {
 			demo_scene_complete: "bool"
+			active_graph_revision: "number"
+			parsed_soundfont_banks: "number"
+			prepared_instruments: "number"
+			callback_destructions: "number"
 			event_log_records: "number"
 			event_log_dropped: "number"
 			state_tree_schema_version: "number"
@@ -245,6 +251,10 @@ project: witnesses: exhaustive_demo_scene: {
 	}
 	predicates: [
 		{field: "demo_scene_complete", op: "eq", value: true, repairResources: ["valueObject.Testing.DemoSceneReport", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "active_graph_revision", op: "gt", value: 0, repairResources: ["valueObject.RealTime.GraphRevision", "valueObject.Control.StateTree", "applicationService.RealTime.AudioRenderer"]},
+		{field: "parsed_soundfont_banks", op: "eq", value: 1, repairResources: ["adapter.HiDefSoundFontPreparer", "applicationService.Shell.StandaloneApplication"]},
+		{field: "prepared_instruments", op: "gt", value: 1, repairResources: ["aggregate.RealTime.PreparedEngineRack", "applicationService.RealTime.PreparedGraphBuilder"]},
+		{field: "callback_destructions", op: "eq", value: 0, repairResources: ["applicationService.RealTime.AudioRenderer", "port.RealTime.StructuralGraphBoundary"]},
 		{field: "event_log_records", op: "gt", value: 0, repairResources: ["valueObject.Control.EventLog", "applicationService.Control.AppLoop", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "event_log_dropped", op: "eq", value: 0, repairResources: ["valueObject.Control.EventLog", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "state_tree_schema_version", op: "gt", value: 0, repairResources: ["valueObject.Control.StateTree", "domainService.Control.StateProjector"]},
@@ -450,7 +460,7 @@ project: witnesses: patch_misroute_mutant: {
 		"valueObject.RealTime.PatchAudioBlock",
 		"port.Synth.PreparedInstrument",
 		"aggregate.RealTime.PreparedEngineRack",
-		"adapter.HiDefSoundFontEngine",
+		"adapter.HiDefSoundFontPreparer",
 		"domainService.Mixer.MixEngine",
 		"applicationService.Testing.ExhaustiveGuiDemo",
 		"applicationService.Testing.BehavioralMutationHarness",
@@ -464,7 +474,7 @@ project: witnesses: patch_misroute_mutant: {
 		"valueObject.RealTime.PatchAudioBlock",
 		"port.Synth.PreparedInstrument",
 		"aggregate.RealTime.PreparedEngineRack",
-		"adapter.HiDefSoundFontEngine",
+		"adapter.HiDefSoundFontPreparer",
 		"domainService.Mixer.MixEngine",
 		"applicationService.Testing.ExhaustiveGuiDemo",
 		"applicationService.Testing.BehavioralMutationHarness",
@@ -492,9 +502,9 @@ project: witnesses: patch_misroute_mutant: {
 	predicates: [
 		{field: "case", op: "eq", value: "patch-misroute", repairResources: ["applicationService.Testing.BehavioralMutationHarness", "asset.BehavioralWitnessMain"]},
 		{field: "command_patch_matches_event", op: "eq", value: true, repairResources: ["applicationService.Control.AppLoop", "valueObject.RealTime.AudioCommand", "adapter.LockFreeAudioBoundary"]},
-		{field: "target_patch_received_command", op: "eq", value: true, repairResources: ["adapter.LockFreeAudioBoundary", "applicationService.RealTime.AudioRenderer", "aggregate.RealTime.PreparedEngineRack", "port.Synth.PreparedInstrument", "adapter.HiDefSoundFontEngine"]},
-		{field: "target_stem_changed", op: "eq", value: true, repairResources: ["applicationService.RealTime.AudioRenderer", "valueObject.RealTime.PatchAudioBlock", "adapter.HiDefSoundFontEngine", "domainService.Mixer.MixEngine"]},
-		{field: "untargeted_stems_unchanged", op: "eq", value: true, repairResources: ["applicationService.RealTime.AudioRenderer", "valueObject.RealTime.PatchAudioBlock", "adapter.HiDefSoundFontEngine", "domainService.Mixer.MixEngine"]},
+		{field: "target_patch_received_command", op: "eq", value: true, repairResources: ["adapter.LockFreeAudioBoundary", "applicationService.RealTime.AudioRenderer", "aggregate.RealTime.PreparedEngineRack", "port.Synth.PreparedInstrument", "adapter.HiDefSoundFontPreparer"]},
+		{field: "target_stem_changed", op: "eq", value: true, repairResources: ["applicationService.RealTime.AudioRenderer", "valueObject.RealTime.PatchAudioBlock", "adapter.HiDefSoundFontPreparer", "domainService.Mixer.MixEngine"]},
+		{field: "untargeted_stems_unchanged", op: "eq", value: true, repairResources: ["applicationService.RealTime.AudioRenderer", "valueObject.RealTime.PatchAudioBlock", "adapter.HiDefSoundFontPreparer", "domainService.Mixer.MixEngine"]},
 		{field: "patch_routing_exact", op: "eq", value: true, repairResources: ["applicationService.Control.AppLoop", "valueObject.RealTime.AudioCommand", "adapter.LockFreeAudioBoundary", "applicationService.RealTime.AudioRenderer", "domainService.Mixer.MixEngine", "applicationService.Testing.ExhaustiveGuiDemo"]},
 	]
 }

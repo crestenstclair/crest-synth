@@ -6,7 +6,7 @@ project: assets: CargoManifest: {
 	profile: {kind: "configuration", ecosystem: "cargo"}
 	targets: [
 		"adapter.HiDefSoundFontCapability",
-		"adapter.HiDefSoundFontEngine",
+		"adapter.HiDefSoundFontPreparer",
 		"adapter.GlobalReverbDelay",
 		"adapter.LockFreeAudioBoundary",
 		"adapter.LockFreeStructuralGraphBoundary",
@@ -18,7 +18,7 @@ project: assets: CargoManifest: {
 	]
 	prompts: [
 		"Create Cargo.toml for one Rust library, the crest-synth product binary, and the crest-synth-witness verification-only binary.",
-		"Use only dependencies required by the declared resources: rustysynth, midly, cpal, eframe/egui, rtrb, triple_buffer, serde with derive, serde_json, thiserror, and anyhow. Remove basedrop when the ownership-return structural graph queues supersede its transitional retirement path. Development-only test helpers may be added when required by the declared tests.",
+		"Use only dependencies required by the declared resources: rustysynth, midly, cpal, eframe/egui, rtrb, triple_buffer, serde with derive, serde_json, thiserror, and anyhow. Complete graph destruction uses the dedicated ownership-return structural queue and no deferred-drop dependency. Development-only test helpers may be added when required by the declared tests.",
 		"Do not add synthesis, effect, GUI-widget, sequencing, persistence, plugin, database, networking, or async-runtime libraries.",
 	]
 	validations: [{kind: "custom", command: ["cargo", "metadata", "--no-deps", "--format-version", "1"], description: "the manifest resolves"}]
@@ -227,7 +227,7 @@ project: assets: CrestSynthMain: {
 		"applicationService.Testing.LiveDemoRunner",
 		"adapter.AtomicAudioObservation",
 		"adapter.HiDefSoundFontCapability",
-		"adapter.HiDefSoundFontEngine",
+		"adapter.HiDefSoundFontPreparer",
 		"applicationService.Synth.PreparedEngineRackBuilder",
 		"applicationService.RealTime.PreparedGraphBuilder",
 		"applicationService.RealTime.StructuralGraphCoordinator",

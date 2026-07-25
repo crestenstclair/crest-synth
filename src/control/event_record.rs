@@ -4,6 +4,7 @@ use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::real_time::audio_command::AudioCommand;
+use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::InstrumentConfig;
 use crate::synth::patch::Patch;
 use core::fmt;
@@ -246,9 +247,17 @@ impl From<AudioCommand> for AudioEffect {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum EmittedEvent {
-    StateAccepted { generation: u64 },
-    ParameterSnapshotPublished { generation: u64 },
-    AudioCommand { effect: AudioEffect },
+    StateAccepted {
+        generation: u64,
+    },
+    ParameterSnapshotPublished {
+        generation: u64,
+        #[serde(rename = "graphRevision")]
+        graph_revision: GraphRevision,
+    },
+    AudioCommand {
+        effect: AudioEffect,
+    },
 }
 
 /// A coherence failure detected while assembling an EventRecord.
@@ -344,6 +353,7 @@ impl EventRecord {
         "emittedEvents[].effect.message.kind",
         "emittedEvents[].effect.patchId",
         "emittedEvents[].generation",
+        "emittedEvents[].graphRevision",
         "emittedEvents[].kind",
         "generationAfter",
         "generationBefore",
@@ -396,6 +406,7 @@ impl EventRecord {
         accepted: StateAccepted,
         snapshot: &StateSnapshot,
         parameter_generation: u64,
+        parameter_graph_revision: GraphRevision,
         projection: &TextProjection,
         audio_command: Option<AudioCommand>,
     ) -> Result<Self, EventRecordError> {
@@ -422,6 +433,7 @@ impl EventRecord {
             },
             EmittedEvent::ParameterSnapshotPublished {
                 generation: parameter_generation,
+                graph_revision: parameter_graph_revision,
             },
         ];
         if let Some(command) = audio_command {
@@ -601,6 +613,7 @@ mod tests {
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::real_time::GraphRevision;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::{ParameterId, ParameterValue};
@@ -701,7 +714,10 @@ mod tests {
                 EventOutcome::Accepted,
                 vec![
                     EmittedEvent::StateAccepted { generation: 5 },
-                    EmittedEvent::ParameterSnapshotPublished { generation: 5 },
+                    EmittedEvent::ParameterSnapshotPublished {
+                        generation: 5,
+                        graph_revision: GraphRevision::INITIAL,
+                    },
                 ],
                 None,
             ),
@@ -825,6 +841,7 @@ mod tests {
             outcome.accepted(),
             &snapshot,
             state.generation(),
+            GraphRevision::INITIAL,
             &projection,
             outcome.audio_command().copied(),
         )
@@ -847,7 +864,10 @@ mod tests {
         );
         assert_eq!(
             record.emitted_events()[1],
-            EmittedEvent::ParameterSnapshotPublished { generation: 2 }
+            EmittedEvent::ParameterSnapshotPublished {
+                generation: 2,
+                graph_revision: GraphRevision::INITIAL,
+            }
         );
         assert_eq!(
             record.emitted_events()[2],
@@ -958,6 +978,7 @@ mod tests {
             outcome.accepted(),
             &snapshot,
             state.generation() + 1,
+            GraphRevision::INITIAL,
             &projection,
             None,
         )

@@ -459,7 +459,7 @@ Versions belong in `Cargo.toml`, not here.
 | audio decode | [Symphonia](https://github.com/pdeljanov/Symphonia) | Decode/demux on workers into the prepared sample model. |
 | MIDI files | [midly](https://github.com/kovaxis/midly) | Fixture/demo adapter only; parser types stay private. |
 | persistence | [Serde](https://github.com/serde-rs/serde) + JSON | Versioned control-side schema with explicit migrations. |
-| destruction | ownership return ring | Preferred for prepared graphs. Existing `basedrop` use is transitional until maintenance and callback behavior are audited. |
+| destruction | ownership return ring | Prepared graphs return through their dedicated bounded structural queue and are destroyed only on control/worker ownership. |
 
 No third-party synth/DSP is assumed real-time safe merely because it renders into a slice. Admission requires proof of:
 

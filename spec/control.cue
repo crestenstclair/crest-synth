@@ -41,7 +41,7 @@ project: contexts: Control: {
 		}
 		invariants: [
 			"sequence is contiguous and strictly increasing within one EventLog",
-			"accepted records increment generation exactly once and their stateHashAfter, parameterGeneration, projectionStateHash, and emitted StateAccepted generation agree",
+			"accepted records increment generation exactly once and their stateHashAfter, parameterGeneration, projectionStateHash, emitted StateAccepted generation, and emitted ParameterSnapshotPublished graphRevision agree with the canonical projections",
 			"rejected records keep generation and state hash identical and emit no parameter publication or audio command",
 			"records contain domain identifiers and bounded numeric payloads, never raw window objects, device handles, audio buffers, or nondeterministic timestamps",
 			"serializedLeafDescriptor is compared against the union of discriminating accepted and rejected EventRecords covering every input tag, Direction payload, MIDI payload, Patch installation capability/config field, rejection, and emitted-event tag; discovery from one convenient record is invalid",
@@ -79,14 +79,14 @@ project: contexts: Control: {
 			global: "{masterGainDb, reverbRoomSize, reverbDamping, reverbReturn, delayMilliseconds, delayFeedback, delayReturn}"
 			selection: "{section, patchIndex, parameterIndex}"
 			projection: "{body, selectedLine, stateHash}"
-			parameters: "{generation, patchCount, patches, global}"
+			parameters: "{generation, graphRevision, patchCount, patches, global}"
 			serializedLeafDescriptor: "typed stable paths derived beside the StateTree serializer"
 		}
 		invariants: [
 			"the tree contains every currently serialized CapabilityDescriptor, ParameterSpec, Patch, InstrumentConfig, ParameterAssignment, AssetReference, ChannelParameters, GlobalParameters, Selection, TextProjection, and ParameterSnapshot property without an opaque debug-string substitute",
 			"capabilities exactly equal the installed CapabilityRegistry in stable order and every Patch InstrumentConfig resolves to exactly one listed descriptor",
 			"patch order and numeric values exactly match StateSnapshot and ParameterSnapshot",
-			"projection.stateHash equals the canonical StateSnapshot hash and parameters.generation equals generation",
+			"projection.stateHash equals the canonical StateSnapshot hash, parameters.generation equals generation, and parameters.graphRevision equals the target PreparedGraph revision",
 			"serialization is deterministic JSON with a version field and stable property names",
 			"serializedLeafDescriptor exactly equals recursively discovered JSON leaf paths in both directions for a discriminating multi-Patch tree",
 		]

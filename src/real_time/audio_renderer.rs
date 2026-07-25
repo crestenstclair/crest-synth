@@ -1,186 +1,130 @@
-use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
-use crate::mixer::mix_engine::MixEngine;
+use crate::kernel::midi_message::MidiMessageKind;
+use crate::kernel::patch_id::PatchId;
 use crate::real_time::audio_boundary::AudioThreadBoundary;
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation::{CallbackAudioObservation, DiscardAudioObservation};
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
+use crate::real_time::graph_handoff_status::GraphHandoffStatus;
+use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::MAX_PATCHES;
-use crate::real_time::patch_audio_block::{PatchAudioBlock, PatchAudioBlockError};
-use crate::synth::sound_font_engine::SoundFontEngine;
-use crate::{kernel::midi_message::MidiMessageKind, kernel::patch_id::PatchId};
-use core::fmt;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AudioError {
-    InvalidSampleRate,
-    InvalidMaxFrames,
-    SampleCapacityExceeded,
-    StorageAllocationFailed,
-    Effects(EffectError),
-    PatchAudioBlock(PatchAudioBlockError),
-}
-
-impl fmt::Display for AudioError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidSampleRate => {
-                formatter.write_str("audio sample rate must be finite and greater than zero")
-            }
-            Self::InvalidMaxFrames => {
-                formatter.write_str("maximum audio frame count must be greater than zero")
-            }
-            Self::SampleCapacityExceeded => {
-                formatter.write_str("maximum audio frame count exceeds addressable stereo storage")
-            }
-            Self::StorageAllocationFailed => {
-                formatter.write_str("audio renderer scratch storage allocation failed")
-            }
-            Self::Effects(error) => write!(formatter, "global mixer preparation failed: {error}"),
-            Self::PatchAudioBlock(error) => {
-                write!(formatter, "Patch audio preparation failed: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for AudioError {}
-
-impl From<EffectError> for AudioError {
-    fn from(error: EffectError) -> Self {
-        Self::Effects(error)
-    }
-}
-
-impl From<PatchAudioBlockError> for AudioError {
-    fn from(error: PatchAudioBlockError) -> Self {
-        Self::PatchAudioBlock(error)
-    }
-}
-
-/// Joins the callback-side boundary, the one SoundFont engine, and the global mixer.
+use crate::real_time::prepared_graph::PreparedGraph;
+use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
+/// Hard-real-time owner of one active complete prepared graph.
 ///
-/// The engine and its patches must be loaded and configured on the control thread
-/// before construction. After `prepare`, `render` uses only bounded storage and
-/// non-blocking operations supplied by its dependencies.
-pub struct AudioRenderer<Boundary, Engine, Effects, Observation = DiscardAudioObservation> {
+/// Construction receives every engine, effect, stem, route, and scratch owner
+/// already prepared. `render` performs only bounded graph handoff, command
+/// dispatch, compatible scalar selection, synthesis, mixing, and observation.
+pub struct AudioRenderer<Boundary, Structural, Observation = DiscardAudioObservation> {
     boundary: Boundary,
-    engine: Engine,
-    mixer: MixEngine<Effects>,
+    structural: Structural,
     observation: Observation,
-    patch_audio: Option<PatchAudioBlock>,
+    active_graph: PreparedGraph,
+    pending_retirement: Option<PreparedGraph>,
+    parameters: crate::real_time::parameter_snapshot::ParameterSnapshot,
+    handoff_status: GraphHandoffStatus,
     active_notes: ActiveNoteObservation,
     rendered_blocks: u64,
     rendered_frames: u64,
     commands_consumed: u64,
-    max_frames: usize,
-    prepared: bool,
 }
 
-impl<Boundary, Engine, Effects> AudioRenderer<Boundary, Engine, Effects, DiscardAudioObservation>
+impl<Boundary, Structural> AudioRenderer<Boundary, Structural, DiscardAudioObservation>
 where
     Boundary: AudioThreadBoundary,
-    Engine: SoundFontEngine,
-    Effects: GlobalEffectsProcessor,
+    Structural: AudioStructuralGraphBoundary,
 {
     #[must_use]
-    pub fn new(boundary: Boundary, engine: Engine, mixer: MixEngine<Effects>) -> Self {
-        Self::with_observation(boundary, engine, mixer, DiscardAudioObservation)
+    pub fn new(boundary: Boundary, structural: Structural, initial_graph: PreparedGraph) -> Self {
+        Self::with_observation(boundary, structural, initial_graph, DiscardAudioObservation)
     }
 }
 
-impl<Boundary, Engine, Effects, Observation> AudioRenderer<Boundary, Engine, Effects, Observation>
+impl<Boundary, Structural, Observation> AudioRenderer<Boundary, Structural, Observation>
 where
     Boundary: AudioThreadBoundary,
-    Engine: SoundFontEngine,
-    Effects: GlobalEffectsProcessor,
+    Structural: AudioStructuralGraphBoundary,
     Observation: CallbackAudioObservation,
 {
     #[must_use]
     pub fn with_observation(
         boundary: Boundary,
-        engine: Engine,
-        mixer: MixEngine<Effects>,
+        mut structural: Structural,
+        initial_graph: PreparedGraph,
         observation: Observation,
     ) -> Self {
+        let parameters = *initial_graph.initial_parameters();
+        let handoff_status = GraphHandoffStatus::with_active(initial_graph.revision());
+        structural.publish_status_on_audio(handoff_status);
         Self {
             boundary,
-            engine,
-            mixer,
+            structural,
             observation,
-            patch_audio: None,
+            active_graph: initial_graph,
+            pending_retirement: None,
+            parameters,
+            handoff_status,
             active_notes: ActiveNoteObservation::new(),
             rendered_blocks: 0,
             rendered_frames: 0,
             commands_consumed: 0,
-            max_frames: 0,
-            prepared: false,
         }
     }
 
-    /// Allocates every renderer, mixer, and effect buffer on the control thread.
-    pub fn prepare(&mut self, max_frames: usize, sample_rate: f32) -> Result<(), AudioError> {
-        self.prepared = false;
-        if max_frames == 0 {
-            return Err(AudioError::InvalidMaxFrames);
-        }
-        if !sample_rate.is_finite() || sample_rate <= 0.0 {
-            return Err(AudioError::InvalidSampleRate);
-        }
-
-        let _sample_capacity = max_frames
-            .checked_mul(2)
-            .ok_or(AudioError::SampleCapacityExceeded)?;
-        let patch_audio = PatchAudioBlock::prepare(max_frames)?;
-        self.mixer.prepare(sample_rate, max_frames)?;
-
-        self.patch_audio = Some(patch_audio);
-        self.max_frames = max_frames;
-        self.prepared = true;
-        Ok(())
-    }
-
-    /// Drains ready commands, consumes one latest snapshot, renders the
-    /// SoundFont stream, and applies the global mixer.
+    /// Applies structural ownership only at block start, drains ready commands,
+    /// consumes at most one compatible latest scalar snapshot, and renders the
+    /// active graph into interleaved stereo output.
     pub fn render(&mut self, interleaved_stereo: &mut [f32]) {
         interleaved_stereo.fill(0.0);
-        if !self.prepared {
-            return;
-        }
+        self.apply_structural_handoff();
 
         while let Some(command) = self.boundary.pop_command() {
             self.commands_consumed = self.commands_consumed.saturating_add(1);
             match command {
                 AudioCommand::PatchMidi { patch_id, message } => {
-                    if self.engine.dispatch(patch_id, message).is_ok() {
+                    let dispatched = {
+                        let (rack, _, _) = self.active_graph.callback_parts_mut();
+                        rack.dispatch(patch_id, message).is_ok()
+                    };
+                    if dispatched {
                         self.active_notes.observe_patch_message(patch_id, message);
-                    } else {
-                        self.engine.all_notes_off();
-                        self.active_notes.clear_all();
                     }
                 }
                 AudioCommand::AllNotesOff => {
-                    self.engine.all_notes_off();
+                    let (rack, _, _) = self.active_graph.callback_parts_mut();
+                    rack.all_notes_off();
                     self.active_notes.clear_all();
                 }
             }
         }
 
-        let parameters = self.boundary.read_latest_parameters();
-        let frame_count = (interleaved_stereo.len() / 2).min(self.max_frames);
-        let sample_count = frame_count * 2;
-        if sample_count == 0 {
+        let latest = self.boundary.read_latest_parameters();
+        let compatible = latest.graph_revision() == self.active_graph.revision()
+            && self.active_graph.engine_rack().matches_parameters(&latest);
+        if compatible {
+            self.parameters = latest;
+        } else {
+            self.handoff_status.record_incompatible_snapshot();
+        }
+        self.structural.publish_status_on_audio(self.handoff_status);
+
+        let frame_count = (interleaved_stereo.len() / 2).min(self.active_graph.max_frames());
+        if frame_count == 0 {
             return;
         }
 
-        let Some(patch_audio) = self.patch_audio.as_mut() else {
-            return;
+        let parameters = self.parameters;
+        let mix = {
+            let (rack, patch_audio, mixer) = self.active_graph.callback_parts_mut();
+            if patch_audio.begin_render(&parameters, frame_count).is_err() {
+                return;
+            }
+            if rack.render(patch_audio).is_err() {
+                interleaved_stereo.fill(0.0);
+                return;
+            }
+            mixer.mix(patch_audio, &parameters, interleaved_stereo)
         };
-        if patch_audio.begin_render(&parameters, frame_count).is_err() {
-            return;
-        }
 
-        self.engine.render_patches(patch_audio, &parameters);
-        let mix = self.mixer.mix(patch_audio, &parameters, interleaved_stereo);
         self.rendered_blocks = self.rendered_blocks.saturating_add(1);
         self.rendered_frames = self.rendered_frames.saturating_add(frame_count as u64);
         self.observation
@@ -193,6 +137,67 @@ where
                 self.active_notes.count(),
                 mix,
             ));
+    }
+
+    pub const fn active_revision(&self) -> GraphRevision {
+        self.active_graph.revision()
+    }
+
+    pub fn pending_retirement_revision(&self) -> Option<GraphRevision> {
+        self.pending_retirement
+            .as_ref()
+            .map(PreparedGraph::revision)
+    }
+
+    pub const fn handoff_status(&self) -> GraphHandoffStatus {
+        self.handoff_status
+    }
+
+    pub const fn parameters(&self) -> &crate::real_time::parameter_snapshot::ParameterSnapshot {
+        &self.parameters
+    }
+
+    /// Returns the active graph's caller-owned Patch stems for control-side
+    /// deterministic verification when no physical callback owns the renderer.
+    pub fn active_patch_audio(&self) -> &crate::real_time::patch_audio_block::PatchAudioBlock {
+        self.active_graph.patch_audio()
+    }
+
+    fn apply_structural_handoff(&mut self) {
+        if let Some(retired) = self.pending_retirement.take() {
+            let retired_revision = retired.revision();
+            match self.structural.return_retired_on_audio(retired) {
+                Ok(()) => self.handoff_status.record_retired(retired_revision),
+                Err(full) => {
+                    self.pending_retirement = Some(full.into_graph());
+                    self.handoff_status.record_retirement_retry();
+                    self.structural.publish_status_on_audio(self.handoff_status);
+                    return;
+                }
+            }
+        }
+
+        let Some(replacement) = self.structural.take_prepared_on_audio() else {
+            self.structural.publish_status_on_audio(self.handoff_status);
+            return;
+        };
+
+        let replacement_revision = replacement.revision();
+        let replacement_parameters = *replacement.initial_parameters();
+        let retired = core::mem::replace(&mut self.active_graph, replacement);
+        let retired_revision = retired.revision();
+        self.parameters = replacement_parameters;
+        self.active_notes.clear_all();
+        self.handoff_status.record_swap(replacement_revision);
+
+        match self.structural.return_retired_on_audio(retired) {
+            Ok(()) => self.handoff_status.record_retired(retired_revision),
+            Err(full) => {
+                self.pending_retirement = Some(full.into_graph());
+                self.handoff_status.record_retirement_retry();
+            }
+        }
+        self.structural.publish_status_on_audio(self.handoff_status);
     }
 }
 
@@ -313,30 +318,45 @@ impl ActiveNoteObservation {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActiveNoteObservation, AudioError, AudioRenderer};
+    use super::{ActiveNoteObservation, AudioRenderer};
+    use crate::adapter::hidef_soundfont_capability::{
+        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
+    };
+    use crate::adapter::hidef_soundfont_preparer::HiDefSoundFontPreparer;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
-    use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
     use crate::mixer::global_parameters::GlobalParameters;
-    use crate::mixer::mix_engine::MixEngine;
-    use crate::real_time::audio_boundary::{AudioThreadBoundary, RetiredAudioState};
+    use crate::real_time::audio_boundary::AudioThreadBoundary;
     use crate::real_time::audio_command::AudioCommand;
     use crate::real_time::audio_observation::CallbackAudioObservation;
     use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
+    use crate::real_time::graph_handoff_status::GraphHandoffStatus;
+    use crate::real_time::graph_revision::GraphRevision;
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
-    use crate::real_time::patch_audio_block::PatchAudioBlock;
+    use crate::real_time::prepared_graph::PreparedGraph;
+    use crate::real_time::prepared_graph_builder::PreparedGraphBuilder;
+    use crate::real_time::structural_graph_boundary::{
+        AudioStructuralGraphBoundary, RetiredBoundaryFull,
+    };
+    use crate::real_time::MAX_PATCHES;
+    use crate::synth::capability_id::CapabilityId;
+    use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
     use crate::synth::patch::Patch;
-    use crate::synth::sound_font_engine::{SoundFontEngine, SoundFontError};
+    use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
+    use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::testing::automatic_midi_test::create_soundfont_config;
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::Cell;
     use std::alloc::System;
-    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     thread_local! {
-        static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+        static COUNT_MEMORY: Cell<bool> = const { Cell::new(false) };
         static ALLOCATION_COUNT: Cell<usize> = const { Cell::new(0) };
+        static DEALLOCATION_COUNT: Cell<usize> = const { Cell::new(0) };
     }
 
     struct TestAllocator;
@@ -356,6 +376,7 @@ mod tests {
         }
 
         unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            record_deallocation();
             unsafe { System.dealloc(pointer, layout) }
         }
 
@@ -366,33 +387,43 @@ mod tests {
     }
 
     fn record_allocation() {
-        let _ = COUNT_ALLOCATIONS.try_with(|enabled| {
+        let _ = COUNT_MEMORY.try_with(|enabled| {
             if enabled.get() {
                 let _ = ALLOCATION_COUNT.try_with(|count| count.set(count.get() + 1));
             }
         });
     }
 
-    fn begin_allocation_count() {
-        ALLOCATION_COUNT.with(|count| count.set(0));
-        COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+    fn record_deallocation() {
+        let _ = COUNT_MEMORY.try_with(|enabled| {
+            if enabled.get() {
+                let _ = DEALLOCATION_COUNT.try_with(|count| count.set(count.get() + 1));
+            }
+        });
     }
 
-    fn finish_allocation_count() -> usize {
-        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
-        ALLOCATION_COUNT.with(Cell::get)
+    fn begin_memory_count() {
+        ALLOCATION_COUNT.with(|count| count.set(0));
+        DEALLOCATION_COUNT.with(|count| count.set(0));
+        COUNT_MEMORY.with(|enabled| enabled.set(true));
+    }
+
+    fn finish_memory_count() -> (usize, usize) {
+        COUNT_MEMORY.with(|enabled| enabled.set(false));
+        (
+            ALLOCATION_COUNT.with(Cell::get),
+            DEALLOCATION_COUNT.with(Cell::get),
+        )
     }
 
     struct TestBoundary {
-        commands: [Option<AudioCommand>; 3],
+        commands: [Option<AudioCommand>; 4],
         next_command: usize,
-        parameters: ParameterSnapshot,
+        latest: ParameterSnapshot,
         parameter_reads: usize,
     }
 
     impl AudioThreadBoundary for TestBoundary {
-        type RetiredState = ();
-
         fn pop_command(&mut self) -> Option<AudioCommand> {
             let command = self.commands.get_mut(self.next_command)?.take();
             if command.is_some() {
@@ -403,84 +434,66 @@ mod tests {
 
         fn read_latest_parameters(&mut self) -> ParameterSnapshot {
             self.parameter_reads += 1;
-            self.parameters
+            self.latest
         }
-
-        fn retire(&mut self, _state: RetiredAudioState<Self::RetiredState>) {}
     }
 
-    #[derive(Default)]
-    struct TestEngine {
-        dispatched: [Option<(PatchId, MidiMessage)>; 2],
-        dispatch_count: usize,
-        all_notes_off_count: usize,
-        rendered_generation: Option<u64>,
+    struct TestStructural {
+        prepared: [Option<PreparedGraph>; 2],
+        prepared_index: usize,
+        retired: [Option<PreparedGraph>; 2],
+        retired_count: usize,
+        retirement_blocked: bool,
+        latest_status: GraphHandoffStatus,
     }
 
-    impl SoundFontEngine for TestEngine {
-        fn load(&mut self, _path: &Path) -> Result<(), SoundFontError> {
-            Ok(())
-        }
-
-        fn configure_patch(&mut self, _patch: &Patch) -> Result<(), SoundFontError> {
-            Ok(())
-        }
-
-        fn dispatch(
-            &mut self,
-            patch_id: PatchId,
-            message: MidiMessage,
-        ) -> Result<(), SoundFontError> {
-            if let Some(slot) = self.dispatched.get_mut(self.dispatch_count) {
-                *slot = Some((patch_id, message));
-                self.dispatch_count += 1;
-                Ok(())
-            } else {
-                Err(SoundFontError::MidiDispatchFailed { patch_id })
+    impl TestStructural {
+        fn new() -> Self {
+            Self {
+                prepared: std::array::from_fn(|_| None),
+                prepared_index: 0,
+                retired: std::array::from_fn(|_| None),
+                retired_count: 0,
+                retirement_blocked: false,
+                latest_status: GraphHandoffStatus::default(),
             }
         }
 
-        fn all_notes_off(&mut self) {
-            self.all_notes_off_count += 1;
-        }
-
-        fn render_patches(&mut self, output: &mut PatchAudioBlock, parameters: &ParameterSnapshot) {
-            self.rendered_generation = Some(parameters.generation());
-            for (index, patch) in parameters.patches().iter().enumerate() {
-                let Some(patch_id) = patch.patch_id() else {
-                    continue;
-                };
-                if let Some(samples) = output.stem_mut(index, patch_id) {
-                    samples.fill(if index == 0 { 0.25 } else { 0.5 });
-                }
+        fn with_prepared(graphs: [Option<PreparedGraph>; 2]) -> Self {
+            Self {
+                prepared: graphs,
+                prepared_index: 0,
+                retired: std::array::from_fn(|_| None),
+                retired_count: 0,
+                retirement_blocked: false,
+                latest_status: GraphHandoffStatus::default(),
             }
         }
     }
 
-    struct TestEffects;
+    impl AudioStructuralGraphBoundary for TestStructural {
+        fn take_prepared_on_audio(&mut self) -> Option<PreparedGraph> {
+            let graph = self.prepared.get_mut(self.prepared_index)?.take();
+            if graph.is_some() {
+                self.prepared_index += 1;
+            }
+            graph
+        }
 
-    impl GlobalEffectsProcessor for TestEffects {
-        fn prepare(
+        fn return_retired_on_audio(
             &mut self,
-            _sample_rate: f32,
-            _max_frames: usize,
-            _max_delay_milliseconds: f32,
-        ) -> Result<(), EffectError> {
+            graph: PreparedGraph,
+        ) -> Result<(), RetiredBoundaryFull> {
+            if self.retirement_blocked || self.retired_count == self.retired.len() {
+                return Err(RetiredBoundaryFull::new(graph));
+            }
+            self.retired[self.retired_count] = Some(graph);
+            self.retired_count += 1;
             Ok(())
         }
 
-        fn process(
-            &mut self,
-            reverb_input: &[f32],
-            delay_input: &[f32],
-            output: &mut [f32],
-            _parameters: &GlobalParameters,
-        ) {
-            for ((output_sample, reverb_sample), delay_sample) in
-                output.iter_mut().zip(reverb_input).zip(delay_input)
-            {
-                *output_sample += reverb_sample + delay_sample;
-            }
+        fn publish_status_on_audio(&mut self, status: GraphHandoffStatus) {
+            self.latest_status = status;
         }
     }
 
@@ -497,172 +510,381 @@ mod tests {
         }
     }
 
+    struct FixturePreparer {
+        capability_id: CapabilityId,
+        first_dispatches: Arc<AtomicUsize>,
+        second_dispatches: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl InstrumentPreparer for FixturePreparer {
+        fn capability_id(&self) -> &CapabilityId {
+            &self.capability_id
+        }
+
+        fn prepare(
+            &self,
+            patch: &Patch,
+            _sample_rate: f32,
+            _max_frames: usize,
+        ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
+            if patch.id().value() % 2 == 1 {
+                Ok(Box::new(FirstInstrument {
+                    patch_id: patch.id(),
+                    dispatches: Arc::clone(&self.first_dispatches),
+                    drops: Arc::clone(&self.drops),
+                }))
+            } else {
+                Ok(Box::new(SecondInstrument {
+                    patch_id: patch.id(),
+                    dispatches: Arc::clone(&self.second_dispatches),
+                    drops: Arc::clone(&self.drops),
+                }))
+            }
+        }
+    }
+
+    struct FirstInstrument {
+        patch_id: PatchId,
+        dispatches: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl PreparedInstrument for FirstInstrument {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+            self.dispatches.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+            output.fill(0.25);
+        }
+
+        fn all_notes_off(&mut self) {
+            self.dispatches.store(0, Ordering::Relaxed);
+        }
+    }
+
+    impl Drop for FirstInstrument {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct SecondInstrument {
+        patch_id: PatchId,
+        dispatches: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl PreparedInstrument for SecondInstrument {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+            self.dispatches.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+            output.fill(0.5);
+        }
+
+        fn all_notes_off(&mut self) {
+            self.dispatches.store(0, Ordering::Relaxed);
+        }
+    }
+
+    impl Drop for SecondInstrument {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct Fixture {
+        provider: HiDefSoundFontCapability,
+        patches: [Patch; 2],
+        first_dispatches: Arc<AtomicUsize>,
+        second_dispatches: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let provider = HiDefSoundFontCapability::new().unwrap();
+            let patch = |id: u32| {
+                Patch::new(
+                    PatchId::new(id).unwrap(),
+                    format!("Patch {id}"),
+                    create_soundfont_config(
+                        &provider,
+                        SoundFontInstrument::new(0, (id - 1) as u8, false).unwrap(),
+                    )
+                    .unwrap(),
+                    MidiChannel::new((id - 1) as u8).unwrap(),
+                    ChannelParameters::new(0.0, 0.0, 0.0, 0.0).unwrap(),
+                )
+            };
+            Self {
+                patches: [patch(1), patch(2)],
+                provider,
+                first_dispatches: Arc::new(AtomicUsize::new(0)),
+                second_dispatches: Arc::new(AtomicUsize::new(0)),
+                drops: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn parameters(&self, revision: u64, generation: u64) -> ParameterSnapshot {
+            ParameterSnapshot::for_graph(
+                generation,
+                GraphRevision::new(revision).unwrap(),
+                GlobalParameters::new(0.0, 0.5, 0.5, 0.0, 250.0, 0.5, 0.0).unwrap(),
+                &self
+                    .patches
+                    .each_ref()
+                    .map(|patch| RtPatchParameters::new(patch.id(), *patch.parameters())),
+            )
+            .unwrap()
+        }
+
+        fn graph(&self, revision: u64, generation: u64) -> PreparedGraph {
+            let registry = self.provider.registry().unwrap();
+            let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer {
+                capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+                first_dispatches: Arc::clone(&self.first_dispatches),
+                second_dispatches: Arc::clone(&self.second_dispatches),
+                drops: Arc::clone(&self.drops),
+            })];
+            PreparedGraphBuilder::new(&registry, &preparers)
+                .build(
+                    GraphRevision::new(revision).unwrap(),
+                    &self.patches,
+                    self.parameters(revision, generation),
+                    48_000.0,
+                    4,
+                )
+                .unwrap()
+        }
+
+        fn boundary(&self, latest: ParameterSnapshot, commands: &[AudioCommand]) -> TestBoundary {
+            let mut storage = [None; 4];
+            for (slot, command) in storage.iter_mut().zip(commands) {
+                *slot = Some(*command);
+            }
+            TestBoundary {
+                commands: storage,
+                next_command: 0,
+                latest,
+                parameter_reads: 0,
+            }
+        }
+    }
+
     fn midi(kind: MidiMessageKind) -> MidiMessage {
-        MidiMessage::try_new(MidiChannel::new(0).unwrap(), kind, 60, 100).unwrap()
-    }
-
-    fn parameters(first_patch_id: PatchId, second_patch_id: PatchId) -> ParameterSnapshot {
-        ParameterSnapshot::new(
-            9,
-            GlobalParameters::new(0.0, 0.5, 0.5, 1.0, 250.0, 0.5, 1.0).unwrap(),
-            &[
-                RtPatchParameters::new(
-                    first_patch_id,
-                    ChannelParameters::new(0.0, 0.0, 0.0, 0.0).unwrap(),
-                ),
-                RtPatchParameters::new(
-                    second_patch_id,
-                    ChannelParameters::new(0.0, 0.0, 0.0, 0.0).unwrap(),
-                ),
-            ],
-        )
-        .unwrap()
-    }
-
-    fn renderer() -> AudioRenderer<TestBoundary, TestEngine, TestEffects> {
-        let patch_id = PatchId::new(4).unwrap();
-        let second_patch_id = PatchId::new(7).unwrap();
-        let boundary = TestBoundary {
-            commands: [
-                Some(AudioCommand::patch_midi(
-                    patch_id,
-                    midi(MidiMessageKind::NoteOn),
-                )),
-                Some(AudioCommand::patch_midi(
-                    patch_id,
-                    midi(MidiMessageKind::NoteOff),
-                )),
-                Some(AudioCommand::all_notes_off()),
-            ],
-            next_command: 0,
-            parameters: parameters(patch_id, second_patch_id),
-            parameter_reads: 0,
-        };
-
-        AudioRenderer::new(boundary, TestEngine::default(), MixEngine::new(TestEffects))
-    }
-
-    fn observing_renderer() -> AudioRenderer<TestBoundary, TestEngine, TestEffects, TestObservation>
-    {
-        let patch_id = PatchId::new(4).unwrap();
-        let second_patch_id = PatchId::new(7).unwrap();
-        let boundary = TestBoundary {
-            commands: [
-                Some(AudioCommand::patch_midi(
-                    patch_id,
-                    midi(MidiMessageKind::NoteOn),
-                )),
-                Some(AudioCommand::patch_midi(
-                    patch_id,
-                    midi(MidiMessageKind::NoteOff),
-                )),
-                Some(AudioCommand::all_notes_off()),
-            ],
-            next_command: 0,
-            parameters: parameters(patch_id, second_patch_id),
-            parameter_reads: 0,
-        };
-
-        AudioRenderer::with_observation(
-            boundary,
-            TestEngine::default(),
-            MixEngine::new(TestEffects),
-            TestObservation::default(),
-        )
+        MidiMessage::try_new(MidiChannel::new(1).unwrap(), kind, 60, 100).unwrap()
     }
 
     #[test]
-    fn audio_renderer_realtime_contract() {
-        let mut renderer = renderer();
-        renderer.prepare(4, 48_000.0).unwrap();
+    fn renderer_routes_heterogeneous_patches_and_publishes_finite_mix_observation() {
+        let fixture = Fixture::new();
+        let boundary = fixture.boundary(
+            fixture.parameters(1, 9),
+            &[
+                AudioCommand::patch_midi(fixture.patches[1].id(), midi(MidiMessageKind::NoteOn)),
+                AudioCommand::patch_midi(PatchId::new(99).unwrap(), midi(MidiMessageKind::NoteOn)),
+            ],
+        );
+        let structural = TestStructural::new();
+        let mut renderer = AudioRenderer::with_observation(
+            boundary,
+            structural,
+            fixture.graph(1, 1),
+            TestObservation::default(),
+        );
         let mut output = [0.0; 8];
 
-        begin_allocation_count();
         renderer.render(&mut output);
-        let callback_allocations = finish_allocation_count();
 
-        assert_eq!(callback_allocations, 0);
-        assert_eq!(renderer.boundary.parameter_reads, 1);
-        assert_eq!(renderer.engine.dispatch_count, 2);
-        assert_eq!(renderer.engine.all_notes_off_count, 1);
-        assert_eq!(renderer.engine.rendered_generation, Some(9));
+        assert_eq!(fixture.first_dispatches.load(Ordering::Relaxed), 0);
+        assert_eq!(fixture.second_dispatches.load(Ordering::Relaxed), 1);
+        assert!(output.iter().all(|sample| sample.is_finite()));
         assert!(output
             .iter()
             .all(|sample| (*sample - 0.75).abs() < 0.000_001));
+        assert_eq!(renderer.observation.publications, 1);
+        assert_eq!(renderer.observation.latest.parameter_generation(), 9);
+        assert_eq!(renderer.observation.latest.commands_consumed(), 2);
+        assert_eq!(renderer.observation.latest.active_notes(), 1);
     }
 
     #[test]
-    fn prepare_rejects_invalid_callback_shapes_before_rendering() {
-        let mut renderer = renderer();
-
-        assert_eq!(
-            renderer.prepare(0, 48_000.0),
-            Err(AudioError::InvalidMaxFrames)
-        );
-        assert_eq!(
-            renderer.prepare(4, f32::NAN),
-            Err(AudioError::InvalidSampleRate)
-        );
-
-        let mut output = [1.0; 4];
-        renderer.render(&mut output);
-        assert_eq!(output, [0.0; 4]);
-    }
-
-    #[test]
-    fn render_silences_samples_past_the_prepared_block() {
-        let mut renderer = renderer();
-        renderer.prepare(1, 48_000.0).unwrap();
-        let mut output = [1.0; 5];
-
-        renderer.render(&mut output);
-
-        assert!(output[..2]
-            .iter()
-            .all(|sample| (*sample - 0.75).abs() < 0.000_001));
-        assert_eq!(output[2..], [0.0; 3]);
-    }
-
-    #[test]
-    fn audio_observation_realtime_contract() {
-        let mut renderer = observing_renderer();
-        renderer.prepare(4, 48_000.0).unwrap();
+    fn graph_swaps_apply_once_at_block_start_and_return_the_old_owner() {
+        let fixture = Fixture::new();
+        let boundary = fixture.boundary(fixture.parameters(2, 20), &[]);
+        let structural =
+            TestStructural::with_prepared([Some(fixture.graph(2, 20)), Some(fixture.graph(3, 30))]);
+        let mut renderer = AudioRenderer::new(boundary, structural, fixture.graph(1, 10));
         let mut output = [0.0; 8];
 
-        begin_allocation_count();
         renderer.render(&mut output);
-        let callback_allocations = finish_allocation_count();
 
-        let observation = renderer.observation.latest;
-        assert_eq!(callback_allocations, 0);
-        assert_eq!(renderer.observation.publications, 1);
-        assert_eq!(observation.sequence(), 1);
-        assert_eq!(observation.rendered_blocks(), 1);
-        assert_eq!(observation.rendered_frames(), 4);
-        assert_eq!(observation.parameter_generation(), 9);
-        assert_eq!(observation.commands_consumed(), 3);
-        assert_eq!(observation.active_notes(), 0);
-        assert!(observation.output_rms() > 0.0);
-        assert!(observation.output_rms().is_finite());
+        assert_eq!(renderer.active_revision(), GraphRevision::new(2).unwrap());
+        assert_eq!(renderer.structural.prepared_index, 1);
+        assert_eq!(renderer.structural.retired_count, 1);
+        assert_eq!(
+            renderer.structural.retired[0].as_ref().unwrap().revision(),
+            GraphRevision::new(1).unwrap()
+        );
+        assert_eq!(renderer.handoff_status().swaps_applied(), 1);
+        assert_eq!(
+            renderer.handoff_status().retired_revision(),
+            Some(GraphRevision::new(1).unwrap())
+        );
+    }
+
+    #[test]
+    fn retirement_pressure_retains_and_retries_without_taking_another_graph() {
+        let fixture = Fixture::new();
+        let boundary = fixture.boundary(fixture.parameters(2, 20), &[]);
+        let mut structural =
+            TestStructural::with_prepared([Some(fixture.graph(2, 20)), Some(fixture.graph(3, 30))]);
+        structural.retirement_blocked = true;
+        let mut renderer = AudioRenderer::new(boundary, structural, fixture.graph(1, 10));
+        let mut output = [0.0; 8];
+
+        begin_memory_count();
+        renderer.render(&mut output);
+        renderer.render(&mut output);
+        let (allocations, deallocations) = finish_memory_count();
+
+        assert_eq!(allocations, 0);
+        assert_eq!(deallocations, 0);
+        assert_eq!(fixture.drops.load(Ordering::Relaxed), 0);
+        assert_eq!(renderer.active_revision(), GraphRevision::new(2).unwrap());
+        assert_eq!(
+            renderer.pending_retirement_revision(),
+            Some(GraphRevision::new(1).unwrap())
+        );
+        assert_eq!(renderer.structural.prepared_index, 1);
+        assert_eq!(renderer.handoff_status().swaps_applied(), 1);
+        assert_eq!(renderer.handoff_status().retirement_retries(), 2);
+
+        renderer.structural.retirement_blocked = false;
+        renderer.render(&mut output);
+        assert_eq!(renderer.active_revision(), GraphRevision::new(3).unwrap());
+        assert_eq!(renderer.structural.prepared_index, 2);
+        assert_eq!(renderer.structural.retired_count, 2);
+    }
+
+    #[test]
+    fn incompatible_scalar_races_keep_each_graphs_last_compatible_snapshot() {
+        let fixture = Fixture::new();
+        let boundary = fixture.boundary(fixture.parameters(2, 99), &[]);
+        let structural = TestStructural::new();
+        let mut renderer = AudioRenderer::with_observation(
+            boundary,
+            structural,
+            fixture.graph(1, 10),
+            TestObservation::default(),
+        );
+        let mut output = [0.0; 8];
+
+        renderer.render(&mut output);
+        assert_eq!(renderer.parameters().generation(), 10);
+        assert_eq!(renderer.observation.latest.parameter_generation(), 10);
+        assert_eq!(renderer.handoff_status().incompatible_snapshots(), 1);
+
+        renderer.structural.prepared[0] = Some(fixture.graph(2, 20));
+        renderer.render(&mut output);
+        assert_eq!(renderer.active_revision(), GraphRevision::new(2).unwrap());
+        assert_eq!(renderer.parameters().generation(), 99);
+        assert_eq!(renderer.observation.latest.parameter_generation(), 99);
+
+        renderer.boundary.latest = fixture.parameters(1, 100);
+        renderer.render(&mut output);
+        assert_eq!(renderer.parameters().generation(), 99);
+        assert_eq!(renderer.handoff_status().incompatible_snapshots(), 2);
+    }
+
+    #[test]
+    fn normal_renderer_callback_allocates_deallocates_and_destroys_nothing() {
+        let fixture = Fixture::new();
+        let boundary = fixture.boundary(
+            fixture.parameters(1, 2),
+            &[AudioCommand::patch_midi(
+                fixture.patches[0].id(),
+                midi(MidiMessageKind::NoteOn),
+            )],
+        );
+        let structural = TestStructural::new();
+        let mut renderer = AudioRenderer::new(boundary, structural, fixture.graph(1, 1));
+        let mut output = [0.0; 8];
+
+        begin_memory_count();
+        renderer.render(&mut output);
+        let (allocations, deallocations) = finish_memory_count();
+
+        assert_eq!(allocations, 0);
+        assert_eq!(deallocations, 0);
+        assert_eq!(fixture.drops.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn hidef_soundfont_preparer_callback_operations_allocate_and_deallocate_nothing() {
+        let provider = HiDefSoundFontCapability::new().unwrap();
+        let patch = Patch::new(
+            PatchId::new(1).unwrap(),
+            "Prepared piano".to_owned(),
+            create_soundfont_config(&provider, SoundFontInstrument::new(0, 0, false).unwrap())
+                .unwrap(),
+            MidiChannel::new(0).unwrap(),
+            ChannelParameters::default(),
+        );
+        let preparer = HiDefSoundFontPreparer::new().unwrap();
+        let mut instrument = preparer.prepare(&patch, 48_000.0, 512).unwrap();
+        let message =
+            MidiMessage::try_new(patch.channel(), MidiMessageKind::NoteOn, 60, 100).unwrap();
+        let mut output = [0.0; 1_024];
+
+        begin_memory_count();
+        let dispatch = instrument.dispatch(message);
+        instrument.render(&mut output, 512);
+        instrument.all_notes_off();
+        let (allocations, deallocations) = finish_memory_count();
+
+        assert_eq!(dispatch, Ok(()));
+        assert_eq!(allocations, 0);
+        assert_eq!(deallocations, 0);
+        assert!(output.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]
     fn active_note_observation_tracks_patch_lifecycle_with_bounded_bits() {
-        let first = PatchId::new(4).unwrap();
-        let second = PatchId::new(7).unwrap();
         let mut notes = ActiveNoteObservation::new();
+        let patch = PatchId::new(3).unwrap();
 
-        notes.observe_patch_message(first, midi(MidiMessageKind::NoteOn));
-        notes.observe_patch_message(second, midi(MidiMessageKind::NoteOn));
-        assert_eq!(notes.count(), 2);
-
-        notes.observe_patch_message(first, midi(MidiMessageKind::NoteOff));
+        notes.observe_patch_message(patch, midi(MidiMessageKind::NoteOn));
         assert_eq!(notes.count(), 1);
-        notes.observe_patch_message(second, midi(MidiMessageKind::AllNotesOff));
+        notes.observe_patch_message(patch, midi(MidiMessageKind::NoteOff));
         assert_eq!(notes.count(), 0);
+        notes.observe_patch_message(patch, midi(MidiMessageKind::NoteOn));
+        notes.observe_patch_message(patch, midi(MidiMessageKind::AllNotesOff));
+        assert_eq!(notes.count(), 0);
+    }
 
-        notes.observe_patch_message(first, midi(MidiMessageKind::NoteOn));
-        notes.clear_all();
-        assert_eq!(notes.count(), 0);
+    #[test]
+    fn prepared_graph_exposes_fixed_patch_stem_storage() {
+        let fixture = Fixture::new();
+        let graph = fixture.graph(1, 1);
+        let stems: &[crate::real_time::patch_audio_block::PatchStereoStem] =
+            graph.patch_audio().stems();
+
+        assert!(stems.is_empty());
+        assert_eq!(graph.patch_audio().storage().len(), MAX_PATCHES);
     }
 }

@@ -368,7 +368,7 @@ pub struct DemoSceneReport {
 
 impl DemoSceneReport {
     /// Stable schema version for the top-level report.
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
 
     /// Packages a scene only after checking the journal/tree endpoint.
     ///
@@ -665,7 +665,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&first).unwrap();
 
         assert_eq!(first, second);
-        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["schemaVersion"], 2);
         assert_eq!(json["scene"], "exhaustive-gui");
         assert_eq!(json["complete"], true);
         assert_eq!(json["coverage"]["events"]["missing"], serde_json::json!([]));

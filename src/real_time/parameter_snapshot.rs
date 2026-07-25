@@ -1,6 +1,7 @@
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
+use crate::real_time::graph_revision::GraphRevision;
 use core::fmt;
 
 /// The maximum number of Patch parameter values carried across the real-time
@@ -86,6 +87,7 @@ impl std::error::Error for ParameterSnapshotError {}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParameterSnapshot {
     generation: u64,
+    graph_revision: GraphRevision,
     global: GlobalParameters,
     patch_count: usize,
     patches: [RtPatchParameters; MAX_PATCHES],
@@ -98,6 +100,16 @@ impl ParameterSnapshot {
     /// entries are initialized to the canonical inactive value.
     pub fn new(
         generation: u64,
+        global: GlobalParameters,
+        patches: &[RtPatchParameters],
+    ) -> Result<Self, ParameterSnapshotError> {
+        Self::for_graph(generation, GraphRevision::INITIAL, global, patches)
+    }
+
+    /// Copies one complete projection for a specific prepared graph revision.
+    pub fn for_graph(
+        generation: u64,
+        graph_revision: GraphRevision,
         global: GlobalParameters,
         patches: &[RtPatchParameters],
     ) -> Result<Self, ParameterSnapshotError> {
@@ -116,6 +128,7 @@ impl ParameterSnapshot {
 
         Ok(Self {
             generation,
+            graph_revision,
             global,
             patch_count: patches.len(),
             patches: storage,
@@ -125,6 +138,11 @@ impl ParameterSnapshot {
     /// Returns the AppState generation from which this snapshot was projected.
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Returns the prepared graph revision targeted by this snapshot.
+    pub const fn graph_revision(&self) -> GraphRevision {
+        self.graph_revision
     }
 
     /// Returns the copied parameters for the one shared global mix.
@@ -154,6 +172,22 @@ impl ParameterSnapshot {
             .find(|patch| patch.patch_id() == Some(patch_id))
     }
 
+    /// Returns whether this complete snapshot targets an exact graph revision
+    /// and ordered Patch layout.
+    pub fn is_compatible(
+        &self,
+        graph_revision: GraphRevision,
+        ordered_patch_ids: &[PatchId],
+    ) -> bool {
+        self.graph_revision == graph_revision
+            && self.patch_count == ordered_patch_ids.len()
+            && self
+                .patches()
+                .iter()
+                .zip(ordered_patch_ids)
+                .all(|(patch, patch_id)| patch.patch_id() == Some(*patch_id))
+    }
+
     /// Reuses identical bounded parameter values for a MIDI-only generation.
     pub(crate) const fn with_generation(mut self, generation: u64) -> Self {
         self.generation = generation;
@@ -167,6 +201,7 @@ mod tests {
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::real_time::graph_revision::GraphRevision;
 
     fn global() -> GlobalParameters {
         GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap()
@@ -182,13 +217,41 @@ mod tests {
     #[test]
     fn copies_one_complete_accepted_control_projection() {
         let patches = [patch(1, -6.0), patch(2, -12.0)];
-        let snapshot = ParameterSnapshot::new(42, global(), &patches).unwrap();
+        let revision = GraphRevision::new(7).unwrap();
+        let snapshot = ParameterSnapshot::for_graph(42, revision, global(), &patches).unwrap();
 
         assert_eq!(snapshot.generation(), 42);
+        assert_eq!(snapshot.graph_revision(), revision);
         assert_eq!(snapshot.global(), &global());
         assert_eq!(snapshot.patch_count(), 2);
         assert_eq!(snapshot.patches(), &patches);
         assert_eq!(snapshot.patch(PatchId::new(2).unwrap()), Some(&patches[1]));
+    }
+
+    #[test]
+    fn compatibility_requires_revision_count_and_exact_patch_order() {
+        let revision = GraphRevision::new(8).unwrap();
+        let snapshot = ParameterSnapshot::for_graph(
+            42,
+            revision,
+            global(),
+            &[patch(1, -6.0), patch(2, -12.0)],
+        )
+        .unwrap();
+
+        assert!(snapshot.is_compatible(
+            revision,
+            &[PatchId::new(1).unwrap(), PatchId::new(2).unwrap()]
+        ));
+        assert!(!snapshot.is_compatible(
+            GraphRevision::new(9).unwrap(),
+            &[PatchId::new(1).unwrap(), PatchId::new(2).unwrap()]
+        ));
+        assert!(!snapshot.is_compatible(revision, &[PatchId::new(1).unwrap()]));
+        assert!(!snapshot.is_compatible(
+            revision,
+            &[PatchId::new(2).unwrap(), PatchId::new(1).unwrap()]
+        ));
     }
 
     #[test]

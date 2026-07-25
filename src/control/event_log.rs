@@ -146,7 +146,7 @@ pub struct EventLog {
 
 impl EventLog {
     /// The stable schema version emitted in every serialized log.
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "totalObserved",
@@ -387,7 +387,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&first).unwrap();
 
         assert_eq!(first, second);
-        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["schemaVersion"], 2);
         assert_eq!(json["droppedRecords"], 0);
         assert_eq!(json["totalObserved"], 0);
         assert_eq!(
