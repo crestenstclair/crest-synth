@@ -1,13 +1,117 @@
 mod support;
 
+use crest_synth::adapter::braids_capability::BraidsCapability;
+use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
+use crest_synth::adapter::production_instruments::production_capability_registry;
+use crest_synth::control::{AppEvent, AppState, StateProjector, StateTree, TopLevelContext};
+use crest_synth::kernel::midi_channel::MidiChannel;
+use crest_synth::kernel::patch_id::PatchId;
+use crest_synth::mixer::channel_parameters::ChannelParameters;
+use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
+use crest_synth::synth::{InstrumentConfig, Patch, VoiceEnvelope};
+use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use crest_synth::testing::{
     BehavioralMutationCase, BehavioralMutationHarness, BehavioralMutationObservation,
     DemoCoverageGroup,
 };
+use serde_json::Value;
 use std::collections::BTreeSet;
+
+fn state_tree_with_first_config(
+    first: InstrumentConfig,
+    second: InstrumentConfig,
+    context: TopLevelContext,
+) -> StateTree {
+    let patches = [first, second]
+        .into_iter()
+        .enumerate()
+        .map(|(index, config)| {
+            Patch::new(
+                PatchId::new(index as u32 + 1).unwrap(),
+                format!("Schema {index}"),
+                config,
+                MidiChannel::new(index as u8).unwrap(),
+                ChannelParameters::new(-3.0 - index as f32, 0.1, 0.2, 0.3).unwrap(),
+            )
+            .with_envelope(VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap())
+        })
+        .collect();
+    let mut state = AppState::new(
+        production_capability_registry().unwrap(),
+        support::globals(),
+    );
+    state.apply(AppEvent::InstallPatches(patches)).unwrap();
+    if context == TopLevelContext::Patch {
+        state.apply(AppEvent::SelectContext(context)).unwrap();
+    }
+    StateProjector::new().project_with_tree(&state).unwrap().4
+}
+
+fn discover_leaves(value: &Value, prefix: &str, output: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let path = if prefix.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{prefix}.{name}")
+                };
+                discover_leaves(child, &path, output);
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                discover_leaves(child, &format!("{prefix}[]"), output);
+            }
+        }
+        _ => {
+            output.insert(prefix.to_owned());
+        }
+    }
+}
+
+fn assert_state_tree_leaf_surface_exact() {
+    let soundfont = HiDefSoundFontCapability::new().unwrap();
+    let soundfont_config = create_soundfont_config(
+        &soundfont,
+        SoundFontInstrument::new(128, 11, false).unwrap(),
+    )
+    .unwrap();
+    let braids_config = BraidsCapability::new().unwrap().default_config().unwrap();
+    let trees = [
+        state_tree_with_first_config(
+            soundfont_config.clone(),
+            braids_config.clone(),
+            TopLevelContext::Mixer,
+        ),
+        state_tree_with_first_config(
+            soundfont_config.clone(),
+            braids_config.clone(),
+            TopLevelContext::Patch,
+        ),
+        state_tree_with_first_config(braids_config, soundfont_config, TopLevelContext::Patch),
+    ];
+    let mut discovered = BTreeSet::new();
+    for tree in trees {
+        discover_leaves(
+            &serde_json::from_str::<Value>(tree.json()).unwrap(),
+            "",
+            &mut discovered,
+        );
+    }
+    let descriptor = StateTree::serialized_leaf_descriptor();
+    let described = descriptor
+        .iter()
+        .map(|path| (*path).to_owned())
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(descriptor.len(), described.len(), "duplicate typed leaf");
+    assert_eq!(described, discovered);
+}
 
 #[test]
 fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact() {
+    assert_state_tree_leaf_surface_exact();
     let run = support::run_demo();
     let serialized = run
         .report
@@ -45,6 +149,31 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     assert!(expected
         .iter()
         .any(|identifier| identifier.starts_with("property.textProjection.")));
+
+    let tree: Value = serde_json::from_str(run.report.final_state_tree().json()).unwrap();
+    assert_eq!(
+        tree["capabilities"]["descriptors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|descriptor| descriptor["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["instrument.soundfont.hidef", "instrument.braids"]
+    );
+    assert_eq!(
+        tree["patches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|patch| patch["instrument"]["capabilityId"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["instrument.soundfont.hidef", "instrument.braids"]
+    );
+    assert!(run.report.audio_evidence().mixed_engine_stems_nonzero());
+    assert!(run
+        .report
+        .audio_evidence()
+        .mixed_engine_parameter_isolation());
 
     let harness = BehavioralMutationHarness::new();
     let healthy = harness.run(BehavioralMutationCase::OmittedStateTreeLeaf, false);

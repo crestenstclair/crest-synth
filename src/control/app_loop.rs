@@ -2,6 +2,7 @@ use crate::control::app_event::AppEvent;
 use crate::control::app_state::{AppState, EventRejection, StateAccepted};
 use crate::control::event_log::EventLog;
 use crate::control::event_record::{EventRecord, EventSource};
+use crate::control::patch_page_projection::PatchPageProjection;
 use crate::control::state_projector::{StateProjectionError, StateProjector};
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::state_tree::StateTree;
@@ -57,6 +58,7 @@ where
     projector: StateProjector,
     boundary: Boundary,
     current_snapshot: StateSnapshot,
+    current_patch_page: Option<PatchPageProjection>,
     current_text: TextProjection,
     current_parameters: crate::real_time::parameter_snapshot::ParameterSnapshot,
     current_state_tree: StateTree,
@@ -89,7 +91,7 @@ where
         mut boundary: Boundary,
         event_log: EventLog,
     ) -> Result<Self, StateProjectionError> {
-        let (current_snapshot, current_text, parameters, current_state_tree) =
+        let (current_snapshot, current_patch_page, current_text, parameters, current_state_tree) =
             projector.project_with_tree(&state)?;
         boundary.publish_parameters(parameters);
 
@@ -98,6 +100,7 @@ where
             projector,
             boundary,
             current_snapshot,
+            current_patch_page,
             current_text,
             current_parameters: parameters,
             current_state_tree,
@@ -141,11 +144,12 @@ where
             }
         };
 
-        let (snapshot, text, parameters, state_tree) = if midi_generation_only {
+        let (snapshot, patch_page, text, parameters, state_tree) = if midi_generation_only {
             self.projector
                 .project_midi_generation(
                     &self.state,
                     &self.current_snapshot,
+                    self.current_patch_page.as_ref(),
                     &self.current_text,
                     self.current_parameters,
                     &self.current_state_tree,
@@ -177,6 +181,7 @@ where
         let boundary_full =
             audio_command.and_then(|command| self.boundary.push_command(command).err());
         self.current_snapshot = snapshot.clone();
+        self.current_patch_page = patch_page;
         self.current_text = text;
         self.current_parameters = parameters;
         self.current_state_tree = state_tree;
@@ -194,6 +199,11 @@ where
     /// Returns the newest complete immutable text projection.
     pub fn current_text(&self) -> TextProjection {
         self.current_text.clone()
+    }
+
+    /// Returns the newest host-neutral PATCH page exactly when PATCH is active.
+    pub fn current_patch_page(&self) -> Option<PatchPageProjection> {
+        self.current_patch_page.clone()
     }
 
     /// Returns the newest canonical state and projection tree.
@@ -381,6 +391,66 @@ mod tests {
         assert!(current_text.body().contains("> gainDb=1"));
         assert!(observations.commands.is_empty());
         assert!(result.audio_effects_published());
+    }
+
+    #[test]
+    fn context_dispatch_projects_page_and_publishes_same_values_without_audio_command() {
+        let (mut app_loop, observations) = loop_with_observations();
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+        let retained_selection = app_loop.state().selection();
+        let before_parameters = *app_loop.current_parameters();
+        let before_patches = app_loop.patches().to_vec();
+        let before_global = *app_loop.state().global();
+        let command_count = observations.lock().unwrap().commands.len();
+
+        let result = app_loop
+            .dispatch_from(
+                AppEvent::SelectContext(crate::control::TopLevelContext::Patch),
+                EventSource::Keyboard,
+            )
+            .unwrap();
+        let page = app_loop.current_patch_page().unwrap();
+        let text = app_loop.current_text();
+        let tree: serde_json::Value =
+            serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
+        let after_parameters = *app_loop.current_parameters();
+
+        assert_eq!(page.patch().id(), PatchId::new(1).unwrap());
+        assert_eq!(page.state_hash(), result.snapshot().hash());
+        assert_eq!(text.context(), crate::control::TopLevelContext::Patch);
+        assert_eq!(text.state_hash(), result.snapshot().hash());
+        assert_eq!(tree["interaction"]["context"], "patch");
+        assert_eq!(tree["patchPage"]["stateHash"], result.snapshot().hash());
+        assert_eq!(before_patches, app_loop.patches());
+        assert_eq!(before_global, *app_loop.state().global());
+        assert_eq!(retained_selection, app_loop.state().selection());
+        assert_eq!(
+            before_parameters.graph_revision(),
+            after_parameters.graph_revision()
+        );
+        assert_eq!(before_parameters.patches(), after_parameters.patches());
+        assert_eq!(before_parameters.global(), after_parameters.global());
+        assert_eq!(observations.lock().unwrap().commands.len(), command_count);
+
+        let rejected_tree = app_loop.current_state_tree();
+        assert_eq!(
+            app_loop.dispatch(AppEvent::Adjust(Direction::Right)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(app_loop.current_state_tree(), rejected_tree);
+        app_loop
+            .dispatch(AppEvent::SelectContext(
+                crate::control::TopLevelContext::Mixer,
+            ))
+            .unwrap();
+        assert!(app_loop.current_patch_page().is_none());
+        assert_eq!(
+            app_loop.current_text().context(),
+            crate::control::TopLevelContext::Mixer
+        );
+        assert_eq!(app_loop.state().selection(), retained_selection);
     }
 
     #[test]
@@ -575,7 +645,8 @@ mod tests {
         for property in [
             "\"patches\"",
             "\"global\"",
-            "\"selection\"",
+            "\"interaction\"",
+            "\"patchPage\"",
             "\"projection\"",
             "\"parameters\"",
         ] {

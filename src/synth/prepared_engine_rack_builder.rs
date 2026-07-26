@@ -73,6 +73,10 @@ impl PreparedEngineRackBuilder {
         let mut slots = std::array::from_fn(|_| None);
         for (index, patch) in patches.iter().enumerate() {
             let capability_id = patch.instrument_config().capability_id();
+            let scalar_count = registry
+                .descriptor(capability_id)
+                .expect("validated Patch capability is installed")
+                .scalar_parameter_count();
             let Some(preparer) = preparers
                 .iter()
                 .find(|preparer| preparer.capability_id() == capability_id)
@@ -96,7 +100,11 @@ impl PreparedEngineRackBuilder {
                     actual,
                 });
             }
-            slots[index] = Some(PreparedEngineSlot::new(patch.id(), instrument));
+            slots[index] = Some(PreparedEngineSlot::new(
+                patch.id(),
+                scalar_count,
+                instrument,
+            ));
         }
 
         Ok(PreparedEngineRack::from_slots(patches.len(), slots))
@@ -312,12 +320,21 @@ mod tests {
             self.patch_id
         }
 
-        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+        fn dispatch(
+            &mut self,
+            _message: MidiMessage,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
             self.dispatches.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
-        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) {
             output.fill(0.25);
         }
 
@@ -343,12 +360,21 @@ mod tests {
             self.patch_id
         }
 
-        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+        fn dispatch(
+            &mut self,
+            _message: MidiMessage,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
             self.dispatches.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
-        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) {
             output.fill(-0.5);
         }
 
@@ -378,22 +404,19 @@ mod tests {
             PreparedEngineRackBuilder::build(&patches, &registry(), &preparers, 48_000.0, 8)
                 .unwrap();
 
-        rack.dispatch(patches[1].id(), message()).unwrap();
+        let projected = [
+            RtPatchParameters::new(patches[0].id(), ChannelParameters::default()),
+            RtPatchParameters::new(patches[1].id(), ChannelParameters::default()),
+        ];
+        rack.dispatch(patches[1].id(), message(), &projected[1])
+            .unwrap();
         assert_eq!(alpha_dispatches.load(Ordering::Relaxed), 0);
         assert_eq!(beta_dispatches.load(Ordering::Relaxed), 1);
 
-        let parameters = ParameterSnapshot::new(
-            1,
-            global_parameters(),
-            &[
-                RtPatchParameters::new(patches[0].id(), ChannelParameters::default()),
-                RtPatchParameters::new(patches[1].id(), ChannelParameters::default()),
-            ],
-        )
-        .unwrap();
+        let parameters = ParameterSnapshot::new(1, global_parameters(), &projected).unwrap();
         let mut block = PatchAudioBlock::prepare(8).unwrap();
         block.begin_render(&parameters, 4).unwrap();
-        rack.render(&mut block).unwrap();
+        rack.render(&mut block, &parameters).unwrap();
 
         assert_eq!(block.stem(0, patches[0].id()).unwrap().samples(), [0.25; 8]);
         assert_eq!(block.stem(1, patches[1].id()).unwrap().samples(), [-0.5; 8]);
@@ -401,7 +424,7 @@ mod tests {
 
         let unknown = PatchId::new(99).unwrap();
         assert_eq!(
-            rack.dispatch(unknown, message()),
+            rack.dispatch(unknown, message(), &projected[0]),
             Err(RackDispatchError::UnknownPatch { patch_id: unknown })
         );
         assert_eq!(alpha_dispatches.load(Ordering::Relaxed), 0);
@@ -409,8 +432,10 @@ mod tests {
 
         rack.all_notes_off_for(patches[1].id()).unwrap();
         assert_eq!(beta_dispatches.load(Ordering::Relaxed), 0);
-        rack.dispatch(patches[0].id(), message()).unwrap();
-        rack.dispatch(patches[1].id(), message()).unwrap();
+        rack.dispatch(patches[0].id(), message(), &projected[0])
+            .unwrap();
+        rack.dispatch(patches[1].id(), message(), &projected[1])
+            .unwrap();
         rack.all_notes_off();
         assert_eq!(alpha_dispatches.load(Ordering::Relaxed), 0);
         assert_eq!(beta_dispatches.load(Ordering::Relaxed), 0);
@@ -440,12 +465,8 @@ mod tests {
         block.begin_render(&reversed, 4).unwrap();
 
         assert_eq!(
-            rack.render(&mut block),
-            Err(RackRenderError::StemIdentityMismatch {
-                index: 0,
-                expected: patches[0].id(),
-                actual: Some(patches[1].id()),
-            })
+            rack.render(&mut block, &reversed),
+            Err(RackRenderError::ParameterLayoutMismatch)
         );
         assert!(block
             .stems()

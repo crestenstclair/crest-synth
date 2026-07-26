@@ -36,6 +36,7 @@ pub struct PreparedGraphLayout {
     max_frames: usize,
     patch_count: usize,
     patch_ids: [Option<PatchId>; MAX_PATCHES],
+    scalar_counts: [u8; MAX_PATCHES],
 }
 
 impl PreparedGraph {
@@ -89,9 +90,15 @@ impl PreparedGraph {
     /// engine, effect, or scratch state.
     pub fn layout(&self) -> PreparedGraphLayout {
         let mut patch_ids = [None; MAX_PATCHES];
+        let mut scalar_counts = [0; MAX_PATCHES];
         let mut index = 0;
         while index < self.inner.engine_rack.patch_count() {
             patch_ids[index] = self.inner.engine_rack.patch_id(index);
+            scalar_counts[index] =
+                self.inner
+                    .engine_rack
+                    .scalar_count(index)
+                    .expect("active rack slots have a Scalar count") as u8;
             index += 1;
         }
         PreparedGraphLayout {
@@ -99,6 +106,7 @@ impl PreparedGraph {
             max_frames: self.inner.max_frames,
             patch_count: self.inner.engine_rack.patch_count(),
             patch_ids,
+            scalar_counts,
         }
     }
 

@@ -3,9 +3,7 @@
 ## Purpose
 
 Define capability-neutral prepared instrument ownership, complete off-callback graph preparation, revision-safe structural handoff, and no-drop hard-real-time graph activation.
-
 ## Requirements
-
 ### Requirement: Exact capability-matched rack preparation
 The application SHALL construct a prepared engine rack from the accepted ordered Patch set by matching every Patch capability identity to exactly one installed preparation boundary and producing exactly one prepared instrument with the same Patch identity. Construction SHALL fail atomically with a typed error for missing or duplicate preparation matches, duplicate or mismatched Patch identities, invalid capacities, preparation failure, or more active Patches than the declared fixed bound; no partial rack or graph SHALL be published and no fallback SHALL be selected.
 
@@ -22,15 +20,15 @@ The application SHALL construct a prepared engine rack from the accepted ordered
 - **THEN** construction fails without truncating, merging, reordering, or substituting any Patch
 
 ### Requirement: Bounded heterogeneous Patch routing
-The prepared rack SHALL use fixed-capacity ordered storage, route each Patch-targeted audio command to only the prepared instrument with the exact `PatchId`, render each active instrument once per block into only its matching caller-owned stereo stem, and visit at most the fixed Patch capacity for a global all-notes-off. An unknown Patch identity SHALL produce bounded observable failure without fallback, broadcast, or mutation of another instrument.
+The prepared rack SHALL use fixed-capacity ordered storage, route each Patch-targeted audio command and only that Patch's matching fixed scalar/envelope projection to the prepared instrument with the exact `PatchId`, render each active instrument once per block into only its matching caller-owned stereo stem, and visit at most the fixed Patch capacity for a global all-notes-off. An unknown Patch identity or parameter-layout mismatch SHALL produce bounded observable failure without fallback, broadcast, or mutation of another instrument.
 
 #### Scenario: MIDI targets one Patch
-- **WHEN** a note or controller command names a non-first Patch in a rack containing different prepared implementation types
-- **THEN** only that Patch's prepared instrument receives the command and every untargeted instrument and stem remains unchanged
+- **WHEN** a note or controller command names a non-first Patch in a rack containing SoundFont and Braids implementations
+- **THEN** only that Patch's prepared instrument receives the command and matching parameters and every untargeted instrument and stem remains unchanged
 
 #### Scenario: Several Patches render one block
 - **WHEN** multiple prepared instruments are active for a bounded render block
-- **THEN** each instrument is called once and fills only the stem whose index and `PatchId` match the canonical rack order
+- **THEN** each instrument is called once with its exact Patch parameter projection and fills only the stem whose index and `PatchId` match the canonical rack order
 
 #### Scenario: Unknown Patch is targeted
 - **WHEN** a command names a Patch not present in the active rack
@@ -74,14 +72,14 @@ The audio renderer SHALL consider structural replacement only at the start of a 
 - **THEN** control throttles the second request rather than overwriting or queueing an unbounded structural backlog
 
 ### Requirement: Graph-compatible scalar snapshots
-Every prepared graph and fixed scalar parameter snapshot SHALL carry a nonzero monotonic graph revision. The renderer SHALL consume a latest scalar snapshot only when its revision, active Patch count, ordered Patch identities, and fixed capacities are compatible with the active graph; otherwise it SHALL retain the last compatible snapshot. Every newly active graph SHALL contain compatible initial parameters so rendering never depends on the relative arrival order of structural and scalar publications.
+Every prepared graph and fixed scalar parameter snapshot SHALL carry a nonzero monotonic graph revision. The renderer SHALL consume a latest scalar snapshot only when its revision, active Patch count, ordered Patch identities, fixed capacities, and descriptor-ordered instrument scalar layouts are compatible with the active graph; otherwise it SHALL retain the last compatible snapshot. Every newly active graph SHALL contain compatible initial mixer, envelope, and instrument parameters so rendering never depends on the relative arrival order of structural and scalar publications.
 
 #### Scenario: Matching scalar snapshot arrives
-- **WHEN** the latest complete parameter snapshot targets the active graph revision and Patch order
-- **THEN** the next rendered block uses that exact accepted scalar generation
+- **WHEN** the latest complete parameter snapshot targets the active graph revision, Patch order, and prepared capability layouts
+- **THEN** the next rendered block uses that exact accepted mixer, envelope, and instrument-scalar generation
 
 #### Scenario: Snapshot targets another graph
-- **WHEN** the latest scalar snapshot is stale or belongs to a pending graph revision
+- **WHEN** the latest scalar snapshot is stale, belongs to a pending graph revision, or carries an incompatible instrument scalar layout
 - **THEN** the renderer does not consume it and continues with the active graph's last compatible complete snapshot
 
 #### Scenario: Graph activates before scalar publication
@@ -96,11 +94,11 @@ Prepared-instrument dispatch, rendering, all-notes-off, graph activation, and gr
 - **THEN** measured callback allocation and destruction counts remain zero, output remains finite, and callback work remains bounded by declared capacities
 
 ### Requirement: Prepared-rack Phase 2 boundary
-This increment SHALL expose only HiDef SoundFont as a production instrument capability and preparer. Different prepared instrument types SHALL be used only as deterministic contract fixtures until a separately specified engine is installed. Replacement graphs SHALL retain the accepted PatchId set, and the application SHALL NOT expose Braids, C++/FFI, engine selection, a PATCH page, modulation, layering, per-Patch effects, or user-triggered structural graph edits.
+This increment SHALL expose HiDef SoundFont and Braids together as the two production instrument capabilities and preparers. Replacement graphs SHALL retain the accepted PatchId and capability layout, and the application SHALL NOT expose engine selection, a PATCH page, user-triggered structural edits, modulation, layering, per-Patch effects, or fallback.
 
 #### Scenario: Production application starts after the rack migration
 - **WHEN** the normal, smoke, headless-demo, or live-demo path is launched
-- **THEN** the generic prepared rack hosts the existing HiDef SoundFont Patches and no second engine or unavailable structural control is presented
+- **THEN** the generic prepared rack hosts alternating SoundFont and Braids Patches with exact isolated stems and no unavailable structural control is presented
 
 ### Requirement: Falsifiable prepared-rack acceptance
 The repository SHALL provide a named prepared-engine-rack acceptance target that exercises the production rack, renderer, and structural handoff and emits its success marker only after exact routing, stem isolation, atomic failure, swap acknowledgement, one-in-flight throttling, full-retirement-transport retry, compatible snapshots, zero callback allocations, and off-callback destruction are measured.
@@ -112,3 +110,32 @@ The repository SHALL provide a named prepared-engine-rack acceptance target that
 #### Scenario: Ownership or routing proof is absent
 - **WHEN** a graph is dropped, a callback destructor runs, a command reaches another Patch, a stem is contaminated, or any required measurement is missing
 - **THEN** the acceptance target fails and does not claim prepared-rack completion
+
+### Requirement: Production structural handoff is injected
+The standalone composition root SHALL construct and inject the structural graph boundary used by the production application. The application SHALL split and use only that injected boundary for initial graph status, replacement publication, and retirement collection and SHALL NOT construct a concrete structural adapter internally.
+
+#### Scenario: Replaceable boundary is supplied
+- **WHEN** a deterministic composition supplies a conforming structural-boundary fixture through the production constructor
+- **THEN** startup splits and uses that exact fixture before rendering and no hidden structural boundary is created
+
+### Requirement: Renderer preserves unknown-Patch routing status
+The production renderer SHALL preserve an unknown-Patch dispatch as fixed-size callback-to-control observation data while leaving every prepared instrument, active-note observation, and untargeted stem unchanged. The observation SHALL identify the unknown Patch and advance a saturating failure count without fallback, broadcast, allocation, blocking, logging, or formatting.
+
+#### Scenario: Unknown Patch reaches the renderer
+- **WHEN** a bounded audio command names a Patch absent from the active parameter layout or prepared rack
+- **THEN** no instrument receives the command and the next coherent audio observation reports exactly one additional routing failure and that Patch identity
+
+#### Scenario: Known Patch follows a routing failure
+- **WHEN** a later command names an installed Patch
+- **THEN** it is dispatched normally to that Patch only and the prior failure does not change routing or active-note state
+
+### Requirement: Production mixed-engine rack proof
+The named prepared-engine-rack acceptance SHALL include real SoundFont and real Braids preparers in one production graph and SHALL prove both implementation types respond to exact targeted MIDI, consume only matching scalar/envelope values, produce distinct nonzero finite stems, and retain zero callback allocation/destruction under bounded load.
+
+#### Scenario: Mixed production graph renders
+- **WHEN** one SoundFont Patch and one Braids Patch are prepared, sounded, edited, and rendered together
+- **THEN** each engine's isolated stem and parameter consequences are measured before the acceptance marker is emitted
+
+#### Scenario: Several Braids Patches share one rack
+- **WHEN** `N` Braids Patches are admitted alongside SoundFont within the rack's fixed Patch capacity
+- **THEN** the rack owns `N` separate prepared Braids instruments with `16 × N` total voices, including forty-eight for three Braids Patches, and routes commands, parameters, stealing, rendering, and all-notes-off without a global Braids voice pool or a Braids-specific Patch-count limit

@@ -1,4 +1,5 @@
 pub mod app_window;
+pub mod audio_device_status;
 pub mod audio_output;
 pub mod keyboard_input_translator;
 pub mod standalone_application;

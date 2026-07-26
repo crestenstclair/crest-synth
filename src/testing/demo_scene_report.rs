@@ -7,7 +7,9 @@ use serde::{Serialize, Serializer};
 /// One stable section of the exhaustive demo coverage matrix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemoCoverageGroup {
+    Inputs,
     Events,
+    Contexts,
     Directions,
     MidiKinds,
     EditableParameters,
@@ -15,6 +17,34 @@ pub enum DemoCoverageGroup {
     Rejections,
     Projections,
     AudioEffects,
+}
+
+/// Control-side evidence sampled from the production mixed-engine render path.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DemoAudioEvidence {
+    mixed_engine_stems_nonzero: bool,
+    mixed_engine_parameter_isolation: bool,
+}
+
+impl DemoAudioEvidence {
+    pub const fn new(
+        mixed_engine_stems_nonzero: bool,
+        mixed_engine_parameter_isolation: bool,
+    ) -> Self {
+        Self {
+            mixed_engine_stems_nonzero,
+            mixed_engine_parameter_isolation,
+        }
+    }
+
+    pub const fn mixed_engine_stems_nonzero(self) -> bool {
+        self.mixed_engine_stems_nonzero
+    }
+
+    pub const fn mixed_engine_parameter_isolation(self) -> bool {
+        self.mixed_engine_parameter_isolation
+    }
 }
 
 /// Sorted expected, exercised, and missing identifiers for one coverage group.
@@ -100,7 +130,9 @@ fn insert_sorted_unique(values: &mut Vec<String>, value: String) -> bool {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DemoSceneCoverage {
+    inputs: DemoCoverageSet,
     events: DemoCoverageSet,
+    contexts: DemoCoverageSet,
     directions: DemoCoverageSet,
     midi_kinds: DemoCoverageSet,
     editable_parameters: DemoCoverageSet,
@@ -137,7 +169,9 @@ impl DemoSceneCoverage {
     /// Returns one complete coverage group.
     pub fn group(&self, group: DemoCoverageGroup) -> &DemoCoverageSet {
         match group {
+            DemoCoverageGroup::Inputs => &self.inputs,
             DemoCoverageGroup::Events => &self.events,
+            DemoCoverageGroup::Contexts => &self.contexts,
             DemoCoverageGroup::Directions => &self.directions,
             DemoCoverageGroup::MidiKinds => &self.midi_kinds,
             DemoCoverageGroup::EditableParameters => &self.editable_parameters,
@@ -187,7 +221,9 @@ impl DemoSceneCoverage {
 
     fn group_mut(&mut self, group: DemoCoverageGroup) -> &mut DemoCoverageSet {
         match group {
+            DemoCoverageGroup::Inputs => &mut self.inputs,
             DemoCoverageGroup::Events => &mut self.events,
+            DemoCoverageGroup::Contexts => &mut self.contexts,
             DemoCoverageGroup::Directions => &mut self.directions,
             DemoCoverageGroup::MidiKinds => &mut self.midi_kinds,
             DemoCoverageGroup::EditableParameters => &mut self.editable_parameters,
@@ -198,9 +234,11 @@ impl DemoSceneCoverage {
         }
     }
 
-    fn groups(&self) -> [&DemoCoverageSet; 8] {
+    fn groups(&self) -> [&DemoCoverageSet; 10] {
         [
+            &self.inputs,
             &self.events,
+            &self.contexts,
             &self.directions,
             &self.midi_kinds,
             &self.editable_parameters,
@@ -364,11 +402,12 @@ pub struct DemoSceneReport {
     checkpoints: Vec<DemoSceneCheckpoint>,
     event_log: EventLog,
     final_state_tree: StateTree,
+    audio_evidence: DemoAudioEvidence,
 }
 
 impl DemoSceneReport {
     /// Stable schema version for the top-level report.
-    pub const SCHEMA_VERSION: u32 = 2;
+    pub const SCHEMA_VERSION: u32 = 3;
 
     /// Packages a scene only after checking the journal/tree endpoint.
     ///
@@ -418,6 +457,7 @@ impl DemoSceneReport {
             checkpoints,
             event_log,
             final_state_tree,
+            audio_evidence: DemoAudioEvidence::default(),
         })
     }
 
@@ -447,6 +487,15 @@ impl DemoSceneReport {
 
     pub const fn final_state_tree(&self) -> &StateTree {
         &self.final_state_tree
+    }
+
+    pub const fn audio_evidence(&self) -> DemoAudioEvidence {
+        self.audio_evidence
+    }
+
+    pub fn with_audio_evidence(mut self, audio_evidence: DemoAudioEvidence) -> Self {
+        self.audio_evidence = audio_evidence;
+        self
     }
 
     /// Serializes stable schema fields without timestamps, paths, or maps.
@@ -495,7 +544,7 @@ impl Serialize for DemoSceneReport {
             serde_json::from_str(self.final_state_tree.json())
                 .map_err(serde::ser::Error::custom)?;
 
-        let mut report = serializer.serialize_struct("DemoSceneReport", 7)?;
+        let mut report = serializer.serialize_struct("DemoSceneReport", 8)?;
         report.serialize_field("schemaVersion", &Self::SCHEMA_VERSION)?;
         report.serialize_field("scene", &self.scene)?;
         report.serialize_field("complete", &self.complete)?;
@@ -503,6 +552,7 @@ impl Serialize for DemoSceneReport {
         report.serialize_field("checkpoints", &self.checkpoints)?;
         report.serialize_field("eventLog", &self.event_log)?;
         report.serialize_field("finalStateTree", &final_state_tree)?;
+        report.serialize_field("audioEvidence", &self.audio_evidence)?;
         report.end()
     }
 }
@@ -665,7 +715,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&first).unwrap();
 
         assert_eq!(first, second);
-        assert_eq!(json["schemaVersion"], 2);
+        assert_eq!(json["schemaVersion"], 3);
         assert_eq!(json["scene"], "exhaustive-gui");
         assert_eq!(json["complete"], true);
         assert_eq!(json["coverage"]["events"]["missing"], serde_json::json!([]));

@@ -1,8 +1,8 @@
-# Refactoring Review: codex/regenerate-with-crest-spec
+# Refactoring Review: repair-production-runtime-contracts
 
-**Date:** 2026-07-19
-**Base branch:** working-tree `HEAD`, scoped to `spec/`
-**Files reviewed:** 7
+**Date:** 2026-07-25
+**Base:** working-tree `HEAD`, scoped to the production runtime-contract repair
+**Files reviewed:** 24 implementation, test, script, CUE, and OpenSpec artifacts
 
 ## Critical Issues
 
@@ -10,18 +10,20 @@ None.
 
 ## Refactoring Opportunities
 
-None remaining. The review found and resolved two ownership issues before this report:
+None remaining. The repair keeps each ownership boundary explicit:
 
-- Live checkpoint serialization now crosses the shell through the canonical `LiveDemoCheckpoint` value object; `LiveDemoRunner` owns the data and the composition-root callbacks own stdout I/O.
-- Mixer-private send and wet buffers now produce a fixed-size `MixObservation`; `AudioRenderer` consumes that value instead of reaching into `MixEngine` internals to assemble callback observations.
+- `StandaloneApplication` depends on injected provider, preparer, structural, observation, MIDI, window, and audio-output ports; concrete adapter choice stays in `src/bin/crest_synth.rs`.
+- Audio-output negotiation and stream start are separate phases, with one validated `AudioDeviceConfig` feeding preparation before callback ownership begins.
+- Runtime device failures and routing failures cross callback ownership through fixed-size atomic observations and are interpreted only on the control side.
+- Oversized device buffers are rendered as bounded graph-capacity chunks, retaining the existing prepared graph and renderer rather than introducing a second rendering path.
 
-The live runner, audio observation transport, shell composition, and verification assets each retain a single reason to change. Autonomous actions depend on `AppLoop` and the observation port rather than concrete reducer, engine, mixer, window, or device implementations.
+The generic standalone type and explicit constructor are intentionally verbose because they expose the replaceable production ports required by the architecture. Bundling them into an opaque dependency container would reduce surface syntax while weakening the composition witness.
 
 ## Minor Suggestions
 
-- Keep the inline tagged step shape inside `LiveDemoScene` until another owner needs it. Extracting a separate public `LiveDemoStep` now would be speculative generality.
-- The physical window/device acceptance remains intentionally human-run through `make demo-live`; the deterministic integration target verifies orchestration without introducing a fake product path.
+- If additional runtime-status kinds are introduced later, consider a common fixed-size status envelope. The current device-error and audio-observation transports have different semantics, so merging them now would be premature.
+- Keep the exact-selector validation script limited to one-test witnesses; multi-test validation should receive a separate structured-count contract instead of relaxing this guard.
 
 ## Summary
 
-The Phase 1 CUE diff has clear domain ownership, no duplicate public concept, no direct UI/audio-state mutation path, and no design-pattern abstraction without a current use. No further behavior-preserving structural changes are recommended before crest-spec generation.
+The reviewed repair has no duplicate canonical concept, concrete application-service dependency, callback-side allocation/logging/formatting path, or silent rendering fallback. No further behavior-preserving refactor is recommended before acceptance.

@@ -7,13 +7,15 @@ use crate::control::text_projection::TextProjection;
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::audio_command::AudioCommand;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
-use crate::synth::instrument_capability::CapabilityRegistry;
-use crate::synth::patch::Patch;
+use crate::synth::instrument_capability::{
+    CapabilityDescriptor, CapabilityRegistry, ParameterKind,
+};
+use crate::synth::patch::{Patch, PatchEditableTarget};
 use core::fmt;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 const TICK_DURATION: Duration = Duration::from_millis(10);
@@ -114,7 +116,7 @@ pub struct DemoScene {
 
 impl DemoScene {
     pub const NAME: &'static str = "exhaustive-gui-demo";
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
 
     /// Derives the complete current scene from the accepted fixture Patch list.
     ///
@@ -141,7 +143,7 @@ impl DemoScene {
         Ok(Self {
             name: Self::NAME.to_owned(),
             schema_version: Self::SCHEMA_VERSION,
-            steps: build_steps(installed_patches, global_parameters),
+            steps: build_steps(capabilities, installed_patches, global_parameters),
             expected_coverage: build_expected_coverage(capabilities, installed_patches),
         })
     }
@@ -195,9 +197,43 @@ impl fmt::Display for DemoSceneError {
 
 impl std::error::Error for DemoSceneError {}
 
-fn build_steps(patches: &[Patch], global_parameters: &GlobalParameters) -> Vec<DemoSceneStep> {
+fn build_steps(
+    capabilities: &CapabilityRegistry,
+    patches: &[Patch],
+    global_parameters: &GlobalParameters,
+) -> Vec<DemoSceneStep> {
     let mut steps = Vec::new();
+    let mut boundary_probed = BTreeSet::new();
     push_checkpoint(&mut steps, DemoCheckpoint::new("scene.start"));
+
+    // Exercise the read-only PATCH context before the exhaustive input sweep.
+    // Both rejected actions leave its page and generation unchanged, and the
+    // direct MIXER key proves the next semantic event is still accepted.
+    push_key_press(&mut steps, WindowKey::Digit2);
+    push_key_press(&mut steps, WindowKey::W);
+    push_checkpoint(
+        &mut steps,
+        DemoCheckpoint::after_rejection(
+            "context.patch.navigateRejected",
+            EventRejection::ActionUnavailableInContext,
+        ),
+    );
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+        WindowKey::K,
+    )));
+    push_key_press(&mut steps, WindowKey::D);
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
+    push_checkpoint(
+        &mut steps,
+        DemoCheckpoint::after_rejection(
+            "context.patch.adjustRejected",
+            EventRejection::ActionUnavailableInContext,
+        ),
+    );
+    push_key_press(&mut steps, WindowKey::Digit1);
+    push_checkpoint(&mut steps, DemoCheckpoint::new("context.mixer.recovered"));
 
     for input in complete_window_vocabulary() {
         steps.push(DemoSceneStep::WindowInput(*input));
@@ -213,27 +249,34 @@ fn build_steps(patches: &[Patch], global_parameters: &GlobalParameters) -> Vec<D
     push_key_press(&mut steps, WindowKey::S);
     push_checkpoint(&mut steps, DemoCheckpoint::new("input.vocabulary"));
 
-    for (patch_index, patch) in patches.iter().enumerate() {
-        for descriptor in ChannelParameters::surface_descriptor() {
-            let parameter = descriptor.parameter();
-            if patch_index == 0 {
+    for patch in patches {
+        let descriptor = capabilities
+            .descriptor(patch.instrument_config().capability_id())
+            .expect("validated scene Patch capability is installed");
+        let targets = patch
+            .editable_targets(descriptor)
+            .expect("validated scene Patch has a canonical editable surface");
+        for target in targets {
+            let metadata = patch_target_metadata(patch, descriptor, &target)
+                .expect("every editable target has bounded adjustment metadata");
+            if boundary_probed.insert(target.name().to_owned()) {
                 push_parameter_boundary_probe(
                     &mut steps,
-                    &format!("patch.{}.{}", patch.id().value(), descriptor.name()),
-                    patch.parameters().value(parameter),
-                    descriptor.minimum(),
-                    descriptor.maximum(),
-                    descriptor.fine_step(),
-                    descriptor.coarse_step(),
+                    &format!("patch.{}.{}", patch.id().value(), target.name()),
+                    metadata.0,
+                    metadata.1,
+                    metadata.2,
+                    metadata.3,
+                    metadata.4,
                 );
             }
-            push_reversible_adjustments(&mut steps);
+            push_reversible_adjustments(&mut steps, metadata.0, metadata.1, metadata.2, metadata.4);
             push_checkpoint(
                 &mut steps,
                 DemoCheckpoint::new(format!(
                     "patch.{}.parameter.{}",
                     patch.id().value(),
-                    descriptor.name()
+                    target.name()
                 )),
             );
             push_key_press(&mut steps, WindowKey::S);
@@ -252,7 +295,13 @@ fn build_steps(patches: &[Patch], global_parameters: &GlobalParameters) -> Vec<D
             descriptor.fine_step(),
             descriptor.coarse_step(),
         );
-        push_reversible_adjustments(&mut steps);
+        push_reversible_adjustments(
+            &mut steps,
+            global_parameters.value(parameter),
+            descriptor.minimum(),
+            descriptor.maximum(),
+            descriptor.coarse_step(),
+        );
         push_checkpoint(
             &mut steps,
             DemoCheckpoint::new(format!("global.parameter.{}", descriptor.name())),
@@ -270,7 +319,10 @@ fn build_steps(patches: &[Patch], global_parameters: &GlobalParameters) -> Vec<D
     push_checkpoint(&mut steps, DemoCheckpoint::new("selection.restored"));
 
     for patch in patches {
-        for message in midi_messages(patch.channel()) {
+        let descriptor = capabilities
+            .descriptor(patch.instrument_config().capability_id())
+            .expect("validated MIDI Patch capability is installed");
+        for message in midi_messages(patch.channel(), descriptor.supported_midi_kinds()) {
             steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
                 patch.id(),
                 message,
@@ -314,18 +366,84 @@ fn push_key_press(steps: &mut Vec<DemoSceneStep>, key: WindowKey) {
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(key)));
 }
 
-fn push_reversible_adjustments(steps: &mut Vec<DemoSceneStep>) {
+fn push_reversible_adjustments(
+    steps: &mut Vec<DemoSceneStep>,
+    initial: f32,
+    minimum: f32,
+    maximum: f32,
+    coarse_step: f32,
+) {
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
         WindowKey::K,
     )));
-    // D/A are the fine positive/negative pair; W/S are the coarse pair.
-    push_key_press(steps, WindowKey::D);
-    push_key_press(steps, WindowKey::A);
-    push_key_press(steps, WindowKey::W);
-    push_key_press(steps, WindowKey::S);
+    let can_increase = initial + coarse_step <= maximum || initial <= minimum;
+    let (fine_first, fine_restore, coarse_first, coarse_restore) = if can_increase {
+        (WindowKey::D, WindowKey::A, WindowKey::W, WindowKey::S)
+    } else {
+        (WindowKey::A, WindowKey::D, WindowKey::S, WindowKey::W)
+    };
+    push_key_press(steps, fine_first);
+    push_key_press(steps, fine_restore);
+    push_key_press(steps, coarse_first);
+    push_key_press(steps, coarse_restore);
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
         WindowKey::K,
     )));
+}
+
+fn patch_target_metadata(
+    patch: &Patch,
+    descriptor: &CapabilityDescriptor,
+    target: &PatchEditableTarget,
+) -> Option<(f32, f32, f32, f32, f32)> {
+    match target {
+        PatchEditableTarget::Mixer(parameter) => {
+            let metadata = parameter.descriptor();
+            Some((
+                patch.parameters().value(*parameter),
+                metadata.minimum(),
+                metadata.maximum(),
+                metadata.fine_step(),
+                metadata.coarse_step(),
+            ))
+        }
+        PatchEditableTarget::Envelope(parameter) => {
+            let metadata = parameter.descriptor();
+            Some((
+                patch.envelope().value(*parameter),
+                metadata.minimum(),
+                metadata.maximum(),
+                metadata.fine_step(),
+                metadata.coarse_step(),
+            ))
+        }
+        PatchEditableTarget::Instrument(parameter_id) => {
+            let spec = descriptor.parameter(parameter_id)?;
+            let value = patch.instrument_config().value(parameter_id)?;
+            let initial = spec.scalar_value(value).ok()?;
+            match spec.kind() {
+                ParameterKind::Continuous | ParameterKind::Stepped => {
+                    let range = spec.range()?;
+                    Some((
+                        initial,
+                        range.minimum() as f32,
+                        range.maximum() as f32,
+                        spec.fine_step()? as f32,
+                        spec.coarse_step()? as f32,
+                    ))
+                }
+                ParameterKind::Choice => Some((
+                    initial,
+                    0.0,
+                    spec.choices().len().saturating_sub(1) as f32,
+                    1.0,
+                    1.0,
+                )),
+                ParameterKind::Toggle => Some((initial, 0.0, 1.0, 1.0, 1.0)),
+                ParameterKind::Asset => None,
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -402,8 +520,8 @@ fn push_checkpoint(steps: &mut Vec<DemoSceneStep>, checkpoint: DemoCheckpoint) {
     steps.push(DemoSceneStep::Checkpoint(checkpoint));
 }
 
-fn midi_messages(channel: MidiChannel) -> Vec<MidiMessage> {
-    MidiMessageKind::surface_descriptor()
+fn midi_messages(channel: MidiChannel, kinds: &[MidiMessageKind]) -> Vec<MidiMessage> {
+    kinds
         .iter()
         .map(|kind| match kind {
             MidiMessageKind::NoteOn => midi_message(channel, *kind, 60, 96),
@@ -433,6 +551,10 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
     let mut expected = Vec::new();
     for descriptor in AppEvent::surface_descriptor() {
         match descriptor {
+            crate::control::app_event::AppEventSurfaceDescriptor::SelectContext { context } => {
+                expected.push("event.selectContext".to_owned());
+                expected.push(format!("context.{}", context.label().to_ascii_lowercase()));
+            }
             crate::control::app_event::AppEventSurfaceDescriptor::Navigate { direction } => {
                 expected.push("event.navigate".to_owned());
                 expected.push(format!("direction.{}", direction_identifier(*direction)));
@@ -462,15 +584,26 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
             .map(|direction| format!("direction.{}", direction_identifier(direction))),
     );
 
-    expected.extend(
-        midi_messages(patches[0].channel())
-            .into_iter()
-            .map(|message| format!("midi.{}", midi_kind_identifier(message.kind()))),
-    );
+    for patch in patches {
+        let descriptor = capabilities
+            .descriptor(patch.instrument_config().capability_id())
+            .expect("validated MIDI coverage capability is installed");
+        expected.extend(
+            midi_messages(patch.channel(), descriptor.supported_midi_kinds())
+                .into_iter()
+                .map(|message| format!("midi.{}", midi_kind_identifier(message.kind()))),
+        );
+    }
 
     for patch in patches {
-        for descriptor in ChannelParameters::surface_descriptor() {
-            let parameter = descriptor.name();
+        let descriptor = capabilities
+            .descriptor(patch.instrument_config().capability_id())
+            .expect("validated coverage Patch capability is installed");
+        let targets = patch
+            .editable_targets(descriptor)
+            .expect("validated coverage Patch has a canonical editable surface");
+        for target in targets {
+            let parameter = target.name();
             expected.push(format!(
                 "parameter.patch.{}.{parameter}",
                 patch.id().value()
@@ -479,14 +612,38 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
                 "effect.parameterSnapshot.patch.{}.{parameter}",
                 patch.id().value()
             ));
-            expected.push(format!(
-                "property.stateTree.patch.{}.parameters.{parameter}",
-                patch.id().value()
-            ));
-            expected.push(format!(
-                "property.stateTree.parameters.patch.{}.{parameter}",
-                patch.id().value()
-            ));
+            match target {
+                PatchEditableTarget::Mixer(_) => {
+                    expected.push(format!(
+                        "property.stateTree.patch.{}.parameters.{parameter}",
+                        patch.id().value()
+                    ));
+                    expected.push(format!(
+                        "property.stateTree.parameters.patch.{}.{parameter}",
+                        patch.id().value()
+                    ));
+                }
+                PatchEditableTarget::Envelope(_) => {
+                    expected.push(format!(
+                        "property.stateTree.patch.{}.envelope.{parameter}",
+                        patch.id().value()
+                    ));
+                    expected.push(format!(
+                        "property.stateTree.parameters.patch.{}.envelope.{parameter}",
+                        patch.id().value()
+                    ));
+                }
+                PatchEditableTarget::Instrument(_) => {
+                    expected.push(format!(
+                        "property.stateTree.parameters.patch.{}.instrument.count",
+                        patch.id().value()
+                    ));
+                    expected.push(format!(
+                        "property.stateTree.parameters.patch.{}.instrument.values",
+                        patch.id().value()
+                    ));
+                }
+            }
         }
         for property in ["id", "name", "channel", "instrument.capabilityId"] {
             expected.push(format!(
@@ -519,7 +676,7 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
             "id",
             "label",
             "semanticAccent",
-            "voiceLimit",
+            "voicePolicy",
             "supportedMidiKinds",
         ] {
             expected.push(format!(
@@ -640,12 +797,16 @@ fn midi_kind_identifier(kind: MidiMessageKind) -> &'static str {
 
 fn window_input_identifier(input: WindowInput) -> &'static str {
     match (input.kind(), input.key()) {
+        (WindowInputKind::KeyDown, WindowKey::Digit1) => "keyDown.digit1",
+        (WindowInputKind::KeyDown, WindowKey::Digit2) => "keyDown.digit2",
         (WindowInputKind::KeyDown, WindowKey::W) => "keyDown.w",
         (WindowInputKind::KeyDown, WindowKey::S) => "keyDown.s",
         (WindowInputKind::KeyDown, WindowKey::A) => "keyDown.a",
         (WindowInputKind::KeyDown, WindowKey::D) => "keyDown.d",
         (WindowInputKind::KeyDown, WindowKey::K) => "keyDown.k",
         (WindowInputKind::KeyDown, WindowKey::Other) => "keyDown.other",
+        (WindowInputKind::KeyUp, WindowKey::Digit1) => "keyUp.digit1",
+        (WindowInputKind::KeyUp, WindowKey::Digit2) => "keyUp.digit2",
         (WindowInputKind::KeyUp, WindowKey::W) => "keyUp.w",
         (WindowInputKind::KeyUp, WindowKey::S) => "keyUp.s",
         (WindowInputKind::KeyUp, WindowKey::A) => "keyUp.a",
@@ -669,6 +830,7 @@ mod tests {
     use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::voice_envelope::VoiceEnvelope;
     use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn patch(id: u32, channel: u8) -> Patch {
@@ -777,10 +939,10 @@ mod tests {
             .expected_coverage()
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
-        assert_eq!(WindowInput::surface_descriptor().len(), 13);
+        assert_eq!(WindowInput::surface_descriptor().len(), 17);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            10
+            12
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),
@@ -788,7 +950,7 @@ mod tests {
         );
         assert_eq!(ChannelParameters::surface_descriptor().len(), 4);
         assert_eq!(GlobalParameters::surface_descriptor().len(), 7);
-        assert_eq!(EventRejection::surface_descriptor().len(), 10);
+        assert_eq!(EventRejection::surface_descriptor().len(), 11);
         for patch in &patches {
             for descriptor in ChannelParameters::surface_descriptor() {
                 assert!(scene.expected_coverage().contains(&format!(
@@ -847,14 +1009,17 @@ mod tests {
                 checkpoint.expected_last_rejection() == Some(EventRejection::ParameterAtBoundary)
             })
             .count();
-        assert_eq!(boundary_rejections, 22);
+        let bounded_parameter_count = ChannelParameters::surface_descriptor().len()
+            + VoiceEnvelope::surface_descriptor().len()
+            + GlobalParameters::surface_descriptor().len();
+        assert_eq!(boundary_rejections, bounded_parameter_count * 2);
         assert_eq!(
             checkpoints
                 .iter()
                 .filter(|checkpoint| checkpoint.name().starts_with("boundary.")
                     && checkpoint.name().ends_with(".restored"))
                 .count(),
-            11
+            bounded_parameter_count
         );
     }
 

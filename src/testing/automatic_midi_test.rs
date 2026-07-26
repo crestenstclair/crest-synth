@@ -10,8 +10,8 @@ use crate::kernel::patch_id::PatchId;
 use crate::mixer::channel_parameters::ChannelParameters;
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crate::synth::instrument_capability::{
-    AssetAssignment, AssetKind, AssetReference, CapabilityError, InstrumentConfig,
-    ParameterAssignment, ParameterValue,
+    AssetAssignment, AssetKind, AssetReference, CapabilityDescriptor, CapabilityError,
+    CapabilityRegistry, InstrumentConfig, ParameterAssignment, ParameterDefault, ParameterValue,
 };
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::parameter_id::ParameterId;
@@ -126,8 +126,8 @@ impl From<BoundaryFull> for TestInputError {
 /// Installs and advances the one automatic MIDI fixture.
 ///
 /// The service owns only fixture-specific input state. The composition root
-/// retains ownership of the one SoundFont engine and the production AppLoop so
-/// the configured engine can move to the audio renderer after initialization
+/// retains ownership of the installed capability providers and the production
+/// AppLoop so every fixture config is created through its selected provider
 /// while every fixture event still uses the same reducer path.
 pub struct AutomaticMidiTest<Source> {
     source: Source,
@@ -135,6 +135,47 @@ pub struct AutomaticMidiTest<Source> {
     events: FixedEventBatch,
     initialized: bool,
     started: bool,
+}
+
+fn exact_provider_descriptors(
+    providers: &[Box<dyn InstrumentCapabilityProvider>],
+    registry: &CapabilityRegistry,
+) -> Result<Vec<CapabilityDescriptor>, CapabilityError> {
+    if providers.is_empty() {
+        let capability_id = registry
+            .descriptors()
+            .first()
+            .ok_or(CapabilityError::EmptyRegistry)?
+            .id()
+            .clone();
+        return Err(CapabilityError::ProviderRegistryMismatch(capability_id));
+    }
+
+    let descriptors = providers
+        .iter()
+        .map(|provider| provider.descriptor())
+        .collect::<Vec<_>>();
+    if descriptors == registry.descriptors() {
+        return Ok(descriptors);
+    }
+
+    let capability_id = descriptors
+        .iter()
+        .zip(registry.descriptors())
+        .find_map(|(provider, registered)| (provider != registered).then(|| provider.id().clone()))
+        .or_else(|| {
+            descriptors
+                .get(registry.descriptors().len())
+                .map(|descriptor| descriptor.id().clone())
+        })
+        .or_else(|| {
+            registry
+                .descriptors()
+                .get(descriptors.len())
+                .map(|descriptor| descriptor.id().clone())
+        })
+        .expect("a nonempty registry or provider list has a mismatched descriptor");
+    Err(CapabilityError::ProviderRegistryMismatch(capability_id))
 }
 
 impl<Source> AutomaticMidiTest<Source>
@@ -154,32 +195,19 @@ where
 
     /// Discovers every fixture Patch and installs it through AppLoop without
     /// configuring a sound engine or starting the event source.
-    pub fn initialize<Provider, Boundary>(
+    pub fn initialize<Boundary>(
         &mut self,
-        provider: &Provider,
+        providers: &[Box<dyn InstrumentCapabilityProvider>],
         app_loop: &mut AppLoop<Boundary>,
     ) -> Result<(), TestInputError>
     where
-        Provider: InstrumentCapabilityProvider,
         Boundary: ControlAudioBoundary,
     {
         if self.initialized {
             return Err(TestInputError::AlreadyInitialized);
         }
 
-        let provider_descriptor = provider.descriptor();
-        let registered_descriptor = app_loop
-            .capabilities()
-            .descriptor(provider_descriptor.id())
-            .ok_or_else(|| {
-                CapabilityError::ProviderRegistryMismatch(provider_descriptor.id().clone())
-            })?;
-        if registered_descriptor != &provider_descriptor {
-            return Err(CapabilityError::ProviderRegistryMismatch(
-                provider_descriptor.id().clone(),
-            )
-            .into());
-        }
+        let descriptors = exact_provider_descriptors(providers, app_loop.capabilities())?;
 
         let parts = self.source.prepare()?;
         let mut patch_ids = Vec::new();
@@ -212,7 +240,15 @@ where
                 .map_err(|_| TestInputError::PatchIdentityOverflow { position })?;
             let patch_id = PatchId::new(patch_number)
                 .expect("a one-based fixture position always produces a non-zero PatchId");
-            let instrument_config = create_soundfont_config(provider, part.instrument())?;
+            let provider_index = position % providers.len();
+            let provider = providers[provider_index].as_ref();
+            let descriptor = &descriptors[provider_index];
+            let instrument_config = create_fixture_config(provider, descriptor, part.instrument())?;
+            if instrument_config.capability_id() != descriptor.id() {
+                return Err(
+                    CapabilityError::ProviderRegistryMismatch(descriptor.id().clone()).into(),
+                );
+            }
             app_loop
                 .capabilities()
                 .validate_config(&instrument_config)?;
@@ -296,6 +332,42 @@ where
     }
 }
 
+/// Creates one fixture config through the selected provider, overriding only
+/// the legacy source identity fields that its descriptor actually declares.
+/// This keeps discovery-order alternation provider-backed and fallback-free.
+fn create_fixture_config(
+    provider: &dyn InstrumentCapabilityProvider,
+    descriptor: &CapabilityDescriptor,
+    instrument: SoundFontInstrument,
+) -> Result<InstrumentConfig, CapabilityError> {
+    let mut values = Vec::with_capacity(descriptor.parameters().count());
+    let mut assets = Vec::with_capacity(descriptor.asset_requirements().len());
+
+    for spec in descriptor.parameters() {
+        match spec.default_value() {
+            ParameterDefault::Asset(reference) => {
+                assets.push(AssetAssignment::new(spec.id().clone(), reference.clone()))
+            }
+            ParameterDefault::Value(default) => {
+                let value = match spec.id().as_str() {
+                    SOUNDFONT_BANK_PARAMETER_ID => {
+                        ParameterValue::Stepped(i64::from(instrument.bank()))
+                    }
+                    SOUNDFONT_PROGRAM_PARAMETER_ID => {
+                        ParameterValue::Stepped(i64::from(instrument.program()))
+                    }
+                    SOUNDFONT_PERCUSSION_PARAMETER_ID => {
+                        ParameterValue::Toggle(instrument.percussion())
+                    }
+                    _ => default.clone(),
+                };
+                values.push(ParameterAssignment::new(spec.id().clone(), value));
+            }
+        }
+    }
+    provider.create_config(&values, &assets)
+}
+
 /// Translates the fixed MIDI fixture's source identity into generic assignments.
 ///
 /// The provider boundary remains generic; this narrow testing service owns all
@@ -342,7 +414,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{AutomaticMidiTest, TestInputError};
-    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
+    use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
+    use crate::adapter::hidef_soundfont_capability::{
+        HiDefSoundFontCapability, SOUNDFONT_PROGRAM_PARAMETER_ID,
+    };
     use crate::control::app_loop::AppLoop;
     use crate::control::app_state::AppState;
     use crate::control::event_record::EventSource;
@@ -355,12 +430,19 @@ mod tests {
     use crate::real_time::audio_command::AudioCommand;
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::{
+        AssetAssignment, CapabilityDescriptor, CapabilityError, CapabilityRegistry,
+        InstrumentCapabilityProvider, InstrumentConfig, ParameterAssignment, ParameterId,
+        ParameterValue,
+    };
     use crate::testing::instrument_part::InstrumentPart;
     use crate::testing::midi_event_source::{
         FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
     };
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    type Providers = Vec<Box<dyn InstrumentCapabilityProvider>>;
 
     struct TestSource {
         parts: Vec<InstrumentPart>,
@@ -443,12 +525,13 @@ mod tests {
         }
     }
 
-    fn app_loop() -> (AppLoop<TestBoundary>, Arc<Mutex<Observations>>) {
+    fn app_loop_for_registry(
+        registry: CapabilityRegistry,
+    ) -> (AppLoop<TestBoundary>, Arc<Mutex<Observations>>) {
         let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap();
-        let provider = HiDefSoundFontCapability::new().unwrap();
         let observations = Arc::new(Mutex::new(Observations::default()));
         let app_loop = AppLoop::new(
-            AppState::new(provider.registry().unwrap(), global),
+            AppState::new(registry, global),
             StateProjector::new(),
             TestBoundary {
                 observations: Arc::clone(&observations),
@@ -458,6 +541,55 @@ mod tests {
         (app_loop, observations)
     }
 
+    fn app_loop() -> (AppLoop<TestBoundary>, Arc<Mutex<Observations>>, Providers) {
+        let providers: Providers = vec![Box::new(HiDefSoundFontCapability::new().unwrap())];
+        let registry = CapabilityRegistry::new(
+            providers
+                .iter()
+                .map(|provider| provider.descriptor())
+                .collect(),
+        )
+        .unwrap();
+        let (app_loop, observations) = app_loop_for_registry(registry);
+        (app_loop, observations, providers)
+    }
+
+    fn mixed_app_loop() -> (AppLoop<TestBoundary>, CapabilityRegistry, Providers) {
+        let providers: Providers = vec![
+            Box::new(HiDefSoundFontCapability::new().unwrap()),
+            Box::new(BraidsCapability::new().unwrap()),
+        ];
+        let registry = CapabilityRegistry::new(
+            providers
+                .iter()
+                .map(|provider| provider.descriptor())
+                .collect(),
+        )
+        .unwrap();
+        let (app_loop, _) = app_loop_for_registry(registry.clone());
+        (app_loop, registry, providers)
+    }
+
+    struct FailingConfigProvider {
+        descriptor: CapabilityDescriptor,
+    }
+
+    impl InstrumentCapabilityProvider for FailingConfigProvider {
+        fn descriptor(&self) -> CapabilityDescriptor {
+            self.descriptor.clone()
+        }
+
+        fn create_config(
+            &self,
+            _values: &[ParameterAssignment],
+            _asset_references: &[AssetAssignment],
+        ) -> Result<InstrumentConfig, CapabilityError> {
+            Err(CapabilityError::ValueOutOfRange(
+                ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap(),
+            ))
+        }
+    }
+
     #[test]
     fn initialize_installs_one_default_patch_per_part_without_starting() {
         let source = source(
@@ -465,10 +597,9 @@ mod tests {
             Vec::new(),
         );
         let mut service = AutomaticMidiTest::new(source);
-        let (mut app_loop, observations) = app_loop();
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let (mut app_loop, observations, providers) = app_loop();
 
-        service.initialize(&provider, &mut app_loop).unwrap();
+        service.initialize(&providers, &mut app_loop).unwrap();
 
         let event_log = app_loop.event_log();
         assert_eq!(event_log.records().len(), 1);
@@ -484,13 +615,150 @@ mod tests {
     }
 
     #[test]
+    fn initialize_alternates_exact_soundfont_and_default_braids_configs_in_discovery_order() {
+        let source = source(
+            vec![
+                part(0, "Piano", 0),
+                part(1, "Bass", 32),
+                part(2, "Strings", 48),
+                part(3, "Lead", 80),
+            ],
+            Vec::new(),
+        );
+        let mut service = AutomaticMidiTest::new(source);
+        let (mut app_loop, registry, providers) = mixed_app_loop();
+        service.initialize(&providers, &mut app_loop).unwrap();
+
+        assert_eq!(
+            app_loop
+                .patches()
+                .iter()
+                .map(|patch| patch.instrument_config().capability_id().as_str())
+                .collect::<Vec<_>>(),
+            [
+                crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
+                BRAIDS_CAPABILITY_ID,
+                crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
+                BRAIDS_CAPABILITY_ID,
+            ]
+        );
+        for patch in app_loop.patches() {
+            registry.validate_config(patch.instrument_config()).unwrap();
+        }
+        assert_eq!(
+            app_loop.patches()[0]
+                .instrument_config()
+                .value(&ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Stepped(0))
+        );
+        assert_eq!(
+            app_loop.patches()[2]
+                .instrument_config()
+                .value(&ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Stepped(48))
+        );
+        let braids_default = BraidsCapability::new().unwrap().default_config().unwrap();
+        assert_eq!(app_loop.patches()[1].instrument_config(), &braids_default);
+        assert_eq!(app_loop.patches()[3].instrument_config(), &braids_default);
+    }
+
+    #[test]
+    fn initialize_rejects_provider_conversion_failure_atomically_without_substitution() {
+        let descriptor = HiDefSoundFontCapability::new().unwrap().descriptor();
+        let registry = CapabilityRegistry::new(vec![descriptor.clone()]).unwrap();
+        let providers: Providers = vec![Box::new(FailingConfigProvider { descriptor })];
+        let (mut app_loop, observations) = app_loop_for_registry(registry);
+        let mut service = AutomaticMidiTest::new(source(vec![part(0, "Piano", 48)], Vec::new()));
+
+        let error = service.initialize(&providers, &mut app_loop).unwrap_err();
+
+        assert_eq!(
+            error,
+            TestInputError::Capability(CapabilityError::ValueOutOfRange(
+                ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()
+            ))
+        );
+        assert!(app_loop.patches().is_empty());
+        assert!(app_loop.event_log().records().is_empty());
+        assert!(!service.source.started);
+        let observations = observations.lock().unwrap();
+        assert!(observations.commands.is_empty());
+        assert_eq!(
+            observations
+                .parameters
+                .as_ref()
+                .map(ParameterSnapshot::generation),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn initialize_rejects_provider_registry_mismatch_before_patch_installation() {
+        let registry = HiDefSoundFontCapability::new().unwrap().registry().unwrap();
+        let providers: Providers = vec![Box::new(BraidsCapability::new().unwrap())];
+        let mismatched_capability = providers[0].descriptor().id().clone();
+        let (mut app_loop, observations) = app_loop_for_registry(registry);
+        let mut service = AutomaticMidiTest::new(source(vec![part(0, "Piano", 0)], Vec::new()));
+
+        let error = service.initialize(&providers, &mut app_loop).unwrap_err();
+
+        assert_eq!(
+            error,
+            TestInputError::Capability(CapabilityError::ProviderRegistryMismatch(
+                mismatched_capability
+            ))
+        );
+        assert!(app_loop.patches().is_empty());
+        assert!(app_loop.event_log().records().is_empty());
+        assert!(!service.source.started);
+        let observations = observations.lock().unwrap();
+        assert!(observations.commands.is_empty());
+        assert_eq!(
+            observations
+                .parameters
+                .as_ref()
+                .map(ParameterSnapshot::generation),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn initialize_rejects_missing_provider_before_patch_installation() {
+        let registry = HiDefSoundFontCapability::new().unwrap().registry().unwrap();
+        let missing_capability = registry.descriptors()[0].id().clone();
+        let providers: Providers = Vec::new();
+        let (mut app_loop, observations) = app_loop_for_registry(registry);
+        let mut service = AutomaticMidiTest::new(source(vec![part(0, "Piano", 0)], Vec::new()));
+
+        let error = service.initialize(&providers, &mut app_loop).unwrap_err();
+
+        assert_eq!(
+            error,
+            TestInputError::Capability(CapabilityError::ProviderRegistryMismatch(
+                missing_capability
+            ))
+        );
+        assert!(app_loop.patches().is_empty());
+        assert!(app_loop.event_log().records().is_empty());
+        assert!(!service.source.started);
+        let observations = observations.lock().unwrap();
+        assert!(observations.commands.is_empty());
+        assert_eq!(
+            observations
+                .parameters
+                .as_ref()
+                .map(ParameterSnapshot::generation),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn explicit_start_is_required_once_after_patch_installation() {
         let mut service = AutomaticMidiTest::new(source(vec![part(4, "Piano", 0)], Vec::new()));
-        let (mut app_loop, _) = app_loop();
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let (mut app_loop, _, providers) = app_loop();
 
         assert_eq!(service.start(), Err(TestInputError::NotInitialized));
-        service.initialize(&provider, &mut app_loop).unwrap();
+        service.initialize(&providers, &mut app_loop).unwrap();
         assert_eq!(
             service.tick(Duration::from_millis(1), &mut app_loop),
             Err(TestInputError::NotStarted)
@@ -508,9 +776,8 @@ mod tests {
             vec![due],
         );
         let mut service = AutomaticMidiTest::new(source);
-        let (mut app_loop, observations) = app_loop();
-        let provider = HiDefSoundFontCapability::new().unwrap();
-        service.initialize(&provider, &mut app_loop).unwrap();
+        let (mut app_loop, observations, providers) = app_loop();
+        service.initialize(&providers, &mut app_loop).unwrap();
         service.start().unwrap();
 
         service
@@ -540,10 +807,9 @@ mod tests {
             Vec::new(),
         );
         let mut service = AutomaticMidiTest::new(source);
-        let (mut app_loop, _) = app_loop();
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let (mut app_loop, _, providers) = app_loop();
 
-        let error = service.initialize(&provider, &mut app_loop).unwrap_err();
+        let error = service.initialize(&providers, &mut app_loop).unwrap_err();
 
         assert_eq!(error, TestInputError::DuplicatePartIndex { part_index: 7 });
         assert!(!service.source.started);
@@ -554,9 +820,8 @@ mod tests {
         let due = TargetedMidiEvent::new(99, message(0, 60));
         let source = source(vec![part(0, "Piano", 0)], vec![due]);
         let mut service = AutomaticMidiTest::new(source);
-        let (mut app_loop, observations) = app_loop();
-        let provider = HiDefSoundFontCapability::new().unwrap();
-        service.initialize(&provider, &mut app_loop).unwrap();
+        let (mut app_loop, observations, providers) = app_loop();
+        service.initialize(&providers, &mut app_loop).unwrap();
         service.start().unwrap();
 
         let error = service

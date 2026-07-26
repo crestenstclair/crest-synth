@@ -1,61 +1,17 @@
 use crate::control::app_event::{AppEvent, Direction};
+use crate::control::interaction_state::{InteractionState, Selection, SelectionSection};
+use crate::control::top_level_context::TopLevelContext;
 use crate::mixer::channel_parameters::{ChannelParameter, ChannelParameters};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::audio_command::AudioCommand;
-use crate::synth::instrument_capability::CapabilityRegistry;
-use crate::synth::patch::Patch;
+use crate::synth::instrument_capability::{
+    CapabilityError, CapabilityRegistry, ParameterAdjustment,
+};
+use crate::synth::patch::{Patch, PatchEditableTarget};
 use core::fmt;
 
-const PATCH_PARAMETER_COUNT: usize = ChannelParameters::surface_descriptor().len();
 const GLOBAL_PARAMETER_COUNT: usize = GlobalParameters::surface_descriptor().len();
 const MAX_PATCH_COUNT: usize = 16;
-
-/// The kind of section selected in the single text view.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SelectionSection {
-    Patch,
-    Global,
-}
-
-/// A typed position in the complete Patch-plus-GLOBAL parameter list.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Selection {
-    section: SelectionSection,
-    patch_index: usize,
-    parameter_index: usize,
-}
-
-impl Selection {
-    /// Selects the first parameter of one Patch section.
-    pub const fn patch(patch_index: usize) -> Self {
-        Self {
-            section: SelectionSection::Patch,
-            patch_index,
-            parameter_index: 0,
-        }
-    }
-
-    /// Selects the first global parameter.
-    pub const fn global() -> Self {
-        Self {
-            section: SelectionSection::Global,
-            patch_index: 0,
-            parameter_index: 0,
-        }
-    }
-
-    pub const fn section(&self) -> SelectionSection {
-        self.section
-    }
-
-    pub const fn patch_index(&self) -> usize {
-        self.patch_index
-    }
-
-    pub const fn parameter_index(&self) -> usize {
-        self.parameter_index
-    }
-}
 
 /// The domain event emitted after an AppEvent has been accepted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +61,7 @@ pub enum EventRejection {
     InvalidSelection,
     ParameterAtBoundary,
     InvalidParameterValue,
+    ActionUnavailableInContext,
     GenerationOverflow,
 }
 
@@ -150,7 +107,7 @@ impl EventRejectionDescriptor {
     }
 }
 
-const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 10] = [
+const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 11] = [
     EventRejectionDescriptor::new(
         EventRejection::InstallationClosed,
         "installationClosed",
@@ -159,12 +116,12 @@ const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 10] = [
     EventRejectionDescriptor::new(
         EventRejection::TooManyPatches,
         "tooManyPatches",
-        EventRejectionReachability::ReducerTable,
+        EventRejectionReachability::Scene,
     ),
     EventRejectionDescriptor::new(
         EventRejection::DuplicateMidiChannel,
         "duplicateMidiChannel",
-        EventRejectionReachability::ReducerTable,
+        EventRejectionReachability::Scene,
     ),
     EventRejectionDescriptor::new(
         EventRejection::InvalidInstrumentConfig,
@@ -197,6 +154,11 @@ const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 10] = [
         EventRejectionReachability::ReducerTable,
     ),
     EventRejectionDescriptor::new(
+        EventRejection::ActionUnavailableInContext,
+        "actionUnavailableInContext",
+        EventRejectionReachability::Scene,
+    ),
+    EventRejectionDescriptor::new(
         EventRejection::GenerationOverflow,
         "generationOverflow",
         EventRejectionReachability::ReducerTable,
@@ -221,6 +183,7 @@ impl EventRejection {
             Self::InvalidSelection => "invalidSelection",
             Self::ParameterAtBoundary => "parameterAtBoundary",
             Self::InvalidParameterValue => "invalidParameterValue",
+            Self::ActionUnavailableInContext => "actionUnavailableInContext",
             Self::GenerationOverflow => "generationOverflow",
         }
     }
@@ -240,6 +203,9 @@ impl fmt::Display for EventRejection {
             Self::InvalidSelection => "the current selection is outside the installed state",
             Self::ParameterAtBoundary => "the selected parameter is already at that boundary",
             Self::InvalidParameterValue => "the adjusted parameter value is invalid",
+            Self::ActionUnavailableInContext => {
+                "the semantic action is unavailable in the active context"
+            }
             Self::GenerationOverflow => "the accepted-state generation cannot be incremented",
         };
         formatter.write_str(message)
@@ -305,7 +271,9 @@ pub(crate) fn exercise_reducer_table_rejections(
         .expect_err("unknown config violates registry installation");
 
     let mut no_patches = AppState::new(capabilities.clone(), global);
-    no_patches.selection = Selection::patch(0);
+    no_patches
+        .interaction
+        .set_mixer_selection(Selection::patch(0));
     let no_patch = no_patches
         .apply(AppEvent::Adjust(Direction::Right))
         .expect_err("an invalid Patch selection has no installed Patch");
@@ -314,10 +282,14 @@ pub(crate) fn exercise_reducer_table_rejections(
         capabilities: capabilities.clone(),
         patches: vec![probe_patch(1, 0, instrument_config)],
         global,
-        selection: Selection {
-            section: SelectionSection::Patch,
-            patch_index: 0,
-            parameter_index: PATCH_PARAMETER_COUNT,
+        interaction: InteractionState {
+            context: TopLevelContext::Mixer,
+            mixer_selection: Selection {
+                section: SelectionSection::Patch,
+                patch_index: 0,
+                parameter_index: usize::MAX,
+            },
+            patch_focus: Some(crate::kernel::patch_id::PatchId::new(1).unwrap()),
         },
         generation: 0,
     };
@@ -357,7 +329,7 @@ pub struct AppState {
     capabilities: CapabilityRegistry,
     patches: Vec<Patch>,
     global: GlobalParameters,
-    selection: Selection,
+    interaction: InteractionState,
     generation: u64,
 }
 
@@ -368,7 +340,7 @@ impl AppState {
             capabilities,
             patches: Vec::new(),
             global,
-            selection: Selection::global(),
+            interaction: InteractionState::new(),
             generation: 0,
         }
     }
@@ -386,11 +358,39 @@ impl AppState {
     }
 
     pub const fn selection(&self) -> Selection {
-        self.selection
+        self.interaction.mixer_selection()
+    }
+
+    /// Returns the complete reducer-owned interaction state.
+    pub const fn interaction(&self) -> &InteractionState {
+        &self.interaction
+    }
+
+    /// Returns the selected top-level context as a thin compatibility view.
+    pub const fn context(&self) -> TopLevelContext {
+        self.interaction.context()
     }
 
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Resolves one installed Patch's complete editable surface from its active schema.
+    pub fn patch_editable_targets(
+        &self,
+        patch_index: usize,
+    ) -> Result<Vec<PatchEditableTarget>, EventRejection> {
+        let patch = self
+            .patches
+            .get(patch_index)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let descriptor = self
+            .capabilities
+            .descriptor(patch.instrument_config().capability_id())
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        patch
+            .editable_targets(descriptor)
+            .map_err(|_| EventRejection::InvalidInstrumentConfig)
     }
 
     /// Applies the only permitted control-state mutation.
@@ -427,11 +427,17 @@ impl AppState {
 
     fn reduce(&mut self, event: AppEvent) -> Result<Option<AudioCommand>, EventRejection> {
         match event {
+            AppEvent::SelectContext(context) => {
+                self.select_context(context)?;
+                Ok(None)
+            }
             AppEvent::Navigate(direction) => {
+                self.require_mixer_context()?;
                 self.navigate(direction)?;
                 Ok(None)
             }
             AppEvent::Adjust(direction) => {
+                self.require_mixer_context()?;
                 self.adjust(direction)?;
                 Ok(None)
             }
@@ -467,12 +473,37 @@ impl AppState {
         }
 
         self.patches = patches;
-        self.selection = if self.patches.is_empty() {
+        let mixer_selection = if self.patches.is_empty() {
             Selection::global()
         } else {
             Selection::patch(0)
         };
+        self.interaction.set_mixer_selection(mixer_selection);
+        self.interaction
+            .initialize_patch_focus(self.patches.first().map(Patch::id));
         Ok(())
+    }
+
+    fn select_context(&mut self, context: TopLevelContext) -> Result<(), EventRejection> {
+        if context == TopLevelContext::Patch {
+            let focus = self
+                .interaction
+                .patch_focus()
+                .ok_or(EventRejection::NoPatchesInstalled)?;
+            if !self.patches.iter().any(|patch| patch.id() == focus) {
+                return Err(EventRejection::NoPatchesInstalled);
+            }
+        }
+        self.interaction.select_context(context);
+        Ok(())
+    }
+
+    fn require_mixer_context(&self) -> Result<(), EventRejection> {
+        if self.interaction.context() == TopLevelContext::Mixer {
+            Ok(())
+        } else {
+            Err(EventRejection::ActionUnavailableInContext)
+        }
     }
 
     fn navigate(&mut self, direction: Direction) -> Result<(), EventRejection> {
@@ -486,84 +517,144 @@ impl AppState {
 
     fn navigate_section(&mut self, amount: isize) -> Result<(), EventRejection> {
         let section_count = self.patches.len() + 1;
-        let current = match self.selection.section {
+        let selection = self.interaction.mixer_selection();
+        let current = match selection.section {
             SelectionSection::Patch => {
-                if self.selection.patch_index >= self.patches.len() {
+                if selection.patch_index >= self.patches.len() {
                     return Err(EventRejection::InvalidSelection);
                 }
-                self.selection.patch_index
+                selection.patch_index
             }
             SelectionSection::Global => self.patches.len(),
         };
         let next = wrapped_index(current, section_count, amount);
 
         if next == self.patches.len() {
-            self.selection.section = SelectionSection::Global;
-            self.selection.parameter_index = self
-                .selection
-                .parameter_index
-                .min(GLOBAL_PARAMETER_COUNT - 1);
+            let selection = self.interaction.mixer_selection_mut();
+            selection.section = SelectionSection::Global;
+            selection.parameter_index = selection.parameter_index.min(GLOBAL_PARAMETER_COUNT - 1);
         } else {
-            self.selection.section = SelectionSection::Patch;
-            self.selection.patch_index = next;
-            self.selection.parameter_index = self
-                .selection
-                .parameter_index
-                .min(PATCH_PARAMETER_COUNT - 1);
+            let parameter_count = self.patch_editable_targets(next)?.len();
+            let selection = self.interaction.mixer_selection_mut();
+            selection.section = SelectionSection::Patch;
+            selection.patch_index = next;
+            selection.parameter_index = selection.parameter_index.min(parameter_count - 1);
         }
         Ok(())
     }
 
     fn navigate_parameter(&mut self, amount: isize) -> Result<(), EventRejection> {
-        let count = match self.selection.section {
+        let selection = self.interaction.mixer_selection();
+        let count = match selection.section {
             SelectionSection::Patch => {
-                if self.selection.patch_index >= self.patches.len() {
+                if selection.patch_index >= self.patches.len() {
                     return Err(EventRejection::NoPatchesInstalled);
                 }
-                PATCH_PARAMETER_COUNT
+                self.patch_editable_targets(selection.patch_index)?.len()
             }
             SelectionSection::Global => GLOBAL_PARAMETER_COUNT,
         };
-        self.selection.parameter_index =
-            wrapped_index(self.selection.parameter_index, count, amount);
+        self.interaction.mixer_selection_mut().parameter_index =
+            wrapped_index(selection.parameter_index, count, amount);
         Ok(())
     }
 
     fn adjust(&mut self, direction: Direction) -> Result<(), EventRejection> {
-        match self.selection.section {
+        match self.interaction.mixer_selection().section {
             SelectionSection::Patch => self.adjust_patch(direction),
             SelectionSection::Global => self.adjust_global(direction),
         }
     }
 
     fn adjust_patch(&mut self, direction: Direction) -> Result<(), EventRejection> {
-        let parameter_index = self.selection.parameter_index;
-        let descriptor = ChannelParameters::surface_descriptor()
+        let patch_index = self.interaction.mixer_selection().patch_index;
+        let parameter_index = self.interaction.mixer_selection().parameter_index;
+        let target = self
+            .patch_editable_targets(patch_index)?
             .get(parameter_index)
+            .cloned()
             .ok_or(EventRejection::InvalidSelection)?;
-        let patch = self
-            .patches
-            .get_mut(self.selection.patch_index)
-            .ok_or(EventRejection::NoPatchesInstalled)?;
-        let parameters = patch.parameters();
-        let parameter = descriptor.parameter();
-        let value = adjusted_value(
-            parameters.value(parameter),
-            descriptor.minimum(),
-            descriptor.maximum(),
-            direction,
-            descriptor.fine_step(),
-            descriptor.coarse_step(),
-        )?;
-        let updated = parameters
-            .with_value(parameter, value)
-            .map_err(|_| EventRejection::InvalidParameterValue)?;
-        patch.set_parameters(updated);
-        Ok(())
+
+        match target {
+            PatchEditableTarget::Mixer(parameter) => {
+                let descriptor = parameter.descriptor();
+                let patch = self
+                    .patches
+                    .get_mut(patch_index)
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                let parameters = patch.parameters();
+                let value = adjusted_value(
+                    parameters.value(parameter),
+                    descriptor.minimum(),
+                    descriptor.maximum(),
+                    direction,
+                    descriptor.fine_step(),
+                    descriptor.coarse_step(),
+                )?;
+                let updated = parameters
+                    .with_value(parameter, value)
+                    .map_err(|_| EventRejection::InvalidParameterValue)?;
+                patch.set_parameters(updated);
+                Ok(())
+            }
+            PatchEditableTarget::Envelope(parameter) => {
+                let descriptor = parameter.descriptor();
+                let patch = self
+                    .patches
+                    .get_mut(patch_index)
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                let envelope = *patch.envelope();
+                let value = adjusted_value(
+                    envelope.value(parameter),
+                    descriptor.minimum(),
+                    descriptor.maximum(),
+                    direction,
+                    descriptor.fine_step(),
+                    descriptor.coarse_step(),
+                )?;
+                let updated = envelope
+                    .with_value(parameter, value)
+                    .map_err(|_| EventRejection::InvalidParameterValue)?;
+                patch.set_envelope(updated);
+                Ok(())
+            }
+            PatchEditableTarget::Instrument(parameter_id) => {
+                let updated = {
+                    let patch = self
+                        .patches
+                        .get(patch_index)
+                        .ok_or(EventRejection::NoPatchesInstalled)?;
+                    let descriptor = self
+                        .capabilities
+                        .descriptor(patch.instrument_config().capability_id())
+                        .ok_or(EventRejection::InvalidInstrumentConfig)?;
+                    let spec = descriptor
+                        .parameter(&parameter_id)
+                        .ok_or(EventRejection::InvalidSelection)?;
+                    let current = patch
+                        .instrument_config()
+                        .value(&parameter_id)
+                        .ok_or(EventRejection::InvalidInstrumentConfig)?;
+                    let adjustment = parameter_adjustment(direction);
+                    let value = spec
+                        .adjusted_scalar_value(current, adjustment)
+                        .map_err(map_scalar_adjustment_error)?;
+                    patch
+                        .instrument_config()
+                        .with_scalar_value(descriptor, &parameter_id, value)
+                        .map_err(map_scalar_adjustment_error)?
+                };
+                self.patches
+                    .get_mut(patch_index)
+                    .ok_or(EventRejection::NoPatchesInstalled)?
+                    .set_instrument_config(updated);
+                Ok(())
+            }
+        }
     }
 
     fn adjust_global(&mut self, direction: Direction) -> Result<(), EventRejection> {
-        let parameter_index = self.selection.parameter_index;
+        let parameter_index = self.interaction.mixer_selection().parameter_index;
         let descriptor = GlobalParameters::surface_descriptor()
             .get(parameter_index)
             .ok_or(EventRejection::InvalidSelection)?;
@@ -581,6 +672,22 @@ impl AppState {
             .with_value(parameter, value)
             .map_err(|_| EventRejection::InvalidParameterValue)?;
         Ok(())
+    }
+}
+
+fn parameter_adjustment(direction: Direction) -> ParameterAdjustment {
+    match direction {
+        Direction::Left => ParameterAdjustment::FineDecrease,
+        Direction::Right => ParameterAdjustment::FineIncrease,
+        Direction::Down => ParameterAdjustment::CoarseDecrease,
+        Direction::Up => ParameterAdjustment::CoarseIncrease,
+    }
+}
+
+fn map_scalar_adjustment_error(error: CapabilityError) -> EventRejection {
+    match error {
+        CapabilityError::ScalarValueAtBoundary(_) => EventRejection::ParameterAtBoundary,
+        _ => EventRejection::InvalidParameterValue,
     }
 }
 
@@ -720,21 +827,38 @@ mod tests {
     #[test]
     fn rejection_descriptor_is_unique_and_reducer_table_exercises_its_partition() {
         let descriptor = EventRejection::surface_descriptor();
-        assert_eq!(descriptor.len(), 10);
+        assert_eq!(descriptor.len(), 11);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(!descriptor[..index].iter().any(|prior| prior.rejection()
                 == entry.rejection()
                 || prior.name() == entry.name()));
         }
+        for entry in descriptor {
+            let expected_reachability = match entry.rejection() {
+                EventRejection::InstallationClosed
+                | EventRejection::TooManyPatches
+                | EventRejection::DuplicateMidiChannel
+                | EventRejection::InvalidInstrumentConfig
+                | EventRejection::UnknownPatch
+                | EventRejection::ParameterAtBoundary
+                | EventRejection::ActionUnavailableInContext => EventRejectionReachability::Scene,
+                EventRejection::NoPatchesInstalled
+                | EventRejection::InvalidSelection
+                | EventRejection::InvalidParameterValue
+                | EventRejection::GenerationOverflow => EventRejectionReachability::ReducerTable,
+            };
+            assert_eq!(entry.reachability(), expected_reachability);
+        }
 
-        let expected = descriptor
-            .iter()
-            .filter(|entry| {
-                entry.reachability() == EventRejectionReachability::ReducerTable
-                    || entry.rejection() == EventRejection::InvalidInstrumentConfig
-            })
-            .map(|entry| entry.rejection())
-            .collect::<Vec<_>>();
+        let expected = [
+            EventRejection::TooManyPatches,
+            EventRejection::DuplicateMidiChannel,
+            EventRejection::InvalidInstrumentConfig,
+            EventRejection::NoPatchesInstalled,
+            EventRejection::InvalidSelection,
+            EventRejection::InvalidParameterValue,
+            EventRejection::GenerationOverflow,
+        ];
         let state = installed_state();
         assert_eq!(
             exercise_reducer_table_rejections(
@@ -742,7 +866,7 @@ mod tests {
                 state.patches()[0].instrument_config(),
             )
             .as_slice(),
-            expected
+            expected.as_slice()
         );
     }
 
@@ -756,6 +880,92 @@ mod tests {
         assert_eq!(patch.parameter_index(), 0);
         assert_eq!(global.section(), SelectionSection::Global);
         assert_eq!(global.parameter_index(), 0);
+    }
+
+    #[test]
+    fn app_state_context_defaults_to_mixer_and_installation_sets_stable_focus() {
+        let mut state = AppState::new(registry(), global_parameters());
+        assert_eq!(state.context(), TopLevelContext::Mixer);
+        assert_eq!(state.interaction().patch_focus(), None);
+        assert_eq!(state.selection(), Selection::global());
+
+        state
+            .apply(AppEvent::InstallPatches(vec![
+                patch(2, -3.0),
+                patch(1, 0.0),
+            ]))
+            .unwrap();
+        assert_eq!(state.context(), TopLevelContext::Mixer);
+        assert_eq!(
+            state.interaction().patch_focus(),
+            Some(PatchId::new(2).unwrap())
+        );
+        assert_eq!(state.selection(), Selection::patch(0));
+    }
+
+    #[test]
+    fn direct_and_repeated_context_selection_preserves_independent_focus() {
+        let mut state = installed_state();
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        let mixer_selection = state.selection();
+        let patch_focus = state.interaction().patch_focus();
+        let generation = state.generation();
+
+        let first = state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        assert_eq!(first.audio_command(), None);
+        assert_eq!(first.accepted().generation(), generation + 1);
+        assert_eq!(state.context(), TopLevelContext::Patch);
+        assert_eq!(state.selection(), mixer_selection);
+        assert_eq!(state.interaction().patch_focus(), patch_focus);
+
+        let repeated = state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        assert_eq!(repeated.accepted().generation(), generation + 2);
+        assert_eq!(repeated.audio_command(), None);
+        assert_eq!(state.selection(), mixer_selection);
+        assert_eq!(state.interaction().patch_focus(), patch_focus);
+
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+            .unwrap();
+        assert_eq!(state.context(), TopLevelContext::Mixer);
+        assert_eq!(state.selection(), mixer_selection);
+    }
+
+    #[test]
+    fn patch_selection_before_installation_and_patch_actions_reject_transactionally() {
+        let mut empty = AppState::new(registry(), global_parameters());
+        let initial = empty.clone();
+        assert_eq!(
+            empty.apply(AppEvent::SelectContext(TopLevelContext::Patch)),
+            Err(EventRejection::NoPatchesInstalled)
+        );
+        assert_eq!(empty, initial);
+        empty.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        for event in [
+            AppEvent::Navigate(Direction::Down),
+            AppEvent::Adjust(Direction::Right),
+        ] {
+            let before = state.clone();
+            assert_eq!(
+                state.apply(event),
+                Err(EventRejection::ActionUnavailableInContext)
+            );
+            assert_eq!(state, before);
+        }
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+            .unwrap();
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert_eq!(state.context(), TopLevelContext::Mixer);
     }
 
     #[test]
@@ -887,6 +1097,35 @@ mod tests {
         state.apply(AppEvent::Adjust(Direction::Left)).unwrap();
         assert_eq!(state.patches()[0].parameters().gain_db(), 6.0);
         assert_eq!(state.patches()[0].parameters().pan(), -0.01);
+    }
+
+    #[test]
+    fn patch_editable_surface_orders_mixer_then_envelope_and_reduces_transactionally() {
+        let mut state = installed_state();
+        let targets = state.patch_editable_targets(0).unwrap();
+        assert_eq!(targets.len(), 8);
+        assert!(matches!(
+            targets[0],
+            PatchEditableTarget::Mixer(crate::mixer::channel_parameters::ChannelParameter::GainDb)
+        ));
+        assert!(matches!(
+            targets[4],
+            PatchEditableTarget::Envelope(crate::synth::VoiceEnvelopeParameter::AttackMilliseconds)
+        ));
+
+        let original_mixer = *state.patches()[0].parameters();
+        let original_config = state.patches()[0].instrument_config().clone();
+        let other_patch = state.patches()[1].clone();
+        for _ in 0..4 {
+            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+        assert_eq!(state.selection().parameter_index(), 4);
+        state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+
+        assert_eq!(state.patches()[0].envelope().attack_milliseconds(), 100.0);
+        assert_eq!(*state.patches()[0].parameters(), original_mixer);
+        assert_eq!(state.patches()[0].instrument_config(), &original_config);
+        assert_eq!(state.patches()[1], other_patch);
     }
 
     #[test]

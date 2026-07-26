@@ -2,11 +2,13 @@ use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::{EventRejection, StateAccepted};
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
+use crate::control::top_level_context::TopLevelContext;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::InstrumentConfig;
 use crate::synth::patch::Patch;
+use crate::synth::voice_envelope::VoiceEnvelope;
 use core::fmt;
 use serde::{Serialize, Serializer};
 
@@ -124,6 +126,7 @@ pub struct PatchInput {
     name: String,
     channel: u8,
     instrument: InstrumentConfig,
+    envelope: VoiceEnvelope,
     gain_db: f32,
     pan: f32,
     reverb_send: f32,
@@ -145,6 +148,10 @@ impl PatchInput {
 
     pub const fn instrument_config(&self) -> &InstrumentConfig {
         &self.instrument
+    }
+
+    pub const fn envelope(&self) -> &VoiceEnvelope {
+        &self.envelope
     }
 
     pub const fn gain_db(&self) -> f32 {
@@ -171,6 +178,7 @@ impl From<&Patch> for PatchInput {
             name: patch.name().to_owned(),
             channel: patch.channel().value(),
             instrument: patch.instrument_config().clone(),
+            envelope: *patch.envelope(),
             gain_db: patch.parameters().gain_db(),
             pan: patch.parameters().pan(),
             reverb_send: patch.parameters().reverb_send(),
@@ -183,6 +191,9 @@ impl From<&Patch> for PatchInput {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum EventInput {
+    SelectContext {
+        context: TopLevelContext,
+    },
     Navigate {
         direction: EventDirection,
     },
@@ -202,6 +213,7 @@ pub enum EventInput {
 impl From<&AppEvent> for EventInput {
     fn from(event: &AppEvent) -> Self {
         match event {
+            AppEvent::SelectContext(context) => Self::SelectContext { context: *context },
             AppEvent::Navigate(direction) => Self::Navigate {
                 direction: (*direction).into(),
             },
@@ -357,6 +369,7 @@ impl EventRecord {
         "emittedEvents[].kind",
         "generationAfter",
         "generationBefore",
+        "input.context",
         "input.direction",
         "input.kind",
         "input.message.channel",
@@ -366,6 +379,10 @@ impl EventRecord {
         "input.patchId",
         "input.patches[].channel",
         "input.patches[].delaySend",
+        "input.patches[].envelope.attackMilliseconds",
+        "input.patches[].envelope.decayMilliseconds",
+        "input.patches[].envelope.releaseMilliseconds",
+        "input.patches[].envelope.sustain",
         "input.patches[].gainDb",
         "input.patches[].id",
         "input.patches[].instrument.assetReferences[].parameterId",
@@ -590,6 +607,7 @@ const fn rejection_name(rejection: EventRejection) -> &'static str {
         EventRejection::InvalidSelection => "invalidSelection",
         EventRejection::ParameterAtBoundary => "parameterAtBoundary",
         EventRejection::InvalidParameterValue => "invalidParameterValue",
+        EventRejection::ActionUnavailableInContext => "actionUnavailableInContext",
         EventRejection::GenerationOverflow => "generationOverflow",
     }
 }
@@ -608,6 +626,7 @@ mod tests {
     use crate::control::app_state::{AppState, EventRejection};
     use crate::control::state_snapshot::StateSnapshot;
     use crate::control::text_projection::TextProjection;
+    use crate::control::TopLevelContext;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -616,6 +635,7 @@ mod tests {
     use crate::real_time::GraphRevision;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::voice_envelope::VoiceEnvelope;
     use crate::synth::{ParameterId, ParameterValue};
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use serde_json::Value;
@@ -693,6 +713,7 @@ mod tests {
                 SoundFontInstrument::new(128, 11, false).unwrap(),
             )
             .unwrap(),
+            envelope: VoiceEnvelope::default(),
             gain_db: -4.0,
             pan: 0.25,
             reverb_send: 0.5,
@@ -706,6 +727,15 @@ mod tests {
         };
 
         vec![
+            schema_record(
+                EventSource::Keyboard,
+                EventInput::SelectContext {
+                    context: TopLevelContext::Patch,
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ),
             schema_record(
                 EventSource::Startup,
                 EventInput::InstallPatches {

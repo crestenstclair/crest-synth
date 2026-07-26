@@ -7,21 +7,51 @@ project: contexts: Shell: {
 		description: "a normalized window-boundary input used by both eframe and deterministic GUI scenes"
 		state: {
 			kind: "KeyDown | KeyUp | FocusLost"
-			key: "W | S | A | D | K | Other"
+			key: "Digit1 | Digit2 | W | S | A | D | K | Other"
 			surfaceDescriptor: "typed exhaustive descriptors for every valid normalized kind/key combination, including key-down, key-up, focus loss, and unrelated input"
 		}
 		invariants: [
 			"platform key codes are normalized at the eframe boundary before translation",
 			"WindowInput is shell data and never enters AppState or the audio boundary",
 			"the deterministic demo feeds the same values to the same translator as the real window",
-			"surfaceDescriptor is defined beside WindowInput and is the only GUI-input vocabulary consumed by DemoScene and acceptance tests; no test owns a second list of W/S/A/D/K, key-up, focus-loss, or unrelated-input strings",
-			"surfaceDescriptor contains exactly 13 unique valid values before any set conversion: KeyDown and KeyUp for W, S, A, D, K, and Other plus FocusLost with no key payload",
+			"surfaceDescriptor is defined beside WindowInput and is the only GUI-input vocabulary consumed by DemoScene and acceptance tests; no test owns a second list of Digit1/Digit2/W/S/A/D/K, key-up, focus-loss, or unrelated-input strings",
+			"surfaceDescriptor contains exactly 17 unique valid values before any set conversion: KeyDown and KeyUp for Digit1, Digit2, W, S, A, D, K, and Other plus FocusLost with no key payload",
 		]
-		contributesTo: [{capability: "capability.observable_demo_scene", contribution: "lets automated scenes exercise the actual current GUI input vocabulary"}]
+		contributesTo: [
+			{capability: "capability.observable_demo_scene", contribution: "lets automated scenes exercise the actual current GUI input vocabulary"},
+			{capability: "capability.schema_driven_patch_page", contribution: "normalizes the two direct page bindings before semantic translation"},
+		]
+	}
+
+	valueObjects: AudioDeviceConfig: {
+		description: "validated physical-device facts selected before any graph is prepared or stream callback starts"
+		state: {
+			sampleRate: "f32"
+			channels: "u16"
+			sampleFormat: "AudioSampleFormat"
+			channelMapping: "StereoToFirstTwo"
+			renderCapacityFrames: "usize"
+		}
+		invariants: [
+			"sampleRate is finite and positive, channels is at least two, the sample format is supported PCM, and renderCapacityFrames is nonzero",
+			"the value is returned by negotiation before PreparedGraphBuilder prepares engines, effects, stems, or scratch",
+			"renderCapacityFrames is the maximum bounded block submitted to PreparedGraph even when a native device callback is larger",
+		]
+		contributesTo: [{capability: "capability.realtime_execution", contribution: "binds complete graph preparation to the accepted physical device configuration"}]
+	}
+
+	valueObjects: AudioDeviceRuntimeError: {
+		description: "fixed-size post-start device failure transferred from callback to control ownership"
+		state: kind: "DeviceBusy | DeviceChanged | DeviceUnavailable | HostUnavailable | InvalidInput | PermissionDenied | RealtimeDenied | ResourceExhausted | StreamInvalidated | UnsupportedConfig | UnsupportedOperation | Xrun | Backend | Other"
+		invariants: [
+			"the value is Copy, fixed-size, non-allocating, and contains no framework error, string, path, or owned resource",
+			"the callback publishes only the first unconsumed failure through bounded atomics and control ownership takes and formats it",
+		]
+		contributesTo: [{capability: "capability.realtime_execution", contribution: "keeps a failed running device visible without callback I/O or allocation"}]
 	}
 
 	applicationServices: KeyboardInputTranslator: {
-		purpose: "translate normalized W/S/A/D/K window input and focus changes into the closed AppEvent vocabulary"
+		purpose: "translate normalized 1/2/W/S/A/D/K window input and focus changes into the closed AppEvent vocabulary"
 		uses: [
 			"valueObject.Shell.WindowInput",
 			"valueObject.Control.AppEvent",
@@ -30,15 +60,17 @@ project: contexts: Shell: {
 			translate: {input: {event: "WindowInput"}, output: {event: "Option<AppEvent>"}}
 		}
 		meta: rules: [
+			"Digit1 key-down emits SelectContext(MIXER), Digit2 key-down emits SelectContext(PATCH), and their key-up events emit nothing regardless of K modifier state",
 			"bare W/S/A/D key-down emits Navigate Up/Down/Left/Right and key-up emits nothing",
 			"K key-down enters modifier state; while held W/S/A/D key-down emits Adjust Up/Down/Left/Right; K key-up exits modifier state",
 			"FocusLost clears modifier state and emits nothing",
 			"Other input emits nothing",
 			"translation owns no Patch, selection, parameter, projection, or audio state",
 		]
-		validations: [{kind: "test", command: ["cargo", "test", "keyboard_input_translator"], description: "every WindowInput and direction mapping, K transition, focus loss, key release, and unrelated key is deterministic"}]
+		validations: [{id: "validation.service.keyboard_input_translator", kind: "test", command: ["cargo", "test", "keyboard_input_translator"], description: "both context mappings plus every direction mapping, K transition, focus loss, key release, and unrelated key are deterministic"}]
 		contributesTo: [
 			{capability: "capability.one_way_parameter_control", contribution: "keeps physical keyboard normalization outside the reducer"},
+			{capability: "capability.schema_driven_patch_page", contribution: "maps direct page keys to semantic context events without reading AppState"},
 			{capability: "capability.observable_demo_scene", contribution: "is the single translator shared by the eframe window and exhaustive scene runner"},
 		]
 	}
@@ -46,30 +78,37 @@ project: contexts: Shell: {
 	ports: AppWindow: {
 		direction: "outbound"
 		contract: {
-			run: "(onInput: FnMut(AppEvent), projection: Fn() -> TextProjection, onTick: FnMut(Duration)) -> Result<(), WindowError>"
+			run: "(onInput: FnMut(AppEvent), projection: Fn() -> TextProjection, onTick: FnMut(Duration) -> bool) -> Result<(), WindowError>"
 		}
 		consumes: ["valueObject.Control.AppEvent", "valueObject.Control.TextProjection"]
 		invariants: [
 			"the window receives immutable TextProjection and emits AppEvent",
-			"the window owns raw key and K-modifier state but no synth parameter or selection state",
+			"the window owns raw key and K-modifier state but no synth parameter, context, Patch focus, or selection state",
 			"an AppEvent rejection does not close the window or disable later input",
 			"each interactive frame advances the injected control-side tick and then requests the current immutable TextProjection; autonomous live-demo state is never stored or applied by the window",
+			"a false tick result closes the disposable window only after application control ownership has retained a terminal outcome: either the completed live report or a typed fatal runtime error",
 		]
 		contributesTo: [
 			{capability: "capability.one_way_parameter_control", contribution: "keeps the disposable text view outside application state"},
-			{capability: "capability.live_observable_demo", contribution: "keeps the final canonical projection visible while the control-side live runner advances and after it finishes"},
+			{capability: "capability.schema_driven_patch_page", contribution: "renders whichever immutable semantic context the reducer projects"},
+			{capability: "capability.live_observable_demo", contribution: "renders canonical projections while the control-side live runner advances and closes when its owning application reports completion"},
 		]
 	}
 
 	ports: AudioOutput: {
 		direction: "outbound"
 		contract: {
-			open: "(render: FnMut(&mut [f32], sampleRate: f32)) -> Result<AudioStream, AudioOutputError>"
+			negotiate: "() -> Result<NegotiatedAudioOutput, AudioOutputError>"
+			config: "(&NegotiatedAudioOutput) -> AudioDeviceConfig"
+			start: "(NegotiatedAudioOutput, render: FnMut(&mut [f32]), onRuntimeError: FnMut(AudioDeviceRuntimeError)) -> Result<AudioStream, AudioOutputError>"
 		}
+		consumes: ["valueObject.Shell.AudioDeviceConfig", "valueObject.Shell.AudioDeviceRuntimeError"]
 		invariants: [
+			"negotiate selects and validates the device, sample rate, channel mapping, PCM sample format, and bounded render capacity without starting its callback",
+			"start consumes that exact negotiated owner only after a compatible PreparedGraph and AudioRenderer exist",
 			"AudioRenderer always receives interleaved stereo f32 frames; a native stereo f32 device may forward its exact caller-owned buffer",
 			"a device with more than two channels uses bounded preallocated callback storage, writes stereo to its first two output channels, and silences every surplus channel",
-			"device setup occurs before the callback starts",
+			"post-start framework errors are mapped to AudioDeviceRuntimeError and published without allocation, locking, blocking, I/O, logging, formatting, panic, or destruction",
 		]
 		contributesTo: [{capability: "capability.realtime_execution", contribution: "connects the hard real-time renderer to a stereo device"}]
 	}
@@ -103,36 +142,45 @@ project: contexts: Shell: {
 			runDemoScene: {input: {degenerate: "Option<DegenerateMode>"}, output: {result: "Result<DemoSceneReport, ApplicationError>"}}
 		}
 		meta: rules: [
-			"startup obtains the installed CapabilityDescriptor from exactly one InstrumentCapabilityProvider, validates and freezes the CapabilityRegistry in AppState, initializes AutomaticMidiTest to install accepted Patches, resolves exactly one matching HiDef InstrumentPreparer, builds one complete initial PreparedGraph, constructs AudioRenderer from it, opens audio, then opens the text window",
+			"the crest-synth composition root constructs and injects the ordered InstrumentCapabilityProviders, matching InstrumentPreparers, StructuralGraphBoundary, AudioObservation, AudioBoundary, MIDI source, window, and AudioOutput; StandaloneApplication imports no concrete infrastructure adapter and constructs none of those boundaries",
+			"startup validates duplicate, missing, unknown, and mismatched provider/preparer registrations, freezes their ordered CapabilityRegistry in AppState, and performs no structural publication before registration succeeds",
+			"physical startup negotiates AudioDeviceConfig first, prepares the complete initial graph from its exact sampleRate and renderCapacityFrames, constructs AudioRenderer, starts the same negotiated output owner, then opens the text window",
 			"startup fails visibly before audio on duplicate, missing, unknown, or mismatched capability or preparer registration and never chooses or substitutes a fallback provider, preparer, prepared instrument, config, asset, preset, graph, or engine",
 			"normal-mode MIDI begins automatically only after the initial graph is fully prepared; each window tick advances only the private test input, polls GraphHandoffStatus, and collects returned graphs outside the callback",
-			"production startup installs only HiDef SoundFont instruments into PreparedEngineRack; the generic rack and structural handoff are real, but this increment exposes no runtime graph edit, engine choice, second production capability, or Braids adapter",
-			"runLiveDemo uses the exact normal startup order, real EframeTextWindow, physical CpalAudioOutput, HiDef.sf2, and Corridors of Time fixture, then starts LiveDemoRunner on the control side and advances it from the existing window-tick callback",
-			"runLiveDemo injects the same AppLoop into keyboard input, AutomaticMidiTest, LiveDemoRunner, and immutable projection callbacks; none receives mutable AppState and no live-specific reducer, engine, mixer, window, or audio-output implementation exists",
+			"production startup alternates HiDef SoundFont and Braids instruments in PreparedEngineRack; it exposes both installed entries as read-only PATCH projection choices but no runtime graph edit or engine replacement, and never substitutes one engine for the other",
+			"runLiveDemo uses the exact normal startup order, real EframeTextWindow, physical CpalAudioOutput, HiDef.sf2, pinned Braids adapter, and Corridors of Time fixture, then starts LiveDemoRunner on the control side and advances it from the existing window-tick callback",
+			"runLiveDemo injects the same AppLoop into AutomaticMidiTest, LiveDemoRunner, and immutable projection callbacks; its live-mode window input callback is a stateless semantic no-op, none receives mutable AppState, and no live-specific reducer, engine, mixer, window, or audio-output implementation exists",
 			"in live mode only LiveDemoRunner advances AutomaticMidiTest; StandaloneApplication does not also tick the fixture and every due fixture event is dispatched exactly once",
 			"the live EventLog is pre-sized to a declared bounded capacity sufficient for the frozen scene and fixture events; dropped records make the final report incomplete rather than being hidden",
-			"keypress events are dispatched to AppLoop before a new TextProjection is requested",
+			"in normal interactive mode keypress events are dispatched to AppLoop before a new TextProjection is requested",
+			"in autonomous live-demo mode mapped semantic window input is ignored without an EventRecord, generation change, projection change, parameter publication, or application failure; native window close remains available and follows the typed early-close path",
 			"ParameterAtBoundary and every other EventRejection caused by ordinary user input are nonfatal no-ops: keep the window and audio running, preserve the current projection, and accept the next key event",
 			"run returns ApplicationError only for startup, adapter, audio-device, window-runtime, automatic-input, or real-time boundary failures; it never promotes a rejected user edit to an application failure",
+			"each window tick first consumes any post-start AudioDeviceRuntimeError on control ownership, retains the exact ApplicationError, and asks the window to close; it never formats, logs, or invokes UI behavior from the device callback",
 			"runSmoke uses the same services without a physical device or window and measures real control, routing, and rendered-sample results",
 			"runDemoScene initializes the real fixture, then drives normalized WindowInputs through KeyboardInputTranslator and the production AppLoop; it never mutates state or projections directly",
 			"demo execution retains the complete EventLog and final StateTree and reports zero missing coverage before returning success",
 			"verification-only demo degeneracy is injected before observation at exactly one real seam: control drops one translated Adjust before AppLoop, audio clears the rendered buffer after AudioRenderer; neither mode edits coverage, a completed DemoSceneReport, or any measured observation field",
-			"each checkpoint is passed exactly once to the injected control-side onCheckpoint callback; when LiveDemoRunner completes, pass its report exactly once to onComplete, stop advancing it, keep servicing keyboard input and canonical projection frames, and keep the audio/window lifetime under the user's close action",
+			"each checkpoint is passed exactly once to the injected control-side onCheckpoint callback; when LiveDemoRunner completes, pass its report exactly once to onComplete and return false from that same tick so the window closes without a post-completion tick or frame",
+			"after the completed window returns, release the physical stream on control ownership and return success when no retained runtime error exists",
 			"if the user closes the window before completion, dispatch semantic all-notes-off for installed Patches while the control loop is available, do not call onComplete with a successful report, and return a typed incomplete-live-demo result without fabricating coverage",
-			"--demo-live has no degenerate, headless, no-device, no-window, auto-close, or silent-fallback mode; startup or runtime device failures remain typed visible ApplicationErrors",
+			"--demo-live has no degenerate, headless, no-device, no-window, persistent-final-window, or silent-fallback mode; startup or runtime device failures remain typed visible ApplicationErrors",
 		]
 		validations: [
-			{kind: "integration", command: ["cargo", "test", "standalone_application"], description: "a boundary adjustment on a non-first Patch is ignored without terminating the window, and a following valid edit is accepted"},
-			{kind: "integration", command: ["cargo", "test", "standalone_exhaustive_gui_demo"], description: "the composed headless application emits a complete event log, state tree, coverage matrix, and audio observations"},
-			{kind: "integration", command: ["cargo", "test", "standalone_live_demo_composition"], description: "the live mode wires the real window/audio lifetime to the paced runner while a deterministic harness proves final output and no auto-close"},
+			{id: "validation.service.standalone_application", kind: "integration", command: ["cargo", "test", "standalone_application"], description: "a boundary adjustment on a non-first Patch is ignored without terminating the window, and a following valid edit is accepted"},
+			{id: "validation.service.standalone_exhaustive_demo", kind: "integration", command: ["cargo", "test", "standalone_exhaustive_gui_demo"], description: "the composed headless application emits a complete event log, state tree, coverage matrix, and audio observations"},
+			{id: "validation.service.standalone_live_demo", kind: "integration", command: ["cargo", "test", "standalone_live_demo_composition"], description: "the live mode wires the real window/audio lifetime to the paced runner while a deterministic harness injects mapped input during a pending checkpoint and proves isolated input, one completion, immediate close, and successful teardown"},
+			{id: "validation.service.standalone_runtime_contracts", kind: "integration", command: ["cargo", "test", "--test", "production_runtime_contracts", "--", "--nocapture"], description: "the injected production constructor, negotiated device lifecycle, replaceable boundaries, oversized callback adaptation, and post-start typed error path are executable"},
 		]
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "constructs the immutable descriptor registry and injects the provider into the fixture installation path"},
 			{capability: "capability.prepared_engine_rack", contribution: "composes registered preparation, the complete initial graph, distinct structural handoff, and control-side retirement collection"},
 			{capability: "capability.soundfont_audio", contribution: "composes the running SoundFont audio path"},
+			{capability: "capability.braids_engine", contribution: "composes the intentional second engine from its independent provider and preparer"},
+			{capability: "capability.per_voice_envelope", contribution: "uses the same canonical Patch envelope and projection for both prepared implementations"},
 			{capability: "capability.automatic_test_midi", contribution: "starts the fixed test input automatically"},
 			{capability: "capability.one_way_parameter_control", contribution: "joins keyboard events to the shared reducer and immutable text projection"},
+			{capability: "capability.schema_driven_patch_page", contribution: "composes direct context input with the canonical Patch-page projection"},
 			{capability: "capability.realtime_execution", contribution: "starts control and audio sides in the correct preparation order"},
 			{capability: "capability.observable_demo_scene", contribution: "composes the exhaustive scene against production input, reducer, projection, boundary, engine, and mixer services"},
 			{capability: "capability.live_observable_demo", contribution: "composes the paced runner with the real standalone UI, physical audio stream, canonical control loop, and final visible state"},
@@ -143,13 +191,13 @@ project: contexts: Shell: {
 project: adapters: EframeTextWindow: {
 	implements: "port.Shell.AppWindow"
 	layer: "infrastructure"
-	profile: {kind: "ui", surfaces: ["keyboard", "single_text_view"]}
+	profile: {kind: "ui", surfaces: ["keyboard", "mixer_text_context", "patch_text_context"]}
 		meta: {
 		framework: "eframe/egui"
 			rules: [
-				"render exactly one vertical scroll area containing TextProjection.body in a stock monospace text label",
-				"keep selectedLine visible and add no panels, menus, columns, grids, tables, meters, faders, controls, widgets, custom painting, theme, or second screen",
-				"normalize egui key presses, releases, and focus loss into WindowInput and delegate every W/S/A/D/K decision to KeyboardInputTranslator",
+				"render exactly one vertical scroll area containing the active-context TextProjection.body in a stock monospace text label",
+				"keep selectedLine visible and add no panels, menus, columns, grids, tables, meters, faders, controls, widgets, custom painting, theme, or adapter-owned tabs; PATCH and MIXER are reducer-owned projections in the same basic shell",
+				"normalize egui key presses, releases, and focus loss into WindowInput and delegate every 1/2/W/S/A/D/K decision to KeyboardInputTranslator",
 				"do not retain a second private keyboard state machine or duplicate the translator in tests",
 				"key handling emits AppEvents only and never mutates view selection, Patch values, AppState, snapshots, event logs, or audio",
 				"the headless adapter contract drives real egui RawInput through an egui Context and EframeApplication.update with the production on_input callback wired to AppLoop.dispatch, then runs the next frame from AppLoop.currentText; capturing a callback without applying it is not acceptance evidence",
@@ -157,17 +205,19 @@ project: adapters: EframeTextWindow: {
 				"the headless adapter contract begins with a projection containing discriminating values for every Patch and global parameter and inspects egui output for the exact values; calling normalize_egui_event directly or rendering an unrelated supplied projection is not sufficient integration evidence",
 				"in --demo-live, invoke the injected tick without blocking, then render only the newest AppLoop.currentText projection; the adapter never receives LiveDemoScene, LiveDemoReport, AudioObservationSnapshot, or mutable state",
 				"schedule the next idle repaint after 16 ms instead of requesting an immediate perpetual repaint; native input and window events may wake the event loop sooner",
-				"after live completion continue requesting and painting the final canonical projection until the user closes the native window; completion never sends a viewport-close command",
+				"when the injected tick returns false after a completed live report, send a viewport-close command immediately and do not request another projection or repaint",
+				"also send a viewport-close command when the injected tick returns false for an already-retained fatal runtime failure",
 			]
 		}
 		validations: [
-			{kind: "test", command: ["cargo", "test", "eframe_text_window"], description: "the adapter normalizes the complete egui input vocabulary through the shared translator"},
-			{kind: "integration", command: ["cargo", "test", "--test", "eframe_context", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE eframe_context passed"}], description: "a headless egui Context executes EframeApplication.update, invokes the real callback, renders exact projection values, and targets the exact selected line without a native window"},
+			{id: "validation.adapter.eframe_text_window", kind: "test", command: ["cargo", "test", "eframe_text_window"], description: "the adapter normalizes the complete egui input vocabulary through the shared translator"},
+			{id: "validation.adapter.eframe_context", kind: "integration", command: ["cargo", "test", "--test", "eframe_context", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE eframe_context passed"}], description: "a headless egui Context executes EframeApplication.update, invokes the real callback, renders exact projection values, and targets the exact selected line without a native window"},
 		]
 	contributesTo: [
 		{capability: "capability.one_way_parameter_control", contribution: "implements the single text screen and exact keyboard vocabulary"},
+		{capability: "capability.schema_driven_patch_page", contribution: "renders PATCH and MIXER projections without owning their page state or schema"},
 		{capability: "capability.observable_demo_scene", contribution: "shares its production input translator with the deterministic scene"},
-		{capability: "capability.live_observable_demo", contribution: "renders each accepted live generation and preserves the completed canonical frame"},
+		{capability: "capability.live_observable_demo", contribution: "renders each accepted live generation and closes on the owner's completed-report tick"},
 	]
 }
 
@@ -178,10 +228,12 @@ project: adapters: CpalAudioOutput: {
 	meta: {
 		framework: "cpal"
 		rules: [
-			"select and open the default PCM output with at least two channels on the control thread",
+			"select the default PCM output, prefer 48 kHz when supported, validate at least two channels and a bounded render capacity, and return the negotiated owner without starting it",
+			"start only that negotiated device after compatible graph preparation and never pass sample-rate data into the render callback",
 			"use a direct callback fast path for native stereo f32; otherwise render into fixed-capacity stereo scratch storage, map left and right to device channels 1 and 2, and write silence to surplus device channels",
 			"the callback performs no pacing, allocation, locking, I/O, logging, format construction, or deallocation",
 			"convert sample formats with bounded arithmetic when the device is not f32",
+			"map every post-start CPAL ErrorKind to fixed-size AudioDeviceRuntimeError and invoke only the bounded injected status callback",
 		]
 	}
 	contributesTo: [

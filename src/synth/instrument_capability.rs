@@ -4,6 +4,9 @@ use crate::synth::parameter_id::ParameterId;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 
+/// Maximum descriptor-ordered live instrument values carried by one RT Patch slot.
+pub const MAX_INSTRUMENT_SCALAR_PARAMETERS: usize = 16;
+
 /// The semantic kind of a stable asset reference.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,6 +137,35 @@ pub enum ParameterKind {
 pub enum ParameterUpdate {
     Scalar,
     Structural,
+}
+
+/// Patch-local note-allocation policy declared by one capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum VoicePolicy {
+    /// Every prepared Patch owns this exact independent voice capacity.
+    FixedPerPatch { voices: u16 },
+    /// One Patch-local engine instance owns allocation under its prepared bound.
+    EngineManaged,
+}
+
+/// A semantic scalar adjustment independent of keyboard/controller bindings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParameterAdjustment {
+    FineDecrease,
+    FineIncrease,
+    CoarseDecrease,
+    CoarseIncrease,
+}
+
+impl ParameterAdjustment {
+    const fn increases(self) -> bool {
+        matches!(self, Self::FineIncrease | Self::CoarseIncrease)
+    }
+
+    const fn coarse(self) -> bool {
+        matches!(self, Self::CoarseDecrease | Self::CoarseIncrease)
+    }
 }
 
 /// A typed default for either a scalar parameter or an asset parameter.
@@ -334,6 +366,111 @@ impl ParameterSpec {
         self.visible_when.as_ref()
     }
 
+    /// Encodes one validated Scalar value for descriptor-ordered RT storage.
+    pub fn scalar_value(&self, value: &ParameterValue) -> Result<f32, CapabilityError> {
+        if self.update != ParameterUpdate::Scalar || self.kind == ParameterKind::Asset {
+            return Err(CapabilityError::StructuralParameter(self.id.clone()));
+        }
+        validate_value(self, value)?;
+        let encoded = match value {
+            ParameterValue::Continuous(value) => *value as f32,
+            ParameterValue::Stepped(value) => *value as f32,
+            ParameterValue::Choice(value) => self
+                .choices
+                .iter()
+                .position(|choice| choice.id() == value)
+                .ok_or_else(|| CapabilityError::UnknownChoice(self.id.clone()))?
+                as f32,
+            ParameterValue::Toggle(value) => u8::from(*value) as f32,
+        };
+        if !encoded.is_finite() {
+            return Err(CapabilityError::ScalarEncodingOutOfRange(self.id.clone()));
+        }
+        Ok(encoded)
+    }
+
+    /// Produces a typed, bounded replacement for one current Scalar value.
+    pub fn adjusted_scalar_value(
+        &self,
+        current: &ParameterValue,
+        adjustment: ParameterAdjustment,
+    ) -> Result<ParameterValue, CapabilityError> {
+        if self.update != ParameterUpdate::Scalar || self.kind == ParameterKind::Asset {
+            return Err(CapabilityError::StructuralParameter(self.id.clone()));
+        }
+        validate_value(self, current)?;
+        let next = match current {
+            ParameterValue::Continuous(current) => {
+                let range = self
+                    .range
+                    .ok_or_else(|| CapabilityError::InvalidParameterShape {
+                        parameter_id: self.id.clone(),
+                        reason: "continuous Scalar has no numeric range",
+                    })?;
+                let step = if adjustment.coarse() {
+                    self.coarse_step
+                } else {
+                    self.fine_step
+                }
+                .ok_or_else(|| CapabilityError::InvalidParameterShape {
+                    parameter_id: self.id.clone(),
+                    reason: "continuous Scalar has no adjustment step",
+                })?;
+                ParameterValue::Continuous(adjust_numeric(
+                    *current,
+                    range.minimum(),
+                    range.maximum(),
+                    self.fine_step
+                        .expect("validated numeric Scalar has a fine step"),
+                    step,
+                    adjustment.increases(),
+                ))
+            }
+            ParameterValue::Stepped(current) => {
+                let range = self
+                    .range
+                    .ok_or_else(|| CapabilityError::InvalidParameterShape {
+                        parameter_id: self.id.clone(),
+                        reason: "stepped Scalar has no numeric range",
+                    })?;
+                let step = if adjustment.coarse() {
+                    self.coarse_step
+                } else {
+                    self.fine_step
+                }
+                .ok_or_else(|| CapabilityError::InvalidParameterShape {
+                    parameter_id: self.id.clone(),
+                    reason: "stepped Scalar has no adjustment step",
+                })? as i64;
+                let delta = if adjustment.increases() { step } else { -step };
+                ParameterValue::Stepped(
+                    current
+                        .saturating_add(delta)
+                        .clamp(range.minimum() as i64, range.maximum() as i64),
+                )
+            }
+            ParameterValue::Choice(current) => {
+                let index = self
+                    .choices
+                    .iter()
+                    .position(|choice| choice.id() == current)
+                    .ok_or_else(|| CapabilityError::UnknownChoice(self.id.clone()))?;
+                let next = if adjustment.increases() {
+                    index.saturating_add(1).min(self.choices.len() - 1)
+                } else {
+                    index.saturating_sub(1)
+                };
+                ParameterValue::Choice(self.choices[next].id().to_owned())
+            }
+            ParameterValue::Toggle(_) => ParameterValue::Toggle(adjustment.increases()),
+        };
+        if &next == current {
+            return Err(CapabilityError::ScalarValueAtBoundary(self.id.clone()));
+        }
+        validate_value(self, &next)?;
+        Ok(next)
+    }
+
     fn validate_shape(&self) -> Result<(), CapabilityError> {
         if self.label.is_empty() {
             return Err(CapabilityError::EmptyLabel);
@@ -431,6 +568,29 @@ fn positive_finite(value: Option<f64>) -> bool {
     value.is_some_and(|value| value.is_finite() && value > 0.0)
 }
 
+fn adjust_numeric(
+    current: f64,
+    minimum: f64,
+    maximum: f64,
+    fine_step: f64,
+    adjustment_step: f64,
+    increase: bool,
+) -> f64 {
+    let scale = decimal_scale(fine_step);
+    let current_units = (current * scale).round();
+    let step_units = (adjustment_step * scale).round();
+    let delta = if increase { step_units } else { -step_units };
+    ((current_units + delta) / scale).clamp(minimum, maximum)
+}
+
+fn decimal_scale(step: f64) -> f64 {
+    let mut scale = 1.0;
+    while scale < 1_000_000.0 && (step * scale).fract().abs() > f64::EPSILON * scale {
+        scale *= 10.0;
+    }
+    scale
+}
+
 fn default_parameter_value(default: &ParameterDefault) -> Result<&ParameterValue, CapabilityError> {
     match default {
         ParameterDefault::Value(value) => Ok(value),
@@ -517,7 +677,7 @@ pub struct CapabilityDescriptor {
     semantic_accent: String,
     sections: Vec<CapabilitySection>,
     asset_requirements: Vec<AssetRequirement>,
-    voice_limit: u16,
+    voice_policy: VoicePolicy,
     supported_midi_kinds: Vec<MidiMessageKind>,
 }
 
@@ -528,7 +688,7 @@ impl CapabilityDescriptor {
         semantic_accent: impl Into<String>,
         sections: Vec<CapabilitySection>,
         asset_requirements: Vec<AssetRequirement>,
-        voice_limit: u16,
+        voice_policy: VoicePolicy,
         supported_midi_kinds: Vec<MidiMessageKind>,
     ) -> Result<Self, CapabilityError> {
         let descriptor = Self {
@@ -537,7 +697,7 @@ impl CapabilityDescriptor {
             semantic_accent: semantic_accent.into(),
             sections,
             asset_requirements,
-            voice_limit,
+            voice_policy,
             supported_midi_kinds,
         };
         descriptor.validate()?;
@@ -564,8 +724,8 @@ impl CapabilityDescriptor {
         &self.asset_requirements
     }
 
-    pub const fn voice_limit(&self) -> u16 {
-        self.voice_limit
+    pub const fn voice_policy(&self) -> VoicePolicy {
+        self.voice_policy
     }
 
     pub fn supported_midi_kinds(&self) -> &[MidiMessageKind] {
@@ -581,6 +741,16 @@ impl CapabilityDescriptor {
 
     pub fn parameters(&self) -> impl Iterator<Item = &ParameterSpec> {
         self.sections.iter().flat_map(CapabilitySection::parameters)
+    }
+
+    /// Returns live Scalar parameters exactly once in immutable descriptor order.
+    pub fn scalar_parameters(&self) -> impl Iterator<Item = &ParameterSpec> {
+        self.parameters()
+            .filter(|parameter| parameter.update() == ParameterUpdate::Scalar)
+    }
+
+    pub fn scalar_parameter_count(&self) -> usize {
+        self.scalar_parameters().count()
     }
 
     /// Validates caller-owned assignments and returns canonical descriptor order.
@@ -660,8 +830,8 @@ impl CapabilityDescriptor {
         if self.sections.is_empty() {
             return Err(CapabilityError::NoSections);
         }
-        if self.voice_limit == 0 {
-            return Err(CapabilityError::ZeroVoiceLimit);
+        if matches!(self.voice_policy, VoicePolicy::FixedPerPatch { voices: 0 }) {
+            return Err(CapabilityError::ZeroFixedVoiceCount);
         }
         if self.supported_midi_kinds.is_empty() {
             return Err(CapabilityError::NoSupportedMidiKinds);
@@ -743,6 +913,13 @@ impl CapabilityDescriptor {
             if self.supported_midi_kinds[..index].contains(kind) {
                 return Err(CapabilityError::DuplicateMidiKind(*kind));
             }
+        }
+        let scalar_count = self.scalar_parameter_count();
+        if scalar_count > MAX_INSTRUMENT_SCALAR_PARAMETERS {
+            return Err(CapabilityError::TooManyScalarParameters {
+                count: scalar_count,
+                capacity: MAX_INSTRUMENT_SCALAR_PARAMETERS,
+            });
         }
         Ok(())
     }
@@ -898,6 +1075,35 @@ impl InstrumentConfig {
             .find(|assignment| assignment.parameter_id() == id)
             .map(AssetAssignment::reference)
     }
+
+    /// Replaces one descriptor-classified Scalar assignment and revalidates
+    /// the complete canonical config without substituting any value.
+    pub fn with_scalar_value(
+        &self,
+        descriptor: &CapabilityDescriptor,
+        id: &ParameterId,
+        value: ParameterValue,
+    ) -> Result<Self, CapabilityError> {
+        if descriptor.id() != self.capability_id() {
+            return Err(CapabilityError::ProviderRegistryMismatch(
+                self.capability_id.clone(),
+            ));
+        }
+        let spec = descriptor
+            .parameter(id)
+            .ok_or_else(|| CapabilityError::UndeclaredParameter(id.clone()))?;
+        if spec.update() != ParameterUpdate::Scalar || spec.kind() == ParameterKind::Asset {
+            return Err(CapabilityError::StructuralParameter(id.clone()));
+        }
+        validate_value(spec, &value)?;
+        let mut values = self.values.clone();
+        let assignment = values
+            .iter_mut()
+            .find(|assignment| assignment.parameter_id() == id)
+            .ok_or_else(|| CapabilityError::MissingParameter(id.clone()))?;
+        assignment.value = value;
+        descriptor.create_config(&values, &self.asset_references)
+    }
 }
 
 /// Immutable ordered descriptors installed in canonical application state.
@@ -959,7 +1165,11 @@ pub enum CapabilityError {
     EmptyRegistry,
     NoSections,
     NoSupportedMidiKinds,
-    ZeroVoiceLimit,
+    ZeroFixedVoiceCount,
+    TooManyScalarParameters {
+        count: usize,
+        capacity: usize,
+    },
     NonFiniteContinuousValue,
     InvalidNumericRange,
     InvalidDefaultKind,
@@ -996,6 +1206,9 @@ pub enum CapabilityError {
     WrongAssetKind(ParameterId),
     AssetDoesNotMatch(ParameterId),
     DependencyUnsatisfied(ParameterId),
+    StructuralParameter(ParameterId),
+    ScalarValueAtBoundary(ParameterId),
+    ScalarEncodingOutOfRange(ParameterId),
     ConfigOrderMismatch(CapabilityId),
     ProviderRegistryMismatch(CapabilityId),
 }
@@ -1011,7 +1224,13 @@ impl fmt::Display for CapabilityError {
             Self::NoSupportedMidiKinds => {
                 formatter.write_str("capability descriptor requires supported MIDI semantics")
             }
-            Self::ZeroVoiceLimit => formatter.write_str("capability voice limit must be nonzero"),
+            Self::ZeroFixedVoiceCount => {
+                formatter.write_str("fixed-per-Patch voice count must be nonzero")
+            }
+            Self::TooManyScalarParameters { count, capacity } => write!(
+                formatter,
+                "capability declares {count} Scalar parameters but capacity is {capacity}"
+            ),
             Self::NonFiniteContinuousValue => {
                 formatter.write_str("continuous parameter values must be finite")
             }
@@ -1075,6 +1294,21 @@ impl fmt::Display for CapabilityError {
             Self::DependencyUnsatisfied(id) => {
                 write!(formatter, "parameter {id} violates a dependency")
             }
+            Self::StructuralParameter(id) => {
+                write!(formatter, "parameter {id} requires structural preparation")
+            }
+            Self::ScalarValueAtBoundary(id) => {
+                write!(
+                    formatter,
+                    "Scalar parameter {id} is already at its boundary"
+                )
+            }
+            Self::ScalarEncodingOutOfRange(id) => {
+                write!(
+                    formatter,
+                    "Scalar parameter {id} cannot be encoded as finite f32"
+                )
+            }
             Self::ConfigOrderMismatch(id) => {
                 write!(formatter, "config for {id} is not in descriptor order")
             }
@@ -1117,6 +1351,55 @@ mod tests {
         .unwrap()
     }
 
+    fn scalar_parameter(
+        id_value: &str,
+        kind: ParameterKind,
+        default: ParameterValue,
+    ) -> ParameterSpec {
+        let (range, choices, fine_step, coarse_step) = match kind {
+            ParameterKind::Continuous => (
+                Some(ParameterRange::new(0.0, 1.0).unwrap()),
+                Vec::new(),
+                Some(0.01),
+                Some(0.1),
+            ),
+            ParameterKind::Stepped => (
+                Some(ParameterRange::new(0.0, 8.0).unwrap()),
+                Vec::new(),
+                Some(1.0),
+                Some(2.0),
+            ),
+            ParameterKind::Choice => (
+                None,
+                vec![
+                    ParameterChoice::new("choice.one", "One").unwrap(),
+                    ParameterChoice::new("choice.two", "Two").unwrap(),
+                    ParameterChoice::new("choice.three", "Three").unwrap(),
+                ],
+                None,
+                None,
+            ),
+            ParameterKind::Toggle => (None, Vec::new(), None, None),
+            ParameterKind::Asset => unreachable!("asset values are never Scalar"),
+        };
+        ParameterSpec::new(
+            id(id_value),
+            id_value,
+            kind,
+            ParameterUpdate::Scalar,
+            ParameterDefault::Value(default),
+            range,
+            choices,
+            fine_step,
+            coarse_step,
+            None,
+            "scalar",
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
     fn descriptor() -> CapabilityDescriptor {
         let file_id = id("test.file");
         let file = ParameterSpec::new(
@@ -1144,7 +1427,7 @@ mod tests {
                     .unwrap(),
             ],
             vec![AssetRequirement::new(file_id, true)],
-            4,
+            VoicePolicy::FixedPerPatch { voices: 4 },
             vec![MidiMessageKind::NoteOn, MidiMessageKind::NoteOff],
         )
         .unwrap()
@@ -1270,10 +1553,10 @@ mod tests {
                 "instrument.invalid",
                 vec![CapabilitySection::new("main", "Main", vec![step.clone()]).unwrap()],
                 Vec::new(),
-                0,
+                VoicePolicy::FixedPerPatch { voices: 0 },
                 vec![MidiMessageKind::NoteOn],
             ),
-            Err(CapabilityError::ZeroVoiceLimit)
+            Err(CapabilityError::ZeroFixedVoiceCount)
         ));
         assert!(matches!(
             CapabilityDescriptor::new(
@@ -1282,7 +1565,7 @@ mod tests {
                 "instrument.invalid",
                 vec![CapabilitySection::new("main", "Main", vec![step]).unwrap()],
                 Vec::new(),
-                1,
+                VoicePolicy::FixedPerPatch { voices: 1 },
                 vec![MidiMessageKind::NoteOn, MidiMessageKind::NoteOn],
             ),
             Err(CapabilityError::DuplicateMidiKind(MidiMessageKind::NoteOn))
@@ -1300,7 +1583,7 @@ mod tests {
                 "instrument.invalid",
                 vec![section.clone(), section],
                 Vec::new(),
-                1,
+                VoicePolicy::FixedPerPatch { voices: 1 },
                 vec![MidiMessageKind::NoteOn],
             ),
             Err(CapabilityError::DuplicateSection(_))
@@ -1312,7 +1595,7 @@ mod tests {
                 "instrument.invalid",
                 vec![CapabilitySection::new("main", "Main", vec![step.clone(), step]).unwrap()],
                 Vec::new(),
-                1,
+                VoicePolicy::FixedPerPatch { voices: 1 },
                 vec![MidiMessageKind::NoteOn],
             ),
             Err(CapabilityError::DuplicateParameter(_))
@@ -1352,7 +1635,7 @@ mod tests {
                     AssetRequirement::new(id("test.file"), true),
                     AssetRequirement::new(id("test.file"), true),
                 ],
-                1,
+                VoicePolicy::FixedPerPatch { voices: 1 },
                 vec![MidiMessageKind::NoteOn],
             ),
             Err(CapabilityError::DuplicateAssetRequirement(_))
@@ -1364,7 +1647,7 @@ mod tests {
                 "instrument.invalid",
                 valid.sections,
                 Vec::new(),
-                1,
+                VoicePolicy::FixedPerPatch { voices: 1 },
                 vec![MidiMessageKind::NoteOn],
             ),
             Err(CapabilityError::MissingAssetRequirement(_))
@@ -1462,7 +1745,7 @@ mod tests {
             "instrument.dependent",
             vec![CapabilitySection::new("main", "Main", vec![enabled, dependent]).unwrap()],
             Vec::new(),
-            1,
+            VoicePolicy::FixedPerPatch { voices: 1 },
             vec![MidiMessageKind::NoteOn],
         )
         .unwrap();
@@ -1503,10 +1786,162 @@ mod tests {
                 "instrument.invalid",
                 vec![CapabilitySection::new("main", "Main", vec![invalid_dependency]).unwrap()],
                 Vec::new(),
-                1,
+                VoicePolicy::FixedPerPatch { voices: 1 },
                 vec![MidiMessageKind::NoteOn],
             ),
             Err(CapabilityError::InvalidDependency { .. })
+        ));
+    }
+
+    #[test]
+    fn scalar_values_encode_replace_and_adjust_without_fallback() {
+        let continuous = scalar_parameter(
+            "test.continuous",
+            ParameterKind::Continuous,
+            ParameterValue::continuous(0.25).unwrap(),
+        );
+        let stepped_scalar = scalar_parameter(
+            "test.stepped-scalar",
+            ParameterKind::Stepped,
+            ParameterValue::Stepped(2),
+        );
+        let choice = scalar_parameter(
+            "test.choice",
+            ParameterKind::Choice,
+            ParameterValue::Choice("choice.two".to_owned()),
+        );
+        let toggle = scalar_parameter(
+            "test.toggle",
+            ParameterKind::Toggle,
+            ParameterValue::Toggle(false),
+        );
+        let descriptor = CapabilityDescriptor::new(
+            CapabilityId::new("instrument.scalar-test").unwrap(),
+            "Scalar test",
+            "instrument.scalar-test",
+            vec![CapabilitySection::new(
+                "main",
+                "Main",
+                vec![
+                    continuous.clone(),
+                    stepped("test.structural", 1, 0, 8),
+                    stepped_scalar.clone(),
+                    choice.clone(),
+                    toggle.clone(),
+                ],
+            )
+            .unwrap()],
+            Vec::new(),
+            VoicePolicy::FixedPerPatch { voices: 4 },
+            vec![MidiMessageKind::NoteOn],
+        )
+        .unwrap();
+        let config = descriptor
+            .create_config(
+                &[
+                    ParameterAssignment::new(
+                        id("test.continuous"),
+                        ParameterValue::continuous(0.25).unwrap(),
+                    ),
+                    ParameterAssignment::new(id("test.structural"), ParameterValue::Stepped(1)),
+                    ParameterAssignment::new(id("test.stepped-scalar"), ParameterValue::Stepped(2)),
+                    ParameterAssignment::new(
+                        id("test.choice"),
+                        ParameterValue::Choice("choice.two".to_owned()),
+                    ),
+                    ParameterAssignment::new(id("test.toggle"), ParameterValue::Toggle(false)),
+                ],
+                &[],
+            )
+            .unwrap();
+
+        let encoded = descriptor
+            .scalar_parameters()
+            .map(|spec| spec.scalar_value(config.value(spec.id()).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(encoded, vec![0.25, 2.0, 1.0, 0.0]);
+        assert_eq!(
+            continuous
+                .adjusted_scalar_value(
+                    config.value(continuous.id()).unwrap(),
+                    ParameterAdjustment::CoarseIncrease,
+                )
+                .unwrap(),
+            ParameterValue::Continuous(0.35)
+        );
+        assert_eq!(
+            stepped_scalar
+                .adjusted_scalar_value(
+                    config.value(stepped_scalar.id()).unwrap(),
+                    ParameterAdjustment::CoarseIncrease,
+                )
+                .unwrap(),
+            ParameterValue::Stepped(4)
+        );
+        assert_eq!(
+            choice
+                .adjusted_scalar_value(
+                    config.value(choice.id()).unwrap(),
+                    ParameterAdjustment::FineIncrease,
+                )
+                .unwrap(),
+            ParameterValue::Choice("choice.three".to_owned())
+        );
+
+        let replaced = config
+            .with_scalar_value(&descriptor, toggle.id(), ParameterValue::Toggle(true))
+            .unwrap();
+        assert_eq!(
+            replaced.value(toggle.id()),
+            Some(&ParameterValue::Toggle(true))
+        );
+        assert_eq!(
+            config.value(toggle.id()),
+            Some(&ParameterValue::Toggle(false))
+        );
+        assert!(matches!(
+            config.with_scalar_value(
+                &descriptor,
+                &id("test.structural"),
+                ParameterValue::Stepped(2),
+            ),
+            Err(CapabilityError::StructuralParameter(_))
+        ));
+        assert!(matches!(
+            config.with_scalar_value(
+                &descriptor,
+                choice.id(),
+                ParameterValue::Choice("choice.missing".to_owned()),
+            ),
+            Err(CapabilityError::UnknownChoice(_))
+        ));
+    }
+
+    #[test]
+    fn descriptor_rejects_more_than_sixteen_scalar_parameters() {
+        let parameters = (0..=MAX_INSTRUMENT_SCALAR_PARAMETERS)
+            .map(|index| {
+                scalar_parameter(
+                    &format!("test.scalar-{index}"),
+                    ParameterKind::Toggle,
+                    ParameterValue::Toggle(false),
+                )
+            })
+            .collect();
+        assert!(matches!(
+            CapabilityDescriptor::new(
+                CapabilityId::new("instrument.too-many-scalars").unwrap(),
+                "Too many Scalars",
+                "instrument.too-many-scalars",
+                vec![CapabilitySection::new("main", "Main", parameters).unwrap()],
+                Vec::new(),
+                VoicePolicy::FixedPerPatch { voices: 1 },
+                vec![MidiMessageKind::NoteOn],
+            ),
+            Err(CapabilityError::TooManyScalarParameters {
+                count: 17,
+                capacity: MAX_INSTRUMENT_SCALAR_PARAMETERS,
+            })
         ));
     }
 }

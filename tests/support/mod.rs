@@ -1,5 +1,9 @@
+use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
 use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+use crest_synth::adapter::production_instruments::{
+    production_capability_registry, production_instrument_providers,
+};
 use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
@@ -62,7 +66,8 @@ fn parts() -> Vec<InstrumentPart> {
 }
 
 fn scene_patches() -> Vec<Patch> {
-    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+    let soundfont = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+    let braids = BraidsCapability::new().expect("fixture capability is valid");
     parts()
         .into_iter()
         .enumerate()
@@ -72,8 +77,14 @@ fn scene_patches() -> Vec<Patch> {
             Patch::new(
                 patch_id,
                 part.name().to_owned(),
-                create_soundfont_config(&provider, part.instrument())
-                    .expect("fixture config matches the production descriptor"),
+                if index % 2 == 0 {
+                    create_soundfont_config(&soundfont, part.instrument())
+                        .expect("fixture config matches the SoundFont descriptor")
+                } else {
+                    braids
+                        .default_config()
+                        .expect("fixture config matches the Braids descriptor")
+                },
                 part.assigned_channel(),
                 crest_synth::mixer::channel_parameters::ChannelParameters::default(),
             )
@@ -132,8 +143,12 @@ pub struct FixturePreparer {
 
 impl FixturePreparer {
     pub fn new() -> Self {
+        Self::for_capability("instrument.soundfont.hidef")
+    }
+
+    pub fn for_capability(capability_id: &str) -> Self {
         Self {
-            capability_id: CapabilityId::new("instrument.soundfont.hidef")
+            capability_id: CapabilityId::new(capability_id)
                 .expect("fixture capability identity is valid"),
         }
     }
@@ -145,7 +160,7 @@ impl InstrumentPreparer for FixturePreparer {
     }
 
     fn prepared_shared_asset_count(&self) -> usize {
-        1
+        usize::from(self.capability_id.as_str() == "instrument.soundfont.hidef")
     }
 
     fn prepare(
@@ -175,11 +190,20 @@ impl PreparedInstrument for FixtureLeadInstrument {
         self.patch_id
     }
 
-    fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+    fn dispatch(
+        &mut self,
+        _message: MidiMessage,
+        _parameters: &crest_synth::real_time::RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
         Ok(())
     }
 
-    fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+    fn render(
+        &mut self,
+        output: &mut [f32],
+        _frame_count: usize,
+        _parameters: &crest_synth::real_time::RtPatchParameters,
+    ) {
         for frame in output.chunks_exact_mut(2) {
             frame[0] = 0.15;
             frame[1] = 0.15;
@@ -198,11 +222,20 @@ impl PreparedInstrument for FixturePadInstrument {
         self.patch_id
     }
 
-    fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+    fn dispatch(
+        &mut self,
+        _message: MidiMessage,
+        _parameters: &crest_synth::real_time::RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
         Ok(())
     }
 
-    fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+    fn render(
+        &mut self,
+        output: &mut [f32],
+        _frame_count: usize,
+        _parameters: &crest_synth::real_time::RtPatchParameters,
+    ) {
         for frame in output.chunks_exact_mut(2) {
             frame[0] = 0.26;
             frame[1] = 0.2782;
@@ -213,15 +246,12 @@ impl PreparedInstrument for FixturePadInstrument {
 }
 
 pub fn run_demo() -> DemoRun {
-    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+    let providers = production_instrument_providers().expect("production providers are valid");
+    let registry = production_capability_registry().expect("production registry is valid");
     let patches = scene_patches();
     let global_parameters = globals();
-    let scene = DemoScene::exhaustive(
-        &provider.registry().expect("fixture registry is valid"),
-        &patches,
-        &global_parameters,
-    )
-    .expect("the fixture contains two discriminating Patches");
+    let scene = DemoScene::exhaustive(&registry, &patches, &global_parameters)
+        .expect("the fixture contains two discriminating Patches");
     let expected_coverage = scene.expected_coverage().to_vec();
     let initial_parameters =
         ParameterSnapshot::new(0, global_parameters, &[]).expect("initial parameters are valid");
@@ -230,10 +260,7 @@ pub fn run_demo() -> DemoRun {
     let event_log = EventLog::new(scene.event_log_capacity().saturating_add(16))
         .expect("fixture EventLog capacity is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(
-            provider.registry().expect("fixture registry is valid"),
-            global_parameters,
-        ),
+        AppState::new(registry.clone(), global_parameters),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         event_log,
@@ -242,9 +269,12 @@ pub fn run_demo() -> DemoRun {
 
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
     automatic
-        .initialize(&provider, &mut app_loop)
+        .initialize(&providers, &mut app_loop)
         .expect("automatic fixture initializes through AppLoop");
-    let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer::new())];
+    let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
+        Box::new(FixturePreparer::new()),
+        Box::new(FixturePreparer::for_capability(BRAIDS_CAPABILITY_ID)),
+    ];
     let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
         .build(
             GraphRevision::INITIAL,

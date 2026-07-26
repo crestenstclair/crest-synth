@@ -27,7 +27,9 @@ project: contexts: RealTime: {
 			"graphRevision identifies the PreparedGraph whose exact PatchId order and fixed capacities this snapshot targets",
 			"unused entries are inactive",
 			"the snapshot is fully owned, fixed-size, and readable without allocation",
-			"a production-owned typed leaf descriptor covers generation, graphRevision, patchCount, every active PatchId/channel parameter, and every global parameter and exactly matches the StateTree parameters projection",
+			"each RtPatchParameters contains PatchId, ChannelParameters, VoiceEnvelope, scalarCount, and a descriptor-ordered [f32; 16] engine-scalar array fixed by the active graph revision",
+			"choice values are encoded as descriptor indices and snapshots contain no string, vector, asset, capability union, engine object, or destructor-bearing owner",
+			"a production-owned typed leaf descriptor covers generation, graphRevision, patchCount, every active PatchId/channel/envelope/scalar parameter, and every global parameter and exactly matches the StateTree parameters projection",
 		]
 		contributesTo: [
 			{capability: "capability.one_way_parameter_control", contribution: "carries accepted AppState values to audio"},
@@ -45,13 +47,13 @@ project: contexts: RealTime: {
 		invariants: [
 			"the rack is constructed outside the callback and every active slot contains one unique PatchId plus exactly one fully prepared instrument",
 			"slot order and PatchIds exactly match the PreparedGraph initial ParameterSnapshot and PatchAudioBlock stems",
-			"dispatch resolves one PatchId through bounded storage and calls only that slot; unknown PatchId returns fixed-size status without fallback or broadcast",
-			"render clears caller-owned stems and calls each active instrument once per block into only its matching stem",
+			"dispatch resolves one PatchId through bounded storage and passes only that slot's compatible RtPatchParameters; unknown PatchId or layout mismatch returns fixed-size status without fallback or broadcast",
+			"render clears caller-owned stems and calls each active instrument once per block with only its matching RtPatchParameters into only its matching stem",
 			"all-notes-off visits at most MAX_PATCHES prepared instruments",
 			"the rack never allocates, grows, reorders, locks, blocks, performs I/O, logs, formats, panics, unwinds, or destroys an instrument in callback operations",
 			"heterogeneous trait objects are allowed across slots, but dynamic dispatch never occurs inside an instrument's inner sample loop",
 		]
-		validations: [{kind: "test", command: ["cargo", "test", "prepared_engine_rack"], description: "two distinct prepared test instrument implementations route targeted MIDI and render isolated bounded stems through one rack"}]
+		validations: [{id: "validation.aggregate.prepared_engine_rack", kind: "test", command: ["cargo", "test", "prepared_engine_rack"], description: "two distinct prepared test instrument implementations route targeted MIDI and render isolated bounded stems through one rack"}]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "is the capability-neutral bounded runtime owner later used by SoundFont and Braids together"},
 			{capability: "capability.realtime_execution", contribution: "bounds polymorphic dispatch and rendering outside inner sample loops"},
@@ -73,8 +75,9 @@ project: contexts: RealTime: {
 		invariants: [
 			"all owned engines, parsed assets, voices, effect memory, stems, routing, and scratch capacity are fully prepared outside the callback",
 			"revision is nonzero and equals initialParameters.graphRevision",
-			"the rack, parameter snapshot, stems, and mixer routing contain the same PatchIds in the same bounded order",
-			"sampleRate and maxFrames are validated once and every callback buffer is bounded by maxFrames",
+			"the rack, parameter snapshot, descriptor scalar layouts, stems, and mixer routing contain the same PatchIds in the same bounded order",
+			"sampleRate and maxFrames come from the accepted negotiated AudioDeviceConfig and are validated once before the device stream starts",
+			"every graph render block is bounded by maxFrames; a larger native device callback is completely rendered as consecutive bounded blocks without truncation or a silent tail",
 			"the current increment permits replacement only for the same accepted PatchId set and does not expose a structural edit event or engine selector",
 			"moving graph ownership through a queue performs no allocation or destruction; destruction is permitted only after the retired graph reaches control or worker ownership",
 		]
@@ -150,6 +153,8 @@ project: contexts: RealTime: {
 			parameterGeneration: "u64"
 			commandsConsumed: "u64"
 			activeNotes: "u32"
+			routingFailures: "u64"
+			lastUnknownPatchId: "Option<PatchId>"
 			leftPeak: "f32"
 			rightPeak: "f32"
 			outputRms: "f32"
@@ -164,6 +169,7 @@ project: contexts: RealTime: {
 			"sequence and renderedBlocks increase monotonically and parameterGeneration is the exact ParameterSnapshot generation used for the measured block",
 			"peak, RMS, wet-input, and wet-output fields copy the MixObservation produced from the actual mixer-owned buffers for that observation window",
 			"activeNotes is maintained by a prepared fixed-capacity Patch/channel/note bitset updated only when the callback dispatches the corresponding MIDI lifecycle command; Patch-targeted or global all-notes-off clears it with bounded work",
+			"routingFailures increments exactly once for each PatchMidi command whose PatchId is absent from either the compatible parameter projection or prepared rack, and lastUnknownPatchId retains that exact identity without fallback or broadcast",
 			"the callback updates nonFiniteSamples and clippedSamples instead of logging, formatting, panicking, or performing I/O",
 		]
 		contributesTo: [
@@ -256,7 +262,7 @@ project: contexts: RealTime: {
 			"fail atomically with a typed error on any capacity, format, capability, asset, engine, effect, routing, or allocation failure and never return a partial graph",
 			"use the existing one global reverb and one global delay topology without introducing Patch effects, arbitrary graph edges, or feedback cycles",
 		]
-		validations: [{kind: "test", command: ["cargo", "test", "prepared_graph_builder"], description: "complete compatible graphs prepare deterministically while every partial, mismatched, unsupported, or over-capacity input fails before publication"}]
+		validations: [{id: "validation.service.prepared_graph_builder", kind: "test", command: ["cargo", "test", "prepared_graph_builder"], description: "complete compatible graphs prepare deterministically while every partial, mismatched, unsupported, or over-capacity input fails before publication"}]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "turns accepted structural state into one complete callback-ready ownership unit"},
 			{capability: "capability.realtime_execution", contribution: "keeps every allocating preparation step outside the callback"},
@@ -281,7 +287,7 @@ project: contexts: RealTime: {
 			"never mutate AppState, fabricate an acknowledgement, publish a partial graph, or substitute another graph after failure",
 			"this increment exercises handoff through deterministic orchestration but exposes no user structural edit or engine-selection event",
 		]
-		validations: [{kind: "test", command: ["cargo", "test", "structural_graph_coordinator"], description: "one-in-flight throttling, ownership preservation, acknowledgement, retry, and explicit control-side collection are exact"}]
+		validations: [{id: "validation.service.structural_graph_coordinator", kind: "test", command: ["cargo", "test", "structural_graph_coordinator"], description: "one-in-flight throttling, ownership preservation, acknowledgement, retry, and explicit control-side collection are exact"}]
 		contributesTo: [{capability: "capability.prepared_engine_rack", contribution: "enforces the one-in-flight graph replacement protocol on the non-real-time side"}]
 	}
 
@@ -304,7 +310,10 @@ project: contexts: RealTime: {
 			"at the start of a render block, if no prior retired graph occupies the bounded callback retirement slot, take at most one prepared replacement, swap the complete graph, activate its initial parameters, and publish the active revision",
 			"move the replaced graph into the dedicated return queue; if that queue is full, retain it in the one preallocated callback retirement slot and retry on later blocks without taking another replacement or destroying it",
 			"publish retiredRevision only after the return queue owns the old graph; control does not submit another structure until that acknowledgement is observed and collected",
-			"render drains only currently available AudioCommands, reads one latest ParameterSnapshot compatible with the active graph revision and PatchIds, asks PreparedEngineRack to fill one PatchAudioBlock stem per active Patch, passes all matching stems and parameters to the active graph's MixEngine, and returns",
+			"render drains only currently available AudioCommands, reads one latest ParameterSnapshot compatible with the active graph revision, PatchIds, and scalar layouts, gives each targeted dispatch and each per-Patch render only its matching RtPatchParameters, passes all matching stems and mixer values to the active graph's MixEngine, and returns",
+			"render divides an oversized interleaved stereo callback into complete consecutive blocks of at most PreparedGraph.maxFrames and renders every complete device frame without a silently cleared tail",
+			"an unknown PatchMidi identity leaves every prepared instrument unchanged and is preserved as one fixed-size routing failure in the same injected AudioObservation path",
+			"one engine-managed SoundFont synthesizer per SoundFont Patch plus every Patch-local Braids FFI bank, sixteen-voice bank iteration, 24-sample internal rendering, per-note envelopes, and 2:1 conversion remain inside the same no-allocation callback contract",
 			"PatchId and Patch index remain aligned from AudioCommand through the synthesis stem and ChannelParameters; a combined engine master buffer must never be treated as one Patch's input",
 			"after rendering each block, combine MixEngine's MixObservation with bounded command and active-note counters and publish one AudioObservationSnapshot tagged with the consumed ParameterSnapshot generation",
 			"the active-note observer is prepared outside the callback, has explicit Patch, channel, and note bounds, saturates counters on overflow, and never controls or substitutes prepared instrument state",
@@ -312,13 +321,15 @@ project: contexts: RealTime: {
 			"render never allocates, deallocates, locks, blocks, performs I/O, logs, formats strings, grows a collection, panics, unwinds, or destroys owned state",
 		]
 		validations: [
-			{kind: "test", command: ["cargo", "test", "audio_renderer_realtime_contract"], description: "an instrumented callback consumes commands and latest parameters through a heterogeneous prepared rack with zero callback allocations or destruction and preserves simultaneous Patch stems into the mixer"},
-			{kind: "test", command: ["cargo", "test", "prepared_graph_handoff"], description: "complete graphs swap only at block boundaries, acknowledge active and retired revisions, retain on return pressure, and drop only during control collection"},
-			{kind: "test", command: ["cargo", "test", "audio_observation_realtime_contract"], description: "the callback publishes coherent generation-tagged numeric observations with zero allocation, locking, blocking, logging, or callback-owned destruction"},
+			{id: "validation.service.audio_renderer_realtime_contract", kind: "integration", command: ["bash", "scripts/run_exact_test_validation.sh", "production_runtime_contracts", "audio_renderer_realtime_contract", "CREST_RT_VALIDATION audio_renderer_realtime_contract passed"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "\"testsExecuted\":1"}], description: "the production application prepares from a supported non-default negotiated rate and exact capacity, then completely chunks an oversized callback through injected boundaries"},
+			{id: "validation.service.audio_renderer_graph_handoff", kind: "integration", command: ["bash", "scripts/run_exact_test_validation.sh", "production_runtime_contracts", "prepared_graph_handoff", "CREST_RT_VALIDATION prepared_graph_handoff passed"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "\"testsExecuted\":1"}], description: "complete graphs swap only at block boundaries, acknowledge active and retired revisions, and drop only during control collection"},
+			{id: "validation.service.audio_renderer_observation_contract", kind: "integration", command: ["bash", "scripts/run_exact_test_validation.sh", "production_runtime_contracts", "audio_observation_realtime_contract", "CREST_RT_VALIDATION audio_observation_realtime_contract passed"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "\"testsExecuted\":1"}], description: "the production renderer preserves exact unknown-Patch failure through coherent bounded callback observation without fallback or mutation"},
 		]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "owns block-boundary graph activation and bounded retirement retry"},
 			{capability: "capability.soundfont_audio", contribution: "joins the SoundFont and global mixer into the callback"},
+			{capability: "capability.braids_engine", contribution: "joins the pinned Braids renderer through the same matching Patch projection and rack"},
+			{capability: "capability.per_voice_envelope", contribution: "delivers common ADSR values to independent note voices without adding a post-stem processor"},
 			{capability: "capability.live_observable_demo", contribution: "publishes measured callback consequences for the live scene without changing the render path"},
 			{capability: "capability.realtime_execution", contribution: "owns the hard real-time render operation"},
 		]
@@ -354,7 +365,7 @@ project: adapters: LockFreeStructuralGraphBoundary: {
 			"complete graph ownership return is the only retirement path for replaced engine and effect state",
 		]
 	}
-	validations: [{kind: "test", command: ["cargo", "test", "lock_free_structural_graph_boundary"], description: "both directions are bounded FIFO ownership transfer, pressure preserves values, status is coherent, and destructors run only under explicit control collection"}]
+	validations: [{id: "validation.adapter.lock_free_structural_graph_boundary", kind: "test", command: ["cargo", "test", "lock_free_structural_graph_boundary"], description: "both directions are bounded FIFO ownership transfer, pressure preserves values, status is coherent, and destructors run only under explicit control collection"}]
 	contributesTo: [
 		{capability: "capability.prepared_engine_rack", contribution: "implements the dedicated prepared/retired graph handoff and acknowledgement path"},
 		{capability: "capability.realtime_execution", contribution: "makes structural ownership transfer distinct from discrete commands and scalar snapshots"},
@@ -372,7 +383,7 @@ project: adapters: AtomicAudioObservation: {
 			"publishing overwrites the previous observation without allocation or backpressure and never touches AudioCommand or ParameterSnapshot storage",
 		]
 	}
-	validations: [{kind: "test", command: ["cargo", "test", "atomic_audio_observation"], description: "publication and reads are coherent, latest-wins, monotonic, and allocation-free on the callback side"}]
+	validations: [{id: "validation.adapter.atomic_audio_observation", kind: "test", command: ["cargo", "test", "atomic_audio_observation"], description: "publication and reads are coherent, latest-wins, monotonic, and allocation-free on the callback side"}]
 	contributesTo: [
 		{capability: "capability.live_observable_demo", contribution: "implements the bounded callback-to-control observation seam used by live checkpoints"},
 		{capability: "capability.realtime_execution", contribution: "keeps meters and health data out of the event and parameter transports"},

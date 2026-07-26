@@ -110,10 +110,10 @@ project: contexts: Mixer: {
 			"paired sensitivity cases independently vary reverbRoomSize, reverbDamping, reverbReturn, delayMilliseconds, delayFeedback, and delayReturn through adapter.GlobalReverbDelay with nonzero routed input, identical reset state, and exact send restoration",
 		]
 		validations: [
-			{kind: "test", command: ["cargo", "test", "global_mix"], description: "with two distinct simultaneous stems, editing either Patch's gain, pan, or sends changes only that Patch's declared dry/send path while global controls affect the complete mix"},
-			{kind: "test", command: ["cargo", "test", "faithful_effects_nonzero_sends_and_baseline_restoration"], description: "effect observations use nonzero routed sends, identical initial effect state, zero-input silence, and exact parameter/send baseline restoration"},
-			{kind: "test", command: ["cargo", "test", "global_effects_parameter_sensitivity"], description: "each reverb and delay parameter causes its own measured response from nonzero routed input using paired identical effect state"},
-			{kind: "test", command: ["cargo", "test", "mix_observation"], description: "dry, reverb-input, delay-input, wet-return, final-output, finite, and clipping measurements come from their declared mixer-owned buffers without changing output"},
+			{id: "validation.service.mix_engine_global_mix", kind: "test", command: ["cargo", "test", "global_mix"], description: "with two distinct simultaneous stems, editing either Patch's gain, pan, or sends changes only that Patch's declared dry/send path while global controls affect the complete mix"},
+			{id: "validation.service.mix_engine_faithful_effects", kind: "test", command: ["cargo", "test", "faithful_effects_nonzero_sends_and_baseline_restoration"], description: "effect observations use nonzero routed sends, identical initial effect state, zero-input silence, and exact parameter/send baseline restoration"},
+			{id: "validation.service.mix_engine_effect_sensitivity", kind: "test", command: ["cargo", "test", "global_effects_parameter_sensitivity"], description: "each reverb and delay parameter causes its own measured response from nonzero routed input using paired identical effect state"},
+			{id: "validation.service.mix_engine_observation", kind: "test", command: ["cargo", "test", "mix_observation"], description: "dry, reverb-input, delay-input, wet-return, final-output, finite, and clipping measurements come from their declared mixer-owned buffers without changing output"},
 		]
 		contributesTo: [
 			{capability: "capability.global_mix", contribution: "implements the complete channel-to-global-effects-to-master signal path"},

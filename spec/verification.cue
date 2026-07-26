@@ -6,6 +6,7 @@ project: witnesses: running_synth: {
 	capability: "capability.soundfont_audio"
 	resources: [
 		"adapter.HiDefSoundFontPreparer",
+		"adapter.BraidsPreparer",
 		"adapter.CorridorsMidiEventSource",
 		"applicationService.Testing.AutomaticMidiTest",
 		"applicationService.RealTime.AudioRenderer",
@@ -15,6 +16,7 @@ project: witnesses: running_synth: {
 	]
 	repairResources: [
 		"adapter.HiDefSoundFontPreparer",
+		"adapter.BraidsPreparer",
 		"applicationService.Testing.AutomaticMidiTest",
 		"applicationService.RealTime.AudioRenderer",
 		"domainService.Mixer.MixEngine",
@@ -31,9 +33,12 @@ project: witnesses: running_synth: {
 	observation: {
 		kind: "json_stdout"
 		marker: "CREST_OBSERVATION "
-		schema: {
+			schema: {
 			parsed_soundfont_banks: "number"
 			prepared_instruments: "number"
+			soundfont_patches: "number"
+			braids_patches: "number"
+			alternating_capabilities: "bool"
 			active_graph_revision: "number"
 			presets_match: "bool"
 			distinct_patch_channels: "bool"
@@ -48,6 +53,9 @@ project: witnesses: running_synth: {
 	predicates: [
 		{field: "parsed_soundfont_banks", op: "eq", value: 1},
 		{field: "prepared_instruments", op: "gt", value: 1},
+		{field: "soundfont_patches", op: "gt", value: 0},
+		{field: "braids_patches", op: "gt", value: 0},
+		{field: "alternating_capabilities", op: "eq", value: true},
 		{field: "active_graph_revision", op: "gt", value: 0},
 		{field: "presets_match", op: "eq", value: true},
 		{field: "distinct_patch_channels", op: "eq", value: true},
@@ -134,10 +142,16 @@ project: witnesses: exhaustive_demo_scene: {
 	goal: "goal.observe_synth"
 	capability: "capability.observable_demo_scene"
 	resources: [
+		"adapter.BraidsCapability",
+		"adapter.BraidsPreparer",
+		"valueObject.Synth.VoiceEnvelope",
+		"valueObject.Control.TopLevelContext",
+		"valueObject.Control.InteractionState",
 		"valueObject.Control.AppEvent",
 		"valueObject.Control.EventRecord",
 		"valueObject.Control.EventLog",
 		"valueObject.Control.StateTree",
+		"valueObject.Control.PatchPageProjection",
 		"valueObject.Control.TextProjection",
 		"aggregate.Control.AppState",
 		"domainService.Control.StateProjector",
@@ -163,10 +177,16 @@ project: witnesses: exhaustive_demo_scene: {
 		"asset.CrestSynthMain",
 	]
 	repairResources: [
+		"adapter.BraidsCapability",
+		"adapter.BraidsPreparer",
+		"valueObject.Synth.VoiceEnvelope",
+		"valueObject.Control.TopLevelContext",
+		"valueObject.Control.InteractionState",
 		"valueObject.Control.AppEvent",
 		"valueObject.Control.EventRecord",
 		"valueObject.Control.EventLog",
 		"valueObject.Control.StateTree",
+		"valueObject.Control.PatchPageProjection",
 		"valueObject.Control.TextProjection",
 		"aggregate.Control.AppState",
 		"domainService.Control.StateProjector",
@@ -205,13 +225,16 @@ project: witnesses: exhaustive_demo_scene: {
 			active_graph_revision: "number"
 			parsed_soundfont_banks: "number"
 			prepared_instruments: "number"
+			braids_patches: "number"
+			alternating_capabilities: "bool"
 			callback_destructions: "number"
 			event_log_records: "number"
 			event_log_dropped: "number"
 			state_tree_schema_version: "number"
 			state_tree_patch_count: "number"
 			window_input_cases_exercised: "number"
-			app_event_variants_exercised: "number"
+				app_event_variants_exercised: "number"
+				top_level_contexts_exercised: "number"
 			event_sources_exercised: "number"
 			navigate_directions_exercised: "number"
 			adjust_directions_exercised: "number"
@@ -219,6 +242,8 @@ project: witnesses: exhaustive_demo_scene: {
 			audio_command_variants_exercised: "number"
 			rejection_variants_exercised: "number"
 			global_parameter_cases_exercised: "number"
+			envelope_parameter_cases_exercised: "number"
+			braids_scalar_cases_exercised: "number"
 			all_patch_parameter_cases_exercised: "bool"
 			all_serialized_properties_observed: "bool"
 			accepted_events: "number"
@@ -231,6 +256,8 @@ project: witnesses: exhaustive_demo_scene: {
 			gui_projection_matches_state: "bool"
 			parameter_projection_matches_state: "bool"
 			all_audio_parameter_effects_observed: "bool"
+			mixed_engine_stems_nonzero: "bool"
+			mixed_engine_parameter_isolation: "bool"
 				post_rejection_event_accepted: "bool"
 				schema_surface_equal: "bool"
 				unexpected_coverage: "number"
@@ -254,20 +281,25 @@ project: witnesses: exhaustive_demo_scene: {
 		{field: "active_graph_revision", op: "gt", value: 0, repairResources: ["valueObject.RealTime.GraphRevision", "valueObject.Control.StateTree", "applicationService.RealTime.AudioRenderer"]},
 		{field: "parsed_soundfont_banks", op: "eq", value: 1, repairResources: ["adapter.HiDefSoundFontPreparer", "applicationService.Shell.StandaloneApplication"]},
 		{field: "prepared_instruments", op: "gt", value: 1, repairResources: ["aggregate.RealTime.PreparedEngineRack", "applicationService.RealTime.PreparedGraphBuilder"]},
+		{field: "braids_patches", op: "gt", value: 0, repairResources: ["adapter.BraidsCapability", "adapter.BraidsPreparer", "applicationService.Testing.AutomaticMidiTest"]},
+		{field: "alternating_capabilities", op: "eq", value: true, repairResources: ["applicationService.Testing.AutomaticMidiTest", "applicationService.Shell.StandaloneApplication"]},
 		{field: "callback_destructions", op: "eq", value: 0, repairResources: ["applicationService.RealTime.AudioRenderer", "port.RealTime.StructuralGraphBoundary"]},
 		{field: "event_log_records", op: "gt", value: 0, repairResources: ["valueObject.Control.EventLog", "applicationService.Control.AppLoop", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "event_log_dropped", op: "eq", value: 0, repairResources: ["valueObject.Control.EventLog", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "state_tree_schema_version", op: "gt", value: 0, repairResources: ["valueObject.Control.StateTree", "domainService.Control.StateProjector"]},
 		{field: "state_tree_patch_count", op: "gt", value: 1, repairResources: ["aggregate.Control.AppState", "valueObject.Control.StateTree", "domainService.Control.StateProjector", "applicationService.Testing.AutomaticMidiTest"]},
-		{field: "window_input_cases_exercised", op: "eq", value: 13, repairResources: ["valueObject.Shell.WindowInput", "applicationService.Shell.KeyboardInputTranslator", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
-		{field: "app_event_variants_exercised", op: "eq", value: 4, repairResources: ["valueObject.Control.AppEvent", "valueObject.Testing.DemoScene", "applicationService.Control.AppLoop"]},
+		{field: "window_input_cases_exercised", op: "eq", value: 17, repairResources: ["valueObject.Shell.WindowInput", "applicationService.Shell.KeyboardInputTranslator", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "app_event_variants_exercised", op: "eq", value: 5, repairResources: ["valueObject.Control.AppEvent", "valueObject.Testing.DemoScene", "applicationService.Control.AppLoop"]},
+		{field: "top_level_contexts_exercised", op: "eq", value: 2, repairResources: ["valueObject.Control.TopLevelContext", "valueObject.Control.InteractionState", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "event_sources_exercised", op: "eq", value: 5, repairResources: ["valueObject.Control.EventRecord", "applicationService.Control.AppLoop", "applicationService.Testing.AutomaticMidiTest", "applicationService.Shell.StandaloneApplication"]},
 		{field: "navigate_directions_exercised", op: "eq", value: 4, repairResources: ["valueObject.Control.AppEvent", "valueObject.Testing.DemoScene", "applicationService.Shell.KeyboardInputTranslator"]},
 		{field: "adjust_directions_exercised", op: "eq", value: 4, repairResources: ["valueObject.Control.AppEvent", "valueObject.Testing.DemoScene", "applicationService.Shell.KeyboardInputTranslator"]},
 		{field: "midi_message_kinds_exercised", op: "eq", value: 7, repairResources: ["valueObject.Kernel.MidiMessage", "valueObject.Testing.DemoScene", "applicationService.Testing.AutomaticMidiTest"]},
 		{field: "audio_command_variants_exercised", op: "eq", value: 2, repairResources: ["valueObject.RealTime.AudioCommand", "applicationService.RealTime.AudioRenderer", "valueObject.Testing.DemoScene"]},
-		{field: "rejection_variants_exercised", op: "eq", value: 9, repairResources: ["aggregate.Control.AppState", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "rejection_variants_exercised", op: "eq", value: 11, repairResources: ["aggregate.Control.AppState", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "global_parameter_cases_exercised", op: "eq", value: 7, repairResources: ["valueObject.Mixer.GlobalParameters", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "envelope_parameter_cases_exercised", op: "gt", value: 0, repairResources: ["valueObject.Synth.VoiceEnvelope", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "braids_scalar_cases_exercised", op: "gt", value: 0, repairResources: ["adapter.BraidsCapability", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "all_patch_parameter_cases_exercised", op: "eq", value: true, repairResources: ["valueObject.Mixer.ChannelParameters", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "all_serialized_properties_observed", op: "eq", value: true, repairResources: ["valueObject.Control.EventRecord", "valueObject.Control.EventLog", "valueObject.Control.StateTree", "valueObject.Control.TextProjection", "valueObject.RealTime.ParameterSnapshot", "domainService.Control.StateProjector"]},
 		{field: "accepted_events", op: "gt", value: 0, repairResources: ["valueObject.Control.EventRecord", "valueObject.Control.EventLog", "applicationService.Control.AppLoop"]},
@@ -280,8 +312,10 @@ project: witnesses: exhaustive_demo_scene: {
 		{field: "gui_projection_matches_state", op: "eq", value: true, repairResources: ["valueObject.Control.TextProjection", "domainService.Control.StateProjector", "adapter.EframeTextWindow"]},
 		{field: "parameter_projection_matches_state", op: "eq", value: true, repairResources: ["valueObject.RealTime.ParameterSnapshot", "domainService.Control.StateProjector"]},
 		{field: "all_audio_parameter_effects_observed", op: "eq", value: true, repairResources: ["valueObject.Mixer.ChannelParameters", "valueObject.Mixer.GlobalParameters", "adapter.GlobalReverbDelay", "domainService.Mixer.MixEngine", "applicationService.RealTime.AudioRenderer", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "mixed_engine_stems_nonzero", op: "eq", value: true, repairResources: ["adapter.HiDefSoundFontPreparer", "adapter.BraidsPreparer", "aggregate.RealTime.PreparedEngineRack", "applicationService.RealTime.AudioRenderer"]},
+		{field: "mixed_engine_parameter_isolation", op: "eq", value: true, repairResources: ["domainService.Control.StateProjector", "aggregate.RealTime.PreparedEngineRack", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "post_rejection_event_accepted", op: "eq", value: true, repairResources: ["aggregate.Control.AppState", "applicationService.Control.AppLoop", "applicationService.Testing.ExhaustiveGuiDemo", "applicationService.Shell.StandaloneApplication"]},
-		{field: "schema_surface_equal", op: "eq", value: true, repairResources: ["valueObject.Control.AppEvent", "valueObject.Control.EventRecord", "valueObject.Control.EventLog", "valueObject.Control.StateTree", "valueObject.Control.TextProjection", "domainService.Control.StateProjector", "valueObject.Testing.DemoScene"]},
+		{field: "schema_surface_equal", op: "eq", value: true, repairResources: ["valueObject.Control.TopLevelContext", "valueObject.Control.InteractionState", "valueObject.Control.AppEvent", "valueObject.Control.EventRecord", "valueObject.Control.EventLog", "valueObject.Control.StateTree", "valueObject.Control.PatchPageProjection", "valueObject.Control.TextProjection", "domainService.Control.StateProjector", "valueObject.Testing.DemoScene"]},
 		{field: "unexpected_coverage", op: "eq", value: 0, repairResources: ["valueObject.Control.EventLog", "valueObject.Testing.DemoScene", "valueObject.Testing.DemoSceneReport", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "exact_state_values", op: "eq", value: true, repairResources: ["aggregate.Control.AppState", "valueObject.Control.StateTree", "domainService.Control.StateProjector", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "exact_projection_values", op: "eq", value: true, repairResources: ["valueObject.Control.TextProjection", "valueObject.RealTime.ParameterSnapshot", "domainService.Control.StateProjector", "applicationService.Testing.ExhaustiveGuiDemo"]},
@@ -675,5 +709,138 @@ project: witnesses: zero_renderer_mutant: {
 		{field: "renderer_nonzero", op: "eq", value: true, repairResources: ["applicationService.RealTime.AudioRenderer", "valueObject.RealTime.PatchAudioBlock", "domainService.Mixer.MixEngine"]},
 		{field: "render_peak", op: "gt", value: 0.001, repairResources: ["applicationService.RealTime.AudioRenderer", "valueObject.RealTime.PatchAudioBlock", "domainService.Mixer.MixEngine"]},
 		{field: "finite_audio", op: "eq", value: true, repairResources: ["applicationService.RealTime.AudioRenderer", "domainService.Mixer.MixEngine"]},
+	]
+}
+
+project: witnesses: braids_engine: {
+	scope: "goal"
+	goal: "goal.play_test_song"
+	capability: "capability.braids_engine"
+	resources: [
+		"adapter.BraidsCapability",
+		"adapter.BraidsPreparer",
+		"port.Synth.PreparedInstrument",
+		"aggregate.RealTime.PreparedEngineRack",
+		"applicationService.RealTime.AudioRenderer",
+		"applicationService.Testing.ExhaustiveGuiDemo",
+		"asset.BehavioralAcceptanceTests",
+	]
+	repairResources: [
+		"adapter.BraidsCapability",
+		"adapter.BraidsPreparer",
+		"aggregate.RealTime.PreparedEngineRack",
+		"applicationService.RealTime.AudioRenderer",
+		"applicationService.Testing.ExhaustiveGuiDemo",
+	]
+	evidence: ["evidence.braids_engine_contract"]
+	command: ["cargo", "test", "--release", "--test", "braids_engine", "--", "--nocapture"]
+	timeout: "180s"
+	observation: {
+		kind: "json_stdout"
+		marker: "CREST_BRAIDS_OBSERVATION "
+		schema: {
+			upstream_revision: "string"
+			stmlib_revision: "string"
+			source_hashes_match: "bool"
+			model_count: "number"
+			voices_per_patch: "number"
+			braids_patch_count: "number"
+			total_braids_voice_capacity: "number"
+			capacity_matches_patch_count: "bool"
+			no_braids_specific_patch_limit: "bool"
+			independent_patch_banks: "bool"
+			sixteen_voices_audible: "bool"
+			seventeenth_stole_oldest: "bool"
+			scalar_cases_exercised: "number"
+			unsupported_rate_rejected: "bool"
+			mixed_routing_exact: "bool"
+			parameter_isolation_exact: "bool"
+			finite_audio: "bool"
+			callback_allocations: "number"
+			callback_destructions: "number"
+			native_callback_destructions: "number"
+			p99_render_microseconds: "number"
+		}
+	}
+	predicates: [
+		{field: "upstream_revision", op: "eq", value: "08460a69a7e1f7a81c5a2abcc7189c9a6b7208d4"},
+		{field: "stmlib_revision", op: "eq", value: "e3bd7c9cc00e4364166f9905c0509b6ffd0535ec"},
+		{field: "source_hashes_match", op: "eq", value: true},
+		{field: "model_count", op: "eq", value: 47},
+		{field: "voices_per_patch", op: "eq", value: 16},
+		{field: "braids_patch_count", op: "eq", value: 3},
+		{field: "total_braids_voice_capacity", op: "eq", value: 48},
+		{field: "capacity_matches_patch_count", op: "eq", value: true},
+		{field: "no_braids_specific_patch_limit", op: "eq", value: true},
+		{field: "independent_patch_banks", op: "eq", value: true},
+		{field: "sixteen_voices_audible", op: "eq", value: true},
+		{field: "seventeenth_stole_oldest", op: "eq", value: true},
+		{field: "scalar_cases_exercised", op: "eq", value: 3},
+		{field: "unsupported_rate_rejected", op: "eq", value: true},
+		{field: "mixed_routing_exact", op: "eq", value: true},
+		{field: "parameter_isolation_exact", op: "eq", value: true},
+		{field: "finite_audio", op: "eq", value: true},
+		{field: "callback_allocations", op: "eq", value: 0},
+		{field: "callback_destructions", op: "eq", value: 0},
+		{field: "native_callback_destructions", op: "eq", value: 0},
+		{field: "p99_render_microseconds", op: "lt", value: 2666},
+	]
+}
+
+project: witnesses: per_voice_envelope: {
+	scope: "goal"
+	goal: "goal.control_synth"
+	capability: "capability.per_voice_envelope"
+	resources: [
+		"valueObject.Synth.VoiceEnvelope",
+		"aggregate.Synth.Patch",
+		"aggregate.Control.AppState",
+		"domainService.Control.StateProjector",
+		"adapter.HiDefSoundFontPreparer",
+		"adapter.BraidsPreparer",
+		"applicationService.RealTime.AudioRenderer",
+		"asset.BehavioralAcceptanceTests",
+	]
+	repairResources: [
+		"valueObject.Synth.VoiceEnvelope",
+		"aggregate.Synth.Patch",
+		"aggregate.Control.AppState",
+		"domainService.Control.StateProjector",
+		"adapter.HiDefSoundFontPreparer",
+		"adapter.BraidsPreparer",
+		"applicationService.RealTime.AudioRenderer",
+	]
+	evidence: ["evidence.per_voice_envelope_contract"]
+	command: ["cargo", "test", "--test", "per_voice_envelope", "--", "--nocapture"]
+	timeout: "180s"
+	observation: {
+		kind: "json_stdout"
+		marker: "CREST_ENVELOPE_OBSERVATION "
+		schema: {
+			parameter_cases_exercised: "number"
+			soundfont_synthesizers_per_patch: "number"
+			braids_voices_per_patch: "number"
+			state_text_snapshot_exact: "bool"
+			soundfont_overlap_independent: "bool"
+			braids_overlap_independent: "bool"
+			all_fields_audible: "bool"
+			post_stem_envelope_absent: "bool"
+			extremes_finite: "bool"
+			callback_allocations: "number"
+			callback_destructions: "number"
+		}
+	}
+	predicates: [
+		{field: "parameter_cases_exercised", op: "eq", value: 4},
+		{field: "soundfont_synthesizers_per_patch", op: "eq", value: 1},
+		{field: "braids_voices_per_patch", op: "eq", value: 16},
+		{field: "state_text_snapshot_exact", op: "eq", value: true},
+		{field: "soundfont_overlap_independent", op: "eq", value: true},
+		{field: "braids_overlap_independent", op: "eq", value: true},
+		{field: "all_fields_audible", op: "eq", value: true},
+		{field: "post_stem_envelope_absent", op: "eq", value: true},
+		{field: "extremes_finite", op: "eq", value: true},
+		{field: "callback_allocations", op: "eq", value: 0},
+		{field: "callback_destructions", op: "eq", value: 0},
 	]
 }

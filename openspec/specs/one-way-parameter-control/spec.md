@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the normalized one-way control pipeline, exact keyboard vocabulary, bounded parameter behavior, complete text projection, and replaceable external boundaries.
-
 ## Requirements
-
 ### Requirement: Ordered one-way state transition
 Every supported control input SHALL be normalized into a semantic event, and accepted state SHALL be committed before serialization, text projection, graph-revision-tagged parameter publication, or audio-command effects are produced. Structural graph ownership SHALL remain outside `AppState` and SHALL cross only through its dedicated handoff.
 
@@ -29,15 +27,23 @@ Every fixed parameter snapshot and its StateTree parameters projection SHALL con
 - **THEN** it is rejected from active audio consumption rather than relabeled, partially applied, or treated as a fallback
 
 ### Requirement: Exact keyboard vocabulary
-Bare W and S SHALL navigate parameters, bare A and D SHALL navigate Patch or GLOBAL sections, and holding K with W, S, A, or D SHALL adjust only the selected bounded value. K SHALL act only as a modifier, and no physical key SHALL mutate application state directly.
+Digit `1` SHALL directly select MIXER and Digit `2` SHALL directly select PATCH. Bare W and S SHALL navigate parameters, bare A and D SHALL navigate Patch or GLOBAL sections, and holding K with W, S, A, or D SHALL adjust only the selected bounded value while MIXER is active. Digit key-up and every other supported key-up SHALL emit no semantic event, K SHALL act only as a modifier, and no physical key SHALL mutate application state directly.
+
+#### Scenario: Select a context
+- **WHEN** the player presses `1` or `2`
+- **THEN** the shared input translator emits the corresponding semantic `SelectContext` event without reading AppState or changing window-owned page state
 
 #### Scenario: Navigate without editing
-- **WHEN** the player presses bare W, S, A, or D
+- **WHEN** MIXER is active and the player presses bare W, S, A, or D
 - **THEN** selection moves according to the declared wrap and clamp rules without changing a synth parameter
 
 #### Scenario: Edit the selected value
-- **WHEN** the player holds K and presses W, S, A, or D
+- **WHEN** MIXER is active and the player holds K and presses W, S, A, or D
 - **THEN** exactly the selected bounded parameter receives the corresponding fine or coarse adjustment through the semantic event path
+
+#### Scenario: Release a page key
+- **WHEN** the player releases `1` or `2`, including while K is held
+- **THEN** no semantic event is emitted and the current context remains reducer-owned
 
 ### Requirement: Nonfatal parameter boundaries
 Every editable value SHALL enforce its typed lower and upper bounds, and an adjustment beyond a reached boundary SHALL be an unchanged nonfatal transition.
@@ -47,22 +53,34 @@ Every editable value SHALL enforce its typed lower and upper bounds, and an adju
 - **THEN** the value remains unchanged, a boundary rejection is recorded, and the application accepts a subsequent valid edit
 
 ### Requirement: Single complete text view
-The user interface SHALL remain one scrollable text view listing the installed capability identity and descriptor-driven instrument config for every Patch, every current editable Patch parameter, and all global parameters, with Patch sections separated by `------------------------------------------------------------` and the selected line visibly identified.
+The basic user interface SHALL remain one scrollable text shell rendering exactly one reducer-selected projection at a time. MIXER SHALL preserve the complete existing descriptor-derived Patch/global diagnostic body, separators, editable selection, and selected-line marker. PATCH SHALL render the focused immutable PatchPageProjection with Patch identity, MIDI channel, active engine and complete installed choices, canonical ADSR, and active descriptor fields with stable IDs and read-only status. Neither context SHALL contain a hard-coded SoundFont/Braids field list, and the window SHALL own no page state.
 
 #### Scenario: View is projected from current state
-- **WHEN** installed Patches, generic instrument configs, parameters, or selection change
-- **THEN** the one text body contains every exact current value, walks instrument fields in production descriptor order, includes the required Patch separators, and places a selection marker at the projected selected line
+- **WHEN** MIXER is active and installed Patches, generic configs, envelope/mixer values, Scalar engine values, global values, or MIXER selection change
+- **THEN** the text body contains every exact current value, retains required Patch separators, follows production descriptor order, and places one marker at the projected selected line
+
+#### Scenario: Patch capabilities expose different shapes
+- **WHEN** navigation or Patch focus moves between a SoundFont Patch and a Braids Patch
+- **THEN** MIXER derives its editable selection count from the active descriptor, skips SoundFont Structural fields, includes Braids Model, Timbre, and Color, and PATCH projects each different descriptor shape without a hard-coded engine field list
+
+#### Scenario: PATCH is projected from current state
+- **WHEN** PATCH is active for a focused SoundFont or Braids Patch
+- **THEN** the text body is a lossless deterministic rendering of that canonical PatchPageProjection and displays Structural values without making any page row editable
+
+#### Scenario: Context is round-tripped
+- **WHEN** the player switches from a discriminating MIXER selection to PATCH and back
+- **THEN** the same shell renders each canonical body in turn and returns to the exact retained MIXER selection and diagnostic values
 
 ### Requirement: Cross-projection equality
-Serialized state and text SHALL contain the exact immutable capability registry and generic Patch instrument configs accepted for the same state generation, and serialized state, text, and published real-time parameters SHALL contain the exact current Patch identity, editable Patch parameter, global parameter, and selection values for that generation. The StateTree parameters branch and real-time snapshot SHALL additionally agree on the target graph revision and ordered Patch identities.
+Serialized state and text SHALL contain the exact immutable capability registry and generic Patch instrument configs accepted for the same state generation, and serialized state, text, and published real-time parameters SHALL contain the exact current Patch identity, mixer values, common envelope, descriptor-classified Scalar instrument values, global values, and selection for that generation. The StateTree parameters branch and real-time snapshot SHALL additionally agree on the target graph revision, ordered Patch identities, and fixed Scalar layouts.
 
 #### Scenario: Inspect an accepted Patch installation
-- **WHEN** generic Patch configs are installed through the production reducer and their initial graph is prepared
-- **THEN** the state tree and text projection contain the same descriptor ids, parameter specs, capability ids, assignments, and asset references in canonical order, and the tree's parameter branch targets the prepared graph revision
+- **WHEN** generic SoundFont and Braids configs are installed through the production reducer and their initial graph is prepared
+- **THEN** the state tree and text projection contain the same descriptor ids, parameter specs, capability ids, assignments, asset references, and envelopes in canonical order, and the tree's parameter branch targets the prepared graph revision
 
 #### Scenario: Inspect an accepted edit
-- **WHEN** any Patch or global parameter edit is accepted
-- **THEN** the state tree, selected text value, and corresponding real-time parameter contain the same exact value and target graph revision while all unrelated values and immutable instrument configs remain unchanged
+- **WHEN** any editable Patch or global parameter is adjusted
+- **THEN** the state tree, selected text value, and corresponding real-time parameter contain the same exact value and target graph revision while every unrelated Patch/config/envelope/value remains unchanged
 
 ### Requirement: Production GUI input uses the shared path
 Real GUI key and focus events SHALL pass through the same normalized input translator and one-way control loop used by deterministic headless verification.
@@ -110,3 +128,26 @@ Accepted MIDI SHALL continue through `AppState::apply`, canonical generation adv
 #### Scenario: Deferred projection JSON is inspected
 - **WHEN** a generation-only StateSnapshot or StateTree is materialized after MIDI dispatch
 - **THEN** its JSON, hash, text selection, parameter generation, and complete nested values exactly equal an eager canonical projection from the same accepted `AppState`
+
+### Requirement: Descriptor-derived Patch editable surface
+The ordered editable surface for each Patch SHALL be derived from one production-owned resolver containing the four Patch mixer values, four common ADSR values, and every active descriptor parameter classified Scalar in descriptor order. Reducer navigation, adjustment, text selection, deterministic demo coverage, and live-demo coverage SHALL use this same surface.
+
+#### Scenario: SoundFont Patch surface is derived
+- **WHEN** a SoundFont Patch is selected
+- **THEN** its mixer and ADSR values are editable while bank, program, percussion, and file remain visible Structural values outside the live selection cycle
+
+#### Scenario: Braids Patch surface is derived
+- **WHEN** a Braids Patch is selected
+- **THEN** its mixer, ADSR, Model, Timbre, and Color values are each reachable exactly once in the declared order
+
+### Requirement: Fixed engine-scalar audio projection
+Each real-time Patch parameter value SHALL carry its canonical ADSR plus at most sixteen destructor-free engine Scalar values encoded in descriptor order. The projection SHALL contain no string, vector, capability-specific union, asset, or engine object, and choice values SHALL use only the index fixed by the active graph's immutable descriptor revision.
+
+#### Scenario: Braids scalar snapshot is published
+- **WHEN** a Braids value is accepted
+- **THEN** the newest complete snapshot carries its matching finite encoded value in the graph-compatible Braids layout and no SoundFont Patch receives that slot
+
+#### Scenario: Scalar capacity is exceeded
+- **WHEN** an installed descriptor declares more than sixteen Scalar values
+- **THEN** descriptor/registry construction fails before Patch installation or audio publication
+

@@ -1,5 +1,6 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::Cell;
+use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::hidef_soundfont_capability::{
     HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
 };
@@ -13,6 +14,7 @@ use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::real_time::audio_boundary::{AudioBoundary, ControlAudioBoundary};
 use crest_synth::real_time::audio_command::AudioCommand;
+use crest_synth::real_time::audio_observation::{AudioObservation, ControlAudioObservation};
 use crest_synth::real_time::audio_renderer::AudioRenderer;
 use crest_synth::real_time::graph_handoff_status::GraphHandoffStatus;
 use crest_synth::real_time::graph_revision::GraphRevision;
@@ -172,12 +174,16 @@ impl PreparedInstrument for FirstInstrument {
         self.patch_id
     }
 
-    fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+    fn dispatch(
+        &mut self,
+        _message: MidiMessage,
+        _parameters: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
         self.probe.first_dispatches.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+    fn render(&mut self, output: &mut [f32], _frame_count: usize, _parameters: &RtPatchParameters) {
         output.fill(0.125);
     }
 
@@ -204,12 +210,16 @@ impl PreparedInstrument for SecondInstrument {
         self.patch_id
     }
 
-    fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+    fn dispatch(
+        &mut self,
+        _message: MidiMessage,
+        _parameters: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
         self.probe.second_dispatches.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+    fn render(&mut self, output: &mut [f32], _frame_count: usize, _parameters: &RtPatchParameters) {
         output.fill(0.375);
     }
 
@@ -324,7 +334,9 @@ fn prepared_engine_rack_acceptance() {
     structural_audio
         .return_retired_on_audio(retirement_blocker)
         .expect("the retirement blocker fills the return queue");
-    let mut renderer = AudioRenderer::new(audio, structural_audio, graph_one);
+    let (observation_writer, observation_reader) = AtomicAudioObservation::default().into_handles();
+    let mut renderer =
+        AudioRenderer::with_observation(audio, structural_audio, graph_one, observation_writer);
     let mut output = [0.0_f32; MAX_FRAMES * 2];
     assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
 
@@ -349,6 +361,12 @@ fn prepared_engine_rack_acceptance() {
     assert_eq!(probe.instrument_drops.load(Ordering::Relaxed), 0);
     assert_eq!(probe.first_dispatches.load(Ordering::Relaxed), 0);
     assert_eq!(probe.second_dispatches.load(Ordering::Relaxed), 1);
+    let routing = observation_reader.read_latest_on_control();
+    assert_eq!(routing.routing_failures(), 1);
+    assert_eq!(
+        routing.last_unknown_patch_id(),
+        Some(PatchId::new(99).unwrap())
+    );
     assert_eq!(renderer.active_revision(), GraphRevision::new(2).unwrap());
     assert_eq!(renderer.parameters().generation(), 21);
     assert_eq!(
@@ -499,12 +517,13 @@ fn prove_hidef_preparation(patch: &Patch) {
         .prepare(patch, SAMPLE_RATE, 512)
         .expect("the production SoundFont Patch prepares");
     let mut output = [0.0_f32; 1_024];
+    let parameters = RtPatchParameters::new(patch.id(), *patch.parameters());
 
     begin_memory_count();
     instrument
-        .dispatch(note_on(patch.channel()))
+        .dispatch(note_on(patch.channel()), &parameters)
         .expect("prepared HiDef MIDI dispatch succeeds");
-    instrument.render(&mut output, 512);
+    instrument.render(&mut output, 512, &parameters);
     instrument.all_notes_off();
     let (allocations, deallocations) = finish_memory_count();
 

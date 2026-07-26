@@ -30,7 +30,8 @@ project: contexts: Kernel: {
 			"the variants required now are note-on, note-off, control-change, program-change, channel-pressure, pitch-bend, and all-notes-off",
 		]
 		contributesTo: [
-			{capability: "capability.soundfont_audio", contribution: "is the canonical command delivered through the prepared rack to the targeted SoundFont instrument"},
+			{capability: "capability.soundfont_audio", contribution: "is the canonical command delivered through the prepared rack to a targeted SoundFont instrument"},
+			{capability: "capability.braids_engine", contribution: "carries the same capability-neutral note and expression command to a targeted Braids instrument"},
 			{capability: "capability.prepared_engine_rack", contribution: "remains capability-neutral while targeting one prepared Patch slot"},
 			{capability: "capability.automatic_test_midi", contribution: "lets the file fixture implement the same normalized input boundary as later MIDI adapters"},
 		]

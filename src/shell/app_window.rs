@@ -10,7 +10,10 @@ pub type AppInputCallback = Box<dyn FnMut(AppEvent) + 'static>;
 pub type ProjectionCallback = Box<dyn Fn() -> TextProjection + 'static>;
 
 /// Periodic control-side work requested by a window adapter.
-pub type TickCallback = Box<dyn FnMut(Duration) + 'static>;
+///
+/// Returning `false` asks the disposable window to close after application
+/// control ownership has retained a typed runtime failure.
+pub type TickCallback = Box<dyn FnMut(Duration) -> bool + 'static>;
 
 /// A failure while creating or running the application window.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,7 +80,7 @@ mod tests {
             on_input(AppEvent::Navigate(Direction::Down));
             let projection = projection();
             assert_eq!(projection.body(), "KEYS: test");
-            on_tick(Duration::from_millis(16));
+            assert!(on_tick(Duration::from_millis(16)));
             Ok(())
         }
     }
@@ -102,6 +105,7 @@ mod tests {
         let ticks_for_callback = Rc::clone(&ticks);
         let on_tick: TickCallback = Box::new(move |duration| {
             ticks_for_callback.borrow_mut().push(duration);
+            true
         });
 
         let window: &dyn AppWindow = &TestWindow;

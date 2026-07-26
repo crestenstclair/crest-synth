@@ -1,7 +1,10 @@
-use crate::control::app_state::{AppState, Selection, SelectionSection};
+use crate::control::app_state::AppState;
+use crate::control::interaction_state::{Selection, SelectionSection};
+use crate::control::top_level_context::TopLevelContext;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::synth::instrument_capability::{CapabilityRegistry, InstrumentConfig};
 use crate::synth::patch::Patch;
+use crate::synth::voice_envelope::VoiceEnvelope;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
@@ -18,7 +21,8 @@ pub(crate) struct SerializedState<'a> {
     #[serde(borrow)]
     pub(crate) patches: Vec<SerializedPatch<'a>>,
     pub(crate) global: SerializedGlobalParameters,
-    pub(crate) selection: SerializedSelection,
+    #[serde(default)]
+    pub(crate) interaction: SerializedInteractionState,
 }
 
 impl<'a> From<&'a AppState> for SerializedState<'a> {
@@ -28,7 +32,35 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
             capabilities: Cow::Borrowed(state.capabilities()),
             patches: state.patches().iter().map(SerializedPatch::from).collect(),
             global: SerializedGlobalParameters::from(state.global()),
-            selection: SerializedSelection::from(state.selection()),
+            interaction: SerializedInteractionState::from(state.interaction()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SerializedInteractionState {
+    pub(crate) context: TopLevelContext,
+    pub(crate) mixer_selection: SerializedSelection,
+    pub(crate) patch_focus: Option<u32>,
+}
+
+impl Default for SerializedInteractionState {
+    fn default() -> Self {
+        Self {
+            context: TopLevelContext::Mixer,
+            mixer_selection: SerializedSelection::from(Selection::global()),
+            patch_focus: None,
+        }
+    }
+}
+
+impl From<&crate::control::interaction_state::InteractionState> for SerializedInteractionState {
+    fn from(interaction: &crate::control::interaction_state::InteractionState) -> Self {
+        Self {
+            context: interaction.context(),
+            mixer_selection: SerializedSelection::from(interaction.mixer_selection()),
+            patch_focus: interaction.patch_focus().map(|patch_id| patch_id.value()),
         }
     }
 }
@@ -42,6 +74,8 @@ pub(crate) struct SerializedPatch<'a> {
     pub(crate) channel: u8,
     #[serde(borrow)]
     pub(crate) instrument: Cow<'a, InstrumentConfig>,
+    #[serde(default)]
+    pub(crate) envelope: VoiceEnvelope,
     pub(crate) gain_db: f32,
     pub(crate) pan: f32,
     pub(crate) reverb_send: f32,
@@ -55,6 +89,7 @@ impl<'a> From<&'a Patch> for SerializedPatch<'a> {
             name: Cow::Borrowed(patch.name()),
             channel: patch.channel().value(),
             instrument: Cow::Borrowed(patch.instrument_config()),
+            envelope: *patch.envelope(),
             gain_db: patch.parameters().gain_db(),
             pan: patch.parameters().pan(),
             reverb_send: patch.parameters().reverb_send(),

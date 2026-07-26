@@ -6,6 +6,7 @@ use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
 use crest_synth::control::event_record::{EventDirection, EventInput, EventOutcome, EventSource};
 use crest_synth::control::state_projector::StateProjector;
+use crest_synth::control::TopLevelContext;
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::channel_parameters::ChannelParameters;
@@ -142,6 +143,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
     let ticks = Rc::clone(&tick_count);
     let on_tick: TickCallback = Box::new(move |_elapsed| {
         ticks.set(ticks.get() + 1);
+        true
     });
 
     let mut application = EframeApplication::new(on_input, projection, on_tick);
@@ -159,7 +161,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
 
     context.begin_pass(raw_input(Vec::new(), 0.25));
     application.update(&context, &mut frame);
-    let output = context.end_pass();
+    let _edited_output = context.end_pass();
 
     let mut idle_output = None;
     for frame_index in 2..6 {
@@ -169,14 +171,80 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
     }
     let idle_output = idle_output.expect("the idle egui fixture renders a steady frame");
 
+    let (retained_mixer_body, retained_mixer_line, retained_mixer_selection) = {
+        let app_loop = shared.borrow();
+        (
+            app_loop.current_text().body().to_owned(),
+            app_loop.current_text().selected_line(),
+            tree_value(&app_loop)["interaction"]["mixerSelection"].clone(),
+        )
+    };
+
+    context.begin_pass(raw_input(vec![key_event(egui::Key::Num2)], 1.5));
+    application.update(&context, &mut frame);
+    let patch_output = context.end_pass();
+    {
+        let app_loop = shared.borrow();
+        let patch_tree = tree_value(&app_loop);
+        let patch_text = app_loop.current_text();
+        let page = app_loop
+            .current_patch_page()
+            .expect("Digit2 produces the canonical PATCH page");
+        let record = app_loop.event_log().records().last().cloned().unwrap();
+
+        assert_eq!(patch_text.context(), TopLevelContext::Patch);
+        assert!(patch_text.body().starts_with("PATCH | 1 MIXER | 2 PATCH"));
+        assert_eq!(
+            patch_text.state_hash(),
+            app_loop.current_state_tree().state_hash()
+        );
+        assert_eq!(page.patch().id(), PatchId::new(1).unwrap());
+        assert_eq!(page.state_hash(), patch_text.state_hash());
+        assert_eq!(patch_tree["interaction"]["context"], "patch");
+        assert_eq!(patch_tree["interaction"]["patchFocus"], 1);
+        assert_eq!(
+            patch_tree["interaction"]["mixerSelection"],
+            retained_mixer_selection
+        );
+        assert_eq!(
+            patch_tree["patchPage"]["stateHash"],
+            patch_text.state_hash()
+        );
+        assert_eq!(patch_tree["projection"]["body"], patch_text.body());
+        assert!(matches!(
+            record.input(),
+            EventInput::SelectContext {
+                context: TopLevelContext::Patch
+            }
+        ));
+        assert_eq!(record.state_hash_after(), patch_text.state_hash());
+
+        let (clip_rect, text_shape) = painted_projection(&patch_output, patch_text.body())
+            .expect("Digit2 frame paints the exact PATCH projection");
+        let selected = text_shape.galley.rows[patch_text.selected_line()]
+            .rect()
+            .translate(text_shape.pos.to_vec2());
+        assert!(clip_rect.contains(selected.center()));
+    }
+
+    context.begin_pass(raw_input(vec![key_event(egui::Key::Num1)], 1.75));
+    application.update(&context, &mut frame);
+    let output = context.end_pass();
+
     let app_loop = shared.borrow();
     let after_tree = app_loop.current_state_tree();
     let after = tree_value(&app_loop);
     let text = app_loop.current_text();
     let records = app_loop.event_log();
 
-    assert_eq!(after["selection"]["section"], "Global");
-    assert_eq!(after["selection"]["parameterIndex"], 6);
+    assert_eq!(after["interaction"]["context"], "mixer");
+    assert_eq!(
+        after["interaction"]["mixerSelection"],
+        retained_mixer_selection
+    );
+    assert_eq!(after["interaction"]["mixerSelection"]["section"], "Global");
+    assert_eq!(after["interaction"]["mixerSelection"]["parameterIndex"], 6);
+    assert!(after["patchPage"].is_null());
     assert_eq!(after["patches"], before["patches"]);
     for parameter in [
         "masterGainDb",
@@ -205,6 +273,9 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
     );
 
     assert_eq!(text.state_hash(), after_tree.state_hash());
+    assert_eq!(text.context(), TopLevelContext::Mixer);
+    assert_eq!(text.body(), retained_mixer_body);
+    assert_eq!(text.selected_line(), retained_mixer_line);
     assert_eq!(after["projection"]["body"].as_str(), Some(text.body()));
     assert_eq!(
         after["projection"]["selectedLine"].as_u64(),
@@ -216,17 +287,26 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         Some(expected_line.as_str())
     );
 
-    assert_eq!(records.len(), 9);
+    assert_eq!(records.len(), 11);
+    let adjustment = &records.records()[8];
+    assert_eq!(adjustment.source(), EventSource::System);
+    assert_eq!(adjustment.outcome(), EventOutcome::Accepted);
+    assert!(matches!(
+        adjustment.input(),
+        EventInput::Adjust {
+            direction: EventDirection::Right
+        }
+    ));
     let last = records
         .records()
         .last()
-        .expect("the adjustment has an EventRecord");
+        .expect("the MIXER return has an EventRecord");
     assert_eq!(last.source(), EventSource::System);
     assert_eq!(last.outcome(), EventOutcome::Accepted);
     assert!(matches!(
         last.input(),
-        EventInput::Adjust {
-            direction: EventDirection::Right
+        EventInput::SelectContext {
+            context: TopLevelContext::Mixer
         }
     ));
     assert_eq!(last.generation_after(), after_tree.generation());
@@ -247,7 +327,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         clip_rect.contains(selected_rect.center()),
         "the exact selected line must be the scroll target: clip={clip_rect:?}, selected={selected_rect:?}"
     );
-    assert_eq!(tick_count.get(), 6);
+    assert_eq!(tick_count.get(), 8);
     assert_eq!(
         idle_output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
         Duration::from_millis(16),

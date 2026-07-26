@@ -1,8 +1,10 @@
 use crate::adapter::hidef_soundfont_capability::{
-    HIDEF_CAPABILITY_ID, HIDEF_SOUNDFONT_PATH, HIDEF_VOICE_LIMIT, SOUNDFONT_BANK_PARAMETER_ID,
-    SOUNDFONT_FILE_PARAMETER_ID, SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+    HIDEF_CAPABILITY_ID, HIDEF_POLYPHONY_CEILING, HIDEF_SOUNDFONT_PATH,
+    SOUNDFONT_BANK_PARAMETER_ID, SOUNDFONT_FILE_PARAMETER_ID, SOUNDFONT_PERCUSSION_PARAMETER_ID,
+    SOUNDFONT_PROGRAM_PARAMETER_ID,
 };
-use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
+use crate::adapter::soundfont_voice_engine::{PreparedSoundFontBank, SoundFontVoiceEngine};
+use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
 use crate::synth::capability_id::CapabilityId;
 use crate::synth::instrument_capability::{AssetKind, ParameterValue};
@@ -10,14 +12,15 @@ use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPr
 use crate::synth::parameter_id::ParameterId;
 use crate::synth::patch::Patch;
 use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
-use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
+use rustysynth::SoundFont;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-const SYNTHESIZER_BLOCK_SIZE: usize = 64;
 const PERCUSSION_BANK_FLAG: i32 = 128;
 const MELODIC_CHANNEL: i32 = 0;
+const PERCUSSION_CHANNEL: i32 = 9;
+const SOUNDFONT_ENGINE_VOICE_SLOTS: usize = HIDEF_POLYPHONY_CEILING as usize;
 
 /// Control/worker-side HiDef SoundFont preparer.
 ///
@@ -26,7 +29,7 @@ const MELODIC_CHANNEL: i32 = 0;
 /// MIDI state, and bounded render scratch.
 pub struct HiDefSoundFontPreparer {
     capability_id: CapabilityId,
-    sound_font: Arc<SoundFont>,
+    prepared_bank: Arc<PreparedSoundFontBank>,
     parsed_bank_count: usize,
 }
 
@@ -41,13 +44,18 @@ impl HiDefSoundFontPreparer {
             return Err(InstrumentPreparationError::AssetLoadFailed);
         }
         let mut file = File::open(path).map_err(|_| InstrumentPreparationError::AssetLoadFailed)?;
-        let sound_font =
-            SoundFont::new(&mut file).map_err(|_| InstrumentPreparationError::AssetParseFailed)?;
+        let sound_font = Arc::new(
+            SoundFont::new(&mut file).map_err(|_| InstrumentPreparationError::AssetParseFailed)?,
+        );
+        let prepared_bank = Arc::new(
+            PreparedSoundFontBank::new(Arc::clone(&sound_font))
+                .map_err(|_| InstrumentPreparationError::AssetParseFailed)?,
+        );
         let capability_id = CapabilityId::new(HIDEF_CAPABILITY_ID)
             .map_err(|_| InstrumentPreparationError::AssetParseFailed)?;
         Ok(Self {
             capability_id,
-            sound_font: Arc::new(sound_font),
+            prepared_bank,
             parsed_bank_count: 1,
         })
     }
@@ -69,40 +77,28 @@ impl HiDefSoundFontPreparer {
         }
 
         let prepared = PreparedPatch::try_from_patch(patch)?;
-        if !self.sound_font.get_presets().iter().any(|preset| {
-            preset.get_bank_number() == prepared.effective_bank
-                && preset.get_patch_number() == prepared.program
-        }) {
+        if !self
+            .prepared_bank
+            .has_preset(prepared.effective_bank, prepared.program as u8)
+        {
             return Err(InstrumentPreparationError::PresetUnavailable {
                 patch_id: patch.id(),
             });
         }
-
-        let mut settings = SynthesizerSettings::new(sample_rate);
-        settings.block_size = SYNTHESIZER_BLOCK_SIZE;
-        settings.maximum_polyphony = usize::from(HIDEF_VOICE_LIMIT);
-        settings.enable_reverb_and_chorus = false;
-        let mut synthesizer = Synthesizer::new(&self.sound_font, &settings).map_err(|_| {
-            InstrumentPreparationError::VoiceCapacityExceeded {
-                patch_id: patch.id(),
-            }
+        let engine = SoundFontVoiceEngine::<SOUNDFONT_ENGINE_VOICE_SLOTS>::new(
+            Arc::clone(&self.prepared_bank),
+            sample_rate as f32,
+            max_frames,
+            prepared.effective_bank,
+            prepared.program as u8,
+        )
+        .map_err(|_| InstrumentPreparationError::VoiceCapacityExceeded {
+            patch_id: patch.id(),
         })?;
-        synthesizer.set_master_volume(1.0);
-        prepared.apply_to(&mut synthesizer);
-
-        let mut left_scratch = zeroed_scratch(max_frames, patch.id())?;
-        let mut right_scratch = zeroed_scratch(max_frames, patch.id())?;
-
-        // Exercise rustysynth's prepared render path before callback ownership.
-        synthesizer.render(&mut left_scratch, &mut right_scratch);
-        left_scratch.fill(0.0);
-        right_scratch.fill(0.0);
 
         Ok(HiDefPreparedInstrument {
             prepared,
-            synthesizer,
-            left_scratch,
-            right_scratch,
+            engine,
             max_frames,
         })
     }
@@ -130,9 +126,7 @@ impl InstrumentPreparer for HiDefSoundFontPreparer {
 
 struct HiDefPreparedInstrument {
     prepared: PreparedPatch,
-    synthesizer: Synthesizer,
-    left_scratch: Vec<f32>,
-    right_scratch: Vec<f32>,
+    engine: SoundFontVoiceEngine<SOUNDFONT_ENGINE_VOICE_SLOTS>,
     max_frames: usize,
 }
 
@@ -141,16 +135,23 @@ impl PreparedInstrument for HiDefPreparedInstrument {
         self.prepared.patch_id
     }
 
-    fn dispatch(&mut self, message: MidiMessage) -> Result<(), PreparedInstrumentError> {
-        dispatch_message(
-            &mut self.synthesizer,
-            self.prepared.internal_channel,
-            message,
-        );
-        Ok(())
+    fn dispatch(
+        &mut self,
+        message: MidiMessage,
+        parameters: &crate::real_time::RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
+        if parameters.patch_id() != Some(self.prepared.patch_id) {
+            return Err(PreparedInstrumentError::DispatchRejected);
+        }
+        self.engine.dispatch(message, *parameters.envelope())
     }
 
-    fn render(&mut self, interleaved_stereo: &mut [f32], frame_count: usize) {
+    fn render(
+        &mut self,
+        interleaved_stereo: &mut [f32],
+        frame_count: usize,
+        parameters: &crate::real_time::RtPatchParameters,
+    ) {
         let frame_count = frame_count
             .min(self.max_frames)
             .min(interleaved_stereo.len() / 2);
@@ -158,20 +159,15 @@ impl PreparedInstrument for HiDefPreparedInstrument {
             return;
         }
 
-        let left = &mut self.left_scratch[..frame_count];
-        let right = &mut self.right_scratch[..frame_count];
-        left.fill(0.0);
-        right.fill(0.0);
-        self.synthesizer.render(left, right);
-
-        for frame in 0..frame_count {
-            interleaved_stereo[frame * 2] = bounded_sample(left[frame]);
-            interleaved_stereo[frame * 2 + 1] = bounded_sample(right[frame]);
+        let output = &mut interleaved_stereo[..frame_count * 2];
+        output.fill(0.0);
+        if parameters.patch_id() == Some(self.prepared.patch_id) {
+            self.engine.render(output, frame_count);
         }
     }
 
     fn all_notes_off(&mut self) {
-        self.synthesizer.note_off_all(false);
+        self.engine.all_notes_off();
     }
 }
 
@@ -235,7 +231,7 @@ impl PreparedPatch {
             numeric_bank & !PERCUSSION_BANK_FLAG
         };
         let internal_channel = if percussion {
-            Synthesizer::PERCUSSION_CHANNEL as i32
+            PERCUSSION_CHANNEL
         } else {
             MELODIC_CHANNEL
         };
@@ -253,11 +249,6 @@ impl PreparedPatch {
             program: i32::from(program),
         })
     }
-
-    fn apply_to(self, synthesizer: &mut Synthesizer) {
-        synthesizer.process_midi_message(self.internal_channel, 0xB0, 0, self.bank_select_value);
-        synthesizer.process_midi_message(self.internal_channel, 0xC0, self.program, 0);
-    }
 }
 
 fn validated_sample_rate(sample_rate: f32) -> Result<i32, InstrumentPreparationError> {
@@ -270,48 +261,12 @@ fn validated_sample_rate(sample_rate: f32) -> Result<i32, InstrumentPreparationE
     Ok(sample_rate as i32)
 }
 
-fn zeroed_scratch(
-    max_frames: usize,
-    patch_id: PatchId,
-) -> Result<Vec<f32>, InstrumentPreparationError> {
-    let mut scratch = Vec::new();
-    scratch
-        .try_reserve_exact(max_frames)
-        .map_err(|_| InstrumentPreparationError::StorageAllocationFailed { patch_id })?;
-    scratch.resize(max_frames, 0.0);
-    Ok(scratch)
-}
-
-fn dispatch_message(synthesizer: &mut Synthesizer, channel: i32, message: MidiMessage) {
-    let (command, data1, data2) = midi_data(message);
-    synthesizer.process_midi_message(channel, command, data1, data2);
-}
-
-fn midi_data(message: MidiMessage) -> (i32, i32, i32) {
-    let data1 = i32::from(message.data1());
-    let data2 = i32::from(message.data2());
-    match message.kind() {
-        MidiMessageKind::NoteOff => (0x80, data1, data2),
-        MidiMessageKind::NoteOn => (0x90, data1, data2),
-        MidiMessageKind::ControlChange => (0xB0, data1, data2),
-        MidiMessageKind::ProgramChange => (0xC0, data1, data2),
-        MidiMessageKind::ChannelPressure => (0xD0, data1, data2),
-        MidiMessageKind::PitchBend => (0xE0, data1, data2),
-        MidiMessageKind::AllNotesOff => (0xB0, 0x7B, 0),
-    }
-}
-
-fn bounded_sample(sample: f32) -> f32 {
-    if sample.is_finite() {
-        sample.clamp(-1.0, 1.0)
-    } else {
-        0.0
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{HiDefSoundFontPreparer, PreparedPatch, HIDEF_SOUNDFONT_PATH, MELODIC_CHANNEL};
+    use super::{
+        HiDefSoundFontPreparer, PreparedPatch, HIDEF_SOUNDFONT_PATH, MELODIC_CHANNEL,
+        PERCUSSION_CHANNEL,
+    };
     use crate::adapter::hidef_soundfont_capability::{
         HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
     };
@@ -319,6 +274,7 @@ mod tests {
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
+    use crate::real_time::parameter_snapshot::RtInstrumentParameters;
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::instrument_capability::{
         AssetAssignment, AssetKind, AssetReference, InstrumentConfig,
@@ -328,8 +284,8 @@ mod tests {
     use crate::synth::patch::Patch;
     use crate::synth::prepared_instrument::PreparedInstrument;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::voice_envelope::VoiceEnvelope;
     use crate::testing::automatic_midi_test::create_soundfont_config;
-    use rustysynth::Synthesizer;
     use std::path::Path;
     use std::sync::Arc;
 
@@ -353,7 +309,7 @@ mod tests {
         let preparer = HiDefSoundFontPreparer::new().unwrap();
         let melodic_patch = patch(1, 3, 0, 0, false);
         let percussion_patch = patch(2, 4, 0, 0, true);
-        let shared_count = Arc::strong_count(&preparer.sound_font);
+        let shared_count = Arc::strong_count(&preparer.prepared_bank);
         let mut melodic = preparer
             .prepare_patch(&melodic_patch, 48_000.0, 512)
             .unwrap();
@@ -362,26 +318,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(preparer.parsed_bank_count(), 1);
-        assert_eq!(Arc::strong_count(&preparer.sound_font), shared_count + 2);
+        assert_eq!(Arc::strong_count(&preparer.prepared_bank), shared_count + 2);
         assert_ne!(melodic.prepared, percussion.prepared);
         assert_eq!(melodic.prepared.internal_channel, MELODIC_CHANNEL);
-        assert_eq!(
-            percussion.prepared.internal_channel,
-            Synthesizer::PERCUSSION_CHANNEL as i32
+        assert_eq!(percussion.prepared.internal_channel, PERCUSSION_CHANNEL);
+        let parameters = crate::real_time::RtPatchParameters::new(
+            melodic_patch.id(),
+            *melodic_patch.parameters(),
         );
 
         melodic
             .dispatch(
                 MidiMessage::try_new(melodic_patch.channel(), MidiMessageKind::NoteOn, 60, 110)
                     .unwrap(),
+                &parameters,
             )
             .unwrap();
         let mut output = [0.0; 1_024];
-        melodic.render(&mut output, 512);
+        melodic.render(&mut output, 512, &parameters);
 
         assert!(output.iter().all(|sample| sample.is_finite()));
         assert!(output.iter().any(|sample| sample.abs() > 0.000_001));
-        assert!(percussion.left_scratch.iter().all(|sample| *sample == 0.0));
+        assert_eq!(percussion.engine.active_note_voice_count(), 0);
     }
 
     #[test]
@@ -476,5 +434,121 @@ mod tests {
         assert_eq!(melodic.effective_bank, 0);
         assert_eq!(percussion.effective_bank, 128);
         assert_ne!(melodic.internal_channel, percussion.internal_channel);
+    }
+
+    fn projected_parameters(
+        patch: &Patch,
+        envelope: VoiceEnvelope,
+    ) -> crate::real_time::RtPatchParameters {
+        crate::real_time::RtPatchParameters::projected(
+            patch.id(),
+            *patch.parameters(),
+            envelope,
+            RtInstrumentParameters::EMPTY,
+        )
+    }
+
+    fn note(channel: MidiChannel, kind: MidiMessageKind, key: u8, velocity: u8) -> MidiMessage {
+        MidiMessage::try_new(channel, kind, key, velocity).unwrap()
+    }
+
+    fn energy(output: &[f32]) -> f32 {
+        output.iter().map(|sample| sample.abs()).sum()
+    }
+
+    #[test]
+    fn common_adsr_is_owned_by_each_overlapping_soundfont_note_voice() {
+        let preparer = HiDefSoundFontPreparer::new().unwrap();
+        let patch = patch(1, 1, 0, 0, false);
+        let envelope = VoiceEnvelope::new(0.0, 0.0, 1.0, 100.0).unwrap();
+        let parameters = projected_parameters(&patch, envelope);
+        let mut prepared = preparer.prepare_patch(&patch, 48_000.0, 256).unwrap();
+
+        prepared
+            .dispatch(
+                note(patch.channel(), MidiMessageKind::NoteOn, 60, 110),
+                &parameters,
+            )
+            .unwrap();
+        prepared
+            .dispatch(
+                note(patch.channel(), MidiMessageKind::NoteOn, 64, 110),
+                &parameters,
+            )
+            .unwrap();
+        let first = prepared.engine.note_voice_counts(60);
+        let second = prepared.engine.note_voice_counts(64);
+        assert!(first.0 > 0 && second.0 > 0);
+
+        prepared
+            .dispatch(
+                note(patch.channel(), MidiMessageKind::NoteOff, 60, 0),
+                &parameters,
+            )
+            .unwrap();
+        let first = prepared.engine.note_voice_counts(60);
+        let second = prepared.engine.note_voice_counts(64);
+        assert_eq!(first.1, first.0);
+        assert_eq!(second.1, 0);
+
+        let mut output = [0.0; 512];
+        prepared.render(&mut output, 256, &parameters);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(energy(&output) > 0.0);
+        prepared.all_notes_off();
+        assert_eq!(prepared.engine.active_note_voice_count(), 0);
+    }
+
+    #[test]
+    fn every_common_adsr_field_changes_soundfont_audio_before_the_patch_stem() {
+        let preparer = HiDefSoundFontPreparer::new().unwrap();
+        let patch = patch(1, 1, 0, 0, false);
+
+        let render_onset = |envelope: VoiceEnvelope| {
+            let parameters = projected_parameters(&patch, envelope);
+            let mut prepared = preparer.prepare_patch(&patch, 48_000.0, 256).unwrap();
+            prepared
+                .dispatch(
+                    note(patch.channel(), MidiMessageKind::NoteOn, 60, 127),
+                    &parameters,
+                )
+                .unwrap();
+            let mut output = [0.0; 512];
+            prepared.render(&mut output, 256, &parameters);
+            energy(&output)
+        };
+
+        let immediate = render_onset(VoiceEnvelope::DEFAULT);
+        let attacked = render_onset(VoiceEnvelope::new(100.0, 0.0, 1.0, 0.0).unwrap());
+        let decayed = render_onset(VoiceEnvelope::new(0.0, 100.0, 0.0, 0.0).unwrap());
+        let sustained = render_onset(VoiceEnvelope::new(0.0, 0.0, 0.25, 0.0).unwrap());
+        assert!(immediate > attacked);
+        assert!(immediate > decayed);
+        assert!(immediate > sustained);
+
+        let release_energy = |release_milliseconds: f32| {
+            let envelope = VoiceEnvelope::new(0.0, 0.0, 1.0, release_milliseconds).unwrap();
+            let parameters = projected_parameters(&patch, envelope);
+            let mut prepared = preparer.prepare_patch(&patch, 48_000.0, 256).unwrap();
+            prepared
+                .dispatch(
+                    note(patch.channel(), MidiMessageKind::NoteOn, 60, 127),
+                    &parameters,
+                )
+                .unwrap();
+            let mut onset = [0.0; 512];
+            prepared.render(&mut onset, 256, &parameters);
+            prepared
+                .dispatch(
+                    note(patch.channel(), MidiMessageKind::NoteOff, 60, 0),
+                    &parameters,
+                )
+                .unwrap();
+            let mut released = [0.0; 512];
+            prepared.render(&mut released, 256, &parameters);
+            energy(&released)
+        };
+        assert_eq!(release_energy(0.0), 0.0);
+        assert!(release_energy(100.0) > 0.0);
     }
 }

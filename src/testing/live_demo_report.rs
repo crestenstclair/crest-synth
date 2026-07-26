@@ -1,3 +1,5 @@
+use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
+use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crate::control::event_log::EventLog;
 use crate::control::event_record::{EventInput, EventOutcome, EventSource, MidiKind};
 use crate::control::state_tree::StateTree;
@@ -42,7 +44,7 @@ impl LiveDemoCoverage {
         }
     }
 
-    pub fn mark_exercised(&mut self, parameter: LiveEditableParameter) {
+    pub fn mark_exercised(&mut self, parameter: &LiveEditableParameter) {
         let identifier = parameter.identifier();
         if !insert_sorted_unique(&mut self.exercised_editable_parameters, identifier.clone()) {
             return;
@@ -108,6 +110,9 @@ fn insert_sorted_unique(values: &mut Vec<String>, value: String) -> bool {
 pub struct RuntimeAudioWitness {
     parsed_soundfont_banks: usize,
     prepared_instruments: usize,
+    soundfont_patches: usize,
+    braids_patches: usize,
+    alternating_capabilities: bool,
     active_graph_revision: GraphRevision,
     callback_destructions: usize,
 }
@@ -116,12 +121,18 @@ impl RuntimeAudioWitness {
     pub const fn new(
         parsed_soundfont_banks: usize,
         prepared_instruments: usize,
+        soundfont_patches: usize,
+        braids_patches: usize,
+        alternating_capabilities: bool,
         active_graph_revision: GraphRevision,
         callback_destructions: usize,
     ) -> Self {
         Self {
             parsed_soundfont_banks,
             prepared_instruments,
+            soundfont_patches,
+            braids_patches,
+            alternating_capabilities,
             active_graph_revision,
             callback_destructions,
         }
@@ -133,6 +144,18 @@ impl RuntimeAudioWitness {
 
     pub const fn prepared_instruments(self) -> usize {
         self.prepared_instruments
+    }
+
+    pub const fn soundfont_patches(self) -> usize {
+        self.soundfont_patches
+    }
+
+    pub const fn braids_patches(self) -> usize {
+        self.braids_patches
+    }
+
+    pub const fn alternating_capabilities(self) -> bool {
+        self.alternating_capabilities
     }
 
     pub const fn active_graph_revision(self) -> GraphRevision {
@@ -266,6 +289,7 @@ impl LiveDemoReport {
             !checkpoints.is_empty() && checkpoints.iter().all(LiveDemoCheckpoint::agrees);
         let runtime_complete = runtime_audio.parsed_soundfont_banks() == 1
             && runtime_audio.prepared_instruments() == installed_patches.len()
+            && runtime_composition_matches(&state_tree, runtime_audio)
             && runtime_audio.active_graph_revision() == state_tree.graph_revision()
             && runtime_audio.callback_destructions() == 0;
         let lossless = event_log.dropped_records() == 0
@@ -279,7 +303,7 @@ impl LiveDemoReport {
             && final_audio_complete
             && runtime_complete;
         let summary = format!(
-            "live demo {}: {}/{} editable parameters, {} checkpoints, {} events, {} dropped, banks={}, instruments={}, graphRevision={}, callbackDestructions={}, cleanup={}, activeNotes={}",
+            "live demo {}: {}/{} editable parameters, {} checkpoints, {} events, {} dropped, banks={}, instruments={}, soundfontPatches={}, braidsPatches={}, alternatingCapabilities={}, graphRevision={}, callbackDestructions={}, cleanup={}, activeNotes={}",
             if complete { "complete" } else { "incomplete" },
             coverage.exercised().len(),
             coverage.expected().len(),
@@ -288,6 +312,9 @@ impl LiveDemoReport {
             event_log.dropped_records(),
             runtime_audio.parsed_soundfont_banks(),
             runtime_audio.prepared_instruments(),
+            runtime_audio.soundfont_patches(),
+            runtime_audio.braids_patches(),
+            runtime_audio.alternating_capabilities(),
             runtime_audio.active_graph_revision(),
             runtime_audio.callback_destructions(),
             cleanup_complete,
@@ -354,6 +381,42 @@ impl LiveDemoReport {
     }
 }
 
+fn runtime_composition_matches(tree: &StateTree, runtime: RuntimeAudioWitness) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(tree.json()) else {
+        return false;
+    };
+    let Some(patches) = value.get("patches").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    let capabilities: Vec<&str> = patches
+        .iter()
+        .filter_map(|patch| {
+            patch
+                .pointer("/instrument/capabilityId")
+                .and_then(serde_json::Value::as_str)
+        })
+        .collect();
+    if capabilities.len() != patches.len() {
+        return false;
+    }
+    let soundfont = capabilities
+        .iter()
+        .filter(|capability| **capability == HIDEF_CAPABILITY_ID)
+        .count();
+    let braids = capabilities
+        .iter()
+        .filter(|capability| **capability == BRAIDS_CAPABILITY_ID)
+        .count();
+    let alternating = capabilities.len() > 1
+        && soundfont > 0
+        && braids > 0
+        && capabilities.windows(2).all(|pair| pair[0] != pair[1]);
+    soundfont.saturating_add(braids) == patches.len()
+        && runtime.soundfont_patches() == soundfont
+        && runtime.braids_patches() == braids
+        && runtime.alternating_capabilities() == alternating
+}
+
 impl Serialize for LiveDemoReport {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -411,18 +474,18 @@ mod tests {
         let patch = PatchId::new(1).unwrap();
         let gain = LiveEditableParameter::patch(patch, ChannelParameter::GainDb);
         let master = LiveEditableParameter::global(GlobalParameter::MasterGainDb);
-        let mut coverage = LiveDemoCoverage::new(&[gain, master]);
+        let mut coverage = LiveDemoCoverage::new(&[gain.clone(), master.clone()]);
 
-        coverage.mark_exercised(gain);
+        coverage.mark_exercised(&gain);
         assert_eq!(coverage.missing(), &["global.masterGainDb"]);
         assert!(!coverage.is_complete());
 
         coverage.mark_unexpected("patch.1.pan");
         assert_eq!(coverage.unexpected(), &["patch.1.pan"]);
-        coverage.mark_exercised(master);
+        coverage.mark_exercised(&master);
         assert!(!coverage.is_complete());
 
-        let duplicate = LiveDemoCoverage::new(&[gain, gain]);
+        let duplicate = LiveDemoCoverage::new(&[gain.clone(), gain]);
         assert_eq!(duplicate.duplicate_expected(), &["patch.1.gainDb"]);
         assert!(!duplicate.is_complete());
     }

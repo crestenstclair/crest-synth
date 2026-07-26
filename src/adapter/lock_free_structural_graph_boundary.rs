@@ -265,11 +265,20 @@ mod tests {
             self.patch_id
         }
 
-        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+        fn dispatch(
+            &mut self,
+            _message: MidiMessage,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
             Ok(())
         }
 
-        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) {
             output.fill(0.0);
         }
 

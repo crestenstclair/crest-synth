@@ -2,7 +2,10 @@ use crate::kernel::patch_id::PatchId;
 use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::graph_revision::GraphRevision;
+use crate::synth::instrument_capability::MAX_INSTRUMENT_SCALAR_PARAMETERS;
+use crate::synth::voice_envelope::VoiceEnvelope;
 use core::fmt;
+use serde::{Serialize, Serializer};
 
 /// The maximum number of Patch parameter values carried across the real-time
 /// boundary.
@@ -10,6 +13,83 @@ use core::fmt;
 /// SoundFont playback is addressed through MIDI's sixteen bounded channels, so
 /// the callback never needs dynamically sized Patch storage.
 pub const MAX_PATCHES: usize = 16;
+
+/// Fixed descriptor-ordered live instrument values for one Patch.
+///
+/// Choice values are encoded as descriptor indices, toggles as 0/1, and
+/// numeric values directly. Unused storage is always zeroed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RtInstrumentParameters {
+    count: u8,
+    values: [f32; MAX_INSTRUMENT_SCALAR_PARAMETERS],
+}
+
+impl RtInstrumentParameters {
+    pub const EMPTY: Self = Self {
+        count: 0,
+        values: [0.0; MAX_INSTRUMENT_SCALAR_PARAMETERS],
+    };
+
+    /// Copies a complete descriptor-ordered scalar prefix into fixed storage.
+    pub fn new(values: &[f32]) -> Result<Self, ParameterSnapshotError> {
+        if values.len() > MAX_INSTRUMENT_SCALAR_PARAMETERS {
+            return Err(ParameterSnapshotError::TooManyInstrumentScalars {
+                count: values.len(),
+                capacity: MAX_INSTRUMENT_SCALAR_PARAMETERS,
+            });
+        }
+        if let Some(index) = values.iter().position(|value| !value.is_finite()) {
+            return Err(ParameterSnapshotError::NonFiniteInstrumentScalar { index });
+        }
+        let mut storage = [0.0; MAX_INSTRUMENT_SCALAR_PARAMETERS];
+        storage[..values.len()].copy_from_slice(values);
+        Ok(Self {
+            count: values.len() as u8,
+            values: storage,
+        })
+    }
+
+    pub const fn count(&self) -> usize {
+        self.count as usize
+    }
+
+    pub fn values(&self) -> &[f32] {
+        &self.values[..self.count()]
+    }
+
+    pub fn value(&self, index: usize) -> Option<f32> {
+        self.values().get(index).copied()
+    }
+
+    pub const fn storage(&self) -> &[f32; MAX_INSTRUMENT_SCALAR_PARAMETERS] {
+        &self.values
+    }
+}
+
+impl Serialize for RtInstrumentParameters {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct SerializableInstrumentParameters<'a> {
+            count: usize,
+            values: &'a [f32],
+        }
+
+        SerializableInstrumentParameters {
+            count: self.count(),
+            values: self.values(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl Default for RtInstrumentParameters {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
 
 /// The fixed-size audio parameters for one active Patch.
 ///
@@ -19,6 +99,8 @@ pub const MAX_PATCHES: usize = 16;
 pub struct RtPatchParameters {
     patch_id: Option<PatchId>,
     parameters: ChannelParameters,
+    envelope: VoiceEnvelope,
+    instrument: RtInstrumentParameters,
 }
 
 impl RtPatchParameters {
@@ -28,6 +110,23 @@ impl RtPatchParameters {
         Self {
             patch_id: Some(patch_id),
             parameters,
+            envelope: VoiceEnvelope::DEFAULT,
+            instrument: RtInstrumentParameters::EMPTY,
+        }
+    }
+
+    /// Copies the full live projection for one active Patch.
+    pub const fn projected(
+        patch_id: PatchId,
+        parameters: ChannelParameters,
+        envelope: VoiceEnvelope,
+        instrument: RtInstrumentParameters,
+    ) -> Self {
+        Self {
+            patch_id: Some(patch_id),
+            parameters,
+            envelope,
+            instrument,
         }
     }
 
@@ -46,11 +145,65 @@ impl RtPatchParameters {
         &self.parameters
     }
 
+    pub const fn envelope(&self) -> &VoiceEnvelope {
+        &self.envelope
+    }
+
+    pub const fn instrument(&self) -> &RtInstrumentParameters {
+        &self.instrument
+    }
+
     fn inactive() -> Self {
         Self {
             patch_id: None,
             parameters: ChannelParameters::default(),
+            envelope: VoiceEnvelope::DEFAULT,
+            instrument: RtInstrumentParameters::EMPTY,
         }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SerializableChannelParameters {
+    gain_db: f32,
+    pan: f32,
+    reverb_send: f32,
+    delay_send: f32,
+}
+
+impl From<&ChannelParameters> for SerializableChannelParameters {
+    fn from(parameters: &ChannelParameters) -> Self {
+        Self {
+            gain_db: parameters.gain_db(),
+            pan: parameters.pan(),
+            reverb_send: parameters.reverb_send(),
+            delay_send: parameters.delay_send(),
+        }
+    }
+}
+
+impl Serialize for RtPatchParameters {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SerializablePatchParameters<'a> {
+            patch_id: Option<PatchId>,
+            envelope: &'a VoiceEnvelope,
+            instrument: &'a RtInstrumentParameters,
+            parameters: SerializableChannelParameters,
+        }
+
+        SerializablePatchParameters {
+            patch_id: self.patch_id(),
+            envelope: self.envelope(),
+            instrument: self.instrument(),
+            parameters: SerializableChannelParameters::from(self.parameters()),
+        }
+        .serialize(serializer)
     }
 }
 
@@ -61,6 +214,10 @@ pub enum ParameterSnapshotError {
     TooManyPatches { count: usize, capacity: usize },
     /// An inactive value was supplied inside the active Patch prefix.
     InactivePatch { index: usize },
+    /// A descriptor exceeded the fixed live instrument scalar capacity.
+    TooManyInstrumentScalars { count: usize, capacity: usize },
+    /// A scalar could not be represented as a finite real-time value.
+    NonFiniteInstrumentScalar { index: usize },
 }
 
 impl fmt::Display for ParameterSnapshotError {
@@ -72,6 +229,13 @@ impl fmt::Display for ParameterSnapshotError {
             ),
             Self::InactivePatch { index } => {
                 write!(formatter, "parameter snapshot patch {index} is inactive")
+            }
+            Self::TooManyInstrumentScalars { count, capacity } => write!(
+                formatter,
+                "instrument projection has {count} Scalars; maximum is {capacity}"
+            ),
+            Self::NonFiniteInstrumentScalar { index } => {
+                write!(formatter, "instrument Scalar {index} is not finite")
             }
         }
     }
@@ -94,6 +258,35 @@ pub struct ParameterSnapshot {
 }
 
 impl ParameterSnapshot {
+    pub const SERIALIZED_LEAF_DESCRIPTOR: &'static [&'static str] = &[
+        "generation",
+        "graphRevision",
+        "patchCount",
+        "patches[].patchId",
+        "patches[].envelope.attackMilliseconds",
+        "patches[].envelope.decayMilliseconds",
+        "patches[].envelope.sustain",
+        "patches[].envelope.releaseMilliseconds",
+        "patches[].instrument.count",
+        "patches[].instrument.values[]",
+        "patches[].parameters.gainDb",
+        "patches[].parameters.pan",
+        "patches[].parameters.reverbSend",
+        "patches[].parameters.delaySend",
+        "global.masterGainDb",
+        "global.reverbRoomSize",
+        "global.reverbDamping",
+        "global.reverbReturn",
+        "global.delayMilliseconds",
+        "global.delayFeedback",
+        "global.delayReturn",
+    ];
+
+    /// Returns the canonical control-side serialization surface mirrored in StateTree.
+    pub const fn serialized_leaf_descriptor() -> &'static [&'static str] {
+        Self::SERIALIZED_LEAF_DESCRIPTOR
+    }
+
     /// Copies a complete accepted control projection into bounded storage.
     ///
     /// Patch values in the input slice must all be active. Remaining array
@@ -195,13 +388,71 @@ impl ParameterSnapshot {
     }
 }
 
+impl Serialize for ParameterSnapshot {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SerializableGlobalParameters {
+            master_gain_db: f32,
+            reverb_room_size: f32,
+            reverb_damping: f32,
+            reverb_return: f32,
+            delay_milliseconds: f32,
+            delay_feedback: f32,
+            delay_return: f32,
+        }
+
+        impl From<&GlobalParameters> for SerializableGlobalParameters {
+            fn from(parameters: &GlobalParameters) -> Self {
+                Self {
+                    master_gain_db: parameters.master_gain_db(),
+                    reverb_room_size: parameters.reverb_room_size(),
+                    reverb_damping: parameters.reverb_damping(),
+                    reverb_return: parameters.reverb_return(),
+                    delay_milliseconds: parameters.delay_milliseconds(),
+                    delay_feedback: parameters.delay_feedback(),
+                    delay_return: parameters.delay_return(),
+                }
+            }
+        }
+
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SerializableParameterSnapshot<'a> {
+            generation: u64,
+            graph_revision: GraphRevision,
+            patch_count: usize,
+            patches: &'a [RtPatchParameters],
+            global: SerializableGlobalParameters,
+        }
+
+        SerializableParameterSnapshot {
+            generation: self.generation(),
+            graph_revision: self.graph_revision(),
+            patch_count: self.patch_count(),
+            patches: self.patches(),
+            global: SerializableGlobalParameters::from(self.global()),
+        }
+        .serialize(serializer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ParameterSnapshot, ParameterSnapshotError, RtPatchParameters, MAX_PATCHES};
+    use super::{
+        ParameterSnapshot, ParameterSnapshotError, RtInstrumentParameters, RtPatchParameters,
+        MAX_PATCHES,
+    };
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::real_time::graph_revision::GraphRevision;
+    use crate::synth::voice_envelope::VoiceEnvelope;
+    use serde_json::Value;
+    use std::collections::BTreeSet;
 
     fn global() -> GlobalParameters {
         GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap()
@@ -229,6 +480,36 @@ mod tests {
     }
 
     #[test]
+    fn patch_projection_carries_bounded_envelope_and_descriptor_ordered_scalars() {
+        let envelope = VoiceEnvelope::new(5.0, 120.0, 0.6, 450.0).unwrap();
+        let instrument = RtInstrumentParameters::new(&[3.0, 0.25, 0.75]).unwrap();
+        let projected = RtPatchParameters::projected(
+            PatchId::new(7).unwrap(),
+            ChannelParameters::default(),
+            envelope,
+            instrument,
+        );
+
+        assert_eq!(projected.envelope(), &envelope);
+        assert_eq!(projected.instrument().count(), 3);
+        assert_eq!(projected.instrument().values(), &[3.0, 0.25, 0.75]);
+        assert!(projected.instrument().storage()[3..]
+            .iter()
+            .all(|value| *value == 0.0));
+        assert_eq!(
+            RtInstrumentParameters::new(&[0.0; 17]),
+            Err(ParameterSnapshotError::TooManyInstrumentScalars {
+                count: 17,
+                capacity: 16,
+            })
+        );
+        assert_eq!(
+            RtInstrumentParameters::new(&[f32::NAN]),
+            Err(ParameterSnapshotError::NonFiniteInstrumentScalar { index: 0 })
+        );
+    }
+
+    #[test]
     fn compatibility_requires_revision_count_and_exact_patch_order() {
         let revision = GraphRevision::new(8).unwrap();
         let snapshot = ParameterSnapshot::for_graph(
@@ -252,6 +533,56 @@ mod tests {
             revision,
             &[PatchId::new(2).unwrap(), PatchId::new(1).unwrap()]
         ));
+    }
+
+    #[test]
+    fn serialized_leaf_descriptor_exactly_matches_the_active_projection() {
+        fn leaves(value: &Value, prefix: &str, output: &mut BTreeSet<String>) {
+            match value {
+                Value::Object(object) => {
+                    for (name, child) in object {
+                        let path = if prefix.is_empty() {
+                            name.to_owned()
+                        } else {
+                            format!("{prefix}.{name}")
+                        };
+                        leaves(child, &path, output);
+                    }
+                }
+                Value::Array(array) => {
+                    for child in array {
+                        leaves(child, &format!("{prefix}[]"), output);
+                    }
+                }
+                _ => {
+                    output.insert(prefix.to_owned());
+                }
+            }
+        }
+
+        let projected = RtPatchParameters::projected(
+            PatchId::new(7).unwrap(),
+            ChannelParameters::new(-3.0, 0.25, 0.4, 0.2).unwrap(),
+            VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap(),
+            RtInstrumentParameters::new(&[2.0, 0.35, 0.65]).unwrap(),
+        );
+        let snapshot =
+            ParameterSnapshot::for_graph(9, GraphRevision::new(4).unwrap(), global(), &[projected])
+                .unwrap();
+        let mut discovered = BTreeSet::new();
+        leaves(
+            &serde_json::to_value(snapshot).unwrap(),
+            "",
+            &mut discovered,
+        );
+        let descriptor = ParameterSnapshot::serialized_leaf_descriptor();
+        let described = descriptor
+            .iter()
+            .map(|path| (*path).to_owned())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(descriptor.len(), described.len());
+        assert_eq!(described, discovered);
     }
 
     #[test]
@@ -284,7 +615,10 @@ mod tests {
 
         assert_copy::<ParameterSnapshot>();
         assert_copy::<RtPatchParameters>();
+        assert_copy::<RtInstrumentParameters>();
         assert!(!core::mem::needs_drop::<ParameterSnapshot>());
+        assert!(!core::mem::needs_drop::<RtPatchParameters>());
+        assert!(!core::mem::needs_drop::<RtInstrumentParameters>());
         assert_eq!(
             core::mem::size_of::<ParameterSnapshot>(),
             core::mem::size_of_val(&ParameterSnapshot::new(0, global(), &[]).unwrap())

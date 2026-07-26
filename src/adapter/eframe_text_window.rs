@@ -92,18 +92,21 @@ impl EframeApplication {
         });
     }
 
-    fn tick(&mut self) {
+    fn tick(&mut self) -> bool {
         let now = Instant::now();
         let elapsed = now.duration_since(self.previous_tick);
         self.previous_tick = now;
-        (self.on_tick)(elapsed);
+        (self.on_tick)(elapsed)
     }
 }
 
 impl eframe::App for EframeApplication {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_input(context);
-        self.tick();
+        if !self.tick() {
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
 
         let projection = (self.projection)();
         egui::CentralPanel::default().show(context, |ui| {
@@ -152,6 +155,8 @@ fn normalize_egui_event(event: &egui::Event) -> Option<WindowInput> {
 
 fn normalize_key(key: egui::Key) -> WindowKey {
     match key {
+        egui::Key::Num1 => WindowKey::Digit1,
+        egui::Key::Num2 => WindowKey::Digit2,
         egui::Key::W => WindowKey::W,
         egui::Key::S => WindowKey::S,
         egui::Key::A => WindowKey::A,
@@ -194,6 +199,8 @@ mod tests {
     #[test]
     fn eframe_text_window_normalizes_the_complete_key_vocabulary() {
         let cases = [
+            (Key::Num1, WindowKey::Digit1),
+            (Key::Num2, WindowKey::Digit2),
             (Key::W, WindowKey::W),
             (Key::S, WindowKey::S),
             (Key::A, WindowKey::A),
@@ -212,6 +219,31 @@ mod tests {
                 Some(WindowInput::key_up(window_key))
             );
         }
+    }
+
+    #[test]
+    fn eframe_text_window_delegates_direct_context_keys() {
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translate_egui_event(&mut translator, &key_event(Key::Num1, true)),
+            Some(AppEvent::SelectContext(
+                crate::control::TopLevelContext::Mixer
+            ))
+        );
+        assert_eq!(
+            translate_egui_event(&mut translator, &key_event(Key::Num2, true)),
+            Some(AppEvent::SelectContext(
+                crate::control::TopLevelContext::Patch
+            ))
+        );
+        assert_eq!(
+            translate_egui_event(&mut translator, &key_event(Key::Num1, false)),
+            None
+        );
+        assert_eq!(
+            translate_egui_event(&mut translator, &key_event(Key::Num2, false)),
+            None
+        );
     }
 
     #[test]

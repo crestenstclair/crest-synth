@@ -7,8 +7,8 @@ pub use automatic_midi_test::{AutomaticMidiTest, TestInputError};
 
 pub mod demo_scene_report;
 pub use demo_scene_report::{
-    DemoCoverageGroup, DemoCoverageSet, DemoSceneCheckpoint, DemoSceneCheckpointError,
-    DemoSceneCoverage, DemoSceneReport, DemoSceneReportError,
+    DemoAudioEvidence, DemoCoverageGroup, DemoCoverageSet, DemoSceneCheckpoint,
+    DemoSceneCheckpointError, DemoSceneCoverage, DemoSceneReport, DemoSceneReportError,
 };
 
 pub mod demo_scene;

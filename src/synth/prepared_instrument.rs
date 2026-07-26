@@ -1,5 +1,6 @@
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
+use crate::real_time::parameter_snapshot::RtPatchParameters;
 use core::fmt;
 
 /// One fully prepared Patch-specific synthesis runtime.
@@ -13,12 +14,21 @@ pub trait PreparedInstrument: Send {
     fn patch_id(&self) -> PatchId;
 
     /// Delivers one normalized MIDI message to this instrument only.
-    fn dispatch(&mut self, message: MidiMessage) -> Result<(), PreparedInstrumentError>;
+    fn dispatch(
+        &mut self,
+        message: MidiMessage,
+        parameters: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError>;
 
     /// Fills exactly `frame_count` frames in caller-owned interleaved stereo
     /// storage. The rack validates storage identity and capacity before this
     /// operation is called.
-    fn render(&mut self, interleaved_stereo: &mut [f32], frame_count: usize);
+    fn render(
+        &mut self,
+        interleaved_stereo: &mut [f32],
+        frame_count: usize,
+        parameters: &RtPatchParameters,
+    );
 
     /// Silences this instrument's voices with bounded work.
     fn all_notes_off(&mut self);

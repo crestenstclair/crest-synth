@@ -1,4 +1,7 @@
 pub mod atomic_audio_observation;
+pub mod braids_capability;
+pub mod braids_native;
+pub mod braids_preparer;
 pub mod corridors_midi_event_source;
 pub mod cpal_audio_output;
 pub mod eframe_text_window;
@@ -7,3 +10,5 @@ pub mod hidef_soundfont_capability;
 pub mod hidef_soundfont_preparer;
 pub mod lock_free_audio_boundary;
 pub mod lock_free_structural_graph_boundary;
+pub mod production_instruments;
+pub mod soundfont_voice_engine;

@@ -1,0 +1,503 @@
+use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
+use crate::synth::prepared_instrument::PreparedInstrumentError;
+use crate::synth::voice_envelope::VoiceEnvelope;
+use crate::synth::voice_envelope_state::VoiceEnvelopeState;
+use rustysynth::{LoopMode, SoundFont};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+const MIDI_BEND_CENTER: i32 = 8_192;
+const PITCH_BEND_RANGE_SEMITONES: f64 = 2.0;
+
+static ENGINES_CREATED: AtomicU64 = AtomicU64::new(0);
+static ENGINES_DESTROYED: AtomicU64 = AtomicU64::new(0);
+static ENGINES_ACTIVE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SoundFontEngineLifecycleCounts {
+    pub created: u64,
+    pub destroyed: u64,
+    pub active: u64,
+}
+
+pub fn soundfont_engine_lifecycle_counts() -> SoundFontEngineLifecycleCounts {
+    SoundFontEngineLifecycleCounts {
+        created: ENGINES_CREATED.load(Ordering::Relaxed),
+        destroyed: ENGINES_DESTROYED.load(Ordering::Relaxed),
+        active: ENGINES_ACTIVE.load(Ordering::Relaxed),
+    }
+}
+
+/// Immutable sample and preset metadata prepared once beside the parsed bank.
+pub(crate) struct PreparedSoundFontBank {
+    sound_font: Arc<SoundFont>,
+    presets: Vec<PreparedPreset>,
+}
+
+impl PreparedSoundFontBank {
+    pub(crate) fn new(sound_font: Arc<SoundFont>) -> Result<Self, ()> {
+        let mut presets = Vec::new();
+        presets
+            .try_reserve_exact(sound_font.get_presets().len())
+            .map_err(|_| ())?;
+        for preset in sound_font.get_presets() {
+            let mut regions = Vec::new();
+            for preset_region in preset.get_regions() {
+                let instrument = sound_font
+                    .get_instruments()
+                    .get(preset_region.get_instrument_id())
+                    .ok_or(())?;
+                for instrument_region in instrument.get_regions() {
+                    let key_start = preset_region
+                        .get_key_range_start()
+                        .max(instrument_region.get_key_range_start());
+                    let key_end = preset_region
+                        .get_key_range_end()
+                        .min(instrument_region.get_key_range_end());
+                    let velocity_start = preset_region
+                        .get_velocity_range_start()
+                        .max(instrument_region.get_velocity_range_start());
+                    let velocity_end = preset_region
+                        .get_velocity_range_end()
+                        .min(instrument_region.get_velocity_range_end());
+                    if key_start > key_end || velocity_start > velocity_end {
+                        continue;
+                    }
+
+                    let sample = sound_font
+                        .get_sample_headers()
+                        .get(instrument_region.get_sample_id())
+                        .ok_or(())?;
+                    let sample_start =
+                        usize::try_from(instrument_region.get_sample_start()).map_err(|_| ())?;
+                    let sample_end =
+                        usize::try_from(instrument_region.get_sample_end()).map_err(|_| ())?;
+                    let loop_start = usize::try_from(instrument_region.get_sample_start_loop())
+                        .map_err(|_| ())?;
+                    let loop_end =
+                        usize::try_from(instrument_region.get_sample_end_loop()).map_err(|_| ())?;
+                    if sample_start >= sample_end
+                        || sample_end >= sound_font.get_wave_data().len()
+                        || sample.get_sample_rate() <= 0
+                    {
+                        return Err(());
+                    }
+                    let loop_mode = match instrument_region.get_sample_modes() {
+                        LoopMode::NoLoop => PreparedLoopMode::NoLoop,
+                        LoopMode::Continuous => PreparedLoopMode::Continuous,
+                        LoopMode::LoopUntilNoteOff => PreparedLoopMode::UntilNoteOff,
+                    };
+                    if loop_mode != PreparedLoopMode::NoLoop
+                        && (loop_start >= loop_end || loop_end > sample_end)
+                    {
+                        return Err(());
+                    }
+
+                    let attenuation_db = (preset_region.get_initial_attenuation()
+                        + instrument_region.get_initial_attenuation())
+                    .max(0.0);
+                    let amplitude = 10.0_f32.powf(-attenuation_db / 20.0);
+                    let pan = ((preset_region.get_pan() + instrument_region.get_pan()) / 50.0)
+                        .clamp(-1.0, 1.0);
+                    let left_gain = ((1.0 - pan) * 0.5).sqrt();
+                    let right_gain = ((1.0 + pan) * 0.5).sqrt();
+                    regions.push(PreparedSampleRegion {
+                        key_start: key_start as u8,
+                        key_end: key_end as u8,
+                        velocity_start: velocity_start as u8,
+                        velocity_end: velocity_end as u8,
+                        sample_start,
+                        sample_end,
+                        loop_start,
+                        loop_end,
+                        loop_mode,
+                        sample_rate: sample.get_sample_rate() as f64,
+                        root_key: instrument_region.get_root_key() as f64,
+                        coarse_tune: preset_region.get_coarse_tune()
+                            + instrument_region.get_coarse_tune(),
+                        fine_tune: preset_region.get_fine_tune()
+                            + instrument_region.get_fine_tune(),
+                        scale_tuning: preset_region.get_scale_tuning()
+                            + instrument_region.get_scale_tuning(),
+                        exclusive_class: instrument_region.get_exclusive_class(),
+                        amplitude,
+                        left_gain,
+                        right_gain,
+                    });
+                }
+            }
+            presets.push(PreparedPreset {
+                bank: preset.get_bank_number(),
+                program: u8::try_from(preset.get_patch_number()).map_err(|_| ())?,
+                regions,
+            });
+        }
+        Ok(Self {
+            sound_font,
+            presets,
+        })
+    }
+
+    pub(crate) fn has_preset(&self, bank: i32, program: u8) -> bool {
+        self.preset_index(bank, program).is_some()
+    }
+
+    fn preset_index(&self, bank: i32, program: u8) -> Option<usize> {
+        self.presets
+            .iter()
+            .position(|preset| preset.bank == bank && preset.program == program)
+    }
+}
+
+struct PreparedPreset {
+    bank: i32,
+    program: u8,
+    regions: Vec<PreparedSampleRegion>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreparedLoopMode {
+    NoLoop,
+    Continuous,
+    UntilNoteOff,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PreparedSampleRegion {
+    key_start: u8,
+    key_end: u8,
+    velocity_start: u8,
+    velocity_end: u8,
+    sample_start: usize,
+    sample_end: usize,
+    loop_start: usize,
+    loop_end: usize,
+    loop_mode: PreparedLoopMode,
+    sample_rate: f64,
+    root_key: f64,
+    coarse_tune: i32,
+    fine_tune: i32,
+    scale_tuning: i32,
+    exclusive_class: i32,
+    amplitude: f32,
+    left_gain: f32,
+    right_gain: f32,
+}
+
+impl PreparedSampleRegion {
+    fn contains(self, note: u8, velocity: u8) -> bool {
+        (self.key_start..=self.key_end).contains(&note)
+            && (self.velocity_start..=self.velocity_end).contains(&velocity)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SoundFontSampleVoice {
+    note: Option<u8>,
+    region: Option<PreparedSampleRegion>,
+    position: f64,
+    velocity: f32,
+    age: u64,
+    envelope: VoiceEnvelopeState,
+}
+
+impl SoundFontSampleVoice {
+    const IDLE: Self = Self {
+        note: None,
+        region: None,
+        position: 0.0,
+        velocity: 0.0,
+        age: 0,
+        envelope: VoiceEnvelopeState::IDLE,
+    };
+
+    fn clear(&mut self) {
+        *self = Self::IDLE;
+    }
+}
+
+/// One Patch-local engine instance owning all prepared SoundFont note voices.
+pub(crate) struct SoundFontVoiceEngine<const VOICES: usize> {
+    bank: Arc<PreparedSoundFontBank>,
+    voices: [SoundFontSampleVoice; VOICES],
+    sample_rate: f32,
+    max_frames: usize,
+    current_bank: i32,
+    current_program: u8,
+    bank_msb: u8,
+    bank_lsb: u8,
+    expression: f32,
+    pressure: f32,
+    pitch_bend_semitones: f64,
+    next_age: u64,
+}
+
+impl<const VOICES: usize> SoundFontVoiceEngine<VOICES> {
+    pub(crate) fn new(
+        bank: Arc<PreparedSoundFontBank>,
+        sample_rate: f32,
+        max_frames: usize,
+        initial_bank: i32,
+        initial_program: u8,
+    ) -> Result<Self, ()> {
+        if VOICES == 0
+            || !sample_rate.is_finite()
+            || sample_rate <= 0.0
+            || max_frames == 0
+            || !bank.has_preset(initial_bank, initial_program)
+        {
+            return Err(());
+        }
+        ENGINES_CREATED.fetch_add(1, Ordering::Relaxed);
+        ENGINES_ACTIVE.fetch_add(1, Ordering::Relaxed);
+        Ok(Self {
+            bank,
+            voices: [SoundFontSampleVoice::IDLE; VOICES],
+            sample_rate,
+            max_frames,
+            current_bank: initial_bank,
+            current_program: initial_program,
+            bank_msb: ((initial_bank >> 7) & 0x7f) as u8,
+            bank_lsb: (initial_bank & 0x7f) as u8,
+            expression: 1.0,
+            pressure: 1.0,
+            pitch_bend_semitones: 0.0,
+            next_age: 1,
+        })
+    }
+
+    pub(crate) fn dispatch(
+        &mut self,
+        message: MidiMessage,
+        envelope: VoiceEnvelope,
+    ) -> Result<(), PreparedInstrumentError> {
+        match message.kind() {
+            MidiMessageKind::NoteOn if message.data2() > 0 => {
+                self.note_on(message.data1(), message.data2(), envelope)
+            }
+            MidiMessageKind::NoteOn | MidiMessageKind::NoteOff => {
+                self.note_off(message.data1(), envelope.release_milliseconds());
+                Ok(())
+            }
+            MidiMessageKind::ControlChange => {
+                match message.data1() {
+                    0 => {
+                        self.bank_msb = message.data2();
+                        self.current_bank =
+                            (i32::from(self.bank_msb) << 7) | i32::from(self.bank_lsb);
+                    }
+                    32 => {
+                        self.bank_lsb = message.data2();
+                        self.current_bank =
+                            (i32::from(self.bank_msb) << 7) | i32::from(self.bank_lsb);
+                    }
+                    7 | 11 => self.expression = f32::from(message.data2()) / 127.0,
+                    _ => {}
+                }
+                Ok(())
+            }
+            MidiMessageKind::ProgramChange => {
+                if self.bank.has_preset(self.current_bank, message.data1()) {
+                    self.current_program = message.data1();
+                    Ok(())
+                } else {
+                    Err(PreparedInstrumentError::DispatchRejected)
+                }
+            }
+            MidiMessageKind::ChannelPressure => {
+                self.pressure = f32::from(message.data1()) / 127.0;
+                Ok(())
+            }
+            MidiMessageKind::PitchBend => {
+                let bend = i32::from(message.data1()) | (i32::from(message.data2()) << 7);
+                self.pitch_bend_semitones = f64::from(bend - MIDI_BEND_CENTER)
+                    * PITCH_BEND_RANGE_SEMITONES
+                    / f64::from(MIDI_BEND_CENTER);
+                Ok(())
+            }
+            MidiMessageKind::AllNotesOff => {
+                self.all_notes_off();
+                Ok(())
+            }
+        }
+    }
+
+    fn note_on(
+        &mut self,
+        note: u8,
+        velocity: u8,
+        envelope: VoiceEnvelope,
+    ) -> Result<(), PreparedInstrumentError> {
+        let preset_index = self
+            .bank
+            .preset_index(self.current_bank, self.current_program)
+            .ok_or(PreparedInstrumentError::DispatchRejected)?;
+        let region_count = self.bank.presets[preset_index].regions.len();
+        let mut started = false;
+        for region_index in 0..region_count {
+            let region = self.bank.presets[preset_index].regions[region_index];
+            if !region.contains(note, velocity) {
+                continue;
+            }
+            self.start_voice(note, velocity, region, envelope)?;
+            started = true;
+        }
+        if started {
+            Ok(())
+        } else {
+            Err(PreparedInstrumentError::DispatchRejected)
+        }
+    }
+
+    fn start_voice(
+        &mut self,
+        note: u8,
+        velocity: u8,
+        region: PreparedSampleRegion,
+        envelope: VoiceEnvelope,
+    ) -> Result<(), PreparedInstrumentError> {
+        if region.exclusive_class != 0 {
+            for voice in &mut self.voices {
+                if voice
+                    .region
+                    .is_some_and(|active| active.exclusive_class == region.exclusive_class)
+                {
+                    voice.clear();
+                }
+            }
+        }
+        let index = self
+            .voices
+            .iter()
+            .position(|voice| voice.envelope.is_idle())
+            .or_else(|| {
+                self.voices
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(index, voice)| (voice.age, *index))
+                    .map(|(index, _)| index)
+            })
+            .ok_or(PreparedInstrumentError::DispatchRejected)?;
+        let voice = &mut self.voices[index];
+        voice.note = Some(note);
+        voice.region = Some(region);
+        voice.position = region.sample_start as f64;
+        voice.velocity = f32::from(velocity) / 127.0;
+        voice.age = self.next_age;
+        voice.envelope.note_on(envelope, self.sample_rate);
+        self.next_age = self.next_age.saturating_add(1);
+        Ok(())
+    }
+
+    fn note_off(&mut self, note: u8, release_milliseconds: f32) {
+        for voice in &mut self.voices {
+            if voice.note == Some(note) && !voice.envelope.is_idle() {
+                voice
+                    .envelope
+                    .note_off(release_milliseconds, self.sample_rate);
+            }
+        }
+    }
+
+    pub(crate) fn render(&mut self, output: &mut [f32], frame_count: usize) {
+        let frame_count = frame_count.min(self.max_frames).min(output.len() / 2);
+        let wave_data = self.bank.sound_font.get_wave_data();
+        let expression = self.expression * self.pressure;
+        for voice in &mut self.voices {
+            let Some(region) = voice.region else {
+                continue;
+            };
+            let pitch_change = 0.01
+                * f64::from(region.scale_tuning)
+                * (f64::from(voice.note.unwrap_or_default()) + self.pitch_bend_semitones
+                    - region.root_key)
+                + f64::from(region.coarse_tune)
+                + 0.01 * f64::from(region.fine_tune);
+            let increment = region.sample_rate / f64::from(self.sample_rate)
+                * 2.0_f64.powf(pitch_change / 12.0);
+            let voice_gain = voice.velocity * region.amplitude * expression;
+            for frame in 0..frame_count {
+                let looping = match region.loop_mode {
+                    PreparedLoopMode::NoLoop => false,
+                    PreparedLoopMode::Continuous => true,
+                    PreparedLoopMode::UntilNoteOff => !voice.envelope.is_releasing(),
+                };
+                if looping && voice.position >= region.loop_end as f64 {
+                    let loop_length = (region.loop_end - region.loop_start) as f64;
+                    voice.position = region.loop_start as f64
+                        + (voice.position - region.loop_start as f64).rem_euclid(loop_length);
+                }
+                let index = voice.position.floor() as usize;
+                if index >= region.sample_end {
+                    voice.clear();
+                    break;
+                }
+                let next = if looping && index + 1 >= region.loop_end {
+                    region.loop_start
+                } else {
+                    index + 1
+                };
+                let (Some(first), Some(second)) = (wave_data.get(index), wave_data.get(next))
+                else {
+                    voice.clear();
+                    break;
+                };
+                let fraction = (voice.position - index as f64) as f32;
+                let sample = (f32::from(*first)
+                    + (f32::from(*second) - f32::from(*first)) * fraction)
+                    / 32_768.0;
+                let envelope_gain = voice.envelope.next_gain(self.sample_rate);
+                let sample = bounded_sample(sample * voice_gain * envelope_gain);
+                output[frame * 2] += sample * region.left_gain;
+                output[frame * 2 + 1] += sample * region.right_gain;
+                voice.position += increment;
+                if voice.envelope.is_idle() {
+                    voice.clear();
+                    break;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn all_notes_off(&mut self) {
+        for voice in &mut self.voices {
+            voice.clear();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_note_voice_count(&self) -> usize {
+        self.voices
+            .iter()
+            .filter(|voice| !voice.envelope.is_idle())
+            .count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_voice_counts(&self, note: u8) -> (usize, usize) {
+        self.voices
+            .iter()
+            .filter(|voice| voice.note == Some(note))
+            .fold((0, 0), |(active, releasing), voice| {
+                (
+                    active + usize::from(!voice.envelope.is_idle()),
+                    releasing + usize::from(voice.envelope.is_releasing()),
+                )
+            })
+    }
+}
+
+impl<const VOICES: usize> Drop for SoundFontVoiceEngine<VOICES> {
+    fn drop(&mut self) {
+        ENGINES_DESTROYED.fetch_add(1, Ordering::Relaxed);
+        ENGINES_ACTIVE.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn bounded_sample(sample: f32) -> f32 {
+    if sample.is_finite() {
+        sample.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}

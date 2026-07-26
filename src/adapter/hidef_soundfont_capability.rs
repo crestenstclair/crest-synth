@@ -4,7 +4,7 @@ use crate::synth::instrument_capability::{
     AssetAssignment, AssetKind, AssetReference, AssetRequirement, CapabilityDescriptor,
     CapabilityError, CapabilityRegistry, CapabilitySection, InstrumentConfig, ParameterAssignment,
     ParameterDefault, ParameterKind, ParameterRange, ParameterSpec, ParameterUpdate,
-    ParameterValue,
+    ParameterValue, VoicePolicy,
 };
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::parameter_id::ParameterId;
@@ -15,7 +15,7 @@ pub const SOUNDFONT_BANK_PARAMETER_ID: &str = "soundfont.bank";
 pub const SOUNDFONT_PROGRAM_PARAMETER_ID: &str = "soundfont.program";
 pub const SOUNDFONT_PERCUSSION_PARAMETER_ID: &str = "soundfont.percussion";
 pub const SOUNDFONT_FILE_PARAMETER_ID: &str = "soundfont.file";
-pub const HIDEF_VOICE_LIMIT: u16 = 64;
+pub const HIDEF_POLYPHONY_CEILING: u16 = 64;
 
 /// Control-side descriptor/config provider for the installed HiDef SoundFont.
 #[derive(Clone, Debug)]
@@ -89,7 +89,7 @@ impl HiDefSoundFontCapability {
                 vec![bank, program, percussion, file],
             )?],
             vec![AssetRequirement::new(file_id, true)],
-            HIDEF_VOICE_LIMIT,
+            VoicePolicy::EngineManaged,
             MidiMessageKind::ALL.to_vec(),
         )?;
         Ok(Self { descriptor })
@@ -186,7 +186,7 @@ mod tests {
         assert_eq!(descriptor.id().as_str(), HIDEF_CAPABILITY_ID);
         assert_eq!(descriptor.label(), "HiDef SoundFont");
         assert_eq!(descriptor.semantic_accent(), "instrument.soundfont");
-        assert_eq!(descriptor.voice_limit(), HIDEF_VOICE_LIMIT);
+        assert_eq!(descriptor.voice_policy(), VoicePolicy::EngineManaged);
         assert_eq!(descriptor.supported_midi_kinds(), MidiMessageKind::ALL);
         assert_eq!(descriptor.sections().len(), 1);
         let parameters = descriptor.sections()[0].parameters();

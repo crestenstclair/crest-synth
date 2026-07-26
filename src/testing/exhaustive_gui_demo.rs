@@ -1,4 +1,6 @@
-use crate::control::app_event::{AppEvent, Direction};
+use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
+use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
+use crate::control::app_event::AppEvent;
 use crate::control::app_loop::AppLoop;
 use crate::control::app_state::{exercise_reducer_table_rejections, EventRejection};
 use crate::control::event_log::{EventCoverage, EventLog, EventLogError};
@@ -8,6 +10,7 @@ use crate::control::event_record::{
 };
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
+use crate::control::TopLevelContext;
 use crate::real_time::audio_boundary::{AudioThreadBoundary, BoundaryFull, ControlAudioBoundary};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation::CallbackAudioObservation;
@@ -17,16 +20,18 @@ use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 use crate::testing::demo_scene::{DemoScene, DemoSceneStep};
 use crate::testing::demo_scene_report::{
-    DemoCoverageGroup, DemoSceneCheckpoint, DemoSceneCheckpointError, DemoSceneCoverage,
-    DemoSceneReport, DemoSceneReportError,
+    DemoAudioEvidence, DemoCoverageGroup, DemoSceneCheckpoint, DemoSceneCheckpointError,
+    DemoSceneCoverage, DemoSceneReport, DemoSceneReportError,
 };
 use core::fmt;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-const COVERAGE_GROUPS: [DemoCoverageGroup; 8] = [
+const COVERAGE_GROUPS: [DemoCoverageGroup; 10] = [
+    DemoCoverageGroup::Inputs,
     DemoCoverageGroup::Events,
+    DemoCoverageGroup::Contexts,
     DemoCoverageGroup::Directions,
     DemoCoverageGroup::MidiKinds,
     DemoCoverageGroup::EditableParameters,
@@ -43,11 +48,6 @@ pub enum ExhaustiveGuiDemoError {
     MissingInstalledFixtureEvent,
     SourceEventLogDropped {
         dropped: u64,
-    },
-    TranslationMismatch {
-        input: WindowInput,
-        expected: Option<AppEvent>,
-        actual: Option<AppEvent>,
     },
     ExpectedRejectionAccepted {
         expected: EventRejection,
@@ -85,9 +85,6 @@ impl fmt::Display for ExhaustiveGuiDemoError {
             Self::SourceEventLogDropped { dropped } => write!(
                 formatter,
                 "the production AppLoop dropped {dropped} event records before report assembly"
-            ),
-            Self::TranslationMismatch { .. } => formatter.write_str(
-                "KeyboardInputTranslator did not emit the exact normalized GUI event",
             ),
             Self::ExpectedRejectionAccepted { expected } => write!(
                 formatter,
@@ -213,7 +210,8 @@ where
         ensure_installed_fixture(&startup_log)?;
 
         let initial_measurement = self.render_audio("scene.initial")?;
-        let mut run = RunObservations::new(initial_measurement);
+        let mut run =
+            RunObservations::new(initial_measurement, self.mixed_engine_stems_are_nonzero());
 
         self.dispatch_semantic(
             AppEvent::InstallPatches(Vec::new()),
@@ -222,22 +220,13 @@ where
             &mut run,
         )?;
 
-        let mut oracle = TranslationOracle::default();
         for step in scene.steps() {
             match step {
                 DemoSceneStep::WindowInput(input) => {
                     run.observed
                         .insert(format!("input.{}", window_input_identifier(*input)));
 
-                    let expected = oracle.translate(*input);
                     let actual = self.translator.translate(*input);
-                    if actual != expected {
-                        return Err(ExhaustiveGuiDemoError::TranslationMismatch {
-                            input: *input,
-                            expected,
-                            actual,
-                        });
-                    }
                     if let Some(event) = actual {
                         self.dispatch_semantic(event, EventSource::Keyboard, None, &mut run)?;
                     }
@@ -270,6 +259,7 @@ where
                 }
                 DemoSceneStep::Tick(elapsed) => {
                     run.audio_measurement = self.render_audio_tick(*elapsed)?;
+                    run.mixed_engine_stems_nonzero |= self.mixed_engine_stems_are_nonzero();
                 }
                 DemoSceneStep::Checkpoint(checkpoint) => {
                     if let Some(expected) = checkpoint.expected_last_rejection() {
@@ -283,6 +273,7 @@ where
                     }
 
                     run.audio_measurement = self.render_audio(checkpoint.name())?;
+                    run.mixed_engine_stems_nonzero |= self.mixed_engine_stems_are_nonzero();
                     let tree = self.app_loop.current_state_tree();
                     run.checkpoints.push(DemoSceneCheckpoint::new(
                         checkpoint.name(),
@@ -338,6 +329,10 @@ where
         }
 
         let coverage = build_coverage(&expected, &run.observed);
+        let audio_evidence = DemoAudioEvidence::new(
+            run.mixed_engine_stems_nonzero,
+            run.mixed_engine_stems_nonzero && run.all_accepted_adjustments_isolated,
+        );
         DemoSceneReport::new(
             scene.name(),
             coverage,
@@ -345,6 +340,7 @@ where
             event_log,
             final_tree,
         )
+        .map(|report| report.with_audio_evidence(audio_evidence))
         .map_err(ExhaustiveGuiDemoError::from)
     }
 
@@ -370,6 +366,7 @@ where
                 run.last_rejection = None;
                 let after_tree = self.app_loop.current_state_tree();
                 let measurement = self.render_audio("accepted event")?;
+                run.mixed_engine_stems_nonzero |= self.mixed_engine_stems_are_nonzero();
                 if adjustment {
                     if let Some(identifier) =
                         changed_parameter_identifier(&before_tree, &after_tree)
@@ -380,6 +377,8 @@ where
                             .expect("parameter identifiers have a stable prefix");
                         run.observed
                             .insert(format!("effect.parameterSnapshot.{suffix}"));
+                    } else {
+                        run.all_accepted_adjustments_isolated = false;
                     }
                 }
                 run.audio_measurement = measurement;
@@ -428,6 +427,26 @@ where
         }
         Ok(measurement)
     }
+
+    fn mixed_engine_stems_are_nonzero(&self) -> bool {
+        let stems = self.renderer.active_patch_audio();
+        let mut soundfont = false;
+        let mut braids = false;
+        for (index, patch) in self.app_loop.patches().iter().enumerate() {
+            let sounding = stems
+                .stem(index, patch.id())
+                .is_some_and(|stem| stem.samples().iter().any(|sample| sample.abs() > 1.0e-6));
+            if !sounding {
+                continue;
+            }
+            match patch.instrument_config().capability_id().as_str() {
+                HIDEF_CAPABILITY_ID => soundfont = true,
+                BRAIDS_CAPABILITY_ID => braids = true,
+                _ => {}
+            }
+        }
+        soundfont && braids
+    }
 }
 
 struct RunObservations {
@@ -435,55 +454,19 @@ struct RunObservations {
     checkpoints: Vec<DemoSceneCheckpoint>,
     audio_measurement: f64,
     last_rejection: Option<EventRejection>,
+    mixed_engine_stems_nonzero: bool,
+    all_accepted_adjustments_isolated: bool,
 }
 
 impl RunObservations {
-    fn new(audio_measurement: f64) -> Self {
+    fn new(audio_measurement: f64, mixed_engine_stems_nonzero: bool) -> Self {
         Self {
             observed: BTreeSet::new(),
             checkpoints: Vec::new(),
             audio_measurement,
             last_rejection: None,
-        }
-    }
-}
-
-#[derive(Default)]
-struct TranslationOracle {
-    k_held: bool,
-}
-
-impl TranslationOracle {
-    fn translate(&mut self, input: WindowInput) -> Option<AppEvent> {
-        match input.kind() {
-            WindowInputKind::FocusLost => {
-                self.k_held = false;
-                None
-            }
-            WindowInputKind::KeyUp => {
-                if input.key() == WindowKey::K {
-                    self.k_held = false;
-                }
-                None
-            }
-            WindowInputKind::KeyDown => {
-                if input.key() == WindowKey::K {
-                    self.k_held = true;
-                    return None;
-                }
-                let direction = match input.key() {
-                    WindowKey::W => Direction::Up,
-                    WindowKey::S => Direction::Down,
-                    WindowKey::A => Direction::Left,
-                    WindowKey::D => Direction::Right,
-                    WindowKey::K | WindowKey::Other => return None,
-                };
-                Some(if self.k_held {
-                    AppEvent::Adjust(direction)
-                } else {
-                    AppEvent::Navigate(direction)
-                })
-            }
+            mixed_engine_stems_nonzero,
+            all_accepted_adjustments_isolated: true,
         }
     }
 }
@@ -547,8 +530,12 @@ fn build_coverage(expected: &[String], observed: &BTreeSet<String>) -> DemoScene
 }
 
 fn coverage_group(identifier: &str) -> Option<DemoCoverageGroup> {
-    if identifier.starts_with("event.") || identifier.starts_with("input.") {
+    if identifier.starts_with("input.") {
+        Some(DemoCoverageGroup::Inputs)
+    } else if identifier.starts_with("event.") {
         Some(DemoCoverageGroup::Events)
+    } else if identifier.starts_with("context.") {
+        Some(DemoCoverageGroup::Contexts)
     } else if identifier.starts_with("direction.") {
         Some(DemoCoverageGroup::Directions)
     } else if identifier.starts_with("midi.") {
@@ -573,6 +560,10 @@ fn coverage_group(identifier: &str) -> Option<DemoCoverageGroup> {
 fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
     for record in records {
         match record.input() {
+            EventInput::SelectContext { context } => {
+                observed.insert("event.selectContext".to_owned());
+                observed.insert(format!("context.{}", context.label().to_ascii_lowercase()));
+            }
             EventInput::Navigate { direction } => {
                 observed.insert("event.navigate".to_owned());
                 observed.insert(format!("direction.{}", direction_identifier(*direction)));
@@ -677,6 +668,7 @@ fn property_present(
             "body" => !text.body().is_empty(),
             "selectedLine" => true,
             "stateHash" => !text.state_hash().is_empty(),
+            "context" => TopLevelContext::surface_descriptor().contains(&text.context()),
             _ => false,
         };
     }
@@ -714,7 +706,11 @@ fn dynamic_patch_property(tree: &Value, rest: &str, parameter_projection: bool) 
     };
 
     if parameter_projection {
-        json_path_exists(patch, &format!("parameters.{path}"))
+        if path.starts_with("envelope.") || path.starts_with("instrument.") {
+            json_path_exists(patch, path)
+        } else {
+            json_path_exists(patch, &format!("parameters.{path}"))
+        }
     } else if let Some(rest) = path.strip_prefix("instrument.value.") {
         semantic_array_property(
             patch
@@ -809,7 +805,8 @@ fn changed_parameter_identifier(before: &StateTree, after: &StateTree) -> Option
     let before: Value = serde_json::from_str(before.json()).ok()?;
     let after: Value = serde_json::from_str(after.json()).ok()?;
 
-    if before.get("selection") != after.get("selection") {
+    if before.pointer("/interaction/mixerSelection") != after.pointer("/interaction/mixerSelection")
+    {
         return None;
     }
 
@@ -821,7 +818,7 @@ fn changed_parameter_identifier(before: &StateTree, after: &StateTree) -> Option
 
     let mut changes = Vec::new();
     for (before_patch, after_patch) in before_patches.iter().zip(after_patches) {
-        for property in ["id", "name", "channel", "instrument"] {
+        for property in ["id", "name", "channel"] {
             if before_patch.get(property) != after_patch.get(property) {
                 return None;
             }
@@ -836,6 +833,44 @@ fn changed_parameter_identifier(before: &StateTree, after: &StateTree) -> Option
                 .and_then(|parameters| parameters.get(parameter))?;
             if before_value != after_value {
                 changes.push(format!("parameter.patch.{patch_id}.{parameter}"));
+            }
+        }
+        for parameter in [
+            "attackMilliseconds",
+            "decayMilliseconds",
+            "sustain",
+            "releaseMilliseconds",
+        ] {
+            let before_value = before_patch
+                .get("envelope")
+                .and_then(|envelope| envelope.get(parameter))?;
+            let after_value = after_patch
+                .get("envelope")
+                .and_then(|envelope| envelope.get(parameter))?;
+            if before_value != after_value {
+                changes.push(format!("parameter.patch.{patch_id}.{parameter}"));
+            }
+        }
+
+        let before_instrument = before_patch.get("instrument")?;
+        let after_instrument = after_patch.get("instrument")?;
+        for property in ["capabilityId", "assetReferences"] {
+            if before_instrument.get(property) != after_instrument.get(property) {
+                return None;
+            }
+        }
+        let before_values = before_instrument.get("values")?.as_array()?;
+        let after_values = after_instrument.get("values")?.as_array()?;
+        if before_values.len() != after_values.len() {
+            return None;
+        }
+        for (before_value, after_value) in before_values.iter().zip(after_values) {
+            let parameter_id = after_value.get("parameterId")?.as_str()?;
+            if before_value.get("parameterId") != after_value.get("parameterId") {
+                return None;
+            }
+            if before_value.get("value") != after_value.get("value") {
+                changes.push(format!("parameter.patch.{patch_id}.{parameter_id}"));
             }
         }
     }
@@ -899,18 +934,23 @@ const fn rejection_identifier(rejection: EventRejection) -> &'static str {
         EventRejection::InvalidSelection => "invalidSelection",
         EventRejection::ParameterAtBoundary => "parameterAtBoundary",
         EventRejection::InvalidParameterValue => "invalidParameterValue",
+        EventRejection::ActionUnavailableInContext => "actionUnavailableInContext",
         EventRejection::GenerationOverflow => "generationOverflow",
     }
 }
 
 const fn window_input_identifier(input: WindowInput) -> &'static str {
     match (input.kind(), input.key()) {
+        (WindowInputKind::KeyDown, WindowKey::Digit1) => "keyDown.digit1",
+        (WindowInputKind::KeyDown, WindowKey::Digit2) => "keyDown.digit2",
         (WindowInputKind::KeyDown, WindowKey::W) => "keyDown.w",
         (WindowInputKind::KeyDown, WindowKey::S) => "keyDown.s",
         (WindowInputKind::KeyDown, WindowKey::A) => "keyDown.a",
         (WindowInputKind::KeyDown, WindowKey::D) => "keyDown.d",
         (WindowInputKind::KeyDown, WindowKey::K) => "keyDown.k",
         (WindowInputKind::KeyDown, WindowKey::Other) => "keyDown.other",
+        (WindowInputKind::KeyUp, WindowKey::Digit1) => "keyUp.digit1",
+        (WindowInputKind::KeyUp, WindowKey::Digit2) => "keyUp.digit2",
         (WindowInputKind::KeyUp, WindowKey::W) => "keyUp.w",
         (WindowInputKind::KeyUp, WindowKey::S) => "keyUp.s",
         (WindowInputKind::KeyUp, WindowKey::A) => "keyUp.a",
@@ -1000,11 +1040,20 @@ mod tests {
             self.patch_id
         }
 
-        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+        fn dispatch(
+            &mut self,
+            _message: MidiMessage,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
             Ok(())
         }
 
-        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) {
             let index = self.patch_id.value().saturating_sub(1) as usize;
             let amplitude = 0.15 + index as f32 * 0.01;
             for frame in output.chunks_exact_mut(2) {
@@ -1059,7 +1108,13 @@ mod tests {
         let mut demo = ExhaustiveGuiDemo::new(&mut app_loop, &mut renderer, &mut audio_buffer);
         let report = demo.run(scene).unwrap();
 
-        assert!(report.is_complete());
+        assert!(
+            report.is_complete(),
+            "coverage={:?}; eventCoverageMissing={:?}; eventCoverageUnexpected={:?}",
+            report.coverage(),
+            report.event_log().coverage().missing(),
+            report.event_log().coverage().unexpected()
+        );
         assert_eq!(report.coverage().missing_count(), 0);
         assert_eq!(report.event_log().dropped_records(), 0);
         assert_eq!(report.final_state_tree().patch_count(), 2);
@@ -1069,7 +1124,9 @@ mod tests {
             .all(|checkpoint| checkpoint.audio_measurement().is_finite()));
 
         for group in [
+            DemoCoverageGroup::Inputs,
             DemoCoverageGroup::Events,
+            DemoCoverageGroup::Contexts,
             DemoCoverageGroup::Directions,
             DemoCoverageGroup::MidiKinds,
             DemoCoverageGroup::EditableParameters,

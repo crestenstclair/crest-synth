@@ -13,13 +13,13 @@ project: contexts: Testing: {
 			name: "String"
 			schemaVersion: "u32"
 			steps: "Vec<WindowInput | MidiProbe | Tick | Checkpoint>"
-			surfaceDescriptor: "typed WindowInput kind/key, AppEvent, Direction, MidiMessageKind, installed capability, capability-parameter, editable-parameter, rejection, emitted-effect, and serialized-leaf descriptors from production owners"
+			surfaceDescriptor: "typed WindowInput kind/key, AppEvent, TopLevelContext, Direction, MidiMessageKind, installed capability, capability-parameter, editable-parameter, rejection, emitted-effect, and serialized-leaf descriptors from production owners"
 			rejectionDescriptor: "typed unique EventRejection cases partitioned into Scene and ReducerTable reachability"
 			expectedCoverage: "the exact normalized identifier set derived from surfaceDescriptor plus installed Patch identities"
 		}
 		invariants: [
-			"the exhaustive scene is derived from typed descriptors owned beside WindowInput, the production enums, the installed CapabilityRegistry, parameter schemas, emitted effects, and serializers plus the installed fixture Patch list; it never defines a second hand-maintained list of GUI inputs or field-name strings",
-			"a contract test discovers the serialized EventLog, EventRecord, StateTree, TextProjection, and ParameterSnapshot leaf paths and requires exact bidirectional set equality with surfaceDescriptor, so an added, removed, renamed, duplicated, or unexercised item fails",
+			"the exhaustive scene is derived from typed descriptors owned beside WindowInput, AppEvent, TopLevelContext, the installed CapabilityRegistry, parameter schemas, emitted effects, and serializers plus the installed fixture Patch list; it never defines a second hand-maintained list of GUI inputs, page identities, or field-name strings",
+			"a contract test discovers the serialized EventLog, EventRecord, StateTree, PatchPageProjection, TextProjection, and ParameterSnapshot leaf paths and requires exact bidirectional set equality with surfaceDescriptor, so an added, removed, renamed, duplicated, or unexercised item fails",
 			"descriptor uniqueness is asserted before converting to sets, and expectedCoverage is frozen before the first event so actual post-state, discovered output, or coverage observations can never define their own expected values",
 			"every expected state value is computed before dispatch from the captured baseline plus the typed owner descriptor's bound and step; it is never copied from the actual post-dispatch StateTree, TextProjection, ParameterSnapshot, or rendered audio",
 			"every GUI adjustment step enters through KeyboardInputTranslator and every semantic input enters through AppLoop.dispatch",
@@ -37,14 +37,14 @@ project: contexts: Testing: {
 			eventLog: "EventLog"
 			initialStateTree: "StateTree"
 			finalStateTree: "StateTree"
-			coverage: "{expected, exercised, missing, unexpected} grouped by normalized GUI inputs, events, directions, MIDI kinds, editable parameters, serialized properties, rejections, projections, and audio effects"
+			coverage: "{expected, exercised, missing, unexpected} grouped by normalized GUI inputs, events, contexts, directions, MIDI kinds, editable parameters, serialized properties, rejections, projections, and audio effects"
 			checkpoints: "Vec<{step, expectedStateValues, actualStateValues, expectedProjectionValues, actualProjectionValues, stateHash, generation, selectedLine, parameterGeneration, audioMeasurement, reverbInputEnergy, delayInputEnergy}>"
 		}
 		invariants: [
 			"complete is true only when expected and exercised identifiers are exactly equal in both directions, missing and unexpected are empty in both report and EventLog coverage, the event journal dropped no records, and all checkpoints agree",
 			"the final tree is exactly the last accepted event state and the last EventRecord hash/generation chain endpoint",
 			"each checkpoint compares exact typed state and projection values rather than checking only property presence, nonempty text, generation identity, or a changed aggregate buffer",
-			"after every reversible probe the selected parameter, all unrelated parameters, effect sends, selection, and projection equal the captured baseline exactly; generation and journal history are the only permitted differences",
+			"after every reversible probe the selected parameter, all unrelated parameters, effect sends, InteractionState, and active projection equal the captured MIXER baseline exactly; generation and journal history are the only permitted differences",
 			"JSON serialization is deterministic and contains no debug-only pointer, timestamp, platform path, or nondeterministic map ordering",
 			"two independent complete runs from freshly constructed identical fixtures produce byte-identical EventLog, StateTree, coverage, checkpoints, and report JSON with no excluded fields",
 		]
@@ -58,11 +58,11 @@ project: contexts: Testing: {
 			schemaVersion: "u32"
 			minimumParameterDwell: "Duration"
 			steps: "Vec<{input: AppEvent | FixtureTick | Checkpoint | Finish, expectedTransition, editableParameterId?, requireAudibleObservation}>"
-			expectedEditableParameters: "ordered unique identifiers derived from ChannelParameters and GlobalParameters descriptors plus installed PatchIds"
+			expectedEditableParameters: "ordered unique identifiers derived from the canonical per-Patch editable resolver and GlobalParameters descriptor plus installed PatchIds"
 		}
 		invariants: [
 			"construction begins only after AutomaticMidiTest installs the real Corridors of Time fixture Patches and freezes the expected editable-parameter set before any live action is dispatched",
-			"the plan derives every Patch parameter instance and global parameter from production-owned typed descriptors; it contains no duplicate hand-maintained list of field-name strings",
+			"the plan derives every mixer, envelope, descriptor-classified Scalar engine, and global parameter instance from the production Patch resolver and typed descriptors; it contains no duplicate hand-maintained field list or engine branch",
 			"every expected editable parameter has at least one planned accepted value change, one checkpoint, a minimum dwell of 500 ms, and an audible observation requirement",
 			"navigation and adjustment steps contain AppEvents and expected transitions only; the scene contains no mutable AppState, TextProjection, ParameterSnapshot, SoundFont engine, mixer, audio buffer, UI widget, or device handle",
 			"at least one planned boundary adjustment is rejected as ParameterAtBoundary and is followed by a valid accepted adjustment proving the live scene remains active",
@@ -106,13 +106,13 @@ project: contexts: Testing: {
 			eventLog: "EventLog"
 			stateTree: "StateTree"
 			coverage: "{expectedEditableParameters, exercisedEditableParameters, missingEditableParameters, unexpectedEditableParameters}"
-			runtimeAudio: "{parsedSoundfontBanks, preparedInstruments, activeGraphRevision, callbackDestructions}"
+			runtimeAudio: "{parsedSoundfontBanks, preparedInstruments, soundfontPatches, braidsPatches, alternatingCapabilities, activeGraphRevision, callbackDestructions}"
 			summary: "String"
 		}
 		invariants: [
 			"each checkpoint captures its expected transition before dispatch and then copies the actual outcome, generation, state hash, projected value, parameter generation, and emitted effects from the production EventRecord and canonical projections",
 			"each accepted parameter checkpoint requires an AudioObservationSnapshot whose sequence advanced after dispatch, whose parameterGeneration equals the accepted generation, whose output is finite, and whose parameter-specific audible predicate passed while fixture audio was nonzero",
-			"complete is true only when every expected editable parameter changed, missing and unexpected are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, all semantic all-notes-off events were accepted, a later audio observation reports zero active notes, and runtimeAudio reports one parsed bank, one prepared instrument per Patch, the StateTree graph revision, and zero callback destruction",
+			"complete is true only when every expected editable parameter changed, missing and unexpected are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, all semantic all-notes-off events were accepted, a later audio observation reports zero active notes, and runtimeAudio reports one parsed bank, one prepared instrument per Patch, exact SoundFont/Braids Patch counts and alternation, the StateTree graph revision, and zero callback destruction",
 			"eventLog and stateTree are the existing canonical Control values, not live-demo copies; stateTree.generation equals the final checkpoint and EventLog chain endpoint",
 			"the complete EventLog remains retained for deterministic report verification while interactive terminal output uses one compact LiveEventLogSummary containing lossless counts and canonical first/last chain endpoints",
 			"summary is human-readable control-side text derived from the structured report after completion and is never constructed or printed in the audio callback",
@@ -198,8 +198,9 @@ project: contexts: Testing: {
 			tick: {input: {elapsed: "Duration"}, output: {result: "Result<(), TestInputError>"}}
 		}
 		meta: rules: [
-			"initialize prepares the source, translates each SoundFontInstrument into the stable soundfont.bank, soundfont.program, soundfont.percussion, and soundfont.file generic assignments declared by the provider descriptor, asks InstrumentCapabilityProvider to create a schema-valid InstrumentConfig, assigns stable PatchIds and default ChannelParameters, and dispatches one InstallPatches AppEvent without configuring or starting an engine",
-			"initialization rejects a missing provider, registry/provider descriptor mismatch, invalid config, or non-SoundFont capability before installation; it never substitutes a descriptor, config, preset, asset, preparer, prepared instrument, or engine",
+			"initialize prepares the source and asks one injected capability-neutral config factory to create a schema-valid InstrumentConfig for each discovered part, assigns stable PatchIds plus default VoiceEnvelope and ChannelParameters, and dispatches one InstallPatches AppEvent without configuring or starting an engine",
+			"production composition maps zero-based even parts to their exact HiDef SoundFont config and odd parts to the default Braids config; this alternation exists only in the fixture adapter and the resulting Patch/rack path remains capability-polymorphic",
+			"initialization rejects a missing provider, registry/provider mismatch, invalid config, or factory failure before installation; it never substitutes a descriptor, config, preset, asset, preparer, prepared instrument, or engine",
 			"start is accepted exactly once after StandaloneApplication has successfully built the complete initial PreparedGraph; failed graph preparation leaves the source stopped",
 			"tick polls into reusable bounded storage and dispatches each item as AppEvent::Midi through AppLoop",
 			"no transport state or playback controls are added to AppState",
@@ -223,6 +224,9 @@ project: contexts: Testing: {
 			"applicationService.Testing.AutomaticMidiTest",
 			"valueObject.Control.EventLog",
 			"valueObject.Control.StateTree",
+			"valueObject.Control.TopLevelContext",
+			"valueObject.Control.InteractionState",
+			"valueObject.Control.PatchPageProjection",
 			"valueObject.Kernel.MidiMessage",
 			"port.RealTime.AudioBoundary",
 			"applicationService.RealTime.AudioRenderer",
@@ -232,16 +236,19 @@ project: contexts: Testing: {
 		}
 		meta: rules: [
 			"begin after AutomaticMidiTest installs the real fixture Patches so the state tree contains the immutable installed capability registry and every current Patch identity, generic instrument config, asset reference, and mixer parameter set",
-			"prove the registry contains exactly instrument.soundfont.hidef and every installed Patch config matches that descriptor; unknown, duplicate, missing, undeclared, wrong-kind, and out-of-range config mutations must fail without fallback or partial installation",
-			"exercise InstallPatches, Navigate, Adjust, and Midi; Navigate and Adjust each exercise Up, Down, Left, and Right; for every installed Patch, MIDI probes cover note-on, note-off, control-change, program-change, channel-pressure, pitch-bend, and PatchMidi all-notes-off semantics with exact channel/data bytes",
+			"prove the registry contains instrument.soundfont.hidef and instrument.braids and the fixture alternates them in stable part order; every installed config matches its descriptor and unknown, duplicate, missing, undeclared, wrong-kind, non-finite, and out-of-range mutations fail without fallback or partial installation",
+			"exercise SelectContext, InstallPatches, Navigate, Adjust, and Midi; SelectContext exercises PATCH and MIXER, Navigate and Adjust each exercise Up, Down, Left, and Right, each Patch's MIDI probes cover exactly the kinds declared by its active descriptor with exact channel/data bytes, and the mixed scene covers the complete canonical MIDI union",
 			"exercise every valid normalized WindowInput from its production-owned descriptor through KeyboardInputTranslator and prove each emits the exact expected AppEvent or no event",
-			"for every installed Patch select each typed ChannelParameters field and perform reversible fine and coarse edits through GUI inputs; at every step assert the exact expected bounded value, exact selected line/text value, exact ParameterSnapshot value, and exact equality of every unrelated Patch/global value",
+			"drive Digit2 through KeyboardInputTranslator and AppLoop, prove the accepted InteractionState context and stable PatchId focus, then compare PatchPageProjection and rendered PATCH text exactly against the focused Patch, VoiceEnvelope descriptor, active CapabilityDescriptor, InstrumentConfig, and full registry choices for both SoundFont and Braids without capability-specific expected field lists",
+			"while PATCH is read-only, drive Navigate and Adjust and require ActionUnavailableInContext with unchanged generation, state hash, page, parameter values, graph revision, and audio-command count; then drive Digit1 and require the preserved prior MIXER selection and exact diagnostic body",
+			"prove context-only acceptance advances coherent serialization, TextProjection, StateTree, and ParameterSnapshot generation while retaining byte-identical session values, parameter values, active GraphRevision, prepared ownership, routing, and rendered audio",
+			"for every installed Patch select every target returned by the canonical editable resolver—mixer, common ADSR, and active descriptor Scalar fields—and perform reversible declared edits through GUI inputs; assert exact state/text/snapshot values, measured target behavior, and exact equality of every unrelated Patch/global value",
 			"before global wet-parameter probes, make at least two Patches sound and establish nonzero reverbSend and delaySend through the same GUI/reducer path; assert nonzero reverb and delay input energy at GlobalEffectsProcessor, then compare each typed GlobalParameters field from identical reset effect state",
 			"the faithful effects observer may inspect and forward the supplied reverbInput and delayInput but may never synthesize wet excitation from dry output, bypass Patch sends, add report-only coverage, or mark an effect exercised merely because time-varying tails changed",
 			"select each typed GlobalParameters field and perform reversible fine and coarse edits; prove the exact selected value and complete expected mix response while Patch identity and unrelated values remain stable, then restore all global values and both sends to the captured baseline",
 			"cover Patch-to-Patch, Patch-to-GLOBAL, GLOBAL-to-Patch, parameter wrap, section wrap, and selected-line projection movement in both directions",
-			"explicitly prove the differing parameter-count clamp: GLOBAL parameter indexes 4, 5, and 6 each move to Patch parameter index 3, while Patch index 3 moves to GLOBAL index 3; do not infer this from generic section-wrap coverage",
-			"for each of gainDb, pan, reverbSend, delaySend, masterGainDb, reverbRoomSize, reverbDamping, reverbReturn, delayMilliseconds, delayFeedback, and delayReturn, drive the selected value to its typed lower and upper boundary, record ParameterAtBoundary as a nonfatal unchanged transition at each boundary, then prove a valid subsequent edit succeeds",
+			"explicitly prove section changes clamp selection against the destination Patch resolver count or seven-value GLOBAL count, including transitions between differently shaped SoundFont and Braids surfaces",
+			"for every numeric or choice target returned by the Patch resolver and every global value, drive the selected value to both declared boundaries, record ParameterAtBoundary as a nonfatal unchanged transition, then prove a valid subsequent edit succeeds",
 			"derive the expected surface from the production-owned installed capability/parameter descriptors, other typed descriptors, and discovered serialization leaves; require exact expected-versus-observed set equality and report both missing and unexpected identifiers",
 			"observe and compare every current StateTree value, TextProjection line/value/selection marker, and ParameterSnapshot value against the same accepted AppState generation; property existence or a nonempty body alone is insufficient",
 			"verify all publicly reachable EventRejection outcomes in the scene and cover internal-only rejection variants with a table-driven reducer test; no rejection terminates later scene steps",
@@ -252,18 +259,20 @@ project: contexts: Testing: {
 			"exercise the separate AudioCommand::AllNotesOff renderer command in addition to PatchMidi(MidiMessageKind::AllNotesOff), and require both unique coverage identifiers",
 			"each Tick calls AutomaticMidiTest.tick with the declared deterministic elapsed duration, records every resulting fixture MIDI event through AppLoop, and asserts the exact EventRecord and audio consequence; an ignored elapsed value or render-only tick fails",
 			"audio comparison uses discriminating stems, nonzero effect inputs, paired renders from identical engine/effect state, and measured finite output; construction, success strings, dry-derived fake excitation, unrelated tail evolution, or a changed master buffer alone are not evidence",
-			"restore every reversible parameter, send, selection, text projection, and parameter projection to its exact captured baseline so the final StateTree is deterministic while generation and EventLog still prove every transition",
+			"restore every reversible parameter, send, InteractionState, active-context text projection, Patch-page presence, and parameter projection to its exact captured MIXER baseline so the final StateTree is deterministic while generation and EventLog still prove every transition",
+			"render real SoundFont and Braids Patches simultaneously, require distinct nonzero finite isolated stems, and measure that Model, Timbre, Color, and all four ADSR controls affect only their declared target through the production reducer and renderer",
 			"run the complete scene twice from fresh identical services and require byte-identical EventLog, StateTree, coverage, checkpoints, and report JSON; no timestamp, map-order, pointer, or first-run effect tail may be excluded",
 		]
 		validations: [
-			{kind: "integration", command: ["cargo", "test", "--test", "exhaustive_demo_scene", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE exhaustive_demo_scene passed"}], description: "the generated scene covers every typed current input/event/property/parameter, compares exact state/projection values, records accepted and rejected transitions, and restores its baseline"},
-			{kind: "integration", command: ["cargo", "test", "--test", "schema_surface", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE schema_surface passed"}], description: "typed production descriptors and discovered serialized leaves are exactly equal in both directions"},
-			{kind: "test", command: ["cargo", "test", "faithful_effects_nonzero_sends_and_baseline_restoration"], description: "wet controls are measured with nonzero routed sends, identical effect state, no dry bypass, and exact baseline restoration"},
+			{id: "validation.service.exhaustive_gui_demo", kind: "integration", command: ["cargo", "test", "--test", "exhaustive_demo_scene", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE exhaustive_demo_scene passed"}], description: "the generated scene covers every typed current input/event/property/parameter, compares exact state/projection values, records accepted and rejected transitions, and restores its baseline"},
+			{id: "validation.service.exhaustive_gui_schema_surface", kind: "integration", command: ["cargo", "test", "--test", "schema_surface", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE schema_surface passed"}], description: "typed production descriptors and discovered serialized leaves are exactly equal in both directions"},
+			{id: "validation.service.exhaustive_gui_effects", kind: "test", command: ["cargo", "test", "faithful_effects_nonzero_sends_and_baseline_restoration"], description: "wet controls are measured with nonzero routed sends, identical effect state, no dry bypass, and exact baseline restoration"},
 		]
 		contributesTo: [
 			{capability: "capability.observable_demo_scene", contribution: "runs exhaustive stateful GUI and event coverage through production seams"},
 			{capability: "capability.instrument_capability_model", contribution: "proves registry/config serialization, generic projection, and explicit no-fallback rejection through production seams"},
 			{capability: "capability.one_way_parameter_control", contribution: "proves all current editable values use the one reducer and projection path"},
+			{capability: "capability.schema_driven_patch_page", contribution: "proves both direct page events, exact generic Patch projection, stable focus, typed read-only rejection, and audio-neutral switching"},
 			{capability: "capability.global_mix", contribution: "measures every current Patch and global mix parameter case"},
 			{capability: "capability.realtime_execution", contribution: "observes parameter and command effects through the real-time boundary"},
 		]
@@ -281,6 +290,8 @@ project: contexts: Testing: {
 			"valueObject.Control.EventLog",
 			"valueObject.Control.StateTree",
 			"valueObject.Mixer.ChannelParameters",
+			"valueObject.Synth.VoiceEnvelope",
+			"valueObject.Synth.CapabilityDescriptor",
 			"valueObject.Mixer.GlobalParameters",
 			"port.RealTime.AudioObservation",
 			"valueObject.RealTime.AudioObservationSnapshot",
@@ -295,15 +306,15 @@ project: contexts: Testing: {
 			"advance is called by the real window tick with monotonic elapsed time and never sleeps or blocks the UI thread; it advances AutomaticMidiTest through its existing tick operation and dispatches at most one due autonomous AppEvent through AppLoop.dispatchFrom with EventSource::DemoScene",
 			"before each dispatch compute the exact expected generation, selected parameter value, StateTree value, TextProjection value, ParameterSnapshot value, outcome, and emitted effects from the captured prior canonical state and the owning typed descriptor",
 			"after an accepted edit wait until the projection has been available across a rendered frame, at least 500 ms has elapsed, and AudioObservation has advanced to the exact accepted ParameterSnapshot generation before returning one LiveDemoCheckpoint to the caller",
-			"audible predicates use actual finite observation fields from the physical render path: gain and master edits observe output level, pan observes left/right balance, sends observe their exact wet inputs, and reverb/delay controls observe wet output; fixture timing is recorded so unrelated musical evolution cannot be presented as the parameter consequence",
+			"audible predicates use actual finite observation fields from the physical render path: mixer/global edits observe their owned signal stages, ADSR edits observe envelope timing/level, and Braids Model/Timbre/Color observe waveform or energy; fixture timing is recorded so unrelated musical evolution cannot be presented as the parameter consequence",
 			"a rejected event is read from the existing EventLog, leaves generation and all projections unchanged, emits no effects, does not close the window, and does not skip the following valid scene step",
 			"expected and exercised editable-parameter identifiers are compared in both directions; an added, removed, duplicated, unmodified, unprojected, inaudible, or unexpected parameter makes the report incomplete",
 			"completion dispatches Patch-targeted MidiMessageKind::AllNotesOff AppEvents through AppLoop for every installed Patch, waits for a newer AudioObservationSnapshot with zero active notes, captures the final EventLog and StateTree, exposes one completed LiveDemoReport, and then performs no more actions",
-			"completion never requests window close; the final TextProjection continues to come from AppLoop.currentText until the user closes the real window",
+			"the runner owns no window lifecycle and never requests window close itself; after completedReport exposes its inert final report, the owning StandaloneApplication consumes that report and requests close on the same window tick",
 			"the runner never calls AppState.apply directly, edits the immutable capability registry or Patch instrument config, edits a projection or report to manufacture agreement, publishes ParameterSnapshot, AudioCommand, or PreparedGraph directly, invokes PreparedInstrument, PreparedEngineRack, or MixEngine directly, writes an audio buffer, prints output, or logs from the callback",
 		]
 		validations: [
-			{kind: "integration", command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE live_demo_scene passed"}], description: "a deterministic-clock harness drives the live runner through production events, projections, rendered observations, rejection recovery, exact current-surface coverage, all-notes-off, and inert completion without opening CI devices"},
+			{id: "validation.service.live_demo_runner", kind: "integration", command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE live_demo_scene passed"}], description: "a deterministic-clock harness drives the live runner through production events, projections, rendered observations, rejection recovery, exact current-surface coverage, all-notes-off, and inert report completion without giving the runner window ownership"},
 		]
 		contributesTo: [
 			{capability: "capability.live_observable_demo", contribution: "orchestrates the paced real-window scene and returns its coherent control-side evidence"},
@@ -340,7 +351,7 @@ project: contexts: Testing: {
 			"every mutant emits exactly one schema-valid CREST_MUTATION_OBSERVATION describing actual downstream measurements, then exits with status 1; every matching healthy case emits the same schema and exits 0",
 			"the harness is verification-only and exposes no mutation switch, alternate engine, alternate routing mode, or debug behavior to the interactive crest-synth application",
 		]
-		validations: [{kind: "integration", command: ["cargo", "test", "--test", "behavioral_mutation_harness", "--", "--nocapture"], assertions: [{kind: "exit_code", expected: 0}, {kind: "stdout_contains", pattern: "CREST_ACCEPTANCE behavioral_mutation_harness passed"}], description: "all six isolated seam mutants alter only their named seam and produce measured falsifying observations without report tampering"}]
+		validations: [{id: "validation.service.behavioral_mutation_harness", kind: "integration", command: ["cargo", "test", "--test", "behavioral_mutation_harness", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE behavioral_mutation_harness passed"}], description: "all six isolated seam mutants alter only their named seam and produce measured falsifying observations without report tampering"}]
 		contributesTo: [
 			{capability: "capability.observable_demo_scene", contribution: "makes the exhaustive proof independently falsifiable at six production seams"},
 			{capability: "capability.one_way_parameter_control", contribution: "proves a dropped adjustment, cross-Patch parameter leak, and Patch misroute cannot masquerade as accepted behavior"},
@@ -364,7 +375,7 @@ project: adapters: CorridorsMidiEventSource: {
 			"start at elapsed zero automatically, run once, and stop at end; do not expose transport, seeking, looping, recording, editing, or public sequence types",
 		]
 	}
-	validations: [{kind: "test", command: ["cargo", "test", "corridors_midi_event_source"], description: "the real fixture discovers multiple instruments, keeps note pairs together, assigns a unique channel to every Patch, rejects channel exhaustion, and emits due bounded events"}]
+	validations: [{id: "validation.adapter.corridors_midi_event_source", kind: "test", command: ["cargo", "test", "corridors_midi_event_source"], description: "the real fixture discovers multiple instruments, keeps note pairs together, assigns a unique channel to every Patch, rejects channel exhaustion, and emits due bounded events"}]
 	contributesTo: [
 		{capability: "capability.automatic_test_midi", contribution: "implements the fixed automatic Corridors of Time test input"},
 		{capability: "capability.soundfont_audio", contribution: "provides the bank/program/percussion identity used to configure every Patch"},

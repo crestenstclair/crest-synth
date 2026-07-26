@@ -16,7 +16,8 @@ pub mod graph_handoff_status;
 pub use graph_handoff_status::GraphHandoffStatus;
 pub mod parameter_snapshot;
 pub use parameter_snapshot::{
-    ParameterSnapshot, ParameterSnapshotError, RtPatchParameters, MAX_PATCHES,
+    ParameterSnapshot, ParameterSnapshotError, RtInstrumentParameters, RtPatchParameters,
+    MAX_PATCHES,
 };
 pub mod patch_audio_block;
 pub use patch_audio_block::{PatchAudioBlock, PatchAudioBlockError, PatchStereoStem};

@@ -1,3 +1,4 @@
+use crate::control::top_level_context::TopLevelContext;
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
 use crate::synth::patch::Patch;
@@ -35,6 +36,9 @@ pub enum AppEventPayloadShape {
 /// variants retain the complete names and types of their payload fields.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AppEventSurfaceDescriptor {
+    SelectContext {
+        context: TopLevelContext,
+    },
     Navigate {
         direction: Direction,
     },
@@ -50,7 +54,13 @@ pub enum AppEventSurfaceDescriptor {
     },
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 10] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 12] = [
+    AppEventSurfaceDescriptor::SelectContext {
+        context: TopLevelContext::Patch,
+    },
+    AppEventSurfaceDescriptor::SelectContext {
+        context: TopLevelContext::Mixer,
+    },
     AppEventSurfaceDescriptor::Navigate {
         direction: Direction::Up,
     },
@@ -90,6 +100,8 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 10] = [
 /// event reaches the control layer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
+    /// Select one of the two reducer-owned top-level contexts directly.
+    SelectContext(TopLevelContext),
     /// Move the current selection without changing a synth parameter.
     Navigate(Direction),
     /// Adjust exactly the currently selected bounded parameter.
@@ -118,6 +130,9 @@ impl AppEvent {
     /// compile error until its surface descriptor is updated as well.
     pub fn surface_entry(&self) -> AppEventSurfaceDescriptor {
         match self {
+            Self::SelectContext(context) => {
+                AppEventSurfaceDescriptor::SelectContext { context: *context }
+            }
             Self::Navigate(direction) => AppEventSurfaceDescriptor::Navigate {
                 direction: *direction,
             },
@@ -138,6 +153,7 @@ impl AppEvent {
 #[cfg(test)]
 mod tests {
     use super::{AppEvent, AppEventPayloadShape, AppEventSurfaceDescriptor, Direction};
+    use crate::control::TopLevelContext;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
@@ -179,12 +195,17 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 10);
+        assert_eq!(descriptor.len(), 12);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
                 "duplicate descriptor entry: {entry:?}"
             );
+        }
+
+        for context in TopLevelContext::surface_descriptor() {
+            assert!(descriptor
+                .contains(&AppEventSurfaceDescriptor::SelectContext { context: *context }));
         }
 
         for direction in [
@@ -205,6 +226,17 @@ mod tests {
             patch_id: AppEventPayloadShape::PatchId,
             message: AppEventPayloadShape::MidiMessage,
         }));
+    }
+
+    #[test]
+    fn context_event_preserves_its_semantic_payload() {
+        for context in TopLevelContext::surface_descriptor() {
+            let event = AppEvent::SelectContext(*context);
+            assert_eq!(
+                event.surface_entry(),
+                AppEventSurfaceDescriptor::SelectContext { context: *context }
+            );
+        }
     }
     #[test]
     fn install_event_preserves_patch_order_payload() {

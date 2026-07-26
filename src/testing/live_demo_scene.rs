@@ -1,27 +1,33 @@
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::EventRejection;
 use crate::control::event_record::{EmittedEvent, EventInput, EventOutcome};
+use crate::control::state_projector::format_instrument_value;
 use crate::control::state_tree::StateTree;
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::channel_parameters::{ChannelParameter, ChannelParameters};
+use crate::mixer::channel_parameters::ChannelParameter;
 use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
 use crate::real_time::GraphRevision;
+use crate::synth::instrument_capability::{
+    CapabilityDescriptor, CapabilityRegistry, InstrumentConfig, ParameterAdjustment, ParameterKind,
+};
+use crate::synth::patch::{resolve_patch_editable_targets, PatchEditableTarget};
+use crate::synth::voice_envelope::VoiceEnvelope;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// One canonical editable value in the installed live-demo surface.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(tag = "scope", rename_all = "camelCase")]
 pub enum LiveEditableParameter {
     Patch {
         #[serde(rename = "patchId")]
         patch_id: PatchId,
-        parameter: ChannelParameter,
+        target: PatchEditableTarget,
     },
     Global {
         parameter: GlobalParameter,
@@ -32,8 +38,12 @@ impl LiveEditableParameter {
     pub const fn patch(patch_id: PatchId, parameter: ChannelParameter) -> Self {
         Self::Patch {
             patch_id,
-            parameter,
+            target: PatchEditableTarget::Mixer(parameter),
         }
+    }
+
+    pub fn patch_target(patch_id: PatchId, target: PatchEditableTarget) -> Self {
+        Self::Patch { patch_id, target }
     }
 
     pub const fn global(parameter: GlobalParameter) -> Self {
@@ -41,44 +51,44 @@ impl LiveEditableParameter {
     }
 
     /// Returns a stable descriptor-derived coverage identifier.
-    pub fn identifier(self) -> String {
+    pub fn identifier(&self) -> String {
         match self {
-            Self::Patch {
-                patch_id,
-                parameter,
-            } => format!("patch.{}.{parameter}", patch_id.value()),
+            Self::Patch { patch_id, target } => {
+                format!("patch.{}.{}", patch_id.value(), target.name())
+            }
             Self::Global { parameter } => format!("global.{parameter}"),
         }
     }
 
-    pub const fn audio_predicate(self) -> LiveAudioPredicate {
+    pub const fn audio_predicate(&self) -> LiveAudioPredicate {
         match self {
             Self::Patch {
-                parameter: ChannelParameter::GainDb,
+                target: PatchEditableTarget::Mixer(ChannelParameter::GainDb),
                 ..
             }
             | Self::Global {
                 parameter: GlobalParameter::MasterGainDb,
             } => LiveAudioPredicate::OutputLevel,
             Self::Patch {
-                parameter: ChannelParameter::Pan,
+                target: PatchEditableTarget::Mixer(ChannelParameter::Pan),
                 ..
             } => LiveAudioPredicate::StereoBalance,
             Self::Patch {
-                parameter: ChannelParameter::ReverbSend,
+                target: PatchEditableTarget::Mixer(ChannelParameter::ReverbSend),
                 ..
             } => LiveAudioPredicate::ReverbInput,
             Self::Patch {
-                parameter: ChannelParameter::DelaySend,
+                target: PatchEditableTarget::Mixer(ChannelParameter::DelaySend),
                 ..
             } => LiveAudioPredicate::DelayInput,
+            Self::Patch { .. } => LiveAudioPredicate::OutputLevel,
             Self::Global { .. } => LiveAudioPredicate::WetOutput,
         }
     }
 
-    pub const fn field_name(self) -> &'static str {
+    pub fn field_name(&self) -> &str {
         match self {
-            Self::Patch { parameter, .. } => parameter.name(),
+            Self::Patch { target, .. } => target.name(),
             Self::Global { parameter } => parameter.name(),
         }
     }
@@ -166,11 +176,8 @@ impl LiveExpectedTransition {
             generation_before
         };
 
-        let selected_text = step
-            .editable_parameter
-            .zip(step.value_after)
-            .map(|(parameter, value)| format!("> {}={value}", parameter.field_name()));
-        let selected_line = step.editable_parameter.map(|_| selected_line);
+        let selected_text = step.selected_text_after.clone();
+        let selected_line = step.editable_parameter.as_ref().map(|_| selected_line);
         let mut emitted_effects = Vec::new();
         if step.expected_outcome == EventOutcome::Accepted {
             emitted_effects.push(EmittedEvent::StateAccepted {
@@ -193,7 +200,7 @@ impl LiveExpectedTransition {
             generation_before,
             generation_after,
             parameter_generation: generation_after,
-            editable_parameter: step.editable_parameter,
+            editable_parameter: step.editable_parameter.clone(),
             value_before: step.value_before,
             value_after: step.value_after,
             selected_line,
@@ -223,8 +230,8 @@ impl LiveExpectedTransition {
         self.parameter_generation
     }
 
-    pub const fn editable_parameter(&self) -> Option<LiveEditableParameter> {
-        self.editable_parameter
+    pub const fn editable_parameter(&self) -> Option<&LiveEditableParameter> {
+        self.editable_parameter.as_ref()
     }
 
     pub const fn value_before(&self) -> Option<f32> {
@@ -261,6 +268,7 @@ pub struct LiveDemoStep {
     editable_parameter: Option<LiveEditableParameter>,
     value_before: Option<f32>,
     value_after: Option<f32>,
+    selected_text_after: Option<String>,
     checkpoint: bool,
     cleanup: bool,
 }
@@ -274,6 +282,7 @@ impl LiveDemoStep {
             editable_parameter: None,
             value_before: None,
             value_after: None,
+            selected_text_after: None,
             checkpoint: false,
             cleanup: false,
         }
@@ -284,6 +293,7 @@ impl LiveDemoStep {
         parameter: LiveEditableParameter,
         value_before: f32,
         value_after: f32,
+        selected_text_after: String,
     ) -> Self {
         Self {
             event,
@@ -292,6 +302,7 @@ impl LiveDemoStep {
             editable_parameter: Some(parameter),
             value_before: Some(value_before),
             value_after: Some(value_after),
+            selected_text_after: Some(selected_text_after),
             checkpoint: true,
             cleanup: false,
         }
@@ -303,6 +314,7 @@ impl LiveDemoStep {
         value: f32,
         rejection: EventRejection,
     ) -> Self {
+        let selected_text_after = Some(format!("> {}={value}", parameter.field_name()));
         Self {
             event,
             expected_outcome: EventOutcome::Rejected,
@@ -310,6 +322,7 @@ impl LiveDemoStep {
             editable_parameter: Some(parameter),
             value_before: Some(value),
             value_after: Some(value),
+            selected_text_after,
             checkpoint: false,
             cleanup: false,
         }
@@ -333,8 +346,8 @@ impl LiveDemoStep {
         self.expected_rejection
     }
 
-    pub const fn editable_parameter(&self) -> Option<LiveEditableParameter> {
-        self.editable_parameter
+    pub const fn editable_parameter(&self) -> Option<&LiveEditableParameter> {
+        self.editable_parameter.as_ref()
     }
 
     pub const fn value_before(&self) -> Option<f32> {
@@ -374,18 +387,15 @@ impl LiveDemoScene {
         if state.patches.is_empty() {
             return Err(LiveDemoSceneError::NoInstalledPatches);
         }
-        if state.selection.section != "Patch"
-            || state.selection.patch_index != 0
-            || state.selection.parameter_index != 0
+        if state.interaction.mixer_selection.section != "Patch"
+            || state.interaction.mixer_selection.patch_index != 0
+            || state.interaction.mixer_selection.parameter_index != 0
         {
             return Err(LiveDemoSceneError::UnexpectedInitialSelection);
         }
 
         let mut patches = Vec::with_capacity(state.patches.len());
-        let mut expected = Vec::with_capacity(
-            state.patches.len() * ChannelParameters::surface_descriptor().len()
-                + GlobalParameters::surface_descriptor().len(),
-        );
+        let mut expected = Vec::new();
         for patch in &state.patches {
             let patch_id =
                 PatchId::new(patch.id).map_err(|_| LiveDemoSceneError::InvalidPatchId)?;
@@ -398,12 +408,16 @@ impl LiveDemoScene {
             let channel = MidiChannel::new(patch.channel)
                 .map_err(|_| LiveDemoSceneError::InvalidMidiChannel(patch.channel))?;
             patches.push(LivePatch { patch_id, channel });
+            let descriptor = state
+                .capabilities
+                .descriptor(patch.instrument.capability_id())
+                .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+            let targets = resolve_patch_editable_targets(descriptor, &patch.instrument)
+                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
             expected.extend(
-                ChannelParameters::surface_descriptor()
-                    .iter()
-                    .map(|descriptor| {
-                        LiveEditableParameter::patch(patch_id, descriptor.parameter())
-                    }),
+                targets
+                    .into_iter()
+                    .map(|target| LiveEditableParameter::patch_target(patch_id, target)),
             );
         }
         expected.extend(
@@ -423,7 +437,7 @@ impl LiveDemoScene {
         }
 
         Ok(Self {
-            name: "phase-1-live-observable-demo".to_owned(),
+            name: "phase-2-mixed-engine-live-observable-demo".to_owned(),
             minimum_parameter_dwell: Self::MINIMUM_PARAMETER_DWELL,
             steps,
             expected_editable_parameters: expected,
@@ -474,81 +488,86 @@ fn build_patch_steps(
     steps: &mut Vec<LiveDemoStep>,
 ) -> Result<(), LiveDemoSceneError> {
     for (patch_index, (patch, identity)) in state.patches.iter().zip(patches).enumerate() {
-        for (parameter_index, descriptor) in
-            ChannelParameters::surface_descriptor().iter().enumerate()
-        {
-            let editable = LiveEditableParameter::patch(identity.patch_id, descriptor.parameter());
-            let mut value = patch.parameters.value(descriptor.parameter());
+        let descriptor = state
+            .capabilities
+            .descriptor(patch.instrument.capability_id())
+            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let targets = resolve_patch_editable_targets(descriptor, &patch.instrument)
+            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let target_count = targets.len();
+        for (parameter_index, target) in targets.into_iter().enumerate() {
+            let editable = LiveEditableParameter::patch_target(identity.patch_id, target.clone());
+            let metadata = patch_target_metadata(patch, descriptor, &target)?;
 
             if patch_index == 0 && parameter_index == 0 {
-                while value < descriptor.maximum() {
+                if !matches!(target, PatchEditableTarget::Mixer(ChannelParameter::GainDb)) {
+                    return Err(LiveDemoSceneError::InvalidInstrumentConfig);
+                }
+                let mut value = metadata.initial;
+                while value < metadata.maximum {
                     let next = adjusted_value(
                         value,
-                        descriptor.minimum(),
-                        descriptor.maximum(),
+                        metadata.minimum,
+                        metadata.maximum,
                         Direction::Up,
-                        descriptor.fine_step(),
-                        descriptor.coarse_step(),
+                        metadata.fine_step,
+                        metadata.coarse_step,
                     )?;
                     steps.push(LiveDemoStep::adjustment(
                         AppEvent::Adjust(Direction::Up),
-                        editable,
+                        editable.clone(),
                         value,
                         next,
+                        scalar_selected_text(target.name(), next),
                     ));
                     value = next;
                 }
                 steps.push(LiveDemoStep::rejected_adjustment(
                     AppEvent::Adjust(Direction::Up),
-                    editable,
+                    editable.clone(),
                     value,
                     EventRejection::ParameterAtBoundary,
                 ));
                 let next = adjusted_value(
                     value,
-                    descriptor.minimum(),
-                    descriptor.maximum(),
+                    metadata.minimum,
+                    metadata.maximum,
                     Direction::Down,
-                    descriptor.fine_step(),
-                    descriptor.coarse_step(),
+                    metadata.fine_step,
+                    metadata.coarse_step,
                 )?;
                 steps.push(LiveDemoStep::adjustment(
                     AppEvent::Adjust(Direction::Down),
                     editable,
                     value,
                     next,
+                    scalar_selected_text(target.name(), next),
                 ));
             } else {
-                let direction = if value < descriptor.maximum() {
+                let direction = if metadata.initial < metadata.maximum {
                     Direction::Right
                 } else {
                     Direction::Left
                 };
-                let next = adjusted_value(
-                    value,
-                    descriptor.minimum(),
-                    descriptor.maximum(),
-                    direction,
-                    descriptor.fine_step(),
-                    descriptor.coarse_step(),
-                )?;
+                let planned = plan_patch_adjustment(patch, descriptor, &target, direction)?;
                 steps.push(LiveDemoStep::adjustment(
                     AppEvent::Adjust(direction),
                     editable,
-                    value,
-                    next,
+                    planned.before,
+                    planned.after,
+                    planned.selected_text,
                 ));
             }
 
-            if parameter_index + 1 < ChannelParameters::surface_descriptor().len() {
+            if parameter_index + 1 < target_count {
                 steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
                     Direction::Down,
                 )));
             }
         }
 
-        // Wrap delaySend back to gainDb before moving to the next section, so
-        // Patch-to-Patch and Patch-to-GLOBAL transitions preserve index zero.
+        // Wrap the schema-derived surface back to its first target before moving
+        // to the next Patch/GLOBAL section, preserving index zero across schemas.
         steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
             Direction::Down,
         )));
@@ -584,6 +603,7 @@ fn build_global_steps(
             editable,
             value,
             next,
+            scalar_selected_text(descriptor.name(), next),
         ));
         if index + 1 < GlobalParameters::surface_descriptor().len() {
             steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
@@ -592,6 +612,161 @@ fn build_global_steps(
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PatchTargetMetadata {
+    initial: f32,
+    minimum: f32,
+    maximum: f32,
+    fine_step: f32,
+    coarse_step: f32,
+}
+
+struct PlannedPatchAdjustment {
+    before: f32,
+    after: f32,
+    selected_text: String,
+}
+
+fn patch_target_metadata(
+    patch: &DecodedPatch,
+    descriptor: &CapabilityDescriptor,
+    target: &PatchEditableTarget,
+) -> Result<PatchTargetMetadata, LiveDemoSceneError> {
+    let (initial, minimum, maximum, fine_step, coarse_step) = match target {
+        PatchEditableTarget::Mixer(parameter) => {
+            let metadata = parameter.descriptor();
+            (
+                patch.parameters.value(*parameter),
+                metadata.minimum(),
+                metadata.maximum(),
+                metadata.fine_step(),
+                metadata.coarse_step(),
+            )
+        }
+        PatchEditableTarget::Envelope(parameter) => {
+            let metadata = parameter.descriptor();
+            (
+                patch.envelope.value(*parameter),
+                metadata.minimum(),
+                metadata.maximum(),
+                metadata.fine_step(),
+                metadata.coarse_step(),
+            )
+        }
+        PatchEditableTarget::Instrument(parameter_id) => {
+            let spec = descriptor
+                .parameter(parameter_id)
+                .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+            let value = patch
+                .instrument
+                .value(parameter_id)
+                .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+            let initial = spec
+                .scalar_value(value)
+                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+            match spec.kind() {
+                ParameterKind::Continuous | ParameterKind::Stepped => {
+                    let range = spec
+                        .range()
+                        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+                    (
+                        initial,
+                        range.minimum() as f32,
+                        range.maximum() as f32,
+                        spec.fine_step()
+                            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?
+                            as f32,
+                        spec.coarse_step()
+                            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?
+                            as f32,
+                    )
+                }
+                ParameterKind::Choice => (
+                    initial,
+                    0.0,
+                    spec.choices().len().saturating_sub(1) as f32,
+                    1.0,
+                    1.0,
+                ),
+                ParameterKind::Toggle => (initial, 0.0, 1.0, 1.0, 1.0),
+                ParameterKind::Asset => return Err(LiveDemoSceneError::InvalidInstrumentConfig),
+            }
+        }
+    };
+    Ok(PatchTargetMetadata {
+        initial,
+        minimum,
+        maximum,
+        fine_step,
+        coarse_step,
+    })
+}
+
+fn plan_patch_adjustment(
+    patch: &DecodedPatch,
+    descriptor: &CapabilityDescriptor,
+    target: &PatchEditableTarget,
+    direction: Direction,
+) -> Result<PlannedPatchAdjustment, LiveDemoSceneError> {
+    let metadata = patch_target_metadata(patch, descriptor, target)?;
+    match target {
+        PatchEditableTarget::Mixer(_) | PatchEditableTarget::Envelope(_) => {
+            let after = adjusted_value(
+                metadata.initial,
+                metadata.minimum,
+                metadata.maximum,
+                direction,
+                metadata.fine_step,
+                metadata.coarse_step,
+            )?;
+            Ok(PlannedPatchAdjustment {
+                before: metadata.initial,
+                after,
+                selected_text: scalar_selected_text(target.name(), after),
+            })
+        }
+        PatchEditableTarget::Instrument(parameter_id) => {
+            let spec = descriptor
+                .parameter(parameter_id)
+                .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+            let current = patch
+                .instrument
+                .value(parameter_id)
+                .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+            let next = spec
+                .adjusted_scalar_value(current, parameter_adjustment(direction))
+                .map_err(|_| LiveDemoSceneError::InvalidPlannedAdjustment)?;
+            let after = spec
+                .scalar_value(&next)
+                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+            let updated = patch
+                .instrument
+                .with_scalar_value(descriptor, parameter_id, next)
+                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+            let formatted = format_instrument_value(spec, &updated)
+                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+            Ok(PlannedPatchAdjustment {
+                before: metadata.initial,
+                after,
+                selected_text: format!("> {} ({})={formatted}", spec.label(), spec.id()),
+            })
+        }
+    }
+}
+
+const fn parameter_adjustment(direction: Direction) -> ParameterAdjustment {
+    match direction {
+        Direction::Left => ParameterAdjustment::FineDecrease,
+        Direction::Right => ParameterAdjustment::FineIncrease,
+        Direction::Down => ParameterAdjustment::CoarseDecrease,
+        Direction::Up => ParameterAdjustment::CoarseIncrease,
+    }
+}
+
+fn scalar_selected_text(name: &str, value: f32) -> String {
+    format!("> {name}={value}")
 }
 
 fn adjusted_value(
@@ -630,52 +805,51 @@ fn decimal_scale(step: f32) -> f32 {
 
 pub(crate) fn selected_parameter_value(
     tree: &StateTree,
-    parameter: LiveEditableParameter,
+    parameter: &LiveEditableParameter,
 ) -> Result<f32, LiveDemoSceneError> {
     let state = decode_state_tree(tree)?;
     match parameter {
-        LiveEditableParameter::Patch {
-            patch_id,
-            parameter,
-        } => {
-            if state.selection.section != "Patch"
-                || state
-                    .patches
-                    .get(state.selection.patch_index)
-                    .is_none_or(|patch| patch.id != patch_id.value())
-                || ChannelParameters::surface_descriptor()
-                    .get(state.selection.parameter_index)
-                    .is_none_or(|descriptor| descriptor.parameter() != parameter)
+        LiveEditableParameter::Patch { patch_id, target } => {
+            let patch = state
+                .patches
+                .get(state.interaction.mixer_selection.patch_index)
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            let descriptor = state
+                .capabilities
+                .descriptor(patch.instrument.capability_id())
+                .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+            let targets = resolve_patch_editable_targets(descriptor, &patch.instrument)
+                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+            if state.interaction.mixer_selection.section != "Patch"
+                || patch.id != patch_id.value()
+                || targets
+                    .get(state.interaction.mixer_selection.parameter_index)
+                    .is_none_or(|selected| selected != target)
             {
                 return Err(LiveDemoSceneError::SelectedParameterMismatch);
             }
-            Ok(state.patches[state.selection.patch_index]
-                .parameters
-                .value(parameter))
+            Ok(patch_target_metadata(patch, descriptor, target)?.initial)
         }
         LiveEditableParameter::Global { parameter } => {
-            if state.selection.section != "Global"
+            if state.interaction.mixer_selection.section != "Global"
                 || GlobalParameters::surface_descriptor()
-                    .get(state.selection.parameter_index)
-                    .is_none_or(|descriptor| descriptor.parameter() != parameter)
+                    .get(state.interaction.mixer_selection.parameter_index)
+                    .is_none_or(|descriptor| descriptor.parameter() != *parameter)
             {
                 return Err(LiveDemoSceneError::SelectedParameterMismatch);
             }
-            Ok(state.global.value(parameter))
+            Ok(state.global.value(*parameter))
         }
     }
 }
 
 pub(crate) fn projected_parameter_values(
     tree: &StateTree,
-    parameter: LiveEditableParameter,
+    parameter: &LiveEditableParameter,
 ) -> Result<(f32, f32), LiveDemoSceneError> {
     let state = decode_state_tree(tree)?;
     match parameter {
-        LiveEditableParameter::Patch {
-            patch_id,
-            parameter,
-        } => {
+        LiveEditableParameter::Patch { patch_id, target } => {
             let patch = state
                 .patches
                 .iter()
@@ -687,14 +861,36 @@ pub(crate) fn projected_parameter_values(
                 .iter()
                 .find(|patch| patch.patch_id == patch_id.value())
                 .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
-            Ok((
-                patch.parameters.value(parameter),
-                projected.parameters.value(parameter),
-            ))
+            let descriptor = state
+                .capabilities
+                .descriptor(patch.instrument.capability_id())
+                .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+            let state_value = patch_target_metadata(patch, descriptor, target)?.initial;
+            let projected_value = match target {
+                PatchEditableTarget::Mixer(parameter) => projected.parameters.value(*parameter),
+                PatchEditableTarget::Envelope(parameter) => projected.envelope.value(*parameter),
+                PatchEditableTarget::Instrument(parameter_id) => {
+                    let scalar_index = descriptor
+                        .scalar_parameters()
+                        .position(|spec| spec.id() == parameter_id)
+                        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+                    if projected.instrument.count != descriptor.scalar_parameter_count()
+                        || projected.instrument.values.len() != projected.instrument.count
+                    {
+                        return Err(LiveDemoSceneError::InvalidInstrumentConfig);
+                    }
+                    *projected
+                        .instrument
+                        .values
+                        .get(scalar_index)
+                        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?
+                }
+            };
+            Ok((state_value, projected_value))
         }
         LiveEditableParameter::Global { parameter } => Ok((
-            state.global.value(parameter),
-            state.parameters.global.value(parameter),
+            state.global.value(*parameter),
+            state.parameters.global.value(*parameter),
         )),
     }
 }
@@ -702,10 +898,17 @@ pub(crate) fn projected_parameter_values(
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecodedStateTree {
+    capabilities: CapabilityRegistry,
     patches: Vec<DecodedPatch>,
     global: DecodedGlobal,
-    selection: DecodedSelection,
+    interaction: DecodedInteraction,
     parameters: DecodedParameterSnapshot,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecodedInteraction {
+    mixer_selection: DecodedSelection,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -713,6 +916,8 @@ struct DecodedStateTree {
 struct DecodedPatch {
     id: u32,
     channel: u8,
+    instrument: InstrumentConfig,
+    envelope: VoiceEnvelope,
     parameters: DecodedChannel,
 }
 
@@ -777,11 +982,19 @@ struct DecodedParameterSnapshot {
     global: DecodedGlobal,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecodedParameterPatch {
     patch_id: u32,
+    envelope: VoiceEnvelope,
+    instrument: DecodedInstrumentParameters,
     parameters: DecodedChannel,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DecodedInstrumentParameters {
+    count: usize,
+    values: Vec<f32>,
 }
 
 fn decode_state_tree(tree: &StateTree) -> Result<DecodedStateTree, LiveDemoSceneError> {
@@ -797,6 +1010,7 @@ pub enum LiveDemoSceneError {
     InvalidPatchId,
     DuplicatePatchId(u32),
     InvalidMidiChannel(u8),
+    InvalidInstrumentConfig,
     InvalidPlannedAdjustment,
     SelectedParameterMismatch,
     ExpectedValueMismatch { expected: f32, actual: f32 },
@@ -825,6 +1039,9 @@ impl fmt::Display for LiveDemoSceneError {
                 formatter,
                 "installed state contains invalid MIDI channel {value}"
             ),
+            Self::InvalidInstrumentConfig => {
+                formatter.write_str("installed state contains an invalid instrument schema/config")
+            }
             Self::InvalidPlannedAdjustment => {
                 formatter.write_str("descriptor-derived adjustment would not change its parameter")
             }

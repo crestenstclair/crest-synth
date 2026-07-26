@@ -4,12 +4,14 @@ mod support;
 use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+use crest_synth::adapter::production_instruments::{
+    production_capability_registry, production_instrument_providers,
+};
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
 use crest_synth::control::event_log::EventLog;
 use crest_synth::control::event_record::{EventOutcome, EventSource};
 use crest_synth::control::state_projector::StateProjector;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::real_time::audio_observation::AudioObservation;
@@ -18,7 +20,7 @@ use crest_synth::real_time::graph_revision::GraphRevision;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
 use crest_synth::real_time::structural_graph_boundary::NoStructuralGraphChanges;
-use crest_synth::synth::InstrumentPreparer;
+use crest_synth::synth::{InstrumentCapabilityProvider, InstrumentPreparer};
 use crest_synth::testing::automatic_midi_test::AutomaticMidiTest;
 use crest_synth::testing::live_demo_runner::LiveDemoRunner;
 use crest_synth::testing::live_demo_scene::LiveDemoScene;
@@ -33,12 +35,10 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     let boundary = LockFreeAudioBoundary::new(512, initial);
     let (control, audio) = boundary.into_handles();
     let event_log = EventLog::new(4096).expect("live test journal capacity is valid");
-    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+    let providers = production_instrument_providers().expect("production providers are valid");
+    let registry = production_capability_registry().expect("production registry is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(
-            provider.registry().expect("fixture registry is valid"),
-            global,
-        ),
+        AppState::new(registry.clone(), global),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         event_log,
@@ -47,19 +47,28 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
 
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
     automatic
-        .initialize(&provider, &mut app_loop)
+        .initialize(&providers, &mut app_loop)
         .expect("fixture initializes through AppLoop");
     let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())
         .expect("installed fixture produces a live scene");
 
-    let expected_count = app_loop.current_state_tree().patch_count()
-        * ChannelParameters::surface_descriptor().len()
+    let expected_count = app_loop
+        .patches()
+        .iter()
+        .map(|patch| {
+            let descriptor = app_loop
+                .capabilities()
+                .descriptor(patch.instrument_config().capability_id())
+                .unwrap();
+            patch.editable_targets(descriptor).unwrap().len()
+        })
+        .sum::<usize>()
         + GlobalParameters::surface_descriptor().len();
     assert_eq!(scene.expected_editable_parameters().len(), expected_count);
     assert_eq!(scene.minimum_parameter_dwell(), Duration::from_millis(500));
     for parameter in scene.expected_editable_parameters() {
         assert!(scene.steps().iter().any(|step| {
-            step.requires_checkpoint() && step.editable_parameter() == Some(*parameter)
+            step.requires_checkpoint() && step.editable_parameter() == Some(parameter)
         }));
     }
     let rejection_index = scene
@@ -75,7 +84,12 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
 
     let observation = AtomicAudioObservation::default();
     let (writer, reader) = observation.into_handles();
-    let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer::new())];
+    let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
+        Box::new(FixturePreparer::for_capability(
+            "instrument.soundfont.hidef",
+        )),
+        Box::new(FixturePreparer::for_capability("instrument.braids")),
+    ];
     let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
         .build(
             GraphRevision::INITIAL,
@@ -91,8 +105,15 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         .start()
         .expect("source starts after graph preparation");
     let mut output = vec![0.0_f32; FRAME_COUNT * 2];
-    let runtime_audio =
-        RuntimeAudioWitness::new(1, app_loop.patches().len(), GraphRevision::INITIAL, 0);
+    let runtime_audio = RuntimeAudioWitness::new(
+        1,
+        app_loop.patches().len(),
+        1,
+        1,
+        true,
+        GraphRevision::INITIAL,
+        0,
+    );
     let mut runner = LiveDemoRunner::start(scene.clone(), automatic, reader, runtime_audio);
 
     let mut checkpoints = Vec::new();
@@ -181,6 +202,9 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     assert!(report.to_json().unwrap().contains("\"complete\":true"));
     assert_eq!(report.runtime_audio().parsed_soundfont_banks(), 1);
     assert_eq!(report.runtime_audio().prepared_instruments(), 2);
+    assert_eq!(report.runtime_audio().soundfont_patches(), 1);
+    assert_eq!(report.runtime_audio().braids_patches(), 1);
+    assert!(report.runtime_audio().alternating_capabilities());
     assert_eq!(
         report.runtime_audio().active_graph_revision(),
         GraphRevision::INITIAL
@@ -221,15 +245,17 @@ fn early_close_uses_semantic_cleanup_without_success_report() {
     let boundary = LockFreeAudioBoundary::new(64, initial);
     let (control, audio) = boundary.into_handles();
     let provider = HiDefSoundFontCapability::new().unwrap();
+    let registry = provider.registry().unwrap();
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(provider.registry().unwrap(), global),
+        AppState::new(registry, global),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         EventLog::new(256).unwrap(),
     )
     .unwrap();
+    let providers: Vec<Box<dyn InstrumentCapabilityProvider>> = vec![Box::new(provider)];
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
-    automatic.initialize(&provider, &mut app_loop).unwrap();
+    automatic.initialize(&providers, &mut app_loop).unwrap();
     let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer::new())];
     let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
         .build(
@@ -246,8 +272,15 @@ fn early_close_uses_semantic_cleanup_without_success_report() {
     let cleanup_count = scene.patch_ids().len();
     let observation = AtomicAudioObservation::default();
     let (_writer, reader) = observation.into_handles();
-    let runtime_audio =
-        RuntimeAudioWitness::new(1, app_loop.patches().len(), GraphRevision::INITIAL, 0);
+    let runtime_audio = RuntimeAudioWitness::new(
+        1,
+        app_loop.patches().len(),
+        app_loop.patches().len(),
+        0,
+        false,
+        GraphRevision::INITIAL,
+        0,
+    );
     let mut runner = LiveDemoRunner::start(scene, automatic, reader, runtime_audio);
 
     runner.cleanup_before_close(&mut app_loop).unwrap();

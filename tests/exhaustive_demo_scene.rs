@@ -6,8 +6,10 @@ use crest_synth::testing::demo_scene_report::DemoCoverageGroup;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-const COVERAGE_GROUPS: [DemoCoverageGroup; 8] = [
+const COVERAGE_GROUPS: [DemoCoverageGroup; 10] = [
+    DemoCoverageGroup::Inputs,
     DemoCoverageGroup::Events,
+    DemoCoverageGroup::Contexts,
     DemoCoverageGroup::Directions,
     DemoCoverageGroup::MidiKinds,
     DemoCoverageGroup::EditableParameters,
@@ -18,14 +20,25 @@ const COVERAGE_GROUPS: [DemoCoverageGroup; 8] = [
 ];
 
 fn stable_control_surface(tree: &Value) -> Vec<Value> {
-    ["/patches", "/global", "/selection"]
-        .into_iter()
-        .map(|pointer| {
-            tree.pointer(pointer)
-                .expect("required StateTree branch exists")
-                .clone()
-        })
-        .collect()
+    [
+        "/patches",
+        "/global",
+        "/interaction",
+        "/patchPage",
+        "/projection/context",
+        "/projection/body",
+        "/projection/selectedLine",
+        "/parameters/graphRevision",
+        "/parameters/patches",
+        "/parameters/global",
+    ]
+    .into_iter()
+    .map(|pointer| {
+        tree.pointer(pointer)
+            .expect("required StateTree branch exists")
+            .clone()
+    })
+    .collect()
 }
 
 fn source_name(source: EventSource) -> &'static str {
@@ -67,6 +80,29 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         assert!(coverage.missing().is_empty(), "{group:?}");
         assert!(coverage.unexpected().is_empty(), "{group:?}");
     }
+    assert_eq!(
+        report
+            .coverage()
+            .group(DemoCoverageGroup::Inputs)
+            .exercised()
+            .len(),
+        17
+    );
+    assert_eq!(
+        report
+            .coverage()
+            .group(DemoCoverageGroup::Events)
+            .exercised()
+            .len(),
+        5
+    );
+    assert_eq!(
+        report
+            .coverage()
+            .group(DemoCoverageGroup::Contexts)
+            .exercised(),
+        &["context.mixer".to_owned(), "context.patch".to_owned()]
+    );
 
     let expected = first
         .expected_coverage
@@ -91,6 +127,13 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         "pan",
         "reverbSend",
         "delaySend",
+        "attackMilliseconds",
+        "decayMilliseconds",
+        "sustain",
+        "releaseMilliseconds",
+        "braids.model",
+        "braids.timbre",
+        "braids.color",
         "masterGainDb",
         "reverbRoomSize",
         "reverbDamping",
@@ -119,9 +162,28 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
                 && record.rejection() == Some(EventRejection::ParameterAtBoundary)
         })
         .count();
+    let unique_boundary_targets = report
+        .coverage()
+        .group(DemoCoverageGroup::EditableParameters)
+        .expected()
+        .iter()
+        .map(|identifier| {
+            if let Some(patch) = identifier.strip_prefix("parameter.patch.") {
+                let (_, target) = patch
+                    .split_once('.')
+                    .expect("Patch parameter identity contains its target");
+                format!("patch.{target}")
+            } else if let Some(target) = identifier.strip_prefix("parameter.global.") {
+                format!("global.{target}")
+            } else {
+                panic!("unexpected editable parameter identity {identifier}");
+            }
+        })
+        .collect::<BTreeSet<_>>()
+        .len();
     assert!(
-        boundary_rejections >= 22,
-        "each of eleven typed parameters needs lower and upper boundary evidence; observed {boundary_rejections}"
+        boundary_rejections >= unique_boundary_targets * 2,
+        "each schema-derived editable target kind needs lower and upper boundary evidence; observed {boundary_rejections} for {unique_boundary_targets} target kinds"
     );
     for (index, record) in report.event_log().records().iter().enumerate() {
         if record.rejection() == Some(EventRejection::ParameterAtBoundary) {
@@ -169,6 +231,8 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         .checkpoints()
         .iter()
         .all(|checkpoint| checkpoint.audio_measurement().is_finite()));
+    assert!(report.audio_evidence().mixed_engine_stems_nonzero());
+    assert!(report.audio_evidence().mixed_engine_parameter_isolation());
     assert_eq!(first.expected_coverage, second.expected_coverage);
     assert_eq!(first.baseline, second.baseline);
     assert_eq!(

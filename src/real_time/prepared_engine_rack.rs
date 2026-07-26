@@ -1,19 +1,25 @@
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
-use crate::real_time::parameter_snapshot::{ParameterSnapshot, MAX_PATCHES};
+use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters, MAX_PATCHES};
 use crate::real_time::patch_audio_block::PatchAudioBlock;
 use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
 use core::fmt;
 
 pub(crate) struct PreparedEngineSlot {
     patch_id: PatchId,
+    scalar_count: usize,
     instrument: Box<dyn PreparedInstrument>,
 }
 
 impl PreparedEngineSlot {
-    pub(crate) fn new(patch_id: PatchId, instrument: Box<dyn PreparedInstrument>) -> Self {
+    pub(crate) fn new(
+        patch_id: PatchId,
+        scalar_count: usize,
+        instrument: Box<dyn PreparedInstrument>,
+    ) -> Self {
         Self {
             patch_id,
+            scalar_count,
             instrument,
         }
     }
@@ -50,6 +56,14 @@ impl PreparedEngineRack {
             .map(|slot| slot.patch_id)
     }
 
+    /// Returns the fixed descriptor-ordered Scalar layout for one slot.
+    pub fn scalar_count(&self, index: usize) -> Option<usize> {
+        self.slots
+            .get(index)
+            .and_then(Option::as_ref)
+            .map(|slot| slot.scalar_count)
+    }
+
     /// Returns whether a parameter snapshot has the exact rack revision and
     /// ordered Patch identities.
     pub fn matches_parameters(&self, parameters: &ParameterSnapshot) -> bool {
@@ -58,7 +72,10 @@ impl PreparedEngineRack {
                 .patches()
                 .iter()
                 .enumerate()
-                .all(|(index, patch)| patch.patch_id() == self.patch_id(index))
+                .all(|(index, patch)| {
+                    patch.patch_id() == self.patch_id(index)
+                        && Some(patch.instrument().count()) == self.scalar_count(index)
+                })
     }
 
     /// Routes one message to only the slot with the exact Patch identity.
@@ -66,12 +83,18 @@ impl PreparedEngineRack {
         &mut self,
         patch_id: PatchId,
         message: MidiMessage,
+        parameters: &RtPatchParameters,
     ) -> Result<(), RackDispatchError> {
         let Some(slot) = self.find_slot_mut(patch_id) else {
             return Err(RackDispatchError::UnknownPatch { patch_id });
         };
+        if parameters.patch_id() != Some(patch_id)
+            || parameters.instrument().count() != slot.scalar_count
+        {
+            return Err(RackDispatchError::ParameterLayoutMismatch { patch_id });
+        }
         slot.instrument
-            .dispatch(message)
+            .dispatch(message, parameters)
             .map_err(|source| RackDispatchError::Instrument { patch_id, source })
     }
 
@@ -92,12 +115,19 @@ impl PreparedEngineRack {
     }
 
     /// Clears and fills every exact caller-owned Patch stem once.
-    pub fn render(&mut self, block: &mut PatchAudioBlock) -> Result<(), RackRenderError> {
+    pub fn render(
+        &mut self,
+        block: &mut PatchAudioBlock,
+        parameters: &ParameterSnapshot,
+    ) -> Result<(), RackRenderError> {
         if block.patch_count() != self.patch_count {
             return Err(RackRenderError::PatchCountMismatch {
                 rack: self.patch_count,
                 stems: block.patch_count(),
             });
+        }
+        if !self.matches_parameters(parameters) {
+            return Err(RackRenderError::ParameterLayoutMismatch);
         }
 
         for (index, slot) in self.slots[..self.patch_count].iter().enumerate() {
@@ -126,7 +156,8 @@ impl PreparedEngineRack {
                     actual: None,
                 });
             };
-            slot.instrument.render(stem, frame_count);
+            slot.instrument
+                .render(stem, frame_count, &parameters.patches()[index]);
         }
         Ok(())
     }
@@ -165,6 +196,9 @@ pub enum RackDispatchError {
         patch_id: PatchId,
         source: PreparedInstrumentError,
     },
+    ParameterLayoutMismatch {
+        patch_id: PatchId,
+    },
 }
 
 impl fmt::Display for RackDispatchError {
@@ -179,6 +213,10 @@ impl fmt::Display for RackDispatchError {
                     "prepared Patch {patch_id} rejected MIDI: {source}"
                 )
             }
+            Self::ParameterLayoutMismatch { patch_id } => write!(
+                formatter,
+                "prepared Patch {patch_id} received an incompatible parameter projection"
+            ),
         }
     }
 }
@@ -200,6 +238,7 @@ pub enum RackRenderError {
         expected: PatchId,
         actual: Option<PatchId>,
     },
+    ParameterLayoutMismatch,
 }
 
 impl fmt::Display for RackRenderError {
@@ -222,6 +261,9 @@ impl fmt::Display for RackRenderError {
                 formatter,
                 "prepared rack slot {index} expects Patch {expected}, got {actual:?}"
             ),
+            Self::ParameterLayoutMismatch => {
+                formatter.write_str("prepared rack parameter layout is incompatible")
+            }
         }
     }
 }

@@ -1006,14 +1006,23 @@ impl PreparedInstrument for RoutedVerificationInstrument {
         self.patch_id
     }
 
-    fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+    fn dispatch(
+        &mut self,
+        _message: MidiMessage,
+        _parameters: &crate::real_time::RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
         self.probe
             .dispatched_patch
             .store(self.patch_id.value(), Ordering::Release);
         Ok(())
     }
 
-    fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+    fn render(
+        &mut self,
+        output: &mut [f32],
+        _frame_count: usize,
+        _parameters: &crate::real_time::RtPatchParameters,
+    ) {
         if self.probe.dispatched_patch.load(Ordering::Acquire) == self.patch_id.value() {
             output.fill(0.5);
         }

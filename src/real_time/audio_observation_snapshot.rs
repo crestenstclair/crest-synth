@@ -1,3 +1,4 @@
+use crate::kernel::patch_id::PatchId;
 use crate::mixer::mix_observation::MixObservation;
 use serde::Serialize;
 
@@ -11,6 +12,8 @@ pub struct AudioObservationSnapshot {
     parameter_generation: u64,
     commands_consumed: u64,
     active_notes: u32,
+    routing_failures: u64,
+    last_unknown_patch_id: Option<PatchId>,
     left_peak: f32,
     right_peak: f32,
     output_rms: f32,
@@ -31,6 +34,31 @@ impl AudioObservationSnapshot {
         active_notes: u32,
         mix: MixObservation,
     ) -> Self {
+        Self::from_mix_with_routing(
+            sequence,
+            rendered_blocks,
+            rendered_frames,
+            parameter_generation,
+            commands_consumed,
+            active_notes,
+            0,
+            None,
+            mix,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub const fn from_mix_with_routing(
+        sequence: u64,
+        rendered_blocks: u64,
+        rendered_frames: u64,
+        parameter_generation: u64,
+        commands_consumed: u64,
+        active_notes: u32,
+        routing_failures: u64,
+        last_unknown_patch_id: Option<PatchId>,
+        mix: MixObservation,
+    ) -> Self {
         Self {
             sequence,
             rendered_blocks,
@@ -38,6 +66,8 @@ impl AudioObservationSnapshot {
             parameter_generation,
             commands_consumed,
             active_notes,
+            routing_failures,
+            last_unknown_patch_id,
             left_peak: mix.left_peak(),
             right_peak: mix.right_peak(),
             output_rms: mix.output_rms(),
@@ -50,6 +80,7 @@ impl AudioObservationSnapshot {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) const fn from_parts(
         sequence: u64,
         rendered_blocks: u64,
@@ -66,6 +97,45 @@ impl AudioObservationSnapshot {
         non_finite_samples: u64,
         clipped_samples: u64,
     ) -> Self {
+        Self::from_parts_with_routing(
+            sequence,
+            rendered_blocks,
+            rendered_frames,
+            parameter_generation,
+            commands_consumed,
+            active_notes,
+            0,
+            None,
+            left_peak,
+            right_peak,
+            output_rms,
+            reverb_input_rms,
+            delay_input_rms,
+            wet_output_rms,
+            non_finite_samples,
+            clipped_samples,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) const fn from_parts_with_routing(
+        sequence: u64,
+        rendered_blocks: u64,
+        rendered_frames: u64,
+        parameter_generation: u64,
+        commands_consumed: u64,
+        active_notes: u32,
+        routing_failures: u64,
+        last_unknown_patch_id: Option<PatchId>,
+        left_peak: f32,
+        right_peak: f32,
+        output_rms: f32,
+        reverb_input_rms: f32,
+        delay_input_rms: f32,
+        wet_output_rms: f32,
+        non_finite_samples: u64,
+        clipped_samples: u64,
+    ) -> Self {
         Self {
             sequence,
             rendered_blocks,
@@ -73,6 +143,8 @@ impl AudioObservationSnapshot {
             parameter_generation,
             commands_consumed,
             active_notes,
+            routing_failures,
+            last_unknown_patch_id,
             left_peak,
             right_peak,
             output_rms,
@@ -101,6 +173,12 @@ impl AudioObservationSnapshot {
     }
     pub const fn active_notes(self) -> u32 {
         self.active_notes
+    }
+    pub const fn routing_failures(self) -> u64 {
+        self.routing_failures
+    }
+    pub const fn last_unknown_patch_id(self) -> Option<PatchId> {
+        self.last_unknown_patch_id
     }
     pub const fn left_peak(self) -> f32 {
         self.left_peak

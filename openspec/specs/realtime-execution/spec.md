@@ -3,15 +3,13 @@
 ## Purpose
 
 Define the hard real-time rendering contract, lock-free control-to-audio handoff, control-side retirement, and bounded finite output guarantees.
-
 ## Requirements
-
 ### Requirement: Hard real-time callback contract
-The audio callback SHALL use only preallocated fixed-capacity storage and bounded work and SHALL perform no allocation, deallocation, collection growth, locking, blocking, I/O, logging, formatting, panic, unwind, or owned-state destruction.
+The audio callback, including every SoundFont operation, Braids C++ FFI call, per-voice envelope transition, scalar application, 96-to-48 kHz conversion, and mixed-engine dispatch/render operation, SHALL use only preallocated fixed-capacity storage and bounded work and SHALL perform no allocation, deallocation, collection growth, locking, blocking, I/O, logging, formatting, panic, exception, unwind, or owned-state destruction.
 
 #### Scenario: Render under control and structural traffic
-- **WHEN** parameter generations, MIDI commands, and one prepared graph replacement are published while audio is rendering
-- **THEN** the callback renders from bounded preallocated storage with zero callback allocations and zero callback-owned destructions and without locks, blocking, I/O, logging, formatting, panic, or unwind
+- **WHEN** envelope/engine parameter generations, engine-managed SoundFont traffic, sixteen-voice traffic for every active Braids Patch, and one prepared graph replacement are published while audio is rendering
+- **THEN** the callback renders from bounded preallocated storage with zero callback allocations, zero callback/native destructions, finite output, bounded timing, and no locks, blocking, I/O, logging, formatting, panic, exception, or unwind
 
 ### Requirement: Separate structural graph transfer
 Complete prepared graph ownership SHALL cross from control or worker ownership to audio ownership through a preallocated bounded nonblocking structural transport, and replaced graph ownership SHALL return through a different preallocated bounded nonblocking transport. Neither direction SHALL reuse discrete command storage, latest scalar storage, or callback-observation storage.
@@ -46,11 +44,11 @@ Every complete graph replaced across the real-time boundary SHALL return through
 - **THEN** rendering continues on the active graph, retirement pressure is observable, callback destruction remains zero, and no further graph is activated until the retained graph has returned
 
 ### Requirement: Finite continuous render result
-The real-time renderer SHALL route accepted audio commands through the capability-neutral prepared rack to their exact target Patches, render distinct bounded Patch stems, and combine them through the active graph's global mix into a finite bounded stereo output.
+The real-time renderer SHALL route accepted audio commands and only the compatible matching Patch scalar/envelope projection through the capability-neutral prepared rack to exact target SoundFont or Braids Patches, render distinct bounded Patch stems, and combine them through the active graph's global mix into a finite bounded stereo output.
 
 #### Scenario: Automatic MIDI renders through the callback
-- **WHEN** accepted fixture commands target multiple configured Patches during rendering
-- **THEN** each command reaches its exact prepared instrument, distinct Patch stems contribute to the final buffer, and the output has a finite nonzero bounded peak
+- **WHEN** accepted fixture commands target alternating SoundFont and Braids Patches during rendering
+- **THEN** each command and parameter value reaches its exact prepared instrument, both engine types produce distinct nonzero Patch stems, and the output has a finite nonzero bounded peak
 
 ### Requirement: Bounded callback-to-control audio observations
 The audio callback SHALL publish fixed-size numeric observations through a dedicated coherent latest-value transport from the callback to the control side. Publication SHALL be bounded, lock-free, nonblocking, allocation-free, and free of logging, formatting, I/O, panic, and owned-state destruction; a slow reader SHALL NOT backpressure rendering.
@@ -75,8 +73,63 @@ Measurements of reverb input, delay input, wet output, final stereo peak/RMS, cl
 - **THEN** the corresponding bounded counter is updated without callback logging, formatting, panic, or I/O
 
 ### Requirement: Bounded active-note observation
-The renderer SHALL maintain a prepared fixed-capacity note-lifecycle observation updated only from MIDI commands it dispatches, and Patch-targeted or global all-notes-off SHALL clear the corresponding active-note state with bounded work. The observation SHALL NOT control or substitute engine voice state.
+The renderer SHALL maintain a prepared fixed-capacity note-lifecycle observation updated only from MIDI commands it dispatches, and Patch-targeted or global all-notes-off SHALL clear the corresponding active-note state with bounded work. The observation SHALL NOT control or substitute SoundFont or Braids voice/envelope state.
 
 #### Scenario: Note lifecycle is dispatched
-- **WHEN** note-on, note-off, or all-notes-off commands pass through the renderer
-- **THEN** the next audio observation reports the corresponding bounded active-note count while SoundFont behavior remains owned by the engine
+- **WHEN** note-on, note-off, or all-notes-off commands pass through the renderer to either engine
+- **THEN** the next audio observation reports the corresponding bounded active-note count while each engine retains ownership of its real voice and envelope lifecycle
+
+### Requirement: Device negotiation precedes graph preparation
+The physical-audio path SHALL select one output device and validate its sample rate, PCM sample format, channel count, stereo channel mapping, and bounded render capacity before preparing any engine, effect, scratch storage, or complete graph. The graph SHALL be prepared from that exact accepted configuration, and the retained negotiated device owner SHALL start its stream only after the compatible renderer exists. Unsupported configurations SHALL fail before rendering or MIDI start.
+
+#### Scenario: Supported non-default rate is negotiated
+- **WHEN** a conforming output and installed engine set negotiate a supported sample rate different from application defaults
+- **THEN** every preparer and the complete graph receive that negotiated rate and the stream renders only after preparation succeeds
+
+#### Scenario: Exact capacity is negotiated
+- **WHEN** the negotiated device configuration declares a bounded render capacity
+- **THEN** instrument, effect, stem, mixer, and graph scratch are prepared for exactly that capacity before stream start
+
+#### Scenario: Configuration is unsupported
+- **WHEN** the selected sample rate, sample format, channel mapping, or capacity is invalid or unsupported by a required component
+- **THEN** startup returns a typed failure and neither the render callback nor MIDI source starts
+
+### Requirement: Every physical callback buffer is fully bounded
+Every physical output path, including native stereo, SHALL service the complete device buffer as consecutive render blocks no larger than the active graph's prepared frame capacity. It SHALL NOT truncate, leave an oversized tail silent, allocate replacement scratch, or perform unbounded work in any individual render block.
+
+#### Scenario: Callback equals prepared capacity
+- **WHEN** a device callback contains exactly the graph's prepared frame capacity
+- **THEN** one bounded block renders the complete buffer
+
+#### Scenario: Callback exceeds prepared capacity
+- **WHEN** a device callback contains more frames than the graph's prepared capacity
+- **THEN** ordered bounded chunks render every complete frame and no tail remains silent because of capacity truncation
+
+### Requirement: Runtime device failures are typed control outcomes
+After a stream starts, every device error callback SHALL map its error to a fixed-size typed status and publish the first failure through a bounded nonblocking callback-to-control path without allocation, locking, blocking, I/O, logging, formatting, panic, or UI work. The control loop SHALL consume that status, stop presenting the runtime as healthy, and return the exact typed application failure. No recovery or silent substitute SHALL be implied.
+
+#### Scenario: Device fails after successful start
+- **WHEN** a controlled output starts successfully and later reports device unavailability
+- **THEN** the next control tick observes `DeviceNotAvailable`, terminates the unhealthy window lifetime, and returns the corresponding typed application error
+
+#### Scenario: Several errors race before control polls
+- **WHEN** more than one runtime device error arrives before the control loop reads status
+- **THEN** the first failure remains intact and callback publication remains bounded and nonblocking
+
+### Requirement: Test-bearing validation evidence is selector-specific
+Every declared test-bearing validation SHALL execute at least one test under its own exact selector and SHALL provide selector-matched structured evidence of the nonzero executed count and required assertions. A successful broad suite or another selector SHALL NOT satisfy, replace, or lend execution counts to that validation.
+
+#### Scenario: Exact renderer validation executes
+- **WHEN** each declared renderer, graph-handoff, or audio-observation selector is evaluated
+- **THEN** its own invocation executes its named witness and satisfies its post-assertion marker
+
+#### Scenario: Targeted selector matches zero tests
+- **WHEN** a broad suite passes but one independently declared targeted selector executes zero tests
+- **THEN** acceptance fails that targeted validation despite its process exit code being zero
+
+### Requirement: Mixed-engine callback timing admission
+At 48 kHz with 256-frame blocks, the production mixed-engine acceptance SHALL render a declared worst-case bounded scene repeatedly, record block durations without callback logging, and require p99 render time below half the callback period. The measurement SHALL include the declared engine-managed SoundFont load, sixteen active voices in every Braids Patch of the admitted test graph, envelope work, engine scalars, rack stems, global effects, and final mixing.
+
+#### Scenario: Worst-case timing fixture runs
+- **WHEN** the measured mixed-engine render loop completes on the reference development host
+- **THEN** its declared sample count, maximum work bounds, and p99 duration are reported and p99 remains below 2.666 milliseconds

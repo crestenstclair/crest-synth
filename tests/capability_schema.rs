@@ -1,9 +1,14 @@
+use crest_synth::adapter::braids_capability::{
+    BraidsCapability, BRAIDS_CAPABILITY_ID, BRAIDS_COLOR_PARAMETER_ID, BRAIDS_MODELS,
+    BRAIDS_MODEL_PARAMETER_ID, BRAIDS_TIMBRE_PARAMETER_ID,
+};
 use crest_synth::adapter::hidef_soundfont_capability::HIDEF_SOUNDFONT_PATH;
 use crest_synth::adapter::hidef_soundfont_capability::{
-    HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, HIDEF_VOICE_LIMIT, SOUNDFONT_BANK_PARAMETER_ID,
+    HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID,
     SOUNDFONT_FILE_PARAMETER_ID, SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
 };
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+use crest_synth::adapter::production_instruments::production_capability_registry;
 use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::{AppState, EventRejection};
@@ -21,7 +26,7 @@ use crest_synth::synth::{
     CapabilityDescriptor, CapabilityError, CapabilityId, CapabilityRegistry, CapabilitySection,
     InstrumentCapabilityProvider, InstrumentConfig, ParameterAssignment, ParameterDefault,
     ParameterId, ParameterKind, ParameterPredicate, ParameterRange, ParameterSpec, ParameterUpdate,
-    ParameterValue, Patch,
+    ParameterValue, Patch, VoicePolicy,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
@@ -76,13 +81,18 @@ fn candidate(valid: &InstrumentConfig, values: Vec<ParameterAssignment>) -> Inst
 fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
     let provider = HiDefSoundFontCapability::new().unwrap();
     let descriptor = provider.descriptor();
-    let registry = provider.registry().unwrap();
+    let braids_provider = BraidsCapability::new().unwrap();
+    let braids_descriptor = braids_provider.descriptor();
+    let registry = production_capability_registry().unwrap();
 
-    assert_eq!(registry.descriptors(), std::slice::from_ref(&descriptor));
+    assert_eq!(
+        registry.descriptors(),
+        &[descriptor.clone(), braids_descriptor.clone()]
+    );
     assert_eq!(descriptor.id().as_str(), HIDEF_CAPABILITY_ID);
     assert_eq!(descriptor.label(), "HiDef SoundFont");
     assert_eq!(descriptor.semantic_accent(), "instrument.soundfont");
-    assert_eq!(descriptor.voice_limit(), HIDEF_VOICE_LIMIT);
+    assert_eq!(descriptor.voice_policy(), VoicePolicy::EngineManaged);
     assert_eq!(descriptor.supported_midi_kinds(), MidiMessageKind::ALL);
     let parameters = descriptor.sections()[0].parameters();
     assert_eq!(
@@ -116,12 +126,38 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         )
     );
 
+    assert_eq!(braids_descriptor.id().as_str(), BRAIDS_CAPABILITY_ID);
+    assert_eq!(
+        braids_descriptor.voice_policy(),
+        VoicePolicy::FixedPerPatch { voices: 16 }
+    );
+    assert!(braids_descriptor.asset_requirements().is_empty());
+    assert_eq!(braids_descriptor.scalar_parameter_count(), 3);
+    let braids_parameters = braids_descriptor.sections()[0].parameters();
+    assert_eq!(
+        braids_parameters
+            .iter()
+            .map(|parameter| parameter.id().as_str())
+            .collect::<Vec<_>>(),
+        [
+            BRAIDS_MODEL_PARAMETER_ID,
+            BRAIDS_TIMBRE_PARAMETER_ID,
+            BRAIDS_COLOR_PARAMETER_ID,
+        ]
+    );
+    assert_eq!(braids_parameters[0].choices().len(), BRAIDS_MODELS.len());
+    assert!(braids_parameters
+        .iter()
+        .all(|parameter| parameter.update() == ParameterUpdate::Scalar));
+
     let lead = create_soundfont_config(&provider, SoundFontInstrument::new(0, 80, false).unwrap())
         .unwrap();
     let drums = create_soundfont_config(&provider, SoundFontInstrument::new(128, 0, true).unwrap())
         .unwrap();
     registry.validate_config(&lead).unwrap();
     registry.validate_config(&drums).unwrap();
+    let braids = braids_provider.default_config().unwrap();
+    registry.validate_config(&braids).unwrap();
     assert_ne!(lead, drums);
     assert_eq!(
         lead.value(&parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID)),
@@ -141,17 +177,22 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         .dispatch_from(
             AppEvent::InstallPatches(vec![
                 patch(1, 0, "Lead", lead.clone()),
-                patch(2, 1, "Drums", drums.clone()),
+                patch(2, 1, "Braids", braids.clone()),
             ]),
             EventSource::Startup,
         )
         .unwrap();
     let tree: Value = serde_json::from_str(installed.current_state_tree().json()).unwrap();
-    assert_eq!(tree["schemaVersion"], 3);
+    assert_eq!(tree["schemaVersion"], 5);
     assert_eq!(tree["parameters"]["graphRevision"], 1);
     assert_eq!(
-        tree["capabilities"]["descriptors"][0]["id"],
-        HIDEF_CAPABILITY_ID
+        tree["capabilities"]["descriptors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|descriptor| descriptor["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [HIDEF_CAPABILITY_ID, BRAIDS_CAPABILITY_ID]
     );
     assert_eq!(
         tree["patches"][0]["instrument"],
@@ -159,7 +200,37 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
     );
     assert_eq!(
         tree["patches"][1]["instrument"],
-        serde_json::to_value(&drums).unwrap()
+        serde_json::to_value(&braids).unwrap()
+    );
+    assert_eq!(
+        installed.patches()[0]
+            .editable_targets(&descriptor)
+            .unwrap()
+            .len(),
+        8
+    );
+    assert_eq!(
+        installed.patches()[1]
+            .editable_targets(&braids_descriptor)
+            .unwrap()
+            .len(),
+        11
+    );
+    assert!(installed
+        .current_parameters()
+        .patch(PatchId::new(1).unwrap())
+        .unwrap()
+        .instrument()
+        .values()
+        .is_empty());
+    assert_eq!(
+        installed
+            .current_parameters()
+            .patch(PatchId::new(2).unwrap())
+            .unwrap()
+            .instrument()
+            .values(),
+        &[0.0, 0.5, 0.5]
     );
     let text = installed.current_text().body().to_owned();
     let bank = text.find("Bank (soundfont.bank)=0").unwrap();
@@ -169,6 +240,10 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         .unwrap();
     let file = text.find("SoundFont File (soundfont.file)=").unwrap();
     assert!(bank < program && program < percussion && percussion < file);
+    let model = text.find("Model (braids.model)=").unwrap();
+    let timbre = text.find("Timbre (braids.timbre)=0.5").unwrap();
+    let color = text.find("Color (braids.color)=0.5").unwrap();
+    assert!(file < model && model < timbre && timbre < color);
     assert!(!text.lines().any(|line| {
         line.starts_with('>') && (line.contains("soundfont.") || line.contains("SoundFont File"))
     }));
@@ -210,6 +285,15 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
     assert!(matches!(
         registry.validate_config(&candidate(&lead, out_of_range)),
         Err(CapabilityError::ValueOutOfRange(_))
+    ));
+    let mut non_finite = braids.values().to_vec();
+    non_finite[1] = ParameterAssignment::new(
+        parameter_id(BRAIDS_TIMBRE_PARAMETER_ID),
+        ParameterValue::Continuous(f64::NAN),
+    );
+    assert!(matches!(
+        registry.validate_config(&candidate(&braids, non_finite)),
+        Err(CapabilityError::NonFiniteContinuousValue)
     ));
     let missing_asset = InstrumentConfig::from_parts(
         lead.capability_id().clone(),
@@ -317,7 +401,7 @@ fn dependency_descriptor() -> CapabilityDescriptor {
         "instrument.dependent",
         vec![CapabilitySection::new("main", "Main", vec![enabled, value]).unwrap()],
         Vec::new(),
-        1,
+        VoicePolicy::FixedPerPatch { voices: 1 },
         vec![MidiMessageKind::NoteOn],
     )
     .unwrap()

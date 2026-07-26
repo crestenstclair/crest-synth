@@ -50,7 +50,9 @@ Suggested entry point: `make demo-live`, backed by a dedicated interactive CLI o
 
 ## Phase 2 — Polymorphic engine foundation and Braids
 
-Status: **Next**
+Status: **Complete** — 2026-07-25
+
+Delivered and accepted through the Phase 2 capability-model, prepared-rack, Braids-engine, polymorphic-audio, common-envelope, and control/demo OpenSpec changes, followed by `repair-production-runtime-contracts`. The production fixture and both demos alternate SoundFont and Braids Patches through the capability-neutral reducer, prepared rack, per-voice ADSR, mixer, and hard-real-time render path; all 19 declared project checks passed at the archive checkpoint.
 
 Prove the engine-capability architecture with two concrete engines before building a user-facing Patch page. The existing SoundFont implementation is the first engine. **Braids** is the second engine and replaces the previously planned Plaits milestone.
 
@@ -60,6 +62,7 @@ Patch and application state must describe instruments generically:
 Patch
 ├── stable PatchId and MIDI mapping
 ├── InstrumentConfig { capability_id, values, asset references }
+├── VoiceEnvelope { attack_ms, decay_ms, sustain, release_ms }
 ├── ordered PostFx slots
 └── MixerRoute
 ```
@@ -80,24 +83,31 @@ The first Braids descriptor exposes:
 - Timbre;
 - Color.
 
-Pitch, note lifecycle, velocity, and voice assignment come from Crest Synth's canonical MIDI and Patch contracts. Braids is originally monophonic; the adapter must declare a bounded voice policy. Polyphony uses one fully prepared `MacroOscillator` instance per voice. If measured limits require monophony or a smaller voice count, expose that limit explicitly rather than silently dropping or rerouting notes.
+Pitch, note lifecycle, velocity, and voice assignment come from Crest Synth's canonical MIDI and Patch contracts. Every Braids Patch owns a distinct bank of exactly sixteen voices, using one fully prepared `MacroOscillator` instance and one independent envelope per voice. For `N` admitted active Braids Patches, capacity is `16 × N`; three Braids Patches own forty-eight voices. There is no Braids-specific Patch-count limit or global Braids voice budget—the only concurrent Patch bound is the engine-agnostic prepared rack capacity required by the hard-real-time contract. Note-on takes an idle slot or deterministically steals the oldest within only the targeted Patch, note-off releases matching slots there, and all-notes-off clears that Patch's bounded bank.
+
+SoundFont uses a different voice policy: each SoundFont Patch owns one synthesizer instance with engine-managed polyphony under a finite prepared real-time safety ceiling. Crest does not impose Braids' sixteen-voice limit on SoundFont and does not create one synthesizer per note. Its common envelope must reach independent native voices through the SoundFont backend; a nonconforming backend must be extended or replaced rather than hidden behind a post-stem envelope.
+
+Attack, Decay, Sustain, and Release are canonical Patch state rather than Braids fields. Both production engines apply that state per note; a post-stem envelope does not conform. The live scalar surface is derived generically as Patch mixer values, common ADSR values, then descriptor-classified engine values. SoundFont's preset and asset fields remain structural and visible but locked in this phase.
 
 The upstream oscillator's 96 kHz and 24-sample rendering assumptions must be handled inside the prepared adapter with bounded scratch and an explicit sample-rate policy. Unsupported device configurations fail clearly before rendering. The callback performs no allocation, locking, blocking, I/O, logging, panic, unwinding, or destruction across the FFI boundary.
 
-Phase completion requires a mixed-engine scene containing at least one SoundFont Patch and one Braids Patch. Both must respond to targeted MIDI, render nonzero finite isolated stems, consume only their own capability parameters, and pass allocation, destruction, timing, routing, and controlled-negative proofs through the production reducer and render path.
+Phase completion requires normal, smoke, headless-demo, and live-demo composition to alternate fixture Patches between SoundFont and Braids. Both engines must respond to targeted MIDI, render nonzero finite isolated stems, consume only their own capability parameters, and pass allocation, destruction, timing, routing, overlapping-envelope, deterministic-stealing, and controlled-negative proofs through the production reducer and render path. The headless and live scenes must modify every editable mixer, ADSR, Braids, and global parameter instance using the same schema-derived resolver.
 
 Implement this milestone as separate small OpenSpec changes:
 
 1. Introduce canonical capability descriptors, generic instrument configuration, parameter values, and update classifications; adapt the existing SoundFont path without changing its current behavior.
 2. Introduce the bounded prepared engine rack and structural graph handoff needed to host different engines on different Patches and retire replaced state off-thread.
-3. Build, wrap, and prove the Braids renderer behind the prepared-instrument boundary, including its sample-rate, block-size, voice, FFI, source-pin, and license constraints.
-4. Prove simultaneous SoundFont and Braids Patches, schema-derived engine parameters, exact MIDI routing, parameter isolation, audible output, and hard real-time behavior.
+3. Add the canonical per-note ADSR and fixed descriptor-ordered scalar projection, including an engine-native envelope seam for the one synthesizer owned by each SoundFont Patch.
+4. Build, wrap, and prove one sixteen-voice Braids bank per Braids Patch behind the prepared-instrument boundary, including its scaling, sample-rate, block-size, FFI, source-pin, and license constraints.
+5. Prove alternating SoundFont and Braids Patches, schema-derived engine and envelope parameters, exact MIDI routing, parameter isolation, audible output, and hard real-time behavior in both demos.
 
 This phase does not add the Patch page, per-Patch effects, modulation routing, a modulation matrix, arbitrary graph editing, or plugin hosting.
 
 ## Phase 3 — Schema-driven Patch page
 
-Status: **Queued**
+Status: **In progress**
+
+Current increment: page selection plus a read-only, descriptor-driven Patch-page projection. Engine replacement, Patch-page ADSR editing, and SoundFont preset discovery remain separate later increments within this phase.
 
 Preserve the current basic interface while introducing two directly selectable pages:
 
@@ -120,13 +130,13 @@ The page renders the active `CapabilityDescriptor`; it does not contain SoundFon
 
 The SoundFont descriptor exposes the locked `./sf2/HiDef.sf2` asset and the selected preset name. Holding Edit and pressing Left or Right cycles through valid discovered presets. The Braids descriptor exposes Model, Timbre, and Color.
 
-ADSR is common semantic Patch configuration, but it must be applied per voice by every admitted engine. A post-stem envelope is not a conforming implementation because overlapping notes require independent note lifecycles. Do not expose an ADSR field for an engine until changing it produces a measured audible result through that engine's production render path.
+ADSR is already common semantic Patch configuration and is already applied per voice by SoundFont and Braids before this page begins. The Patch page renders those canonical fields; it must not create a second UI-owned envelope model.
 
 Implement this milestone as separate small OpenSpec changes:
 
 1. Add page selection and a Patch-page projection that renders installed capability descriptors and stable parameter IDs.
 2. Add asynchronous engine selection through worker preparation, semantic completion events, prepared-graph publication, acknowledgement, and visible failure handling.
-3. Add common per-voice ADSR behavior for SoundFont and Braids with audible overlapping-note proof.
+3. Render and edit the existing common per-voice ADSR values without duplicating their state or DSP behavior.
 4. Add SoundFont preset discovery, display by name, and Edit+Left/Right selection through the SoundFont descriptor.
 
 This phase does not add modulation routing or a modulation matrix.

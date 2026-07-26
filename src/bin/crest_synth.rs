@@ -1,9 +1,17 @@
 use anyhow::{bail, Context, Result};
+use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
+use crest_synth::adapter::braids_capability::BraidsCapability;
+use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
+use crest_synth::adapter::braids_preparer::BraidsPreparer;
 use crest_synth::adapter::corridors_midi_event_source::CorridorsMidiEventSource;
 use crest_synth::adapter::cpal_audio_output::CpalAudioOutput;
 use crest_synth::adapter::eframe_text_window::EframeTextWindow;
+use crest_synth::adapter::hidef_soundfont_capability::{
+    HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
+};
 use crest_synth::adapter::hidef_soundfont_preparer::HiDefSoundFontPreparer;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_state::EventRejection;
 use crest_synth::control::event_record::{EmittedEvent, EventInput, EventOutcome, EventSource};
@@ -11,11 +19,12 @@ use crest_synth::kernel::midi_message::MidiMessageKind;
 use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
-use crest_synth::real_time::GraphRevision;
+use crest_synth::real_time::{GraphHandoffStatus, GraphRevision};
 use crest_synth::shell::standalone_application::{
     ApplicationConfig, DegenerateMode, StandaloneApplication,
 };
 use crest_synth::shell::window_input::WindowInput;
+use crest_synth::synth::{InstrumentCapabilityProvider, InstrumentPreparer};
 use crest_synth::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport};
 use crest_synth::testing::{
     BehavioralMutationCase, BehavioralMutationHarness, BehavioralMutationObservation,
@@ -38,16 +47,43 @@ fn run(options: Options) -> Result<()> {
         let initial_parameters = ParameterSnapshot::new(0, config.global_parameters(), &[])
             .context("failed to construct the initial audio parameter snapshot")?;
         let boundary = LockFreeAudioBoundary::new(AUDIO_COMMAND_CAPACITY, initial_parameters);
-        let preparer = HiDefSoundFontPreparer::new()
-            .context("failed to open and parse the HiDef SoundFont bank")?;
-        Ok(StandaloneApplication::new(
+        let providers: Vec<Box<dyn InstrumentCapabilityProvider>> = vec![
+            Box::new(
+                HiDefSoundFontCapability::new()
+                    .context("failed to construct the HiDef capability provider")?,
+            ),
+            Box::new(
+                BraidsCapability::new()
+                    .context("failed to construct the Braids capability provider")?,
+            ),
+        ];
+        let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
+            Box::new(
+                HiDefSoundFontPreparer::new()
+                    .context("failed to prepare the HiDef instrument factory")?,
+            ),
+            Box::new(
+                BraidsPreparer::new().context("failed to prepare the Braids instrument factory")?,
+            ),
+        ];
+        let structural = LockFreeStructuralGraphBoundary::new(
+            1,
+            1,
+            GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+        )
+        .context("failed to prepare the structural graph boundary")?;
+        StandaloneApplication::new(
             boundary,
-            preparer,
+            providers,
+            preparers,
+            structural,
+            AtomicAudioObservation::default(),
             CorridorsMidiEventSource::new(),
             EframeTextWindow::default(),
             CpalAudioOutput::new(),
             config,
-        ))
+        )
+        .context("failed to validate the production composition")
     };
 
     if options.demo_live {
@@ -191,13 +227,17 @@ struct DemoSceneObservation {
     accepted_events: usize,
     active_graph_revision: u64,
     adjust_directions_exercised: usize,
+    alternating_capabilities: bool,
     all_parameter_boundaries_exercised: bool,
     all_audio_parameter_effects_observed: bool,
     all_patch_parameter_cases_exercised: bool,
     all_serialized_properties_observed: bool,
     audio_command_variants_exercised: usize,
     app_event_variants_exercised: usize,
+    top_level_contexts_exercised: usize,
     baseline_restored: bool,
+    braids_patches: usize,
+    braids_scalar_cases_exercised: usize,
     causal_audio_comparisons: bool,
     callback_destructions: usize,
     coverage_missing: usize,
@@ -216,6 +256,8 @@ struct DemoSceneObservation {
     global_parameter_cases_exercised: usize,
     gui_projection_matches_state: bool,
     midi_message_kinds_exercised: usize,
+    mixed_engine_parameter_isolation: bool,
+    mixed_engine_stems_nonzero: bool,
     navigate_directions_exercised: usize,
     parameter_projection_matches_state: bool,
     parsed_soundfont_banks: usize,
@@ -227,6 +269,7 @@ struct DemoSceneObservation {
     scene_checkpoints: usize,
     schema_surface_equal: bool,
     selection_clamps_exact: bool,
+    envelope_parameter_cases_exercised: usize,
     state_hash_chain_valid: bool,
     state_tree_patch_count: usize,
     state_tree_schema_version: u32,
@@ -239,7 +282,8 @@ struct DemoSceneObservation {
 impl DemoSceneObservation {
     fn from_report(report: &DemoSceneReport, two_run_trace_equal: bool) -> Self {
         let records = report.event_log().records();
-        let mut event_variants = [false; 4];
+        let mut event_variants = [false; 5];
+        let mut top_level_contexts = Vec::new();
         let mut navigate_directions = Vec::new();
         let mut adjust_directions = Vec::new();
         let mut midi_kinds = Vec::new();
@@ -248,17 +292,21 @@ impl DemoSceneObservation {
         for record in records {
             push_unique(&mut event_sources, record.source());
             match record.input() {
-                EventInput::InstallPatches { .. } => event_variants[0] = true,
+                EventInput::SelectContext { context } => {
+                    event_variants[0] = true;
+                    push_unique(&mut top_level_contexts, *context);
+                }
+                EventInput::InstallPatches { .. } => event_variants[1] = true,
                 EventInput::Navigate { direction } => {
-                    event_variants[1] = true;
+                    event_variants[2] = true;
                     push_unique(&mut navigate_directions, *direction);
                 }
                 EventInput::Adjust { direction } => {
-                    event_variants[2] = true;
+                    event_variants[3] = true;
                     push_unique(&mut adjust_directions, *direction);
                 }
                 EventInput::Midi { message, .. } => {
-                    event_variants[3] = true;
+                    event_variants[4] = true;
                     push_unique(&mut midi_kinds, message.kind());
                 }
             }
@@ -316,6 +364,65 @@ impl DemoSceneObservation {
             .iter()
             .filter(|identifier| identifier.starts_with("parameter.global."))
             .count();
+        let envelope_parameter_cases_exercised = editable
+            .exercised()
+            .iter()
+            .filter(|identifier| {
+                [
+                    "attackMilliseconds",
+                    "decayMilliseconds",
+                    "sustain",
+                    "releaseMilliseconds",
+                ]
+                .iter()
+                .any(|parameter| identifier.ends_with(&format!(".{parameter}")))
+            })
+            .count();
+        let patch_capabilities: Vec<(u64, String)> = tree_json
+            .as_ref()
+            .and_then(|tree| tree.get("patches"))
+            .and_then(Value::as_array)
+            .map(|patches| {
+                patches
+                    .iter()
+                    .filter_map(|patch| {
+                        Some((
+                            patch.get("id")?.as_u64()?,
+                            patch
+                                .pointer("/instrument/capabilityId")?
+                                .as_str()?
+                                .to_owned(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let soundfont_patches = patch_capabilities
+            .iter()
+            .filter(|(_, capability)| capability == HIDEF_CAPABILITY_ID)
+            .count();
+        let braids_patch_ids: Vec<u64> = patch_capabilities
+            .iter()
+            .filter_map(|(patch_id, capability)| {
+                (capability == BRAIDS_CAPABILITY_ID).then_some(*patch_id)
+            })
+            .collect();
+        let braids_patches = braids_patch_ids.len();
+        let alternating_capabilities = patch_capabilities.len() > 1
+            && soundfont_patches > 0
+            && braids_patches > 0
+            && patch_capabilities
+                .windows(2)
+                .all(|pair| pair[0].1 != pair[1].1);
+        let braids_scalar_cases_exercised = editable
+            .exercised()
+            .iter()
+            .filter(|identifier| {
+                braids_patch_ids.iter().any(|patch_id| {
+                    identifier.starts_with(&format!("parameter.patch.{patch_id}.braids."))
+                })
+            })
+            .count();
         let all_patch_parameter_cases_exercised =
             prefixed_expected_are_exercised(editable, "parameter.patch.");
         let serialized = report
@@ -332,7 +439,7 @@ impl DemoSceneObservation {
             .iter()
             .filter(|identifier| identifier.starts_with("effect.emitted.audioCommand."))
             .count();
-        let events = report.coverage().group(DemoCoverageGroup::Events);
+        let inputs = report.coverage().group(DemoCoverageGroup::Inputs);
         let rejections = report.coverage().group(DemoCoverageGroup::Rejections);
         let coverage_missing =
             report.coverage().missing_count() + report.event_log().coverage().missing().len();
@@ -379,13 +486,15 @@ impl DemoSceneObservation {
             && dry_observation.baseline_restored
             && cross_observation.baseline_restored;
         let selection_clamps_exact = tree_json.as_ref().is_some_and(|tree| {
-            tree.pointer("/selection/section").and_then(Value::as_str) == Some("Patch")
+            tree.pointer("/interaction/mixerSelection/section")
+                .and_then(Value::as_str)
+                == Some("Patch")
                 && tree
-                    .pointer("/selection/patchIndex")
+                    .pointer("/interaction/mixerSelection/patchIndex")
                     .and_then(Value::as_u64)
                     == Some(0)
                 && tree
-                    .pointer("/selection/parameterIndex")
+                    .pointer("/interaction/mixerSelection/parameterIndex")
                     .and_then(Value::as_u64)
                     == Some(0)
         });
@@ -401,6 +510,7 @@ impl DemoSceneObservation {
             accepted_events,
             active_graph_revision,
             adjust_directions_exercised: adjust_directions.len(),
+            alternating_capabilities,
             all_parameter_boundaries_exercised,
             all_audio_parameter_effects_observed,
             all_patch_parameter_cases_exercised,
@@ -410,7 +520,10 @@ impl DemoSceneObservation {
                 .iter()
                 .filter(|exercised| **exercised)
                 .count(),
+            top_level_contexts_exercised: top_level_contexts.len(),
             baseline_restored,
+            braids_patches,
+            braids_scalar_cases_exercised,
             causal_audio_comparisons,
             callback_destructions: 0,
             coverage_missing,
@@ -419,6 +532,7 @@ impl DemoSceneObservation {
             descriptors_unique: descriptors_are_unique(),
             event_record_payloads_exact,
             event_sources_exercised: event_sources.len(),
+            envelope_parameter_cases_exercised,
             event_log_dropped: report.event_log().dropped_records(),
             event_log_records: records.len(),
             exact_projection_values,
@@ -429,6 +543,10 @@ impl DemoSceneObservation {
             global_parameter_cases_exercised,
             gui_projection_matches_state,
             midi_message_kinds_exercised: midi_kinds.len(),
+            mixed_engine_parameter_isolation: report
+                .audio_evidence()
+                .mixed_engine_parameter_isolation(),
+            mixed_engine_stems_nonzero: report.audio_evidence().mixed_engine_stems_nonzero(),
             navigate_directions_exercised: navigate_directions.len(),
             parameter_projection_matches_state,
             parsed_soundfont_banks: 1,
@@ -446,7 +564,7 @@ impl DemoSceneObservation {
             tick_events_exact,
             two_run_trace_equal,
             unexpected_coverage,
-            window_input_cases_exercised: events
+            window_input_cases_exercised: inputs
                 .exercised()
                 .iter()
                 .filter(|identifier| identifier.starts_with("input."))

@@ -1,4 +1,5 @@
 use crate::control::app_event::{AppEvent, Direction};
+use crate::control::top_level_context::TopLevelContext;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 
 /// Translates normalized window input into the closed application-event vocabulary.
@@ -35,6 +36,11 @@ impl KeyboardInputTranslator {
     }
 
     fn translate_key_down(&mut self, key: WindowKey) -> Option<AppEvent> {
+        match key {
+            WindowKey::Digit1 => return Some(AppEvent::SelectContext(TopLevelContext::Mixer)),
+            WindowKey::Digit2 => return Some(AppEvent::SelectContext(TopLevelContext::Patch)),
+            _ => {}
+        }
         if key == WindowKey::K {
             self.k_held = true;
             return None;
@@ -45,7 +51,7 @@ impl KeyboardInputTranslator {
             WindowKey::S => Direction::Down,
             WindowKey::A => Direction::Left,
             WindowKey::D => Direction::Right,
-            WindowKey::K | WindowKey::Other => return None,
+            WindowKey::Digit1 | WindowKey::Digit2 | WindowKey::K | WindowKey::Other => return None,
         };
 
         Some(if self.k_held {
@@ -60,6 +66,7 @@ impl KeyboardInputTranslator {
 mod tests {
     use super::KeyboardInputTranslator;
     use crate::control::app_event::{AppEvent, Direction};
+    use crate::control::top_level_context::TopLevelContext;
     use crate::shell::window_input::{WindowInput, WindowKey};
 
     const DIRECTION_CASES: [(WindowKey, Direction); 4] = [
@@ -68,6 +75,31 @@ mod tests {
         (WindowKey::A, Direction::Left),
         (WindowKey::D, Direction::Right),
     ];
+
+    #[test]
+    fn keyboard_input_translator_maps_direct_context_keys_independent_of_modifier() {
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Digit1)),
+            Some(AppEvent::SelectContext(TopLevelContext::Mixer))
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::K)),
+            None
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Digit2)),
+            Some(AppEvent::SelectContext(TopLevelContext::Patch))
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Digit1)),
+            None
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Digit2)),
+            None
+        );
+    }
 
     #[test]
     fn keyboard_input_translator_maps_every_bare_direction_to_navigation() {

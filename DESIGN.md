@@ -159,6 +159,28 @@ Before audio starts, preallocate:
 - active patch, effect, mixer, and aux slots;
 - graph handoff and retirement capacity.
 
+The standalone binary is the production composition root. It selects and
+injects capability providers, their separately registered preparers, the
+discrete/scalar/structural transports, the audio-observation transport, the
+device adapter, and the window adapter. The application service validates an
+exact one-to-one provider/preparer registration before it freezes the registry
+or publishes a graph; it does not import or construct concrete infrastructure
+adapters.
+
+Physical audio startup is explicitly two-stage. Control ownership negotiates a
+validated PCM configuration without starting the stream, then prepares the
+complete graph, every engine/effect, and all scratch from that configuration's
+actual sample rate and bounded render capacity. Only that negotiated device
+owner may then start the prepared renderer. A native callback larger than the
+prepared capacity is rendered completely as consecutive bounded blocks; it is
+never truncated or left with a silent tail.
+
+Post-start device failures cross back through a preallocated first-failure
+atomic status path. The device callback maps only to a fixed-size typed error;
+the control tick consumes it, retains the visible application error, and asks
+the disposable window to close. Formatting, logging, recovery policy, and UI
+behavior never run in the device callback.
+
 Render complexity is bounded by explicit limits for active patches, voices, post-FX slots, tracks, aux buses, events, and frames.
 
 ### Overflow and recovery
@@ -193,6 +215,11 @@ and state tree to materialize and compare exactly with eager canonical output.
 
 The callback updates only bounded counters for underruns, high-water render time, queue pressure, active voices, and clipped/non-finite samples. The UI polls those counters and decimated meters.
 
+Unknown Patch routing is part of that bounded observation surface: the
+renderer increments a saturating routing-failure counter and retains the last
+unknown `PatchId` while leaving every prepared instrument unchanged. A direct
+rack error is not sufficient evidence if the production renderer discards it.
+
 ## Audio and domain model
 
 ### Patch and capability registry
@@ -202,6 +229,7 @@ Patch
 ├── stable PatchId
 ├── label and MIDI mapping
 ├── InstrumentConfig { capability_id, values, asset references }
+├── VoiceEnvelope { attack_ms, decay_ms, sustain, release_ms }
 ├── ordered PostFx slots
 └── MixerRoute { track, gain, pan, mute, solo, sends }
 ```
@@ -215,7 +243,8 @@ CapabilityDescriptor
 ├── stable id, label, semantic accent
 ├── ordered sections and ParameterSpec[]
 ├── asset requirements
-├── voice limits and supported event semantics
+├── voice policy: fixed per Patch | engine managed
+├── supported event semantics
 ├── off-thread preparation
 └── real-time renderer factory
 
@@ -227,7 +256,15 @@ ParameterSpec
 └── optional enabled/visible dependency
 ```
 
-UI choices come from the installed registry. The Figma names are illustrative planned capabilities, not permission to expose placeholders. SoundFont is the first concrete registry entry. Braids is the second concrete engine and is wrapped around the pinned Mutable Instruments C++ macro-oscillator implementation; it exists to prove that Patch state, projection, preparation, MIDI routing, rendering, and verification are capability-polymorphic before the Patch page is built. Later sample, physical-model, wavetable, FM, and effect implementations must satisfy the same preparation and callback contracts.
+UI choices come from the installed registry. The Figma names are illustrative planned capabilities, not permission to expose placeholders. SoundFont is the first concrete registry entry. Braids is the second concrete engine and is wrapped around the pinned Mutable Instruments C++ macro-oscillator implementation; it exists to prove that Patch state, projection, preparation, MIDI routing, rendering, and verification are capability-polymorphic before the Patch page is built. Neither the reducer, projector, rack, renderer, nor demo coverage may switch on those two capability identities to define an instrument's fields. Later sample, physical-model, wavetable, FM, and effect implementations must satisfy the same preparation and callback contracts.
+
+Voice policy is capability-polymorphic. Braids declares `FixedPerPatch(16)`: every admitted Braids Patch owns a distinct sixteen-oscillator bank, so `N` active Braids Patches own `16 × N` voices with no engine-global pool; three Braids Patches therefore own forty-eight voices. There is no Braids-specific Patch-count limit or shared Braids voice budget. SoundFont declares `EngineManaged`: every SoundFont Patch owns one synthesizer instance whose backend manages polyphony under a finite prepared real-time safety ceiling. The engine-agnostic active graph capacity bounds how many Patches of any type can be materialized concurrently for hard-real-time execution; it never changes a Braids Patch's sixteen voices or turns them into shared capacity.
+
+Every admitted engine applies the Patch-owned ADSR independently inside each native note voice. Attack, Decay, and Sustain are latched at note-on; Release is latched at note-off. Applying one gain envelope after a mixed Patch stem is nonconforming because it cannot preserve independent overlapping note lifecycles. Braids assigns an idle voice first and otherwise steals the oldest voice within the targeted Patch only. SoundFont delegates allocation to its one Patch-local synthesizer. All-notes-off remains Patch-targeted and bounded by the prepared engine policy.
+
+Braids is built from the official Mutable Instruments source pinned at `pichenettes/eurorack@08460a69a7e1f7a81c5a2abcc7189c9a6b7208d4` and `stmlib@e3bd7c9cc00e4364166f9905c0509b6ffd0535ec`. Crest vendors only the audited DSP subset and license/provenance files, compiles it behind a small exception-free opaque C ABI, and owns exactly sixteen fully initialized `MacroOscillator` instances per prepared Braids Patch. The descriptor exposes the 47 named playable upstream models plus scalar Timbre and Color. Braids retains its 96 kHz, 24-sample internal contract; the first admitted host format is exactly 48 kHz and uses a bounded 2:1 adapter. Unsupported rates fail during preparation and never select another engine.
+
+Scalar capability parameters use descriptor order within the immutable active graph revision. Control projection encodes at most sixteen scalar values into fixed destructor-free real-time storage; choices use their descriptor index. Structural fields such as the SoundFont bank, program, percussion flag, and asset reference remain visible but are not live-editable until a prepared structural edit workflow exists.
 
 ### SoundFont and sample pipeline
 
@@ -240,7 +277,7 @@ SF2, WAV, and related formats are control-side assets:
 5. build bounded voice state and warm the asset;
 6. publish a prepared instrument through the structural handoff.
 
-The real-time side receives stable numeric IDs, immutable PCM/zones, and bounded voice storage. It performs no path lookup, decode, zone allocation, or last-reference destruction.
+The real-time side receives stable numeric IDs, immutable PCM/zones, and bounded voice storage. It performs no path lookup, decode, zone allocation, or last-reference destruction. The initial SoundFont adapter shares one parsed immutable bank and prepares exactly one synthesizer instance per SoundFont Patch. Common ADSR must reach that synthesizer's independent native note voices through a conforming backend seam; Crest does not create one synthesizer per voice or accept a post-stem envelope. If the selected backend cannot satisfy that proof, the adapter must be extended or replaced before the controls are exposed.
 
 SoundFont identity includes bank, program, and percussion status. Missing presets are load errors. A melodic preset cannot substitute for percussion with the same numeric program.
 
@@ -477,11 +514,11 @@ A completed behavior must be distinguishable from a no-op:
 
 - **Reducer:** exact accepted/rejected mutations, stable focus, implicit patch creation, input parity.
 - **Projection:** one state generation produces matching view and audio snapshots.
-- **DSP:** finite measured peak/RMS, stereo routing, mute/solo, effect order, bounded voice behavior.
+- **DSP:** finite measured peak/RMS, stereo routing, mute/solo, effect order, `16 × N` Patch-local Braids scaling, deterministic Patch-local stealing, engine-managed SoundFont polyphony, and independent overlapping-note envelopes in both engines.
 - **RT:** allocator instrumentation, callback timing, overflow recovery, graph swap, off-thread destruction.
 - **Assets:** real SF2/sample fixtures, preset identity, malformed input, loop bounds, atomic replacement.
 - **UI:** golden images at 1920×1080 and Steam Deck size, semantic tokens, single focus, complete controller navigation, modal return.
-- **Integration:** standalone, fixture, and synthetic inputs use the production reducer and render path.
+- **Integration:** standalone, fixture, and synthetic inputs use the production reducer and render path; the production fixture alternates SoundFont and Braids Patches and the demos modify every editable mixer, ADSR, capability-scalar, and global value through that path.
 
 Offline render is the deterministic audio proof. Device smoke tests separately validate negotiation and underruns. Construction-only tests, success-token logs, and silent output are not evidence.
 
@@ -498,6 +535,18 @@ still wake it sooner. `make demo-live` uses the optimized release profile so a
 physical listening demo measures product behavior rather than debug-build
 overhead; deterministic acceptance remains in the unoptimized test profile.
 
+`make demo-live` is a bounded autonomous verification command, not an
+open-ended interactive session. While its scene is active, the window renders
+only the canonical `AppLoop` projection and native close remains available,
+but mapped semantic key input is not dispatched into `AppState`; this prevents
+an asynchronous user edit from replacing the exact generation awaited by a
+checkpoint. After semantic all-notes-off cleanup and the completed report, the
+standalone owner emits the four final records synchronously, asks the window to
+close on that same control tick, releases the physical stream on control
+ownership, and returns success. Closing the native window before that report
+remains a typed incomplete-demo failure. Open-ended keyboard control belongs to
+the normal `make run` application mode.
+
 An architecture change must preserve the one-way state path and callback contract, use canonical types, update this document when a durable decision changes, add falsifiable proof, and remove the superseded path in the same change.
 
 ## Durable decisions
@@ -507,7 +556,15 @@ An architecture change must preserve the one-way state path and callback contrac
 - The UI is schema-driven; Figma example names are not a feature list.
 - SoundFont is the first concrete engine, not a reason to couple the domain to one library.
 - Braids is the second concrete engine; its C++ DSP remains behind the generic capability and prepared-renderer boundaries.
-- Live input, fixtures, and UI share the canonical reducer/projector path.
+- Every Braids Patch owns exactly sixteen voices; Braids capacity scales as `16 × active Braids Patch count` and is never pooled globally.
+- Every SoundFont Patch owns one synthesizer with engine-managed polyphony; SoundFont is not artificially capped at sixteen and is never split into one synthesizer per note.
+- SoundFont and Braids share the same Patch-owned per-note ADSR contract despite their distinct voice policies.
+- The production fixture and both demos intentionally mix the two engines; engine-specific editable fields come only from capability descriptors.
+- Normal live input, fixtures, and UI share the canonical reducer/projector
+  path.
+- The autonomous `demo-live` witness isolates mapped semantic input while its
+  generation-correlated scene runs, then closes and returns after final report
+  emission and control-owned stream teardown.
 - High-rate MIDI projections share immutable generation-only state and
   materialize large JSON only when observed; the materialized form remains
   exactly equal to eager canonical serialization.

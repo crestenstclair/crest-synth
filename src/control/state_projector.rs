@@ -1,18 +1,25 @@
-use crate::control::app_state::{AppState, Selection, SelectionSection};
+use crate::control::app_state::AppState;
+use crate::control::interaction_state::{Selection, SelectionSection};
+use crate::control::patch_page_projection::{PatchPageProjection, PatchPageProjectionError};
 use crate::control::serialized_state::SerializedState;
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::state_tree::{StateTree, StateTreeError};
 use crate::control::text_projection::TextProjection;
 use crate::real_time::parameter_snapshot::{
-    ParameterSnapshot, ParameterSnapshotError, RtPatchParameters, MAX_PATCHES,
+    ParameterSnapshot, ParameterSnapshotError, RtInstrumentParameters, RtPatchParameters,
+    MAX_PATCHES,
 };
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
-    InstrumentConfig, ParameterDefault, ParameterKind, ParameterSpec, ParameterValue,
+    InstrumentConfig, ParameterDefault, ParameterKind, ParameterSpec, ParameterUpdate,
+    ParameterValue,
 };
+use crate::synth::patch::{resolve_patch_editable_targets, PatchEditableTarget};
 use core::fmt;
 
-const HEADER: &str = "KEYS: W/S parameters | A/D channels | K+direction edit";
+const MIXER_HEADER: &str =
+    "MIXER | 1 MIXER | 2 PATCH | W/S parameters | A/D channels | K+direction edit";
+const PATCH_HEADER: &str = "PATCH | 1 MIXER | 2 PATCH | READ ONLY";
 const SEPARATOR: &str = "------------------------------------------------------------";
 
 /// A projection failure detected on the control side before publication.
@@ -24,6 +31,7 @@ pub enum StateProjectionError {
     SelectionDoesNotMatchSnapshot,
     InvalidSelection,
     InvalidInstrumentConfig,
+    PatchPage(PatchPageProjectionError),
     ParameterSnapshot(ParameterSnapshotError),
     StateTree(StateTreeError),
 }
@@ -48,6 +56,7 @@ impl fmt::Display for StateProjectionError {
             Self::InvalidInstrumentConfig => {
                 formatter.write_str("instrument config does not resolve through the registry")
             }
+            Self::PatchPage(error) => error.fmt(formatter),
             Self::ParameterSnapshot(error) => error.fmt(formatter),
             Self::StateTree(error) => error.fmt(formatter),
         }
@@ -59,6 +68,7 @@ impl std::error::Error for StateProjectionError {
         match self {
             Self::ParameterSnapshot(error) => Some(error),
             Self::StateTree(error) => Some(error),
+            Self::PatchPage(error) => Some(error),
             _ => None,
         }
     }
@@ -73,6 +83,12 @@ impl From<ParameterSnapshotError> for StateProjectionError {
 impl From<StateTreeError> for StateProjectionError {
     fn from(error: StateTreeError) -> Self {
         Self::StateTree(error)
+    }
+}
+
+impl From<PatchPageProjectionError> for StateProjectionError {
+    fn from(error: PatchPageProjectionError) -> Self {
+        Self::PatchPage(error)
     }
 }
 
@@ -108,32 +124,75 @@ impl StateProjector {
         self.graph_revision
     }
 
-    /// Derives the three coherent projections consumed after state acceptance.
+    /// Derives the snapshot, active text, and fixed real-time values.
     pub fn project(
         &self,
         state: &AppState,
     ) -> Result<(StateSnapshot, TextProjection, ParameterSnapshot), StateProjectionError> {
+        let (snapshot, _page, text, parameters) = self.project_with_page(state)?;
+        Ok((snapshot, text, parameters))
+    }
+
+    /// Derives the complete projection set including the optional PATCH page.
+    pub fn project_with_page(
+        &self,
+        state: &AppState,
+    ) -> Result<
+        (
+            StateSnapshot,
+            Option<PatchPageProjection>,
+            TextProjection,
+            ParameterSnapshot,
+        ),
+        StateProjectionError,
+    > {
         let serialized = SerializedState::from(state);
         let snapshot = self.snapshot_from_serialized(&serialized)?;
-        let text = self.text_from_serialized(&serialized, state.selection(), snapshot.hash())?;
+        let page = self.patch_page_projection(state, snapshot.hash())?;
+        let text = self.text_from_serialized(
+            &serialized,
+            state.selection(),
+            page.as_ref(),
+            snapshot.hash(),
+        )?;
         let parameters = self.parameter_snapshot(state)?;
 
-        Ok((snapshot, text, parameters))
+        Ok((snapshot, page, text, parameters))
     }
 
     /// Derives every coherent projection, including the canonical observation tree.
     pub fn project_with_tree(
         &self,
         state: &AppState,
-    ) -> Result<(StateSnapshot, TextProjection, ParameterSnapshot, StateTree), StateProjectionError>
-    {
+    ) -> Result<
+        (
+            StateSnapshot,
+            Option<PatchPageProjection>,
+            TextProjection,
+            ParameterSnapshot,
+            StateTree,
+        ),
+        StateProjectionError,
+    > {
         let serialized = SerializedState::from(state);
         let snapshot = self.snapshot_from_serialized(&serialized)?;
-        let text = self.text_from_serialized(&serialized, state.selection(), snapshot.hash())?;
+        let page = self.patch_page_projection(state, snapshot.hash())?;
+        let text = self.text_from_serialized(
+            &serialized,
+            state.selection(),
+            page.as_ref(),
+            snapshot.hash(),
+        )?;
         let parameters = self.parameter_snapshot(state)?;
-        let tree = StateTree::from_serialized_state(&serialized, &snapshot, &text, &parameters)?;
+        let tree = StateTree::from_serialized_state(
+            &serialized,
+            &snapshot,
+            page.as_ref(),
+            &text,
+            &parameters,
+        )?;
 
-        Ok((snapshot, text, parameters, tree))
+        Ok((snapshot, page, text, parameters, tree))
     }
 
     /// Builds the canonical tree from one already-derived projection set.
@@ -143,10 +202,22 @@ impl StateProjector {
         text: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<StateTree, StateProjectionError> {
+        self.state_tree_with_page(snapshot, None, text, parameters)
+    }
+
+    /// Builds the canonical tree with an explicit optional PATCH page.
+    pub fn state_tree_with_page(
+        &self,
+        snapshot: &StateSnapshot,
+        page: Option<&PatchPageProjection>,
+        text: &TextProjection,
+        parameters: &ParameterSnapshot,
+    ) -> Result<StateTree, StateProjectionError> {
         if parameters.graph_revision() != self.graph_revision {
             return Err(StateTreeError::GraphRevisionMismatch.into());
         }
-        StateTree::new(snapshot, text, parameters).map_err(StateProjectionError::from)
+        StateTree::with_patch_page(snapshot, page, text, parameters)
+            .map_err(StateProjectionError::from)
     }
 
     /// Serializes every AppState field through the canonical borrowed state view.
@@ -164,9 +235,35 @@ impl StateProjector {
         snapshot: &StateSnapshot,
         selection: Selection,
     ) -> Result<TextProjection, StateProjectionError> {
+        self.text_projection_with_page(snapshot, selection, None)
+    }
+
+    /// Renders text with an explicit optional host-neutral PATCH page.
+    pub fn text_projection_with_page(
+        &self,
+        snapshot: &StateSnapshot,
+        selection: Selection,
+        page: Option<&PatchPageProjection>,
+    ) -> Result<TextProjection, StateProjectionError> {
         let state: SerializedState<'_> = serde_json::from_str(snapshot.json())
             .map_err(|_| StateProjectionError::StateDeserialization)?;
-        self.text_from_serialized(&state, selection, snapshot.hash())
+        self.text_from_serialized(&state, selection, page, snapshot.hash())
+    }
+
+    /// Resolves the optional active PATCH page from canonical state and registry data.
+    pub fn patch_page_projection(
+        &self,
+        state: &AppState,
+        state_hash: &str,
+    ) -> Result<Option<PatchPageProjection>, StateProjectionError> {
+        match state.context() {
+            crate::control::TopLevelContext::Mixer => Ok(None),
+            crate::control::TopLevelContext::Patch => {
+                PatchPageProjection::project(state, state_hash)
+                    .map(Some)
+                    .map_err(StateProjectionError::from)
+            }
+        }
     }
 
     /// Copies every audio parameter into bounded, fully owned storage.
@@ -185,8 +282,31 @@ impl StateProjector {
         let patches: Vec<RtPatchParameters> = state
             .patches()
             .iter()
-            .map(|patch| RtPatchParameters::new(patch.id(), *patch.parameters()))
-            .collect();
+            .map(|patch| {
+                let descriptor = state
+                    .capabilities()
+                    .descriptor(patch.instrument_config().capability_id())
+                    .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
+                let values = descriptor
+                    .scalar_parameters()
+                    .map(|spec| {
+                        let value = patch
+                            .instrument_config()
+                            .value(spec.id())
+                            .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
+                        spec.scalar_value(value)
+                            .map_err(|_| StateProjectionError::InvalidInstrumentConfig)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let instrument = RtInstrumentParameters::new(&values)?;
+                Ok(RtPatchParameters::projected(
+                    patch.id(),
+                    *patch.parameters(),
+                    *patch.envelope(),
+                    instrument,
+                ))
+            })
+            .collect::<Result<Vec<_>, StateProjectionError>>()?;
 
         ParameterSnapshot::for_graph(
             state.generation(),
@@ -203,11 +323,20 @@ impl StateProjector {
         &self,
         state: &AppState,
         previous_snapshot: &StateSnapshot,
+        previous_page: Option<&PatchPageProjection>,
         previous_text: &TextProjection,
         previous_parameters: ParameterSnapshot,
         previous_tree: &StateTree,
-    ) -> Result<(StateSnapshot, TextProjection, ParameterSnapshot, StateTree), StateProjectionError>
-    {
+    ) -> Result<
+        (
+            StateSnapshot,
+            Option<PatchPageProjection>,
+            TextProjection,
+            ParameterSnapshot,
+            StateTree,
+        ),
+        StateProjectionError,
+    > {
         let generation = state.generation();
         if previous_parameters.generation().checked_add(1) != Some(generation)
             || previous_tree.generation().checked_add(1) != Some(generation)
@@ -220,10 +349,12 @@ impl StateProjector {
         let snapshot = previous_snapshot
             .with_generation(generation)
             .ok_or(StateProjectionError::StateGenerationTemplateMismatch)?;
+        let page = previous_page.map(|page| page.with_state_hash(snapshot.hash().to_owned()));
         let text = previous_text.with_state_hash(snapshot.hash().to_owned());
         let parameters = previous_parameters.with_generation(generation);
-        let tree = previous_tree.with_midi_generation(&snapshot, &text, &parameters)?;
-        Ok((snapshot, text, parameters, tree))
+        let tree =
+            previous_tree.with_midi_generation(&snapshot, page.as_ref(), &text, &parameters)?;
+        Ok((snapshot, page, text, parameters, tree))
     }
 
     fn snapshot_from_serialized(
@@ -239,21 +370,36 @@ impl StateProjector {
         &self,
         state: &SerializedState<'_>,
         selection: Selection,
+        page: Option<&PatchPageProjection>,
         state_hash: &str,
     ) -> Result<TextProjection, StateProjectionError> {
-        if !state.selection.matches(selection) {
+        if !state.interaction.mixer_selection.matches(selection) {
             return Err(StateProjectionError::SelectionDoesNotMatchSnapshot);
         }
-        render_text(state, selection, state_hash)
+        match state.interaction.context {
+            crate::control::TopLevelContext::Mixer => {
+                if page.is_some() {
+                    return Err(StateProjectionError::InvalidSelection);
+                }
+                render_mixer_text(state, selection, state_hash)
+            }
+            crate::control::TopLevelContext::Patch => {
+                let page = page.ok_or(StateProjectionError::InvalidSelection)?;
+                if page.state_hash() != state_hash {
+                    return Err(StateProjectionError::InvalidSelection);
+                }
+                render_patch_text(page, state_hash)
+            }
+        }
     }
 }
 
-fn render_text(
+fn render_mixer_text(
     state: &SerializedState<'_>,
     selection: Selection,
     state_hash: &str,
 ) -> Result<TextProjection, StateProjectionError> {
-    let mut lines = vec![HEADER.to_owned()];
+    let mut lines = vec![MIXER_HEADER.to_owned()];
     let mut selected_line = None;
 
     for (patch_index, patch) in state.patches.iter().enumerate() {
@@ -265,6 +411,9 @@ fn render_text(
             .capabilities
             .descriptor(patch.instrument.capability_id())
             .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
+        let editable_targets =
+            resolve_patch_editable_targets(descriptor, patch.instrument.as_ref())
+                .map_err(|_| StateProjectionError::InvalidInstrumentConfig)?;
         lines.push(format!(
             "PATCH id={} name={} channel={} capability={} ({})",
             patch.id,
@@ -281,21 +430,72 @@ fn render_text(
             ));
             for spec in section.parameters() {
                 let value = format_instrument_value(spec, patch.instrument.as_ref())?;
-                lines.push(format!("  {} ({})={value}", spec.label(), spec.id()));
+                if spec.update() == ParameterUpdate::Scalar {
+                    let target = PatchEditableTarget::Instrument(spec.id().clone());
+                    let parameter_index = editable_targets
+                        .iter()
+                        .position(|candidate| candidate == &target)
+                        .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
+                    let selected = selection.section() == SelectionSection::Patch
+                        && selection.patch_index() == patch_index
+                        && selection.parameter_index() == parameter_index;
+                    push_parameter_text_line(
+                        &mut lines,
+                        &mut selected_line,
+                        selected,
+                        &format!("{} ({})", spec.label(), spec.id()),
+                        &value,
+                    );
+                } else {
+                    lines.push(format!("  {} ({})={value}", spec.label(), spec.id()));
+                }
             }
         }
 
         let parameters = [
-            ("gainDb", patch.gain_db),
-            ("pan", patch.pan),
-            ("reverbSend", patch.reverb_send),
-            ("delaySend", patch.delay_send),
+            patch.gain_db,
+            patch.pan,
+            patch.reverb_send,
+            patch.delay_send,
         ];
-        for (parameter_index, (name, value)) in parameters.into_iter().enumerate() {
+        for (descriptor, value) in
+            crate::mixer::channel_parameters::ChannelParameters::surface_descriptor()
+                .iter()
+                .zip(parameters)
+        {
+            let target = PatchEditableTarget::Mixer(descriptor.parameter());
+            let parameter_index = editable_targets
+                .iter()
+                .position(|candidate| candidate == &target)
+                .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
             let selected = selection.section() == SelectionSection::Patch
                 && selection.patch_index() == patch_index
                 && selection.parameter_index() == parameter_index;
-            push_parameter_line(&mut lines, &mut selected_line, selected, name, value);
+            push_parameter_line(
+                &mut lines,
+                &mut selected_line,
+                selected,
+                descriptor.name(),
+                value,
+            );
+        }
+
+        for descriptor in crate::synth::voice_envelope::VoiceEnvelope::surface_descriptor() {
+            let target = PatchEditableTarget::Envelope(descriptor.parameter());
+            let parameter_index = editable_targets
+                .iter()
+                .position(|candidate| candidate == &target)
+                .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
+            let selected = selection.section() == SelectionSection::Patch
+                && selection.patch_index() == patch_index
+                && selection.parameter_index() == parameter_index;
+            push_parameter_line(
+                &mut lines,
+                &mut selected_line,
+                selected,
+                descriptor.name(),
+                patch.envelope.value(descriptor.parameter()),
+            );
         }
     }
 
@@ -320,14 +520,58 @@ fn render_text(
     }
 
     let selected_line = selected_line.ok_or(StateProjectionError::InvalidSelection)?;
-    Ok(TextProjection::new(
+    Ok(TextProjection::for_context(
+        crate::control::TopLevelContext::Mixer,
         lines.join("\n"),
         selected_line,
         state_hash.to_owned(),
     ))
 }
 
-fn format_instrument_value(
+fn render_patch_text(
+    page: &PatchPageProjection,
+    state_hash: &str,
+) -> Result<TextProjection, StateProjectionError> {
+    let mut lines = vec![PATCH_HEADER.to_owned()];
+    lines.push(format!(
+        "> PATCH {}",
+        serde_json::to_string(page.patch())
+            .map_err(|_| StateProjectionError::StateSerialization)?
+    ));
+    lines.push(format!(
+        " ENGINE {}",
+        serde_json::to_string(page.engine())
+            .map_err(|_| StateProjectionError::StateSerialization)?
+    ));
+    for row in page.envelope() {
+        lines.push(format!(
+            " ENVELOPE {}",
+            serde_json::to_string(row).map_err(|_| StateProjectionError::StateSerialization)?
+        ));
+    }
+    for section in page.sections() {
+        lines.push(format!(
+            " SECTION id={} label={}",
+            section.id(),
+            section.label()
+        ));
+        for row in section.parameters() {
+            lines.push(format!(
+                " PARAMETER {}",
+                serde_json::to_string(row).map_err(|_| StateProjectionError::StateSerialization)?
+            ));
+        }
+    }
+
+    Ok(TextProjection::for_context(
+        crate::control::TopLevelContext::Patch,
+        lines.join("\n"),
+        1,
+        state_hash.to_owned(),
+    ))
+}
+
+pub(crate) fn format_instrument_value(
     spec: &ParameterSpec,
     config: &InstrumentConfig,
 ) -> Result<String, StateProjectionError> {
@@ -375,6 +619,16 @@ fn push_parameter_line(
     selected: bool,
     name: &str,
     value: f32,
+) {
+    push_parameter_text_line(lines, selected_line, selected, name, &value.to_string());
+}
+
+fn push_parameter_text_line(
+    lines: &mut Vec<String>,
+    selected_line: &mut Option<usize>,
+    selected: bool,
+    name: &str,
+    value: &str,
 ) {
     let marker = if selected { '>' } else { ' ' };
     if selected {
@@ -458,9 +712,12 @@ mod tests {
         );
         assert_eq!(decoded.patches[0].gain_db, -6.0);
         assert_eq!(decoded.global.delay_milliseconds, 375.0);
-        assert_eq!(decoded.selection.section, SerializedSelectionSection::Patch);
-        assert_eq!(decoded.selection.patch_index, 0);
-        assert_eq!(decoded.selection.parameter_index, 0);
+        assert_eq!(
+            decoded.interaction.mixer_selection.section,
+            SerializedSelectionSection::Patch
+        );
+        assert_eq!(decoded.interaction.mixer_selection.patch_index, 0);
+        assert_eq!(decoded.interaction.mixer_selection.parameter_index, 0);
     }
 
     #[test]
@@ -474,7 +731,7 @@ mod tests {
             .text_projection(&snapshot, Selection::patch(0))
             .unwrap();
 
-        assert!(text.body().starts_with(HEADER));
+        assert!(text.body().starts_with(MIXER_HEADER));
         assert!(text
             .body()
             .contains("PATCH id=1 name=Patch 1 channel=0 capability=HiDef SoundFont (instrument.soundfont.hidef)"));
@@ -545,10 +802,11 @@ mod tests {
     fn complete_projection_uses_one_accepted_generation() {
         let state = installed_state();
         let revision = GraphRevision::new(17).unwrap();
-        let (snapshot, text, parameters, tree) = StateProjector::for_graph(revision)
+        let (snapshot, page, text, parameters, tree) = StateProjector::for_graph(revision)
             .project_with_tree(&state)
             .unwrap();
 
+        assert!(page.is_none());
         assert_eq!(text.state_hash(), snapshot.hash());
         assert_eq!(parameters.generation(), state.generation());
         assert_eq!(parameters.graph_revision(), revision);
@@ -574,7 +832,7 @@ mod tests {
     fn midi_generation_projection_is_exactly_equal_to_eager_projection() {
         let mut state = installed_state();
         let projector = StateProjector::for_graph(GraphRevision::new(23).unwrap());
-        let (snapshot, text, parameters, tree) = projector.project_with_tree(&state).unwrap();
+        let (snapshot, page, text, parameters, tree) = projector.project_with_tree(&state).unwrap();
         let patch_id = state.patches()[0].id();
         let message = MidiMessage::try_new(
             state.patches()[0].channel(),
@@ -586,7 +844,7 @@ mod tests {
         state.apply(AppEvent::Midi { patch_id, message }).unwrap();
 
         let fast = projector
-            .project_midi_generation(&state, &snapshot, &text, parameters, &tree)
+            .project_midi_generation(&state, &snapshot, page.as_ref(), &text, parameters, &tree)
             .unwrap();
         let eager = projector.project_with_tree(&state).unwrap();
 
@@ -594,8 +852,63 @@ mod tests {
         assert_eq!(fast.1, eager.1);
         assert_eq!(fast.2, eager.2);
         assert_eq!(fast.3, eager.3);
-        assert_eq!(fast.2.graph_revision(), GraphRevision::new(23).unwrap());
+        assert_eq!(fast.4, eager.4);
         assert_eq!(fast.3.graph_revision(), GraphRevision::new(23).unwrap());
+        assert_eq!(fast.4.graph_revision(), GraphRevision::new(23).unwrap());
+    }
+
+    #[test]
+    fn patch_projection_and_generation_only_midi_are_context_coherent_and_shared() {
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(
+                crate::control::TopLevelContext::Patch,
+            ))
+            .unwrap();
+        let projector = StateProjector::for_graph(GraphRevision::new(29).unwrap());
+        let (snapshot, page, text, parameters, tree) = projector.project_with_tree(&state).unwrap();
+        let page = page.expect("PATCH context projects one focused page");
+
+        assert_eq!(page.patch().id(), state.patches()[0].id());
+        assert_eq!(page.state_hash(), snapshot.hash());
+        assert_eq!(text.context(), crate::control::TopLevelContext::Patch);
+        assert!(text.body().starts_with(PATCH_HEADER));
+        assert_eq!(text.state_hash(), snapshot.hash());
+        let tree_value: serde_json::Value = serde_json::from_str(tree.json()).unwrap();
+        assert_eq!(tree_value["interaction"]["context"], "patch");
+        assert_eq!(tree_value["projection"]["context"], "patch");
+        assert_eq!(
+            tree_value["patchPage"]["patch"]["id"],
+            page.patch().id().value()
+        );
+
+        let body_address = text.body().as_ptr();
+        let message = MidiMessage::try_new(
+            state.patches()[0].channel(),
+            MidiMessageKind::NoteOn,
+            60,
+            100,
+        )
+        .unwrap();
+        state
+            .apply(AppEvent::Midi {
+                patch_id: state.patches()[0].id(),
+                message,
+            })
+            .unwrap();
+        let fast = projector
+            .project_midi_generation(&state, &snapshot, Some(&page), &text, parameters, &tree)
+            .unwrap();
+        let eager = projector.project_with_tree(&state).unwrap();
+
+        assert_eq!(fast, eager);
+        let fast_page = fast.1.as_ref().unwrap();
+        assert!(page.shares_content_with(fast_page));
+        assert_eq!(fast.2.body().as_ptr(), body_address);
+        assert_eq!(fast_page.state_hash(), fast.0.hash());
+        assert_eq!(fast.2.state_hash(), fast.0.hash());
+        assert_eq!(fast.3.generation(), state.generation());
+        assert_eq!(fast.4.generation(), state.generation());
     }
 
     #[test]

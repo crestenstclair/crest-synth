@@ -3,9 +3,7 @@
 ## Purpose
 
 Define stable, schema-driven instrument capabilities and generic Patch-owned configurations without coupling canonical state or projections to one sound engine.
-
 ## Requirements
-
 ### Requirement: Canonical instrument capability identities
 Every installed instrument implementation and each of its parameters SHALL have stable namespaced identifiers that are independent of display labels, registry positions, filesystem paths, engine instances, and UI widgets.
 
@@ -14,14 +12,14 @@ Every installed instrument implementation and each of its parameters SHALL have 
 - **THEN** capability and parameter identities remain stable across runs and can be joined to Patch configs without positional or label matching
 
 ### Requirement: Descriptor-owned instrument schema
-Each installed instrument capability SHALL expose one immutable ordered descriptor containing its label, semantic accent, sections, parameter specifications, asset requirements, bounded voice capacity, and supported MIDI message kinds. Each parameter specification SHALL declare its stable identity, label, value kind, default, Scalar or Structural update class, applicable bounds or choices, adjustment steps, formatting metadata, and declarative dependencies.
+Each installed instrument capability SHALL expose one immutable ordered descriptor containing its label, semantic accent, sections, parameter specifications, asset requirements, typed voice policy, and supported MIDI message kinds. `FixedPerPatch` SHALL declare an exact capacity newly owned by every prepared Patch; `EngineManaged` SHALL leave note allocation to one Patch-local engine instance while its preparer retains a finite measured real-time safety ceiling. Voice policy SHALL describe one Patch and SHALL NOT encode an engine-global voice budget or capability-specific Patch-count limit. Each parameter specification SHALL declare its stable identity, label, value kind, default, Scalar or Structural update class, applicable bounds or choices, adjustment steps, formatting metadata, and declarative dependencies. A descriptor SHALL contain at most the declared fixed real-time Scalar-parameter capacity.
 
 #### Scenario: Current SoundFont descriptor is inspected
 - **WHEN** the current application registry is constructed
-- **THEN** it contains exactly `instrument.soundfont.hidef` with ordered specifications for bank, program, percussion, and `./sf2/HiDef.sf2`, all classified as Structural
+- **THEN** it contains `instrument.soundfont.hidef` with ordered Structural bank, program, percussion, and `./sf2/HiDef.sf2` specifications plus `instrument.braids` with ordered Scalar Model, Timbre, and Color specifications; SoundFont reports `EngineManaged`, Braids reports `FixedPerPatch(16)`, and both report their exact supported MIDI kinds
 
 #### Scenario: Descriptor metadata is invalid
-- **WHEN** a descriptor repeats an identity, declares an invalid default or range, references an undeclared dependency, reports zero voice capacity, or repeats a supported MIDI kind
+- **WHEN** a descriptor repeats an identity, declares an invalid default or range, references an undeclared dependency, reports a zero `FixedPerPatch` capacity or malformed voice policy, repeats a supported MIDI kind, or exceeds the fixed Scalar capacity
 - **THEN** registry construction fails with a typed error before any Patch or renderer is installed
 
 ### Requirement: Generic Patch-owned instrument config
@@ -36,11 +34,11 @@ Each Patch SHALL own one generic instrument config containing a capability ident
 - **THEN** the generic config contract can represent its declared values and assets without adding capability-specific fields to Patch
 
 ### Requirement: Immutable validated capability registry
-The accepted application state SHALL contain one immutable ordered registry of installed capability descriptors, and every installed Patch config SHALL resolve to exactly one descriptor and satisfy its declared parameters, values, assets, kinds, bounds, choices, and dependencies.
+The accepted application state SHALL contain one immutable ordered registry of installed capability descriptors, and every installed Patch config SHALL resolve to exactly one descriptor and satisfy its declared parameters, values, assets, kinds, bounds, choices, update classes, and dependencies.
 
 #### Scenario: Valid fixture Patches are installed
-- **WHEN** all fixture configs match the installed SoundFont descriptor
-- **THEN** installation succeeds atomically, the registry remains unchanged, and every Patch retains its validated generic config
+- **WHEN** alternating SoundFont and Braids fixture configs match their installed descriptors
+- **THEN** installation succeeds atomically, the registry remains unchanged, and every Patch retains its validated generic config and capability identity
 
 #### Scenario: Patch config is invalid
 - **WHEN** a config uses an unknown capability or contains a missing, duplicate, undeclared, wrong-kind, dependency-invalid, or out-of-range assignment or asset reference
@@ -73,12 +71,43 @@ Canonical serialized state and the current text projection SHALL include the ins
 - **THEN** serialization, text projection, and schema-derived coverage follow the production descriptor and the duplicated expectation fails verification
 
 ### Requirement: Phase 2 increment boundary
-This increment SHALL install only the current SoundFont capability and runtime preparer while establishing the generic prepared-instrument ports, bounded engine rack, and structural graph handoff. It SHALL NOT add Braids C++ or FFI code, a second production capability, user-selectable or simultaneous mixed-engine product configuration, engine selection, PATCH page, editable capability parameters, modulation, layering, or per-Patch effects. Deterministic heterogeneous prepared test instruments MAY prove the generic runtime contract without being installed as product capabilities.
+The completed Phase 2 foundation SHALL retain HiDef SoundFont and Braids as the two production instrument capabilities and runtime preparers, SHALL alternate them in the fixed fixture scene, and SHALL permit descriptor-classified Scalar capability values plus common Patch ADSR to be edited through the existing generic MIXER reducer and latest snapshot. Phase 3 MAY project both installed descriptors, their generic configs, Structural fields, and complete registry choices through a read-only PATCH page. Structural capability values SHALL remain preparation-only. This increment SHALL NOT add runtime engine selection, PATCH editing, SoundFont preset discovery or editing, modulation, layering, per-Patch effects, plugin hosting, or arbitrary graph edits.
 
 #### Scenario: Application starts after the prepared-rack refactor
 - **WHEN** the normal, smoke, headless-demo, or live-demo path is launched
-- **THEN** current SoundFont behavior remains available through exactly one installed capability and preparer behind the generic rack, and no unavailable engine or UI feature is presented
+- **THEN** the accepted registry and projections contain both installed capabilities, the prepared rack contains exact alternating implementations, PATCH can display their real schemas without placeholders, and no unavailable capability or later structural workflow is presented
 
 #### Scenario: Runtime polymorphism is verified
-- **WHEN** the prepared-rack contract uses two different deterministic prepared instrument implementations
-- **THEN** they share the same bounded rack and renderer contract without appearing in the production capability registry or Patch projection
+- **WHEN** SoundFont and Braids Patches are inspected in PATCH and receive targeted MIDI, Scalar edits in MIXER, and rendering
+- **THEN** both share the same Patch, reducer, descriptor/config projection, preparation, rack, stem, mixer, and observation contracts without an engine-specific branch in those owners
+
+#### Scenario: Engine choice is invoked during the read-only increment
+- **WHEN** an installed engine choice is treated as an editable PATCH control
+- **THEN** the action is unavailable and no config, preparer, prepared graph, active instrument, or fallback changes
+
+### Requirement: Production capability ports are composed explicitly
+The production composition root SHALL construct and inject every installed instrument capability provider and its separate preparer into the standalone application. Before fixture initialization or graph publication, the application SHALL build the immutable registry from the injected provider descriptors and SHALL require exactly one provider and exactly one preparer for every installed capability identity. Missing, duplicate, unknown, or mismatched registrations SHALL return a typed startup failure without selecting a fallback.
+
+#### Scenario: Matching production registrations start
+- **WHEN** the production constructor receives the declared providers and one identity-matched preparer for each provider
+- **THEN** it accepts the composition and later graph preparation uses only those injected ports
+
+#### Scenario: Provider or preparer registration is invalid
+- **WHEN** a provider or preparer is missing, duplicated, unknown to the opposite collection, or identity-mismatched
+- **THEN** construction fails with the corresponding typed error before a graph is prepared or published
+
+#### Scenario: Concrete selection is replaced in a witness
+- **WHEN** a deterministic witness supplies conforming provider and preparer fixtures through the production constructor
+- **THEN** the standalone application uses those fixtures without constructing a built-in capability or preparer internally
+
+### Requirement: Generic Scalar capability adjustment
+The reducer SHALL resolve editable capability values from the selected Patch's installed descriptor and SHALL permit only parameters classified Scalar to change without graph preparation. It SHALL create and validate one canonical descriptor-ordered candidate config, commit it transactionally, and SHALL NOT match SoundFont or Braids identities to decide the parameter shape.
+
+#### Scenario: Braids choice or continuous value is adjusted
+- **WHEN** Model, Timbre, or Color is selected and receives a valid semantic adjustment
+- **THEN** exactly that assignment changes to the descriptor-derived choice or numeric value and the new accepted generation is projected to audio
+
+#### Scenario: Structural value is selected for live adjustment
+- **WHEN** a SoundFont bank, program, percussion, or asset value is treated as a live Scalar control
+- **THEN** the operation is unavailable or rejected without changing the config, preparing a graph, or selecting a fallback
+

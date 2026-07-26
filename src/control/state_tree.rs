@@ -1,13 +1,15 @@
 use crate::control::serialized_state::{
-    SerializedGlobalParameters, SerializedPatch, SerializedSelection, SerializedState,
+    SerializedGlobalParameters, SerializedInteractionState, SerializedPatch, SerializedState,
 };
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
+use crate::control::{PatchPageProjection, TopLevelContext};
 use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
-use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
+use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{CapabilityRegistry, InstrumentConfig};
+use crate::synth::voice_envelope::VoiceEnvelope;
 use core::fmt;
 use serde::Serialize;
 use std::sync::{Arc, OnceLock};
@@ -35,6 +37,10 @@ pub enum StateTreeError {
     Serialization,
     /// A generation-only projection could not reuse the canonical tree shape.
     MidiTemplateMismatch,
+    /// State, page, and text did not name the same reducer-owned context.
+    ContextMismatch,
+    /// PATCH page presence, identity, or snapshot hash was incoherent.
+    PatchPageMismatch,
 }
 
 impl fmt::Display for StateTreeError {
@@ -71,6 +77,12 @@ impl fmt::Display for StateTreeError {
             Self::MidiTemplateMismatch => {
                 formatter.write_str("state tree generation template does not match canonical JSON")
             }
+            Self::ContextMismatch => {
+                formatter.write_str("state and text projection contexts do not match")
+            }
+            Self::PatchPageMismatch => {
+                formatter.write_str("PATCH page does not match canonical context, focus, or hash")
+            }
         }
     }
 }
@@ -89,6 +101,8 @@ pub struct StateTree {
     graph_revision: GraphRevision,
     patch_count: usize,
     selected_line: usize,
+    context: TopLevelContext,
+    patch_page_id: Option<crate::kernel::PatchId>,
     state_hash: Arc<str>,
 }
 
@@ -106,23 +120,26 @@ enum TreeJson {
 #[derive(Debug)]
 struct MidiTreeTemplate {
     before_root_generation: Arc<str>,
-    before_state_hash: Arc<str>,
-    before_parameter_generation: Arc<str>,
+    between_root_and_parameter_hashes: Vec<Arc<str>>,
     after_parameter_generation: Arc<str>,
 }
 
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
-    pub const SCHEMA_VERSION: u32 = 3;
+    pub const SCHEMA_VERSION: u32 = 5;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
         "capabilities",
         "patches",
         "global",
-        "selection.section",
-        "selection.patchIndex",
-        "selection.parameterIndex",
+        "interaction.context",
+        "interaction.mixerSelection.section",
+        "interaction.mixerSelection.patchIndex",
+        "interaction.mixerSelection.parameterIndex",
+        "interaction.patchFocus",
+        "patchPage",
+        "projection.context",
         "projection.body",
         "projection.selectedLine",
         "projection.stateHash",
@@ -151,21 +168,19 @@ impl StateTree {
         "capabilities.descriptors[].sections[].parameters[].defaultValue.value.locator",
         "capabilities.descriptors[].sections[].parameters[].range.minimum",
         "capabilities.descriptors[].sections[].parameters[].range.maximum",
+        "capabilities.descriptors[].sections[].parameters[].range",
         "capabilities.descriptors[].sections[].parameters[].choices[].id",
         "capabilities.descriptors[].sections[].parameters[].choices[].label",
         "capabilities.descriptors[].sections[].parameters[].fineStep",
         "capabilities.descriptors[].sections[].parameters[].coarseStep",
         "capabilities.descriptors[].sections[].parameters[].unit",
         "capabilities.descriptors[].sections[].parameters[].formatter",
-        "capabilities.descriptors[].sections[].parameters[].enabledWhen.parameterId",
-        "capabilities.descriptors[].sections[].parameters[].enabledWhen.equals.kind",
-        "capabilities.descriptors[].sections[].parameters[].enabledWhen.equals.value",
-        "capabilities.descriptors[].sections[].parameters[].visibleWhen.parameterId",
-        "capabilities.descriptors[].sections[].parameters[].visibleWhen.equals.kind",
-        "capabilities.descriptors[].sections[].parameters[].visibleWhen.equals.value",
+        "capabilities.descriptors[].sections[].parameters[].enabledWhen",
+        "capabilities.descriptors[].sections[].parameters[].visibleWhen",
         "capabilities.descriptors[].assetRequirements[].parameterId",
         "capabilities.descriptors[].assetRequirements[].required",
-        "capabilities.descriptors[].voiceLimit",
+        "capabilities.descriptors[].voicePolicy.kind",
+        "capabilities.descriptors[].voicePolicy.voices",
         "capabilities.descriptors[].supportedMidiKinds[]",
         "patches[].id",
         "patches[].name",
@@ -177,6 +192,10 @@ impl StateTree {
         "patches[].instrument.assetReferences[].parameterId",
         "patches[].instrument.assetReferences[].reference.kind",
         "patches[].instrument.assetReferences[].reference.locator",
+        "patches[].envelope.attackMilliseconds",
+        "patches[].envelope.decayMilliseconds",
+        "patches[].envelope.releaseMilliseconds",
+        "patches[].envelope.sustain",
         "patches[].parameters.gainDb",
         "patches[].parameters.pan",
         "patches[].parameters.reverbSend",
@@ -188,9 +207,55 @@ impl StateTree {
         "global.delayMilliseconds",
         "global.delayFeedback",
         "global.delayReturn",
-        "selection.section",
-        "selection.patchIndex",
-        "selection.parameterIndex",
+        "interaction.context",
+        "interaction.mixerSelection.section",
+        "interaction.mixerSelection.patchIndex",
+        "interaction.mixerSelection.parameterIndex",
+        "interaction.patchFocus",
+        "patchPage",
+        "patchPage.context",
+        "patchPage.engine.activeCapabilityId",
+        "patchPage.engine.activeLabel",
+        "patchPage.engine.choices[].capabilityId",
+        "patchPage.engine.choices[].label",
+        "patchPage.engine.editable",
+        "patchPage.envelope[].coarseStep",
+        "patchPage.envelope[].editable",
+        "patchPage.envelope[].fineStep",
+        "patchPage.envelope[].id",
+        "patchPage.envelope[].label",
+        "patchPage.envelope[].maximum",
+        "patchPage.envelope[].minimum",
+        "patchPage.envelope[].unit",
+        "patchPage.envelope[].value",
+        "patchPage.patch.id",
+        "patchPage.patch.midiChannel",
+        "patchPage.patch.name",
+        "patchPage.sections[].id",
+        "patchPage.sections[].label",
+        "patchPage.sections[].parameters[].choices[].id",
+        "patchPage.sections[].parameters[].choices[].label",
+        "patchPage.sections[].parameters[].coarseStep",
+        "patchPage.sections[].parameters[].editable",
+        "patchPage.sections[].parameters[].enabled",
+        "patchPage.sections[].parameters[].fineStep",
+        "patchPage.sections[].parameters[].formatter",
+        "patchPage.sections[].parameters[].id",
+        "patchPage.sections[].parameters[].kind",
+        "patchPage.sections[].parameters[].label",
+        "patchPage.sections[].parameters[].range.maximum",
+        "patchPage.sections[].parameters[].range.minimum",
+        "patchPage.sections[].parameters[].range",
+        "patchPage.sections[].parameters[].unit",
+        "patchPage.sections[].parameters[].update",
+        "patchPage.sections[].parameters[].value.reference.kind",
+        "patchPage.sections[].parameters[].value.reference.locator",
+        "patchPage.sections[].parameters[].value.source",
+        "patchPage.sections[].parameters[].value.value.kind",
+        "patchPage.sections[].parameters[].value.value.value",
+        "patchPage.sections[].parameters[].visible",
+        "patchPage.stateHash",
+        "projection.context",
         "projection.body",
         "projection.selectedLine",
         "projection.stateHash",
@@ -198,6 +263,12 @@ impl StateTree {
         "parameters.graphRevision",
         "parameters.patchCount",
         "parameters.patches[].patchId",
+        "parameters.patches[].envelope.attackMilliseconds",
+        "parameters.patches[].envelope.decayMilliseconds",
+        "parameters.patches[].envelope.sustain",
+        "parameters.patches[].envelope.releaseMilliseconds",
+        "parameters.patches[].instrument.count",
+        "parameters.patches[].instrument.values[]",
         "parameters.patches[].parameters.gainDb",
         "parameters.patches[].parameters.pan",
         "parameters.patches[].parameters.reverbSend",
@@ -228,10 +299,20 @@ impl StateTree {
         projection: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<Self, StateTreeError> {
+        Self::with_patch_page(snapshot, None, projection, parameters)
+    }
+
+    /// Builds one observation tree with an explicit optional PATCH page.
+    pub fn with_patch_page(
+        snapshot: &StateSnapshot,
+        patch_page: Option<&PatchPageProjection>,
+        projection: &TextProjection,
+        parameters: &ParameterSnapshot,
+    ) -> Result<Self, StateTreeError> {
         let state: SerializedState<'_> = serde_json::from_str(snapshot.json())
             .map_err(|_| StateTreeError::StateDeserialization)?;
 
-        Self::from_serialized_state(&state, snapshot, projection, parameters)
+        Self::from_serialized_state(&state, snapshot, patch_page, projection, parameters)
     }
 
     /// Builds the production tree from the canonical typed state that produced
@@ -240,16 +321,27 @@ impl StateTree {
     pub(crate) fn from_serialized_state(
         state: &SerializedState<'_>,
         snapshot: &StateSnapshot,
+        patch_page: Option<&PatchPageProjection>,
         projection: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<Self, StateTreeError> {
         if projection.state_hash() != snapshot.hash() {
             return Err(StateTreeError::ProjectionHashMismatch);
         }
+        if projection.context() != state.interaction.context {
+            return Err(StateTreeError::ContextMismatch);
+        }
+        match (state.interaction.context, patch_page) {
+            (TopLevelContext::Mixer, None) => {}
+            (TopLevelContext::Patch, Some(page))
+                if page.context() == TopLevelContext::Patch
+                    && page.state_hash() == snapshot.hash()
+                    && Some(page.patch().id().value()) == state.interaction.patch_focus => {}
+            _ => return Err(StateTreeError::PatchPageMismatch),
+        }
         validate_parameter_projection(state, parameters)?;
 
-        let serializable =
-            SerializableStateTree::new(state, projection, parameters, snapshot.hash());
+        let serializable = SerializableStateTree::new(state, patch_page, projection, parameters);
         let json =
             serde_json::to_string(&serializable).map_err(|_| StateTreeError::Serialization)?;
 
@@ -259,6 +351,8 @@ impl StateTree {
             graph_revision: parameters.graph_revision(),
             patch_count: state.patches.len(),
             selected_line: projection.selected_line(),
+            context: state.interaction.context,
+            patch_page_id: patch_page.map(|page| page.patch().id()),
             state_hash: Arc::from(snapshot.hash()),
         })
     }
@@ -267,6 +361,7 @@ impl StateTree {
     pub(crate) fn with_midi_generation(
         &self,
         snapshot: &StateSnapshot,
+        patch_page: Option<&PatchPageProjection>,
         projection: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<Self, StateTreeError> {
@@ -284,6 +379,17 @@ impl StateTree {
         }
         if projection.selected_line() != self.selected_line {
             return Err(StateTreeError::MidiTemplateMismatch);
+        }
+        if projection.context() != self.context {
+            return Err(StateTreeError::ContextMismatch);
+        }
+        match (self.context, self.patch_page_id, patch_page) {
+            (TopLevelContext::Mixer, None, None) => {}
+            (TopLevelContext::Patch, Some(expected), Some(page))
+                if page.patch().id() == expected
+                    && page.context() == TopLevelContext::Patch
+                    && page.state_hash() == snapshot.hash() => {}
+            _ => return Err(StateTreeError::PatchPageMismatch),
         }
 
         let template = match &self.json {
@@ -307,6 +413,8 @@ impl StateTree {
             graph_revision: self.graph_revision,
             patch_count: self.patch_count,
             selected_line: self.selected_line,
+            context: self.context,
+            patch_page_id: self.patch_page_id,
             state_hash,
         })
     }
@@ -367,6 +475,8 @@ impl PartialEq for StateTree {
             && self.graph_revision == other.graph_revision
             && self.patch_count == other.patch_count
             && self.selected_line == other.selected_line
+            && self.context == other.context
+            && self.patch_page_id == other.patch_page_id
             && self.state_hash == other.state_hash
             && self.json() == other.json()
     }
@@ -374,8 +484,7 @@ impl PartialEq for StateTree {
 
 impl MidiTreeTemplate {
     fn from_json(json: &str, generation: u64, state_hash: &str) -> Option<Self> {
-        const ROOT_MARKER: &str = "{\"schemaVersion\":3,\"generation\":";
-        const HASH_MARKER: &str = "\"stateHash\":\"";
+        const ROOT_MARKER: &str = "{\"schemaVersion\":5,\"generation\":";
         const PARAMETER_MARKER: &str = "\"parameters\":{\"generation\":";
 
         let root_start = ROOT_MARKER.len();
@@ -384,14 +493,7 @@ impl MidiTreeTemplate {
             return None;
         }
 
-        let hash_marker_start = json.get(root_end..)?.find(HASH_MARKER)? + root_end;
-        let hash_start = hash_marker_start + HASH_MARKER.len();
-        let hash_end = json.get(hash_start..)?.find('"')? + hash_start;
-        if json.get(hash_start..hash_end)? != state_hash {
-            return None;
-        }
-
-        let parameter_marker_start = json.get(hash_end..)?.find(PARAMETER_MARKER)? + hash_end;
+        let parameter_marker_start = json.get(root_end..)?.find(PARAMETER_MARKER)? + root_end;
         let parameter_start = parameter_marker_start + PARAMETER_MARKER.len();
         let parameter_end = json.get(parameter_start..)?.find(',')? + parameter_start;
         if json
@@ -403,10 +505,16 @@ impl MidiTreeTemplate {
             return None;
         }
 
+        let between = json.get(root_end..parameter_start)?;
+        let between_root_and_parameter_hashes =
+            between.split(state_hash).map(Arc::from).collect::<Vec<_>>();
+        if between_root_and_parameter_hashes.len() < 2 {
+            return None;
+        }
+
         Some(Self {
             before_root_generation: Arc::from(json.get(..root_start)?),
-            before_state_hash: Arc::from(json.get(root_end..hash_start)?),
-            before_parameter_generation: Arc::from(json.get(hash_end..parameter_start)?),
+            between_root_and_parameter_hashes,
             after_parameter_generation: Arc::from(json.get(parameter_end..)?),
         })
     }
@@ -415,17 +523,27 @@ impl MidiTreeTemplate {
         let generation = generation.to_string();
         let mut json = String::with_capacity(
             self.before_root_generation.len()
-                + self.before_state_hash.len()
-                + self.before_parameter_generation.len()
+                + self
+                    .between_root_and_parameter_hashes
+                    .iter()
+                    .map(|segment| segment.len())
+                    .sum::<usize>()
                 + self.after_parameter_generation.len()
                 + generation.len() * 2
-                + state_hash.len(),
+                + state_hash.len()
+                    * self
+                        .between_root_and_parameter_hashes
+                        .len()
+                        .saturating_sub(1),
         );
         json.push_str(&self.before_root_generation);
         json.push_str(&generation);
-        json.push_str(&self.before_state_hash);
-        json.push_str(state_hash);
-        json.push_str(&self.before_parameter_generation);
+        for (index, segment) in self.between_root_and_parameter_hashes.iter().enumerate() {
+            if index > 0 {
+                json.push_str(state_hash);
+            }
+            json.push_str(segment);
+        }
         json.push_str(&generation);
         json.push_str(&self.after_parameter_generation);
         json
@@ -454,6 +572,27 @@ fn validate_parameter_projection(
         {
             return Err(StateTreeError::PatchParametersMismatch { index });
         }
+        if state_patch.envelope != *parameter_patch.envelope() {
+            return Err(StateTreeError::PatchParametersMismatch { index });
+        }
+        let descriptor = state
+            .capabilities
+            .descriptor(state_patch.instrument.capability_id())
+            .ok_or(StateTreeError::PatchParametersMismatch { index })?;
+        if parameter_patch.instrument().count() != descriptor.scalar_parameter_count()
+            || descriptor
+                .scalar_parameters()
+                .enumerate()
+                .any(|(scalar_index, spec)| {
+                    let Some(value) = state_patch.instrument.value(spec.id()) else {
+                        return true;
+                    };
+                    spec.scalar_value(value).ok()
+                        != parameter_patch.instrument().value(scalar_index)
+                })
+        {
+            return Err(StateTreeError::PatchParametersMismatch { index });
+        }
     }
 
     if TreeGlobalParameters::from(&state.global) != TreeGlobalParameters::from(parameters.global())
@@ -472,17 +611,18 @@ struct SerializableStateTree<'a> {
     capabilities: &'a CapabilityRegistry,
     patches: Vec<TreePatch<'a>>,
     global: TreeGlobalParameters,
-    selection: &'a SerializedSelection,
-    projection: TreeProjection<'a>,
-    parameters: TreeParameterSnapshot,
+    interaction: &'a SerializedInteractionState,
+    patch_page: Option<&'a PatchPageProjection>,
+    projection: &'a TextProjection,
+    parameters: &'a ParameterSnapshot,
 }
 
 impl<'a> SerializableStateTree<'a> {
     fn new(
         state: &'a SerializedState<'_>,
+        patch_page: Option<&'a PatchPageProjection>,
         projection: &'a TextProjection,
-        parameters: &ParameterSnapshot,
-        state_hash: &'a str,
+        parameters: &'a ParameterSnapshot,
     ) -> Self {
         Self {
             schema_version: StateTree::SCHEMA_VERSION,
@@ -490,23 +630,10 @@ impl<'a> SerializableStateTree<'a> {
             capabilities: state.capabilities.as_ref(),
             patches: state.patches.iter().map(TreePatch::from).collect(),
             global: TreeGlobalParameters::from(&state.global),
-            selection: &state.selection,
-            projection: TreeProjection {
-                body: projection.body(),
-                selected_line: projection.selected_line(),
-                state_hash,
-            },
-            parameters: TreeParameterSnapshot {
-                generation: parameters.generation(),
-                graph_revision: parameters.graph_revision(),
-                patch_count: parameters.patch_count(),
-                patches: parameters
-                    .patches()
-                    .iter()
-                    .map(TreeParameterPatch::from)
-                    .collect(),
-                global: TreeGlobalParameters::from(parameters.global()),
-            },
+            interaction: &state.interaction,
+            patch_page,
+            projection,
+            parameters,
         }
     }
 }
@@ -518,6 +645,7 @@ struct TreePatch<'a> {
     name: &'a str,
     channel: u8,
     instrument: &'a InstrumentConfig,
+    envelope: VoiceEnvelope,
     parameters: TreeChannelParameters,
 }
 
@@ -528,6 +656,7 @@ impl<'a> From<&'a SerializedPatch<'_>> for TreePatch<'a> {
             name: patch.name.as_ref(),
             channel: patch.channel,
             instrument: patch.instrument.as_ref(),
+            envelope: patch.envelope,
             parameters: TreeChannelParameters::from(patch),
         }
     }
@@ -604,43 +733,6 @@ impl From<&GlobalParameters> for TreeGlobalParameters {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TreeProjection<'a> {
-    body: &'a str,
-    selected_line: usize,
-    state_hash: &'a str,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TreeParameterSnapshot {
-    generation: u64,
-    graph_revision: GraphRevision,
-    patch_count: usize,
-    patches: Vec<TreeParameterPatch>,
-    global: TreeGlobalParameters,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TreeParameterPatch {
-    patch_id: u32,
-    parameters: TreeChannelParameters,
-}
-
-impl From<&RtPatchParameters> for TreeParameterPatch {
-    fn from(patch: &RtPatchParameters) -> Self {
-        Self {
-            patch_id: patch
-                .patch_id()
-                .expect("active ParameterSnapshot entries always carry a PatchId")
-                .value(),
-            parameters: TreeChannelParameters::from(patch.parameters()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{StateTree, StateTreeError};
@@ -700,7 +792,15 @@ mod tests {
                     "delayFeedback": 0.35,
                     "delayReturn": 0.2
                 },
-                "selection": {"section": "Patch", "patchIndex": 1, "parameterIndex": 2}
+                "interaction": {
+                    "context": "mixer",
+                    "mixerSelection": {
+                        "section": "Patch",
+                        "patchIndex": 1,
+                        "parameterIndex": 2
+                    },
+                    "patchFocus": 7
+                }
             })
             .to_string(),
         )
@@ -743,7 +843,7 @@ mod tests {
         let tree = StateTree::new(&snapshot, &projection(&snapshot), &parameters()).unwrap();
         let value: Value = serde_json::from_str(tree.json()).unwrap();
 
-        assert_eq!(tree.schema_version(), 3);
+        assert_eq!(tree.schema_version(), StateTree::SCHEMA_VERSION);
         assert_eq!(tree.generation(), 42);
         assert_eq!(tree.graph_revision().value(), 7);
         assert_eq!(tree.patch_count(), 2);
@@ -751,14 +851,15 @@ mod tests {
         assert_eq!(tree.state_hash(), snapshot.hash());
 
         let root = value.as_object().unwrap();
-        assert_eq!(root.len(), 8);
+        assert_eq!(root.len(), 9);
         for property in [
             "schemaVersion",
             "generation",
             "capabilities",
             "patches",
             "global",
-            "selection",
+            "interaction",
+            "patchPage",
             "projection",
             "parameters",
         ] {
@@ -772,6 +873,12 @@ mod tests {
                 "name": "Lead",
                 "channel": 2,
                 "instrument": value["patches"][0]["instrument"].clone(),
+                "envelope": {
+                    "attackMilliseconds": 0.0,
+                    "decayMilliseconds": 0.0,
+                    "sustain": 1.0,
+                    "releaseMilliseconds": 0.0
+                },
                 "parameters": {
                     "gainDb": -6.0,
                     "pan": -0.25,
@@ -809,9 +916,19 @@ mod tests {
             })
         );
         assert_eq!(
-            value["selection"],
-            json!({"section": "Patch", "patchIndex": 1, "parameterIndex": 2})
+            value["interaction"],
+            json!({
+                "context": "mixer",
+                "mixerSelection": {
+                    "section": "Patch",
+                    "patchIndex": 1,
+                    "parameterIndex": 2
+                },
+                "patchFocus": 7
+            })
         );
+        assert!(value["patchPage"].is_null());
+        assert_eq!(value["projection"]["context"], "mixer");
         assert_eq!(
             value["projection"]["body"],
             "PATCH Lead\n> reverbSend=0.4\nGLOBAL"
@@ -825,6 +942,13 @@ mod tests {
             value["parameters"]["patches"][1],
             json!({
                 "patchId": 9,
+                "envelope": {
+                    "attackMilliseconds": 0.0,
+                    "decayMilliseconds": 0.0,
+                    "sustain": 1.0,
+                    "releaseMilliseconds": 0.0
+                },
+                "instrument": {"count": 0, "values": []},
                 "parameters": {
                     "gainDb": -12.0,
                     "pan": 0.5,
@@ -846,7 +970,7 @@ mod tests {
         assert_eq!(first.json(), second.json());
         assert!(first
             .json()
-            .starts_with("{\"schemaVersion\":3,\"generation\":42,\"capabilities\":"));
+            .starts_with("{\"schemaVersion\":5,\"generation\":42,\"capabilities\":"));
         assert_eq!(first.clone().into_json(), first.json());
     }
 
@@ -867,6 +991,16 @@ mod tests {
         ] {
             assert!(unique.contains(required), "missing {required}");
         }
+
+        let described_parameters = descriptor
+            .iter()
+            .filter_map(|path| path.strip_prefix("parameters."))
+            .collect::<std::collections::BTreeSet<_>>();
+        let parameter_descriptor = ParameterSnapshot::serialized_leaf_descriptor()
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(described_parameters, parameter_descriptor);
     }
 
     #[test]

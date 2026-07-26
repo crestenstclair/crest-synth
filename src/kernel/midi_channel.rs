@@ -1,11 +1,13 @@
 use core::fmt;
+use serde::Serialize;
 
 /// A validated zero-based MIDI channel number.
 ///
 /// MIDI channel numbers are represented internally and at adapter boundaries in
 /// the canonical `0..=15` range.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[repr(transparent)]
+#[serde(transparent)]
 pub struct MidiChannel(u8);
 
 impl MidiChannel {

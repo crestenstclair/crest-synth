@@ -7,6 +7,7 @@ use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
 use crate::real_time::graph_handoff_status::GraphHandoffStatus;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::MAX_PATCHES;
+use crate::real_time::prepared_engine_rack::RackDispatchError;
 use crate::real_time::prepared_graph::PreparedGraph;
 use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
 /// Hard-real-time owner of one active complete prepared graph.
@@ -26,6 +27,8 @@ pub struct AudioRenderer<Boundary, Structural, Observation = DiscardAudioObserva
     rendered_blocks: u64,
     rendered_frames: u64,
     commands_consumed: u64,
+    routing_failures: u64,
+    last_unknown_patch_id: Option<PatchId>,
 }
 
 impl<Boundary, Structural> AudioRenderer<Boundary, Structural, DiscardAudioObservation>
@@ -67,6 +70,8 @@ where
             rendered_blocks: 0,
             rendered_frames: 0,
             commands_consumed: 0,
+            routing_failures: 0,
+            last_unknown_patch_id: None,
         }
     }
 
@@ -75,28 +80,21 @@ where
     /// active graph into interleaved stereo output.
     pub fn render(&mut self, interleaved_stereo: &mut [f32]) {
         interleaved_stereo.fill(0.0);
+        let capacity_samples = self.active_graph.max_frames().saturating_mul(2);
+        if capacity_samples == 0 {
+            return;
+        }
+        let usable_samples = interleaved_stereo.len() - interleaved_stereo.len() % 2;
+        for block in interleaved_stereo[..usable_samples].chunks_mut(capacity_samples) {
+            self.render_bounded_block(block);
+        }
+    }
+
+    fn render_bounded_block(&mut self, interleaved_stereo: &mut [f32]) {
         self.apply_structural_handoff();
 
-        while let Some(command) = self.boundary.pop_command() {
-            self.commands_consumed = self.commands_consumed.saturating_add(1);
-            match command {
-                AudioCommand::PatchMidi { patch_id, message } => {
-                    let dispatched = {
-                        let (rack, _, _) = self.active_graph.callback_parts_mut();
-                        rack.dispatch(patch_id, message).is_ok()
-                    };
-                    if dispatched {
-                        self.active_notes.observe_patch_message(patch_id, message);
-                    }
-                }
-                AudioCommand::AllNotesOff => {
-                    let (rack, _, _) = self.active_graph.callback_parts_mut();
-                    rack.all_notes_off();
-                    self.active_notes.clear_all();
-                }
-            }
-        }
-
+        // Select the newest compatible complete projection before command
+        // delivery so note-on/note-off latching observes this generation.
         let latest = self.boundary.read_latest_parameters();
         let compatible = latest.graph_revision() == self.active_graph.revision()
             && self.active_graph.engine_rack().matches_parameters(&latest);
@@ -107,7 +105,38 @@ where
         }
         self.structural.publish_status_on_audio(self.handoff_status);
 
-        let frame_count = (interleaved_stereo.len() / 2).min(self.active_graph.max_frames());
+        while let Some(command) = self.boundary.pop_command() {
+            self.commands_consumed = self.commands_consumed.saturating_add(1);
+            match command {
+                AudioCommand::PatchMidi { patch_id, message } => {
+                    let matching_parameters = self.parameters.patch(patch_id).copied();
+                    let dispatch_result = matching_parameters.map(|parameters| {
+                        let (rack, _, _) = self.active_graph.callback_parts_mut();
+                        rack.dispatch(patch_id, message, &parameters)
+                    });
+                    match dispatch_result {
+                        Some(Ok(())) => {
+                            self.active_notes.observe_patch_message(patch_id, message);
+                        }
+                        None | Some(Err(RackDispatchError::UnknownPatch { .. })) => {
+                            self.routing_failures = self.routing_failures.saturating_add(1);
+                            self.last_unknown_patch_id = Some(patch_id);
+                        }
+                        Some(Err(
+                            RackDispatchError::Instrument { .. }
+                            | RackDispatchError::ParameterLayoutMismatch { .. },
+                        )) => {}
+                    }
+                }
+                AudioCommand::AllNotesOff => {
+                    let (rack, _, _) = self.active_graph.callback_parts_mut();
+                    rack.all_notes_off();
+                    self.active_notes.clear_all();
+                }
+            }
+        }
+
+        let frame_count = interleaved_stereo.len() / 2;
         if frame_count == 0 {
             return;
         }
@@ -118,7 +147,7 @@ where
             if patch_audio.begin_render(&parameters, frame_count).is_err() {
                 return;
             }
-            if rack.render(patch_audio).is_err() {
+            if rack.render(patch_audio, &parameters).is_err() {
                 interleaved_stereo.fill(0.0);
                 return;
             }
@@ -128,13 +157,15 @@ where
         self.rendered_blocks = self.rendered_blocks.saturating_add(1);
         self.rendered_frames = self.rendered_frames.saturating_add(frame_count as u64);
         self.observation
-            .publish_from_callback(AudioObservationSnapshot::from_mix(
+            .publish_from_callback(AudioObservationSnapshot::from_mix_with_routing(
                 self.rendered_blocks,
                 self.rendered_blocks,
                 self.rendered_frames,
                 parameters.generation(),
                 self.commands_consumed,
                 self.active_notes.count(),
+                self.routing_failures,
+                self.last_unknown_patch_id,
                 mix,
             ));
     }
@@ -555,12 +586,21 @@ mod tests {
             self.patch_id
         }
 
-        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+        fn dispatch(
+            &mut self,
+            _message: MidiMessage,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
             self.dispatches.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
-        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) {
             output.fill(0.25);
         }
 
@@ -586,12 +626,21 @@ mod tests {
             self.patch_id
         }
 
-        fn dispatch(&mut self, _message: MidiMessage) -> Result<(), PreparedInstrumentError> {
+        fn dispatch(
+            &mut self,
+            _message: MidiMessage,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
             self.dispatches.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
-        fn render(&mut self, output: &mut [f32], _frame_count: usize) {
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) {
             output.fill(0.5);
         }
 
@@ -850,10 +899,11 @@ mod tests {
         let message =
             MidiMessage::try_new(patch.channel(), MidiMessageKind::NoteOn, 60, 100).unwrap();
         let mut output = [0.0; 1_024];
+        let parameters = RtPatchParameters::new(patch.id(), *patch.parameters());
 
         begin_memory_count();
-        let dispatch = instrument.dispatch(message);
-        instrument.render(&mut output, 512);
+        let dispatch = instrument.dispatch(message, &parameters);
+        instrument.render(&mut output, 512, &parameters);
         instrument.all_notes_off();
         let (allocations, deallocations) = finish_memory_count();
 

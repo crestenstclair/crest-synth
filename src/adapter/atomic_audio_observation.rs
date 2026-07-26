@@ -72,6 +72,8 @@ struct AtomicObservationFields {
     parameter_generation: AtomicU64,
     commands_consumed: AtomicU64,
     active_notes: AtomicU32,
+    routing_failures: AtomicU64,
+    last_unknown_patch_id: AtomicU32,
     left_peak: AtomicU32,
     right_peak: AtomicU32,
     output_rms: AtomicU32,
@@ -92,6 +94,12 @@ impl AtomicObservationFields {
             parameter_generation: AtomicU64::new(initial.parameter_generation()),
             commands_consumed: AtomicU64::new(initial.commands_consumed()),
             active_notes: AtomicU32::new(initial.active_notes()),
+            routing_failures: AtomicU64::new(initial.routing_failures()),
+            last_unknown_patch_id: AtomicU32::new(
+                initial
+                    .last_unknown_patch_id()
+                    .map_or(0, |patch_id| patch_id.value()),
+            ),
             left_peak: AtomicU32::new(initial.left_peak().to_bits()),
             right_peak: AtomicU32::new(initial.right_peak().to_bits()),
             output_rms: AtomicU32::new(initial.output_rms().to_bits()),
@@ -116,6 +124,14 @@ impl AtomicObservationFields {
             .store(snapshot.commands_consumed(), Ordering::Relaxed);
         self.active_notes
             .store(snapshot.active_notes(), Ordering::Relaxed);
+        self.routing_failures
+            .store(snapshot.routing_failures(), Ordering::Relaxed);
+        self.last_unknown_patch_id.store(
+            snapshot
+                .last_unknown_patch_id()
+                .map_or(0, |patch_id| patch_id.value()),
+            Ordering::Relaxed,
+        );
         self.left_peak
             .store(snapshot.left_peak().to_bits(), Ordering::Relaxed);
         self.right_peak
@@ -143,13 +159,18 @@ impl AtomicObservationFields {
                 continue;
             }
 
-            let snapshot = AudioObservationSnapshot::from_parts(
+            let snapshot = AudioObservationSnapshot::from_parts_with_routing(
                 self.sequence.load(Ordering::Relaxed),
                 self.rendered_blocks.load(Ordering::Relaxed),
                 self.rendered_frames.load(Ordering::Relaxed),
                 self.parameter_generation.load(Ordering::Relaxed),
                 self.commands_consumed.load(Ordering::Relaxed),
                 self.active_notes.load(Ordering::Relaxed),
+                self.routing_failures.load(Ordering::Relaxed),
+                crate::kernel::patch_id::PatchId::new(
+                    self.last_unknown_patch_id.load(Ordering::Relaxed),
+                )
+                .ok(),
                 f32::from_bits(self.left_peak.load(Ordering::Relaxed)),
                 f32::from_bits(self.right_peak.load(Ordering::Relaxed)),
                 f32::from_bits(self.output_rms.load(Ordering::Relaxed)),
@@ -179,13 +200,15 @@ mod tests {
 
     fn snapshot(sequence: u64) -> AudioObservationSnapshot {
         let value = sequence as f32;
-        AudioObservationSnapshot::from_mix(
+        AudioObservationSnapshot::from_mix_with_routing(
             sequence,
             sequence,
             sequence * 64,
             sequence,
             sequence,
             sequence as u32,
+            sequence,
+            crate::kernel::patch_id::PatchId::new(sequence as u32).ok(),
             MixObservation::new(value, value, value, value, value, value, sequence, sequence),
         )
     }
@@ -218,6 +241,13 @@ mod tests {
             let sequence = latest.sequence();
             assert_eq!(latest.rendered_blocks(), sequence);
             assert_eq!(latest.parameter_generation(), sequence);
+            assert_eq!(latest.routing_failures(), sequence);
+            assert_eq!(
+                latest
+                    .last_unknown_patch_id()
+                    .map(|patch_id| patch_id.value()),
+                (sequence != 0).then_some(sequence as u32)
+            );
             assert_eq!(latest.output_rms().to_bits(), (sequence as f32).to_bits());
             assert_eq!(latest.non_finite_samples(), sequence);
         }
