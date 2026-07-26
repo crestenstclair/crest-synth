@@ -107,7 +107,12 @@ This phase does not add the Patch page, per-Patch effects, modulation routing, a
 
 Status: **In progress**
 
-Current increment: page selection plus a read-only, descriptor-driven Patch-page projection. Engine replacement, Patch-page ADSR editing, and SoundFont preset discovery remain separate later increments within this phase.
+Completed increments:
+
+1. Page selection and the read-only, descriptor-driven Patch-page projection, accepted through OpenSpec change `phase-3-patch-page-projection`.
+2. Asynchronous focused-Patch engine selection, accepted on 2026-07-26 through OpenSpec change `phase-3-asynchronous-engine-selection`. The production path now performs descriptor-default SoundFont ↔ Braids replacement through one correlated capacity-one worker and complete graph handoff while the source remains audible, publishes no fallback, retires graphs off callback, and proves both directions in deterministic and physical live witnesses.
+
+Current increment: render and edit the existing common per-voice ADSR values on PATCH without duplicating their canonical state or DSP behavior. SoundFont preset discovery remains the following separate increment within this phase.
 
 Preserve the current basic interface while introducing two directly selectable pages:
 

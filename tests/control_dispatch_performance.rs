@@ -1,9 +1,11 @@
 use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
-use crest_synth::control::app_event::AppEvent;
+use crest_synth::adapter::production_instruments::production_capability_registry;
+use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
 use crest_synth::control::event_log::EventLog;
 use crest_synth::control::state_projector::StateProjector;
+use crest_synth::control::{EngineSelectionStatusKind, TopLevelContext};
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
@@ -44,7 +46,7 @@ fn globals() -> GlobalParameters {
 
 fn installed_state() -> AppState {
     let provider = HiDefSoundFontCapability::new().unwrap();
-    let mut state = AppState::new(provider.registry().unwrap(), globals());
+    let mut state = AppState::new(production_capability_registry().unwrap(), globals());
     let patches = (0..PATCH_COUNT)
         .map(|index| {
             let id = PatchId::new(index as u32 + 1).unwrap();
@@ -64,11 +66,21 @@ fn installed_state() -> AppState {
         .collect();
     state.apply(AppEvent::InstallPatches(patches)).unwrap();
     state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+    state
 }
 
 #[test]
 fn fifteen_patch_midi_dispatch_uses_the_complete_production_control_path() {
     let state = installed_state();
+    assert_eq!(
+        state.engine_selection().kind(),
+        EngineSelectionStatusKind::Preparing
+    );
+    let initial_generation = state.generation();
+    let mut eager_state = state.clone();
     let event_log = EventLog::new(DISPATCH_COUNT).unwrap();
     let mut app_loop = AppLoop::with_event_log(
         state,
@@ -77,30 +89,57 @@ fn fifteen_patch_midi_dispatch_uses_the_complete_production_control_path() {
         event_log,
     )
     .unwrap();
+    let events = (0..DISPATCH_COUNT)
+        .map(|sequence| {
+            let patch_index = sequence % PATCH_COUNT;
+            let patch_id = PatchId::new(patch_index as u32 + 1).unwrap();
+            let channel = MidiChannel::new(patch_index as u8).unwrap();
+            let kind = if sequence % 2 == 0 {
+                MidiMessageKind::NoteOn
+            } else {
+                MidiMessageKind::NoteOff
+            };
+            let message =
+                MidiMessage::try_new(channel, kind, 48 + (sequence % 24) as u8, 96).unwrap();
+            AppEvent::Midi { patch_id, message }
+        })
+        .collect::<Vec<_>>();
     let started = Instant::now();
 
-    for sequence in 0..DISPATCH_COUNT {
-        let patch_index = sequence % PATCH_COUNT;
-        let patch_id = PatchId::new(patch_index as u32 + 1).unwrap();
-        let channel = MidiChannel::new(patch_index as u8).unwrap();
-        let kind = if sequence % 2 == 0 {
-            MidiMessageKind::NoteOn
-        } else {
-            MidiMessageKind::NoteOff
-        };
-        let message = MidiMessage::try_new(channel, kind, 48 + (sequence % 24) as u8, 96).unwrap();
-        app_loop
-            .dispatch(AppEvent::Midi { patch_id, message })
-            .unwrap();
+    for event in &events {
+        app_loop.dispatch(event.clone()).unwrap();
     }
 
     let elapsed = started.elapsed();
+    for event in events {
+        eager_state.apply(event).unwrap();
+    }
+    let (eager_snapshot, eager_page, eager_text, eager_parameters, eager_tree) =
+        StateProjector::new()
+            .project_with_tree(&eager_state)
+            .unwrap();
     let log = app_loop.event_log();
     assert_eq!(log.total_observed(), DISPATCH_COUNT as u64);
     assert_eq!(log.dropped_records(), 0);
     assert_eq!(
         app_loop.current_state_tree().generation(),
-        1 + DISPATCH_COUNT as u64
+        initial_generation + DISPATCH_COUNT as u64
+    );
+    assert_eq!(
+        app_loop.current_patch_page().unwrap().engine().status(),
+        EngineSelectionStatusKind::Preparing
+    );
+    assert_eq!(app_loop.current_patch_page(), eager_page);
+    assert_eq!(app_loop.current_text(), eager_text);
+    assert_eq!(app_loop.current_parameters(), &eager_parameters);
+    assert_eq!(app_loop.current_state_tree(), eager_tree);
+    assert_eq!(
+        app_loop.current_state_tree().json().as_bytes(),
+        eager_tree.json().as_bytes()
+    );
+    assert_eq!(
+        app_loop.current_state_tree().state_hash(),
+        eager_snapshot.hash()
     );
     assert!(
         elapsed <= MAX_DISPATCH_DURATION,

@@ -1,5 +1,5 @@
 use core::fmt;
-use serde::Serialize;
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 /// Stable identity assigned to one instrument patch.
 ///
@@ -41,6 +41,16 @@ impl TryFrom<u32> for PatchId {
 impl From<PatchId> for u32 {
     fn from(patch_id: PatchId) -> Self {
         patch_id.value()
+    }
+}
+
+impl<'de> Deserialize<'de> for PatchId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = u32::deserialize(deserializer)?;
+        Self::new(value).map_err(D::Error::custom)
     }
 }
 

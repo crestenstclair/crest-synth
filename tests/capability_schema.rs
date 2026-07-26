@@ -183,7 +183,7 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         )
         .unwrap();
     let tree: Value = serde_json::from_str(installed.current_state_tree().json()).unwrap();
-    assert_eq!(tree["schemaVersion"], 5);
+    assert_eq!(tree["schemaVersion"], 6);
     assert_eq!(tree["parameters"]["graphRevision"], 1);
     assert_eq!(
         tree["capabilities"]["descriptors"]

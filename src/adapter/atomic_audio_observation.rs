@@ -70,10 +70,14 @@ struct AtomicObservationFields {
     rendered_blocks: AtomicU64,
     rendered_frames: AtomicU64,
     parameter_generation: AtomicU64,
+    active_graph_revision: AtomicU64,
     commands_consumed: AtomicU64,
     active_notes: AtomicU32,
     routing_failures: AtomicU64,
     last_unknown_patch_id: AtomicU32,
+    primary_patch_id: AtomicU32,
+    primary_patch_rms: AtomicU32,
+    primary_active_notes: AtomicU32,
     left_peak: AtomicU32,
     right_peak: AtomicU32,
     output_rms: AtomicU32,
@@ -92,6 +96,7 @@ impl AtomicObservationFields {
             rendered_blocks: AtomicU64::new(initial.rendered_blocks()),
             rendered_frames: AtomicU64::new(initial.rendered_frames()),
             parameter_generation: AtomicU64::new(initial.parameter_generation()),
+            active_graph_revision: AtomicU64::new(initial.active_graph_revision().value()),
             commands_consumed: AtomicU64::new(initial.commands_consumed()),
             active_notes: AtomicU32::new(initial.active_notes()),
             routing_failures: AtomicU64::new(initial.routing_failures()),
@@ -100,6 +105,13 @@ impl AtomicObservationFields {
                     .last_unknown_patch_id()
                     .map_or(0, |patch_id| patch_id.value()),
             ),
+            primary_patch_id: AtomicU32::new(
+                initial
+                    .primary_patch_id()
+                    .map_or(0, |patch_id| patch_id.value()),
+            ),
+            primary_patch_rms: AtomicU32::new(initial.primary_patch_rms().to_bits()),
+            primary_active_notes: AtomicU32::new(initial.primary_active_notes()),
             left_peak: AtomicU32::new(initial.left_peak().to_bits()),
             right_peak: AtomicU32::new(initial.right_peak().to_bits()),
             output_rms: AtomicU32::new(initial.output_rms().to_bits()),
@@ -120,6 +132,8 @@ impl AtomicObservationFields {
             .store(snapshot.rendered_frames(), Ordering::Relaxed);
         self.parameter_generation
             .store(snapshot.parameter_generation(), Ordering::Relaxed);
+        self.active_graph_revision
+            .store(snapshot.active_graph_revision().value(), Ordering::Relaxed);
         self.commands_consumed
             .store(snapshot.commands_consumed(), Ordering::Relaxed);
         self.active_notes
@@ -132,6 +146,16 @@ impl AtomicObservationFields {
                 .map_or(0, |patch_id| patch_id.value()),
             Ordering::Relaxed,
         );
+        self.primary_patch_id.store(
+            snapshot
+                .primary_patch_id()
+                .map_or(0, |patch_id| patch_id.value()),
+            Ordering::Relaxed,
+        );
+        self.primary_patch_rms
+            .store(snapshot.primary_patch_rms().to_bits(), Ordering::Relaxed);
+        self.primary_active_notes
+            .store(snapshot.primary_active_notes(), Ordering::Relaxed);
         self.left_peak
             .store(snapshot.left_peak().to_bits(), Ordering::Relaxed);
         self.right_peak
@@ -159,11 +183,15 @@ impl AtomicObservationFields {
                 continue;
             }
 
-            let snapshot = AudioObservationSnapshot::from_parts_with_routing(
+            let snapshot = AudioObservationSnapshot::from_parts_with_graph_routing_and_primary(
                 self.sequence.load(Ordering::Relaxed),
                 self.rendered_blocks.load(Ordering::Relaxed),
                 self.rendered_frames.load(Ordering::Relaxed),
                 self.parameter_generation.load(Ordering::Relaxed),
+                crate::real_time::GraphRevision::new(
+                    self.active_graph_revision.load(Ordering::Relaxed),
+                )
+                .expect("published observations always carry a valid graph revision"),
                 self.commands_consumed.load(Ordering::Relaxed),
                 self.active_notes.load(Ordering::Relaxed),
                 self.routing_failures.load(Ordering::Relaxed),
@@ -171,6 +199,12 @@ impl AtomicObservationFields {
                     self.last_unknown_patch_id.load(Ordering::Relaxed),
                 )
                 .ok(),
+                crate::kernel::patch_id::PatchId::new(
+                    self.primary_patch_id.load(Ordering::Relaxed),
+                )
+                .ok(),
+                f32::from_bits(self.primary_patch_rms.load(Ordering::Relaxed)),
+                self.primary_active_notes.load(Ordering::Relaxed),
                 f32::from_bits(self.left_peak.load(Ordering::Relaxed)),
                 f32::from_bits(self.right_peak.load(Ordering::Relaxed)),
                 f32::from_bits(self.output_rms.load(Ordering::Relaxed)),
@@ -241,6 +275,10 @@ mod tests {
             let sequence = latest.sequence();
             assert_eq!(latest.rendered_blocks(), sequence);
             assert_eq!(latest.parameter_generation(), sequence);
+            assert_eq!(
+                latest.active_graph_revision(),
+                crate::real_time::GraphRevision::INITIAL
+            );
             assert_eq!(latest.routing_failures(), sequence);
             assert_eq!(
                 latest

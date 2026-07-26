@@ -1,5 +1,5 @@
 use core::fmt;
-use serde::Serialize;
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 /// Monotonic identity for one completely prepared structural audio graph.
 ///
@@ -50,6 +50,16 @@ impl TryFrom<u64> for GraphRevision {
 impl From<GraphRevision> for u64 {
     fn from(revision: GraphRevision) -> Self {
         revision.value()
+    }
+}
+
+impl<'de> Deserialize<'de> for GraphRevision {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = u64::deserialize(deserializer)?;
+        Self::new(value).map_err(D::Error::custom)
     }
 }
 

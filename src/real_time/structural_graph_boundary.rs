@@ -17,6 +17,26 @@ pub trait ControlStructuralGraphBoundary: Send {
     fn read_status_on_control(&self) -> GraphHandoffStatus;
 }
 
+impl<Boundary> ControlStructuralGraphBoundary for Box<Boundary>
+where
+    Boundary: ControlStructuralGraphBoundary + ?Sized,
+{
+    fn publish_prepared_on_control(
+        &mut self,
+        graph: PreparedGraph,
+    ) -> Result<(), StructuralBoundaryFull> {
+        (**self).publish_prepared_on_control(graph)
+    }
+
+    fn collect_retired_on_control(&mut self) -> Option<GraphRevision> {
+        (**self).collect_retired_on_control()
+    }
+
+    fn read_status_on_control(&self) -> GraphHandoffStatus {
+        (**self).read_status_on_control()
+    }
+}
+
 /// Callback-only operations for complete structural graph ownership.
 pub trait AudioStructuralGraphBoundary: Send {
     fn take_prepared_on_audio(&mut self) -> Option<PreparedGraph>;

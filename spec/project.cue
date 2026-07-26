@@ -17,7 +17,7 @@ project: {
 			"test support uses the same ports, reducer, parameter bridge, event ring, engine, mixer, and audio callback as the running application",
 			]
 		avoid: [
-			"engine-specific branches in Patch, reducer, projector, page projection, rack, renderer, or demo coverage; runtime engine replacement, layering, or synthesis fallback in this increment",
+			"engine-specific branches in Patch, reducer, projector, page projection, selection workflow, rack, renderer, or demo coverage; layering, unprepared structural replacement, or synthesis fallback",
 			"effects other than the one global reverb and one global delay",
 			"sequencer, transport, timeline, pattern, clip, or song-editing domain models",
 			"presets, sessions, modulation matrices, per-channel inserts, effect chains, buses, or plugin hosting",
@@ -67,18 +67,21 @@ project: {
 			resources: [
 				"port.Synth.InstrumentCapabilityProvider",
 				"port.Synth.InstrumentPreparer",
+				"applicationService.Synth.DescriptorDefaultConfigFactory",
 				"valueObject.Shell.AudioDeviceConfig",
 				"valueObject.Shell.AudioDeviceRuntimeError",
 				"port.Shell.AudioOutput",
 				"port.RealTime.StructuralGraphBoundary",
+				"port.RealTime.GraphPreparationWorker",
+				"adapter.ThreadedGraphPreparationWorker",
 				"port.RealTime.AudioObservation",
 				"applicationService.RealTime.AudioRenderer",
 				"applicationService.Shell.StandaloneApplication",
 				"asset.ProductionRuntimeContractTests",
 			]
-			capabilities: ["capability.instrument_capability_model", "capability.prepared_engine_rack", "capability.realtime_execution"]
-			goals: ["goal.play_test_song", "goal.control_synth"]
-			description: "the production constructor, negotiated graph preparation, complete callback adaptation, visible device failure, and routing observation contracts pass together"
+			capabilities: ["capability.instrument_capability_model", "capability.asynchronous_engine_selection", "capability.prepared_engine_rack", "capability.realtime_execution"]
+			goals: ["goal.play_test_song", "goal.control_synth", "goal.select_patch_engine"]
+			description: "the production constructor, injected capacity-one preparation worker, negotiated graph preparation, complete callback adaptation, control-owned worker shutdown, visible device failure, and routing observation contracts pass together"
 		}
 		zero_selection_guard: {
 			id: "validation.zero_selection_guard"
@@ -146,10 +149,12 @@ project: {
 				"adapter.HiDefSoundFontPreparer",
 				"adapter.BraidsPreparer",
 				"applicationService.Synth.PreparedEngineRackBuilder",
+				"applicationService.Synth.DescriptorDefaultConfigFactory",
 				"applicationService.RealTime.PreparedGraphBuilder",
 				"aggregate.RealTime.PreparedEngineRack",
 				"aggregate.RealTime.PreparedGraph",
 				"adapter.LockFreeStructuralGraphBoundary",
+				"adapter.ThreadedGraphPreparationWorker",
 				"adapter.CorridorsMidiEventSource",
 				"applicationService.Testing.AutomaticMidiTest",
 				"applicationService.Shell.StandaloneApplication",
@@ -162,6 +167,7 @@ project: {
 				"capability.per_voice_envelope",
 				"capability.automatic_test_midi",
 				"capability.one_way_parameter_control",
+				"capability.asynchronous_engine_selection",
 				"capability.realtime_execution",
 			]
 			goals: ["goal.play_test_song", "goal.control_synth"]
@@ -284,6 +290,8 @@ project: {
 					resources: [
 						"valueObject.Control.TopLevelContext",
 						"valueObject.Control.InteractionState",
+						"valueObject.Control.EngineSelectionStatus",
+						"valueObject.Control.EngineSelectionFailure",
 						"valueObject.Control.AppEvent",
 						"valueObject.Control.PatchPageProjection",
 						"valueObject.Control.TextProjection",
@@ -299,9 +307,9 @@ project: {
 						"aggregate.RealTime.PreparedGraph",
 						"asset.BehavioralAcceptanceTests",
 					]
-					capabilities: ["capability.schema_driven_patch_page", "capability.instrument_capability_model", "capability.one_way_parameter_control"]
-					goals: ["goal.inspect_patch"]
-					description: "direct 1/2 input, reducer-owned context and stable Patch focus, exact SoundFont/Braids descriptor rows, preserved MIXER projection, and sample-identical audio-neutral switching pass through production seams"
+					capabilities: ["capability.schema_driven_patch_page", "capability.asynchronous_engine_selection", "capability.instrument_capability_model", "capability.one_way_parameter_control"]
+					goals: ["goal.inspect_patch", "goal.select_patch_engine"]
+					description: "direct 1/2 input, reducer-owned Patch/engine focus, exact SoundFont/Braids descriptor rows and lifecycle status, preserved MIXER projection, audio-neutral context switching, and semantic engine-row request projection pass through production seams"
 				}
 				control_dispatch_performance: {
 					id: "validation.control_dispatch_performance"
@@ -341,6 +349,9 @@ project: {
 					"valueObject.Control.AppEvent",
 					"valueObject.Control.TopLevelContext",
 					"valueObject.Control.InteractionState",
+					"valueObject.Control.EngineSelectionStatus",
+					"valueObject.Control.EngineSelectionFailure",
+					"valueObject.Control.EngineSelectionEffect",
 					"valueObject.Control.PatchPageProjection",
 					"valueObject.Control.EventRecord",
 					"valueObject.Control.EventLog",
@@ -349,6 +360,7 @@ project: {
 					"aggregate.Control.AppState",
 					"domainService.Control.StateProjector",
 					"applicationService.Control.AppLoop",
+					"applicationService.Synth.DescriptorDefaultConfigFactory",
 					"valueObject.Shell.WindowInput",
 					"applicationService.Shell.KeyboardInputTranslator",
 					"adapter.EframeTextWindow",
@@ -361,9 +373,13 @@ project: {
 					"valueObject.RealTime.ParameterSnapshot",
 					"valueObject.RealTime.AudioCommand",
 					"valueObject.RealTime.PatchAudioBlock",
+					"port.RealTime.GraphPreparationWorker",
+					"adapter.DeterministicGraphPreparationWorker",
+					"applicationService.RealTime.StructuralGraphCoordinator",
 					"applicationService.RealTime.AudioRenderer",
 					"valueObject.Testing.DemoScene",
 					"valueObject.Testing.DemoSceneReport",
+					"valueObject.Testing.EngineSelectionObservation",
 					"applicationService.Testing.ExhaustiveGuiDemo",
 					"applicationService.Shell.StandaloneApplication",
 					"asset.CrestSynthMain",
@@ -374,10 +390,11 @@ project: {
 					"capability.observable_demo_scene",
 					"capability.one_way_parameter_control",
 					"capability.schema_driven_patch_page",
+					"capability.asynchronous_engine_selection",
 					"capability.global_mix",
 				]
-				goals: ["goal.observe_synth"]
-				description: "the exhaustive deterministic GUI scene covers every current event, editable parameter, serialized property, projection, and downstream effect"
+				goals: ["goal.select_patch_engine", "goal.observe_synth"]
+				description: "the exhaustive deterministic GUI scene covers every current event, editable scalar and engine control, structural lifecycle state/effect/failure, serialized property, projection, and downstream audio consequence"
 			}
 			live_demo: {
 				id: "validation.live_demo"
@@ -398,9 +415,12 @@ project: {
 					"valueObject.Control.EventLog",
 					"valueObject.Control.StateTree",
 					"valueObject.Control.TextProjection",
+					"valueObject.Control.EngineSelectionStatus",
+					"valueObject.Control.EngineSelectionEffect",
 					"aggregate.Control.AppState",
 					"domainService.Control.StateProjector",
 					"applicationService.Control.AppLoop",
+					"applicationService.Synth.DescriptorDefaultConfigFactory",
 					"valueObject.Mixer.ChannelParameters",
 					"valueObject.Mixer.GlobalParameters",
 					"valueObject.Mixer.MixObservation",
@@ -409,6 +429,10 @@ project: {
 					"port.RealTime.AudioObservation",
 					"adapter.AtomicAudioObservation",
 					"applicationService.RealTime.AudioRenderer",
+					"port.RealTime.GraphPreparationWorker",
+					"adapter.ThreadedGraphPreparationWorker",
+					"applicationService.RealTime.StructuralGraphCoordinator",
+					"port.RealTime.StructuralGraphBoundary",
 					"applicationService.Testing.AutomaticMidiTest",
 					"valueObject.Testing.LiveDemoScene",
 					"valueObject.Testing.LiveDemoCheckpoint",
@@ -426,10 +450,11 @@ project: {
 				capabilities: [
 					"capability.live_observable_demo",
 					"capability.one_way_parameter_control",
+					"capability.asynchronous_engine_selection",
 					"capability.realtime_execution",
 				]
 				goals: ["goal.observe_live_synth"]
-				description: "a deterministic-clock harness proves the live runner's pacing, exact editable-parameter coverage, coherent checkpoints, bounded audio observations, semantic all-notes-off completion, mapped-input isolation, one completed report, and immediate successful close without substituting a second reducer or renderer"
+				description: "a deterministic-clock harness proves live pacing, exact scalar coverage, SoundFont-to-Braids-to-descriptor-default-SoundFont through the worker and structural seams, coherent lifecycle/revision checkpoints, finite targeted audio, semantic all-notes-off completion, mapped-input isolation, one completed report, and immediate successful close without substituting a second reducer, worker workflow, or renderer"
 			}
 			schema_surface: {
 				id: "validation.schema_surface"
@@ -445,6 +470,9 @@ project: {
 					"valueObject.Kernel.MidiMessage",
 					"valueObject.Control.TopLevelContext",
 					"valueObject.Control.InteractionState",
+					"valueObject.Control.EngineSelectionStatus",
+					"valueObject.Control.EngineSelectionFailure",
+					"valueObject.Control.EngineSelectionEffect",
 					"valueObject.Control.AppEvent",
 					"valueObject.Control.EventRecord",
 					"valueObject.Control.EventLog",
@@ -459,8 +487,8 @@ project: {
 					"applicationService.Testing.ExhaustiveGuiDemo",
 					"asset.BehavioralAcceptanceTests",
 				]
-				capabilities: ["capability.instrument_capability_model", "capability.schema_driven_patch_page", "capability.observable_demo_scene"]
-				goals: ["goal.control_synth", "goal.inspect_patch", "goal.observe_synth"]
+				capabilities: ["capability.instrument_capability_model", "capability.schema_driven_patch_page", "capability.asynchronous_engine_selection", "capability.observable_demo_scene"]
+				goals: ["goal.control_synth", "goal.inspect_patch", "goal.select_patch_engine", "goal.observe_synth"]
 				description: "typed production surface descriptors and discovered serialized leaves are exactly equal with no missing or unexpected identifiers"
 			}
 			egui_context: {
@@ -476,6 +504,7 @@ project: {
 					"valueObject.Shell.WindowInput",
 					"valueObject.Control.TopLevelContext",
 					"valueObject.Control.InteractionState",
+					"valueObject.Control.EngineSelectionStatus",
 					"valueObject.Control.PatchPageProjection",
 					"applicationService.Shell.KeyboardInputTranslator",
 					"adapter.EframeTextWindow",
@@ -485,9 +514,9 @@ project: {
 					"domainService.Control.StateProjector",
 					"asset.BehavioralAcceptanceTests",
 				]
-				capabilities: ["capability.observable_demo_scene", "capability.one_way_parameter_control", "capability.schema_driven_patch_page"]
-				goals: ["goal.observe_synth", "goal.control_synth", "goal.inspect_patch"]
-				description: "a headless egui Context dispatches real RawInput through EframeApplication.update into AppLoop and proves the next frame, event record, accepted state, exact projection values, selection, and scroll target all reflect that event"
+				capabilities: ["capability.observable_demo_scene", "capability.one_way_parameter_control", "capability.schema_driven_patch_page", "capability.asynchronous_engine_selection"]
+				goals: ["goal.observe_synth", "goal.control_synth", "goal.inspect_patch", "goal.select_patch_engine"]
+				description: "a headless egui Context dispatches real RawInput through EframeApplication.update into AppLoop and proves the next frame, event record, accepted state, exact projection values, engine-row lifecycle status, selection, and scroll target all reflect that event"
 			}
 			mutation_harness: {
 				id: "validation.mutation_harness"
@@ -532,6 +561,7 @@ project: {
 		{text: "input and view adapters emit AppEvents and never mutate application or engine state", meta: rationale: "adapters remain replaceable"},
 		{text: "PATCH and MIXER are the only top-level contexts; InteractionState owns context and stable PATCH focus, while the basic window renders only the immutable active-context projection", meta: rationale: "page selection remains semantic, deterministic, and independent from UI state"},
 		{text: "after an event is accepted, the application commits AppState before deriving serialized state, text, parameter snapshots, or audio commands", meta: rationale: "effects always describe accepted state"},
+		{text: "engine selection is a one-in-flight reducer-owned lifecycle; a capacity-one worker prepares off callback, PreparedGraph stays outside AppState, candidate config commits before target-revision projection/publication, and Ready requires block-boundary activation plus off-callback retirement collection", meta: rationale: "structural edits preserve one-way mutation and hard-real-time ownership"},
 		{text: "the audio callback never allocates, locks, blocks, performs file or device discovery I/O, logs, or destroys owned state", meta: rationale: "the callback has a hard deadline"},
 		{text: "AudioBoundary carries discrete MIDI commands and latest scalar values, while StructuralGraphBoundary uses distinct bounded queues for prepared and retired graph ownership plus fixed-size acknowledgement", meta: rationale: "each real-time datum uses its required delivery semantics"},
 		{text: "Patch and instrument config are capability-polymorphic and PreparedEngineRack hosts exactly the HiDef SoundFont and pinned Braids preparers; SoundFont uses one EngineManaged synthesizer per Patch, every Braids Patch owns FixedPerPatch(16), both use the common per-note envelope, and unknown capabilities fail without fallback", meta: rationale: "two materially different voice policies let the Patch page prove its schema projection without engine branches"},

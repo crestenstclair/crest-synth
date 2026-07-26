@@ -4,11 +4,16 @@ use crate::control::event_record::{
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
+use crate::real_time::GraphRevision;
+use crate::synth::CapabilityId;
 use crate::testing::live_demo_scene::{
     projected_parameter_values, LiveAudioPredicate, LiveDemoSceneError, LiveExpectedTransition,
 };
 use core::fmt;
 use serde::Serialize;
+
+use crate::control::{EngineSelectionRequestId, EngineSelectionStatusKind};
+use crate::kernel::PatchId;
 
 /// Exact selected values copied from the canonical state, text, and RT projections.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -217,6 +222,235 @@ impl LiveDemoCheckpoint {
     }
 }
 
+/// A serialized live checkpoint is either one scalar observation or one
+/// engine-selection lifecycle observation. The two evidence sets remain
+/// distinct even though the standalone callback presents them uniformly.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LiveCheckpoint {
+    Parameter {
+        checkpoint: Box<LiveDemoCheckpoint>,
+    },
+    Engine {
+        checkpoint: Box<LiveEngineCheckpoint>,
+    },
+}
+
+impl LiveCheckpoint {
+    pub fn parameter(checkpoint: LiveDemoCheckpoint) -> Self {
+        Self::Parameter {
+            checkpoint: Box::new(checkpoint),
+        }
+    }
+
+    pub fn engine(checkpoint: LiveEngineCheckpoint) -> Self {
+        Self::Engine {
+            checkpoint: Box::new(checkpoint),
+        }
+    }
+
+    pub const fn as_parameter(&self) -> Option<&LiveDemoCheckpoint> {
+        match self {
+            Self::Parameter { checkpoint } => Some(checkpoint),
+            Self::Engine { .. } => None,
+        }
+    }
+
+    pub const fn as_engine(&self) -> Option<&LiveEngineCheckpoint> {
+        match self {
+            Self::Engine { checkpoint } => Some(checkpoint),
+            Self::Parameter { .. } => None,
+        }
+    }
+
+    pub fn agrees(&self) -> bool {
+        match self {
+            Self::Parameter { checkpoint } => checkpoint.agrees(),
+            Self::Engine { checkpoint } => checkpoint.agrees(),
+        }
+    }
+}
+
+/// One immutable observation of a planned live engine transition.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveEngineCheckpoint {
+    transition: String,
+    transition_index: usize,
+    status: EngineSelectionStatusKind,
+    request_id: EngineSelectionRequestId,
+    patch_id: PatchId,
+    source_capability_id: CapabilityId,
+    target_capability_id: CapabilityId,
+    active_capability_id: CapabilityId,
+    requested_capability_id: Option<CapabilityId>,
+    generation: u64,
+    state_hash: String,
+    graph_revision: GraphRevision,
+    handoff_active_revision: Option<GraphRevision>,
+    handoff_retired_revision: Option<GraphRevision>,
+    staged_revision: Option<GraphRevision>,
+    in_flight_revision: Option<GraphRevision>,
+    event_sequence: u64,
+    audio_observation: Option<AudioObservationSnapshot>,
+    target_audio_nonzero: bool,
+    callback_allocations: usize,
+    callback_destructions: usize,
+}
+
+impl LiveEngineCheckpoint {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        transition: impl Into<String>,
+        transition_index: usize,
+        status: EngineSelectionStatusKind,
+        request_id: EngineSelectionRequestId,
+        patch_id: PatchId,
+        source_capability_id: CapabilityId,
+        target_capability_id: CapabilityId,
+        active_capability_id: CapabilityId,
+        requested_capability_id: Option<CapabilityId>,
+        generation: u64,
+        state_hash: impl Into<String>,
+        graph_revision: GraphRevision,
+        handoff_active_revision: Option<GraphRevision>,
+        handoff_retired_revision: Option<GraphRevision>,
+        staged_revision: Option<GraphRevision>,
+        in_flight_revision: Option<GraphRevision>,
+        event_sequence: u64,
+        audio_observation: Option<AudioObservationSnapshot>,
+        callback_allocations: usize,
+        callback_destructions: usize,
+    ) -> Result<Self, LiveDemoCheckpointError> {
+        let target_audio_nonzero = audio_observation.is_some_and(|observation| {
+            audio_fields_are_finite(observation)
+                && observation.active_graph_revision() == graph_revision
+                && observation.parameter_generation() == generation
+                && observation.active_notes() > 0
+                && observation.primary_patch_id() == Some(patch_id)
+                && observation.primary_active_notes() > 0
+                && observation.primary_patch_rms() > 0.0
+        });
+        let checkpoint = Self {
+            transition: transition.into(),
+            transition_index,
+            status,
+            request_id,
+            patch_id,
+            source_capability_id,
+            target_capability_id,
+            active_capability_id,
+            requested_capability_id,
+            generation,
+            state_hash: state_hash.into(),
+            graph_revision,
+            handoff_active_revision,
+            handoff_retired_revision,
+            staged_revision,
+            in_flight_revision,
+            event_sequence,
+            audio_observation,
+            target_audio_nonzero,
+            callback_allocations,
+            callback_destructions,
+        };
+        if !checkpoint.agrees() {
+            return Err(LiveDemoCheckpointError::EngineLifecycleMismatch);
+        }
+        Ok(checkpoint)
+    }
+
+    pub fn transition(&self) -> &str {
+        &self.transition
+    }
+
+    pub const fn transition_index(&self) -> usize {
+        self.transition_index
+    }
+
+    pub const fn status(&self) -> EngineSelectionStatusKind {
+        self.status
+    }
+
+    pub const fn request_id(&self) -> EngineSelectionRequestId {
+        self.request_id
+    }
+
+    pub const fn patch_id(&self) -> PatchId {
+        self.patch_id
+    }
+
+    pub const fn source_capability_id(&self) -> &CapabilityId {
+        &self.source_capability_id
+    }
+
+    pub const fn target_capability_id(&self) -> &CapabilityId {
+        &self.target_capability_id
+    }
+
+    pub const fn graph_revision(&self) -> GraphRevision {
+        self.graph_revision
+    }
+
+    pub const fn audio_observation(&self) -> Option<AudioObservationSnapshot> {
+        self.audio_observation
+    }
+
+    pub const fn target_audio_nonzero(&self) -> bool {
+        self.target_audio_nonzero
+    }
+
+    pub const fn callback_allocations(&self) -> usize {
+        self.callback_allocations
+    }
+
+    pub const fn callback_destructions(&self) -> usize {
+        self.callback_destructions
+    }
+
+    pub fn agrees(&self) -> bool {
+        if self.transition.trim().is_empty()
+            || self.request_id.is_none()
+            || self.state_hash.is_empty()
+            || self.callback_allocations != 0
+            || self.callback_destructions != 0
+        {
+            return false;
+        }
+        let target_pending = self.staged_revision == Some(self.graph_revision)
+            || self.in_flight_revision == Some(self.graph_revision);
+        match self.status {
+            EngineSelectionStatusKind::Preparing => {
+                self.active_capability_id == self.source_capability_id
+                    && self.requested_capability_id.as_ref() == Some(&self.target_capability_id)
+                    && self.handoff_active_revision == Some(self.graph_revision)
+                    && self.staged_revision.is_none()
+                    && self.in_flight_revision.is_none()
+                    && self.audio_observation.is_none()
+                    && !self.target_audio_nonzero
+            }
+            EngineSelectionStatusKind::Activating => {
+                self.active_capability_id == self.target_capability_id
+                    && self.requested_capability_id.as_ref() == Some(&self.target_capability_id)
+                    && self.handoff_active_revision.is_some()
+                    && target_pending
+                    && self.audio_observation.is_none()
+                    && !self.target_audio_nonzero
+            }
+            EngineSelectionStatusKind::Ready => {
+                self.active_capability_id == self.target_capability_id
+                    && self.requested_capability_id.is_none()
+                    && self.handoff_active_revision == Some(self.graph_revision)
+                    && self.staged_revision.is_none()
+                    && self.in_flight_revision.is_none()
+                    && self.audio_observation.is_some()
+                    && self.target_audio_nonzero
+            }
+            EngineSelectionStatusKind::Failed => false,
+        }
+    }
+}
+
 fn audio_fields_are_finite(observation: AudioObservationSnapshot) -> bool {
     observation.left_peak().is_finite()
         && observation.right_peak().is_finite()
@@ -247,6 +481,7 @@ pub enum LiveDemoCheckpointError {
     },
     NonFiniteAudioObservation,
     AudioPredicateFailed(LiveAudioPredicate),
+    EngineLifecycleMismatch,
     Scene(LiveDemoSceneError),
 }
 
@@ -269,6 +504,9 @@ impl fmt::Display for LiveDemoCheckpointError {
             Self::AudioGenerationMismatch { expected, actual } => write!(formatter, "audio observation generation {actual} does not match checkpoint generation {expected}"),
             Self::NonFiniteAudioObservation => formatter.write_str("audio observation contains non-finite output"),
             Self::AudioPredicateFailed(predicate) => write!(formatter, "audio observation did not satisfy {predicate:?}"),
+            Self::EngineLifecycleMismatch => formatter.write_str(
+                "engine checkpoint does not match its lifecycle, revision, or target-audio contract",
+            ),
             Self::Scene(error) => error.fmt(formatter),
         }
     }

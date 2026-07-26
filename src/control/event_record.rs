@@ -1,5 +1,8 @@
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::{EventRejection, StateAccepted};
+use crate::control::engine_selection::{
+    EngineSelectionEffect, EngineSelectionFailure, EngineSelectionRequestId,
+};
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
 use crate::control::top_level_context::TopLevelContext;
@@ -20,7 +23,34 @@ pub enum EventSource {
     Keyboard,
     AutomaticMidi,
     DemoScene,
+    Worker,
     System,
+}
+
+impl EventSource {
+    pub const ALL: [Self; 6] = [
+        Self::Startup,
+        Self::Keyboard,
+        Self::AutomaticMidi,
+        Self::DemoScene,
+        Self::Worker,
+        Self::System,
+    ];
+
+    pub const fn surface_descriptor() -> &'static [Self] {
+        &Self::ALL
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::Keyboard => "keyboard",
+            Self::AutomaticMidi => "automaticMidi",
+            Self::DemoScene => "demoScene",
+            Self::Worker => "worker",
+            Self::System => "system",
+        }
+    }
 }
 
 /// Whether the reducer accepted or rejected an input.
@@ -208,6 +238,46 @@ pub enum EventInput {
         patch_id: u32,
         message: MidiInput,
     },
+    EnginePrepared {
+        #[serde(rename = "requestId")]
+        request_id: EngineSelectionRequestId,
+        #[serde(rename = "patchId")]
+        patch_id: u32,
+        #[serde(rename = "sourceCapabilityId")]
+        source_capability_id: crate::synth::CapabilityId,
+        #[serde(rename = "targetCapabilityId")]
+        target_capability_id: crate::synth::CapabilityId,
+        #[serde(rename = "sourceGraphRevision")]
+        source_graph_revision: GraphRevision,
+        #[serde(rename = "targetGraphRevision")]
+        target_graph_revision: GraphRevision,
+        #[serde(rename = "candidateConfig")]
+        candidate_config: InstrumentConfig,
+    },
+    EnginePreparationFailed {
+        #[serde(rename = "requestId")]
+        request_id: EngineSelectionRequestId,
+        #[serde(rename = "patchId")]
+        patch_id: u32,
+        #[serde(rename = "sourceCapabilityId")]
+        source_capability_id: crate::synth::CapabilityId,
+        #[serde(rename = "targetCapabilityId")]
+        target_capability_id: crate::synth::CapabilityId,
+        #[serde(rename = "sourceGraphRevision")]
+        source_graph_revision: GraphRevision,
+        #[serde(rename = "targetGraphRevision")]
+        target_graph_revision: GraphRevision,
+        failure: EngineSelectionFailure,
+    },
+    EngineActivationAcknowledged {
+        #[serde(rename = "requestId")]
+        request_id: EngineSelectionRequestId,
+        #[serde(rename = "targetGraphRevision")]
+        target_graph_revision: GraphRevision,
+        #[serde(rename = "retiredGraphRevision")]
+        retired_graph_revision: GraphRevision,
+        collected: bool,
+    },
 }
 
 impl From<&AppEvent> for EventInput {
@@ -226,6 +296,51 @@ impl From<&AppEvent> for EventInput {
             AppEvent::Midi { patch_id, message } => Self::Midi {
                 patch_id: patch_id.value(),
                 message: (*message).into(),
+            },
+            AppEvent::EnginePrepared {
+                request_id,
+                patch_id,
+                source_capability_id,
+                target_capability_id,
+                source_graph_revision,
+                target_graph_revision,
+                candidate_config,
+            } => Self::EnginePrepared {
+                request_id: *request_id,
+                patch_id: patch_id.value(),
+                source_capability_id: source_capability_id.clone(),
+                target_capability_id: target_capability_id.clone(),
+                source_graph_revision: *source_graph_revision,
+                target_graph_revision: *target_graph_revision,
+                candidate_config: candidate_config.clone(),
+            },
+            AppEvent::EnginePreparationFailed {
+                request_id,
+                patch_id,
+                source_capability_id,
+                target_capability_id,
+                source_graph_revision,
+                target_graph_revision,
+                failure,
+            } => Self::EnginePreparationFailed {
+                request_id: *request_id,
+                patch_id: patch_id.value(),
+                source_capability_id: source_capability_id.clone(),
+                target_capability_id: target_capability_id.clone(),
+                source_graph_revision: *source_graph_revision,
+                target_graph_revision: *target_graph_revision,
+                failure: *failure,
+            },
+            AppEvent::EngineActivationAcknowledged {
+                request_id,
+                target_graph_revision,
+                retired_graph_revision,
+                collected,
+            } => Self::EngineActivationAcknowledged {
+                request_id: *request_id,
+                target_graph_revision: *target_graph_revision,
+                retired_graph_revision: *retired_graph_revision,
+                collected: *collected,
             },
         }
     }
@@ -269,6 +384,9 @@ pub enum EmittedEvent {
     },
     AudioCommand {
         effect: AudioEffect,
+    },
+    EngineSelection {
+        effect: EngineSelectionEffect,
     },
 }
 
@@ -364,13 +482,27 @@ impl EventRecord {
         "emittedEvents[].effect.message.data2",
         "emittedEvents[].effect.message.kind",
         "emittedEvents[].effect.patchId",
+        "emittedEvents[].effect.requestId",
+        "emittedEvents[].effect.sourceCapabilityId",
+        "emittedEvents[].effect.sourceGraphRevision",
+        "emittedEvents[].effect.targetCapabilityId",
+        "emittedEvents[].effect.targetGraphRevision",
         "emittedEvents[].generation",
         "emittedEvents[].graphRevision",
         "emittedEvents[].kind",
         "generationAfter",
         "generationBefore",
+        "input.candidateConfig.assetReferences[].parameterId",
+        "input.candidateConfig.assetReferences[].reference.kind",
+        "input.candidateConfig.assetReferences[].reference.locator",
+        "input.candidateConfig.capabilityId",
+        "input.candidateConfig.values[].parameterId",
+        "input.candidateConfig.values[].value.kind",
+        "input.candidateConfig.values[].value.value",
+        "input.collected",
         "input.context",
         "input.direction",
+        "input.failure",
         "input.kind",
         "input.message.channel",
         "input.message.data1",
@@ -395,6 +527,12 @@ impl EventRecord {
         "input.patches[].name",
         "input.patches[].pan",
         "input.patches[].reverbSend",
+        "input.requestId",
+        "input.retiredGraphRevision",
+        "input.sourceCapabilityId",
+        "input.sourceGraphRevision",
+        "input.targetCapabilityId",
+        "input.targetGraphRevision",
         "outcome",
         "parameterGeneration",
         "projectionStateHash",
@@ -426,6 +564,7 @@ impl EventRecord {
         parameter_graph_revision: GraphRevision,
         projection: &TextProjection,
         audio_command: Option<AudioCommand>,
+        engine_selection_effect: Option<EngineSelectionEffect>,
     ) -> Result<Self, EventRecordError> {
         let generation_after = generation_before
             .checked_add(1)
@@ -457,6 +596,9 @@ impl EventRecord {
             emitted_events.push(EmittedEvent::AudioCommand {
                 effect: command.into(),
             });
+        }
+        if let Some(effect) = engine_selection_effect {
+            emitted_events.push(EmittedEvent::EngineSelection { effect });
         }
 
         Ok(Self {
@@ -557,6 +699,24 @@ impl EventRecord {
         &self.emitted_events
     }
 
+    pub(crate) fn append_engine_selection_effect(&mut self, effect: EngineSelectionEffect) -> bool {
+        if self.outcome != EventOutcome::Accepted
+            || self.emitted_events.iter().any(|emitted| {
+                matches!(
+                    emitted,
+                    EmittedEvent::EngineSelection { effect: existing }
+                        if existing.kind() == effect.kind()
+                            && existing.request_id() == effect.request_id()
+                )
+            })
+        {
+            return false;
+        }
+        self.emitted_events
+            .push(EmittedEvent::EngineSelection { effect });
+        true
+    }
+
     pub const fn rejection(&self) -> Option<EventRejection> {
         self.rejection
     }
@@ -608,6 +768,11 @@ const fn rejection_name(rejection: EventRejection) -> &'static str {
         EventRejection::ParameterAtBoundary => "parameterAtBoundary",
         EventRejection::InvalidParameterValue => "invalidParameterValue",
         EventRejection::ActionUnavailableInContext => "actionUnavailableInContext",
+        EventRejection::EngineSelectionUnavailable => "engineSelectionUnavailable",
+        EventRejection::StructuralEditBusy => "structuralEditBusy",
+        EventRejection::StaleEngineSelection => "staleEngineSelection",
+        EventRejection::MismatchedEngineSelection => "mismatchedEngineSelection",
+        EventRejection::RequestIdOverflow => "requestIdOverflow",
         EventRejection::GenerationOverflow => "generationOverflow",
     }
 }
@@ -626,7 +791,10 @@ mod tests {
     use crate::control::app_state::{AppState, EventRejection};
     use crate::control::state_snapshot::StateSnapshot;
     use crate::control::text_projection::TextProjection;
-    use crate::control::TopLevelContext;
+    use crate::control::{
+        EngineSelectionEffect, EngineSelectionEffectKind, EngineSelectionFailure,
+        EngineSelectionRequestId, EngineSelectionStatus, TopLevelContext,
+    };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -725,6 +893,27 @@ mod tests {
             data1: 1,
             data2: 65,
         };
+        let request_id = EngineSelectionRequestId::FIRST;
+        let source_capability_id = crate::synth::CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap();
+        let target_capability_id =
+            crate::synth::CapabilityId::new("instrument.schema-target").unwrap();
+        let target_graph_revision = GraphRevision::INITIAL.checked_next().unwrap();
+        let candidate_config = patch.instrument.clone();
+        let effect_status = EngineSelectionStatus::preparing(
+            GraphRevision::INITIAL,
+            request_id,
+            PatchId::new(7).unwrap(),
+            source_capability_id.clone(),
+            target_capability_id.clone(),
+        )
+        .unwrap()
+        .activating(target_graph_revision)
+        .unwrap();
+        let engine_effect = EngineSelectionEffect::from_correlation(
+            EngineSelectionEffectKind::CandidateCommitted,
+            effect_status.correlation().unwrap(),
+        )
+        .unwrap();
 
         vec![
             schema_record(
@@ -795,6 +984,50 @@ mod tests {
                 Vec::new(),
                 None,
             ),
+            schema_record(
+                EventSource::Worker,
+                EventInput::EnginePrepared {
+                    request_id,
+                    patch_id: 7,
+                    source_capability_id: source_capability_id.clone(),
+                    target_capability_id: target_capability_id.clone(),
+                    source_graph_revision: GraphRevision::INITIAL,
+                    target_graph_revision,
+                    candidate_config,
+                },
+                EventOutcome::Accepted,
+                vec![EmittedEvent::EngineSelection {
+                    effect: engine_effect,
+                }],
+                None,
+            ),
+            schema_record(
+                EventSource::Worker,
+                EventInput::EnginePreparationFailed {
+                    request_id,
+                    patch_id: 7,
+                    source_capability_id,
+                    target_capability_id,
+                    source_graph_revision: GraphRevision::INITIAL,
+                    target_graph_revision,
+                    failure: EngineSelectionFailure::AssetUnavailable,
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ),
+            schema_record(
+                EventSource::Worker,
+                EventInput::EngineActivationAcknowledged {
+                    request_id,
+                    target_graph_revision,
+                    retired_graph_revision: GraphRevision::INITIAL,
+                    collected: true,
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ),
         ]
     }
 
@@ -845,6 +1078,20 @@ mod tests {
     }
 
     #[test]
+    fn event_source_surface_includes_worker_with_stable_serialized_names() {
+        let descriptor = EventSource::surface_descriptor();
+        assert_eq!(descriptor.len(), 6);
+        for (index, source) in descriptor.iter().enumerate() {
+            assert!(!descriptor[..index].contains(source));
+            assert_eq!(
+                serde_json::to_string(source).unwrap(),
+                format!("\"{}\"", source.name())
+            );
+        }
+        assert!(descriptor.contains(&EventSource::Worker));
+    }
+
+    #[test]
     fn accepted_record_keeps_one_coherent_hash_generation_and_effect_chain() {
         let mut state = installed_state();
         let message = MidiMessage::try_new(
@@ -874,6 +1121,7 @@ mod tests {
             GraphRevision::INITIAL,
             &projection,
             outcome.audio_command().copied(),
+            outcome.engine_selection_effect().cloned(),
         )
         .unwrap();
 
@@ -1010,6 +1258,7 @@ mod tests {
             state.generation() + 1,
             GraphRevision::INITIAL,
             &projection,
+            None,
             None,
         )
         .unwrap_err();

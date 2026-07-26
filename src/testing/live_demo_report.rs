@@ -6,8 +6,8 @@ use crate::control::state_tree::StateTree;
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
 use crate::real_time::GraphRevision;
-use crate::testing::live_demo_checkpoint::LiveDemoCheckpoint;
-use crate::testing::live_demo_scene::LiveEditableParameter;
+use crate::testing::live_demo_checkpoint::LiveCheckpoint;
+use crate::testing::live_demo_scene::{LiveEditableParameter, LiveEngineTransition};
 use core::fmt;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
@@ -21,10 +21,22 @@ pub struct LiveDemoCoverage {
     missing_editable_parameters: Vec<String>,
     unexpected_editable_parameters: Vec<String>,
     duplicate_expected_parameters: Vec<String>,
+    expected_engine_transitions: Vec<String>,
+    exercised_engine_transitions: Vec<String>,
+    missing_engine_transitions: Vec<String>,
+    unexpected_engine_transitions: Vec<String>,
+    duplicate_expected_engine_transitions: Vec<String>,
 }
 
 impl LiveDemoCoverage {
     pub fn new(expected: &[LiveEditableParameter]) -> Self {
+        Self::with_engine_transitions(expected, &[])
+    }
+
+    pub fn with_engine_transitions(
+        expected: &[LiveEditableParameter],
+        engine_transitions: &[LiveEngineTransition],
+    ) -> Self {
         let mut expected_ids = Vec::with_capacity(expected.len());
         let mut duplicate_expected = Vec::new();
         for parameter in expected {
@@ -36,10 +48,24 @@ impl LiveDemoCoverage {
             }
         }
 
+        let mut expected_engines = Vec::with_capacity(engine_transitions.len());
+        let mut duplicate_expected_engines = Vec::new();
+        for transition in engine_transitions {
+            let identifier = transition.identifier().to_owned();
+            if expected_engines.contains(&identifier) {
+                insert_sorted_unique(&mut duplicate_expected_engines, identifier);
+            } else {
+                expected_engines.push(identifier);
+            }
+        }
+
         Self {
             missing_editable_parameters: expected_ids.clone(),
             expected_editable_parameters: expected_ids,
             duplicate_expected_parameters: duplicate_expected,
+            missing_engine_transitions: expected_engines.clone(),
+            expected_engine_transitions: expected_engines,
+            duplicate_expected_engine_transitions: duplicate_expected_engines,
             ..Self::default()
         }
     }
@@ -66,6 +92,22 @@ impl LiveDemoCoverage {
         insert_sorted_unique(&mut self.unexpected_editable_parameters, identifier);
     }
 
+    pub fn mark_engine_exercised(&mut self, transition: &LiveEngineTransition) {
+        let identifier = transition.identifier().to_owned();
+        if !insert_sorted_unique(&mut self.exercised_engine_transitions, identifier.clone()) {
+            return;
+        }
+        if let Some(index) = self
+            .missing_engine_transitions
+            .iter()
+            .position(|expected| expected == &identifier)
+        {
+            self.missing_engine_transitions.remove(index);
+        } else {
+            insert_sorted_unique(&mut self.unexpected_engine_transitions, identifier);
+        }
+    }
+
     pub fn expected(&self) -> &[String] {
         &self.expected_editable_parameters
     }
@@ -86,11 +128,31 @@ impl LiveDemoCoverage {
         &self.duplicate_expected_parameters
     }
 
+    pub fn expected_engine_transitions(&self) -> &[String] {
+        &self.expected_engine_transitions
+    }
+
+    pub fn exercised_engine_transitions(&self) -> &[String] {
+        &self.exercised_engine_transitions
+    }
+
+    pub fn missing_engine_transitions(&self) -> &[String] {
+        &self.missing_engine_transitions
+    }
+
+    pub fn unexpected_engine_transitions(&self) -> &[String] {
+        &self.unexpected_engine_transitions
+    }
+
     pub fn is_complete(&self) -> bool {
         self.missing_editable_parameters.is_empty()
             && self.unexpected_editable_parameters.is_empty()
             && self.duplicate_expected_parameters.is_empty()
             && self.exercised_editable_parameters.len() == self.expected_editable_parameters.len()
+            && self.missing_engine_transitions.is_empty()
+            && self.unexpected_engine_transitions.is_empty()
+            && self.duplicate_expected_engine_transitions.is_empty()
+            && self.exercised_engine_transitions.len() == self.expected_engine_transitions.len()
     }
 }
 
@@ -113,11 +175,25 @@ pub struct RuntimeAudioWitness {
     soundfont_patches: usize,
     braids_patches: usize,
     alternating_capabilities: bool,
+    initial_graph_revision: GraphRevision,
     active_graph_revision: GraphRevision,
+    engine_switches: usize,
+    ready_capabilities: [Option<RuntimeReadyCapability>; 2],
+    fallbacks: usize,
+    callback_allocations: usize,
     callback_destructions: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum RuntimeReadyCapability {
+    #[serde(rename = "instrument.braids")]
+    Braids,
+    #[serde(rename = "instrument.soundfont.hidef")]
+    SoundFont,
+}
+
 impl RuntimeAudioWitness {
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         parsed_soundfont_banks: usize,
         prepared_instruments: usize,
@@ -125,6 +201,7 @@ impl RuntimeAudioWitness {
         braids_patches: usize,
         alternating_capabilities: bool,
         active_graph_revision: GraphRevision,
+        callback_allocations: usize,
         callback_destructions: usize,
     ) -> Self {
         Self {
@@ -133,7 +210,12 @@ impl RuntimeAudioWitness {
             soundfont_patches,
             braids_patches,
             alternating_capabilities,
+            initial_graph_revision: active_graph_revision,
             active_graph_revision,
+            engine_switches: 0,
+            ready_capabilities: [None, None],
+            fallbacks: 0,
+            callback_allocations,
             callback_destructions,
         }
     }
@@ -162,8 +244,58 @@ impl RuntimeAudioWitness {
         self.active_graph_revision
     }
 
+    pub const fn initial_graph_revision(self) -> GraphRevision {
+        self.initial_graph_revision
+    }
+
+    pub const fn engine_switches(self) -> usize {
+        self.engine_switches
+    }
+
+    pub const fn fallbacks(self) -> usize {
+        self.fallbacks
+    }
+
     pub const fn callback_destructions(self) -> usize {
         self.callback_destructions
+    }
+
+    pub const fn callback_allocations(self) -> usize {
+        self.callback_allocations
+    }
+
+    pub const fn with_active_graph_revision(mut self, revision: GraphRevision) -> Self {
+        self.active_graph_revision = revision;
+        self
+    }
+
+    pub fn record_ready_capability(
+        &mut self,
+        capability_id: &crate::synth::CapabilityId,
+        revision: GraphRevision,
+    ) -> bool {
+        let capability = match capability_id.as_str() {
+            BRAIDS_CAPABILITY_ID => RuntimeReadyCapability::Braids,
+            HIDEF_CAPABILITY_ID => RuntimeReadyCapability::SoundFont,
+            _ => return false,
+        };
+        let Some(slot) = self.ready_capabilities.get_mut(self.engine_switches) else {
+            return false;
+        };
+        *slot = Some(capability);
+        self.engine_switches = self.engine_switches.saturating_add(1);
+        self.active_graph_revision = revision;
+        true
+    }
+
+    const fn has_exact_ready_sequence(self) -> bool {
+        matches!(
+            self.ready_capabilities,
+            [
+                Some(RuntimeReadyCapability::Braids),
+                Some(RuntimeReadyCapability::SoundFont)
+            ]
+        )
     }
 }
 
@@ -172,7 +304,7 @@ impl RuntimeAudioWitness {
 pub struct LiveDemoReport {
     scene: String,
     complete: bool,
-    checkpoints: Vec<LiveDemoCheckpoint>,
+    checkpoints: Vec<LiveCheckpoint>,
     event_log: EventLog,
     state_tree: StateTree,
     coverage: LiveDemoCoverage,
@@ -229,12 +361,12 @@ impl LiveEventLogSummary {
 }
 
 impl LiveDemoReport {
-    pub const SCHEMA_VERSION: u32 = 2;
+    pub const SCHEMA_VERSION: u32 = 3;
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         scene: impl Into<String>,
-        checkpoints: Vec<LiveDemoCheckpoint>,
+        checkpoints: Vec<LiveCheckpoint>,
         event_log: EventLog,
         state_tree: StateTree,
         coverage: LiveDemoCoverage,
@@ -285,13 +417,20 @@ impl LiveDemoReport {
             && final_observation.active_notes() == 0
             && final_observation.output_rms().is_finite()
             && final_observation.non_finite_samples() == 0;
-        let checkpoints_agree =
-            !checkpoints.is_empty() && checkpoints.iter().all(LiveDemoCheckpoint::agrees);
-        let runtime_complete = runtime_audio.parsed_soundfont_banks() == 1
+        let checkpoints_agree = !checkpoints.is_empty()
+            && checkpoints.iter().all(LiveCheckpoint::agrees)
+            && engine_checkpoint_sequence_is_complete(&checkpoints, &coverage);
+        let runtime_complete = runtime_audio.parsed_soundfont_banks() > 0
             && runtime_audio.prepared_instruments() == installed_patches.len()
             && runtime_composition_matches(&state_tree, runtime_audio)
+            && runtime_audio.initial_graph_revision() < runtime_audio.active_graph_revision()
             && runtime_audio.active_graph_revision() == state_tree.graph_revision()
+            && runtime_audio.engine_switches() == 2
+            && runtime_audio.has_exact_ready_sequence()
+            && runtime_audio.fallbacks() == 0
+            && runtime_audio.callback_allocations() == 0
             && runtime_audio.callback_destructions() == 0;
+        let final_engine_complete = final_soundfont_config_is_default(&state_tree);
         let lossless = event_log.dropped_records() == 0
             && event_log.total_observed() == event_log.records().len() as u64;
         let complete = coverage.is_complete()
@@ -301,12 +440,15 @@ impl LiveDemoReport {
             && lossless
             && cleanup_complete
             && final_audio_complete
-            && runtime_complete;
+            && runtime_complete
+            && final_engine_complete;
         let summary = format!(
-            "live demo {}: {}/{} editable parameters, {} checkpoints, {} events, {} dropped, banks={}, instruments={}, soundfontPatches={}, braidsPatches={}, alternatingCapabilities={}, graphRevision={}, callbackDestructions={}, cleanup={}, activeNotes={}",
+            "live demo {}: {}/{} editable parameters, {}/{} engine transitions, {} checkpoints, {} events, {} dropped, banks={}, instruments={}, soundfontPatches={}, braidsPatches={}, alternatingCapabilities={}, initialGraphRevision={}, graphRevision={}, engineSwitches={}, fallbacks={}, callbackAllocations={}, callbackDestructions={}, cleanup={}, activeNotes={}",
             if complete { "complete" } else { "incomplete" },
             coverage.exercised().len(),
             coverage.expected().len(),
+            coverage.exercised_engine_transitions().len(),
+            coverage.expected_engine_transitions().len(),
             checkpoints.len(),
             event_log.total_observed(),
             event_log.dropped_records(),
@@ -315,7 +457,11 @@ impl LiveDemoReport {
             runtime_audio.soundfont_patches(),
             runtime_audio.braids_patches(),
             runtime_audio.alternating_capabilities(),
+            runtime_audio.initial_graph_revision(),
             runtime_audio.active_graph_revision(),
+            runtime_audio.engine_switches(),
+            runtime_audio.fallbacks(),
+            runtime_audio.callback_allocations(),
             runtime_audio.callback_destructions(),
             cleanup_complete,
             final_observation.active_notes(),
@@ -345,7 +491,7 @@ impl LiveDemoReport {
         self.complete
     }
 
-    pub fn checkpoints(&self) -> &[LiveDemoCheckpoint] {
+    pub fn checkpoints(&self) -> &[LiveCheckpoint] {
         &self.checkpoints
     }
 
@@ -415,6 +561,72 @@ fn runtime_composition_matches(tree: &StateTree, runtime: RuntimeAudioWitness) -
         && runtime.soundfont_patches() == soundfont
         && runtime.braids_patches() == braids
         && runtime.alternating_capabilities() == alternating
+}
+
+fn engine_checkpoint_sequence_is_complete(
+    checkpoints: &[LiveCheckpoint],
+    coverage: &LiveDemoCoverage,
+) -> bool {
+    let engines: Vec<_> = checkpoints
+        .iter()
+        .filter_map(LiveCheckpoint::as_engine)
+        .collect();
+    if engines.len()
+        != coverage
+            .expected_engine_transitions()
+            .len()
+            .saturating_mul(3)
+    {
+        return false;
+    }
+    for (index, expected) in coverage.expected_engine_transitions().iter().enumerate() {
+        let offset = index * 3;
+        let lifecycle = &engines[offset..offset + 3];
+        if lifecycle.iter().any(|checkpoint| {
+            checkpoint.transition_index() != index || checkpoint.transition() != expected
+        }) || lifecycle[0].status() != crate::control::EngineSelectionStatusKind::Preparing
+            || lifecycle[1].status() != crate::control::EngineSelectionStatusKind::Activating
+            || lifecycle[2].status() != crate::control::EngineSelectionStatusKind::Ready
+            || !lifecycle[2].target_audio_nonzero()
+        {
+            return false;
+        }
+        if index > 0 && lifecycle[2].graph_revision() <= engines[offset - 1].graph_revision() {
+            return false;
+        }
+    }
+    true
+}
+
+fn final_soundfont_config_is_default(tree: &StateTree) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(tree.json()) else {
+        return false;
+    };
+    let Some(instrument) = value.pointer("/patches/0/instrument").cloned() else {
+        return false;
+    };
+    let Ok(actual) = serde_json::from_value::<crate::synth::InstrumentConfig>(instrument) else {
+        return false;
+    };
+    let Ok(registry) = serde_json::from_value::<crate::synth::CapabilityRegistry>(
+        value.get("capabilities").cloned().unwrap_or_default(),
+    ) else {
+        return false;
+    };
+    let Ok(providers) = crate::adapter::production_instruments::production_instrument_providers()
+    else {
+        return false;
+    };
+    let factory = crate::synth::DescriptorDefaultConfigFactory::new(registry, providers);
+    let Ok(expected) = factory.create(actual.capability_id()) else {
+        return false;
+    };
+    value
+        .pointer("/engineSelection/kind")
+        .and_then(serde_json::Value::as_str)
+        == Some("ready")
+        && actual.capability_id().as_str() == HIDEF_CAPABILITY_ID
+        && actual == expected
 }
 
 impl Serialize for LiveDemoReport {

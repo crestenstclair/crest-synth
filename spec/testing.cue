@@ -8,12 +8,12 @@ project: contexts: Testing: {
 	]
 
 	valueObjects: DemoScene: {
-		description: "a deterministic sequence of normalized GUI inputs, MIDI probes, ticks, and immutable checkpoints"
+		description: "a deterministic sequence of normalized GUI inputs, MIDI probes, fixture ticks, explicit worker/graph advancement, and immutable checkpoints"
 		state: {
 			name: "String"
 			schemaVersion: "u32"
-			steps: "Vec<WindowInput | MidiProbe | Tick | Checkpoint>"
-			surfaceDescriptor: "typed WindowInput kind/key, AppEvent, TopLevelContext, Direction, MidiMessageKind, installed capability, capability-parameter, editable-parameter, rejection, emitted-effect, and serialized-leaf descriptors from production owners"
+			steps: "Vec<WindowInput | MidiProbe | Tick | AdvanceGraphWorker | RenderBlock | PollStructural | Checkpoint>"
+			surfaceDescriptor: "typed WindowInput kind/key, AppEvent, TopLevelContext, Direction, MidiMessageKind, installed capability, capability-parameter, editable-parameter, engine-selection state/failure, rejection, emitted-effect, and serialized-leaf descriptors from production owners"
 			rejectionDescriptor: "typed unique EventRejection cases partitioned into Scene and ReducerTable reachability"
 			expectedCoverage: "the exact normalized identifier set derived from surfaceDescriptor plus installed Patch identities"
 		}
@@ -24,6 +24,7 @@ project: contexts: Testing: {
 			"every expected state value is computed before dispatch from the captured baseline plus the typed owner descriptor's bound and step; it is never copied from the actual post-dispatch StateTree, TextProjection, ParameterSnapshot, or rendered audio",
 			"every GUI adjustment step enters through KeyboardInputTranslator and every semantic input enters through AppLoop.dispatch",
 			"ticks use deterministic elapsed durations and no wall clock, native window, physical audio device, or random input",
+			"AdvanceGraphWorker, RenderBlock, and PollStructural drive the injected production worker port, graph boundary, and renderer at explicit deterministic points; they never mutate AppState, synth state, EventLog, or expected observations directly",
 			"the scene is test/demo support and exposes no transport, playback, arrangement, recording, or editing feature to the product domain",
 		]
 		contributesTo: [{capability: "capability.observable_demo_scene", contribution: "declares the exhaustive deterministic control-surface exercise"}]
@@ -37,14 +38,14 @@ project: contexts: Testing: {
 			eventLog: "EventLog"
 			initialStateTree: "StateTree"
 			finalStateTree: "StateTree"
-			coverage: "{expected, exercised, missing, unexpected} grouped by normalized GUI inputs, events, contexts, directions, MIDI kinds, editable parameters, serialized properties, rejections, projections, and audio effects"
-			checkpoints: "Vec<{step, expectedStateValues, actualStateValues, expectedProjectionValues, actualProjectionValues, stateHash, generation, selectedLine, parameterGeneration, audioMeasurement, reverbInputEnergy, delayInputEnergy}>"
+			coverage: "{expected, exercised, missing, unexpected} grouped by normalized GUI inputs, events, contexts, directions, MIDI kinds, editable parameters, engine-selection states/failures/effects, serialized properties, rejections, projections, and audio effects"
+			checkpoints: "Vec<{step, expectedStateValues, actualStateValues, expectedProjectionValues, actualProjectionValues, stateHash, generation, selectedLine, parameterGeneration, graphRevision, engineSelectionStatus, audioMeasurement, reverbInputEnergy, delayInputEnergy}>"
 		}
 		invariants: [
 			"complete is true only when expected and exercised identifiers are exactly equal in both directions, missing and unexpected are empty in both report and EventLog coverage, the event journal dropped no records, and all checkpoints agree",
 			"the final tree is exactly the last accepted event state and the last EventRecord hash/generation chain endpoint",
 			"each checkpoint compares exact typed state and projection values rather than checking only property presence, nonempty text, generation identity, or a changed aggregate buffer",
-			"after every reversible probe the selected parameter, all unrelated parameters, effect sends, InteractionState, and active projection equal the captured MIXER baseline exactly; generation and journal history are the only permitted differences",
+			"after every reversible scalar probe the selected parameter, all unrelated parameters, effect sends, and MIXER selection equal the captured baseline; the declared final structural state is the first Patch on descriptor-default HiDef SoundFont in Ready with every unrelated Patch exact",
 			"JSON serialization is deterministic and contains no debug-only pointer, timestamp, platform path, or nondeterministic map ordering",
 			"two independent complete runs from freshly constructed identical fixtures produce byte-identical EventLog, StateTree, coverage, checkpoints, and report JSON with no excluded fields",
 		]
@@ -52,24 +53,31 @@ project: contexts: Testing: {
 	}
 
 	valueObjects: LiveDemoScene: {
-		description: "a bounded paced plan of semantic navigation, parameter edits, fixture advancement, rejection probes, checkpoints, and note cleanup for the real standalone application"
+		description: "a bounded paced plan of semantic navigation, parameter edits, two successful engine replacements, fixture advancement, rejection probes, checkpoints, and note cleanup for the real standalone application"
 		state: {
 			name: "String"
 			schemaVersion: "u32"
 			minimumParameterDwell: "Duration"
-			steps: "Vec<{input: AppEvent | FixtureTick | Checkpoint | Finish, expectedTransition, editableParameterId?, requireAudibleObservation}>"
+			steps: "Vec<{input: AppEvent | FixtureTick | Checkpoint | Finish, expectedTransition, editableParameterId?, engineTransitionId?, requireAudibleObservation}>"
 			expectedEditableParameters: "ordered unique identifiers derived from the canonical per-Patch editable resolver and GlobalParameters descriptor plus installed PatchIds"
+			expectedEngineTransitions: "ordered [SoundFontToBraids, BraidsToDescriptorDefaultSoundFont] identities for the focused first fixture Patch"
 		}
 		invariants: [
-			"construction begins only after AutomaticMidiTest installs the real Corridors of Time fixture Patches and freezes the expected editable-parameter set before any live action is dispatched",
+			"construction begins only after AutomaticMidiTest installs the real Corridors of Time fixture Patches and freezes the expected editable-parameter and engine-transition sets before any live action is dispatched",
 			"the plan derives every mixer, envelope, descriptor-classified Scalar engine, and global parameter instance from the production Patch resolver and typed descriptors; it contains no duplicate hand-maintained field list or engine branch",
 			"every expected editable parameter has at least one planned accepted value change, one checkpoint, a minimum dwell of 500 ms, and an audible observation requirement",
 			"navigation and adjustment steps contain AppEvents and expected transitions only; the scene contains no mutable AppState, TextProjection, ParameterSnapshot, SoundFont engine, mixer, audio buffer, UI widget, or device handle",
+			"after frozen scalar coverage, the plan selects PATCH and submits exactly one semantic Adjust Right for the focused first SoundFont Patch, waits for Preparing, Activating, and Ready on a newer Braids graph revision, then submits exactly one Adjust Left and waits for the same lifecycle on a newer descriptor-default SoundFont revision",
+			"each Ready engine transition is followed by Patch-targeted semantic MIDI and a finite nonzero target-output checkpoint before the reverse transition or cleanup; engine-transition coverage is separate from the frozen editable-scalar set and cannot be credited by a changed label, constructed candidate, or nonzero unrelated Patch",
 			"at least one planned boundary adjustment is rejected as ParameterAtBoundary and is followed by a valid accepted adjustment proving the live scene remains active",
 			"Finish contains one Patch-targeted semantic all-notes-off Midi AppEvent for every installed Patch and no direct AudioCommand",
 			"the live scene is test/demo support around the existing MIDI fixture and exposes no transport, sequencer, song, clip, timeline, recording, or playback-control product model",
+			"the live scene injects no preparation failure, stale result, fabricated acknowledgement, manual graph, or direct worker action; exhaustive negative-path evidence remains in DemoScene while live composition uses ThreadedGraphPreparationWorker",
 		]
-		contributesTo: [{capability: "capability.live_observable_demo", contribution: "declares the bounded human-paced production-path scene without changing the exhaustive headless scene"}]
+		contributesTo: [
+			{capability: "capability.live_observable_demo", contribution: "declares the bounded human-paced scalar and engine-switching production-path scene without weakening the exhaustive headless scene"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "declares both successful directions and their lifecycle/audio checkpoints for the physical demo"},
+		]
 	}
 
 	valueObjects: LiveDemoCheckpoint: {
@@ -83,14 +91,17 @@ project: contexts: Testing: {
 			stateHash: "String"
 			projectedValue: "typed selected TextProjection and ParameterSnapshot value"
 			parameterGeneration: "u64"
+			graphRevision: "GraphRevision"
+			engineSelectionStatus: "EngineSelectionStatus"
+			activeCapabilityId: "CapabilityId"
 			emittedEffects: "bounded EventRecord effect descriptors"
 			audioObservation: "AudioObservationSnapshot"
-			audioPredicate: "typed parameter-specific predicate and measured result"
+			audioPredicate: "typed parameter- or engine-specific predicate and measured result"
 		}
 		invariants: [
 			"expectedTransition is computed and frozen before input dispatch; no actual state, projection, effect, or audio value can define its own expectation",
-			"all control fields come from one production EventRecord and the canonical projections for that record's accepted generation or unchanged rejected generation",
-			"audioObservation is copied from the bounded callback-to-control port only after its sequence advances and its parameterGeneration matches the checkpoint generation",
+			"all control fields come from one production EventRecord and the canonical projections plus structural status for that record's accepted generation or unchanged rejected generation",
+			"audioObservation is copied from the bounded callback-to-control port only after its sequence advances and its parameterGeneration matches the checkpoint generation; an engine-output checkpoint additionally requires Ready, the acknowledged active graphRevision, and the exact target activeCapabilityId",
 			"the checkpoint is constructed and serialized only on the control side and contains no device, callback, engine, mixer, window, or mutable-state handle",
 		]
 		contributesTo: [{capability: "capability.live_observable_demo", contribution: "is the canonical structured live checkpoint returned to the standalone output adapter"}]
@@ -105,14 +116,14 @@ project: contexts: Testing: {
 			checkpoints: "Vec<LiveDemoCheckpoint>"
 			eventLog: "EventLog"
 			stateTree: "StateTree"
-			coverage: "{expectedEditableParameters, exercisedEditableParameters, missingEditableParameters, unexpectedEditableParameters}"
-			runtimeAudio: "{parsedSoundfontBanks, preparedInstruments, soundfontPatches, braidsPatches, alternatingCapabilities, activeGraphRevision, callbackDestructions}"
+			coverage: "{expectedEditableParameters, exercisedEditableParameters, missingEditableParameters, unexpectedEditableParameters, expectedEngineTransitions, exercisedEngineTransitions, missingEngineTransitions, unexpectedEngineTransitions}"
+			runtimeAudio: "{parsedSoundfontBanks, preparedInstruments, soundfontPatches, braidsPatches, alternatingCapabilities, initialGraphRevision, activeGraphRevision, engineSwitches, readyCapabilities, fallbacks, callbackAllocations, callbackDestructions}"
 			summary: "String"
 		}
 		invariants: [
 			"each checkpoint captures its expected transition before dispatch and then copies the actual outcome, generation, state hash, projected value, parameter generation, and emitted effects from the production EventRecord and canonical projections",
-			"each accepted parameter checkpoint requires an AudioObservationSnapshot whose sequence advanced after dispatch, whose parameterGeneration equals the accepted generation, whose output is finite, and whose parameter-specific audible predicate passed while fixture audio was nonzero",
-			"complete is true only when every expected editable parameter changed, missing and unexpected are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, all semantic all-notes-off events were accepted, a later audio observation reports zero active notes, and runtimeAudio reports one parsed bank, one prepared instrument per Patch, exact SoundFont/Braids Patch counts and alternation, the StateTree graph revision, and zero callback destruction",
+			"each accepted parameter checkpoint requires an AudioObservationSnapshot whose sequence advanced after dispatch, whose parameterGeneration equals the accepted generation, whose output is finite, and whose parameter-specific audible predicate passed while fixture audio was nonzero; each engine checkpoint additionally proves the correlated status, increasing active graph revision, exact active capability, and finite nonzero targeted output after acknowledgement",
+			"complete is true only when every expected editable parameter changed, both ordered engine transitions completed, both missing and unexpected pairs are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, the focused Patch is Ready on descriptor-default SoundFont, all semantic all-notes-off events were accepted, a later audio observation reports zero active notes, and runtimeAudio reports one parsed bank, one prepared instrument per Patch after each rebuild, exact final SoundFont/Braids Patch counts and alternation, two switches, increasing revisions ending at StateTree graph revision, zero fallbacks, and zero callback allocation or destruction",
 			"eventLog and stateTree are the existing canonical Control values, not live-demo copies; stateTree.generation equals the final checkpoint and EventLog chain endpoint",
 			"the complete EventLog remains retained for deterministic report verification while interactive terminal output uses one compact LiveEventLogSummary containing lossless counts and canonical first/last chain endpoints",
 			"summary is human-readable control-side text derived from the structured report after completion and is never constructed or printed in the audio callback",
@@ -229,7 +240,11 @@ project: contexts: Testing: {
 			"valueObject.Control.PatchPageProjection",
 			"valueObject.Kernel.MidiMessage",
 			"port.RealTime.AudioBoundary",
+			"port.RealTime.GraphPreparationWorker",
+			"adapter.DeterministicGraphPreparationWorker",
+			"applicationService.RealTime.StructuralGraphCoordinator",
 			"applicationService.RealTime.AudioRenderer",
+			"valueObject.Testing.EngineSelectionObservation",
 		]
 		operations: {
 			run: {input: {scene: "DemoScene"}, output: {report: "Result<DemoSceneReport, DemoSceneError>"}}
@@ -237,10 +252,12 @@ project: contexts: Testing: {
 		meta: rules: [
 			"begin after AutomaticMidiTest installs the real fixture Patches so the state tree contains the immutable installed capability registry and every current Patch identity, generic instrument config, asset reference, and mixer parameter set",
 			"prove the registry contains instrument.soundfont.hidef and instrument.braids and the fixture alternates them in stable part order; every installed config matches its descriptor and unknown, duplicate, missing, undeclared, wrong-kind, non-finite, and out-of-range mutations fail without fallback or partial installation",
-			"exercise SelectContext, InstallPatches, Navigate, Adjust, and Midi; SelectContext exercises PATCH and MIXER, Navigate and Adjust each exercise Up, Down, Left, and Right, each Patch's MIDI probes cover exactly the kinds declared by its active descriptor with exact channel/data bytes, and the mixed scene covers the complete canonical MIDI union",
+			"exercise SelectContext, InstallPatches, Navigate, Adjust, Midi, EnginePrepared, EnginePreparationFailed, and EngineActivationAcknowledged; SelectContext exercises PATCH and MIXER, Navigate and Adjust each exercise Up, Down, Left, and Right, each Patch's MIDI probes cover exactly the kinds declared by its active descriptor with exact channel/data bytes, and the mixed scene covers the complete canonical MIDI union",
 			"exercise every valid normalized WindowInput from its production-owned descriptor through KeyboardInputTranslator and prove each emits the exact expected AppEvent or no event",
 			"drive Digit2 through KeyboardInputTranslator and AppLoop, prove the accepted InteractionState context and stable PatchId focus, then compare PatchPageProjection and rendered PATCH text exactly against the focused Patch, VoiceEnvelope descriptor, active CapabilityDescriptor, InstrumentConfig, and full registry choices for both SoundFont and Braids without capability-specific expected field lists",
-			"while PATCH is read-only, drive Navigate and Adjust and require ActionUnavailableInContext with unchanged generation, state hash, page, parameter values, graph revision, and audio-command count; then drive Digit1 and require the preserved prior MIXER selection and exact diagnostic body",
+			"on the focused PATCH Engine row, drive K+D to request SoundFont to Braids, checkpoint Preparing with the source config/revision and audible source graph exact, reject another request as StructuralEditBusy, manually advance real preparation, accept the candidate, checkpoint Activating, publish/render/collect/acknowledge, then send targeted MIDI and measure finite nonzero Braids output",
+			"drive K+A through the same path to descriptor-default HiDef SoundFont and measure finite nonzero engine-managed output; then run one controlled worker failure plus early, stale, and mismatched outcome/acknowledgement probes and prove exact source preservation, no publication or fallback, and later valid recovery",
+			"PATCH Navigate and Adjust Up/Down remain ActionUnavailableInContext, and adjacent selection beyond either registry boundary is EngineSelectionUnavailable; every rejection leaves generation, hash, config, lifecycle, graph revision, and audio-command count exact and accepts a later valid event",
 			"prove context-only acceptance advances coherent serialization, TextProjection, StateTree, and ParameterSnapshot generation while retaining byte-identical session values, parameter values, active GraphRevision, prepared ownership, routing, and rendered audio",
 			"for every installed Patch select every target returned by the canonical editable resolver—mixer, common ADSR, and active descriptor Scalar fields—and perform reversible declared edits through GUI inputs; assert exact state/text/snapshot values, measured target behavior, and exact equality of every unrelated Patch/global value",
 			"before global wet-parameter probes, make at least two Patches sound and establish nonzero reverbSend and delaySend through the same GUI/reducer path; assert nonzero reverb and delay input energy at GlobalEffectsProcessor, then compare each typed GlobalParameters field from identical reset effect state",
@@ -253,13 +270,13 @@ project: contexts: Testing: {
 			"observe and compare every current StateTree value, TextProjection line/value/selection marker, and ParameterSnapshot value against the same accepted AppState generation; property existence or a nonempty body alone is insufficient",
 			"verify all publicly reachable EventRejection outcomes in the scene and cover internal-only rejection variants with a table-driven reducer test; no rejection terminates later scene steps",
 			"for every scene step compare the complete EventRecord source, tagged input payload, outcome/rejection, generations, state hashes, emitted-event payloads, parameter generation, projection hash, and selected line against an oracle fixed before dispatch",
-			"exercise Startup, Keyboard, AutomaticMidi, DemoScene, and System EventSource tags through their real dispatch entry points and require each source's exact payload/outcome in EventRecord coverage",
+			"exercise Startup, Keyboard, AutomaticMidi, DemoScene, Worker, and System EventSource tags through their real dispatch entry points and require each source's exact payload/outcome in EventRecord coverage",
 			"schema discovery unions discriminating EventRecords for every input, outcome, rejection, and emitted-event tag; table cases removing one expected leaf or inserting one unexpected leaf in EventRecord and EventLog JSON must both make exact schema equality fail",
 			"discover ParameterSnapshot paths and exact values from the actual StateProjector output/getters and StateTree parameters projection, never by serializing or echoing the expected descriptor itself",
 			"exercise the separate AudioCommand::AllNotesOff renderer command in addition to PatchMidi(MidiMessageKind::AllNotesOff), and require both unique coverage identifiers",
 			"each Tick calls AutomaticMidiTest.tick with the declared deterministic elapsed duration, records every resulting fixture MIDI event through AppLoop, and asserts the exact EventRecord and audio consequence; an ignored elapsed value or render-only tick fails",
 			"audio comparison uses discriminating stems, nonzero effect inputs, paired renders from identical engine/effect state, and measured finite output; construction, success strings, dry-derived fake excitation, unrelated tail evolution, or a changed master buffer alone are not evidence",
-			"restore every reversible parameter, send, InteractionState, active-context text projection, Patch-page presence, and parameter projection to its exact captured MIXER baseline so the final StateTree is deterministic while generation and EventLog still prove every transition",
+			"restore every reversible scalar parameter, send, MIXER selection, and context to its exact captured baseline; finish with the declared first-Patch descriptor-default SoundFont config, Ready lifecycle, matching active GraphRevision, deterministic projections, and every unrelated Patch exact",
 			"render real SoundFont and Braids Patches simultaneously, require distinct nonzero finite isolated stems, and measure that Model, Timbre, Color, and all four ADSR controls affect only their declared target through the production reducer and renderer",
 			"run the complete scene twice from fresh identical services and require byte-identical EventLog, StateTree, coverage, checkpoints, and report JSON; no timestamp, map-order, pointer, or first-run effect tail may be excluded",
 		]
@@ -272,7 +289,8 @@ project: contexts: Testing: {
 			{capability: "capability.observable_demo_scene", contribution: "runs exhaustive stateful GUI and event coverage through production seams"},
 			{capability: "capability.instrument_capability_model", contribution: "proves registry/config serialization, generic projection, and explicit no-fallback rejection through production seams"},
 			{capability: "capability.one_way_parameter_control", contribution: "proves all current editable values use the one reducer and projection path"},
-			{capability: "capability.schema_driven_patch_page", contribution: "proves both direct page events, exact generic Patch projection, stable focus, typed read-only rejection, and audio-neutral switching"},
+			{capability: "capability.schema_driven_patch_page", contribution: "proves both direct page events, exact generic Patch projection, stable engine focus, typed unsupported-action rejection, and audio-neutral context switching"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "proves both engine directions, pending/busy/failure/stale states, complete activation, off-callback retirement, and targeted audible output through production seams"},
 			{capability: "capability.global_mix", contribution: "measures every current Patch and global mix parameter case"},
 			{capability: "capability.realtime_execution", contribution: "observes parameter and command effects through the real-time boundary"},
 		]
@@ -289,6 +307,7 @@ project: contexts: Testing: {
 			"valueObject.Control.AppEvent",
 			"valueObject.Control.EventLog",
 			"valueObject.Control.StateTree",
+			"valueObject.Control.EngineSelectionStatus",
 			"valueObject.Mixer.ChannelParameters",
 			"valueObject.Synth.VoiceEnvelope",
 			"valueObject.Synth.CapabilityDescriptor",
@@ -304,23 +323,27 @@ project: contexts: Testing: {
 		meta: rules: [
 			"start runs on the control thread after the fixture Patches, audio observation handles, bounded EventLog capacity, physical audio stream, and window application are prepared; it never opens a device or mutates canonical state",
 			"advance is called by the real window tick with monotonic elapsed time and never sleeps or blocks the UI thread; it advances AutomaticMidiTest through its existing tick operation and dispatches at most one due autonomous AppEvent through AppLoop.dispatchFrom with EventSource::DemoScene",
+			"before each runner advance the owning standalone tick calls AppLoop.advanceStructural exactly once, allowing the injected production worker and structural coordinator to progress without blocking; LiveDemoRunner observes canonical results and never submits, polls, advances, joins, or owns the worker or a graph directly",
 			"before each dispatch compute the exact expected generation, selected parameter value, StateTree value, TextProjection value, ParameterSnapshot value, outcome, and emitted effects from the captured prior canonical state and the owning typed descriptor",
 			"after an accepted edit wait until the projection has been available across a rendered frame, at least 500 ms has elapsed, and AudioObservation has advanced to the exact accepted ParameterSnapshot generation before returning one LiveDemoCheckpoint to the caller",
 			"audible predicates use actual finite observation fields from the physical render path: mixer/global edits observe their owned signal stages, ADSR edits observe envelope timing/level, and Braids Model/Timbre/Color observe waveform or energy; fixture timing is recorded so unrelated musical evolution cannot be presented as the parameter consequence",
 			"a rejected event is read from the existing EventLog, leaves generation and all projections unchanged, emits no effects, does not close the window, and does not skip the following valid scene step",
-			"expected and exercised editable-parameter identifiers are compared in both directions; an added, removed, duplicated, unmodified, unprojected, inaudible, or unexpected parameter makes the report incomplete",
+			"after scalar coverage the runner dispatches the two planned PATCH engine adjustments through AppLoop, holds later scene actions while each request is pending, and emits checkpoints only after the same request progresses through canonical Preparing, Activating, and Ready with exact capabilities and increasing graph revisions",
+			"after each Ready acknowledgement the runner dispatches targeted semantic MIDI for the selected Patch and waits for a newer matching-generation finite nonzero AudioObservation before crediting that engine direction; labels, candidate construction, source-engine audio, or unrelated stems cannot satisfy the checkpoint",
+			"expected and exercised editable-parameter and ordered engine-transition identifiers are each compared in both directions; an added, removed, duplicated, unmodified, unprojected, inaudible, unacknowledged, out-of-order, or unexpected item makes the report incomplete",
 			"completion dispatches Patch-targeted MidiMessageKind::AllNotesOff AppEvents through AppLoop for every installed Patch, waits for a newer AudioObservationSnapshot with zero active notes, captures the final EventLog and StateTree, exposes one completed LiveDemoReport, and then performs no more actions",
 			"the runner owns no window lifecycle and never requests window close itself; after completedReport exposes its inert final report, the owning StandaloneApplication consumes that report and requests close on the same window tick",
 			"the runner never calls AppState.apply directly, edits the immutable capability registry or Patch instrument config, edits a projection or report to manufacture agreement, publishes ParameterSnapshot, AudioCommand, or PreparedGraph directly, invokes PreparedInstrument, PreparedEngineRack, or MixEngine directly, writes an audio buffer, prints output, or logs from the callback",
 		]
 		validations: [
-			{id: "validation.service.live_demo_runner", kind: "integration", command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE live_demo_scene passed"}], description: "a deterministic-clock harness drives the live runner through production events, projections, rendered observations, rejection recovery, exact current-surface coverage, all-notes-off, and inert report completion without giving the runner window ownership"},
+			{id: "validation.service.live_demo_runner", kind: "integration", command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE live_demo_scene passed"}], description: "a deterministic-clock harness drives the live runner through production events, both engine directions, lifecycle/revision checkpoints, targeted render observations, rejection recovery, exact scalar and transition coverage, all-notes-off, and inert report completion without giving the runner window or worker ownership"},
 		]
 		contributesTo: [
 			{capability: "capability.live_observable_demo", contribution: "orchestrates the paced real-window scene and returns its coherent control-side evidence"},
 			{capability: "capability.one_way_parameter_control", contribution: "routes autonomous actions through the same AppLoop as keyboard and fixture input"},
 			{capability: "capability.realtime_execution", contribution: "reads only bounded generation-tagged callback observations"},
 			{capability: "capability.prepared_engine_rack", contribution: "observes the same rack-backed renderer without receiving graph ownership or preparation operations"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "observes both production-path replacements through canonical lifecycle, revision, and target-audio evidence"},
 		]
 	}
 

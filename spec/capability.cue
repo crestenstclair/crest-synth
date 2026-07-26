@@ -121,6 +121,7 @@ project: contexts: Synth: {
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "is the single schema source for installed instrument configuration and projection"},
 			{capability: "capability.schema_driven_patch_page", contribution: "supplies the active engine label, ordered sections, and generic parameter rows"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "supplies the ordered defaults and required asset references for a new target config"},
 		]
 	}
 
@@ -141,6 +142,7 @@ project: contexts: Synth: {
 			{capability: "capability.instrument_capability_model", contribution: "removes SoundFont-specific shape from the Patch aggregate"},
 			{capability: "capability.soundfont_audio", contribution: "carries the current SoundFont preset and asset through a generic Patch-owned contract"},
 			{capability: "capability.schema_driven_patch_page", contribution: "supplies the active values and asset references rendered against the descriptor"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "is the only candidate configuration committed when a prepared target succeeds"},
 		]
 	}
 
@@ -151,13 +153,14 @@ project: contexts: Synth: {
 			"CapabilityIds are unique and descriptor order is stable",
 			"lookup and InstrumentConfig validation use CapabilityId and ParameterId rather than label or position",
 			"an unknown, duplicate, unavailable, or invalid capability produces a typed error; no descriptor or config is silently substituted",
-			"the current production composition installs exactly the HiDef SoundFont and Braids descriptors in stable order; PATCH may project those entries as read-only choices, but no layering, runtime replacement, or fallback exists in this increment",
+			"the current production composition installs exactly the HiDef SoundFont and Braids descriptors in stable order; PATCH projects them as adjacent nonwrapping engine choices, permits one prepared replacement at a time, and never layers or falls back",
 			"the registry contains descriptors only; InstrumentPreparer registration, PreparedInstrument ownership, PreparedEngineRack, and structural graph handoff remain behind their separate application and real-time ports",
 		]
 		validations: [{id: "validation.value_object.capability_registry", kind: "test", command: ["cargo", "test", "capability_registry"], description: "duplicate ids, invalid assignments, unknown capabilities, fallback attempts, and descriptor-order drift are rejected"}]
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "makes the installed instrument schema explicit and deterministic without coupling AppState to an adapter"},
 			{capability: "capability.schema_driven_patch_page", contribution: "supplies the complete ordered engine-choice projection without placeholders"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "defines deterministic adjacent choice order and validates every committed candidate"},
 		]
 	}
 
@@ -174,11 +177,14 @@ project: contexts: Synth: {
 			"valueObject.Synth.AssetReference",
 		]
 		invariants: [
-			"provider operations run on the control side before Patch installation",
+			"provider operations run on control or worker ownership before Patch installation or off-callback candidate preparation",
 			"descriptor and config creation are deterministic and return typed errors without fallback",
 			"the port contains no render, dispatch, audio-buffer, device, UI, or file-I/O operation",
 		]
-		contributesTo: [{capability: "capability.instrument_capability_model", contribution: "lets a concrete engine adapter supply schema/config data without defining Patch"}]
+		contributesTo: [
+			{capability: "capability.instrument_capability_model", contribution: "lets a concrete engine adapter supply schema/config data without defining Patch"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "validates descriptor-default candidates without owning selection or mutation"},
+		]
 	}
 }
 
@@ -199,6 +205,7 @@ project: adapters: HiDefSoundFontCapability: {
 	validations: [{id: "validation.adapter.hidef_soundfont_capability", kind: "test", command: ["cargo", "test", "hidef_soundfont_capability"], description: "the descriptor and every fixture-derived config are exact, deterministic, schema-valid, and rejected when altered"}]
 	contributesTo: [
 		{capability: "capability.instrument_capability_model", contribution: "proves SoundFont is one registry entry rather than the universal Patch model"},
+		{capability: "capability.asynchronous_engine_selection", contribution: "builds the exact descriptor-default SoundFont candidate including HiDef.sf2 without fallback"},
 		{capability: "capability.prepared_engine_rack", contribution: "provides the stable capability identity independently matched to the production SoundFont preparer"},
 		{capability: "capability.soundfont_audio", contribution: "preserves the fixed bank/program/percussion and HiDef.sf2 identity used by the existing renderer"},
 	]
@@ -222,6 +229,7 @@ project: adapters: BraidsCapability: {
 	validations: [{id: "validation.adapter.braids_capability", kind: "test", command: ["cargo", "test", "braids_capability"], description: "the full 47-model descriptor and default/config validation are stable, exact, and fallback-free"}]
 	contributesTo: [
 		{capability: "capability.instrument_capability_model", contribution: "proves a second materially different schema is handled by the same registry/config model"},
+		{capability: "capability.asynchronous_engine_selection", contribution: "builds the exact descriptor-default Braids candidate without cached SoundFont state"},
 		{capability: "capability.braids_engine", contribution: "owns the canonical Model, Timbre, Color, FixedPerPatch(16), and supported-MIDI declaration independently of native preparation"},
 		{capability: "capability.prepared_engine_rack", contribution: "provides the identity independently matched to the Braids preparer"},
 	]

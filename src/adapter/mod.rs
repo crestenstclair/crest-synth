@@ -12,3 +12,4 @@ pub mod lock_free_audio_boundary;
 pub mod lock_free_structural_graph_boundary;
 pub mod production_instruments;
 pub mod soundfont_voice_engine;
+pub mod threaded_graph_preparation_worker;

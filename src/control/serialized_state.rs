@@ -1,6 +1,7 @@
 use crate::control::app_state::AppState;
 use crate::control::interaction_state::{Selection, SelectionSection};
 use crate::control::top_level_context::TopLevelContext;
+use crate::control::{EngineSelectionStatus, PatchControlId};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::synth::instrument_capability::{CapabilityRegistry, InstrumentConfig};
 use crate::synth::patch::Patch;
@@ -23,6 +24,7 @@ pub(crate) struct SerializedState<'a> {
     pub(crate) global: SerializedGlobalParameters,
     #[serde(default)]
     pub(crate) interaction: SerializedInteractionState,
+    pub(crate) engine_selection: EngineSelectionStatus,
 }
 
 impl<'a> From<&'a AppState> for SerializedState<'a> {
@@ -33,6 +35,7 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
             patches: state.patches().iter().map(SerializedPatch::from).collect(),
             global: SerializedGlobalParameters::from(state.global()),
             interaction: SerializedInteractionState::from(state.interaction()),
+            engine_selection: state.engine_selection().clone(),
         }
     }
 }
@@ -43,6 +46,7 @@ pub(crate) struct SerializedInteractionState {
     pub(crate) context: TopLevelContext,
     pub(crate) mixer_selection: SerializedSelection,
     pub(crate) patch_focus: Option<u32>,
+    pub(crate) patch_control_focus: Option<PatchControlId>,
 }
 
 impl Default for SerializedInteractionState {
@@ -51,6 +55,7 @@ impl Default for SerializedInteractionState {
             context: TopLevelContext::Mixer,
             mixer_selection: SerializedSelection::from(Selection::global()),
             patch_focus: None,
+            patch_control_focus: None,
         }
     }
 }
@@ -61,6 +66,7 @@ impl From<&crate::control::interaction_state::InteractionState> for SerializedIn
             context: interaction.context(),
             mixer_selection: SerializedSelection::from(interaction.mixer_selection()),
             patch_focus: interaction.patch_focus().map(|patch_id| patch_id.value()),
+            patch_control_focus: interaction.patch_control_focus(),
         }
     }
 }

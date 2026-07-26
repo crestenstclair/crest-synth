@@ -1,12 +1,18 @@
+use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
 use crest_synth::adapter::eframe_text_window::EframeApplication;
 use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+use crest_synth::adapter::production_instruments::production_capability_registry;
 use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
-use crest_synth::control::event_record::{EventDirection, EventInput, EventOutcome, EventSource};
+use crest_synth::control::event_record::{
+    EmittedEvent, EventDirection, EventInput, EventOutcome, EventSource,
+};
 use crest_synth::control::state_projector::StateProjector;
-use crest_synth::control::TopLevelContext;
+use crest_synth::control::{
+    EngineSelectionEffectKind, EngineSelectionRequestId, EngineSelectionStatusKind, TopLevelContext,
+};
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::channel_parameters::ChannelParameters;
@@ -44,9 +50,8 @@ fn patch(id: u32, channel: u8, parameters: ChannelParameters) -> Patch {
 }
 
 fn installed_state() -> AppState {
-    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
     let mut state = AppState::new(
-        provider.registry().expect("fixture registry is valid"),
+        production_capability_registry().expect("fixture registry is valid"),
         globals(),
     );
     state
@@ -72,6 +77,16 @@ fn key_event(key: egui::Key) -> egui::Event {
         key,
         physical_key: None,
         pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    }
+}
+
+fn key_release(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: false,
         repeat: false,
         modifiers: egui::Modifiers::default(),
     }
@@ -227,7 +242,107 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         assert!(clip_rect.contains(selected.center()));
     }
 
-    context.begin_pass(raw_input(vec![key_event(egui::Key::Num1)], 1.75));
+    context.begin_pass(raw_input(
+        vec![
+            key_event(egui::Key::K),
+            key_event(egui::Key::D),
+            key_release(egui::Key::D),
+            key_release(egui::Key::K),
+        ],
+        1.75,
+    ));
+    application.update(&context, &mut frame);
+    let pending_output = context.end_pass();
+    {
+        let app_loop = shared.borrow();
+        let pending_tree = tree_value(&app_loop);
+        let pending_text = app_loop.current_text();
+        let page = app_loop
+            .current_patch_page()
+            .expect("K+D keeps the canonical PATCH page visible");
+        let records = app_loop.event_log();
+        let record = records
+            .records()
+            .last()
+            .expect("the normalized chord emits exactly one semantic event");
+
+        assert_eq!(records.len(), 11);
+        assert_eq!(page.engine().status(), EngineSelectionStatusKind::Preparing);
+        assert!(!page.engine().editable());
+        assert_eq!(
+            page.engine().active_capability_id().as_str(),
+            "instrument.soundfont.hidef"
+        );
+        assert_eq!(
+            page.engine()
+                .requested_capability_id()
+                .expect("Preparing identifies the requested capability")
+                .as_str(),
+            BRAIDS_CAPABILITY_ID
+        );
+        assert_eq!(
+            page.engine().request_id(),
+            Some(EngineSelectionRequestId::FIRST)
+        );
+        assert_eq!(page.engine().target_graph_revision(), None);
+        assert_eq!(pending_tree["engineSelection"]["kind"], "preparing");
+        assert_eq!(
+            pending_tree["engineSelection"]["correlation"]["requestId"],
+            EngineSelectionRequestId::FIRST.value()
+        );
+        assert_eq!(
+            pending_tree["engineSelection"]["correlation"]["targetCapabilityId"],
+            BRAIDS_CAPABILITY_ID
+        );
+        assert_eq!(
+            pending_tree["parameters"]["graphRevision"],
+            page.engine().active_graph_revision().value()
+        );
+        assert_eq!(
+            pending_tree["patchPage"]["stateHash"],
+            pending_text.state_hash()
+        );
+        assert_eq!(pending_tree["projection"]["body"], pending_text.body());
+        assert_eq!(pending_text.selected_line(), 2);
+        assert!(pending_text
+            .body()
+            .lines()
+            .nth(pending_text.selected_line())
+            .expect("the engine line exists")
+            .starts_with("  ENGINE"));
+        assert!(matches!(
+            record.input(),
+            EventInput::Adjust {
+                direction: EventDirection::Right
+            }
+        ));
+        assert_eq!(record.source(), EventSource::System);
+        assert_eq!(record.outcome(), EventOutcome::Accepted);
+        assert_eq!(
+            record.generation_after(),
+            app_loop.current_state_tree().generation()
+        );
+        assert_eq!(record.state_hash_after(), pending_text.state_hash());
+        assert_eq!(record.emitted_events().len(), 3);
+        match &record.emitted_events()[2] {
+            EmittedEvent::EngineSelection { effect } => {
+                assert_eq!(effect.kind(), EngineSelectionEffectKind::PrepareRequested);
+                assert_eq!(effect.request_id(), EngineSelectionRequestId::FIRST);
+                assert_eq!(effect.target_capability_id().as_str(), BRAIDS_CAPABILITY_ID);
+                assert_eq!(effect.target_graph_revision(), None);
+            }
+            other => panic!("expected correlated preparation effect, got {other:?}"),
+        }
+
+        let (clip_rect, text_shape) = painted_projection(&pending_output, pending_text.body())
+            .expect("the chord frame paints the pending PATCH projection");
+        let selected = text_shape.galley.rows[pending_text.selected_line()]
+            .rect()
+            .translate(text_shape.pos.to_vec2());
+        assert!(clip_rect.contains(selected.center()));
+    }
+
+    context.begin_pass(raw_input(vec![key_event(egui::Key::Num1)], 2.0));
     application.update(&context, &mut frame);
     let output = context.end_pass();
 
@@ -287,7 +402,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         Some(expected_line.as_str())
     );
 
-    assert_eq!(records.len(), 11);
+    assert_eq!(records.len(), 12);
     let adjustment = &records.records()[8];
     assert_eq!(adjustment.source(), EventSource::System);
     assert_eq!(adjustment.outcome(), EventOutcome::Accepted);
@@ -327,7 +442,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         clip_rect.contains(selected_rect.center()),
         "the exact selected line must be the scroll target: clip={clip_rect:?}, selected={selected_rect:?}"
     );
-    assert_eq!(tick_count.get(), 8);
+    assert_eq!(tick_count.get(), 9);
     assert_eq!(
         idle_output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
         Duration::from_millis(16),

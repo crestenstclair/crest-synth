@@ -60,7 +60,7 @@ project: contexts: Synth: {
 		invariants: [
 			"id is stable for the process lifetime",
 			"instrument capability and configuration are validated against the installed CapabilityRegistry before Patch construction",
-			"Structural instrument values are immutable after installation in this increment; descriptor-classified Scalar values may change only through the canonical reducer",
+			"descriptor-classified Scalar values may change through the canonical reducer; the only structural mutation in this increment atomically replaces the complete InstrumentConfig after a correlated engine candidate is prepared",
 			"channel is assigned by the input adapter and is in 0..=15",
 			"ChannelParameters, VoiceEnvelope, and active descriptor-classified Scalar instrument values form one schema-derived editable surface",
 			"Patch contains no SoundFont-only field, engine object, descriptor copy, prepared renderer, decoded asset, UI state, or fallback configuration",
@@ -71,6 +71,7 @@ project: contexts: Synth: {
 			{capability: "capability.braids_engine", contribution: "binds the same generic Patch aggregate to the registered Braids capability"},
 			{capability: "capability.one_way_parameter_control", contribution: "is the unit listed and edited by the text view"},
 			{capability: "capability.schema_driven_patch_page", contribution: "supplies stable Patch identity, MIDI channel, active config, and envelope to the focused page"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "retains Patch identity, MIDI channel, envelope, and mixer routing while replacing only its prepared InstrumentConfig"},
 		]
 	}
 
@@ -146,6 +147,7 @@ project: contexts: Synth: {
 		validations: [{id: "validation.service.prepared_engine_rack_builder", kind: "test", command: ["cargo", "test", "prepared_engine_rack_builder"], description: "exact preparation succeeds while missing, duplicate, mismatched, over-capacity, and partial configurations fail without fallback"}]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "constructs the bounded rack from canonical Patch configs and registered preparation ports"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "rebuilds the bounded rack from the exact candidate Patch set without engine-specific branching"},
 		]
 	}
 
@@ -172,6 +174,7 @@ project: adapters: HiDefSoundFontPreparer: {
 	validations: [{id: "validation.adapter.hidef_soundfont_preparer", kind: "test", command: ["cargo", "test", "hidef_soundfont_preparer"], description: "one parsed bank prepares independent melodic and percussion instruments whose targeted MIDI and bounded non-silent stems remain isolated behind PreparedInstrument"}]
 	contributesTo: [
 		{capability: "capability.instrument_capability_model", contribution: "prepares the existing renderer from a generic capability config without becoming the Patch model"},
+		{capability: "capability.asynchronous_engine_selection", contribution: "prepares a selected default SoundFont candidate on worker ownership"},
 		{capability: "capability.prepared_engine_rack", contribution: "supplies the SoundFont production preparer and capability-neutral per-Patch prepared instruments"},
 		{capability: "capability.soundfont_audio", contribution: "preserves one parsed HiDef.sf2 bank while adapting SoundFont to the generic prepared boundary"},
 		{capability: "capability.per_voice_envelope", contribution: "applies the common envelope through one Patch-local synthesizer's independent native voices"},
@@ -201,6 +204,7 @@ project: adapters: BraidsPreparer: {
 	]
 	contributesTo: [
 		{capability: "capability.braids_engine", contribution: "defers synthesis to the pinned upstream MacroOscillator while adapting it to Crest's bounded contracts"},
+		{capability: "capability.asynchronous_engine_selection", contribution: "prepares a selected default Braids candidate on worker ownership"},
 		{capability: "capability.per_voice_envelope", contribution: "owns one independent oscillator and envelope per Braids note voice"},
 		{capability: "capability.prepared_engine_rack", contribution: "supplies the intentional second production preparer"},
 		{capability: "capability.realtime_execution", contribution: "keeps native DSP work bounded and prepared across the callback boundary"},

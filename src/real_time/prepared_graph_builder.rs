@@ -159,6 +159,7 @@ mod tests {
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::real_time::graph_revision::{GraphRevision, GraphRevisionError};
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
+    use crate::real_time::PreparedGraphRefreshError;
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
     use crate::synth::patch::Patch;
@@ -289,6 +290,51 @@ mod tests {
         assert!(graph
             .engine_rack()
             .matches_parameters(graph.initial_parameters()));
+    }
+
+    #[test]
+    fn prepared_graph_refreshes_only_an_exact_target_revision_and_engine_layout() {
+        let provider = HiDefSoundFontCapability::new().unwrap();
+        let registry = provider.registry().unwrap();
+        let preparers = vec![FixturePreparer::boxed(false)];
+        let builder = PreparedGraphBuilder::new(&registry, &preparers);
+        let revision = GraphRevision::new(7).unwrap();
+        let patches = [patch(1), patch(2)];
+        let mut graph = builder
+            .build(
+                revision,
+                &patches,
+                parameters(revision, &patches),
+                48_000.0,
+                256,
+            )
+            .unwrap();
+
+        let mut edited_patches = patches.clone();
+        edited_patches[0].set_parameters(ChannelParameters::new(-9.0, 0.75, 0.25, 0.5).unwrap());
+        let refreshed = parameters(revision, &edited_patches).with_generation(99);
+        graph.refresh_initial_parameters(refreshed).unwrap();
+        assert_eq!(graph.initial_parameters(), &refreshed);
+        assert_eq!(
+            graph
+                .initial_parameters()
+                .patch(edited_patches[0].id())
+                .unwrap()
+                .parameters(),
+            edited_patches[0].parameters()
+        );
+
+        let retained = *graph.initial_parameters();
+        assert_eq!(
+            graph.refresh_initial_parameters(parameters(GraphRevision::new(8).unwrap(), &patches)),
+            Err(PreparedGraphRefreshError::RevisionMismatch)
+        );
+        assert_eq!(graph.initial_parameters(), &retained);
+        assert_eq!(
+            graph.refresh_initial_parameters(parameters(revision, &[patch(2), patch(1)])),
+            Err(PreparedGraphRefreshError::LayoutMismatch)
+        );
+        assert_eq!(graph.initial_parameters(), &retained);
     }
 
     #[test]

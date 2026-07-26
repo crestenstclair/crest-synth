@@ -60,10 +60,7 @@ impl PreparedEngineRackBuilder {
                     capability_id: preparer.capability_id().clone(),
                 });
             }
-            if !patches
-                .iter()
-                .any(|patch| patch.instrument_config().capability_id() == preparer.capability_id())
-            {
+            if registry.descriptor(preparer.capability_id()).is_none() {
                 return Err(RackPreparationError::ExtraPreparer {
                     capability_id: preparer.capability_id().clone(),
                 });

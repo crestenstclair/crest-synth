@@ -114,7 +114,7 @@ project: contexts: Shell: {
 	}
 
 	applicationServices: StandaloneApplication: {
-		purpose: "compose the control loop, automatic MIDI fixture, exhaustive GUI demo, audio renderer, text window, and device output"
+		purpose: "compose the control loop, capacity-one graph-preparation worker, automatic MIDI fixture, exhaustive GUI demo, audio renderer, text window, and device output"
 		uses: [
 			"valueObject.Synth.CapabilityRegistry",
 			"port.Synth.InstrumentCapabilityProvider",
@@ -131,6 +131,8 @@ project: contexts: Shell: {
 			"applicationService.RealTime.PreparedGraphBuilder",
 			"applicationService.RealTime.StructuralGraphCoordinator",
 			"port.RealTime.StructuralGraphBoundary",
+			"port.RealTime.GraphPreparationWorker",
+			"applicationService.Synth.DescriptorDefaultConfigFactory",
 			"port.RealTime.AudioObservation",
 			"port.Shell.AppWindow",
 			"port.Shell.AudioOutput",
@@ -146,8 +148,9 @@ project: contexts: Shell: {
 			"startup validates duplicate, missing, unknown, and mismatched provider/preparer registrations, freezes their ordered CapabilityRegistry in AppState, and performs no structural publication before registration succeeds",
 			"physical startup negotiates AudioDeviceConfig first, prepares the complete initial graph from its exact sampleRate and renderCapacityFrames, constructs AudioRenderer, starts the same negotiated output owner, then opens the text window",
 			"startup fails visibly before audio on duplicate, missing, unknown, or mismatched capability or preparer registration and never chooses or substitutes a fallback provider, preparer, prepared instrument, config, asset, preset, graph, or engine",
-			"normal-mode MIDI begins automatically only after the initial graph is fully prepared; each window tick advances only the private test input, polls GraphHandoffStatus, and collects returned graphs outside the callback",
-			"production startup alternates HiDef SoundFont and Braids instruments in PreparedEngineRack; it exposes both installed entries as read-only PATCH projection choices but no runtime graph edit or engine replacement, and never substitutes one engine for the other",
+			"normal-mode MIDI begins automatically only after the initial graph is fully prepared; each window tick advances the private test input, polls at most one worker outcome and structural status, retries a staged graph, and collects returned graphs outside the callback",
+			"production startup alternates HiDef SoundFont and Braids instruments in PreparedEngineRack; PATCH exposes both installed entries as adjacent nonwrapping choices and the injected worker prepares one complete replacement at a time without ever substituting one engine for the other",
+			"normal, smoke, headless-demo, and live-demo compositions inject the same registry, providers, preparers, DescriptorDefaultConfigFactory, GraphPreparationWorker port, graph builder, structural coordinator, reducer, projector, and renderer; only the deterministic headless harness manually advances its worker adapter while live uses ThreadedGraphPreparationWorker",
 			"runLiveDemo uses the exact normal startup order, real EframeTextWindow, physical CpalAudioOutput, HiDef.sf2, pinned Braids adapter, and Corridors of Time fixture, then starts LiveDemoRunner on the control side and advances it from the existing window-tick callback",
 			"runLiveDemo injects the same AppLoop into AutomaticMidiTest, LiveDemoRunner, and immutable projection callbacks; its live-mode window input callback is a stateless semantic no-op, none receives mutable AppState, and no live-specific reducer, engine, mixer, window, or audio-output implementation exists",
 			"in live mode only LiveDemoRunner advances AutomaticMidiTest; StandaloneApplication does not also tick the fixture and every due fixture event is dispatched exactly once",
@@ -159,17 +162,20 @@ project: contexts: Shell: {
 			"each window tick first consumes any post-start AudioDeviceRuntimeError on control ownership, retains the exact ApplicationError, and asks the window to close; it never formats, logs, or invokes UI behavior from the device callback",
 			"runSmoke uses the same services without a physical device or window and measures real control, routing, and rendered-sample results",
 			"runDemoScene initializes the real fixture, then drives normalized WindowInputs through KeyboardInputTranslator and the production AppLoop; it never mutates state or projections directly",
+			"runDemoScene injects DeterministicGraphPreparationWorker, exercises the complete SoundFont to Braids to descriptor-default SoundFont lifecycle plus one controlled failure, and never fabricates a graph, status, event, measurement, or report field",
+			"runLiveDemo completes its frozen editable-scalar coverage, then submits SoundFont to Braids and Braids to descriptor-default SoundFont for the focused first Patch through LiveDemoRunner semantic events; each window tick advances AppLoop structural work nonblockingly, each direction waits for visible Preparing, Activating, Ready, an acknowledged newer revision, and finite nonzero targeted physical output, and no live path injects failure or fabricates acknowledgement",
 			"demo execution retains the complete EventLog and final StateTree and reports zero missing coverage before returning success",
 			"verification-only demo degeneracy is injected before observation at exactly one real seam: control drops one translated Adjust before AppLoop, audio clears the rendered buffer after AudioRenderer; neither mode edits coverage, a completed DemoSceneReport, or any measured observation field",
 			"each checkpoint is passed exactly once to the injected control-side onCheckpoint callback; when LiveDemoRunner completes, pass its report exactly once to onComplete and return false from that same tick so the window closes without a post-completion tick or frame",
 			"after the completed window returns, release the physical stream on control ownership and return success when no retained runtime error exists",
+			"after every normal, error, demo, or live exit release the audio stream before shutting down the worker, then drain or destroy pending, staged, returned, and retired graph ownership only on control/worker ownership",
 			"if the user closes the window before completion, dispatch semantic all-notes-off for installed Patches while the control loop is available, do not call onComplete with a successful report, and return a typed incomplete-live-demo result without fabricating coverage",
 			"--demo-live has no degenerate, headless, no-device, no-window, persistent-final-window, or silent-fallback mode; startup or runtime device failures remain typed visible ApplicationErrors",
 		]
 		validations: [
 			{id: "validation.service.standalone_application", kind: "integration", command: ["cargo", "test", "standalone_application"], description: "a boundary adjustment on a non-first Patch is ignored without terminating the window, and a following valid edit is accepted"},
 			{id: "validation.service.standalone_exhaustive_demo", kind: "integration", command: ["cargo", "test", "standalone_exhaustive_gui_demo"], description: "the composed headless application emits a complete event log, state tree, coverage matrix, and audio observations"},
-			{id: "validation.service.standalone_live_demo", kind: "integration", command: ["cargo", "test", "standalone_live_demo_composition"], description: "the live mode wires the real window/audio lifetime to the paced runner while a deterministic harness injects mapped input during a pending checkpoint and proves isolated input, one completion, immediate close, and successful teardown"},
+			{id: "validation.service.standalone_live_demo", kind: "integration", command: ["cargo", "test", "standalone_live_demo_composition"], description: "the live mode wires the threaded preparation and graph handoff plus real window/audio lifetime to the paced two-direction runner while a deterministic harness proves lifecycle/revision/audio checkpoints, mapped-input isolation, one completion, immediate close, and successful teardown"},
 			{id: "validation.service.standalone_runtime_contracts", kind: "integration", command: ["cargo", "test", "--test", "production_runtime_contracts", "--", "--nocapture"], description: "the injected production constructor, negotiated device lifecycle, replaceable boundaries, oversized callback adaptation, and post-start typed error path are executable"},
 		]
 		contributesTo: [
@@ -181,6 +187,7 @@ project: contexts: Shell: {
 			{capability: "capability.automatic_test_midi", contribution: "starts the fixed test input automatically"},
 			{capability: "capability.one_way_parameter_control", contribution: "joins keyboard events to the shared reducer and immutable text projection"},
 			{capability: "capability.schema_driven_patch_page", contribution: "composes direct context input with the canonical Patch-page projection"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "composes descriptor defaults, capacity-one preparation, one-way lifecycle events, structural handoff, and control-owned shutdown"},
 			{capability: "capability.realtime_execution", contribution: "starts control and audio sides in the correct preparation order"},
 			{capability: "capability.observable_demo_scene", contribution: "composes the exhaustive scene against production input, reducer, projection, boundary, engine, and mixer services"},
 			{capability: "capability.live_observable_demo", contribution: "composes the paced runner with the real standalone UI, physical audio stream, canonical control loop, and final visible state"},
@@ -200,6 +207,7 @@ project: adapters: EframeTextWindow: {
 				"normalize egui key presses, releases, and focus loss into WindowInput and delegate every 1/2/W/S/A/D/K decision to KeyboardInputTranslator",
 				"do not retain a second private keyboard state machine or duplicate the translator in tests",
 				"key handling emits AppEvents only and never mutates view selection, Patch values, AppState, snapshots, event logs, or audio",
+				"in PATCH render patch.engine as the sole selected row with active/requested capability, Ready/Preparing/Activating/Failed text, and typed failure; K+A/D still emits only Adjust Left/Right and the reducer owns whether that means an adjacent engine request",
 				"the headless adapter contract drives real egui RawInput through an egui Context and EframeApplication.update with the production on_input callback wired to AppLoop.dispatch, then runs the next frame from AppLoop.currentText; capturing a callback without applying it is not acceptance evidence",
 				"the next frame must prove the event-log record, accepted generation, selected parameter value, every unrelated value, TextProjection body/stateHash/selectedLine, and selected-line scroll target all reflect that same dispatched GUI event",
 				"the headless adapter contract begins with a projection containing discriminating values for every Patch and global parameter and inspects egui output for the exact values; calling normalize_egui_event directly or rendering an unrelated supplied projection is not sufficient integration evidence",

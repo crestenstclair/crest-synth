@@ -5,10 +5,7 @@ use crate::control::serialized_state::SerializedState;
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::state_tree::{StateTree, StateTreeError};
 use crate::control::text_projection::TextProjection;
-use crate::real_time::parameter_snapshot::{
-    ParameterSnapshot, ParameterSnapshotError, RtInstrumentParameters, RtPatchParameters,
-    MAX_PATCHES,
-};
+use crate::real_time::parameter_snapshot::{ParameterSnapshot, ParameterSnapshotError};
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
     InstrumentConfig, ParameterDefault, ParameterKind, ParameterSpec, ParameterUpdate,
@@ -19,7 +16,7 @@ use core::fmt;
 
 const MIXER_HEADER: &str =
     "MIXER | 1 MIXER | 2 PATCH | W/S parameters | A/D channels | K+direction edit";
-const PATCH_HEADER: &str = "PATCH | 1 MIXER | 2 PATCH | READ ONLY";
+const PATCH_HEADER: &str = "PATCH | 1 MIXER | 2 PATCH | K+A/D engine";
 const SEPARATOR: &str = "------------------------------------------------------------";
 
 /// A projection failure detected on the control side before publication.
@@ -213,9 +210,6 @@ impl StateProjector {
         text: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<StateTree, StateProjectionError> {
-        if parameters.graph_revision() != self.graph_revision {
-            return Err(StateTreeError::GraphRevisionMismatch.into());
-        }
         StateTree::with_patch_page(snapshot, page, text, parameters)
             .map_err(StateProjectionError::from)
     }
@@ -271,50 +265,19 @@ impl StateProjector {
         &self,
         state: &AppState,
     ) -> Result<ParameterSnapshot, StateProjectionError> {
-        if state.patches().len() > MAX_PATCHES {
-            return Err(ParameterSnapshotError::TooManyPatches {
-                count: state.patches().len(),
-                capacity: MAX_PATCHES,
-            }
-            .into());
-        }
-
-        let patches: Vec<RtPatchParameters> = state
-            .patches()
-            .iter()
-            .map(|patch| {
-                let descriptor = state
-                    .capabilities()
-                    .descriptor(patch.instrument_config().capability_id())
-                    .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
-                let values = descriptor
-                    .scalar_parameters()
-                    .map(|spec| {
-                        let value = patch
-                            .instrument_config()
-                            .value(spec.id())
-                            .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
-                        spec.scalar_value(value)
-                            .map_err(|_| StateProjectionError::InvalidInstrumentConfig)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let instrument = RtInstrumentParameters::new(&values)?;
-                Ok(RtPatchParameters::projected(
-                    patch.id(),
-                    *patch.parameters(),
-                    *patch.envelope(),
-                    instrument,
-                ))
-            })
-            .collect::<Result<Vec<_>, StateProjectionError>>()?;
-
-        ParameterSnapshot::for_graph(
+        ParameterSnapshot::project_patches(
             state.generation(),
-            self.graph_revision,
+            state.engine_selection().projection_graph_revision(),
             *state.global(),
-            &patches,
+            state.patches(),
+            state.capabilities(),
         )
-        .map_err(StateProjectionError::from)
+        .map_err(|error| match error {
+            ParameterSnapshotError::InvalidInstrumentConfig { .. } => {
+                StateProjectionError::InvalidInstrumentConfig
+            }
+            other => StateProjectionError::ParameterSnapshot(other),
+        })
     }
 
     /// Advances all coherent projections after a validated MIDI event changed
@@ -340,8 +303,10 @@ impl StateProjector {
         let generation = state.generation();
         if previous_parameters.generation().checked_add(1) != Some(generation)
             || previous_tree.generation().checked_add(1) != Some(generation)
-            || previous_parameters.graph_revision() != self.graph_revision
-            || previous_tree.graph_revision() != self.graph_revision
+            || previous_parameters.graph_revision()
+                != state.engine_selection().projection_graph_revision()
+            || previous_tree.graph_revision()
+                != state.engine_selection().projection_graph_revision()
         {
             return Err(StateProjectionError::StateGenerationTemplateMismatch);
         }
@@ -534,12 +499,13 @@ fn render_patch_text(
 ) -> Result<TextProjection, StateProjectionError> {
     let mut lines = vec![PATCH_HEADER.to_owned()];
     lines.push(format!(
-        "> PATCH {}",
+        " PATCH {}",
         serde_json::to_string(page.patch())
             .map_err(|_| StateProjectionError::StateSerialization)?
     ));
+    let engine_marker = if page.engine().editable() { '>' } else { ' ' };
     lines.push(format!(
-        " ENGINE {}",
+        "{engine_marker} ENGINE {}",
         serde_json::to_string(page.engine())
             .map_err(|_| StateProjectionError::StateSerialization)?
     ));
@@ -566,7 +532,7 @@ fn render_patch_text(
     Ok(TextProjection::for_context(
         crate::control::TopLevelContext::Patch,
         lines.join("\n"),
-        1,
+        2,
         state_hash.to_owned(),
     ))
 }
@@ -640,17 +606,21 @@ fn push_parameter_text_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
     use crate::adapter::hidef_soundfont_capability::{
         HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID,
     };
+    use crate::adapter::production_instruments::production_capability_registry;
     use crate::control::app_event::{AppEvent, Direction};
     use crate::control::app_state::EventRejection;
     use crate::control::serialized_state::{SerializedSelectionSection, SerializedState};
+    use crate::control::{EngineSelectionFailure, EngineSelectionStatusKind};
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::real_time::MAX_PATCHES;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::testing::automatic_midi_test::create_soundfont_config;
@@ -674,14 +644,38 @@ mod tests {
         )
     }
 
-    fn installed_state() -> AppState {
+    fn installed_state_for_graph(graph_revision: GraphRevision) -> AppState {
         let provider = HiDefSoundFontCapability::new().unwrap();
-        let mut state = AppState::new(provider.registry().unwrap(), global_parameters());
+        let mut state = AppState::for_graph(
+            provider.registry().unwrap(),
+            global_parameters(),
+            graph_revision,
+        );
         state
             .apply(AppEvent::InstallPatches(vec![
                 patch(1, -6.0),
                 patch(2, -12.0),
             ]))
+            .unwrap();
+        state
+    }
+
+    fn installed_state() -> AppState {
+        installed_state_for_graph(GraphRevision::INITIAL)
+    }
+
+    fn mixed_patch_state() -> AppState {
+        let mut state = AppState::new(
+            production_capability_registry().unwrap(),
+            global_parameters(),
+        );
+        state
+            .apply(AppEvent::InstallPatches(vec![patch(1, -6.0)]))
+            .unwrap();
+        state
+            .apply(AppEvent::SelectContext(
+                crate::control::TopLevelContext::Patch,
+            ))
             .unwrap();
         state
     }
@@ -800,8 +794,8 @@ mod tests {
 
     #[test]
     fn complete_projection_uses_one_accepted_generation() {
-        let state = installed_state();
         let revision = GraphRevision::new(17).unwrap();
+        let state = installed_state_for_graph(revision);
         let (snapshot, page, text, parameters, tree) = StateProjector::for_graph(revision)
             .project_with_tree(&state)
             .unwrap();
@@ -830,8 +824,9 @@ mod tests {
 
     #[test]
     fn midi_generation_projection_is_exactly_equal_to_eager_projection() {
-        let mut state = installed_state();
-        let projector = StateProjector::for_graph(GraphRevision::new(23).unwrap());
+        let revision = GraphRevision::new(23).unwrap();
+        let mut state = installed_state_for_graph(revision);
+        let projector = StateProjector::for_graph(revision);
         let (snapshot, page, text, parameters, tree) = projector.project_with_tree(&state).unwrap();
         let patch_id = state.patches()[0].id();
         let message = MidiMessage::try_new(
@@ -853,19 +848,20 @@ mod tests {
         assert_eq!(fast.2, eager.2);
         assert_eq!(fast.3, eager.3);
         assert_eq!(fast.4, eager.4);
-        assert_eq!(fast.3.graph_revision(), GraphRevision::new(23).unwrap());
-        assert_eq!(fast.4.graph_revision(), GraphRevision::new(23).unwrap());
+        assert_eq!(fast.3.graph_revision(), revision);
+        assert_eq!(fast.4.graph_revision(), revision);
     }
 
     #[test]
     fn patch_projection_and_generation_only_midi_are_context_coherent_and_shared() {
-        let mut state = installed_state();
+        let revision = GraphRevision::new(29).unwrap();
+        let mut state = installed_state_for_graph(revision);
         state
             .apply(AppEvent::SelectContext(
                 crate::control::TopLevelContext::Patch,
             ))
             .unwrap();
-        let projector = StateProjector::for_graph(GraphRevision::new(29).unwrap());
+        let projector = StateProjector::for_graph(revision);
         let (snapshot, page, text, parameters, tree) = projector.project_with_tree(&state).unwrap();
         let page = page.expect("PATCH context projects one focused page");
 
@@ -912,11 +908,170 @@ mod tests {
     }
 
     #[test]
+    fn every_engine_selection_generation_is_cross_projection_coherent() {
+        let projector = StateProjector::new();
+        let mut state = mixed_patch_state();
+        let source_config = state.patches()[0].instrument_config().clone();
+        let source_revision = GraphRevision::INITIAL;
+
+        let assert_projection =
+            |state: &AppState,
+             expected_kind: EngineSelectionStatusKind,
+             expected_projection_revision: GraphRevision,
+             expected_editable: bool,
+             expected_failure: Option<EngineSelectionFailure>| {
+                let (snapshot, page, text, parameters, tree) =
+                    projector.project_with_tree(state).unwrap();
+                let page = page.expect("PATCH context always projects its focused page");
+                let snapshot_value: serde_json::Value =
+                    serde_json::from_str(snapshot.json()).unwrap();
+                let tree_value: serde_json::Value = serde_json::from_str(tree.json()).unwrap();
+
+                assert_eq!(page.engine().status(), expected_kind);
+                assert_eq!(page.engine().editable(), expected_editable);
+                assert_eq!(page.engine().failure(), expected_failure);
+                assert_eq!(parameters.generation(), state.generation());
+                assert_eq!(parameters.graph_revision(), expected_projection_revision);
+                assert_eq!(tree.generation(), state.generation());
+                assert_eq!(tree.graph_revision(), expected_projection_revision);
+                assert_eq!(page.state_hash(), snapshot.hash());
+                assert_eq!(text.state_hash(), snapshot.hash());
+                assert_eq!(tree.state_hash(), snapshot.hash());
+                assert_eq!(
+                    snapshot_value["engineSelection"],
+                    tree_value["engineSelection"]
+                );
+                assert_eq!(
+                    serde_json::to_value(page.engine()).unwrap(),
+                    tree_value["patchPage"]["engine"]
+                );
+                assert_eq!(
+                    tree_value["parameters"]["graphRevision"],
+                    expected_projection_revision.value()
+                );
+                assert!(text
+                    .body()
+                    .contains(&format!("\"status\":\"{}\"", expected_kind.name())));
+                assert_eq!(
+                    text.body()
+                        .lines()
+                        .find(|line| line.contains("ENGINE"))
+                        .unwrap()
+                        .starts_with('>'),
+                    expected_editable
+                );
+                if let Some(failure) = expected_failure {
+                    assert!(text
+                        .body()
+                        .contains(&format!("\"failure\":\"{}\"", failure.name())));
+                }
+            };
+
+        assert_projection(
+            &state,
+            EngineSelectionStatusKind::Ready,
+            source_revision,
+            true,
+            None,
+        );
+
+        let ready_generation = state.generation();
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        assert_eq!(state.generation(), ready_generation + 1);
+        assert_eq!(state.patches()[0].instrument_config(), &source_config);
+        assert_projection(
+            &state,
+            EngineSelectionStatusKind::Preparing,
+            source_revision,
+            false,
+            None,
+        );
+
+        let failed_correlation = state.engine_selection().correlation().unwrap().clone();
+        let target_revision = source_revision.checked_next().unwrap();
+        state
+            .apply(AppEvent::EnginePreparationFailed {
+                request_id: failed_correlation.request_id(),
+                patch_id: failed_correlation.patch_id(),
+                source_capability_id: failed_correlation.source_capability_id().clone(),
+                target_capability_id: failed_correlation.target_capability_id().clone(),
+                source_graph_revision: failed_correlation.source_graph_revision(),
+                target_graph_revision: target_revision,
+                failure: EngineSelectionFailure::WorkerUnavailable,
+            })
+            .unwrap();
+        assert_eq!(state.patches()[0].instrument_config(), &source_config);
+        assert_projection(
+            &state,
+            EngineSelectionStatusKind::Failed,
+            source_revision,
+            true,
+            Some(EngineSelectionFailure::WorkerUnavailable),
+        );
+
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        assert_projection(
+            &state,
+            EngineSelectionStatusKind::Preparing,
+            source_revision,
+            false,
+            None,
+        );
+        let correlation = state.engine_selection().correlation().unwrap().clone();
+        let candidate_config = BraidsCapability::new().unwrap().default_config().unwrap();
+        state
+            .apply(AppEvent::EnginePrepared {
+                request_id: correlation.request_id(),
+                patch_id: correlation.patch_id(),
+                source_capability_id: correlation.source_capability_id().clone(),
+                target_capability_id: correlation.target_capability_id().clone(),
+                source_graph_revision: correlation.source_graph_revision(),
+                target_graph_revision: target_revision,
+                candidate_config,
+            })
+            .unwrap();
+        assert_eq!(
+            state.patches()[0]
+                .instrument_config()
+                .capability_id()
+                .as_str(),
+            BRAIDS_CAPABILITY_ID
+        );
+        assert_projection(
+            &state,
+            EngineSelectionStatusKind::Activating,
+            target_revision,
+            false,
+            None,
+        );
+
+        state
+            .apply(AppEvent::EngineActivationAcknowledged {
+                request_id: correlation.request_id(),
+                target_graph_revision: target_revision,
+                retired_graph_revision: source_revision,
+                collected: true,
+            })
+            .unwrap();
+        assert_projection(
+            &state,
+            EngineSelectionStatusKind::Ready,
+            target_revision,
+            true,
+            None,
+        );
+    }
+
+    #[test]
     fn projector_rejects_a_tree_projection_for_another_graph_revision() {
-        let state = installed_state();
-        let first = StateProjector::for_graph(GraphRevision::new(31).unwrap());
-        let second = StateProjector::for_graph(GraphRevision::new(32).unwrap());
-        let (snapshot, text, parameters) = first.project(&state).unwrap();
+        let first_revision = GraphRevision::new(31).unwrap();
+        let second_revision = GraphRevision::new(32).unwrap();
+        let first_state = installed_state_for_graph(first_revision);
+        let second_state = installed_state_for_graph(second_revision);
+        let first = StateProjector::for_graph(first_revision);
+        let second = StateProjector::for_graph(second_revision);
+        let (_, _, parameters) = first.project(&first_state).unwrap();
+        let (snapshot, text, _) = second.project(&second_state).unwrap();
 
         assert_eq!(
             second.state_tree(&snapshot, &text, &parameters),

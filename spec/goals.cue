@@ -1,7 +1,7 @@
 package crestsynth
 
 project: {
-	mission: "crest-synth is a standalone controller-first instrument host. Its current executable slice prepares alternating capability-configured HiDef SoundFont and Braids instruments with capability-polymorphic voice policies and common per-note envelopes into a bounded rack, mixes them to low-latency stereo audio, and exposes reducer-owned MIXER and schema-driven PATCH contexts through the basic keyboard-controlled text adapter."
+	mission: "crest-synth is a standalone controller-first instrument host. Its current executable slice prepares alternating capability-configured HiDef SoundFont and Braids instruments with capability-polymorphic voice policies and common per-note envelopes into a bounded rack, mixes them to low-latency stereo audio, exposes reducer-owned MIXER and schema-driven PATCH contexts, and replaces the focused Patch engine through a one-in-flight off-callback prepared-graph workflow."
 
 	actors: {
 		player: {
@@ -85,10 +85,11 @@ project: {
 			description: "The maintainer can run an exhaustive deterministic GUI demo and inspect a complete event log, state tree, coverage matrix, projections, and audio effects"
 			priority: "required"
 			actors: ["actor.maintainer"]
-			dependsOn: ["goal.inspect_patch"]
+			dependsOn: ["goal.select_patch_engine"]
 			capabilities: [
 				"capability.observable_demo_scene",
 				"capability.schema_driven_patch_page",
+				"capability.asynchronous_engine_selection",
 			]
 			requirements: [
 				"requirement.deterministic_demo_scene",
@@ -101,12 +102,13 @@ project: {
 			]
 		}
 		observe_live_synth: {
-			description: "The maintainer can launch the real standalone UI and audio device, watch a paced autonomous scene exercise every current editable parameter, hear the alternating SoundFont/Braids result, and inspect coherent live checkpoints"
+			description: "The maintainer can launch the real standalone UI and audio device, watch a paced autonomous scene exercise every current editable parameter and switch the focused Patch SoundFont to Braids and back, hear each acknowledged engine, and inspect coherent live checkpoints"
 			priority: "required"
 			actors: ["actor.player", "actor.maintainer"]
 			dependsOn: ["goal.observe_synth"]
 			capabilities: [
 				"capability.live_observable_demo",
+				"capability.asynchronous_engine_selection",
 			]
 			requirements: [
 				"requirement.separate_live_demo",
@@ -115,6 +117,7 @@ project: {
 				"requirement.canonical_live_projection",
 				"requirement.bounded_audio_observation",
 				"requirement.live_demo_completion",
+				"requirement.live_engine_selection_proof",
 				"requirement.headless_demo_preserved",
 			]
 		}
@@ -123,7 +126,7 @@ project: {
 	capabilities: {
 		instrument_capability_model: {
 			description: "Represent installed instrument implementations through stable capability descriptors and generic Patch-owned configs while keeping preparation and prepared runtime ownership behind separate ports"
-			goals: ["goal.play_test_song", "goal.control_synth", "goal.inspect_patch"]
+			goals: ["goal.play_test_song", "goal.control_synth", "goal.inspect_patch", "goal.select_patch_engine"]
 			acceptance: soundfont_is_one_capability: {
 				description: "the current SoundFont path is expressed as one validated capability rather than the universal Patch shape"
 				actor: "actor.maintainer"
@@ -207,7 +210,7 @@ project: {
 		}
 		one_way_parameter_control: {
 			description: "Translate keyboard input to AppEvents, reduce them into AppState, serialize accepted state, project text and parameters, and publish them to audio"
-			goals: ["goal.control_synth", "goal.inspect_patch"]
+			goals: ["goal.control_synth", "goal.inspect_patch", "goal.select_patch_engine"]
 			acceptance: keyboard_edit: {
 				description: "navigation and editing use the same reducer and projections as every other control input"
 				actor: "actor.player"
@@ -221,8 +224,8 @@ project: {
 			}
 		}
 		schema_driven_patch_page: {
-			description: "Project one stable Patch through the installed capability registry into a read-only PATCH context while preserving the basic MIXER context"
-			goals: ["goal.inspect_patch", "goal.observe_synth"]
+			description: "Project one stable Patch through the installed capability registry into PATCH with one reducer-owned engine focus while preserving the basic MIXER context"
+			goals: ["goal.inspect_patch", "goal.select_patch_engine", "goal.observe_synth"]
 			acceptance: two_context_projection: {
 				description: "direct page selection produces exact context-specific projections through the canonical reducer without an audio or graph change"
 				actor: "actor.maintainer"
@@ -231,7 +234,8 @@ project: {
 					{action: "inspect SoundFont and Braids Patch projections", observes: "each shows Patch identity and MIDI channel, the active CapabilityId and label, all four canonical ADSR values, every active descriptor section and parameter in descriptor order, stable semantic ids, typed values, update class, and the exact two installed engine choices without an engine-specific page branch"},
 					{action: "compare state and audio projections before and after page selection", observes: "session values, active graph revision, engine ownership, parameter values, and queued audio commands are unchanged; only context, accepted generation, serialization, and view projection advance"},
 					{action: "press 1", observes: "SelectContext(MIXER) restores the prior MIXER selection and the existing complete diagnostic projection without a second state copy"},
-					{action: "send Navigate or Adjust while PATCH is read-only", observes: "the reducer returns typed ActionUnavailableInContext, leaves state and generation unchanged, and accepts a later context-selection event"},
+					{action: "inspect the PATCH focus", observes: "the engine row has stable patch.engine identity and is editable only in Ready or Failed; ADSR and descriptor fields remain read-only"},
+					{action: "send unsupported PATCH navigation or adjustment", observes: "the reducer returns typed ActionUnavailableInContext, leaves state and generation unchanged, and accepts a later context-selection event"},
 				]
 				evidence: ["evidence.patch_page_contract"]
 			}
@@ -267,33 +271,34 @@ project: {
 			}
 		}
 		live_observable_demo: {
-			description: "Run a paced autonomous scene inside the real standalone window and physical audio stream while preserving the canonical reducer, projection, publication, and event-log path"
+			description: "Run a paced autonomous scalar-and-engine scene inside the real standalone window and physical audio stream while preserving the canonical reducer, projection, preparation, graph-publication, and event-log path"
 			goals: ["goal.observe_live_synth"]
 			acceptance: live_scene: {
-				description: "one bounded command opens the real UI and audio output, exercises every current editable parameter, emits its completed evidence, and exits successfully"
+				description: "one bounded command opens the real UI and audio output, exercises every current editable parameter plus both successful engine directions, emits its completed evidence, and exits successfully"
 				actor: "actor.player"
-					steps: [
-						{action: "run make demo-live", observes: "the normal eframe window and physical CPAL output open with HiDef.sf2 and the existing Corridors of Time fixture"},
-						{action: "watch and listen to the paced scene", observes: "fixture MIDI remains responsive while every editable parameter instance changes through AppEvent and AppState.apply, remains visible for at least one rendered frame and the declared dwell, and reaches audio through the published ParameterSnapshot"},
+				steps: [
+					{action: "run make demo-live", observes: "the normal eframe window and physical CPAL output open with HiDef.sf2 and the existing Corridors of Time fixture"},
+					{action: "watch and listen to the paced scene", observes: "fixture MIDI remains responsive while every editable parameter instance changes through AppEvent and AppState.apply, remains visible for at least one rendered frame and the declared dwell, and reaches audio through the published ParameterSnapshot"},
+					{action: "watch the focused first Patch switch SoundFont to Braids and back", observes: "semantic requests progress through Preparing, Activating, and Ready via the production threaded worker; each acknowledged graph revision receives targeted MIDI and produces finite nonzero physical output before the next direction begins"},
 					{action: "press a mapped key while the autonomous scene is active", observes: "the window translates the semantic input but live orchestration does not dispatch it, so no keyboard EventRecord, generation, projection, or parameter publication can interleave with the pending checkpoint"},
-					{action: "wait for the scene to complete", observes: "accepted and rejected scene events are present in EventLog, all active notes are stopped through semantic MIDI events, the four final records are emitted once, the window closes, the physical stream is released, and the command returns success"},
+					{action: "wait for the scene to complete", observes: "both engine transitions and accepted/rejected scalar events are present in EventLog, the first Patch is Ready on descriptor-default SoundFont, all active notes are stopped through semantic MIDI events, the four final records are emitted once, the window closes, the physical stream is released, and the command returns success"},
 				]
 				evidence: ["evidence.live_demo_contract"]
 			}
 			acceptance: coherent_live_trace: {
-				description: "each declared live checkpoint correlates its planned input with one accepted generation, exact projections, emitted effects, and a bounded audio-thread observation"
+				description: "each declared live checkpoint correlates its planned input with one accepted generation, exact projections, emitted effects, and either a matching scalar audio observation or an acknowledged structural graph revision"
 				actor: "actor.maintainer"
 				steps: [
-					{action: "inspect CREST_LIVE_CHECKPOINT records while the window remains responsive", observes: "each record contains the input, expected transition, EventRecord outcome, accepted generation, projected value, emitted effects, and an AudioObservationSnapshot that has consumed that generation"},
-						{action: "inspect the final live outputs", observes: "CREST_LIVE_EVENT_LOG_SUMMARY, CREST_LIVE_STATE_TREE, CREST_LIVE_COVERAGE, and CREST_LIVE_SUMMARY agree on the final generation, prove a lossless retained journal, and report no missing or unexpected editable parameters without flooding the terminal with every MIDI record"},
-					{action: "run the existing make demo and project checks", observes: "the deterministic headless proof and its schema, mutation, real-time, and project gates remain unchanged and pass"},
+					{action: "inspect CREST_LIVE_CHECKPOINT records while the window remains responsive", observes: "scalar records contain the input, expected transition, EventRecord outcome, accepted generation, exact projection, emitted effects, and an AudioObservationSnapshot that consumed that generation; engine-selection records additionally show Preparing, Activating, and Ready with the requested capability and a newer acknowledged GraphRevision before targeted finite audio"},
+					{action: "inspect the final live outputs", observes: "CREST_LIVE_EVENT_LOG_SUMMARY, CREST_LIVE_STATE_TREE, CREST_LIVE_COVERAGE, and CREST_LIVE_SUMMARY agree on the final generation, prove a lossless retained journal, report exact and distinct scalar and engine-transition coverage, and finish Ready on descriptor-default SoundFont without flooding the terminal with every MIDI record"},
+					{action: "run make demo and the project checks", observes: "the deterministic headless proof exercises both successful engine-selection directions plus exhaustive busy, failure, stale, mismatch, and two-run-equality cases while the schema, mutation, real-time, and project gates pass"},
 				]
 				evidence: ["evidence.live_demo_contract", "evidence.exhaustive_demo_scene"]
 			}
 		}
 		prepared_engine_rack: {
 			description: "Prepare one bounded capability-neutral instrument per Patch, render heterogeneous slots through one rack, and replace complete graphs through acknowledged ownership transfer"
-			goals: ["goal.play_test_song", "goal.control_synth"]
+			goals: ["goal.play_test_song", "goal.control_synth", "goal.select_patch_engine"]
 			acceptance: rack_and_handoff: {
 				description: "the runtime owns no SoundFont-shaped dispatch path and graph replacement never prepares or destroys state on the callback"
 				actor: "actor.maintainer"
@@ -309,7 +314,7 @@ project: {
 		}
 		realtime_execution: {
 			description: "Render audio through fixed-capacity lock-free boundaries without callback allocation, locking, blocking, I/O, logging, or destruction"
-			goals: ["goal.play_test_song", "goal.control_synth"]
+			goals: ["goal.play_test_song", "goal.control_synth", "goal.select_patch_engine"]
 			acceptance: callback_contract: {
 				description: "the audio callback consumes ready commands and compatible latest parameters, swaps prepared graphs, and returns retired ownership within its real-time constraints"
 				actor: "actor.maintainer"
@@ -326,8 +331,8 @@ project: {
 		production_two_engines: {kind: "functional", description: "The production application installs exactly the HiDef SoundFont and pinned Braids capabilities/preparers, alternates fixture Patches between them, and never layers or substitutes one for the other", goals: ["goal.play_test_song"], capabilities: ["capability.soundfont_audio", "capability.braids_engine", "capability.instrument_capability_model", "capability.prepared_engine_rack"]}
 		polymorphic_voice_envelopes: {kind: "functional", description: "Every admitted Braids Patch independently adds exactly sixteen voices with no Braids-specific Patch-count or global voice budget, every SoundFont Patch owns one engine-managed synthesizer without an artificial sixteen-note cap, and both apply canonical configurable Patch ADSR independently before native note voices enter the Patch stem", goals: ["goal.play_test_song", "goal.control_synth"], capabilities: ["capability.soundfont_audio", "capability.braids_engine", "capability.per_voice_envelope"]}
 		prepared_instrument_boundary: {kind: "nonfunctional", description: "Each Patch is prepared outside the callback through exactly one CapabilityId-matched InstrumentPreparer into an object-safe PreparedInstrument; callback dispatch, all-notes-off, and rendering are bounded and capability-neutral, with dynamic dispatch outside inner sample loops", goals: ["goal.play_test_song", "goal.control_synth"], capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution"]}
-		structural_graph_handoff: {kind: "nonfunctional", description: "One complete PreparedGraph containing the bounded engine rack, mixer/effect state, routing, stems, and scratch crosses a dedicated bounded ownership queue, swaps only at a render-block boundary, and is correlated by GraphRevision and fixed-size acknowledgement; commands and scalar snapshots use separate transports", goals: ["goal.play_test_song", "goal.control_synth"], capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution"]}
-		off_callback_graph_retirement: {kind: "nonfunctional", description: "A replaced PreparedGraph enters a distinct bounded audio-to-control ownership queue; return pressure retains it in a preallocated callback slot and retries, while destructors run only after explicit control or worker collection and the prior handoff is acknowledged before another publication", goals: ["goal.play_test_song", "goal.control_synth"], capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution"]}
+		structural_graph_handoff: {kind: "nonfunctional", description: "One complete PreparedGraph containing the bounded engine rack, mixer/effect state, routing, stems, and scratch crosses a dedicated bounded ownership queue, swaps only at a render-block boundary, and is correlated by GraphRevision and fixed-size acknowledgement; commands and scalar snapshots use separate transports", goals: ["goal.play_test_song", "goal.control_synth", "goal.select_patch_engine"], capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution", "capability.asynchronous_engine_selection"]}
+		off_callback_graph_retirement: {kind: "nonfunctional", description: "A replaced PreparedGraph enters a distinct bounded audio-to-control ownership queue; return pressure retains it in a preallocated callback slot and retries, while destructors run only after explicit control or worker collection and the prior handoff is acknowledged before another publication", goals: ["goal.play_test_song", "goal.control_synth", "goal.select_patch_engine"], capabilities: ["capability.prepared_engine_rack", "capability.realtime_execution", "capability.asynchronous_engine_selection"]}
 		fixed_soundfont: {kind: "functional", description: "The SoundFont adapter expects ./sf2/HiDef.sf2 and startup fails clearly when it is absent or invalid", goals: ["goal.play_test_song"], capabilities: ["capability.soundfont_audio"]}
 		fixed_midi_fixture: {kind: "functional", description: "The automatic test module targets ./midi/Corridors of Time - Chrono Trigger.mid", goals: ["goal.play_test_song"], capabilities: ["capability.automatic_test_midi"]}
 		global_effects_only: {kind: "functional", description: "The signal path contains one shared reverb and one shared delay; channels expose sends to those processors and no other effect slots or processors exist", goals: ["goal.play_test_song"], capabilities: ["capability.global_mix"]}
@@ -337,9 +342,9 @@ project: {
 		responsive_control_projection: {kind: "nonfunctional", description: "A fifteen-Patch production AppLoop dispatches 512 MIDI events through reducer, coherent logical projections, journal, and audio publication within 50 ms in the unoptimized acceptance profile; unchanged immutable projection storage is shared and deferred JSON remains byte-identical to eager canonical output", goals: ["goal.control_synth", "goal.observe_live_synth"], capabilities: ["capability.one_way_parameter_control", "capability.live_observable_demo"]}
 		basic_text_contexts: {kind: "functional", description: "The basic adapter renders exactly one immutable text projection at a time: MIXER preserves the complete existing scrollable Patch/global wall and PATCH renders the focused schema-derived Patch page; this increment adds no graphical replacement, panels, or third top-level context", goals: ["goal.control_synth", "goal.inspect_patch"], capabilities: ["capability.one_way_parameter_control", "capability.schema_driven_patch_page"]}
 		keyboard_controls: {kind: "functional", description: "1 directly selects MIXER, 2 directly selects PATCH, bare W/S navigate parameters, bare A/D navigate Patch sections, and K plus W/S/A/D adjusts the selected value in MIXER; every key is normalized and translated before AppState.apply and no key mutates state directly", goals: ["goal.control_synth", "goal.inspect_patch"], capabilities: ["capability.one_way_parameter_control", "capability.schema_driven_patch_page"]}
-		two_top_level_contexts: {kind: "functional", description: "PATCH and MIXER are the only top-level contexts; the existing diagnostic view is the transitional MIXER projection and the new read-only Patch page is PATCH, so the basic interface introduces no third context", goals: ["goal.inspect_patch"], capabilities: ["capability.schema_driven_patch_page"]}
+		two_top_level_contexts: {kind: "functional", description: "PATCH and MIXER are the only top-level contexts; the existing diagnostic view is the transitional MIXER projection and PATCH owns one semantic engine-row focus, so the basic interface introduces no third context", goals: ["goal.inspect_patch", "goal.select_patch_engine"], capabilities: ["capability.schema_driven_patch_page"]}
 		semantic_context_selection: {kind: "nonfunctional", description: "Digit 1 and Digit 2 normalize to WindowInput, translate to SelectContext(MIXER|PATCH), reduce only through AppState.apply, and project from the committed InteractionState; window, test, and view adapters own no context state", goals: ["goal.inspect_patch"], capabilities: ["capability.one_way_parameter_control", "capability.schema_driven_patch_page"]}
-		descriptor_driven_patch_projection: {kind: "functional", description: "PATCH projects the focused PatchId, name, MIDI channel, active CapabilityId and label, installed engine choices, canonical ADSR, and every active ParameterSpec/value/asset in descriptor section order with stable semantic ids, kinds, update classes, values, and read-only status; it contains no SoundFont/Braids field list or capability-id branch", goals: ["goal.inspect_patch"], capabilities: ["capability.instrument_capability_model", "capability.schema_driven_patch_page"]}
+		descriptor_driven_patch_projection: {kind: "functional", description: "PATCH projects the focused PatchId, name, MIDI channel, active and requested CapabilityIds, engine-selection status/failure/revision, installed choices, canonical ADSR, and every active ParameterSpec/value/asset in descriptor order; only the stable engine row is editable and no SoundFont/Braids field list or capability-id branch exists", goals: ["goal.inspect_patch", "goal.select_patch_engine"], capabilities: ["capability.instrument_capability_model", "capability.schema_driven_patch_page", "capability.asynchronous_engine_selection"]}
 		stable_patch_focus: {kind: "nonfunctional", description: "InteractionState owns PATCH focus by stable PatchId separately from the preserved MIXER selection; installation initializes it deterministically to the first Patch, context switches retain it, and a missing or stale identity is rejected before projection rather than repaired in a view or interpreted as a vector index", goals: ["goal.inspect_patch"], capabilities: ["capability.schema_driven_patch_page"]}
 		projection_only_context_switch: {kind: "nonfunctional", description: "Selecting PATCH or MIXER changes only reducer-owned interaction context and the generation-coherent serialization/view projection; Patch/config/envelope/mixer/global values, ParameterSnapshot values, PreparedGraph revision and ownership, MIDI routing, audio commands, and rendered behavior remain unchanged", goals: ["goal.inspect_patch"], capabilities: ["capability.one_way_parameter_control", "capability.schema_driven_patch_page", "capability.realtime_execution"]}
 		generic_instrument_config: {kind: "functional", description: "Patch owns one InstrumentConfig containing a CapabilityId, ordered typed parameter assignments, and stable asset references; Patch contains no SoundFont-only fields, engine instance, descriptor copy, prepared state, or fallback config", goals: ["goal.control_synth"], capabilities: ["capability.instrument_capability_model"]}
@@ -354,12 +359,12 @@ project: {
 		egui_context_verification: {kind: "functional", description: "A headless egui Context processes real egui key/focus events through EframeApplication update with its callback wired to AppLoop, then proves the next frame, EventLog, accepted state, exact TextProjection values, and scroll target all reflect that event without opening a native window", goals: ["goal.observe_synth"], capabilities: ["capability.observable_demo_scene", "capability.one_way_parameter_control"]}
 		seam_mutation_falsifiability: {kind: "nonfunctional", description: "Six isolated verification-only mutants—dropped adjustment, cross-Patch parameter leak, PatchId misroute, omitted StateTree leaf, dry-to-wet bypass, and zeroed renderer output—must each falsify its own typed witness without manufacturing coverage gaps or altering a completed report", goals: ["goal.observe_synth"], capabilities: ["capability.observable_demo_scene"]}
 		separate_live_demo: {kind: "functional", description: "make demo-live invokes the optimized release binary with a dedicated bounded --demo-live autonomous option that opens the normal eframe window and physical CPAL stream, emits completed evidence, closes, and returns; make demo retains its exact headless command and behavior", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo"]}
-		paced_production_path: {kind: "nonfunctional", description: "The live scene advances incrementally on control-side window ticks, dispatches autonomous actions only as AppEvents through AppLoop, ignores mapped semantic window input for the duration of the autonomous scene, and never mutates UI, AppState, engine, mixer, or audio state directly", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.one_way_parameter_control"]}
-		live_current_surface: {kind: "functional", description: "The expected live coverage set is derived from the production Patch editable resolver and GlobalParameters descriptor plus installed Patch identities; every mixer, ADSR, Braids-scalar, and global instance changes at least once and remains at its accepted value for at least 500 ms while the mixed fixture is audible", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.global_mix", "capability.per_voice_envelope", "capability.braids_engine"]}
-		canonical_live_projection: {kind: "nonfunctional", description: "The visible frame, EventRecord, StateTree, TextProjection, and ParameterSnapshot at each live checkpoint all derive from the same accepted AppState generation; the live runner has no UI-owned or engine-owned state copy", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.one_way_parameter_control"]}
+		paced_production_path: {kind: "nonfunctional", description: "The live scene advances incrementally on control-side window ticks, dispatches autonomous actions only as AppEvents through AppLoop, lets the owning tick nonblockingly advance the production worker and structural coordinator, ignores mapped semantic window input for the duration of the autonomous scene, and never mutates UI, AppState, engine, mixer, graph, or audio state directly", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.one_way_parameter_control", "capability.asynchronous_engine_selection"]}
+		live_current_surface: {kind: "functional", description: "The expected live scalar coverage set is frozen from the production Patch editable resolver and GlobalParameters descriptor plus installed Patch identities; every mixer, ADSR, Braids-scalar, and global instance changes at least once and remains at its accepted value for at least 500 ms while the mixed fixture is audible, while the separate ordered engine-transition set must contain exactly SoundFont-to-Braids and Braids-to-descriptor-default-SoundFont for the focused first Patch", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.global_mix", "capability.per_voice_envelope", "capability.braids_engine", "capability.asynchronous_engine_selection"]}
+		canonical_live_projection: {kind: "nonfunctional", description: "The visible frame, EventRecord, StateTree, TextProjection, ParameterSnapshot, engine-selection status, and active graph revision at each live checkpoint all derive from the same accepted AppState generation and correlated structural status; the live runner has no UI-owned, worker-owned, graph-owned, or engine-owned state copy", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.one_way_parameter_control", "capability.asynchronous_engine_selection"]}
 		bounded_audio_observation: {kind: "nonfunctional", description: "The callback publishes only fixed-size numeric AudioObservationSnapshots through a lock-free latest-value transport; it never logs, formats, allocates, locks, blocks, performs I/O, or destroys state, and the control side correlates observations by parameter generation and monotonically increasing block sequence", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.realtime_execution"]}
-		live_demo_completion: {kind: "functional", description: "The live runner retains the complete final EventLog for typed verification and emits structured checkpoints plus a compact lossless EventLog summary, StateTree, exact editable-parameter coverage, and human-readable summary; it dispatches all-notes-off through AppLoop for every installed Patch, waits for the audio observation to acknowledge zero active notes, then the standalone owner emits completion once, requests window close on the same tick, releases the physical stream, and returns success", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo"]}
-		headless_demo_preserved: {kind: "nonfunctional", description: "The PATCH-projection increment preserves make demo's deterministic command and all existing behavioral gates while expanding its schema universe to the two page keys, SelectContext, InteractionState, and descriptor-derived Patch projection; it introduces no engine replacement, Patch-page editing, preset selection, static Patch effects, modulation, or graphical redesign", goals: ["goal.observe_live_synth", "goal.inspect_patch"], capabilities: ["capability.live_observable_demo", "capability.observable_demo_scene", "capability.schema_driven_patch_page", "capability.instrument_capability_model", "capability.prepared_engine_rack", "capability.braids_engine", "capability.per_voice_envelope"]}
+		live_demo_completion: {kind: "functional", description: "The live runner retains the complete final EventLog for typed verification and emits structured checkpoints plus a compact lossless EventLog summary, StateTree, exact scalar and engine-transition coverage, and human-readable summary; completion requires both acknowledged audible engine directions and descriptor-default SoundFont Ready before semantic all-notes-off, zero active notes, one close request, physical stream release, and success", goals: ["goal.observe_live_synth"], capabilities: ["capability.live_observable_demo", "capability.asynchronous_engine_selection"]}
+		headless_demo_preserved: {kind: "nonfunctional", description: "The engine-selection increment expands both demos through the same production lifecycle: make demo retains exhaustive busy/failure/stale, structural audio, schema, controlled-negative, and two-run deterministic proof, while make demo-live adds paced visible and physical-audio success in both directions through the threaded worker; every prior reducer, projection, DSP, real-time, mutation, scalar-live, and teardown gate remains required", goals: ["goal.observe_live_synth", "goal.select_patch_engine"], capabilities: ["capability.live_observable_demo", "capability.observable_demo_scene", "capability.schema_driven_patch_page", "capability.asynchronous_engine_selection", "capability.instrument_capability_model", "capability.prepared_engine_rack", "capability.braids_engine", "capability.per_voice_envelope"]}
 	}
 
 		evidence: {
@@ -369,25 +374,25 @@ project: {
 		control_path: {kind: "behavioral", description: "a keyboard-equivalent edit on a non-first Patch changes only its serialized value and audio contribution, a boundary no-op remains nonfatal, and sustained fifteen-Patch MIDI dispatch stays within its measured responsiveness ceiling", validations: ["validation.smoke", "validation.control_dispatch_performance", "validation.test"], witnesses: ["witness.control_path"]}
 		exhaustive_demo_scene: {kind: "behavioral", description: "the schema-derived current GUI/event/state/audio surface is exhaustively exercised with exact projection values, faithful causal audio comparisons, a lossless journal, and a complete state tree", validations: ["validation.demo_scene", "validation.schema_surface", "validation.egui_context", "validation.test"], witnesses: ["witness.exhaustive_demo_scene"]}
 		mutation_resistance: {kind: "behavioral", description: "independent production-seam mutants for dropped adjustment, cross-Patch parameter leakage, Patch misrouting, StateTree leaf omission, dry-to-wet bypass, and zero renderer output are each rejected by a typed engine-executed witness", validations: ["validation.mutation_harness", "validation.test"], witnesses: ["witness.dropped_adjustment_mutant", "witness.cross_patch_parameter_leak_mutant", "witness.patch_misroute_mutant", "witness.omitted_state_tree_leaf_mutant", "witness.dry_to_wet_bypass_mutant", "witness.zero_renderer_mutant"]}
-		live_demo_contract: {kind: "behavioral", description: "the paced autonomous orchestration is verified against the production reducer, responsive generation-only projections, event log, render publication, bounded audio observations, mapped-input isolation, and successful bounded shutdown without requiring a native CI window or device", validations: ["validation.live_demo", "validation.control_dispatch_performance", "validation.test"]}
+		live_demo_contract: {kind: "behavioral", description: "the paced autonomous orchestration is verified against the production reducer, worker port, structural coordinator, responsive generation-only projections, event log, render publication, two acknowledged audible engine directions, bounded audio observations, mapped-input isolation, and successful bounded shutdown without requiring a native CI window or device", validations: ["validation.live_demo", "validation.control_dispatch_performance", "validation.test"]}
 		braids_engine_contract: {kind: "behavioral", description: "the pinned native adapter, FixedPerPatch(16) descriptor, 16 × N scaling across N admitted Braids Patches, exact sample-rate policy, mixed routing, scalar effects, lifecycle, and timing are verified through production preparation/render seams", validations: ["validation.braids_engine", "validation.prepared_engine_rack", "validation.test"]}
 			per_voice_envelope_contract: {kind: "behavioral", description: "the canonical four-field envelope projects exactly and independently controls overlapping SoundFont and Braids note voices", validations: ["validation.per_voice_envelope", "validation.prepared_engine_rack", "validation.test"]}
-			patch_page_contract: {kind: "behavioral", description: "the production input translator, reducer, serializer, context projector, basic eframe adapter, and audio boundary prove exact two-context selection, descriptor-derived Patch rows, stable Patch focus, and an audio-neutral read-only context switch", validations: ["validation.patch_page_projection", "validation.schema_surface", "validation.egui_context", "validation.test"]}
+			patch_page_contract: {kind: "behavioral", description: "the production input translator, reducer, serializer, context projector, basic eframe adapter, and audio boundary prove exact two-context selection, descriptor-derived Patch rows, stable Patch/engine focus, and reducer-owned engine-row status", validations: ["validation.patch_page_projection", "validation.schema_surface", "validation.egui_context", "validation.engine_selection_workflow", "validation.test"]}
 		}
 
 	nonGoals: {
 		sequencing: "crest-synth does not provide sequencing, transport, recording, arrangement, clips, patterns, a timeline, or song editing"
-		other_engines: "production installs only HiDef SoundFont and Braids; no additional oscillator, physical-model, standalone sampler, wavetable, FM, plugin, layering, or runtime engine replacement is exposed"
+		other_engines: "production installs and permits prepared selection only between HiDef SoundFont and Braids; no additional oscillator, physical-model, standalone sampler, wavetable, FM, plugin, or layering is exposed"
 		additional_effects: "crest-synth does not provide channel inserts, effect chains, EQ, compression, chorus, distortion, or limiting"
 		elaborate_ui: "crest-synth does not yet provide dashboards, panels, meters, faders, custom widgets, themes, mouse interaction, or the Figma-derived graphical interface; this increment uses two projections in the existing basic text adapter"
 		sound_library: "crest-synth does not provide preset, session, bank, sample-library, or patch-browser persistence"
 		live_midi_adapter: "a physical MIDI device adapter is not included; the automatic file fixture implements the MIDI input port used by the application"
-		later_phase_three_increments: "This increment does not introduce asynchronous engine replacement, Patch-page parameter editing, SoundFont preset discovery or selection, pending/error workflow, or prepared structural graph publication"
+		later_phase_three_increments: "This increment does not introduce PATCH ADSR or capability-parameter editing, SoundFont preset discovery/selection, an engine-choice modal, inactive-engine config caching, or seamless voice/effect-tail migration"
 		later_roadmap_phases: "This increment does not introduce per-Patch effects, modulation, arbitrary graph editing, persistence, or the Figma-derived replacement interface"
 	}
 
 	completion: {
-		requiredGoals: ["goal.play_test_song", "goal.control_synth", "goal.inspect_patch", "goal.observe_synth", "goal.observe_live_synth"]
-		projectChecks: ["validation.format", "validation.clippy", "validation.test", "validation.smoke", "validation.capability_schema", "validation.patch_page_projection", "validation.prepared_engine_rack", "validation.braids_engine", "validation.per_voice_envelope", "validation.control_dispatch_performance", "validation.demo_scene", "validation.schema_surface", "validation.egui_context", "validation.mutation_harness", "validation.live_demo", "validation.production_runtime_contracts", "validation.audio_renderer_realtime_contract", "validation.prepared_graph_handoff_contract", "validation.audio_observation_realtime_contract", "validation.zero_selection_guard"]
+		requiredGoals: ["goal.play_test_song", "goal.control_synth", "goal.inspect_patch", "goal.select_patch_engine", "goal.observe_synth", "goal.observe_live_synth"]
+		projectChecks: ["validation.format", "validation.clippy", "validation.test", "validation.smoke", "validation.capability_schema", "validation.patch_page_projection", "validation.engine_selection_workflow", "validation.prepared_engine_rack", "validation.braids_engine", "validation.per_voice_envelope", "validation.control_dispatch_performance", "validation.demo_scene", "validation.schema_surface", "validation.egui_context", "validation.mutation_harness", "validation.live_demo", "validation.production_runtime_contracts", "validation.audio_renderer_realtime_contract", "validation.prepared_graph_handoff_contract", "validation.audio_observation_realtime_contract", "validation.zero_selection_guard"]
 	}
 }

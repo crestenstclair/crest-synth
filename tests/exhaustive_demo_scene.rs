@@ -21,14 +21,11 @@ const COVERAGE_GROUPS: [DemoCoverageGroup; 10] = [
 
 fn stable_control_surface(tree: &Value) -> Vec<Value> {
     [
-        "/patches",
         "/global",
         "/interaction",
         "/patchPage",
         "/projection/context",
-        "/projection/body",
         "/projection/selectedLine",
-        "/parameters/graphRevision",
         "/parameters/patches",
         "/parameters/global",
     ]
@@ -47,6 +44,7 @@ fn source_name(source: EventSource) -> &'static str {
         EventSource::Keyboard => "keyboard",
         EventSource::AutomaticMidi => "automatic-midi",
         EventSource::DemoScene => "demo-scene",
+        EventSource::Worker => "worker",
         EventSource::System => "system",
     }
 }
@@ -94,7 +92,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .group(DemoCoverageGroup::Events)
             .exercised()
             .len(),
-        5
+        8
     );
     assert_eq!(
         report
@@ -216,6 +214,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             "automatic-midi",
             "demo-scene",
             "system",
+            "worker",
         ])
     );
 
@@ -226,6 +225,39 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         stable_control_surface(&final_tree),
         "every reversible value and selection must return to baseline"
     );
+    let baseline_patches = first.baseline["patches"].as_array().unwrap();
+    let final_patches = final_tree["patches"].as_array().unwrap();
+    assert_eq!(baseline_patches.len(), final_patches.len());
+    for property in ["id", "name", "channel", "envelope", "parameters"] {
+        assert_eq!(baseline_patches[0][property], final_patches[0][property]);
+    }
+    assert_eq!(baseline_patches[1], final_patches[1]);
+    assert_eq!(
+        final_patches[0]["instrument"]["capabilityId"],
+        "instrument.soundfont.hidef"
+    );
+    assert_eq!(
+        final_patches[0]["instrument"]["values"][0]["value"]["value"],
+        0
+    );
+    assert_eq!(
+        final_patches[0]["instrument"]["values"][1]["value"]["value"],
+        0
+    );
+    assert_eq!(
+        final_patches[0]["instrument"]["values"][2]["value"]["value"],
+        false
+    );
+    assert_eq!(
+        final_patches[0]["instrument"]["assetReferences"][0]["reference"]["locator"],
+        "./sf2/HiDef.sf2"
+    );
+    assert_eq!(final_tree["engineSelection"]["kind"], "ready");
+    assert!(report
+        .checkpoints()
+        .iter()
+        .filter_map(|checkpoint| checkpoint.engine_selection())
+        .any(|checkpoint| checkpoint.target_patch_peak() > 0.0));
 
     assert!(report
         .checkpoints()

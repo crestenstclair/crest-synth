@@ -1,6 +1,7 @@
 use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
 use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_instrument_providers,
 };
@@ -16,12 +17,13 @@ use crest_synth::real_time::audio_renderer::AudioRenderer;
 use crest_synth::real_time::graph_revision::GraphRevision;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
-use crest_synth::real_time::structural_graph_boundary::NoStructuralGraphChanges;
+use crest_synth::real_time::{GraphHandoffStatus, StructuralGraphBoundary};
+use crest_synth::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
 use crest_synth::synth::patch::Patch;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityId, InstrumentPreparationError, InstrumentPreparer, PreparedInstrument,
-    PreparedInstrumentError,
+    CapabilityId, DescriptorDefaultConfigFactory, InstrumentPreparationError, InstrumentPreparer,
+    PreparedInstrument, PreparedInstrumentError,
 };
 use crest_synth::testing::automatic_midi_test::{create_soundfont_config, AutomaticMidiTest};
 use crest_synth::testing::demo_scene::DemoScene;
@@ -30,7 +32,7 @@ use crest_synth::testing::instrument_part::InstrumentPart;
 use crest_synth::testing::midi_event_source::{
     FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
 };
-use crest_synth::testing::ExhaustiveGuiDemo;
+use crest_synth::testing::{DeterministicGraphPreparationWorker, ExhaustiveGuiDemo};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -284,7 +286,32 @@ pub fn run_demo() -> DemoRun {
             FRAME_COUNT,
         )
         .expect("fixture graph prepares atomically");
-    let mut renderer = AudioRenderer::new(audio, NoStructuralGraphChanges::new(), graph);
+    let structural = LockFreeStructuralGraphBoundary::new(
+        1,
+        1,
+        GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+    )
+    .expect("fixture structural boundary is valid");
+    let (structural_control, structural_audio) = structural.into_handles();
+    let worker_preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
+        Box::new(FixturePreparer::new()),
+        Box::new(FixturePreparer::for_capability(BRAIDS_CAPABILITY_ID)),
+    ];
+    let audio_config = AudioDeviceConfig::new(SAMPLE_RATE, 2, AudioSampleFormat::F32, FRAME_COUNT)
+        .expect("fixture audio config is valid");
+    let worker =
+        DeterministicGraphPreparationWorker::new(registry.clone(), worker_preparers, audio_config);
+    let worker_handle = worker.advance_handle();
+    app_loop
+        .configure_engine_selection(
+            DescriptorDefaultConfigFactory::new(registry, providers),
+            worker,
+            structural_control,
+            &graph,
+            audio_config,
+        )
+        .expect("fixture engine-selection orchestration configures");
+    let mut renderer = AudioRenderer::new(audio, structural_audio, graph);
     automatic
         .start()
         .expect("automatic fixture starts after graph preparation");
@@ -302,7 +329,12 @@ pub fn run_demo() -> DemoRun {
     let baseline: Value = serde_json::from_str(app_loop.current_state_tree().json())
         .expect("baseline StateTree is valid JSON");
     let mut audio_buffer = vec![0.0_f32; FRAME_COUNT * 2];
-    let mut demo = ExhaustiveGuiDemo::new(&mut app_loop, &mut renderer, &mut audio_buffer);
+    let mut demo = ExhaustiveGuiDemo::new_with_worker(
+        &mut app_loop,
+        &mut renderer,
+        &mut audio_buffer,
+        worker_handle,
+    );
     let report = demo
         .run(scene)
         .expect("the deterministic demo returns a diagnostic report");

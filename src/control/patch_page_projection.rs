@@ -1,6 +1,10 @@
 use crate::control::app_state::AppState;
 use crate::control::top_level_context::TopLevelContext;
+use crate::control::{
+    EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, PatchControlId,
+};
 use crate::kernel::{MidiChannel, PatchId};
+use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
     AssetReference, ParameterChoice, ParameterDefault, ParameterKind, ParameterRange,
     ParameterUpdate, ParameterValue,
@@ -55,13 +59,24 @@ impl PatchPageEngineChoice {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PatchPageEngine {
+    control_id: PatchControlId,
     active_capability_id: CapabilityId,
     active_label: String,
     choices: Vec<PatchPageEngineChoice>,
+    status: EngineSelectionStatusKind,
+    active_graph_revision: GraphRevision,
+    requested_capability_id: Option<CapabilityId>,
+    request_id: Option<EngineSelectionRequestId>,
+    target_graph_revision: Option<GraphRevision>,
+    failure: Option<EngineSelectionFailure>,
     editable: bool,
 }
 
 impl PatchPageEngine {
+    pub const fn control_id(&self) -> PatchControlId {
+        self.control_id
+    }
+
     pub const fn active_capability_id(&self) -> &CapabilityId {
         &self.active_capability_id
     }
@@ -72,6 +87,30 @@ impl PatchPageEngine {
 
     pub fn choices(&self) -> &[PatchPageEngineChoice] {
         &self.choices
+    }
+
+    pub const fn status(&self) -> EngineSelectionStatusKind {
+        self.status
+    }
+
+    pub const fn active_graph_revision(&self) -> GraphRevision {
+        self.active_graph_revision
+    }
+
+    pub const fn requested_capability_id(&self) -> Option<&CapabilityId> {
+        self.requested_capability_id.as_ref()
+    }
+
+    pub const fn request_id(&self) -> Option<EngineSelectionRequestId> {
+        self.request_id
+    }
+
+    pub const fn target_graph_revision(&self) -> Option<GraphRevision> {
+        self.target_graph_revision
+    }
+
+    pub const fn failure(&self) -> Option<EngineSelectionFailure> {
+        self.failure
     }
 
     pub const fn editable(&self) -> bool {
@@ -278,10 +317,17 @@ impl PatchPageProjection {
     pub const SERIALIZED_LEAF_DESCRIPTOR: &'static [&'static str] = &[
         "context",
         "engine.activeCapabilityId",
+        "engine.activeGraphRevision",
         "engine.activeLabel",
         "engine.choices[].capabilityId",
         "engine.choices[].label",
+        "engine.controlId",
         "engine.editable",
+        "engine.failure",
+        "engine.requestId",
+        "engine.requestedCapabilityId",
+        "engine.status",
+        "engine.targetGraphRevision",
         "envelope[].coarseStep",
         "envelope[].editable",
         "envelope[].fineStep",
@@ -391,6 +437,14 @@ impl PatchPageProjection {
                 label: descriptor.label().to_owned(),
             })
             .collect();
+        let engine_selection = state.engine_selection();
+        let correlation = engine_selection.correlation();
+        let editable = state.interaction().patch_control_focus() == Some(PatchControlId::Engine)
+            && state.capabilities().descriptors().len() >= 2
+            && matches!(
+                engine_selection.kind(),
+                EngineSelectionStatusKind::Ready | EngineSelectionStatusKind::Failed
+            );
         let envelope = crate::synth::VoiceEnvelope::surface_descriptor()
             .iter()
             .map(|spec| PatchPageEnvelopeRow {
@@ -476,10 +530,19 @@ impl PatchPageProjection {
                     midi_channel: patch.channel(),
                 },
                 engine: PatchPageEngine {
+                    control_id: PatchControlId::Engine,
                     active_capability_id: descriptor.id().clone(),
                     active_label: descriptor.label().to_owned(),
                     choices,
-                    editable: false,
+                    status: engine_selection.kind(),
+                    active_graph_revision: engine_selection.active_graph_revision(),
+                    requested_capability_id: correlation
+                        .map(|correlation| correlation.target_capability_id().clone()),
+                    request_id: correlation.map(|correlation| correlation.request_id()),
+                    target_graph_revision: correlation
+                        .and_then(|correlation| correlation.target_graph_revision()),
+                    failure: engine_selection.failure(),
+                    editable,
                 },
                 envelope,
                 sections,
@@ -601,7 +664,17 @@ mod tests {
         assert_eq!(page.patch().midi_channel(), patch.channel());
         assert_eq!(page.engine().active_capability_id(), descriptor.id());
         assert_eq!(page.engine().active_label(), descriptor.label());
-        assert!(!page.engine().editable());
+        assert_eq!(page.engine().control_id(), PatchControlId::Engine);
+        assert_eq!(page.engine().status(), EngineSelectionStatusKind::Ready);
+        assert_eq!(
+            page.engine().active_graph_revision(),
+            GraphRevision::INITIAL
+        );
+        assert_eq!(page.engine().requested_capability_id(), None);
+        assert_eq!(page.engine().request_id(), None);
+        assert_eq!(page.engine().target_graph_revision(), None);
+        assert_eq!(page.engine().failure(), None);
+        assert!(page.engine().editable());
         assert_eq!(
             page.engine().choices().len(),
             state.capabilities().descriptors().len()

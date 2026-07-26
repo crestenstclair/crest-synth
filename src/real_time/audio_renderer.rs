@@ -142,7 +142,7 @@ where
         }
 
         let parameters = self.parameters;
-        let mix = {
+        let (primary_patch_id, primary_patch_rms, mix) = {
             let (rack, patch_audio, mixer) = self.active_graph.callback_parts_mut();
             if patch_audio.begin_render(&parameters, frame_count).is_err() {
                 return;
@@ -151,23 +151,47 @@ where
                 interleaved_stereo.fill(0.0);
                 return;
             }
-            mixer.mix(patch_audio, &parameters, interleaved_stereo)
+            let primary = patch_audio.stems().first();
+            let primary_patch_id = primary.and_then(|stem| stem.patch_id());
+            let primary_patch_rms = primary.map_or(0.0, |stem| {
+                let samples = stem.samples();
+                if samples.is_empty() {
+                    0.0
+                } else {
+                    let energy = samples.iter().fold(0.0_f64, |sum, sample| {
+                        sum + f64::from(*sample) * f64::from(*sample)
+                    });
+                    (energy / samples.len() as f64).sqrt() as f32
+                }
+            });
+            (
+                primary_patch_id,
+                primary_patch_rms,
+                mixer.mix(patch_audio, &parameters, interleaved_stereo),
+            )
         };
 
         self.rendered_blocks = self.rendered_blocks.saturating_add(1);
         self.rendered_frames = self.rendered_frames.saturating_add(frame_count as u64);
-        self.observation
-            .publish_from_callback(AudioObservationSnapshot::from_mix_with_routing(
+        let primary_active_notes =
+            primary_patch_id.map_or(0, |patch_id| self.active_notes.count_patch(patch_id));
+        self.observation.publish_from_callback(
+            AudioObservationSnapshot::from_mix_with_graph_routing_and_primary(
                 self.rendered_blocks,
                 self.rendered_blocks,
                 self.rendered_frames,
                 parameters.generation(),
+                self.active_graph.revision(),
                 self.commands_consumed,
                 self.active_notes.count(),
                 self.routing_failures,
                 self.last_unknown_patch_id,
+                primary_patch_id,
+                primary_patch_rms,
+                primary_active_notes,
                 mix,
-            ));
+            ),
+        );
     }
 
     pub const fn active_revision(&self) -> GraphRevision {
@@ -345,15 +369,27 @@ impl ActiveNoteObservation {
             .iter()
             .fold(0_u32, |count, patch| count.saturating_add(patch.count()))
     }
+
+    fn count_patch(&self, patch_id: PatchId) -> u32 {
+        self.patches
+            .iter()
+            .find(|patch| patch.patch_id == Some(patch_id))
+            .map_or(0, |patch| patch.count())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ActiveNoteObservation, AudioRenderer};
+    use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
     use crate::adapter::hidef_soundfont_capability::{
         HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
     };
     use crate::adapter::hidef_soundfont_preparer::HiDefSoundFontPreparer;
+    use crate::adapter::production_instruments::{
+        production_capability_registry, production_instrument_preparers,
+        production_instrument_providers,
+    };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -377,6 +413,7 @@ mod tests {
     use crate::synth::patch::Patch;
     use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::DescriptorDefaultConfigFactory;
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::Cell;
@@ -858,6 +895,102 @@ mod tests {
         renderer.render(&mut output);
         assert_eq!(renderer.parameters().generation(), 99);
         assert_eq!(renderer.handoff_status().incompatible_snapshots(), 2);
+    }
+
+    #[test]
+    fn production_layout_changing_swap_is_bounded_finite_and_allocation_free() {
+        let registry = production_capability_registry().unwrap();
+        let factory = DescriptorDefaultConfigFactory::new(
+            registry.clone(),
+            production_instrument_providers().unwrap(),
+        );
+        let patch_id = PatchId::new(1).unwrap();
+        let soundfont = factory
+            .create(&CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap())
+            .unwrap();
+        let mut patch = Patch::new(
+            patch_id,
+            "Layout-changing Patch".to_owned(),
+            soundfont,
+            MidiChannel::new(0).unwrap(),
+            ChannelParameters::new(0.0, 0.0, 0.0, 0.0).unwrap(),
+        );
+        let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.0, 250.0, 0.5, 0.0).unwrap();
+        let preparers = production_instrument_preparers().unwrap();
+        let builder = PreparedGraphBuilder::new(&registry, &preparers);
+        let source_parameters = ParameterSnapshot::project_patches(
+            1,
+            GraphRevision::INITIAL,
+            global,
+            std::slice::from_ref(&patch),
+            &registry,
+        )
+        .unwrap();
+        let source = builder
+            .build(
+                GraphRevision::INITIAL,
+                std::slice::from_ref(&patch),
+                source_parameters,
+                48_000.0,
+                512,
+            )
+            .unwrap();
+        assert_eq!(source.engine_rack().scalar_count(0), Some(0));
+
+        patch.set_instrument_config(
+            factory
+                .create(&CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap())
+                .unwrap(),
+        );
+        let target_revision = GraphRevision::new(2).unwrap();
+        let target_parameters = ParameterSnapshot::project_patches(
+            2,
+            target_revision,
+            global,
+            std::slice::from_ref(&patch),
+            &registry,
+        )
+        .unwrap();
+        let target = builder
+            .build(
+                target_revision,
+                std::slice::from_ref(&patch),
+                target_parameters,
+                48_000.0,
+                512,
+            )
+            .unwrap();
+        assert_eq!(target.engine_rack().scalar_count(0), Some(3));
+
+        let message =
+            MidiMessage::try_new(patch.channel(), MidiMessageKind::NoteOn, 60, 100).unwrap();
+        let boundary = TestBoundary {
+            commands: [
+                Some(AudioCommand::patch_midi(patch_id, message)),
+                None,
+                None,
+                None,
+            ],
+            next_command: 0,
+            latest: target_parameters,
+            parameter_reads: 0,
+        };
+        let structural = TestStructural::with_prepared([Some(target), None]);
+        let mut renderer = AudioRenderer::new(boundary, structural, source);
+        let mut output = [0.0; 1_024];
+
+        begin_memory_count();
+        renderer.render(&mut output);
+        let (allocations, deallocations) = finish_memory_count();
+
+        assert_eq!(allocations, 0);
+        assert_eq!(deallocations, 0);
+        assert_eq!(renderer.active_revision(), target_revision);
+        assert_eq!(renderer.active_graph.engine_rack().scalar_count(0), Some(3));
+        assert_eq!(renderer.structural.retired_count, 1);
+        assert_eq!(renderer.handoff_status().swaps_applied(), 1);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(output.iter().any(|sample| sample.abs() > f32::EPSILON));
     }
 
     #[test]

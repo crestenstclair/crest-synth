@@ -7,12 +7,21 @@ pub use automatic_midi_test::{AutomaticMidiTest, TestInputError};
 
 pub mod demo_scene_report;
 pub use demo_scene_report::{
-    DemoAudioEvidence, DemoCoverageGroup, DemoCoverageSet, DemoSceneCheckpoint,
-    DemoSceneCheckpointError, DemoSceneCoverage, DemoSceneReport, DemoSceneReportError,
+    DemoAudioEvidence, DemoCoverageGroup, DemoCoverageSet, DemoEngineCheckpoint,
+    DemoSceneCheckpoint, DemoSceneCheckpointError, DemoSceneCoverage, DemoSceneReport,
+    DemoSceneReportError,
 };
 
 pub mod demo_scene;
-pub use demo_scene::{DemoCheckpoint, DemoScene, DemoSceneError, DemoSceneStep, MidiProbe};
+pub use demo_scene::{
+    DemoCheckpoint, DemoEngineExpectation, DemoEngineProbe, DemoScene, DemoSceneError,
+    DemoSceneStep, DemoWorkerAdvance, MidiProbe,
+};
+
+pub mod deterministic_graph_preparation_worker;
+pub use deterministic_graph_preparation_worker::{
+    DeterministicGraphPreparationHandle, DeterministicGraphPreparationWorker,
+};
 
 pub mod exhaustive_gui_demo;
 pub use exhaustive_gui_demo::{ExhaustiveGuiDemo, ExhaustiveGuiDemoError};
@@ -26,11 +35,14 @@ pub use behavioral_mutation_harness::{
 pub mod live_demo_scene;
 pub use live_demo_scene::{
     LiveAudioPredicate, LiveDemoScene, LiveDemoSceneError, LiveDemoStep, LiveEditableParameter,
-    LiveExpectedTransition,
+    LiveEngineTransition, LiveExpectedTransition,
 };
 
 pub mod live_demo_checkpoint;
-pub use live_demo_checkpoint::{LiveDemoCheckpoint, LiveDemoCheckpointError, LiveProjectedValue};
+pub use live_demo_checkpoint::{
+    LiveCheckpoint, LiveDemoCheckpoint, LiveDemoCheckpointError, LiveEngineCheckpoint,
+    LiveProjectedValue,
+};
 
 pub mod live_demo_report;
 pub use live_demo_report::{

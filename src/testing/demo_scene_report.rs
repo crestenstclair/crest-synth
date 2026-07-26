@@ -1,5 +1,8 @@
 use crate::control::event_log::EventLog;
 use crate::control::state_tree::StateTree;
+use crate::control::{EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind};
+use crate::real_time::GraphRevision;
+use crate::synth::CapabilityId;
 use core::fmt;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
@@ -295,6 +298,7 @@ pub struct DemoSceneCheckpoint {
     selected_line: usize,
     parameter_generation: u64,
     audio_measurement: f64,
+    engine_selection: Option<DemoEngineCheckpoint>,
 }
 
 impl DemoSceneCheckpoint {
@@ -333,7 +337,13 @@ impl DemoSceneCheckpoint {
             selected_line,
             parameter_generation,
             audio_measurement,
+            engine_selection: None,
         })
+    }
+
+    pub fn with_engine_selection(mut self, observation: DemoEngineCheckpoint) -> Self {
+        self.engine_selection = Some(observation);
+        self
     }
 
     pub fn step(&self) -> &str {
@@ -358,6 +368,83 @@ impl DemoSceneCheckpoint {
 
     pub const fn audio_measurement(&self) -> f64 {
         self.audio_measurement
+    }
+
+    pub const fn engine_selection(&self) -> Option<&DemoEngineCheckpoint> {
+        self.engine_selection.as_ref()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DemoEngineCheckpoint {
+    status: EngineSelectionStatusKind,
+    active_capability_id: CapabilityId,
+    requested_capability_id: Option<CapabilityId>,
+    request_id: Option<EngineSelectionRequestId>,
+    state_graph_revision: GraphRevision,
+    renderer_graph_revision: GraphRevision,
+    failure: Option<EngineSelectionFailure>,
+    target_patch_peak: f32,
+}
+
+impl DemoEngineCheckpoint {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        status: EngineSelectionStatusKind,
+        active_capability_id: CapabilityId,
+        requested_capability_id: Option<CapabilityId>,
+        request_id: Option<EngineSelectionRequestId>,
+        state_graph_revision: GraphRevision,
+        renderer_graph_revision: GraphRevision,
+        failure: Option<EngineSelectionFailure>,
+        target_patch_peak: f32,
+    ) -> Result<Self, DemoSceneCheckpointError> {
+        if !target_patch_peak.is_finite() || target_patch_peak < 0.0 {
+            return Err(DemoSceneCheckpointError::NonFiniteAudioMeasurement);
+        }
+        Ok(Self {
+            status,
+            active_capability_id,
+            requested_capability_id,
+            request_id,
+            state_graph_revision,
+            renderer_graph_revision,
+            failure,
+            target_patch_peak,
+        })
+    }
+
+    pub const fn status(&self) -> EngineSelectionStatusKind {
+        self.status
+    }
+
+    pub const fn active_capability_id(&self) -> &CapabilityId {
+        &self.active_capability_id
+    }
+
+    pub const fn requested_capability_id(&self) -> Option<&CapabilityId> {
+        self.requested_capability_id.as_ref()
+    }
+
+    pub const fn request_id(&self) -> Option<EngineSelectionRequestId> {
+        self.request_id
+    }
+
+    pub const fn state_graph_revision(&self) -> GraphRevision {
+        self.state_graph_revision
+    }
+
+    pub const fn renderer_graph_revision(&self) -> GraphRevision {
+        self.renderer_graph_revision
+    }
+
+    pub const fn failure(&self) -> Option<EngineSelectionFailure> {
+        self.failure
+    }
+
+    pub const fn target_patch_peak(&self) -> f32 {
+        self.target_patch_peak
     }
 }
 
@@ -565,89 +652,56 @@ mod tests {
     };
     use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::control::app_event::{AppEvent, Direction};
-    use crate::control::app_state::EventRejection;
+    use crate::control::app_state::{AppState, EventRejection};
     use crate::control::event_log::{EventCoverage, EventLog};
     use crate::control::event_record::{EventRecord, EventSource};
-    use crate::control::state_snapshot::StateSnapshot;
+    use crate::control::state_projector::StateProjector;
     use crate::control::state_tree::StateTree;
     use crate::control::text_projection::TextProjection;
+    use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
-    use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
+    use crate::real_time::GraphRevision;
+    use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::testing::automatic_midi_test::create_soundfont_config;
-    use serde_json::json;
-
-    fn snapshot() -> StateSnapshot {
-        let provider = HiDefSoundFontCapability::new().unwrap();
-        StateSnapshot::new(
-            json!({
-                "generation": 4,
-                "capabilities": provider.registry().unwrap(),
-                "patches": [
-                    {
-                        "id": 7,
-                        "name": "Lead",
-                        "channel": 2,
-                        "instrument": create_soundfont_config(
-                            &provider,
-                            SoundFontInstrument::new(0, 80, false).unwrap()
-                        ).unwrap(),
-                        "gainDb": -6.0,
-                        "pan": -0.25,
-                        "reverbSend": 0.2,
-                        "delaySend": 0.1
-                    },
-                    {
-                        "id": 9,
-                        "name": "Drums",
-                        "channel": 9,
-                        "instrument": create_soundfont_config(
-                            &provider,
-                            SoundFontInstrument::new(128, 0, true).unwrap()
-                        ).unwrap(),
-                        "gainDb": -12.0,
-                        "pan": 0.5,
-                        "reverbSend": 0.4,
-                        "delaySend": 0.3
-                    }
-                ],
-                "global": {
-                    "masterGainDb": -3.0,
-                    "reverbRoomSize": 0.7,
-                    "reverbDamping": 0.4,
-                    "reverbReturn": 0.25,
-                    "delayMilliseconds": 375.0,
-                    "delayFeedback": 0.35,
-                    "delayReturn": 0.2
-                },
-                "selection": {"section": "Patch", "patchIndex": 1, "parameterIndex": 2}
-            })
-            .to_string(),
-        )
-    }
 
     fn tree_and_projection() -> (StateTree, TextProjection) {
-        let snapshot = snapshot();
-        let projection = TextProjection::new(
-            "PATCH Lead\n> reverbSend=0.4\nGLOBAL".to_owned(),
-            1,
-            snapshot.hash().to_owned(),
-        );
+        let provider = HiDefSoundFontCapability::new().unwrap();
         let global = GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap();
-        let patches = [
-            RtPatchParameters::new(
+        let mut state =
+            AppState::for_graph(provider.registry().unwrap(), global, GraphRevision::INITIAL);
+        let patches = vec![
+            Patch::new(
                 PatchId::new(7).unwrap(),
+                "Lead".to_owned(),
+                create_soundfont_config(&provider, SoundFontInstrument::new(0, 80, false).unwrap())
+                    .unwrap(),
+                MidiChannel::new(2).unwrap(),
                 ChannelParameters::new(-6.0, -0.25, 0.2, 0.1).unwrap(),
             ),
-            RtPatchParameters::new(
+            Patch::new(
                 PatchId::new(9).unwrap(),
+                "Drums".to_owned(),
+                create_soundfont_config(&provider, SoundFontInstrument::new(128, 0, true).unwrap())
+                    .unwrap(),
+                MidiChannel::new(9).unwrap(),
                 ChannelParameters::new(-12.0, 0.5, 0.4, 0.3).unwrap(),
             ),
         ];
-        let parameters = ParameterSnapshot::new(4, global, &patches).unwrap();
-        let tree = StateTree::new(&snapshot, &projection, &parameters).unwrap();
+        state.apply(AppEvent::InstallPatches(patches)).unwrap();
+        for _ in 0..3 {
+            state
+                .apply(AppEvent::SelectContext(
+                    crate::control::TopLevelContext::Mixer,
+                ))
+                .unwrap();
+        }
+        let (_, _, projection, _, tree) = StateProjector::for_graph(GraphRevision::INITIAL)
+            .project_with_tree(&state)
+            .unwrap();
+        assert_eq!(tree.generation(), 4);
         (tree, projection)
     }
 

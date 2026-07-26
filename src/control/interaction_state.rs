@@ -1,4 +1,5 @@
 use crate::control::top_level_context::TopLevelContext;
+use crate::control::PatchControlId;
 use crate::kernel::patch_id::PatchId;
 
 /// The kind of section selected in the transitional MIXER text projection.
@@ -54,6 +55,7 @@ pub struct InteractionState {
     pub(super) context: TopLevelContext,
     pub(super) mixer_selection: Selection,
     pub(super) patch_focus: Option<PatchId>,
+    pub(super) patch_control_focus: Option<PatchControlId>,
 }
 
 impl InteractionState {
@@ -63,6 +65,7 @@ impl InteractionState {
             context: TopLevelContext::Mixer,
             mixer_selection: Selection::global(),
             patch_focus: None,
+            patch_control_focus: None,
         }
     }
 
@@ -78,6 +81,10 @@ impl InteractionState {
         self.patch_focus
     }
 
+    pub const fn patch_control_focus(&self) -> Option<PatchControlId> {
+        self.patch_control_focus
+    }
+
     pub(super) fn select_context(&mut self, context: TopLevelContext) {
         self.context = context;
     }
@@ -88,6 +95,11 @@ impl InteractionState {
 
     pub(super) fn initialize_patch_focus(&mut self, patch_focus: Option<PatchId>) {
         self.patch_focus = patch_focus;
+        self.patch_control_focus = if patch_focus.is_some() {
+            Some(PatchControlId::Engine)
+        } else {
+            None
+        };
     }
 
     pub(super) fn mixer_selection_mut(&mut self) -> &mut Selection {
@@ -103,7 +115,7 @@ impl Default for InteractionState {
 
 #[cfg(test)]
 mod tests {
-    use super::{InteractionState, Selection, SelectionSection};
+    use super::{InteractionState, PatchControlId, Selection, SelectionSection};
     use crate::control::TopLevelContext;
     use crate::kernel::PatchId;
 
@@ -113,6 +125,7 @@ mod tests {
         assert_eq!(state.context(), TopLevelContext::Mixer);
         assert_eq!(state.mixer_selection(), Selection::global());
         assert_eq!(state.patch_focus(), None);
+        assert_eq!(state.patch_control_focus(), None);
     }
 
     #[test]
@@ -127,5 +140,6 @@ mod tests {
         assert_eq!(state.mixer_selection(), selection);
         assert_eq!(state.mixer_selection().section(), SelectionSection::Patch);
         assert_eq!(state.patch_focus(), Some(PatchId::new(7).unwrap()));
+        assert_eq!(state.patch_control_focus(), Some(PatchControlId::Engine));
     }
 }

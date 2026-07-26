@@ -3,7 +3,7 @@ use crate::control::serialized_state::{
 };
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
-use crate::control::{PatchPageProjection, TopLevelContext};
+use crate::control::{EngineSelectionStatus, PatchPageProjection, TopLevelContext};
 use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
@@ -126,7 +126,7 @@ struct MidiTreeTemplate {
 
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
-    pub const SCHEMA_VERSION: u32 = 5;
+    pub const SCHEMA_VERSION: u32 = 6;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -138,6 +138,17 @@ impl StateTree {
         "interaction.mixerSelection.patchIndex",
         "interaction.mixerSelection.parameterIndex",
         "interaction.patchFocus",
+        "interaction.patchControlFocus",
+        "engineSelection.kind",
+        "engineSelection.activeGraphRevision",
+        "engineSelection.correlation",
+        "engineSelection.correlation.requestId",
+        "engineSelection.correlation.patchId",
+        "engineSelection.correlation.sourceCapabilityId",
+        "engineSelection.correlation.targetCapabilityId",
+        "engineSelection.correlation.sourceGraphRevision",
+        "engineSelection.correlation.targetGraphRevision",
+        "engineSelection.failure",
         "patchPage",
         "projection.context",
         "projection.body",
@@ -212,13 +223,31 @@ impl StateTree {
         "interaction.mixerSelection.patchIndex",
         "interaction.mixerSelection.parameterIndex",
         "interaction.patchFocus",
+        "interaction.patchControlFocus",
+        "engineSelection.kind",
+        "engineSelection.activeGraphRevision",
+        "engineSelection.correlation",
+        "engineSelection.correlation.requestId",
+        "engineSelection.correlation.patchId",
+        "engineSelection.correlation.sourceCapabilityId",
+        "engineSelection.correlation.targetCapabilityId",
+        "engineSelection.correlation.sourceGraphRevision",
+        "engineSelection.correlation.targetGraphRevision",
+        "engineSelection.failure",
         "patchPage",
         "patchPage.context",
         "patchPage.engine.activeCapabilityId",
+        "patchPage.engine.activeGraphRevision",
         "patchPage.engine.activeLabel",
         "patchPage.engine.choices[].capabilityId",
         "patchPage.engine.choices[].label",
+        "patchPage.engine.controlId",
         "patchPage.engine.editable",
+        "patchPage.engine.failure",
+        "patchPage.engine.requestId",
+        "patchPage.engine.requestedCapabilityId",
+        "patchPage.engine.status",
+        "patchPage.engine.targetGraphRevision",
         "patchPage.envelope[].coarseStep",
         "patchPage.envelope[].editable",
         "patchPage.envelope[].fineStep",
@@ -336,7 +365,31 @@ impl StateTree {
             (TopLevelContext::Patch, Some(page))
                 if page.context() == TopLevelContext::Patch
                     && page.state_hash() == snapshot.hash()
-                    && Some(page.patch().id().value()) == state.interaction.patch_focus => {}
+                    && Some(page.patch().id().value()) == state.interaction.patch_focus
+                    && page.engine().control_id()
+                        == state
+                            .interaction
+                            .patch_control_focus
+                            .ok_or(StateTreeError::PatchPageMismatch)?
+                    && page.engine().status() == state.engine_selection.kind()
+                    && page.engine().active_graph_revision()
+                        == state.engine_selection.active_graph_revision()
+                    && page.engine().requested_capability_id()
+                        == state
+                            .engine_selection
+                            .correlation()
+                            .map(|correlation| correlation.target_capability_id())
+                    && page.engine().request_id()
+                        == state
+                            .engine_selection
+                            .correlation()
+                            .map(|correlation| correlation.request_id())
+                    && page.engine().target_graph_revision()
+                        == state
+                            .engine_selection
+                            .correlation()
+                            .and_then(|correlation| correlation.target_graph_revision())
+                    && page.engine().failure() == state.engine_selection.failure() => {}
             _ => return Err(StateTreeError::PatchPageMismatch),
         }
         validate_parameter_projection(state, parameters)?;
@@ -484,7 +537,7 @@ impl PartialEq for StateTree {
 
 impl MidiTreeTemplate {
     fn from_json(json: &str, generation: u64, state_hash: &str) -> Option<Self> {
-        const ROOT_MARKER: &str = "{\"schemaVersion\":5,\"generation\":";
+        const ROOT_MARKER: &str = "{\"schemaVersion\":6,\"generation\":";
         const PARAMETER_MARKER: &str = "\"parameters\":{\"generation\":";
 
         let root_start = ROOT_MARKER.len();
@@ -557,6 +610,9 @@ fn validate_parameter_projection(
     if parameters.generation() != state.generation {
         return Err(StateTreeError::GenerationMismatch);
     }
+    if parameters.graph_revision() != state.engine_selection.projection_graph_revision() {
+        return Err(StateTreeError::GraphRevisionMismatch);
+    }
     if parameters.patch_count() != state.patches.len() {
         return Err(StateTreeError::PatchCountMismatch);
     }
@@ -612,6 +668,7 @@ struct SerializableStateTree<'a> {
     patches: Vec<TreePatch<'a>>,
     global: TreeGlobalParameters,
     interaction: &'a SerializedInteractionState,
+    engine_selection: &'a EngineSelectionStatus,
     patch_page: Option<&'a PatchPageProjection>,
     projection: &'a TextProjection,
     parameters: &'a ParameterSnapshot,
@@ -631,6 +688,7 @@ impl<'a> SerializableStateTree<'a> {
             patches: state.patches.iter().map(TreePatch::from).collect(),
             global: TreeGlobalParameters::from(&state.global),
             interaction: &state.interaction,
+            engine_selection: &state.engine_selection,
             patch_page,
             projection,
             parameters,
@@ -799,7 +857,14 @@ mod tests {
                         "patchIndex": 1,
                         "parameterIndex": 2
                     },
-                    "patchFocus": 7
+                    "patchFocus": 7,
+                    "patchControlFocus": null
+                },
+                "engineSelection": {
+                    "kind": "ready",
+                    "activeGraphRevision": 7,
+                    "correlation": null,
+                    "failure": null
                 }
             })
             .to_string(),
@@ -851,7 +916,7 @@ mod tests {
         assert_eq!(tree.state_hash(), snapshot.hash());
 
         let root = value.as_object().unwrap();
-        assert_eq!(root.len(), 9);
+        assert_eq!(root.len(), 10);
         for property in [
             "schemaVersion",
             "generation",
@@ -859,6 +924,7 @@ mod tests {
             "patches",
             "global",
             "interaction",
+            "engineSelection",
             "patchPage",
             "projection",
             "parameters",
@@ -924,7 +990,17 @@ mod tests {
                     "patchIndex": 1,
                     "parameterIndex": 2
                 },
-                "patchFocus": 7
+                "patchFocus": 7,
+                "patchControlFocus": null
+            })
+        );
+        assert_eq!(
+            value["engineSelection"],
+            json!({
+                "kind": "ready",
+                "activeGraphRevision": 7,
+                "correlation": null,
+                "failure": null
             })
         );
         assert!(value["patchPage"].is_null());
@@ -970,7 +1046,7 @@ mod tests {
         assert_eq!(first.json(), second.json());
         assert!(first
             .json()
-            .starts_with("{\"schemaVersion\":5,\"generation\":42,\"capabilities\":"));
+            .starts_with("{\"schemaVersion\":6,\"generation\":42,\"capabilities\":"));
         assert_eq!(first.clone().into_json(), first.json());
     }
 
@@ -1019,15 +1095,16 @@ mod tests {
     fn rejects_parameter_generation_patch_order_and_values_that_do_not_match() {
         let snapshot = snapshot();
         let projection = projection(&snapshot);
+        let revision = crate::real_time::GraphRevision::new(7).unwrap();
         let wrong_generation =
-            ParameterSnapshot::new(43, global(), parameters().patches()).unwrap();
+            ParameterSnapshot::for_graph(43, revision, global(), parameters().patches()).unwrap();
         assert_eq!(
             StateTree::new(&snapshot, &projection, &wrong_generation),
             Err(StateTreeError::GenerationMismatch)
         );
 
         let reversed = [parameters().patches()[1], parameters().patches()[0]];
-        let wrong_order = ParameterSnapshot::new(42, global(), &reversed).unwrap();
+        let wrong_order = ParameterSnapshot::for_graph(42, revision, global(), &reversed).unwrap();
         assert_eq!(
             StateTree::new(&snapshot, &projection, &wrong_order),
             Err(StateTreeError::PatchIdentityMismatch { index: 0 })
@@ -1040,7 +1117,8 @@ mod tests {
                 ChannelParameters::new(-10.0, 0.5, 0.4, 0.3).unwrap(),
             ),
         ];
-        let wrong_parameters = ParameterSnapshot::new(42, global(), &wrong_values).unwrap();
+        let wrong_parameters =
+            ParameterSnapshot::for_graph(42, revision, global(), &wrong_values).unwrap();
         assert_eq!(
             StateTree::new(&snapshot, &projection, &wrong_parameters),
             Err(StateTreeError::PatchParametersMismatch { index: 1 })
@@ -1060,8 +1138,13 @@ mod tests {
         let projection = projection(&snapshot);
         let different_global =
             GlobalParameters::new(-2.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap();
-        let wrong_global =
-            ParameterSnapshot::new(42, different_global, parameters().patches()).unwrap();
+        let wrong_global = ParameterSnapshot::for_graph(
+            42,
+            crate::real_time::GraphRevision::new(7).unwrap(),
+            different_global,
+            parameters().patches(),
+        )
+        .unwrap();
         assert_eq!(
             StateTree::new(&snapshot, &projection, &wrong_global),
             Err(StateTreeError::GlobalParametersMismatch)

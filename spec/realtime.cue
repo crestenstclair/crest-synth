@@ -10,7 +10,10 @@ project: contexts: RealTime: {
 			"zero denotes no published graph and every prepared replacement uses a greater revision",
 			"the value is Copy, fixed-size, and contains no state owner or destructor",
 		]
-		contributesTo: [{capability: "capability.prepared_engine_rack", contribution: "correlates publication, block-boundary activation, parameter compatibility, acknowledgement, and retirement"}]
+		contributesTo: [
+			{capability: "capability.prepared_engine_rack", contribution: "correlates publication, block-boundary activation, parameter compatibility, acknowledgement, and retirement"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "joins one request's source and target graphs without carrying ownership"},
+		]
 	}
 
 	valueObjects: ParameterSnapshot: {
@@ -33,6 +36,7 @@ project: contexts: RealTime: {
 		]
 		contributesTo: [
 			{capability: "capability.one_way_parameter_control", contribution: "carries accepted AppState values to audio"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "carries the exact descriptor scalar layout for the source or committed target graph revision"},
 			{capability: "capability.realtime_execution", contribution: "provides a fixed-size latest-wins callback input"},
 		]
 	}
@@ -56,6 +60,7 @@ project: contexts: RealTime: {
 		validations: [{id: "validation.aggregate.prepared_engine_rack", kind: "test", command: ["cargo", "test", "prepared_engine_rack"], description: "two distinct prepared test instrument implementations route targeted MIDI and render isolated bounded stems through one rack"}]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "is the capability-neutral bounded runtime owner later used by SoundFont and Braids together"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "replaces one selected slot implementation without branching on capability identity"},
 			{capability: "capability.realtime_execution", contribution: "bounds polymorphic dispatch and rendering outside inner sample loops"},
 		]
 	}
@@ -78,11 +83,13 @@ project: contexts: RealTime: {
 			"the rack, parameter snapshot, descriptor scalar layouts, stems, and mixer routing contain the same PatchIds in the same bounded order",
 			"sampleRate and maxFrames come from the accepted negotiated AudioDeviceConfig and are validated once before the device stream starts",
 			"every graph render block is bounded by maxFrames; a larger native device callback is completely rendered as consecutive bounded blocks without truncation or a silent tail",
-			"the current increment permits replacement only for the same accepted PatchId set and does not expose a structural edit event or engine selector",
+			"a replacement preserves the accepted PatchId set, order, rack capacity, routes, mixer values, and device bounds while permitting exactly the selected Patch capability and descriptor-scalar layout to change to its validated candidate config",
+			"initialParameters is refreshed from the exact committed EnginePrepared generation immediately before publication so scalar edits accepted during preparation cannot be reverted by the swap",
 			"moving graph ownership through a queue performs no allocation or destruction; destruction is permitted only after the retired graph reaches control or worker ownership",
 		]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "makes structural audio state one complete ownership-transfer unit"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "carries one fully prepared target engine and its committed scalar layout as an atomic replacement"},
 			{capability: "capability.global_mix", contribution: "keeps the existing reverb, delay, routing, and mixer prepared with the engine rack"},
 			{capability: "capability.realtime_execution", contribution: "prevents partially prepared topology from reaching the callback"},
 		]
@@ -103,7 +110,10 @@ project: contexts: RealTime: {
 			"retiredRevision advances only after ownership of the replaced graph has entered the audio-to-control return queue",
 			"the callback reports swap, retirement-pressure, and incompatible-snapshot counters without logging, formatting, allocation, or backpressure",
 		]
-		contributesTo: [{capability: "capability.prepared_engine_rack", contribution: "lets control throttle structural work until the prior graph is active and safely returned"}]
+		contributesTo: [
+			{capability: "capability.prepared_engine_rack", contribution: "lets control throttle structural work until the prior graph is active and safely returned"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "supplies the fixed activation and retirement facts required before Ready"},
+		]
 	}
 
 	valueObjects: PatchAudioBlock: {
@@ -218,9 +228,11 @@ project: contexts: RealTime: {
 			"the callback can move graph ownership and publish status without allocation, deallocation, locking, blocking, I/O, logging, formatting, panic, unwinding, or destruction",
 			"collectRetiredOnControl is the only runtime operation that destroys a replaced graph and never runs on the audio callback",
 			"control publishes at most one replacement and does not publish another until status reports the prior revision retired",
+			"publication pressure returns complete ownership to control for staged retry; it never rolls back committed state, drops a graph, or selects a substitute",
 		]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "transfers complete prepared graph ownership and returns replaced ownership without callback destruction"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "carries the correlated candidate only after its control config commits"},
 			{capability: "capability.realtime_execution", contribution: "keeps structural state separate from commands and latest scalar snapshots"},
 		]
 	}
@@ -261,34 +273,43 @@ project: contexts: RealTime: {
 			"require the supplied parameter graphRevision, PatchIds, order, and count to match the prepared rack exactly",
 			"fail atomically with a typed error on any capacity, format, capability, asset, engine, effect, routing, or allocation failure and never return a partial graph",
 			"use the existing one global reverb and one global delay topology without introducing Patch effects, arbitrary graph edges, or feedback cycles",
+			"for engine selection preserve PatchIds, order, count, routes, mixer values, envelopes, device bounds, and untargeted configs exactly while allowing only the selected Patch capability/config and descriptor scalar layout to differ",
 		]
 		validations: [{id: "validation.service.prepared_graph_builder", kind: "test", command: ["cargo", "test", "prepared_graph_builder"], description: "complete compatible graphs prepare deterministically while every partial, mismatched, unsupported, or over-capacity input fails before publication"}]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "turns accepted structural state into one complete callback-ready ownership unit"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "builds the exact complete candidate consumed by the correlated worker result"},
 			{capability: "capability.realtime_execution", contribution: "keeps every allocating preparation step outside the callback"},
 		]
 	}
 
 	applicationServices: StructuralGraphCoordinator: {
-		purpose: "publish at most one prepared replacement and collect its predecessor after callback acknowledgement"
+		purpose: "stage or publish at most one prepared replacement, preserve its layout correlation, and collect its predecessor after callback acknowledgement"
 		uses: [
 			"port.RealTime.StructuralGraphBoundary",
 			"aggregate.RealTime.PreparedGraph",
 			"valueObject.RealTime.GraphHandoffStatus",
+			"valueObject.Control.EngineSelectionRequestId",
 		]
 		operations: {
-			submit: {input: {graph: "PreparedGraph"}, output: {result: "Result<(), StructuralGraphBusy>"}}
+			submit: {input: {requestId: "EngineSelectionRequestId", sourceRevision: "GraphRevision", graph: "PreparedGraph"}, output: {result: "Result<Published | Staged, StructuralGraphBusy>"}}
+			retryStaged: {input: {}, output: {result: "Result<Option<GraphRevision>, StructuralBoundaryError>"}}
 			poll: {input: {}, output: {status: "GraphHandoffStatus"}}
 		}
 		meta: rules: [
 			"run only outside the audio callback and preserve ownership of a graph rejected by queue pressure",
-			"allow exactly one revision in flight and reject or defer another submission until the previous active revision is also acknowledged retired and collected",
+			"allow exactly one correlated revision in flight and reject another submission until the previous target is active, its source is acknowledged retired, and the returned graph is collected",
+			"if publication pressure returns the graph, retain exactly one staged complete graph on control ownership and retry it before polling another worker result; never rollback committed AppState or drop, rebuild, or substitute the graph",
+			"a candidate may change only the selected Patch capability and scalar layout while keeping PatchIds, order, capacities, routes, mixer values, and device configuration exact; retain the source layout until acknowledgement and adopt the target layout only after collection",
 			"collect returned graphs on control or worker ownership where destructors are allowed",
 			"never mutate AppState, fabricate an acknowledgement, publish a partial graph, or substitute another graph after failure",
-			"this increment exercises handoff through deterministic orchestration but exposes no user structural edit or engine-selection event",
+			"correlate request id plus source/target revisions with EngineSelectionStatus but never mutate AppState or store the status itself",
 		]
 		validations: [{id: "validation.service.structural_graph_coordinator", kind: "test", command: ["cargo", "test", "structural_graph_coordinator"], description: "one-in-flight throttling, ownership preservation, acknowledgement, retry, and explicit control-side collection are exact"}]
-		contributesTo: [{capability: "capability.prepared_engine_rack", contribution: "enforces the one-in-flight graph replacement protocol on the non-real-time side"}]
+		contributesTo: [
+			{capability: "capability.prepared_engine_rack", contribution: "enforces the one-in-flight graph replacement protocol on the non-real-time side"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "owns staged retry and layout adoption without becoming a second state reducer"},
+		]
 	}
 
 	applicationServices: AudioRenderer: {
@@ -308,6 +329,7 @@ project: contexts: RealTime: {
 		meta: rules: [
 			"construction receives one completely prepared initial graph before the callback starts and never prepares an engine, mixer, effect, route, or buffer itself",
 			"at the start of a render block, if no prior retired graph occupies the bounded callback retirement slot, take at most one prepared replacement, swap the complete graph, activate its initial parameters, and publish the active revision",
+			"a layout-changing engine replacement follows the identical bounded swap path; it may reset voices and global-effect tails and makes no seamless migration claim",
 			"move the replaced graph into the dedicated return queue; if that queue is full, retain it in the one preallocated callback retirement slot and retry on later blocks without taking another replacement or destroying it",
 			"publish retiredRevision only after the return queue owns the old graph; control does not submit another structure until that acknowledgement is observed and collected",
 			"render drains only currently available AudioCommands, reads one latest ParameterSnapshot compatible with the active graph revision, PatchIds, and scalar layouts, gives each targeted dispatch and each per-Patch render only its matching RtPatchParameters, passes all matching stems and mixer values to the active graph's MixEngine, and returns",
@@ -327,6 +349,7 @@ project: contexts: RealTime: {
 		]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "owns block-boundary graph activation and bounded retirement retry"},
+			{capability: "capability.asynchronous_engine_selection", contribution: "activates the complete committed candidate without inspecting engine identity"},
 			{capability: "capability.soundfont_audio", contribution: "joins the SoundFont and global mixer into the callback"},
 			{capability: "capability.braids_engine", contribution: "joins the pinned Braids renderer through the same matching Patch projection and rack"},
 			{capability: "capability.per_voice_envelope", contribution: "delivers common ADSR values to independent note voices without adding a post-stem processor"},
@@ -368,6 +391,7 @@ project: adapters: LockFreeStructuralGraphBoundary: {
 	validations: [{id: "validation.adapter.lock_free_structural_graph_boundary", kind: "test", command: ["cargo", "test", "lock_free_structural_graph_boundary"], description: "both directions are bounded FIFO ownership transfer, pressure preserves values, status is coherent, and destructors run only under explicit control collection"}]
 	contributesTo: [
 		{capability: "capability.prepared_engine_rack", contribution: "implements the dedicated prepared/retired graph handoff and acknowledgement path"},
+		{capability: "capability.asynchronous_engine_selection", contribution: "preserves candidate and retired ownership under queue pressure"},
 		{capability: "capability.realtime_execution", contribution: "makes structural ownership transfer distinct from discrete commands and scalar snapshots"},
 	]
 }

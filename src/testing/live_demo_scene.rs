@@ -1,6 +1,6 @@
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::EventRejection;
-use crate::control::event_record::{EmittedEvent, EventInput, EventOutcome};
+use crate::control::event_record::{EmittedEvent, EventDirection, EventInput, EventOutcome};
 use crate::control::state_projector::format_instrument_value;
 use crate::control::state_tree::StateTree;
 use crate::kernel::midi_channel::MidiChannel;
@@ -16,6 +16,7 @@ use crate::synth::instrument_capability::{
 };
 use crate::synth::patch::{resolve_patch_editable_targets, PatchEditableTarget};
 use crate::synth::voice_envelope::VoiceEnvelope;
+use crate::synth::CapabilityId;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -373,12 +374,14 @@ pub struct LiveDemoScene {
     name: String,
     minimum_parameter_dwell: Duration,
     steps: Vec<LiveDemoStep>,
+    scalar_step_count: usize,
     expected_editable_parameters: Vec<LiveEditableParameter>,
+    expected_engine_transitions: Vec<LiveEngineTransition>,
     patches: Vec<LivePatch>,
 }
 
 impl LiveDemoScene {
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
     pub const MINIMUM_PARAMETER_DWELL: Duration = Duration::from_millis(500);
 
     /// Freezes the installed patch and current typed descriptor surface.
@@ -386,6 +389,16 @@ impl LiveDemoScene {
         let state = decode_state_tree(tree)?;
         if state.patches.is_empty() {
             return Err(LiveDemoSceneError::NoInstalledPatches);
+        }
+        let soundfont =
+            CapabilityId::new(crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID)
+                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let braids = CapabilityId::new(crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID)
+            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+        if state.patches[0].instrument.capability_id() != &soundfont
+            || state.capabilities.descriptor(&braids).is_none()
+        {
+            return Err(LiveDemoSceneError::EngineFixtureUnavailable);
         }
         if state.interaction.mixer_selection.section != "Patch"
             || state.interaction.mixer_selection.patch_index != 0
@@ -429,6 +442,26 @@ impl LiveDemoScene {
         let mut steps = Vec::new();
         build_patch_steps(&state, &patches, &mut steps)?;
         build_global_steps(&state, &mut steps)?;
+        let scalar_step_count = steps.len();
+        let first = patches[0];
+        let expected_engine_transitions = vec![
+            LiveEngineTransition::new(
+                "engine.soundfontToBraids",
+                first.patch_id,
+                first.channel,
+                Direction::Right,
+                soundfont.clone(),
+                braids.clone(),
+            ),
+            LiveEngineTransition::new(
+                "engine.braidsToSoundfontDefault",
+                first.patch_id,
+                first.channel,
+                Direction::Left,
+                braids,
+                soundfont,
+            ),
+        ];
         for patch in &patches {
             steps.push(LiveDemoStep::cleanup(AppEvent::Midi {
                 patch_id: patch.patch_id,
@@ -437,10 +470,12 @@ impl LiveDemoScene {
         }
 
         Ok(Self {
-            name: "phase-2-mixed-engine-live-observable-demo".to_owned(),
+            name: "phase-3-asynchronous-engine-selection-live-demo".to_owned(),
             minimum_parameter_dwell: Self::MINIMUM_PARAMETER_DWELL,
             steps,
+            scalar_step_count,
             expected_editable_parameters: expected,
+            expected_engine_transitions,
             patches,
         })
     }
@@ -465,6 +500,14 @@ impl LiveDemoScene {
         &self.expected_editable_parameters
     }
 
+    pub fn expected_engine_transitions(&self) -> &[LiveEngineTransition] {
+        &self.expected_engine_transitions
+    }
+
+    pub(crate) const fn scalar_step_count(&self) -> usize {
+        self.scalar_step_count
+    }
+
     pub fn patch_ids(&self) -> impl ExactSizeIterator<Item = PatchId> + '_ {
         self.patches.iter().map(|patch| patch.patch_id)
     }
@@ -472,7 +515,70 @@ impl LiveDemoScene {
     pub fn required_event_log_capacity(&self, fixture_allowance: usize) -> usize {
         1usize
             .saturating_add(self.steps.len())
+            .saturating_add(self.expected_engine_transitions.len().saturating_mul(4))
+            .saturating_add(2)
             .saturating_add(fixture_allowance)
+    }
+}
+
+/// One frozen ordered live engine replacement for the focused fixture Patch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveEngineTransition {
+    id: String,
+    patch_id: PatchId,
+    channel: MidiChannel,
+    direction: EventDirection,
+    source_capability_id: CapabilityId,
+    target_capability_id: CapabilityId,
+}
+
+impl LiveEngineTransition {
+    fn new(
+        id: impl Into<String>,
+        patch_id: PatchId,
+        channel: MidiChannel,
+        direction: Direction,
+        source_capability_id: CapabilityId,
+        target_capability_id: CapabilityId,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            patch_id,
+            channel,
+            direction: direction.into(),
+            source_capability_id,
+            target_capability_id,
+        }
+    }
+
+    pub fn identifier(&self) -> &str {
+        &self.id
+    }
+
+    pub const fn patch_id(&self) -> PatchId {
+        self.patch_id
+    }
+
+    pub const fn channel(&self) -> MidiChannel {
+        self.channel
+    }
+
+    pub const fn direction(&self) -> Direction {
+        match self.direction {
+            EventDirection::Up => Direction::Up,
+            EventDirection::Down => Direction::Down,
+            EventDirection::Left => Direction::Left,
+            EventDirection::Right => Direction::Right,
+        }
+    }
+
+    pub const fn source_capability_id(&self) -> &CapabilityId {
+        &self.source_capability_id
+    }
+
+    pub const fn target_capability_id(&self) -> &CapabilityId {
+        &self.target_capability_id
     }
 }
 
@@ -1011,6 +1117,7 @@ pub enum LiveDemoSceneError {
     DuplicatePatchId(u32),
     InvalidMidiChannel(u8),
     InvalidInstrumentConfig,
+    EngineFixtureUnavailable,
     InvalidPlannedAdjustment,
     SelectedParameterMismatch,
     ExpectedValueMismatch { expected: f32, actual: f32 },
@@ -1042,6 +1149,9 @@ impl fmt::Display for LiveDemoSceneError {
             Self::InvalidInstrumentConfig => {
                 formatter.write_str("installed state contains an invalid instrument schema/config")
             }
+            Self::EngineFixtureUnavailable => formatter.write_str(
+                "live engine proof requires the focused first Patch on SoundFont and installed Braids",
+            ),
             Self::InvalidPlannedAdjustment => {
                 formatter.write_str("descriptor-derived adjustment would not change its parameter")
             }

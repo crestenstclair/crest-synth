@@ -12,6 +12,12 @@ pub mod audio_renderer;
 pub use audio_renderer::AudioRenderer;
 pub mod graph_revision;
 pub use graph_revision::{GraphRevision, GraphRevisionError};
+pub mod graph_preparation_worker;
+pub use graph_preparation_worker::{
+    GraphPreparationCorrelation, GraphPreparationRequest, GraphPreparationRequestError,
+    GraphPreparationResult, GraphPreparationWorker, WorkerBusy, WorkerBusyReason,
+    WorkerShutdownError,
+};
 pub mod graph_handoff_status;
 pub use graph_handoff_status::GraphHandoffStatus;
 pub mod parameter_snapshot;
@@ -24,7 +30,7 @@ pub use patch_audio_block::{PatchAudioBlock, PatchAudioBlockError, PatchStereoSt
 pub mod prepared_engine_rack;
 pub use prepared_engine_rack::{PreparedEngineRack, RackDispatchError, RackRenderError};
 pub mod prepared_graph;
-pub use prepared_graph::PreparedGraph;
+pub use prepared_graph::{PreparedGraph, PreparedGraphRefreshError};
 pub mod prepared_graph_builder;
 pub use prepared_graph_builder::{GraphPreparationError, PreparedGraphBuilder};
 pub mod structural_graph_boundary;
@@ -34,5 +40,6 @@ pub use structural_graph_boundary::{
 };
 pub mod structural_graph_coordinator;
 pub use structural_graph_coordinator::{
-    CoordinatorProgress, GraphPublicationError, GraphPublicationFailure, StructuralGraphCoordinator,
+    CoordinatorProgress, GraphPublicationError, GraphPublicationFailure, GraphStageOutcome,
+    StructuralGraphCoordinator,
 };

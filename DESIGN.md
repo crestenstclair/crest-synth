@@ -88,7 +88,8 @@ AppState
 
 - `SessionState` is versioned and persistent.
 - `InteractionState` is reducer-owned so navigation is deterministic and testable; it need not be saved in presets.
-- `RuntimeState` contains status values, never device handles, decoders, or audio buffers.
+- `RuntimeState` contains device/load status plus the reducer-owned engine-selection
+  lifecycle, never device handles, decoders, prepared graphs, or audio buffers.
 - Invalid events return typed rejections and leave all state and generation unchanged.
 
 Every accepted event follows one sequence:
@@ -101,6 +102,19 @@ Every accepted event follows one sequence:
 6. Publish those projections through their owning ports.
 
 Views receive an immutable view model and event sink, never mutable application state.
+
+Engine selection is the first asynchronous structural edit through this path. An
+accepted request records a monotonic request identity and `Preparing` status while
+leaving the active `InstrumentConfig` and graph revision unchanged. A capacity-one
+worker prepares the descriptor-default target config and a complete replacement
+graph off the callback from one compatible provisional target snapshot. A
+correlated successful result then passes through
+`AppState::apply`, commits the target config and `Activating` status, projects the
+matching fixed snapshot, rebinds the graph to that exact committed projection, and
+publishes the prepared graph. `Ready` is restored only
+after block-boundary activation, retirement acknowledgement, and control-side
+collection all agree. Failure, busy, early, stale, or mismatched outcomes are typed,
+visible, and never select a fallback.
 
 ## Low-latency audio
 
@@ -264,7 +278,15 @@ Every admitted engine applies the Patch-owned ADSR independently inside each nat
 
 Braids is built from the official Mutable Instruments source pinned at `pichenettes/eurorack@08460a69a7e1f7a81c5a2abcc7189c9a6b7208d4` and `stmlib@e3bd7c9cc00e4364166f9905c0509b6ffd0535ec`. Crest vendors only the audited DSP subset and license/provenance files, compiles it behind a small exception-free opaque C ABI, and owns exactly sixteen fully initialized `MacroOscillator` instances per prepared Braids Patch. The descriptor exposes the 47 named playable upstream models plus scalar Timbre and Color. Braids retains its 96 kHz, 24-sample internal contract; the first admitted host format is exactly 48 kHz and uses a bounded 2:1 adapter. Unsupported rates fail during preparation and never select another engine.
 
-Scalar capability parameters use descriptor order within the immutable active graph revision. Control projection encodes at most sixteen scalar values into fixed destructor-free real-time storage; choices use their descriptor index. Structural fields such as the SoundFont bank, program, percussion flag, and asset reference remain visible but are not live-editable until a prepared structural edit workflow exists.
+Scalar capability parameters use descriptor order within the immutable active graph revision. Control projection encodes at most sixteen scalar values into fixed destructor-free real-time storage; choices use their descriptor index. The PATCH engine row is the first live structural control: Edit+Left/Right requests the adjacent installed capability without wrapping. The target `InstrumentConfig` is rebuilt from that descriptor's ordered defaults, including its required default asset references, rather than translating or caching inactive-engine values. SoundFont bank, program, percussion, asset, ADSR, and capability parameter rows remain visible but read-only in this increment.
+
+Only one structural request is in flight application-wide. MIDI, context selection,
+and valid scalar MIXER edits may continue while preparation runs. The old graph stays
+audible until the complete replacement swaps at a block boundary. A full structural
+publish queue retains exactly one staged graph on control ownership and retries; it
+does not roll back committed control state, drop the graph, or choose another engine.
+A complete engine change may reset active voices and effect tails; seamless migration
+is not claimed.
 
 ### SoundFont and sample pipeline
 
@@ -356,7 +378,7 @@ The layout must also be verified at the Steam Deck viewport. Preserve the header
 
 ### Patch
 
-The strip contains patch identity/routing, one instrument selector, ordered post-effect selectors, and a persistent Utility panel for global/patch volume, MIDI input, output track, and voice limit.
+The strip contains patch identity/routing, one instrument selector, ordered post-effect selectors, and a persistent Utility panel for global/patch volume, MIDI input, output track, and voice limit. In the current executable slice the focused PATCH engine row is the only editable PATCH control: Edit+Left/Right requests the adjacent installed engine, and the same row displays `Preparing`, `Activating`, or a typed failure while the active engine remains explicit. No engine-choice modal is added yet.
 
 Instrument and effect detail views reuse the shell. The active capability supplies the title, accent, sections, values, ranges, units, and dependency rules. Sample detail adds an asset selector and a non-focusable waveform/loop visualization.
 
@@ -518,7 +540,7 @@ A completed behavior must be distinguishable from a no-op:
 - **RT:** allocator instrumentation, callback timing, overflow recovery, graph swap, off-thread destruction.
 - **Assets:** real SF2/sample fixtures, preset identity, malformed input, loop bounds, atomic replacement.
 - **UI:** golden images at 1920×1080 and Steam Deck size, semantic tokens, single focus, complete controller navigation, modal return.
-- **Integration:** standalone, fixture, and synthetic inputs use the production reducer and render path; the production fixture alternates SoundFont and Braids Patches and the demos modify every editable mixer, ADSR, capability-scalar, and global value through that path.
+- **Integration:** standalone, fixture, and synthetic inputs use the production reducer and render path; the production fixture alternates SoundFont and Braids Patches and the deterministic demo modifies every editable mixer, ADSR, capability-scalar, and global value, then selects SoundFont → Braids → descriptor-default SoundFont through the same worker, reducer, graph handoff, and renderer path. It also proves pending/busy/failure/stale handling, block-boundary activation, off-callback retirement, target-only mutation, finite audible output, and two-run logical determinism. The paced physical-device demo independently performs the same successful two-way selection through the production threaded worker, renders the canonical lifecycle, waits for each acknowledged graph revision, and requires finite audible target output; exhaustive negative-path and two-run proof remains headless.
 
 Offline render is the deterministic audio proof. Device smoke tests separately validate negotiation and underruns. Construction-only tests, success-token logs, and silent output are not evidence.
 
@@ -547,6 +569,17 @@ ownership, and returns success. Closing the native window before that report
 remains a typed incomplete-demo failure. Open-ended keyboard control belongs to
 the normal `make run` application mode.
 
+After completing its frozen editable-scalar coverage, the autonomous live scene
+selects the focused first fixture Patch from SoundFont to Braids and back to the
+descriptor-default SoundFont configuration. Each request is a semantic
+`AppEvent`; the runner waits without blocking for canonical `Preparing`,
+`Activating`, and `Ready` observations while the standalone control tick
+advances the production worker and structural coordinator. After each
+acknowledged revision it dispatches targeted MIDI and requires a newer finite,
+nonzero physical render observation before proceeding. The live scene does not
+inject worker failures or stale results; those exhaustive controlled negatives
+remain in the deterministic headless scene.
+
 An architecture change must preserve the one-way state path and callback contract, use canonical types, update this document when a durable decision changes, add falsifiable proof, and remove the superseded path in the same change.
 
 ## Durable decisions
@@ -560,6 +593,10 @@ An architecture change must preserve the one-way state path and callback contrac
 - Every SoundFont Patch owns one synthesizer with engine-managed polyphony; SoundFont is not artificially capped at sixteen and is never split into one synthesizer per note.
 - SoundFont and Braids share the same Patch-owned per-note ADSR contract despite their distinct voice policies.
 - The production fixture and both demos intentionally mix the two engines; engine-specific editable fields come only from capability descriptors.
+- The PATCH engine row is the first editable structural control; it selects adjacent installed capabilities through a one-in-flight asynchronous preparation lifecycle owned by the reducer and application coordinator.
+- Engine selection constructs the target from descriptor defaults and required default assets, keeps no inactive-engine config cache, leaves the old graph audible until block-boundary activation, and never falls back after failure.
+- A complete engine graph swap may reset voices and effect tails; seamless migration is outside the current contract.
+- Both autonomous demos select the focused first Patch SoundFont → Braids → descriptor-default SoundFont through production seams; the headless demo owns exhaustive deterministic and controlled-negative proof, while `demo-live` owns paced visible and physical-audio confirmation through the threaded worker.
 - Normal live input, fixtures, and UI share the canonical reducer/projector
   path.
 - The autonomous `demo-live` witness isolates mapped semantic input while its

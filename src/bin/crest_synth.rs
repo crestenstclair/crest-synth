@@ -282,7 +282,7 @@ struct DemoSceneObservation {
 impl DemoSceneObservation {
     fn from_report(report: &DemoSceneReport, two_run_trace_equal: bool) -> Self {
         let records = report.event_log().records();
-        let mut event_variants = [false; 5];
+        let mut event_variants = [false; 8];
         let mut top_level_contexts = Vec::new();
         let mut navigate_directions = Vec::new();
         let mut adjust_directions = Vec::new();
@@ -309,6 +309,9 @@ impl DemoSceneObservation {
                     event_variants[4] = true;
                     push_unique(&mut midi_kinds, message.kind());
                 }
+                EventInput::EnginePrepared { .. } => event_variants[5] = true,
+                EventInput::EnginePreparationFailed { .. } => event_variants[6] = true,
+                EventInput::EngineActivationAcknowledged { .. } => event_variants[7] = true,
             }
         }
 
@@ -671,29 +674,49 @@ fn final_tree_values_are_exact(tree: &Value) -> bool {
 }
 
 fn event_records_are_exact(records: &[crest_synth::control::event_record::EventRecord]) -> bool {
-    records.iter().enumerate().all(|(index, record)| {
+    let mut expected_graph_revision = GraphRevision::INITIAL;
+    for (index, record) in records.iter().enumerate() {
+        if record.outcome() == EventOutcome::Accepted {
+            if let EventInput::EnginePrepared {
+                target_graph_revision,
+                ..
+            } = record.input()
+            {
+                expected_graph_revision = *target_graph_revision;
+            }
+        }
         let sequence_exact = u64::try_from(index) == Ok(record.sequence());
         let projection_exact = record.parameter_generation() == record.generation_after()
             && record.projection_state_hash() == record.state_hash_after();
         let outcome_exact = match record.outcome() {
             EventOutcome::Accepted => {
-                let state_accepted = record.emitted_events().iter().any(|effect| {
-                    matches!(
-                        effect,
-                        EmittedEvent::StateAccepted { generation }
-                            if *generation == record.generation_after()
-                    )
-                });
-                let parameters_published = record.emitted_events().iter().any(|effect| {
-                    matches!(
-                        effect,
-                        EmittedEvent::ParameterSnapshotPublished {
-                            generation,
-                            graph_revision,
-                        } if *generation == record.generation_after()
-                            && *graph_revision == GraphRevision::INITIAL
-                    )
-                });
+                let state_accepted = record
+                    .emitted_events()
+                    .iter()
+                    .filter(|effect| {
+                        matches!(
+                            effect,
+                            EmittedEvent::StateAccepted { generation }
+                                if *generation == record.generation_after()
+                        )
+                    })
+                    .count()
+                    == 1;
+                let parameters_published = record
+                    .emitted_events()
+                    .iter()
+                    .filter(|effect| {
+                        matches!(
+                            effect,
+                            EmittedEvent::ParameterSnapshotPublished {
+                                generation,
+                                graph_revision,
+                            } if *generation == record.generation_after()
+                                && *graph_revision == expected_graph_revision
+                        )
+                    })
+                    .count()
+                    == 1;
                 record.rejection().is_none()
                     && state_accepted
                     && parameters_published
@@ -707,8 +730,11 @@ fn event_records_are_exact(records: &[crest_synth::control::event_record::EventR
                     && record.state_hash_before() == record.state_hash_after()
             }
         };
-        sequence_exact && projection_exact && outcome_exact
-    })
+        if !sequence_exact || !projection_exact || !outcome_exact {
+            return false;
+        }
+    }
+    true
 }
 
 fn prefixed_expected_are_exercised(

@@ -1,5 +1,8 @@
+use crate::adapter::threaded_graph_preparation_worker::{
+    ThreadedGraphPreparationWorker, ThreadedGraphPreparationWorkerError,
+};
 use crate::control::app_event::{AppEvent, Direction};
-use crate::control::app_loop::AppLoop;
+use crate::control::app_loop::{AppLoop, StructuralAdvanceError};
 use crate::control::app_state::{AppState, EventRejection};
 use crate::control::event_log::EventLog;
 use crate::control::event_record::{EventInput, EventSource};
@@ -20,16 +23,15 @@ use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters}
 use crate::real_time::prepared_graph::PreparedGraph;
 use crate::real_time::prepared_graph_builder::{GraphPreparationError, PreparedGraphBuilder};
 use crate::real_time::structural_graph_boundary::{
-    AudioStructuralGraphBoundary, ControlStructuralGraphBoundary, StructuralGraphBoundary,
+    AudioStructuralGraphBoundary, StructuralGraphBoundary,
 };
-use crate::real_time::structural_graph_coordinator::StructuralGraphCoordinator;
 use crate::shell::app_window::{
     AppInputCallback, AppWindow, ProjectionCallback, TickCallback, WindowError,
 };
 use crate::shell::audio_device_status::{AudioDeviceStatusBoundary, AudioDeviceStatusReader};
 use crate::shell::audio_output::{
-    AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput, AudioOutputError,
-    AudioRenderCallback, AudioStream, NegotiatedAudioOutput,
+    AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
+    AudioOutputError, AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
 };
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
@@ -38,15 +40,16 @@ use crate::synth::instrument_composition::{
 };
 use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
 use crate::synth::patch::Patch;
-use crate::synth::VoicePolicy;
+use crate::synth::{DescriptorDefaultConfigFactory, VoicePolicy};
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::demo_scene::{DemoScene, DemoSceneError};
 use crate::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport, DemoSceneReportError};
 use crate::testing::exhaustive_gui_demo::{ExhaustiveGuiDemo, ExhaustiveGuiDemoError};
 use crate::testing::midi_event_source::MidiEventSource;
 use crate::testing::{
-    LiveDemoCheckpoint, LiveDemoError, LiveDemoReport, LiveDemoRunner, LiveDemoScene,
-    LiveDemoSceneError, RuntimeAudioWitness,
+    DeterministicGraphPreparationHandle, DeterministicGraphPreparationWorker, LiveCheckpoint,
+    LiveDemoError, LiveDemoReport, LiveDemoRunner, LiveDemoScene, LiveDemoSceneError,
+    RuntimeAudioWitness,
 };
 use core::fmt;
 use serde::Serialize;
@@ -159,6 +162,8 @@ pub enum ApplicationError {
     InstrumentComposition(InstrumentCompositionError),
     Instrument(InstrumentPreparationError),
     Graph(GraphPreparationError),
+    GraphWorker(ThreadedGraphPreparationWorkerError),
+    Structural(StructuralAdvanceError),
     StateProjection(StateProjectionError),
     TestInput(TestInputError),
     DemoScene(DemoSceneError),
@@ -187,6 +192,8 @@ impl fmt::Display for ApplicationError {
             }
             Self::Instrument(error) => write!(formatter, "instrument preparation failed: {error}"),
             Self::Graph(error) => write!(formatter, "prepared graph setup failed: {error}"),
+            Self::GraphWorker(error) => write!(formatter, "graph worker setup failed: {error}"),
+            Self::Structural(error) => write!(formatter, "structural control failed: {error}"),
             Self::StateProjection(error) => {
                 write!(formatter, "initial control projection failed: {error}")
             }
@@ -231,6 +238,8 @@ impl std::error::Error for ApplicationError {
             Self::InstrumentComposition(error) => Some(error),
             Self::Instrument(error) => Some(error),
             Self::Graph(error) => Some(error),
+            Self::GraphWorker(error) => Some(error),
+            Self::Structural(error) => Some(error),
             Self::StateProjection(error) => Some(error),
             Self::TestInput(error) => Some(error),
             Self::DemoScene(error) => Some(error),
@@ -261,6 +270,18 @@ impl From<InstrumentPreparationError> for ApplicationError {
 impl From<GraphPreparationError> for ApplicationError {
     fn from(error: GraphPreparationError) -> Self {
         Self::Graph(error)
+    }
+}
+
+impl From<ThreadedGraphPreparationWorkerError> for ApplicationError {
+    fn from(error: ThreadedGraphPreparationWorkerError) -> Self {
+        Self::GraphWorker(error)
+    }
+}
+
+impl From<StructuralAdvanceError> for ApplicationError {
+    fn from(error: StructuralAdvanceError) -> Self {
+        Self::Structural(error)
     }
 }
 
@@ -395,11 +416,10 @@ impl<Boundary, Structural, Observation, Source, Window, Output>
     }
 }
 
-struct PreparedStartup<Control, Audio, StructuralControl, StructuralAudio, Source>
+struct PreparedStartup<Control, Audio, StructuralAudio, Source>
 where
     Control: ControlAudioBoundary,
     Audio: AudioThreadBoundary,
-    StructuralControl: ControlStructuralGraphBoundary,
     StructuralAudio: AudioStructuralGraphBoundary,
     Source: MidiEventSource,
 {
@@ -407,8 +427,8 @@ where
     automatic: AutomaticMidiTest<Source>,
     audio_boundary: Audio,
     structural_audio: StructuralAudio,
-    structural_coordinator: StructuralGraphCoordinator<StructuralControl>,
     initial_graph: PreparedGraph,
+    deterministic_worker: Option<DeterministicGraphPreparationHandle>,
     parsed_soundfont_banks: usize,
     prepared_instruments: usize,
     capability_composition: CapabilityCompositionObservation,
@@ -417,15 +437,30 @@ where
 type PreparedStartupFor<Boundary, Structural, Source> = PreparedStartup<
     <Boundary as AudioBoundary>::ControlHandle,
     <Boundary as AudioBoundary>::AudioHandle,
-    <Structural as StructuralGraphBoundary>::ControlHandle,
     <Structural as StructuralGraphBoundary>::AudioHandle,
     Source,
 >;
 
 struct StartupPlan {
-    sample_rate: f32,
-    max_frames: usize,
+    audio_config: AudioDeviceConfig,
     event_log: Option<EventLog>,
+    worker: StartupWorker,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupWorker {
+    Threaded,
+    Deterministic,
+}
+
+fn configured_audio(config: ApplicationConfig) -> AudioDeviceConfig {
+    AudioDeviceConfig::new(
+        config.sample_rate(),
+        2,
+        AudioSampleFormat::F32,
+        config.max_frames(),
+    )
+    .expect("the validated standalone configuration defines supported stereo f32 audio")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -482,6 +517,7 @@ fn prepare_startup<Boundary, Structural, Source>(
 where
     Boundary: AudioBoundary,
     Structural: StructuralGraphBoundary,
+    Structural::ControlHandle: 'static,
     Source: MidiEventSource,
 {
     let InstrumentRuntimeComposition {
@@ -491,7 +527,7 @@ where
     } = instruments;
     let revision = GraphRevision::INITIAL;
     let (control_boundary, audio_boundary) = boundary.into_handles();
-    let state = AppState::new(capabilities.clone(), config.global_parameters());
+    let state = AppState::for_graph(capabilities.clone(), config.global_parameters(), revision);
     let projector = StateProjector::for_graph(revision);
     let mut app_loop = match plan.event_log {
         Some(event_log) => AppLoop::with_event_log(state, projector, control_boundary, event_log)?,
@@ -508,23 +544,52 @@ where
         revision,
         app_loop.patches(),
         *app_loop.current_parameters(),
-        plan.sample_rate,
-        plan.max_frames,
+        plan.audio_config.sample_rate(),
+        plan.audio_config.render_capacity_frames(),
     )?;
     let (structural_control, structural_audio) = structural.into_handles();
-    let structural_coordinator =
-        StructuralGraphCoordinator::new(structural_control, &initial_graph);
     let prepared_instruments = initial_graph.engine_rack().patch_count();
     let capability_composition =
         observe_capability_composition(app_loop.capabilities(), app_loop.patches());
+    let factory = DescriptorDefaultConfigFactory::new(capabilities.clone(), providers);
+    let deterministic_worker = match plan.worker {
+        StartupWorker::Threaded => {
+            let worker =
+                ThreadedGraphPreparationWorker::new(capabilities, preparers, plan.audio_config)?;
+            app_loop.configure_engine_selection(
+                factory,
+                worker,
+                structural_control,
+                &initial_graph,
+                plan.audio_config,
+            )?;
+            None
+        }
+        StartupWorker::Deterministic => {
+            let worker = DeterministicGraphPreparationWorker::new(
+                capabilities,
+                preparers,
+                plan.audio_config,
+            );
+            let handle = worker.advance_handle();
+            app_loop.configure_engine_selection(
+                factory,
+                worker,
+                structural_control,
+                &initial_graph,
+                plan.audio_config,
+            )?;
+            Some(handle)
+        }
+    };
 
     Ok(PreparedStartup {
         app_loop,
         automatic,
         audio_boundary,
         structural_audio,
-        structural_coordinator,
         initial_graph,
+        deterministic_worker,
         parsed_soundfont_banks,
         prepared_instruments,
         capability_composition,
@@ -568,7 +633,6 @@ where
             mut automatic,
             audio_boundary,
             structural_audio,
-            structural_coordinator,
             initial_graph,
             ..
         } = prepare_startup(
@@ -578,9 +642,9 @@ where
             source,
             config,
             StartupPlan {
-                sample_rate: device_config.sample_rate(),
-                max_frames: device_config.render_capacity_frames(),
+                audio_config: device_config,
                 event_log: None,
+                worker: StartupWorker::Threaded,
             },
         )?;
         let (observation_writer, _observation_reader) = observation.into_handles();
@@ -601,7 +665,6 @@ where
         let runtime = Rc::new(RefCell::new(ControlRuntime {
             automatic,
             app_loop,
-            structural_coordinator,
             device_status,
             error: None,
         }));
@@ -612,7 +675,12 @@ where
         let window_result = window.run(on_input, projection, on_tick);
         let runtime_error = runtime.borrow_mut().error.take();
         drop(audio_stream);
+        let shutdown_result = runtime
+            .borrow_mut()
+            .app_loop
+            .shutdown_engine_selection_on_control();
         window_result?;
+        shutdown_result?;
 
         if let Some(error) = runtime_error {
             return Err(error);
@@ -628,7 +696,7 @@ where
         on_complete: OnComplete,
     ) -> Result<(), ApplicationError>
     where
-        OnCheckpoint: FnMut(&LiveDemoCheckpoint) + 'static,
+        OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
         OnComplete: FnOnce(&LiveDemoReport) + 'static,
     {
         let Self {
@@ -650,11 +718,11 @@ where
             mut automatic,
             audio_boundary,
             structural_audio,
-            structural_coordinator,
             initial_graph,
             parsed_soundfont_banks,
             prepared_instruments,
             capability_composition,
+            ..
         } = prepare_startup(
             boundary,
             instruments,
@@ -662,9 +730,9 @@ where
             source,
             config,
             StartupPlan {
-                sample_rate: device_config.sample_rate(),
-                max_frames: device_config.render_capacity_frames(),
+                audio_config: device_config,
                 event_log: Some(event_log),
+                worker: StartupWorker::Threaded,
             },
         )?;
         let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())?;
@@ -682,6 +750,7 @@ where
             capability_composition.braids_patches,
             capability_composition.alternating_capabilities,
             initial_graph.revision(),
+            0,
             0,
         );
         let mut renderer = AudioRenderer::with_observation(
@@ -702,7 +771,6 @@ where
         let runtime = Rc::new(RefCell::new(LiveControlRuntime {
             runner,
             app_loop,
-            structural_coordinator,
             device_status,
             on_checkpoint,
             on_complete: Some(on_complete),
@@ -735,7 +803,12 @@ where
             runtime.error.take()
         };
         drop(audio_stream);
+        let shutdown_result = runtime
+            .borrow_mut()
+            .app_loop
+            .shutdown_engine_selection_on_control();
         window_result?;
+        shutdown_result?;
 
         if let Some(error) = runtime_error {
             return Err(error);
@@ -767,8 +840,8 @@ where
             mut automatic,
             audio_boundary,
             structural_audio,
-            mut structural_coordinator,
             initial_graph,
+            deterministic_worker,
             ..
         } = prepare_startup(
             boundary,
@@ -777,9 +850,9 @@ where
             source,
             config,
             StartupPlan {
-                sample_rate: config.sample_rate(),
-                max_frames: config.max_frames(),
+                audio_config: configured_audio(config),
                 event_log: Some(event_log),
+                worker: StartupWorker::Deterministic,
             },
         )?;
         let (observation_writer, _observation_reader) = observation.into_handles();
@@ -791,7 +864,7 @@ where
         );
         automatic.start()?;
         automatic.tick(Duration::from_millis(20), &mut app_loop)?;
-        structural_coordinator.poll();
+        app_loop.advance_structural()?;
         app_loop.dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::System)?;
         app_loop.dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::System)?;
 
@@ -811,8 +884,16 @@ where
             .ok_or(ApplicationError::ObservationOverflow)?;
         let mut audio_buffer = vec![0.0; sample_count];
 
-        let mut demo = ExhaustiveGuiDemo::new(&mut app_loop, &mut renderer, &mut audio_buffer);
+        let mut demo = ExhaustiveGuiDemo::new_with_worker(
+            &mut app_loop,
+            &mut renderer,
+            &mut audio_buffer,
+            deterministic_worker.expect("deterministic startup returns its worker handle"),
+        );
         let report = demo.run(scene)?;
+        drop(demo);
+        drop(renderer);
+        app_loop.shutdown_engine_selection_on_control()?;
         apply_demo_degenerate(report, degenerate).map_err(ApplicationError::from)
     }
 
@@ -838,11 +919,11 @@ where
             mut automatic,
             audio_boundary,
             structural_audio,
-            mut structural_coordinator,
             initial_graph,
             parsed_soundfont_banks,
             prepared_instruments,
             capability_composition,
+            ..
         } = prepare_startup(
             boundary,
             instruments,
@@ -850,9 +931,9 @@ where
             source,
             config,
             StartupPlan {
-                sample_rate: config.sample_rate(),
-                max_frames: config.max_frames(),
+                audio_config: configured_audio(config),
                 event_log: None,
+                worker: StartupWorker::Threaded,
             },
         )?;
         let (observation_writer, _observation_reader) = observation.into_handles();
@@ -883,7 +964,7 @@ where
             .ok_or(ApplicationError::ObservationOverflow)?;
         let mut output = vec![0.0; sample_count];
         renderer.render(&mut output);
-        structural_coordinator.poll();
+        app_loop.advance_structural()?;
         let raw_parameters = *app_loop.current_parameters();
         let patch_audio = renderer.active_patch_audio();
 
@@ -1027,7 +1108,7 @@ where
         for _ in 0..SMOKE_TICK_COUNT {
             automatic.tick(SMOKE_TICK_DURATION, &mut app_loop)?;
             renderer.render(&mut output);
-            structural_coordinator.poll();
+            app_loop.advance_structural()?;
             if !audio_is_degenerate {
                 for sample in output.iter().copied() {
                     peak = peak.max(sample.abs());
@@ -1048,7 +1129,7 @@ where
         let engine_consumed_value =
             parameter_published && edited_patch_audio_changed && audio_changed;
 
-        Ok(SmokeObservation {
+        let observation = SmokeObservation {
             active_graph_revision: renderer.active_revision().value(),
             audio_changed,
             automatic_midi,
@@ -1078,7 +1159,10 @@ where
             state_roundtrip,
             text_matches_state,
             unedited_patch_audio_unchanged,
-        })
+        };
+        drop(renderer);
+        app_loop.shutdown_engine_selection_on_control()?;
+        Ok(observation)
     }
 }
 
@@ -1347,24 +1431,21 @@ where
     )
 }
 
-struct ControlRuntime<Source, Boundary, StructuralControl>
+struct ControlRuntime<Source, Boundary>
 where
     Source: MidiEventSource,
     Boundary: ControlAudioBoundary,
-    StructuralControl: ControlStructuralGraphBoundary,
 {
     automatic: AutomaticMidiTest<Source>,
     app_loop: AppLoop<Boundary>,
-    structural_coordinator: StructuralGraphCoordinator<StructuralControl>,
     device_status: AudioDeviceStatusReader,
     error: Option<ApplicationError>,
 }
 
-impl<Source, Boundary, StructuralControl> ControlRuntime<Source, Boundary, StructuralControl>
+impl<Source, Boundary> ControlRuntime<Source, Boundary>
 where
     Source: MidiEventSource,
     Boundary: ControlAudioBoundary,
-    StructuralControl: ControlStructuralGraphBoundary,
 {
     fn record_error(&mut self, error: ApplicationError) {
         if self.error.is_none() {
@@ -1373,13 +1454,12 @@ where
     }
 }
 
-fn input_callback<Source, Boundary, StructuralControl>(
-    runtime: Rc<RefCell<ControlRuntime<Source, Boundary, StructuralControl>>>,
+fn input_callback<Source, Boundary>(
+    runtime: Rc<RefCell<ControlRuntime<Source, Boundary>>>,
 ) -> AppInputCallback
 where
     Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
-    StructuralControl: ControlStructuralGraphBoundary + 'static,
 {
     Box::new(move |event| {
         let mut runtime = runtime.borrow_mut();
@@ -1398,24 +1478,22 @@ where
     })
 }
 
-fn projection_callback<Source, Boundary, StructuralControl>(
-    runtime: Rc<RefCell<ControlRuntime<Source, Boundary, StructuralControl>>>,
+fn projection_callback<Source, Boundary>(
+    runtime: Rc<RefCell<ControlRuntime<Source, Boundary>>>,
 ) -> ProjectionCallback
 where
     Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
-    StructuralControl: ControlStructuralGraphBoundary + 'static,
 {
     Box::new(move || runtime.borrow().app_loop.current_text())
 }
 
-fn tick_callback<Source, Boundary, StructuralControl>(
-    runtime: Rc<RefCell<ControlRuntime<Source, Boundary, StructuralControl>>>,
+fn tick_callback<Source, Boundary>(
+    runtime: Rc<RefCell<ControlRuntime<Source, Boundary>>>,
 ) -> TickCallback
 where
     Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
-    StructuralControl: ControlStructuralGraphBoundary + 'static,
 {
     Box::new(move |elapsed| {
         let mut runtime = runtime.borrow_mut();
@@ -1430,11 +1508,13 @@ where
         let ControlRuntime {
             automatic,
             app_loop,
-            structural_coordinator,
             device_status: _,
             error,
         } = &mut *runtime;
-        structural_coordinator.poll();
+        if let Err(failure) = app_loop.advance_structural() {
+            *error = Some(failure.into());
+            return false;
+        }
         if let Err(failure) = automatic.tick(elapsed, app_loop) {
             *error = Some(failure.into());
         }
@@ -1442,24 +1522,16 @@ where
     })
 }
 
-struct LiveControlRuntime<
-    Source,
-    Boundary,
-    StructuralControl,
-    Observation,
-    OnCheckpoint,
-    OnComplete,
-> where
+struct LiveControlRuntime<Source, Boundary, Observation, OnCheckpoint, OnComplete>
+where
     Source: MidiEventSource,
     Boundary: ControlAudioBoundary,
-    StructuralControl: ControlStructuralGraphBoundary,
     Observation: ControlAudioObservation,
-    OnCheckpoint: FnMut(&LiveDemoCheckpoint),
+    OnCheckpoint: FnMut(&LiveCheckpoint),
     OnComplete: FnOnce(&LiveDemoReport),
 {
     runner: LiveDemoRunner<Source, Observation>,
     app_loop: AppLoop<Boundary>,
-    structural_coordinator: StructuralGraphCoordinator<StructuralControl>,
     device_status: AudioDeviceStatusReader,
     on_checkpoint: OnCheckpoint,
     on_complete: Option<OnComplete>,
@@ -1467,68 +1539,34 @@ struct LiveControlRuntime<
     error: Option<ApplicationError>,
 }
 
-type SharedLiveRuntime<Source, Boundary, StructuralControl, Observation, OnCheckpoint, OnComplete> =
-    Rc<
-        RefCell<
-            LiveControlRuntime<
-                Source,
-                Boundary,
-                StructuralControl,
-                Observation,
-                OnCheckpoint,
-                OnComplete,
-            >,
-        >,
-    >;
+type SharedLiveRuntime<Source, Boundary, Observation, OnCheckpoint, OnComplete> =
+    Rc<RefCell<LiveControlRuntime<Source, Boundary, Observation, OnCheckpoint, OnComplete>>>;
 
 fn live_input_sink() -> AppInputCallback {
     Box::new(|_event| {})
 }
 
-fn live_projection_callback<
-    Source,
-    Boundary,
-    StructuralControl,
-    Observation,
-    OnCheckpoint,
-    OnComplete,
->(
-    runtime: SharedLiveRuntime<
-        Source,
-        Boundary,
-        StructuralControl,
-        Observation,
-        OnCheckpoint,
-        OnComplete,
-    >,
+fn live_projection_callback<Source, Boundary, Observation, OnCheckpoint, OnComplete>(
+    runtime: SharedLiveRuntime<Source, Boundary, Observation, OnCheckpoint, OnComplete>,
 ) -> ProjectionCallback
 where
     Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
-    StructuralControl: ControlStructuralGraphBoundary + 'static,
     Observation: ControlAudioObservation + 'static,
-    OnCheckpoint: FnMut(&LiveDemoCheckpoint) + 'static,
+    OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
     OnComplete: FnOnce(&LiveDemoReport) + 'static,
 {
     Box::new(move || runtime.borrow().app_loop.current_text())
 }
 
-fn live_tick_callback<Source, Boundary, StructuralControl, Observation, OnCheckpoint, OnComplete>(
-    runtime: SharedLiveRuntime<
-        Source,
-        Boundary,
-        StructuralControl,
-        Observation,
-        OnCheckpoint,
-        OnComplete,
-    >,
+fn live_tick_callback<Source, Boundary, Observation, OnCheckpoint, OnComplete>(
+    runtime: SharedLiveRuntime<Source, Boundary, Observation, OnCheckpoint, OnComplete>,
 ) -> TickCallback
 where
     Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
-    StructuralControl: ControlStructuralGraphBoundary + 'static,
     Observation: ControlAudioObservation + 'static,
-    OnCheckpoint: FnMut(&LiveDemoCheckpoint) + 'static,
+    OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
     OnComplete: FnOnce(&LiveDemoReport) + 'static,
 {
     Box::new(move |elapsed| {
@@ -1544,14 +1582,16 @@ where
         let LiveControlRuntime {
             runner,
             app_loop,
-            structural_coordinator,
             device_status: _,
             on_checkpoint,
             on_complete,
             completion_emitted,
             error,
         } = &mut *runtime;
-        structural_coordinator.poll();
+        if let Err(failure) = app_loop.advance_structural() {
+            *error = Some(failure.into());
+            return false;
+        }
         match runner.advance(elapsed, app_loop) {
             Ok(Some(checkpoint)) => on_checkpoint(&checkpoint),
             Ok(None) => {}
@@ -1605,6 +1645,7 @@ fn channels_are_round_robin(text: &str) -> bool {
 mod tests {
     use super::{ApplicationConfig, DegenerateMode, StandaloneApplication};
     use crate::adapter::atomic_audio_observation::AtomicAudioObservation;
+    use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
     use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
     use crate::control::app_event::{AppEvent, Direction};
@@ -1713,7 +1754,10 @@ mod tests {
         }
 
         fn prepared_shared_asset_count(&self) -> usize {
-            1
+            usize::from(
+                self.capability_id.as_str()
+                    == crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
+            )
         }
 
         fn prepare(
@@ -1980,6 +2024,7 @@ mod tests {
                     let mut buffer = [0.0_f32; 32];
                     render(&mut buffer);
                 }
+                std::thread::yield_now();
                 last_rendered_projection = projection();
             }
             Err(WindowError::new(
@@ -2017,20 +2062,29 @@ mod tests {
         .unwrap()
     }
 
-    fn preparer(state: Arc<Mutex<EngineState>>) -> TestPreparer {
+    fn preparer_for(state: Arc<Mutex<EngineState>>, capability_id: &str) -> TestPreparer {
         state.lock().unwrap().preparer_instances += 1;
         TestPreparer {
             state,
-            capability_id: CapabilityId::new("instrument.soundfont.hidef").unwrap(),
+            capability_id: CapabilityId::new(capability_id).unwrap(),
         }
     }
 
     fn providers() -> Vec<Box<dyn InstrumentCapabilityProvider>> {
-        vec![Box::new(HiDefSoundFontCapability::new().unwrap())]
+        vec![
+            Box::new(HiDefSoundFontCapability::new().unwrap()),
+            Box::new(BraidsCapability::new().unwrap()),
+        ]
     }
 
     fn preparers(state: Arc<Mutex<EngineState>>) -> Vec<Box<dyn InstrumentPreparer>> {
-        vec![Box::new(preparer(state))]
+        vec![
+            Box::new(preparer_for(
+                Arc::clone(&state),
+                "instrument.soundfont.hidef",
+            )),
+            Box::new(preparer_for(state, BRAIDS_CAPABILITY_ID)),
+        ]
     }
 
     fn structural_boundary() -> LockFreeStructuralGraphBoundary {
@@ -2167,7 +2221,7 @@ mod tests {
         .unwrap();
 
         let engine_state = engine_state.lock().unwrap();
-        assert_eq!(engine_state.preparer_instances, 1);
+        assert_eq!(engine_state.preparer_instances, 2);
         assert_eq!(engine_state.prepared, 2);
         let projection = projection.lock().unwrap();
         let body = projection.as_ref().unwrap().body();

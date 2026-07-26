@@ -1,7 +1,9 @@
 use crate::control::top_level_context::TopLevelContext;
+use crate::control::{EngineSelectionFailure, EngineSelectionRequestId};
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
-use crate::synth::patch::Patch;
+use crate::real_time::GraphRevision;
+use crate::synth::{CapabilityId, InstrumentConfig, Patch};
 
 /// A semantic direction emitted by an input adapter.
 ///
@@ -28,6 +30,12 @@ pub enum AppEventPayloadShape {
     PatchList,
     PatchId,
     MidiMessage,
+    EngineSelectionRequestId,
+    CapabilityId,
+    GraphRevision,
+    InstrumentConfig,
+    EngineSelectionFailure,
+    Boolean,
 }
 
 /// One typed entry in the exhaustive application-event surface.
@@ -52,9 +60,33 @@ pub enum AppEventSurfaceDescriptor {
         patch_id: AppEventPayloadShape,
         message: AppEventPayloadShape,
     },
+    EnginePrepared {
+        request_id: AppEventPayloadShape,
+        patch_id: AppEventPayloadShape,
+        source_capability_id: AppEventPayloadShape,
+        target_capability_id: AppEventPayloadShape,
+        source_graph_revision: AppEventPayloadShape,
+        target_graph_revision: AppEventPayloadShape,
+        candidate_config: AppEventPayloadShape,
+    },
+    EnginePreparationFailed {
+        request_id: AppEventPayloadShape,
+        patch_id: AppEventPayloadShape,
+        source_capability_id: AppEventPayloadShape,
+        target_capability_id: AppEventPayloadShape,
+        source_graph_revision: AppEventPayloadShape,
+        target_graph_revision: AppEventPayloadShape,
+        failure: AppEventPayloadShape,
+    },
+    EngineActivationAcknowledged {
+        request_id: AppEventPayloadShape,
+        target_graph_revision: AppEventPayloadShape,
+        retired_graph_revision: AppEventPayloadShape,
+        collected: AppEventPayloadShape,
+    },
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 12] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 15] = [
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
@@ -92,6 +124,30 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 12] = [
         patch_id: AppEventPayloadShape::PatchId,
         message: AppEventPayloadShape::MidiMessage,
     },
+    AppEventSurfaceDescriptor::EnginePrepared {
+        request_id: AppEventPayloadShape::EngineSelectionRequestId,
+        patch_id: AppEventPayloadShape::PatchId,
+        source_capability_id: AppEventPayloadShape::CapabilityId,
+        target_capability_id: AppEventPayloadShape::CapabilityId,
+        source_graph_revision: AppEventPayloadShape::GraphRevision,
+        target_graph_revision: AppEventPayloadShape::GraphRevision,
+        candidate_config: AppEventPayloadShape::InstrumentConfig,
+    },
+    AppEventSurfaceDescriptor::EnginePreparationFailed {
+        request_id: AppEventPayloadShape::EngineSelectionRequestId,
+        patch_id: AppEventPayloadShape::PatchId,
+        source_capability_id: AppEventPayloadShape::CapabilityId,
+        target_capability_id: AppEventPayloadShape::CapabilityId,
+        source_graph_revision: AppEventPayloadShape::GraphRevision,
+        target_graph_revision: AppEventPayloadShape::GraphRevision,
+        failure: AppEventPayloadShape::EngineSelectionFailure,
+    },
+    AppEventSurfaceDescriptor::EngineActivationAcknowledged {
+        request_id: AppEventPayloadShape::EngineSelectionRequestId,
+        target_graph_revision: AppEventPayloadShape::GraphRevision,
+        retired_graph_revision: AppEventPayloadShape::GraphRevision,
+        collected: AppEventPayloadShape::Boolean,
+    },
 ];
 /// The closed semantic input union accepted by the application reducer.
 ///
@@ -115,6 +171,33 @@ pub enum AppEvent {
     Midi {
         patch_id: PatchId,
         message: MidiMessage,
+    },
+    /// Commits one provider-validated candidate after off-callback preparation.
+    EnginePrepared {
+        request_id: EngineSelectionRequestId,
+        patch_id: PatchId,
+        source_capability_id: CapabilityId,
+        target_capability_id: CapabilityId,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+        candidate_config: InstrumentConfig,
+    },
+    /// Records one correlated typed preparation failure without adapter detail.
+    EnginePreparationFailed {
+        request_id: EngineSelectionRequestId,
+        patch_id: PatchId,
+        source_capability_id: CapabilityId,
+        target_capability_id: CapabilityId,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+        failure: EngineSelectionFailure,
+    },
+    /// Reaches Ready only after activation, retirement, and control collection.
+    EngineActivationAcknowledged {
+        request_id: EngineSelectionRequestId,
+        target_graph_revision: GraphRevision,
+        retired_graph_revision: GraphRevision,
+        collected: bool,
     },
 }
 
@@ -146,6 +229,34 @@ impl AppEvent {
                 patch_id: AppEventPayloadShape::PatchId,
                 message: AppEventPayloadShape::MidiMessage,
             },
+            Self::EnginePrepared { .. } => AppEventSurfaceDescriptor::EnginePrepared {
+                request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                patch_id: AppEventPayloadShape::PatchId,
+                source_capability_id: AppEventPayloadShape::CapabilityId,
+                target_capability_id: AppEventPayloadShape::CapabilityId,
+                source_graph_revision: AppEventPayloadShape::GraphRevision,
+                target_graph_revision: AppEventPayloadShape::GraphRevision,
+                candidate_config: AppEventPayloadShape::InstrumentConfig,
+            },
+            Self::EnginePreparationFailed { .. } => {
+                AppEventSurfaceDescriptor::EnginePreparationFailed {
+                    request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                    patch_id: AppEventPayloadShape::PatchId,
+                    source_capability_id: AppEventPayloadShape::CapabilityId,
+                    target_capability_id: AppEventPayloadShape::CapabilityId,
+                    source_graph_revision: AppEventPayloadShape::GraphRevision,
+                    target_graph_revision: AppEventPayloadShape::GraphRevision,
+                    failure: AppEventPayloadShape::EngineSelectionFailure,
+                }
+            }
+            Self::EngineActivationAcknowledged { .. } => {
+                AppEventSurfaceDescriptor::EngineActivationAcknowledged {
+                    request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                    target_graph_revision: AppEventPayloadShape::GraphRevision,
+                    retired_graph_revision: AppEventPayloadShape::GraphRevision,
+                    collected: AppEventPayloadShape::Boolean,
+                }
+            }
         }
     }
 }
@@ -195,7 +306,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 12);
+        assert_eq!(descriptor.len(), 15);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
@@ -226,6 +337,36 @@ mod tests {
             patch_id: AppEventPayloadShape::PatchId,
             message: AppEventPayloadShape::MidiMessage,
         }));
+        assert!(
+            descriptor.contains(&AppEventSurfaceDescriptor::EnginePrepared {
+                request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                patch_id: AppEventPayloadShape::PatchId,
+                source_capability_id: AppEventPayloadShape::CapabilityId,
+                target_capability_id: AppEventPayloadShape::CapabilityId,
+                source_graph_revision: AppEventPayloadShape::GraphRevision,
+                target_graph_revision: AppEventPayloadShape::GraphRevision,
+                candidate_config: AppEventPayloadShape::InstrumentConfig,
+            })
+        );
+        assert!(
+            descriptor.contains(&AppEventSurfaceDescriptor::EnginePreparationFailed {
+                request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                patch_id: AppEventPayloadShape::PatchId,
+                source_capability_id: AppEventPayloadShape::CapabilityId,
+                target_capability_id: AppEventPayloadShape::CapabilityId,
+                source_graph_revision: AppEventPayloadShape::GraphRevision,
+                target_graph_revision: AppEventPayloadShape::GraphRevision,
+                failure: AppEventPayloadShape::EngineSelectionFailure,
+            })
+        );
+        assert!(
+            descriptor.contains(&AppEventSurfaceDescriptor::EngineActivationAcknowledged {
+                request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                target_graph_revision: AppEventPayloadShape::GraphRevision,
+                retired_graph_revision: AppEventPayloadShape::GraphRevision,
+                collected: AppEventPayloadShape::Boolean,
+            })
+        );
     }
 
     #[test]

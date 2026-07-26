@@ -96,6 +96,8 @@ fn insert_sorted_unique(values: &mut Vec<String>, value: String) -> bool {
 pub enum EventLogError {
     ZeroCapacity,
     ObservationOverflow,
+    EffectRecordUnavailable { sequence: u64 },
+    DuplicateStructuralEffect { sequence: u64 },
     SequenceMismatch { expected: u64, actual: u64 },
     GenerationChainMismatch { expected: u64, actual: u64 },
     StateHashChainMismatch { expected: String, actual: String },
@@ -108,6 +110,14 @@ impl fmt::Display for EventLogError {
             Self::ObservationOverflow => {
                 formatter.write_str("event log observation count cannot exceed u64::MAX")
             }
+            Self::EffectRecordUnavailable { sequence } => write!(
+                formatter,
+                "event record {sequence} is unavailable for its structural effect"
+            ),
+            Self::DuplicateStructuralEffect { sequence } => write!(
+                formatter,
+                "event record {sequence} already contains that structural effect"
+            ),
             Self::SequenceMismatch { expected, actual } => write!(
                 formatter,
                 "event record sequence must be contiguous: expected {expected}, got {actual}"
@@ -146,7 +156,7 @@ pub struct EventLog {
 
 impl EventLog {
     /// The stable schema version emitted in every serialized log.
-    pub const SCHEMA_VERSION: u32 = 3;
+    pub const SCHEMA_VERSION: u32 = 4;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "totalObserved",
@@ -235,6 +245,22 @@ impl EventLog {
     /// Returns the stable JSON schema version.
     pub const fn schema_version(&self) -> u32 {
         self.schema_version
+    }
+
+    pub(crate) fn append_engine_selection_effect(
+        &mut self,
+        sequence: u64,
+        effect: crate::control::EngineSelectionEffect,
+    ) -> Result<(), EventLogError> {
+        let record = self
+            .records
+            .iter_mut()
+            .find(|record| record.sequence() == sequence)
+            .ok_or(EventLogError::EffectRecordUnavailable { sequence })?;
+        if !record.append_engine_selection_effect(effect) {
+            return Err(EventLogError::DuplicateStructuralEffect { sequence });
+        }
+        Ok(())
     }
 
     /// Returns the configured maximum number of retained records.
@@ -387,7 +413,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&first).unwrap();
 
         assert_eq!(first, second);
-        assert_eq!(json["schemaVersion"], 3);
+        assert_eq!(json["schemaVersion"], EventLog::SCHEMA_VERSION);
         assert_eq!(json["droppedRecords"], 0);
         assert_eq!(json["totalObserved"], 0);
         assert_eq!(

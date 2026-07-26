@@ -19,30 +19,39 @@ PATCH and MIXER SHALL be the only top-level contexts. Startup SHALL select MIXER
 - **THEN** the event is rejected as no Patches installed, state and generation remain unchanged, and a later valid event remains processable
 
 ### Requirement: Exact descriptor-driven Patch projection
-PATCH SHALL project the focused Patch identity, name, MIDI channel, active CapabilityId and label, every installed engine choice in registry order, the four canonical ADSR values, and every visible active CapabilityDescriptor section and parameter in descriptor order. Rows SHALL retain stable semantic IDs, labels, value kinds, update classes, current typed values or asset references, units, and dependency results. Projection SHALL NOT use a SoundFont-specific or Braids-specific field list or capability-identity branch.
+PATCH SHALL project the focused Patch and active descriptor exactly, plus one stable engine control with registry-ordered choices, active/requested capability, request identity, Ready/Preparing/Activating/Failed status, target revision, editability, and typed failure. Only ready or recoverable-failed Edit+Left/Right SHALL request an adjacent choice; all non-engine rows and directions SHALL remain read-only, and projection SHALL contain no engine-specific branch or runtime owner.
 
 #### Scenario: SoundFont Patch is projected
 - **WHEN** the focused Patch uses `instrument.soundfont.hidef`
-- **THEN** the page contains its exact identity/channel/envelope, both installed registry choices, and the active descriptor's bank, program, percussion, and fixed asset rows as Structural read-only data in descriptor order
+- **THEN** the page contains exact identity, channel, ADSR, both registry choices, one engine row, and bank, program, percussion, and fixed asset rows in descriptor order
 
 #### Scenario: Braids Patch is projected
 - **WHEN** the focused Patch uses `instrument.braids`
-- **THEN** the same projection contract contains its exact identity/channel/envelope, both installed registry choices, and Model, Timbre, and Color from the Braids descriptor exactly once in descriptor order
+- **THEN** the same contract contains exact identity, channel, ADSR, both registry choices, one engine row, and Model, Timbre, and Color exactly once in descriptor order
 
 #### Scenario: Descriptor shape changes
-- **WHEN** a conforming installed descriptor adds, removes, renames, reorders, hides, or disables a parameter
-- **THEN** PATCH follows the production descriptor and active config, and any duplicated stale expected row set fails exact verification
+- **WHEN** a conforming descriptor adds, removes, renames, reorders, hides, or disables a parameter
+- **THEN** PATCH follows the production descriptor and active config and exact schema verification rejects stale duplicated rows
 
-### Requirement: Read-only first Patch-page increment
-Every PATCH identity, routing, engine, ADSR, Scalar, and Structural row SHALL be read-only in this increment. Navigate or Adjust received while PATCH is active SHALL be rejected as `ActionUnavailableInContext` without changing state or generation, preparing an engine, publishing a graph, or selecting a fallback; later context selection SHALL still succeed.
+#### Scenario: Player requests the adjacent installed engine
+- **WHEN** a ready or recoverable-failed engine row receives Edit+Left/Right within registry bounds
+- **THEN** one semantic adjustment enters `AppState::apply`, generation advances to Preparing, and the active config and graph revision remain unchanged
 
-#### Scenario: Adjustment is attempted in PATCH
-- **WHEN** PATCH is active and an Adjust event is reduced
-- **THEN** the typed rejection is recorded, canonical state and every projection generation remain unchanged, no audio or structural effect is emitted, and a following MIXER selection is accepted
+#### Scenario: Player requests beyond a boundary or another PATCH control
+- **WHEN** the choice would wrap or PATCH receives Navigate, Edit+Up/Down, or an edit of MIDI, ADSR, Scalar, or Structural rows
+- **THEN** the typed unchanged rejection starts no preparation, publication, fallback, or alternate PATCH mutation and later valid input remains processable
 
-#### Scenario: Engine choice is inspected
-- **WHEN** the player inspects the engine row and its installed choices
-- **THEN** the active engine and complete registry are visible but no choice can request preparation, replace the instrument, or change the graph
+#### Scenario: Selection is preparing
+- **WHEN** a correlated request awaits worker completion
+- **THEN** PATCH shows the old accepted config as active, the requested choice and Preparing separately, disables another request, and contains no worker or prepared object
+
+#### Scenario: Selection is activating
+- **WHEN** a validated candidate has committed but activation, retirement, or collection is incomplete
+- **THEN** PATCH shows the target as active with Activating and its target revision while preserving Patch identity, channel, mixer route, ADSR, and every untargeted Patch
+
+#### Scenario: Selection fails and recovers
+- **WHEN** matching preparation fails before commit
+- **THEN** PATCH shows the typed failure with unchanged source config and graph, publishes no replacement, and permits a later valid adjacent request without fallback
 
 ### Requirement: Generation-coherent audio-neutral context projection
 An accepted context selection SHALL change only reducer-owned interaction context, accepted generation, and the generation-coherent serialized/view projections. Patch/config/envelope/mixer/global values, stable Patch focus, fixed ParameterSnapshot values and layout, active GraphRevision, MIDI routing, prepared ownership, audio-command count, structural queues, and rendered behavior SHALL remain unchanged. The existing basic window SHALL render exactly one immutable active-context projection and SHALL own no context or Patch-page state.

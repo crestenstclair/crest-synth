@@ -21,6 +21,7 @@ fn state_tree_with_first_config(
     first: InstrumentConfig,
     second: InstrumentConfig,
     context: TopLevelContext,
+    request_engine: bool,
 ) -> StateTree {
     let patches = [first, second]
         .into_iter()
@@ -43,6 +44,11 @@ fn state_tree_with_first_config(
     state.apply(AppEvent::InstallPatches(patches)).unwrap();
     if context == TopLevelContext::Patch {
         state.apply(AppEvent::SelectContext(context)).unwrap();
+    }
+    if request_engine {
+        state
+            .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
+            .unwrap();
     }
     StateProjector::new().project_with_tree(&state).unwrap().4
 }
@@ -83,13 +89,26 @@ fn assert_state_tree_leaf_surface_exact() {
             soundfont_config.clone(),
             braids_config.clone(),
             TopLevelContext::Mixer,
+            false,
         ),
         state_tree_with_first_config(
             soundfont_config.clone(),
             braids_config.clone(),
             TopLevelContext::Patch,
+            false,
         ),
-        state_tree_with_first_config(braids_config, soundfont_config, TopLevelContext::Patch),
+        state_tree_with_first_config(
+            soundfont_config.clone(),
+            braids_config.clone(),
+            TopLevelContext::Patch,
+            true,
+        ),
+        state_tree_with_first_config(
+            braids_config,
+            soundfont_config,
+            TopLevelContext::Patch,
+            false,
+        ),
     ];
     let mut discovered = BTreeSet::new();
     for tree in trees {

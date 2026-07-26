@@ -2,7 +2,8 @@ use crate::kernel::patch_id::PatchId;
 use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::graph_revision::GraphRevision;
-use crate::synth::instrument_capability::MAX_INSTRUMENT_SCALAR_PARAMETERS;
+use crate::synth::instrument_capability::{CapabilityRegistry, MAX_INSTRUMENT_SCALAR_PARAMETERS};
+use crate::synth::patch::Patch;
 use crate::synth::voice_envelope::VoiceEnvelope;
 use core::fmt;
 use serde::{Serialize, Serializer};
@@ -218,6 +219,8 @@ pub enum ParameterSnapshotError {
     TooManyInstrumentScalars { count: usize, capacity: usize },
     /// A scalar could not be represented as a finite real-time value.
     NonFiniteInstrumentScalar { index: usize },
+    /// A Patch config did not resolve through the immutable registry.
+    InvalidInstrumentConfig { index: usize },
 }
 
 impl fmt::Display for ParameterSnapshotError {
@@ -236,6 +239,9 @@ impl fmt::Display for ParameterSnapshotError {
             ),
             Self::NonFiniteInstrumentScalar { index } => {
                 write!(formatter, "instrument Scalar {index} is not finite")
+            }
+            Self::InvalidInstrumentConfig { index } => {
+                write!(formatter, "Patch {index} has an invalid instrument config")
             }
         }
     }
@@ -326,6 +332,58 @@ impl ParameterSnapshot {
             patch_count: patches.len(),
             patches: storage,
         })
+    }
+
+    /// Projects the canonical Patch/config values into the one fixed real-time shape.
+    ///
+    /// Control state projection and off-callback graph preparation share this
+    /// implementation so descriptor ordering and Scalar encoding cannot drift.
+    pub fn project_patches(
+        generation: u64,
+        graph_revision: GraphRevision,
+        global: GlobalParameters,
+        patches: &[Patch],
+        registry: &CapabilityRegistry,
+    ) -> Result<Self, ParameterSnapshotError> {
+        if patches.len() > MAX_PATCHES {
+            return Err(ParameterSnapshotError::TooManyPatches {
+                count: patches.len(),
+                capacity: MAX_PATCHES,
+            });
+        }
+
+        let projected = patches
+            .iter()
+            .enumerate()
+            .map(|(index, patch)| {
+                registry
+                    .validate_config(patch.instrument_config())
+                    .map_err(|_| ParameterSnapshotError::InvalidInstrumentConfig { index })?;
+                let descriptor = registry
+                    .descriptor(patch.instrument_config().capability_id())
+                    .ok_or(ParameterSnapshotError::InvalidInstrumentConfig { index })?;
+                let values = descriptor
+                    .scalar_parameters()
+                    .map(|spec| {
+                        let value = patch
+                            .instrument_config()
+                            .value(spec.id())
+                            .ok_or(ParameterSnapshotError::InvalidInstrumentConfig { index })?;
+                        spec.scalar_value(value)
+                            .map_err(|_| ParameterSnapshotError::InvalidInstrumentConfig { index })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let instrument = RtInstrumentParameters::new(&values)?;
+                Ok(RtPatchParameters::projected(
+                    patch.id(),
+                    *patch.parameters(),
+                    *patch.envelope(),
+                    instrument,
+                ))
+            })
+            .collect::<Result<Vec<_>, ParameterSnapshotError>>()?;
+
+        Self::for_graph(generation, graph_revision, global, &projected)
     }
 
     /// Returns the AppState generation from which this snapshot was projected.

@@ -4,6 +4,7 @@ use crate::control::event_log::EventLog;
 use crate::control::event_record::EventRecord;
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
+use crate::control::{EngineSelectionFailure, EngineSelectionStatusKind};
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
@@ -24,6 +25,7 @@ const TICK_DURATION: Duration = Duration::from_millis(10);
 pub struct DemoCheckpoint {
     name: String,
     expected_last_rejection: Option<EventRejection>,
+    engine: Option<DemoEngineExpectation>,
 }
 
 impl DemoCheckpoint {
@@ -31,6 +33,7 @@ impl DemoCheckpoint {
         Self {
             name: name.into(),
             expected_last_rejection: None,
+            engine: None,
         }
     }
 
@@ -41,6 +44,28 @@ impl DemoCheckpoint {
         Self {
             name: name.into(),
             expected_last_rejection: Some(expected_last_rejection),
+            engine: None,
+        }
+    }
+
+    pub fn engine(
+        name: impl Into<String>,
+        status: EngineSelectionStatusKind,
+        active_capability_id: crate::synth::CapabilityId,
+        requested_capability_id: Option<crate::synth::CapabilityId>,
+        failure: Option<EngineSelectionFailure>,
+        require_target_audio: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            expected_last_rejection: None,
+            engine: Some(DemoEngineExpectation {
+                status,
+                active_capability_id,
+                requested_capability_id,
+                failure,
+                require_target_audio,
+            }),
         }
     }
 
@@ -51,6 +76,54 @@ impl DemoCheckpoint {
     pub const fn expected_last_rejection(&self) -> Option<EventRejection> {
         self.expected_last_rejection
     }
+
+    pub const fn engine_expectation(&self) -> Option<&DemoEngineExpectation> {
+        self.engine.as_ref()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DemoEngineExpectation {
+    status: EngineSelectionStatusKind,
+    active_capability_id: crate::synth::CapabilityId,
+    requested_capability_id: Option<crate::synth::CapabilityId>,
+    failure: Option<EngineSelectionFailure>,
+    require_target_audio: bool,
+}
+
+impl DemoEngineExpectation {
+    pub const fn status(&self) -> EngineSelectionStatusKind {
+        self.status
+    }
+
+    pub const fn active_capability_id(&self) -> &crate::synth::CapabilityId {
+        &self.active_capability_id
+    }
+
+    pub const fn requested_capability_id(&self) -> Option<&crate::synth::CapabilityId> {
+        self.requested_capability_id.as_ref()
+    }
+
+    pub const fn failure(&self) -> Option<EngineSelectionFailure> {
+        self.failure
+    }
+
+    pub const fn require_target_audio(&self) -> bool {
+        self.require_target_audio
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DemoWorkerAdvance {
+    Healthy,
+    Fail(EngineSelectionFailure),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DemoEngineProbe {
+    StaleWorkerFailure,
+    EarlyAcknowledgement,
+    MismatchedAcknowledgement,
 }
 
 /// One semantic MIDI input and the reducer outcome expected from it.
@@ -102,6 +175,9 @@ pub enum DemoSceneStep {
     MidiProbe(MidiProbe),
     AudioCommandProbe(AudioCommand),
     Tick(Duration),
+    AdvanceWorker(DemoWorkerAdvance),
+    AdvanceStructural,
+    EngineProbe(DemoEngineProbe),
     Checkpoint(DemoCheckpoint),
 }
 
@@ -116,7 +192,7 @@ pub struct DemoScene {
 
 impl DemoScene {
     pub const NAME: &'static str = "exhaustive-gui-demo";
-    pub const SCHEMA_VERSION: u32 = 2;
+    pub const SCHEMA_VERSION: u32 = 3;
 
     /// Derives the complete current scene from the accepted fixture Patch list.
     ///
@@ -138,6 +214,22 @@ impl DemoScene {
                 .is_err()
         }) {
             return Err(DemoSceneError::InvalidInstrumentConfig);
+        }
+        if installed_patches[0]
+            .instrument_config()
+            .capability_id()
+            .as_str()
+            != crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID
+            || capabilities
+                .descriptor(
+                    &crate::synth::CapabilityId::new(
+                        crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID,
+                    )
+                    .expect("the production Braids id is valid"),
+                )
+                .is_none()
+        {
+            return Err(DemoSceneError::EngineFixtureUnavailable);
         }
 
         Ok(Self {
@@ -179,6 +271,7 @@ impl DemoScene {
 pub enum DemoSceneError {
     InsufficientPatches { actual: usize },
     InvalidInstrumentConfig,
+    EngineFixtureUnavailable,
 }
 
 impl fmt::Display for DemoSceneError {
@@ -191,6 +284,9 @@ impl fmt::Display for DemoSceneError {
             Self::InvalidInstrumentConfig => {
                 formatter.write_str("installed Patch config does not match the capability registry")
             }
+            Self::EngineFixtureUnavailable => formatter.write_str(
+                "the exhaustive demo requires a first SoundFont Patch and installed Braids capability",
+            ),
         }
     }
 }
@@ -206,7 +302,7 @@ fn build_steps(
     let mut boundary_probed = BTreeSet::new();
     push_checkpoint(&mut steps, DemoCheckpoint::new("scene.start"));
 
-    // Exercise the read-only PATCH context before the exhaustive input sweep.
+    // Exercise the still-unavailable vertical PATCH action before the exhaustive input sweep.
     // Both rejected actions leave its page and generation unchanged, and the
     // direct MIXER key proves the next semantic event is still accepted.
     push_key_press(&mut steps, WindowKey::Digit2);
@@ -221,7 +317,7 @@ fn build_steps(
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
         WindowKey::K,
     )));
-    push_key_press(&mut steps, WindowKey::D);
+    push_key_press(&mut steps, WindowKey::W);
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
         WindowKey::K,
     )));
@@ -318,6 +414,8 @@ fn build_steps(
     push_key_press(&mut steps, WindowKey::D);
     push_checkpoint(&mut steps, DemoCheckpoint::new("selection.restored"));
 
+    push_engine_selection_steps(&mut steps, &patches[0]);
+
     for patch in patches {
         let descriptor = capabilities
             .descriptor(patch.instrument_config().capability_id())
@@ -355,6 +453,231 @@ fn build_steps(
     push_checkpoint(&mut steps, DemoCheckpoint::new("scene.complete"));
 
     steps
+}
+
+fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
+    let soundfont = crate::synth::CapabilityId::new(
+        crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
+    )
+    .expect("the production SoundFont id is valid");
+    let braids =
+        crate::synth::CapabilityId::new(crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID)
+            .expect("the production Braids id is valid");
+
+    push_key_press(steps, WindowKey::Digit2);
+    push_engine_adjustment(steps, WindowKey::A);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            "engine.previous.unavailable",
+            EventRejection::EngineSelectionUnavailable,
+        ),
+    );
+    push_engine_adjustment(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::engine(
+            "engine.forward.preparing",
+            EngineSelectionStatusKind::Preparing,
+            soundfont.clone(),
+            Some(braids.clone()),
+            None,
+            false,
+        ),
+    );
+    push_engine_adjustment(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            "engine.forward.busyRejected",
+            EventRejection::StructuralEditBusy,
+        ),
+    );
+    steps.push(DemoSceneStep::EngineProbe(
+        DemoEngineProbe::StaleWorkerFailure,
+    ));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            "engine.forward.staleRejected",
+            EventRejection::StaleEngineSelection,
+        ),
+    );
+    steps.push(DemoSceneStep::EngineProbe(
+        DemoEngineProbe::EarlyAcknowledgement,
+    ));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            "engine.forward.earlyAckRejected",
+            EventRejection::StaleEngineSelection,
+        ),
+    );
+    push_successful_engine_transition(
+        steps,
+        patch,
+        "engine.forward",
+        braids.clone(),
+        Some(braids.clone()),
+        DemoWorkerAdvance::Healthy,
+    );
+
+    push_engine_adjustment(steps, WindowKey::A);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::engine(
+            "engine.reverse.preparing",
+            EngineSelectionStatusKind::Preparing,
+            braids.clone(),
+            Some(soundfont.clone()),
+            None,
+            false,
+        ),
+    );
+    push_successful_engine_transition(
+        steps,
+        patch,
+        "engine.reverse",
+        soundfont.clone(),
+        Some(soundfont.clone()),
+        DemoWorkerAdvance::Healthy,
+    );
+
+    push_engine_adjustment(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::engine(
+            "engine.failure.preparing",
+            EngineSelectionStatusKind::Preparing,
+            soundfont.clone(),
+            Some(braids.clone()),
+            None,
+            false,
+        ),
+    );
+    steps.push(DemoSceneStep::AdvanceWorker(DemoWorkerAdvance::Fail(
+        EngineSelectionFailure::AssetUnavailable,
+    )));
+    steps.push(DemoSceneStep::AdvanceStructural);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::engine(
+            "engine.failure.preserved",
+            EngineSelectionStatusKind::Failed,
+            soundfont.clone(),
+            Some(braids.clone()),
+            Some(EngineSelectionFailure::AssetUnavailable),
+            false,
+        ),
+    );
+
+    push_engine_adjustment(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::engine(
+            "engine.recovery.preparing",
+            EngineSelectionStatusKind::Preparing,
+            soundfont.clone(),
+            Some(braids.clone()),
+            None,
+            false,
+        ),
+    );
+    push_successful_engine_transition(
+        steps,
+        patch,
+        "engine.recovery",
+        braids.clone(),
+        Some(braids.clone()),
+        DemoWorkerAdvance::Healthy,
+    );
+
+    push_engine_adjustment(steps, WindowKey::A);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::engine(
+            "engine.final.preparing",
+            EngineSelectionStatusKind::Preparing,
+            braids,
+            Some(soundfont.clone()),
+            None,
+            false,
+        ),
+    );
+    push_successful_engine_transition(
+        steps,
+        patch,
+        "engine.final",
+        soundfont.clone(),
+        Some(soundfont),
+        DemoWorkerAdvance::Healthy,
+    );
+    push_key_press(steps, WindowKey::Digit1);
+    push_checkpoint(steps, DemoCheckpoint::new("engine.context.restored"));
+}
+
+fn push_successful_engine_transition(
+    steps: &mut Vec<DemoSceneStep>,
+    patch: &Patch,
+    prefix: &str,
+    active_capability_id: crate::synth::CapabilityId,
+    requested_capability_id: Option<crate::synth::CapabilityId>,
+    worker: DemoWorkerAdvance,
+) {
+    steps.push(DemoSceneStep::AdvanceWorker(worker));
+    steps.push(DemoSceneStep::AdvanceStructural);
+    steps.push(DemoSceneStep::EngineProbe(
+        DemoEngineProbe::MismatchedAcknowledgement,
+    ));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            format!("{prefix}.mismatchedAckRejected"),
+            EventRejection::MismatchedEngineSelection,
+        ),
+    );
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::engine(
+            format!("{prefix}.activating"),
+            EngineSelectionStatusKind::Activating,
+            active_capability_id.clone(),
+            requested_capability_id,
+            None,
+            false,
+        ),
+    );
+    steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
+        patch.id(),
+        midi_message(patch.channel(), MidiMessageKind::NoteOn, 60, 110),
+    )));
+    steps.push(DemoSceneStep::Tick(TICK_DURATION));
+    steps.push(DemoSceneStep::AdvanceStructural);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::engine(
+            format!("{prefix}.ready"),
+            EngineSelectionStatusKind::Ready,
+            active_capability_id,
+            None,
+            None,
+            true,
+        ),
+    );
+    steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
+        patch.id(),
+        MidiMessage::all_notes_off(patch.channel()),
+    )));
+}
+
+fn push_engine_adjustment(steps: &mut Vec<DemoSceneStep>, key: WindowKey) {
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+        WindowKey::K,
+    )));
+    push_key_press(steps, key);
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
 }
 
 fn complete_window_vocabulary() -> &'static [WindowInput] {
@@ -569,6 +892,19 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
             crate::control::app_event::AppEventSurfaceDescriptor::Midi { .. } => {
                 expected.push("event.midi".to_owned());
             }
+            crate::control::app_event::AppEventSurfaceDescriptor::EnginePrepared { .. } => {
+                expected.push("event.enginePrepared".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::EnginePreparationFailed {
+                ..
+            } => {
+                expected.push("event.enginePreparationFailed".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::EngineActivationAcknowledged {
+                ..
+            } => {
+                expected.push("event.engineActivationAcknowledged".to_owned());
+            }
         }
     }
 
@@ -761,6 +1097,11 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
             .map(|descriptor| format!("rejection.{}", descriptor.name())),
     );
     expected.extend(EMITTED_EFFECTS.into_iter().map(str::to_owned));
+    expected.extend(
+        crate::control::EngineSelectionEffectKind::surface_descriptor()
+            .iter()
+            .map(|kind| format!("effect.emitted.engineSelection.{}", kind.name())),
+    );
 
     expected.sort_unstable();
     expected.dedup();
@@ -857,7 +1198,7 @@ mod tests {
     }
 
     fn registry() -> crate::synth::CapabilityRegistry {
-        HiDefSoundFontCapability::new().unwrap().registry().unwrap()
+        crate::adapter::production_instruments::production_capability_registry().unwrap()
     }
 
     #[test]
@@ -907,18 +1248,17 @@ mod tests {
                 .filter(|probe| probe.patch_id() == patch.id())
                 .map(|probe| probe.message().kind())
                 .collect::<Vec<_>>();
-            assert_eq!(
-                kinds,
-                vec![
-                    MidiMessageKind::NoteOn,
-                    MidiMessageKind::NoteOff,
-                    MidiMessageKind::ControlChange,
-                    MidiMessageKind::ProgramChange,
-                    MidiMessageKind::ChannelPressure,
-                    MidiMessageKind::PitchBend,
-                    MidiMessageKind::AllNotesOff,
-                ]
-            );
+            let expected = [
+                MidiMessageKind::NoteOn,
+                MidiMessageKind::NoteOff,
+                MidiMessageKind::ControlChange,
+                MidiMessageKind::ProgramChange,
+                MidiMessageKind::ChannelPressure,
+                MidiMessageKind::PitchBend,
+                MidiMessageKind::AllNotesOff,
+            ];
+            assert!(kinds.len() >= expected.len());
+            assert_eq!(&kinds[kinds.len() - expected.len()..], &expected);
         }
         assert_eq!(
             probes
@@ -942,7 +1282,7 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 17);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            12
+            15
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),
@@ -950,7 +1290,7 @@ mod tests {
         );
         assert_eq!(ChannelParameters::surface_descriptor().len(), 4);
         assert_eq!(GlobalParameters::surface_descriptor().len(), 7);
-        assert_eq!(EventRejection::surface_descriptor().len(), 11);
+        assert_eq!(EventRejection::surface_descriptor().len(), 16);
         for patch in &patches {
             for descriptor in ChannelParameters::surface_descriptor() {
                 assert!(scene.expected_coverage().contains(&format!(

@@ -12,7 +12,7 @@ use crest_synth::control::app_state::{AppState, EventRejection};
 use crest_synth::control::event_record::{EmittedEvent, EventInput, EventOutcome};
 use crest_synth::control::patch_page_projection::PatchPageProjection;
 use crest_synth::control::state_projector::StateProjector;
-use crest_synth::control::TopLevelContext;
+use crest_synth::control::{EngineSelectionStatusKind, TopLevelContext};
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
@@ -242,7 +242,7 @@ fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
     assert_eq!(page.patch().midi_channel(), patch.channel());
     assert_eq!(page.engine().active_capability_id(), descriptor.id());
     assert_eq!(page.engine().active_label(), descriptor.label());
-    assert!(!page.engine().editable());
+    assert!(page.engine().editable());
     assert_eq!(
         page.engine().choices().len(),
         state.capabilities().descriptors().len()
@@ -553,19 +553,35 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     );
     assert_eq!(
         rejections.borrow().as_slice(),
-        &[
-            EventRejection::ActionUnavailableInContext,
-            EventRejection::ActionUnavailableInContext
-        ]
+        &[EventRejection::ActionUnavailableInContext]
     );
     {
         let app_loop = shared.borrow();
-        assert_eq!(app_loop.current_state_tree().generation(), patch_generation);
-        assert_eq!(app_loop.current_patch_page(), Some(patch_page.clone()));
-        assert_eq!(app_loop.current_text(), patch_text);
-        assert_eq!(*app_loop.current_parameters(), after_parameters);
+        let pending_page = app_loop.current_patch_page().unwrap();
+        assert_eq!(
+            app_loop.current_state_tree().generation(),
+            patch_generation + 1
+        );
+        assert_eq!(
+            pending_page.engine().status(),
+            EngineSelectionStatusKind::Preparing
+        );
+        assert_eq!(
+            pending_page.engine().active_capability_id(),
+            patch_page.engine().active_capability_id()
+        );
+        assert!(pending_page.engine().requested_capability_id().is_some());
+        assert!(pending_page.engine().request_id().is_some());
+        assert_eq!(
+            app_loop.current_parameters().graph_revision(),
+            GraphRevision::INITIAL
+        );
+        assert!(same_parameter_values(
+            *app_loop.current_parameters(),
+            after_parameters
+        ));
     }
-    assert_eq!(observations.lock().unwrap().parameters.len(), 2);
+    assert_eq!(observations.lock().unwrap().parameters.len(), 3);
 
     run_frame(
         &mut application,
@@ -600,7 +616,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     }
     {
         let observations = observations.lock().unwrap();
-        assert_eq!(observations.parameters.len(), 3);
+        assert_eq!(observations.parameters.len(), 4);
         assert!(observations.commands.is_empty());
     }
     assert_eq!(preparations.load(Ordering::SeqCst), 0);

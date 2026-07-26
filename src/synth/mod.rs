@@ -1,4 +1,5 @@
 pub mod capability_id;
+pub mod descriptor_default_config_factory;
 pub mod instrument_capability;
 pub mod instrument_capability_provider;
 pub mod instrument_composition;
@@ -9,6 +10,7 @@ pub mod prepared_engine_rack_builder;
 pub mod prepared_instrument;
 
 pub use capability_id::{CapabilityId, IdentifierError};
+pub use descriptor_default_config_factory::DescriptorDefaultConfigFactory;
 pub use instrument_capability::{
     AssetAssignment, AssetKind, AssetReference, AssetRequirement, CapabilityDescriptor,
     CapabilityError, CapabilityRegistry, CapabilitySection, InstrumentConfig, ParameterAdjustment,

@@ -11,6 +11,7 @@ use crate::control::event_record::{
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
 use crate::control::TopLevelContext;
+use crate::control::{EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind};
 use crate::real_time::audio_boundary::{AudioThreadBoundary, BoundaryFull, ControlAudioBoundary};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation::CallbackAudioObservation;
@@ -18,11 +19,14 @@ use crate::real_time::audio_renderer::AudioRenderer;
 use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
-use crate::testing::demo_scene::{DemoScene, DemoSceneStep};
-use crate::testing::demo_scene_report::{
-    DemoAudioEvidence, DemoCoverageGroup, DemoSceneCheckpoint, DemoSceneCheckpointError,
-    DemoSceneCoverage, DemoSceneReport, DemoSceneReportError,
+use crate::testing::demo_scene::{
+    DemoEngineExpectation, DemoEngineProbe, DemoScene, DemoSceneStep, DemoWorkerAdvance,
 };
+use crate::testing::demo_scene_report::{
+    DemoAudioEvidence, DemoCoverageGroup, DemoEngineCheckpoint, DemoSceneCheckpoint,
+    DemoSceneCheckpointError, DemoSceneCoverage, DemoSceneReport, DemoSceneReportError,
+};
+use crate::testing::DeterministicGraphPreparationHandle;
 use core::fmt;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -71,6 +75,13 @@ pub enum ExhaustiveGuiDemoError {
     EventLog(EventLogError),
     Checkpoint(DemoSceneCheckpointError),
     Report(DemoSceneReportError),
+    MissingDeterministicWorker,
+    WorkerDidNotAdvance,
+    Structural(String),
+    EngineCheckpoint {
+        step: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for ExhaustiveGuiDemoError {
@@ -124,6 +135,16 @@ impl fmt::Display for ExhaustiveGuiDemoError {
             Self::EventLog(error) => error.fmt(formatter),
             Self::Checkpoint(error) => error.fmt(formatter),
             Self::Report(error) => error.fmt(formatter),
+            Self::MissingDeterministicWorker => formatter.write_str(
+                "the exhaustive engine scene requires its injected deterministic worker handle",
+            ),
+            Self::WorkerDidNotAdvance => {
+                formatter.write_str("the deterministic graph worker had no pending request")
+            }
+            Self::Structural(error) => write!(formatter, "structural advancement failed: {error}"),
+            Self::EngineCheckpoint { step, reason } => {
+                write!(formatter, "engine checkpoint {step} failed: {reason}")
+            }
         }
     }
 }
@@ -175,6 +196,7 @@ where
     renderer: &'a mut AudioRenderer<RenderBoundary, Structural, Observation>,
     audio_buffer: &'a mut [f32],
     translator: KeyboardInputTranslator,
+    worker: Option<DeterministicGraphPreparationHandle>,
 }
 
 impl<'a, ControlBoundary, RenderBoundary, Structural, Observation>
@@ -196,6 +218,22 @@ where
             renderer,
             audio_buffer,
             translator: KeyboardInputTranslator::new(),
+            worker: None,
+        }
+    }
+
+    pub fn new_with_worker(
+        app_loop: &'a mut AppLoop<ControlBoundary>,
+        renderer: &'a mut AudioRenderer<RenderBoundary, Structural, Observation>,
+        audio_buffer: &'a mut [f32],
+        worker: DeterministicGraphPreparationHandle,
+    ) -> Self {
+        Self {
+            app_loop,
+            renderer,
+            audio_buffer,
+            translator: KeyboardInputTranslator::new(),
+            worker: Some(worker),
         }
     }
 
@@ -210,8 +248,11 @@ where
         ensure_installed_fixture(&startup_log)?;
 
         let initial_measurement = self.render_audio("scene.initial")?;
-        let mut run =
-            RunObservations::new(initial_measurement, self.mixed_engine_stems_are_nonzero());
+        let mut run = RunObservations::new(
+            initial_measurement,
+            self.mixed_engine_stems_are_nonzero(),
+            self.renderer.active_revision(),
+        );
 
         self.dispatch_semantic(
             AppEvent::InstallPatches(Vec::new()),
@@ -261,6 +302,29 @@ where
                     run.audio_measurement = self.render_audio_tick(*elapsed)?;
                     run.mixed_engine_stems_nonzero |= self.mixed_engine_stems_are_nonzero();
                 }
+                DemoSceneStep::AdvanceWorker(advance) => {
+                    let worker = self
+                        .worker
+                        .as_ref()
+                        .ok_or(ExhaustiveGuiDemoError::MissingDeterministicWorker)?;
+                    if let DemoWorkerAdvance::Fail(failure) = advance {
+                        worker.fail_next(*failure);
+                    }
+                    if !worker.advance() {
+                        return Err(ExhaustiveGuiDemoError::WorkerDidNotAdvance);
+                    }
+                }
+                DemoSceneStep::AdvanceStructural => {
+                    let progress = self
+                        .app_loop
+                        .advance_structural()
+                        .map_err(|error| ExhaustiveGuiDemoError::Structural(error.to_string()))?;
+                    run.last_rejection = progress.rejected_worker_event();
+                }
+                DemoSceneStep::EngineProbe(probe) => {
+                    let (event, rejection) = self.engine_probe(*probe)?;
+                    self.dispatch_semantic(event, EventSource::Worker, Some(rejection), &mut run)?;
+                }
                 DemoSceneStep::Checkpoint(checkpoint) => {
                     if let Some(expected) = checkpoint.expected_last_rejection() {
                         if run.last_rejection != Some(expected) {
@@ -275,14 +339,23 @@ where
                     run.audio_measurement = self.render_audio(checkpoint.name())?;
                     run.mixed_engine_stems_nonzero |= self.mixed_engine_stems_are_nonzero();
                     let tree = self.app_loop.current_state_tree();
-                    run.checkpoints.push(DemoSceneCheckpoint::new(
+                    let mut observation = DemoSceneCheckpoint::new(
                         checkpoint.name(),
                         tree.state_hash(),
                         tree.generation(),
                         tree.selected_line(),
                         tree.generation(),
                         run.audio_measurement,
-                    )?);
+                    )?;
+                    if let Some(expectation) = checkpoint.engine_expectation() {
+                        observation =
+                            observation.with_engine_selection(self.verify_engine_checkpoint(
+                                checkpoint.name(),
+                                expectation,
+                                &mut run,
+                            )?);
+                    }
+                    run.checkpoints.push(observation);
                 }
             }
         }
@@ -344,6 +417,189 @@ where
         .map_err(ExhaustiveGuiDemoError::from)
     }
 
+    fn engine_probe(
+        &self,
+        probe: DemoEngineProbe,
+    ) -> Result<(AppEvent, EventRejection), ExhaustiveGuiDemoError> {
+        let correlation = self
+            .app_loop
+            .state()
+            .engine_selection()
+            .correlation()
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: "engine.probe".to_owned(),
+                reason: "canonical state has no pending correlation".to_owned(),
+            })?;
+        let target_revision = correlation
+            .source_graph_revision()
+            .checked_next()
+            .map_err(|error| ExhaustiveGuiDemoError::Structural(error.to_string()))?;
+        Ok(match probe {
+            DemoEngineProbe::StaleWorkerFailure => {
+                let stale_request = EngineSelectionRequestId::new(
+                    correlation.request_id().value().saturating_add(1),
+                )
+                .map_err(|error| ExhaustiveGuiDemoError::Structural(error.to_string()))?;
+                (
+                    AppEvent::EnginePreparationFailed {
+                        request_id: stale_request,
+                        patch_id: correlation.patch_id(),
+                        source_capability_id: correlation.source_capability_id().clone(),
+                        target_capability_id: correlation.target_capability_id().clone(),
+                        source_graph_revision: correlation.source_graph_revision(),
+                        target_graph_revision: target_revision,
+                        failure: EngineSelectionFailure::PreparationFailed,
+                    },
+                    EventRejection::StaleEngineSelection,
+                )
+            }
+            DemoEngineProbe::EarlyAcknowledgement => (
+                AppEvent::EngineActivationAcknowledged {
+                    request_id: correlation.request_id(),
+                    target_graph_revision: target_revision,
+                    retired_graph_revision: correlation.source_graph_revision(),
+                    collected: true,
+                },
+                EventRejection::StaleEngineSelection,
+            ),
+            DemoEngineProbe::MismatchedAcknowledgement => (
+                AppEvent::EngineActivationAcknowledged {
+                    request_id: correlation.request_id(),
+                    target_graph_revision: target_revision,
+                    retired_graph_revision: target_revision,
+                    collected: true,
+                },
+                EventRejection::MismatchedEngineSelection,
+            ),
+        })
+    }
+
+    fn verify_engine_checkpoint(
+        &self,
+        step: &str,
+        expected: &DemoEngineExpectation,
+        run: &mut RunObservations,
+    ) -> Result<DemoEngineCheckpoint, ExhaustiveGuiDemoError> {
+        let page = self.app_loop.current_patch_page().ok_or_else(|| {
+            ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "PATCH projection is unavailable".to_owned(),
+            }
+        })?;
+        let engine = page.engine();
+        let mismatch = engine.status() != expected.status()
+            || engine.active_capability_id() != expected.active_capability_id()
+            || engine.requested_capability_id() != expected.requested_capability_id()
+            || engine.failure() != expected.failure();
+        if mismatch {
+            return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: format!(
+                    "expected {:?}/{}, requested {:?}, failure {:?}; got {:?}/{}, requested {:?}, failure {:?}",
+                    expected.status(),
+                    expected.active_capability_id(),
+                    expected.requested_capability_id(),
+                    expected.failure(),
+                    engine.status(),
+                    engine.active_capability_id(),
+                    engine.requested_capability_id(),
+                    engine.failure(),
+                ),
+            });
+        }
+        if engine.request_id().is_some() {
+            for property in [
+                "patchId",
+                "requestId",
+                "sourceCapabilityId",
+                "sourceGraphRevision",
+                "targetCapabilityId",
+                "targetGraphRevision",
+            ] {
+                run.observed.insert(format!(
+                    "property.stateTree.engineSelection.correlation.{property}"
+                ));
+            }
+        }
+
+        let state_revision = self.app_loop.graph_revision();
+        let renderer_revision = self.renderer.active_revision();
+        if state_revision != renderer_revision {
+            return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: format!(
+                    "state targets graph {state_revision} while renderer owns {renderer_revision}"
+                ),
+            });
+        }
+        match expected.status() {
+            EngineSelectionStatusKind::Preparing | EngineSelectionStatusKind::Failed
+                if state_revision != run.last_ready_graph_revision =>
+            {
+                return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                    step: step.to_owned(),
+                    reason: "preparation or failure changed the active graph revision".to_owned(),
+                });
+            }
+            EngineSelectionStatusKind::Activating
+                if state_revision <= run.last_ready_graph_revision =>
+            {
+                return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                    step: step.to_owned(),
+                    reason: "activating graph revision did not advance".to_owned(),
+                });
+            }
+            EngineSelectionStatusKind::Ready => {
+                if state_revision <= run.last_ready_graph_revision {
+                    return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                        step: step.to_owned(),
+                        reason: "acknowledged graph revision did not advance".to_owned(),
+                    });
+                }
+                run.last_ready_graph_revision = state_revision;
+            }
+            _ => {}
+        }
+
+        let target_index = self
+            .app_loop
+            .patches()
+            .iter()
+            .position(|patch| patch.id() == page.patch().id())
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "focused Patch identity is absent from canonical state".to_owned(),
+            })?;
+        let target_peak = self
+            .renderer
+            .active_patch_audio()
+            .stem(target_index, page.patch().id())
+            .map(|stem| {
+                stem.samples()
+                    .iter()
+                    .fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+            })
+            .unwrap_or(0.0);
+        if expected.require_target_audio() && target_peak <= 1.0e-6 {
+            return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "the selected target Patch stem is silent".to_owned(),
+            });
+        }
+
+        DemoEngineCheckpoint::new(
+            engine.status(),
+            engine.active_capability_id().clone(),
+            engine.requested_capability_id().cloned(),
+            engine.request_id(),
+            state_revision,
+            renderer_revision,
+            engine.failure(),
+            target_peak,
+        )
+        .map_err(ExhaustiveGuiDemoError::from)
+    }
+
     fn dispatch_semantic(
         &mut self,
         event: AppEvent,
@@ -352,7 +608,8 @@ where
         run: &mut RunObservations,
     ) -> Result<(), ExhaustiveGuiDemoError> {
         let before_tree = self.app_loop.current_state_tree();
-        let adjustment = matches!(event, AppEvent::Adjust(_));
+        let adjustment = matches!(event, AppEvent::Adjust(_))
+            && self.app_loop.state().context() == TopLevelContext::Mixer;
 
         match self.app_loop.dispatch_from(event, source) {
             Ok(result) => {
@@ -456,10 +713,15 @@ struct RunObservations {
     last_rejection: Option<EventRejection>,
     mixed_engine_stems_nonzero: bool,
     all_accepted_adjustments_isolated: bool,
+    last_ready_graph_revision: crate::real_time::GraphRevision,
 }
 
 impl RunObservations {
-    fn new(audio_measurement: f64, mixed_engine_stems_nonzero: bool) -> Self {
+    fn new(
+        audio_measurement: f64,
+        mixed_engine_stems_nonzero: bool,
+        last_ready_graph_revision: crate::real_time::GraphRevision,
+    ) -> Self {
         Self {
             observed: BTreeSet::new(),
             checkpoints: Vec::new(),
@@ -467,6 +729,7 @@ impl RunObservations {
             last_rejection: None,
             mixed_engine_stems_nonzero,
             all_accepted_adjustments_isolated: true,
+            last_ready_graph_revision,
         }
     }
 }
@@ -579,6 +842,15 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
                 observed.insert("event.midi".to_owned());
                 observed.insert(format!("midi.{}", midi_kind_identifier(message.kind())));
             }
+            EventInput::EnginePrepared { .. } => {
+                observed.insert("event.enginePrepared".to_owned());
+            }
+            EventInput::EnginePreparationFailed { .. } => {
+                observed.insert("event.enginePreparationFailed".to_owned());
+            }
+            EventInput::EngineActivationAcknowledged { .. } => {
+                observed.insert("event.engineActivationAcknowledged".to_owned());
+            }
         }
 
         if let Some(rejection) = record.rejection() {
@@ -601,6 +873,12 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
                         observed.insert("effect.emitted.audioCommand.allNotesOff".to_owned());
                     }
                 },
+                EmittedEvent::EngineSelection { effect } => {
+                    observed.insert(format!(
+                        "effect.emitted.engineSelection.{}",
+                        effect.kind().name()
+                    ));
+                }
             }
         }
     }
@@ -935,6 +1213,11 @@ const fn rejection_identifier(rejection: EventRejection) -> &'static str {
         EventRejection::ParameterAtBoundary => "parameterAtBoundary",
         EventRejection::InvalidParameterValue => "invalidParameterValue",
         EventRejection::ActionUnavailableInContext => "actionUnavailableInContext",
+        EventRejection::EngineSelectionUnavailable => "engineSelectionUnavailable",
+        EventRejection::StructuralEditBusy => "structuralEditBusy",
+        EventRejection::StaleEngineSelection => "staleEngineSelection",
+        EventRejection::MismatchedEngineSelection => "mismatchedEngineSelection",
+        EventRejection::RequestIdOverflow => "requestIdOverflow",
         EventRejection::GenerationOverflow => "generationOverflow",
     }
 }
@@ -964,8 +1247,14 @@ const fn window_input_identifier(input: WindowInput) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::ExhaustiveGuiDemo;
-    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
+    use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
+    use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+    use crate::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
+    use crate::adapter::production_instruments::{
+        production_capability_registry, production_instrument_preparers,
+        production_instrument_providers,
+    };
     use crate::control::app_event::AppEvent;
     use crate::control::app_loop::AppLoop;
     use crate::control::app_state::AppState;
@@ -973,7 +1262,6 @@ mod tests {
     use crate::control::event_record::{EventOutcome, EventSource};
     use crate::control::state_projector::StateProjector;
     use crate::kernel::midi_channel::MidiChannel;
-    use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
@@ -981,103 +1269,52 @@ mod tests {
     use crate::real_time::audio_renderer::AudioRenderer;
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
     use crate::real_time::prepared_graph_builder::PreparedGraphBuilder;
-    use crate::real_time::structural_graph_boundary::NoStructuralGraphChanges;
-    use crate::synth::sound_font_instrument::SoundFontInstrument;
-    use crate::synth::{
-        CapabilityId, InstrumentPreparationError, InstrumentPreparer, Patch, PreparedInstrument,
-        PreparedInstrumentError,
-    };
-    use crate::testing::automatic_midi_test::create_soundfont_config;
+    use crate::real_time::{GraphHandoffStatus, GraphRevision, StructuralGraphBoundary};
+    use crate::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
+    use crate::synth::{CapabilityId, DescriptorDefaultConfigFactory, Patch};
     use crate::testing::demo_scene::DemoScene;
     use crate::testing::demo_scene_report::DemoCoverageGroup;
+    use crate::testing::DeterministicGraphPreparationWorker;
 
     fn globals() -> GlobalParameters {
         GlobalParameters::new(0.0, 0.5, 0.4, 0.35, 250.0, 0.3, 0.25).unwrap()
     }
 
-    fn patch(id: u32, channel: u8) -> Patch {
-        let provider = HiDefSoundFontCapability::new().unwrap();
-        Patch::new(
-            PatchId::new(id).unwrap(),
-            format!("Fixture {id}"),
-            create_soundfont_config(
-                &provider,
-                SoundFontInstrument::new(0, id as u8, false).unwrap(),
-            )
-            .unwrap(),
-            MidiChannel::new(channel).unwrap(),
-            ChannelParameters::new(0.0, 0.0, 0.3, 0.2).unwrap(),
-        )
-    }
-
-    struct TestPreparer {
-        capability_id: CapabilityId,
-    }
-
-    impl InstrumentPreparer for TestPreparer {
-        fn capability_id(&self) -> &CapabilityId {
-            &self.capability_id
-        }
-
-        fn prepare(
-            &self,
-            patch: &Patch,
-            _sample_rate: f32,
-            _max_frames: usize,
-        ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
-            Ok(Box::new(TestInstrument {
-                patch_id: patch.id(),
-            }))
-        }
-    }
-
-    struct TestInstrument {
-        patch_id: PatchId,
-    }
-
-    impl PreparedInstrument for TestInstrument {
-        fn patch_id(&self) -> PatchId {
-            self.patch_id
-        }
-
-        fn dispatch(
-            &mut self,
-            _message: MidiMessage,
-            _parameters: &crate::real_time::RtPatchParameters,
-        ) -> Result<(), PreparedInstrumentError> {
-            Ok(())
-        }
-
-        fn render(
-            &mut self,
-            output: &mut [f32],
-            _frame_count: usize,
-            _parameters: &crate::real_time::RtPatchParameters,
-        ) {
-            let index = self.patch_id.value().saturating_sub(1) as usize;
-            let amplitude = 0.15 + index as f32 * 0.01;
-            for frame in output.chunks_exact_mut(2) {
-                frame[0] = amplitude;
-                frame[1] = amplitude * 1.07;
-            }
-        }
-
-        fn all_notes_off(&mut self) {}
-    }
-
     #[test]
     fn exhaustive_gui_demo_scene_uses_production_seams_and_has_no_coverage_gaps() {
-        let patches = vec![patch(3, 1), patch(11, 9)];
-        let provider = HiDefSoundFontCapability::new().unwrap();
-        let scene =
-            DemoScene::exhaustive(&provider.registry().unwrap(), &patches, &globals()).unwrap();
+        let registry = production_capability_registry().unwrap();
+        let factory = DescriptorDefaultConfigFactory::new(
+            registry.clone(),
+            production_instrument_providers().unwrap(),
+        );
+        let patches = vec![
+            Patch::new(
+                PatchId::new(3).unwrap(),
+                "Fixture 3".to_owned(),
+                factory
+                    .create(&CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap())
+                    .unwrap(),
+                MidiChannel::new(1).unwrap(),
+                ChannelParameters::new(0.0, 0.0, 0.3, 0.2).unwrap(),
+            ),
+            Patch::new(
+                PatchId::new(11).unwrap(),
+                "Fixture 11".to_owned(),
+                factory
+                    .create(&CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap())
+                    .unwrap(),
+                MidiChannel::new(9).unwrap(),
+                ChannelParameters::new(0.0, 0.0, 0.3, 0.2).unwrap(),
+            ),
+        ];
+        let scene = DemoScene::exhaustive(&registry, &patches, &globals()).unwrap();
         let initial_parameters = ParameterSnapshot::new(0, globals(), &[]).unwrap();
-        let boundary = LockFreeAudioBoundary::new(4, initial_parameters);
+        let boundary = LockFreeAudioBoundary::new(64, initial_parameters);
         let (control, audio) = boundary.into_handles();
 
         let event_log = EventLog::new(scene.event_log_capacity().saturating_add(2)).unwrap();
         let mut app_loop = AppLoop::with_event_log(
-            AppState::new(provider.registry().unwrap(), globals()),
+            AppState::new(registry.clone(), globals()),
             StateProjector::new(),
             control,
             event_log,
@@ -1090,22 +1327,52 @@ mod tests {
             )
             .unwrap();
 
-        let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(TestPreparer {
-            capability_id: CapabilityId::new("instrument.soundfont.hidef").unwrap(),
-        })];
+        let preparers = production_instrument_preparers().unwrap();
         let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
             .build(
                 crate::real_time::GraphRevision::INITIAL,
                 app_loop.patches(),
                 *app_loop.current_parameters(),
                 48_000.0,
-                32,
+                512,
             )
             .unwrap();
-        let mut renderer = AudioRenderer::new(audio, NoStructuralGraphChanges::new(), graph);
-        let mut audio_buffer = vec![0.0; 64];
+        let structural = LockFreeStructuralGraphBoundary::new(
+            1,
+            1,
+            GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+        )
+        .unwrap();
+        let (structural_control, structural_audio) = structural.into_handles();
+        let audio_config =
+            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 512).unwrap();
+        let worker = DeterministicGraphPreparationWorker::new(
+            registry.clone(),
+            production_instrument_preparers().unwrap(),
+            audio_config,
+        );
+        let worker_handle = worker.advance_handle();
+        app_loop
+            .configure_engine_selection(
+                DescriptorDefaultConfigFactory::new(
+                    registry,
+                    production_instrument_providers().unwrap(),
+                ),
+                worker,
+                structural_control,
+                &graph,
+                audio_config,
+            )
+            .unwrap();
+        let mut renderer = AudioRenderer::new(audio, structural_audio, graph);
+        let mut audio_buffer = vec![0.0; 1_024];
 
-        let mut demo = ExhaustiveGuiDemo::new(&mut app_loop, &mut renderer, &mut audio_buffer);
+        let mut demo = ExhaustiveGuiDemo::new_with_worker(
+            &mut app_loop,
+            &mut renderer,
+            &mut audio_buffer,
+            worker_handle,
+        );
         let report = demo.run(scene).unwrap();
 
         assert!(
