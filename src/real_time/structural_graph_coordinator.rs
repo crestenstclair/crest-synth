@@ -334,7 +334,6 @@ impl std::error::Error for GraphPublicationError {}
 mod tests {
     use super::{GraphPublicationFailure, GraphStageOutcome, StructuralGraphCoordinator};
     use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
-    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::adapter::production_instruments::{
         production_capability_registry, production_instrument_providers,
@@ -404,7 +403,8 @@ mod tests {
     }
 
     fn graph_with_frames(value: u64, max_frames: usize) -> PreparedGraph {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let registry = provider.registry().unwrap();
         let preparers: Vec<Box<dyn InstrumentPreparer>> = Vec::new();
         let revision = GraphRevision::new(value).unwrap();

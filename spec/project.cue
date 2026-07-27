@@ -20,7 +20,7 @@ project: {
 			"engine-specific branches in Patch, reducer, projector, page projection, selection workflow, rack, renderer, or demo coverage; layering, unprepared structural replacement, or synthesis fallback",
 			"effects other than the one global reverb and one global delay",
 			"sequencer, transport, timeline, pattern, clip, or song-editing domain models",
-			"presets, sessions, modulation matrices, per-channel inserts, effect chains, buses, or plugin hosting",
+			"preset/session persistence or browsing, alternate SoundFont assets, modulation matrices, per-channel inserts, effect chains, buses, or plugin hosting; selecting a preset embedded in the fixed SoundFont is permitted",
 			"panels, dashboards, meters, faders, custom widgets, custom drawing, themes, mouse interaction, or the Figma-derived graphical replacement; the two basic text contexts are permitted",
 		]
 	}
@@ -145,8 +145,10 @@ project: {
 			kind: "integration"
 			command: ["cargo", "run", "--bin", "crest-synth", "--", "--smoke"]
 			timeout: "180s"
-			resources: [
-				"adapter.HiDefSoundFontPreparer",
+				resources: [
+					"adapter.HiDefSoundFontAsset",
+					"valueObject.Synth.SoundFontPresetCatalog",
+					"adapter.HiDefSoundFontPreparer",
 				"adapter.BraidsPreparer",
 				"applicationService.Synth.PreparedEngineRackBuilder",
 				"applicationService.Synth.DescriptorDefaultConfigFactory",
@@ -162,7 +164,8 @@ project: {
 			]
 			capabilities: [
 				"capability.prepared_engine_rack",
-				"capability.soundfont_audio",
+					"capability.soundfont_audio",
+					"capability.soundfont_preset_selection",
 				"capability.braids_engine",
 				"capability.per_voice_envelope",
 				"capability.automatic_test_midi",
@@ -170,8 +173,8 @@ project: {
 				"capability.asynchronous_engine_selection",
 				"capability.realtime_execution",
 			]
-			goals: ["goal.play_test_song", "goal.control_synth"]
-				description: "the fixed MIDI fixture alternates the real SoundFont and Braids engines through the control, mixer, and audio path"
+				goals: ["goal.play_test_song", "goal.control_synth", "goal.select_soundfont_preset"]
+					description: "one fixed SoundFont parse supplies exact catalog choices and numeric prepared data while the MIDI fixture alternates real SoundFont and Braids engines through the control, mixer, and audio path"
 			}
 			prepared_engine_rack: {
 				id: "validation.prepared_engine_rack"
@@ -241,9 +244,9 @@ project: {
 					"applicationService.RealTime.AudioRenderer",
 					"asset.BehavioralAcceptanceTests",
 				]
-				capabilities: ["capability.per_voice_envelope", "capability.soundfont_audio", "capability.braids_engine", "capability.realtime_execution"]
-				goals: ["goal.play_test_song", "goal.control_synth"]
-				description: "the canonical ADSR projects exactly and independently shapes overlapping SoundFont and Braids note voices with bounded callback work"
+				capabilities: ["capability.per_voice_envelope", "capability.schema_driven_patch_page", "capability.one_way_parameter_control", "capability.soundfont_audio", "capability.braids_engine", "capability.realtime_execution"]
+				goals: ["goal.play_test_song", "goal.control_synth", "goal.edit_patch_envelope"]
+				description: "all four ADSR values edit through canonical MIXER and PATCH reducer paths, project exactly, and independently shape overlapping SoundFont and Braids note voices with bounded callback work"
 			}
 				capability_schema: {
 					id: "validation.capability_schema"
@@ -263,8 +266,11 @@ project: {
 					"valueObject.Synth.ParameterSpec",
 					"valueObject.Synth.CapabilityDescriptor",
 					"valueObject.Synth.InstrumentConfig",
-					"valueObject.Synth.CapabilityRegistry",
-					"port.Synth.InstrumentCapabilityProvider",
+						"valueObject.Synth.CapabilityRegistry",
+						"valueObject.Synth.SoundFontPresetId",
+						"valueObject.Synth.SoundFontPresetCatalog",
+						"port.Synth.InstrumentCapabilityProvider",
+						"adapter.HiDefSoundFontAsset",
 					"adapter.HiDefSoundFontCapability",
 					"adapter.BraidsCapability",
 					"valueObject.Synth.VoiceEnvelope",
@@ -274,9 +280,9 @@ project: {
 					"applicationService.Testing.AutomaticMidiTest",
 					"asset.BehavioralAcceptanceTests",
 				]
-				capabilities: ["capability.instrument_capability_model", "capability.one_way_parameter_control", "capability.soundfont_audio"]
-				goals: ["goal.control_synth"]
-					description: "both exact installed descriptors and alternating generic fixture Patch configs survive reducer installation, serialization, and projection while malformed and unknown configs fail without fallback"
+					capabilities: ["capability.instrument_capability_model", "capability.one_way_parameter_control", "capability.soundfont_audio", "capability.soundfont_preset_selection"]
+					goals: ["goal.control_synth", "goal.select_soundfont_preset"]
+						description: "both exact installed descriptors, the catalog-hydrated SoundFont preset Choice, and alternating generic fixture Patch configs survive reducer installation, serialization, and projection while malformed and unknown configs fail without fallback"
 				}
 				patch_page_projection: {
 					id: "validation.patch_page_projection"
@@ -289,7 +295,9 @@ project: {
 					]
 					resources: [
 						"valueObject.Control.TopLevelContext",
-						"valueObject.Control.InteractionState",
+							"valueObject.Control.InteractionState",
+							"valueObject.Control.PatchControlId",
+							"valueObject.Control.StructuralEditIntent",
 						"valueObject.Control.EngineSelectionStatus",
 						"valueObject.Control.EngineSelectionFailure",
 						"valueObject.Control.AppEvent",
@@ -307,9 +315,9 @@ project: {
 						"aggregate.RealTime.PreparedGraph",
 						"asset.BehavioralAcceptanceTests",
 					]
-					capabilities: ["capability.schema_driven_patch_page", "capability.asynchronous_engine_selection", "capability.instrument_capability_model", "capability.one_way_parameter_control"]
-					goals: ["goal.inspect_patch", "goal.select_patch_engine"]
-					description: "direct 1/2 input, reducer-owned Patch/engine focus, exact SoundFont/Braids descriptor rows and lifecycle status, preserved MIXER projection, audio-neutral context switching, and semantic engine-row request projection pass through production seams"
+						capabilities: ["capability.schema_driven_patch_page", "capability.asynchronous_engine_selection", "capability.instrument_capability_model", "capability.one_way_parameter_control", "capability.per_voice_envelope", "capability.soundfont_preset_selection"]
+						goals: ["goal.inspect_patch", "goal.select_patch_engine", "goal.edit_patch_envelope", "goal.select_soundfont_preset"]
+						description: "direct 1/2 input, reducer-owned Patch and dynamic Engine-plus-ADSR-plus-descriptor-StructuralChoice focus, exact SoundFont/Braids rows and lifecycle status, preserved MIXER projection, audio-neutral focus/context navigation, canonical ADSR editing, and semantic engine/preset request projection pass through production seams"
 				}
 				control_dispatch_performance: {
 					id: "validation.control_dispatch_performance"
@@ -345,10 +353,15 @@ project: {
 					{type: "stdout-contains", value: "CREST_ACCEPTANCE exhaustive_demo_scene passed"},
 				]
 				timeout: "180s"
-				resources: [
-					"valueObject.Control.AppEvent",
+					resources: [
+						"adapter.HiDefSoundFontAsset",
+						"valueObject.Synth.SoundFontPresetId",
+						"valueObject.Synth.SoundFontPresetCatalog",
+						"valueObject.Control.AppEvent",
 					"valueObject.Control.TopLevelContext",
-					"valueObject.Control.InteractionState",
+						"valueObject.Control.InteractionState",
+						"valueObject.Control.PatchControlId",
+						"valueObject.Control.StructuralEditIntent",
 					"valueObject.Control.EngineSelectionStatus",
 					"valueObject.Control.EngineSelectionFailure",
 					"valueObject.Control.EngineSelectionEffect",
@@ -390,26 +403,31 @@ project: {
 					"capability.observable_demo_scene",
 					"capability.one_way_parameter_control",
 					"capability.schema_driven_patch_page",
-					"capability.asynchronous_engine_selection",
+						"capability.asynchronous_engine_selection",
+						"capability.soundfont_preset_selection",
 					"capability.global_mix",
 				]
-				goals: ["goal.select_patch_engine", "goal.observe_synth"]
-				description: "the exhaustive deterministic GUI scene covers every current event, editable scalar and engine control, structural lifecycle state/effect/failure, serialized property, projection, and downstream audio consequence"
+					goals: ["goal.select_patch_engine", "goal.edit_patch_envelope", "goal.select_soundfont_preset", "goal.observe_synth"]
+					description: "the exhaustive deterministic GUI scene covers every current event, focused PATCH ADSR and catalog-backed preset control, editable scalar and structural controls, coexistence, lifecycle state/effect/failure, serialized property, projection, and downstream audio consequence"
 			}
 			live_demo: {
 				id: "validation.live_demo"
 				scope: "project"
 				kind: "integration"
-				command: ["cargo", "test", "--test", "live_demo_scene", "--", "--nocapture"]
+				command: ["cargo", "test", "live_demo", "--", "--nocapture"]
 				assertions: [
 					{type: "exit-code", equals: 0},
 					{type: "stdout-contains", value: "CREST_ACCEPTANCE live_demo_scene passed"},
 				]
 				timeout: "180s"
-				resources: [
-					"valueObject.Control.AppEvent",
+					resources: [
+						"adapter.HiDefSoundFontAsset",
+						"valueObject.Synth.SoundFontPresetCatalog",
+						"valueObject.Control.AppEvent",
 					"valueObject.Control.TopLevelContext",
-					"valueObject.Control.InteractionState",
+						"valueObject.Control.InteractionState",
+						"valueObject.Control.PatchControlId",
+						"valueObject.Control.StructuralEditIntent",
 					"valueObject.Control.PatchPageProjection",
 					"valueObject.Control.EventRecord",
 					"valueObject.Control.EventLog",
@@ -450,11 +468,14 @@ project: {
 				capabilities: [
 					"capability.live_observable_demo",
 					"capability.one_way_parameter_control",
-					"capability.asynchronous_engine_selection",
+					"capability.schema_driven_patch_page",
+					"capability.per_voice_envelope",
+						"capability.asynchronous_engine_selection",
+						"capability.soundfont_preset_selection",
 					"capability.realtime_execution",
 				]
-				goals: ["goal.observe_live_synth"]
-				description: "a deterministic-clock harness proves live pacing, exact scalar coverage, SoundFont-to-Braids-to-descriptor-default-SoundFont through the worker and structural seams, coherent lifecycle/revision checkpoints, finite targeted audio, semantic all-notes-off completion, mapped-input isolation, one completed report, and immediate successful close without substituting a second reducer, worker workflow, or renderer"
+					goals: ["goal.edit_patch_envelope", "goal.select_soundfont_preset", "goal.observe_live_synth"]
+					description: "a deterministic-clock harness proves live pacing, schedule-independent semantic Patch probes around every scalar checkpoint, the focused Patch's four ADSR instances through PATCH, exact scalar coverage, one adjacent SoundFont preset replacement plus SoundFont-to-Braids-to-descriptor-default-SoundFont through the worker and structural seams, coherent lifecycle/revision checkpoints, finite targeted audio, semantic all-notes-off completion, mapped-input isolation, controlled no-progress timeout cleanup, one completed report, and immediate successful close without substituting a second reducer, worker workflow, or renderer"
 			}
 			schema_surface: {
 				id: "validation.schema_surface"
@@ -559,12 +580,12 @@ project: {
 	invariants: core: [
 		{text: "AppState.apply is the only control-state mutation path", meta: rationale: "every input follows one reducer path"},
 		{text: "input and view adapters emit AppEvents and never mutate application or engine state", meta: rationale: "adapters remain replaceable"},
-		{text: "PATCH and MIXER are the only top-level contexts; InteractionState owns context and stable PATCH focus, while the basic window renders only the immutable active-context projection", meta: rationale: "page selection remains semantic, deterministic, and independent from UI state"},
+			{text: "PATCH and MIXER are the only top-level contexts; InteractionState owns context and stable PATCH focus resolved as Engine, canonical ADSR, then descriptor-declared StructuralChoice controls, while the basic window renders only the immutable active-context projection", meta: rationale: "page selection remains semantic, deterministic, capability-driven, and independent from UI state"},
 		{text: "after an event is accepted, the application commits AppState before deriving serialized state, text, parameter snapshots, or audio commands", meta: rationale: "effects always describe accepted state"},
-		{text: "engine selection is a one-in-flight reducer-owned lifecycle; a capacity-one worker prepares off callback, PreparedGraph stays outside AppState, candidate config commits before target-revision projection/publication, and Ready requires block-boundary activation plus off-callback retirement collection", meta: rationale: "structural edits preserve one-way mutation and hard-real-time ownership"},
+			{text: "engine and structural parameter selection share one app-wide, one-in-flight reducer-owned lifecycle; a capacity-one worker prepares off callback, PreparedGraph stays outside AppState, only the intended config assignment commits before target-revision projection/publication, and Ready requires block-boundary activation plus off-callback retirement collection", meta: rationale: "structural edits preserve one-way mutation and hard-real-time ownership"},
 		{text: "the audio callback never allocates, locks, blocks, performs file or device discovery I/O, logs, or destroys owned state", meta: rationale: "the callback has a hard deadline"},
 		{text: "AudioBoundary carries discrete MIDI commands and latest scalar values, while StructuralGraphBoundary uses distinct bounded queues for prepared and retired graph ownership plus fixed-size acknowledgement", meta: rationale: "each real-time datum uses its required delivery semantics"},
-		{text: "Patch and instrument config are capability-polymorphic and PreparedEngineRack hosts exactly the HiDef SoundFont and pinned Braids preparers; SoundFont uses one EngineManaged synthesizer per Patch, every Braids Patch owns FixedPerPatch(16), both use the common per-note envelope, and unknown capabilities fail without fallback", meta: rationale: "two materially different voice policies let the Patch page prove its schema projection without engine branches"},
+			{text: "Patch and instrument config are capability-polymorphic and PreparedEngineRack hosts exactly the HiDef SoundFont and pinned Braids preparers; one SoundFont parse yields a string-bearing control catalog and separate numeric callback bank, SoundFont uses one EngineManaged synthesizer per Patch, every Braids Patch owns FixedPerPatch(16), both use the common per-note envelope, and unknown capabilities or presets fail without fallback", meta: rationale: "two materially different voice policies and one metadata-safe structural choice let the Patch page prove schema projection without engine branches"},
 		{text: "the only effects are one reverb and one delay shared globally by every channel", meta: rationale: "the signal path stays small"},
 		{text: "the MIDI-file module is an automatic test input adapter, not a sequencer or product transport", meta: rationale: "crest-synth remains an instrument"},
 	]

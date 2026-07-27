@@ -1,8 +1,11 @@
 use crate::control::event_log::EventLog;
 use crate::control::state_tree::StateTree;
-use crate::control::{EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind};
+use crate::control::{
+    EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, PatchControlId,
+    StructuralEditIntent,
+};
 use crate::real_time::GraphRevision;
-use crate::synth::CapabilityId;
+use crate::synth::{CapabilityId, ParameterChoice, ParameterId, VoiceEnvelopeParameter};
 use core::fmt;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
@@ -16,6 +19,7 @@ pub enum DemoCoverageGroup {
     Directions,
     MidiKinds,
     EditableParameters,
+    PatchControls,
     SerializedProperties,
     Rejections,
     Projections,
@@ -139,6 +143,7 @@ pub struct DemoSceneCoverage {
     directions: DemoCoverageSet,
     midi_kinds: DemoCoverageSet,
     editable_parameters: DemoCoverageSet,
+    patch_controls: DemoCoverageSet,
     serialized_properties: DemoCoverageSet,
     rejections: DemoCoverageSet,
     projections: DemoCoverageSet,
@@ -178,6 +183,7 @@ impl DemoSceneCoverage {
             DemoCoverageGroup::Directions => &self.directions,
             DemoCoverageGroup::MidiKinds => &self.midi_kinds,
             DemoCoverageGroup::EditableParameters => &self.editable_parameters,
+            DemoCoverageGroup::PatchControls => &self.patch_controls,
             DemoCoverageGroup::SerializedProperties => &self.serialized_properties,
             DemoCoverageGroup::Rejections => &self.rejections,
             DemoCoverageGroup::Projections => &self.projections,
@@ -230,6 +236,7 @@ impl DemoSceneCoverage {
             DemoCoverageGroup::Directions => &mut self.directions,
             DemoCoverageGroup::MidiKinds => &mut self.midi_kinds,
             DemoCoverageGroup::EditableParameters => &mut self.editable_parameters,
+            DemoCoverageGroup::PatchControls => &mut self.patch_controls,
             DemoCoverageGroup::SerializedProperties => &mut self.serialized_properties,
             DemoCoverageGroup::Rejections => &mut self.rejections,
             DemoCoverageGroup::Projections => &mut self.projections,
@@ -237,7 +244,7 @@ impl DemoSceneCoverage {
         }
     }
 
-    fn groups(&self) -> [&DemoCoverageSet; 10] {
+    fn groups(&self) -> [&DemoCoverageSet; 11] {
         [
             &self.inputs,
             &self.events,
@@ -245,6 +252,7 @@ impl DemoSceneCoverage {
             &self.directions,
             &self.midi_kinds,
             &self.editable_parameters,
+            &self.patch_controls,
             &self.serialized_properties,
             &self.rejections,
             &self.projections,
@@ -263,6 +271,8 @@ pub enum DemoSceneCheckpointError {
         parameter_generation: u64,
     },
     NonFiniteAudioMeasurement,
+    PatchAdsrMismatch,
+    PresetMismatch,
 }
 
 impl fmt::Display for DemoSceneCheckpointError {
@@ -282,6 +292,12 @@ impl fmt::Display for DemoSceneCheckpointError {
             Self::NonFiniteAudioMeasurement => {
                 formatter.write_str("checkpoint audio measurement must be finite")
             }
+            Self::PatchAdsrMismatch => formatter.write_str(
+                "PATCH ADSR checkpoint state, projection, snapshot, effect, or revision mismatch",
+            ),
+            Self::PresetMismatch => formatter.write_str(
+                "SoundFont preset checkpoint state, projection, intent, config delta, or revision mismatch",
+            ),
         }
     }
 }
@@ -299,6 +315,8 @@ pub struct DemoSceneCheckpoint {
     parameter_generation: u64,
     audio_measurement: f64,
     engine_selection: Option<DemoEngineCheckpoint>,
+    preset_selection: Option<DemoPresetCheckpoint>,
+    patch_adsr: Option<DemoPatchAdsrCheckpoint>,
 }
 
 impl DemoSceneCheckpoint {
@@ -338,11 +356,23 @@ impl DemoSceneCheckpoint {
             parameter_generation,
             audio_measurement,
             engine_selection: None,
+            preset_selection: None,
+            patch_adsr: None,
         })
     }
 
     pub fn with_engine_selection(mut self, observation: DemoEngineCheckpoint) -> Self {
         self.engine_selection = Some(observation);
+        self
+    }
+
+    pub fn with_patch_adsr(mut self, observation: DemoPatchAdsrCheckpoint) -> Self {
+        self.patch_adsr = Some(observation);
+        self
+    }
+
+    pub fn with_preset_selection(mut self, observation: DemoPresetCheckpoint) -> Self {
+        self.preset_selection = Some(observation);
         self
     }
 
@@ -372,6 +402,292 @@ impl DemoSceneCheckpoint {
 
     pub const fn engine_selection(&self) -> Option<&DemoEngineCheckpoint> {
         self.engine_selection.as_ref()
+    }
+
+    pub const fn preset_selection(&self) -> Option<&DemoPresetCheckpoint> {
+        self.preset_selection.as_ref()
+    }
+
+    pub const fn patch_adsr(&self) -> Option<&DemoPatchAdsrCheckpoint> {
+        self.patch_adsr.as_ref()
+    }
+}
+
+/// Exact descriptor, projection, lifecycle, and audio evidence for one preset checkpoint.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DemoPresetCheckpoint {
+    patch_id: crate::kernel::PatchId,
+    control_id: PatchControlId,
+    parameter_id: ParameterId,
+    status: EngineSelectionStatusKind,
+    selected_choice_id: String,
+    selected_label: String,
+    requested_choice_id: Option<String>,
+    requested_label: Option<String>,
+    choices: Vec<ParameterChoice>,
+    intent: Option<StructuralEditIntent>,
+    request_id: Option<EngineSelectionRequestId>,
+    state_graph_revision: GraphRevision,
+    renderer_graph_revision: GraphRevision,
+    failure: Option<EngineSelectionFailure>,
+    target_patch_peak: f32,
+    authored_order_exact: bool,
+    focus_projection_exact: bool,
+    assignment_delta_exact: bool,
+    untargeted_patches_exact: bool,
+}
+
+impl DemoPresetCheckpoint {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        patch_id: crate::kernel::PatchId,
+        parameter_id: ParameterId,
+        status: EngineSelectionStatusKind,
+        selected_choice_id: String,
+        selected_label: String,
+        requested_choice_id: Option<String>,
+        requested_label: Option<String>,
+        choices: Vec<ParameterChoice>,
+        intent: Option<StructuralEditIntent>,
+        request_id: Option<EngineSelectionRequestId>,
+        state_graph_revision: GraphRevision,
+        renderer_graph_revision: GraphRevision,
+        failure: Option<EngineSelectionFailure>,
+        target_patch_peak: f32,
+        authored_order_exact: bool,
+        focus_projection_exact: bool,
+        assignment_delta_exact: bool,
+        untargeted_patches_exact: bool,
+    ) -> Result<Self, DemoSceneCheckpointError> {
+        if !target_patch_peak.is_finite()
+            || target_patch_peak < 0.0
+            || !authored_order_exact
+            || !focus_projection_exact
+            || !assignment_delta_exact
+            || !untargeted_patches_exact
+            || state_graph_revision != renderer_graph_revision
+        {
+            return Err(DemoSceneCheckpointError::PresetMismatch);
+        }
+        Ok(Self {
+            patch_id,
+            control_id: PatchControlId::Capability(parameter_id.clone()),
+            parameter_id,
+            status,
+            selected_choice_id,
+            selected_label,
+            requested_choice_id,
+            requested_label,
+            choices,
+            intent,
+            request_id,
+            state_graph_revision,
+            renderer_graph_revision,
+            failure,
+            target_patch_peak,
+            authored_order_exact,
+            focus_projection_exact,
+            assignment_delta_exact,
+            untargeted_patches_exact,
+        })
+    }
+
+    pub const fn patch_id(&self) -> crate::kernel::PatchId {
+        self.patch_id
+    }
+
+    pub fn control_id(&self) -> PatchControlId {
+        self.control_id.clone()
+    }
+
+    pub const fn parameter_id(&self) -> &ParameterId {
+        &self.parameter_id
+    }
+
+    pub const fn status(&self) -> EngineSelectionStatusKind {
+        self.status
+    }
+
+    pub fn selected_choice_id(&self) -> &str {
+        &self.selected_choice_id
+    }
+
+    pub fn selected_label(&self) -> &str {
+        &self.selected_label
+    }
+
+    pub fn requested_choice_id(&self) -> Option<&str> {
+        self.requested_choice_id.as_deref()
+    }
+
+    pub fn requested_label(&self) -> Option<&str> {
+        self.requested_label.as_deref()
+    }
+
+    pub fn choices(&self) -> &[ParameterChoice] {
+        &self.choices
+    }
+
+    pub const fn intent(&self) -> Option<&StructuralEditIntent> {
+        self.intent.as_ref()
+    }
+
+    pub const fn request_id(&self) -> Option<EngineSelectionRequestId> {
+        self.request_id
+    }
+
+    pub const fn state_graph_revision(&self) -> GraphRevision {
+        self.state_graph_revision
+    }
+
+    pub const fn renderer_graph_revision(&self) -> GraphRevision {
+        self.renderer_graph_revision
+    }
+
+    pub const fn failure(&self) -> Option<EngineSelectionFailure> {
+        self.failure
+    }
+
+    pub const fn target_patch_peak(&self) -> f32 {
+        self.target_patch_peak
+    }
+
+    pub const fn authored_order_exact(&self) -> bool {
+        self.authored_order_exact
+    }
+
+    pub const fn assignment_delta_exact(&self) -> bool {
+        self.assignment_delta_exact
+    }
+
+    pub const fn untargeted_patches_exact(&self) -> bool {
+        self.untargeted_patches_exact
+    }
+}
+
+/// Exact cross-projection evidence for one normalized PATCH ADSR checkpoint.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DemoPatchAdsrCheckpoint {
+    patch_id: crate::kernel::PatchId,
+    control_id: PatchControlId,
+    parameter: VoiceEnvelopeParameter,
+    expected_value: f32,
+    state_value: f32,
+    page_value: f32,
+    snapshot_value: f32,
+    renderer_value: f32,
+    lifecycle: Option<EngineSelectionStatusKind>,
+    state_graph_revision: GraphRevision,
+    parameter_graph_revision: GraphRevision,
+    renderer_graph_revision: GraphRevision,
+    focus_projection_exact: bool,
+    all_envelope_values_exact: bool,
+    scalar_only: bool,
+    untargeted_patches_exact: bool,
+    audio_finite: bool,
+}
+
+impl DemoPatchAdsrCheckpoint {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        patch_id: crate::kernel::PatchId,
+        parameter: VoiceEnvelopeParameter,
+        expected_value: f32,
+        state_value: f32,
+        page_value: f32,
+        snapshot_value: f32,
+        renderer_value: f32,
+        lifecycle: Option<EngineSelectionStatusKind>,
+        state_graph_revision: GraphRevision,
+        parameter_graph_revision: GraphRevision,
+        renderer_graph_revision: GraphRevision,
+        focus_projection_exact: bool,
+        all_envelope_values_exact: bool,
+        scalar_only: bool,
+        untargeted_patches_exact: bool,
+        audio_finite: bool,
+    ) -> Result<Self, DemoSceneCheckpointError> {
+        let values_exact = [state_value, page_value, snapshot_value, renderer_value]
+            .into_iter()
+            .all(|value| value == expected_value);
+        if !expected_value.is_finite()
+            || !values_exact
+            || state_graph_revision != parameter_graph_revision
+            || parameter_graph_revision != renderer_graph_revision
+            || !focus_projection_exact
+            || !all_envelope_values_exact
+            || !scalar_only
+            || !untargeted_patches_exact
+            || !audio_finite
+        {
+            return Err(DemoSceneCheckpointError::PatchAdsrMismatch);
+        }
+        Ok(Self {
+            patch_id,
+            control_id: PatchControlId::Envelope(parameter),
+            parameter,
+            expected_value,
+            state_value,
+            page_value,
+            snapshot_value,
+            renderer_value,
+            lifecycle,
+            state_graph_revision,
+            parameter_graph_revision,
+            renderer_graph_revision,
+            focus_projection_exact,
+            all_envelope_values_exact,
+            scalar_only,
+            untargeted_patches_exact,
+            audio_finite,
+        })
+    }
+
+    pub const fn patch_id(&self) -> crate::kernel::PatchId {
+        self.patch_id
+    }
+
+    pub fn control_id(&self) -> PatchControlId {
+        self.control_id.clone()
+    }
+
+    pub const fn parameter(&self) -> VoiceEnvelopeParameter {
+        self.parameter
+    }
+
+    pub const fn expected_value(&self) -> f32 {
+        self.expected_value
+    }
+
+    pub const fn lifecycle(&self) -> Option<EngineSelectionStatusKind> {
+        self.lifecycle
+    }
+
+    pub const fn focus_projection_exact(&self) -> bool {
+        self.focus_projection_exact
+    }
+
+    pub const fn scalar_only(&self) -> bool {
+        self.scalar_only
+    }
+
+    pub const fn all_envelope_values_exact(&self) -> bool {
+        self.all_envelope_values_exact
+    }
+
+    pub const fn untargeted_patches_exact(&self) -> bool {
+        self.untargeted_patches_exact
+    }
+
+    pub fn graph_revision_exact(&self) -> bool {
+        self.state_graph_revision == self.parameter_graph_revision
+            && self.parameter_graph_revision == self.renderer_graph_revision
+    }
+
+    pub const fn renderer_graph_revision(&self) -> GraphRevision {
+        self.renderer_graph_revision
     }
 }
 
@@ -494,7 +810,7 @@ pub struct DemoSceneReport {
 
 impl DemoSceneReport {
     /// Stable schema version for the top-level report.
-    pub const SCHEMA_VERSION: u32 = 3;
+    pub const SCHEMA_VERSION: u32 = 6;
 
     /// Packages a scene only after checking the journal/tree endpoint.
     ///
@@ -650,7 +966,6 @@ mod tests {
         DemoCoverageGroup, DemoSceneCheckpoint, DemoSceneCoverage, DemoSceneReport,
         DemoSceneReportError,
     };
-    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::control::app_event::{AppEvent, Direction};
     use crate::control::app_state::{AppState, EventRejection};
     use crate::control::event_log::{EventCoverage, EventLog};
@@ -668,7 +983,8 @@ mod tests {
     use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn tree_and_projection() -> (StateTree, TextProjection) {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let global = GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap();
         let mut state =
             AppState::for_graph(provider.registry().unwrap(), global, GraphRevision::INITIAL);
@@ -769,7 +1085,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&first).unwrap();
 
         assert_eq!(first, second);
-        assert_eq!(json["schemaVersion"], 3);
+        assert_eq!(json["schemaVersion"], 6);
         assert_eq!(json["scene"], "exhaustive-gui");
         assert_eq!(json["complete"], true);
         assert_eq!(json["coverage"]["events"]["missing"], serde_json::json!([]));

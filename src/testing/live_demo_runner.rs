@@ -7,16 +7,20 @@ use crate::control::event_record::{
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
 use crate::control::{
-    EngineSelectionEffectKind, EngineSelectionRequestId, EngineSelectionStatusKind, TopLevelContext,
+    Direction, EngineSelectionEffectKind, EngineSelectionRequestId, EngineSelectionStatusKind,
+    StructuralEditIntent, TopLevelContext,
 };
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::real_time::audio_boundary::ControlAudioBoundary;
 use crate::real_time::audio_observation::ControlAudioObservation;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
-use crate::synth::{ParameterDefault, ParameterKind};
+use crate::synth::{
+    InstrumentConfig, ParameterDefault, ParameterKind, ParameterValue, VoiceEnvelope,
+};
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::live_demo_checkpoint::{
     LiveCheckpoint, LiveDemoCheckpoint, LiveDemoCheckpointError, LiveEngineCheckpoint,
+    LivePresetProjection,
 };
 use crate::testing::live_demo_report::{
     LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, RuntimeAudioWitness,
@@ -29,6 +33,11 @@ use crate::testing::midi_event_source::MidiEventSource;
 use core::fmt;
 use std::time::Duration;
 
+/// Maximum elapsed control time without a qualifying autonomous milestone.
+pub const LIVE_DEMO_NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum elapsed control time for the complete autonomous live scene.
+pub const LIVE_DEMO_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Control-thread state machine for the real-window live scene.
 pub struct LiveDemoRunner<Source, Observation> {
     automatic_midi: AutomaticMidiTest<Source>,
@@ -36,6 +45,7 @@ pub struct LiveDemoRunner<Source, Observation> {
     scene: LiveDemoScene,
     step_index: usize,
     elapsed: Duration,
+    last_progress_at: Duration,
     deferred_fixture_elapsed: Duration,
     tick_index: u64,
     pending_checkpoint: Option<PendingCheckpoint>,
@@ -44,6 +54,8 @@ pub struct LiveDemoRunner<Source, Observation> {
     engine_transition_index: usize,
     engine_phase: LiveEnginePhase,
     last_ready_graph_revision: crate::real_time::GraphRevision,
+    engine_envelope_baseline: Option<VoiceEnvelope>,
+    structural_config_baseline: Option<InstrumentConfig>,
     cleanup_sequence_before: Option<u64>,
     completed_report: Option<LiveDemoReport>,
     runtime_audio: RuntimeAudioWitness,
@@ -74,6 +86,7 @@ where
             scene,
             step_index: 0,
             elapsed: Duration::ZERO,
+            last_progress_at: Duration::ZERO,
             deferred_fixture_elapsed: Duration::ZERO,
             tick_index: 0,
             pending_checkpoint: None,
@@ -82,6 +95,8 @@ where
             engine_transition_index: 0,
             engine_phase: LiveEnginePhase::SelectPatch,
             last_ready_graph_revision,
+            engine_envelope_baseline: None,
+            structural_config_baseline: None,
             cleanup_sequence_before: None,
             completed_report: None,
             runtime_audio,
@@ -106,6 +121,33 @@ where
         self.deferred_fixture_elapsed = self.deferred_fixture_elapsed.saturating_add(elapsed);
         self.tick_index = self.tick_index.saturating_add(1);
 
+        if self.elapsed >= LIVE_DEMO_TOTAL_TIMEOUT {
+            return Err(LiveDemoError::TotalTimeout {
+                elapsed: self.elapsed,
+            });
+        }
+
+        let result = self.advance_current(app_loop);
+        if result.is_ok()
+            && self.completed_report.is_none()
+            && !self.aborted
+            && self.elapsed.saturating_sub(self.last_progress_at) >= LIVE_DEMO_NO_PROGRESS_TIMEOUT
+        {
+            return Err(LiveDemoError::ProgressTimedOut {
+                stage: self.progress_stage(),
+                stalled_for: self.elapsed.saturating_sub(self.last_progress_at),
+            });
+        }
+        result
+    }
+
+    fn advance_current<Boundary>(
+        &mut self,
+        app_loop: &mut AppLoop<Boundary>,
+    ) -> Result<Option<LiveCheckpoint>, LiveDemoError>
+    where
+        Boundary: ControlAudioBoundary,
+    {
         if self.pending_checkpoint.is_some() {
             return self.advance_pending(app_loop);
         }
@@ -126,6 +168,44 @@ where
             self.tick_fixture(app_loop)?;
         }
         self.dispatch_step(step, app_loop)
+    }
+
+    fn mark_progress(&mut self) {
+        self.last_progress_at = self.elapsed;
+    }
+
+    fn progress_stage(&self) -> &'static str {
+        if let Some(pending) = &self.pending_checkpoint {
+            return if pending.checkpoint.is_some() {
+                "parameter projection dwell"
+            } else {
+                "parameter audio observation"
+            };
+        }
+        if self.step_index < self.scene.scalar_step_count() {
+            return "autonomous scene dispatch";
+        }
+        if self.engine_phase != LiveEnginePhase::Complete {
+            if self
+                .scene
+                .expected_engine_transitions()
+                .get(self.engine_transition_index)
+                .is_some_and(LiveEngineTransition::is_preset)
+            {
+                return match self.engine_phase {
+                    LiveEnginePhase::AwaitSourceAudio { .. } => "preset source audio observation",
+                    LiveEnginePhase::AwaitActivating { .. } => "preset preparation",
+                    LiveEnginePhase::AwaitReady { .. } => "preset graph activation",
+                    LiveEnginePhase::AwaitTargetAudio { .. } => "preset target audio observation",
+                    _ => self.engine_phase.stage_name(),
+                };
+            }
+            return self.engine_phase.stage_name();
+        }
+        if self.step_index < self.scene.steps().len() {
+            return "semantic note cleanup dispatch";
+        }
+        "zero-active-notes cleanup observation"
     }
 
     fn tick_fixture<Boundary>(
@@ -151,7 +231,9 @@ where
         let before_tree = app_loop.current_state_tree();
         let observed_value = step
             .editable_parameter()
-            .map(|parameter| selected_parameter_value(&before_tree, parameter))
+            .map(|parameter| {
+                selected_parameter_value(&before_tree, parameter, step.patch_control_id())
+            })
             .transpose()?;
         let expected = LiveExpectedTransition::for_step(
             &step,
@@ -197,6 +279,7 @@ where
             .ok_or(LiveDemoError::MissingEventRecord)?
             .clone();
         verify_record(&step, &expected, &record)?;
+        self.mark_progress();
 
         if step.requires_checkpoint() {
             let parameter = step
@@ -235,7 +318,7 @@ where
             .pending_checkpoint
             .as_mut()
             .expect("pending state was checked");
-        if pending.checkpoint.is_none() {
+        let captured_now = if pending.checkpoint.is_none() {
             let observation = self.observation.read_latest_on_control();
             if observation.sequence() <= pending.audio_sequence_before
                 || observation.parameter_generation() < pending.record.parameter_generation()
@@ -264,6 +347,12 @@ where
                 observation,
                 pending.predicate,
             )?);
+            true
+        } else {
+            false
+        };
+        if captured_now {
+            self.mark_progress();
         }
 
         // Once exact-generation audio is captured, fixture time may advance;
@@ -296,6 +385,7 @@ where
         let checkpoint = LiveCheckpoint::parameter(checkpoint);
         self.checkpoints.push(checkpoint.clone());
         self.step_index += 1;
+        self.mark_progress();
         Ok(Some(checkpoint))
     }
 
@@ -307,13 +397,53 @@ where
         Boundary: ControlAudioBoundary,
     {
         let phase = self.engine_phase.clone();
-        if !matches!(phase, LiveEnginePhase::AwaitTargetAudio { .. }) {
+        if !matches!(
+            phase,
+            LiveEnginePhase::AwaitSourceAudio { .. } | LiveEnginePhase::AwaitTargetAudio { .. }
+        ) {
             self.tick_fixture(app_loop)?;
         }
         match phase {
             LiveEnginePhase::SelectPatch => {
                 dispatch_engine_event(app_loop, AppEvent::SelectContext(TopLevelContext::Patch))?;
-                self.engine_phase = LiveEnginePhase::Request;
+                let transition = self.current_engine_transition()?;
+                let patch = app_loop
+                    .patches()
+                    .iter()
+                    .find(|patch| patch.id() == transition.patch_id())
+                    .ok_or(LiveDemoError::EngineLifecycleMismatch)?;
+                self.engine_envelope_baseline = Some(*patch.envelope());
+                self.structural_config_baseline = Some(patch.instrument_config().clone());
+                self.engine_phase = LiveEnginePhase::FocusControl;
+                self.mark_progress();
+                Ok(None)
+            }
+            LiveEnginePhase::FocusControl => {
+                let transition = self.current_engine_transition()?.clone();
+                let page = app_loop
+                    .current_patch_page()
+                    .ok_or(LiveDemoError::MissingPatchProjection)?;
+                let target = transition.focused_control_id();
+                if page.focused_control_id() == target {
+                    self.engine_phase = LiveEnginePhase::Request;
+                } else {
+                    let controls = app_loop.state().focused_patch_controls()?;
+                    let current = controls
+                        .iter()
+                        .position(|control| control == &page.focused_control_id())
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?;
+                    let target_index = controls
+                        .iter()
+                        .position(|control| control == &target)
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?;
+                    let direction = if current < target_index {
+                        Direction::Down
+                    } else {
+                        Direction::Up
+                    };
+                    dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+                }
+                self.mark_progress();
                 Ok(None)
             }
             LiveEnginePhase::Request => {
@@ -322,22 +452,83 @@ where
                     .current_patch_page()
                     .ok_or(LiveDemoError::MissingPatchProjection)?;
                 if page.patch().id() != transition.patch_id()
-                    || page.engine().status() != EngineSelectionStatusKind::Ready
                     || page.engine().active_capability_id() != transition.source_capability_id()
+                    || app_loop.engine_selection_status().kind() != EngineSelectionStatusKind::Ready
                     || app_loop.graph_revision() != self.last_ready_graph_revision
+                    || !focused_config_matches_transition_source(app_loop, &transition)?
                 {
                     return Err(LiveDemoError::EngineLifecycleMismatch);
                 }
-
+                if transition.is_preset() {
+                    let audio_sequence_before =
+                        self.observation.read_latest_on_control().sequence();
+                    let note = MidiMessage::try_new(
+                        transition.channel(),
+                        MidiMessageKind::NoteOn,
+                        60,
+                        112,
+                    )
+                    .expect("the frozen live source MIDI constants are valid");
+                    let note_record = dispatch_engine_event(
+                        app_loop,
+                        AppEvent::Midi {
+                            patch_id: transition.patch_id(),
+                            message: note,
+                        },
+                    )?;
+                    self.engine_phase = LiveEnginePhase::AwaitSourceAudio {
+                        source_revision: app_loop.graph_revision(),
+                        generation: note_record.generation_after(),
+                        audio_sequence_before,
+                    };
+                } else {
+                    self.engine_phase = LiveEnginePhase::DispatchRequest { source_audio: None };
+                }
+                self.mark_progress();
+                Ok(None)
+            }
+            LiveEnginePhase::AwaitSourceAudio {
+                source_revision,
+                generation,
+                audio_sequence_before,
+            } => {
+                let transition = self.current_engine_transition()?.clone();
+                let observation = self.observation.read_latest_on_control();
+                if observation.sequence() <= audio_sequence_before
+                    || observation.parameter_generation() < generation
+                {
+                    return Ok(None);
+                }
+                if observation.parameter_generation() > generation {
+                    return Err(LiveDemoError::MissedAudioGeneration {
+                        expected: generation,
+                        actual: observation.parameter_generation(),
+                    });
+                }
+                if !audio_is_finite(observation)
+                    || observation.active_graph_revision() != source_revision
+                    || observation.primary_patch_id() != Some(transition.patch_id())
+                    || observation.primary_active_notes() == 0
+                    || observation.primary_patch_rms() <= 0.0
+                    || observation.routing_failures() != 0
+                {
+                    return Ok(None);
+                }
+                self.engine_phase = LiveEnginePhase::DispatchRequest {
+                    source_audio: Some(observation),
+                };
+                self.mark_progress();
+                Ok(None)
+            }
+            LiveEnginePhase::DispatchRequest { source_audio } => {
+                let transition = self.current_engine_transition()?.clone();
                 let source_revision = app_loop.graph_revision();
                 let request_record =
                     dispatch_engine_event(app_loop, AppEvent::Adjust(transition.direction()))?;
-                let page = app_loop
-                    .current_patch_page()
-                    .ok_or(LiveDemoError::MissingPatchProjection)?;
-                let request_id = page
-                    .engine()
-                    .request_id()
+                let request_id = app_loop
+                    .engine_selection_status()
+                    .correlation()
+                    .map(|correlation| correlation.request_id())
                     .ok_or(LiveDemoError::EngineLifecycleMismatch)?;
                 verify_engine_effects(
                     app_loop,
@@ -353,12 +544,14 @@ where
                     EngineSelectionStatusKind::Preparing,
                     request_id,
                     request_record.sequence(),
+                    source_audio,
                     None,
                 )?;
                 self.engine_phase = LiveEnginePhase::AwaitActivating {
                     request_id,
                     source_revision,
                 };
+                self.mark_progress();
                 self.push_engine_checkpoint(checkpoint)
             }
             LiveEnginePhase::AwaitActivating {
@@ -366,15 +559,13 @@ where
                 source_revision,
             } => {
                 let transition = self.current_engine_transition()?.clone();
-                let page = app_loop
-                    .current_patch_page()
-                    .ok_or(LiveDemoError::MissingPatchProjection)?;
-                match page.engine().status() {
+                match app_loop.engine_selection_status().kind() {
                     EngineSelectionStatusKind::Preparing => Ok(None),
                     EngineSelectionStatusKind::Activating => {
-                        let target_revision = page
-                            .engine()
-                            .target_graph_revision()
+                        let target_revision = app_loop
+                            .engine_selection_status()
+                            .correlation()
+                            .and_then(|correlation| correlation.target_graph_revision())
                             .ok_or(LiveDemoError::EngineLifecycleMismatch)?;
                         if target_revision <= source_revision
                             || target_revision <= self.last_ready_graph_revision
@@ -396,12 +587,14 @@ where
                             request_id,
                             event_sequence,
                             None,
+                            None,
                         )?;
                         self.engine_phase = LiveEnginePhase::AwaitReady {
                             request_id,
                             source_revision,
                             target_revision,
                         };
+                        self.mark_progress();
                         self.push_engine_checkpoint(checkpoint)
                     }
                     EngineSelectionStatusKind::Failed | EngineSelectionStatusKind::Ready => {
@@ -415,10 +608,7 @@ where
                 target_revision,
             } => {
                 let transition = self.current_engine_transition()?.clone();
-                let page = app_loop
-                    .current_patch_page()
-                    .ok_or(LiveDemoError::MissingPatchProjection)?;
-                match page.engine().status() {
+                match app_loop.engine_selection_status().kind() {
                     EngineSelectionStatusKind::Activating => Ok(None),
                     EngineSelectionStatusKind::Ready => {
                         verify_engine_effects(
@@ -429,36 +619,59 @@ where
                             Some(target_revision),
                             EngineSelectionStatusKind::Ready,
                         )?;
-                        let audio_sequence_before =
-                            self.observation.read_latest_on_control().sequence();
-                        let note = MidiMessage::try_new(
-                            transition.channel(),
-                            MidiMessageKind::NoteOn,
-                            64_u8.saturating_add(self.engine_transition_index as u8),
-                            112,
-                        )
-                        .expect("the frozen live target MIDI constants are valid");
-                        let note_record = dispatch_engine_event(
-                            app_loop,
-                            AppEvent::Midi {
-                                patch_id: transition.patch_id(),
-                                message: note,
-                            },
-                        )?;
-                        self.engine_phase = LiveEnginePhase::AwaitTargetAudio {
+                        if transition.is_preset() {
+                            dispatch_engine_event(
+                                app_loop,
+                                AppEvent::Midi {
+                                    patch_id: transition.patch_id(),
+                                    message: MidiMessage::all_notes_off(transition.channel()),
+                                },
+                            )?;
+                        }
+                        self.engine_phase = LiveEnginePhase::StartTargetNote {
                             request_id,
                             source_revision,
                             target_revision,
-                            generation: note_record.generation_after(),
-                            event_sequence: note_record.sequence(),
-                            audio_sequence_before,
                         };
+                        self.mark_progress();
                         Ok(None)
                     }
                     EngineSelectionStatusKind::Failed | EngineSelectionStatusKind::Preparing => {
                         Err(LiveDemoError::EngineLifecycleMismatch)
                     }
                 }
+            }
+            LiveEnginePhase::StartTargetNote {
+                request_id,
+                source_revision,
+                target_revision,
+            } => {
+                let transition = self.current_engine_transition()?.clone();
+                let audio_sequence_before = self.observation.read_latest_on_control().sequence();
+                let note = MidiMessage::try_new(
+                    transition.channel(),
+                    MidiMessageKind::NoteOn,
+                    64_u8.saturating_add(self.engine_transition_index as u8),
+                    112,
+                )
+                .expect("the frozen live target MIDI constants are valid");
+                let note_record = dispatch_engine_event(
+                    app_loop,
+                    AppEvent::Midi {
+                        patch_id: transition.patch_id(),
+                        message: note,
+                    },
+                )?;
+                self.engine_phase = LiveEnginePhase::AwaitTargetAudio {
+                    request_id,
+                    source_revision,
+                    target_revision,
+                    generation: note_record.generation_after(),
+                    event_sequence: note_record.sequence(),
+                    audio_sequence_before,
+                };
+                self.mark_progress();
+                Ok(None)
             }
             LiveEnginePhase::AwaitTargetAudio {
                 request_id,
@@ -507,6 +720,7 @@ where
                     EngineSelectionStatusKind::Ready,
                     request_id,
                     event_sequence,
+                    None,
                     Some(observation),
                 )?;
                 if !self
@@ -517,19 +731,42 @@ where
                 }
                 self.coverage.mark_engine_exercised(&transition);
                 self.last_ready_graph_revision = target_revision;
+                self.engine_phase = LiveEnginePhase::StopTargetNote;
+                self.mark_progress();
+                self.push_engine_checkpoint(checkpoint)
+            }
+            LiveEnginePhase::StopTargetNote => {
+                let transition = self.current_engine_transition()?.clone();
+                dispatch_engine_event(
+                    app_loop,
+                    AppEvent::Midi {
+                        patch_id: transition.patch_id(),
+                        message: MidiMessage::all_notes_off(transition.channel()),
+                    },
+                )?;
                 self.engine_transition_index = self.engine_transition_index.saturating_add(1);
                 self.engine_phase = if self.engine_transition_index
                     < self.scene.expected_engine_transitions().len()
                 {
-                    LiveEnginePhase::Request
+                    let next = self.current_engine_transition()?;
+                    let patch = app_loop
+                        .patches()
+                        .iter()
+                        .find(|patch| patch.id() == next.patch_id())
+                        .ok_or(LiveDemoError::EngineLifecycleMismatch)?;
+                    self.engine_envelope_baseline = Some(*patch.envelope());
+                    self.structural_config_baseline = Some(patch.instrument_config().clone());
+                    LiveEnginePhase::FocusControl
                 } else {
                     LiveEnginePhase::RestoreMixer
                 };
-                self.push_engine_checkpoint(checkpoint)
+                self.mark_progress();
+                Ok(None)
             }
             LiveEnginePhase::RestoreMixer => {
                 dispatch_engine_event(app_loop, AppEvent::SelectContext(TopLevelContext::Mixer))?;
                 self.engine_phase = LiveEnginePhase::Complete;
+                self.mark_progress();
                 Ok(None)
             }
             LiveEnginePhase::Complete => Ok(None),
@@ -560,6 +797,7 @@ where
         status: EngineSelectionStatusKind,
         request_id: EngineSelectionRequestId,
         event_sequence: u64,
+        source_audio_observation: Option<AudioObservationSnapshot>,
         audio_observation: Option<AudioObservationSnapshot>,
     ) -> Result<LiveEngineCheckpoint, LiveDemoError>
     where
@@ -571,37 +809,153 @@ where
         let engine = page.engine();
         let tree = app_loop.current_state_tree();
         let text = app_loop.current_text();
+        let lifecycle = app_loop.engine_selection_status();
         let handoff = app_loop
             .engine_graph_handoff_status()
             .ok_or(LiveDemoError::EngineRuntimeUnavailable)?;
         if page.patch().id() != transition.patch_id()
+            || page.focused_control_id() != transition.focused_control_id()
             || page.state_hash() != tree.state_hash()
             || text.state_hash() != tree.state_hash()
             || tree.graph_revision() != app_loop.graph_revision()
-            || engine.status() != status
-            || engine.active_capability_id()
-                != if status == EngineSelectionStatusKind::Preparing {
+            || lifecycle.kind() != status
+            || lifecycle.failure().is_some()
+        {
+            return Err(LiveDemoError::EngineProjectionMismatch);
+        }
+        if status == EngineSelectionStatusKind::Ready {
+            if lifecycle.correlation().is_some() {
+                return Err(LiveDemoError::EngineProjectionMismatch);
+            }
+        } else if !lifecycle.correlation().is_some_and(|correlation| {
+            correlation.request_id() == request_id
+                && correlation.patch_id() == transition.patch_id()
+                && correlation.intent() == transition.intent()
+                && correlation.source_capability_id() == transition.source_capability_id()
+                && correlation.target_capability_id() == transition.target_capability_id()
+        }) {
+            return Err(LiveDemoError::EngineProjectionMismatch);
+        }
+        let patch = app_loop
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == transition.patch_id())
+            .ok_or(LiveDemoError::EngineProjectionMismatch)?;
+        if self.engine_envelope_baseline.as_ref() != Some(patch.envelope()) {
+            return Err(LiveDemoError::EngineProjectionMismatch);
+        }
+        let baseline = self
+            .structural_config_baseline
+            .as_ref()
+            .ok_or(LiveDemoError::EngineTargetConfigMismatch)?;
+        let preset = match transition.intent() {
+            StructuralEditIntent::ReplaceCapability { .. } => {
+                let expected_request =
+                    (status != EngineSelectionStatusKind::Ready).then_some(request_id);
+                let expected_requested = (status != EngineSelectionStatusKind::Ready)
+                    .then_some(transition.target_capability_id());
+                let expected_active = if status == EngineSelectionStatusKind::Preparing {
                     transition.source_capability_id()
                 } else {
                     transition.target_capability_id()
+                };
+                if engine.status() != status
+                    || engine.active_capability_id() != expected_active
+                    || engine.request_id() != expected_request
+                    || engine.requested_capability_id() != expected_requested
+                    || engine.failure().is_some()
+                    || (status == EngineSelectionStatusKind::Preparing
+                        && patch.instrument_config() != baseline)
+                    || (status != EngineSelectionStatusKind::Preparing
+                        && !focused_config_is_descriptor_default(app_loop, transition)?)
+                {
+                    return Err(LiveDemoError::EngineTargetConfigMismatch);
                 }
-            || engine.failure().is_some()
-        {
-            return Err(LiveDemoError::EngineProjectionMismatch);
-        }
-        let expected_request = (status != EngineSelectionStatusKind::Ready).then_some(request_id);
-        let expected_requested = (status != EngineSelectionStatusKind::Ready)
-            .then_some(transition.target_capability_id());
-        if engine.request_id() != expected_request
-            || engine.requested_capability_id() != expected_requested
-        {
-            return Err(LiveDemoError::EngineProjectionMismatch);
-        }
-        if status != EngineSelectionStatusKind::Preparing
-            && !focused_config_is_descriptor_default(app_loop, transition)?
-        {
-            return Err(LiveDemoError::EngineTargetConfigMismatch);
-        }
+                None
+            }
+            StructuralEditIntent::ReplaceParameterChoice {
+                parameter_id,
+                choice_id,
+                ..
+            } => {
+                if engine.status() != EngineSelectionStatusKind::Ready
+                    || engine.active_capability_id() != transition.source_capability_id()
+                    || engine.request_id().is_some()
+                    || engine.requested_capability_id().is_some()
+                    || engine.failure().is_some()
+                {
+                    return Err(LiveDemoError::EngineProjectionMismatch);
+                }
+                let row = page
+                    .sections()
+                    .iter()
+                    .flat_map(|section| section.parameters())
+                    .find(|row| row.id() == parameter_id)
+                    .ok_or(LiveDemoError::EngineProjectionMismatch)?;
+                let active_choice = if status == EngineSelectionStatusKind::Preparing {
+                    transition
+                        .source_choice_id()
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?
+                } else {
+                    transition
+                        .target_choice_id()
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?
+                };
+                let active_label = if status == EngineSelectionStatusKind::Preparing {
+                    transition
+                        .source_label()
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?
+                } else {
+                    transition
+                        .target_label()
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?
+                };
+                let requested_choice =
+                    (status != EngineSelectionStatusKind::Ready).then_some(choice_id.as_str());
+                let requested_label = (status != EngineSelectionStatusKind::Ready)
+                    .then(|| transition.target_label())
+                    .flatten();
+                let expected_row_status =
+                    (status != EngineSelectionStatusKind::Ready).then_some(status);
+                if row.control_id() != Some(transition.focused_control_id())
+                    || row.selected_choice_id() != Some(active_choice)
+                    || row.selected_label() != Some(active_label)
+                    || row.requested_choice_id() != requested_choice
+                    || row.requested_label() != requested_label
+                    || row.status() != expected_row_status
+                    || row.failure().is_some()
+                    || (status == EngineSelectionStatusKind::Preparing
+                        && patch.instrument_config() != baseline)
+                    || (status != EngineSelectionStatusKind::Preparing
+                        && !preset_config_delta_is_exact(
+                            baseline,
+                            patch.instrument_config(),
+                            parameter_id,
+                            choice_id,
+                        ))
+                {
+                    return Err(LiveDemoError::EngineTargetConfigMismatch);
+                }
+                Some(LivePresetProjection::new(
+                    transition
+                        .source_choice_id()
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?,
+                    transition
+                        .source_label()
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?,
+                    transition
+                        .target_choice_id()
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?,
+                    transition
+                        .target_label()
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?,
+                    active_choice,
+                    active_label,
+                    requested_choice.map(str::to_owned),
+                    requested_label.map(str::to_owned),
+                ))
+            }
+        };
 
         LiveEngineCheckpoint::new(
             transition.identifier(),
@@ -609,8 +963,11 @@ where
             status,
             request_id,
             transition.patch_id(),
+            page.focused_control_id(),
             transition.source_capability_id().clone(),
             transition.target_capability_id().clone(),
+            transition.intent().clone(),
+            preset,
             engine.active_capability_id().clone(),
             engine.requested_capability_id().cloned(),
             tree.generation(),
@@ -621,6 +978,7 @@ where
             app_loop.staged_graph_revision(),
             app_loop.in_flight_graph_revision(),
             event_sequence,
+            source_audio_observation,
             audio_observation,
             self.runtime_audio.callback_allocations(),
             self.runtime_audio.callback_destructions(),
@@ -667,6 +1025,7 @@ where
             self.runtime_audio
                 .with_active_graph_revision(active_graph_revision),
         )?);
+        self.mark_progress();
         Ok(())
     }
 
@@ -719,15 +1078,29 @@ struct PendingCheckpoint {
     checkpoint: Option<LiveDemoCheckpoint>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum LiveEnginePhase {
     SelectPatch,
+    FocusControl,
     Request,
+    AwaitSourceAudio {
+        source_revision: crate::real_time::GraphRevision,
+        generation: u64,
+        audio_sequence_before: u64,
+    },
+    DispatchRequest {
+        source_audio: Option<AudioObservationSnapshot>,
+    },
     AwaitActivating {
         request_id: EngineSelectionRequestId,
         source_revision: crate::real_time::GraphRevision,
     },
     AwaitReady {
+        request_id: EngineSelectionRequestId,
+        source_revision: crate::real_time::GraphRevision,
+        target_revision: crate::real_time::GraphRevision,
+    },
+    StartTargetNote {
         request_id: EngineSelectionRequestId,
         source_revision: crate::real_time::GraphRevision,
         target_revision: crate::real_time::GraphRevision,
@@ -740,8 +1113,28 @@ enum LiveEnginePhase {
         event_sequence: u64,
         audio_sequence_before: u64,
     },
+    StopTargetNote,
     RestoreMixer,
     Complete,
+}
+
+impl LiveEnginePhase {
+    const fn stage_name(&self) -> &'static str {
+        match self {
+            Self::SelectPatch => "engine PATCH selection",
+            Self::FocusControl => "structural control focus",
+            Self::Request => "structural source-note dispatch",
+            Self::AwaitSourceAudio { .. } => "preset source audio observation",
+            Self::DispatchRequest { .. } => "structural request dispatch",
+            Self::AwaitActivating { .. } => "engine preparation",
+            Self::AwaitReady { .. } => "engine graph activation",
+            Self::StartTargetNote { .. } => "structural target-note dispatch",
+            Self::AwaitTargetAudio { .. } => "engine target audio observation",
+            Self::StopTargetNote => "structural target-note cleanup",
+            Self::RestoreMixer => "MIXER restoration",
+            Self::Complete => "engine transitions complete",
+        }
+    }
 }
 
 fn dispatch_engine_event<Boundary>(
@@ -819,6 +1212,7 @@ where
                 target_revision
             };
             if effect.patch_id() != transition.patch_id()
+                || effect.intent() != transition.intent()
                 || effect.source_capability_id() != transition.source_capability_id()
                 || effect.target_capability_id() != transition.target_capability_id()
                 || effect.source_graph_revision() != source_revision
@@ -834,6 +1228,63 @@ where
         return Err(LiveDemoError::EngineEffectMismatch);
     }
     endpoint.ok_or(LiveDemoError::EngineEffectMismatch)
+}
+
+fn focused_config_matches_transition_source<Boundary>(
+    app_loop: &AppLoop<Boundary>,
+    transition: &LiveEngineTransition,
+) -> Result<bool, LiveDemoError>
+where
+    Boundary: ControlAudioBoundary,
+{
+    let patch = app_loop
+        .patches()
+        .iter()
+        .find(|patch| patch.id() == transition.patch_id())
+        .ok_or(LiveDemoError::EngineTargetConfigMismatch)?;
+    let config = patch.instrument_config();
+    if config.capability_id() != transition.source_capability_id() {
+        return Ok(false);
+    }
+    match transition.intent() {
+        StructuralEditIntent::ReplaceCapability { .. } => Ok(true),
+        StructuralEditIntent::ReplaceParameterChoice { parameter_id, .. } => Ok(matches!(
+            config.value(parameter_id),
+            Some(ParameterValue::Choice(choice_id))
+                if Some(choice_id.as_str()) == transition.source_choice_id()
+        )),
+    }
+}
+
+fn preset_config_delta_is_exact(
+    source: &InstrumentConfig,
+    candidate: &InstrumentConfig,
+    parameter_id: &crate::synth::ParameterId,
+    target_choice_id: &str,
+) -> bool {
+    if source.capability_id() != candidate.capability_id()
+        || source.asset_references() != candidate.asset_references()
+        || source.values().len() != candidate.values().len()
+        || !matches!(
+            candidate.value(parameter_id),
+            Some(ParameterValue::Choice(choice_id)) if choice_id == target_choice_id
+        )
+    {
+        return false;
+    }
+    let mut changed = 0usize;
+    for (before, after) in source.values().iter().zip(candidate.values()) {
+        if before.parameter_id() != after.parameter_id() {
+            return false;
+        }
+        if before != after {
+            if before.parameter_id() != parameter_id {
+                return false;
+            }
+            changed = changed.saturating_add(1);
+        }
+    }
+    changed == 1
 }
 
 fn focused_config_is_descriptor_default<Boundary>(
@@ -947,6 +1398,13 @@ pub enum LiveDemoError {
     EngineEffectMismatch,
     EngineTargetConfigMismatch,
     EngineTargetAudioMismatch,
+    ProgressTimedOut {
+        stage: &'static str,
+        stalled_for: Duration,
+    },
+    TotalTimeout {
+        elapsed: Duration,
+    },
 }
 
 impl From<LiveDemoSceneError> for LiveDemoError {
@@ -1035,6 +1493,17 @@ impl fmt::Display for LiveDemoError {
                 .write_str("live engine target is not the exact descriptor-default configuration"),
             Self::EngineTargetAudioMismatch => formatter.write_str(
                 "live engine target did not produce finite nonzero generation-tagged output",
+            ),
+            Self::ProgressTimedOut { stage, stalled_for } => write!(
+                formatter,
+                "live demo made no progress while awaiting {stage} for {:.1} seconds",
+                stalled_for.as_secs_f32()
+            ),
+            Self::TotalTimeout { elapsed } => write!(
+                formatter,
+                "live demo exceeded its {}-second total bound after {:.1} seconds",
+                LIVE_DEMO_TOTAL_TIMEOUT.as_secs(),
+                elapsed.as_secs_f32()
             ),
         }
     }

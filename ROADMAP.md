@@ -105,14 +105,16 @@ This phase does not add the Patch page, per-Patch effects, modulation routing, a
 
 ## Phase 3 — Schema-driven Patch page
 
-Status: **In progress**
+Status: **Complete** — 2026-07-26
 
 Completed increments:
 
 1. Page selection and the read-only, descriptor-driven Patch-page projection, accepted through OpenSpec change `phase-3-patch-page-projection`.
 2. Asynchronous focused-Patch engine selection, accepted on 2026-07-26 through OpenSpec change `phase-3-asynchronous-engine-selection`. The production path now performs descriptor-default SoundFont ↔ Braids replacement through one correlated capacity-one worker and complete graph handoff while the source remains audible, publishes no fallback, retires graphs off callback, and proves both directions in deterministic and physical live witnesses.
+3. Canonical PATCH ADSR focus and editing, completed on 2026-07-26 through OpenSpec change `phase-3-patch-adsr-editing`. PATCH now owns the nonwrapping Engine → Attack → Decay → Sustain → Release focus surface, reuses the existing per-voice envelope mutation and scalar snapshot path, remains coherent through engine preparation and activation, and proves every field through both engines plus the physical live demo.
+4. SoundFont preset discovery and semantic selection, completed on 2026-07-26 through OpenSpec change `phase-3-soundfont-preset-selection`. The fixed SF2 is parsed once into an authored-name, numerically ordered control catalog plus a metadata-free numeric render bank; PATCH derives Preset after Release from the descriptor and sends adjacent choices through the shared structural worker/graph lifecycle. Release-mode real-SF2, deterministic two-run, and physical live witnesses prove exact names/order, source-preserving failure and preparation, audible activation, no fallback, and zero callback allocation or destruction.
 
-Current increment: render and edit the existing common per-voice ADSR values on PATCH without duplicating their canonical state or DSP behavior. SoundFont preset discovery remains the following separate increment within this phase.
+Phase 3 has no remaining planned increment. The next not-yet-implemented roadmap increment is Phase 4's first static per-Patch effect, after its exact processor and license are reviewed and narrowed with the user.
 
 Preserve the current basic interface while introducing two directly selectable pages:
 

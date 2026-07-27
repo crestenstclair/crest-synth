@@ -7,7 +7,6 @@ use crest_synth::adapter::braids_native::{
     braids_lifecycle_counts, BRAIDS_MODEL_COUNT, BRAIDS_VOICE_COUNT,
 };
 use crest_synth::adapter::braids_preparer::BraidsPreparer;
-use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_instrument_preparers,
@@ -387,7 +386,8 @@ fn braids_patches(count: usize, first_id: u32) -> Vec<Patch> {
 }
 
 fn soundfont_patch(id: u32, channel: u8) -> Patch {
-    let provider = HiDefSoundFontCapability::new().unwrap();
+    let provider =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
     Patch::new(
         PatchId::new(id).unwrap(),
         format!("SoundFont {id}"),

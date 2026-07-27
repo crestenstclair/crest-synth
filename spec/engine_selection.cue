@@ -29,8 +29,8 @@ project: goals: select_patch_engine: {
 }
 
 project: capabilities: asynchronous_engine_selection: {
-	description: "Request, prepare, commit, publish, activate, retire, and observe one capability-polymorphic Patch engine replacement without callback work or fallback"
-	goals: ["goal.select_patch_engine", "goal.observe_synth", "goal.observe_live_synth"]
+	description: "Request, prepare, commit, publish, activate, retire, and observe one capability-polymorphic Patch structural replacement without callback work or fallback"
+	goals: ["goal.select_patch_engine", "goal.select_soundfont_preset", "goal.edit_patch_envelope", "goal.observe_synth", "goal.observe_live_synth"]
 	acceptance: prepared_adjacent_choice: {
 		description: "the focused PATCH engine row selects both installed engines through one correlated asynchronous lifecycle"
 		actor: "actor.maintainer"
@@ -62,9 +62,9 @@ project: requirements: {
 	}
 	one_in_flight_structural_work: {
 		kind: "nonfunctional"
-		description: "Exactly one engine-selection request is Preparing or Activating application-wide; another structural request is a typed unchanged rejection, while MIDI, context selection, and valid MIXER scalar edits continue through the normal reducer path"
-		goals: ["goal.select_patch_engine"]
-		capabilities: ["capability.asynchronous_engine_selection", "capability.one_way_parameter_control"]
+		description: "Exactly one engine or descriptor-owned structural-choice request is Preparing or Activating application-wide; another structural request is a typed unchanged rejection, while MIDI, context selection, focus navigation, and valid scalar edits from MIXER or PATCH ADSR continue through the normal reducer path"
+		goals: ["goal.select_patch_engine", "goal.select_soundfont_preset"]
+		capabilities: ["capability.asynchronous_engine_selection", "capability.soundfont_preset_selection", "capability.one_way_parameter_control"]
 	}
 	atomic_prepared_activation: {
 		kind: "nonfunctional"
@@ -74,8 +74,8 @@ project: requirements: {
 	}
 	correlated_structural_outcomes: {
 		kind: "nonfunctional"
-		description: "Monotonic request id, PatchId, source and target CapabilityIds, source and target GraphRevisions, candidate config, Patch order, layout, and acknowledgement must all agree; failure is visible and accepted, while early, duplicate, stale, or mismatched results are typed unchanged rejections and every rejected candidate is destroyed off callback"
-		goals: ["goal.select_patch_engine"]
+		description: "Monotonic request id, PatchId, StructuralEditIntent, source and target CapabilityIds, source and target GraphRevisions, candidate config and permitted delta, Patch order, layout, and acknowledgement must all agree; failure is visible and accepted, while early, duplicate, stale, or mismatched results are typed unchanged rejections and every rejected candidate is destroyed off callback"
+		goals: ["goal.select_patch_engine", "goal.select_soundfont_preset"]
 		capabilities: ["capability.asynchronous_engine_selection", "capability.prepared_engine_rack"]
 	}
 	retryable_structural_publication: {
@@ -106,7 +106,7 @@ project: evidence: engine_selection_workflow: {
 }
 
 project: contexts: Synth: applicationServices: DescriptorDefaultConfigFactory: {
-	purpose: "construct one target capability config from its canonical descriptor defaults before graph preparation"
+	purpose: "construct one exact provider-validated structural target config before graph preparation"
 	uses: [
 		"valueObject.Synth.CapabilityRegistry",
 		"valueObject.Synth.CapabilityDescriptor",
@@ -115,9 +115,11 @@ project: contexts: Synth: applicationServices: DescriptorDefaultConfigFactory: {
 	]
 	operations: {
 		create: {input: {capabilityId: "CapabilityId"}, output: {result: "Result<InstrumentConfig, CapabilityError>"}}
+		replaceStructuralChoice: {input: {source: "InstrumentConfig", parameterId: "ParameterId", choiceId: "String"}, output: {result: "Result<InstrumentConfig, CapabilityError>"}}
 	}
 	meta: rules: [
 		"resolve exactly one descriptor and identity-matched provider, split every ordered ParameterSpec.defaultValue into generic values and asset references, call the existing provider createConfig operation, then revalidate the result through CapabilityRegistry",
+		"replaceStructuralChoice requires the source descriptor to mark exactly that parameter Structural, Choice, and StructuralChoice for PATCH, replaces exactly its assignment with one declared choice id, preserves every other value and asset byte-for-byte, calls the identity-matched provider, and revalidates the complete canonical config",
 		"the required SoundFont default asset is the descriptor-declared ./sf2/HiDef.sf2 reference and the default Braids config contains exactly its descriptor defaults",
 		"run only outside the audio callback and return a typed error for unknown ids, missing defaults or assets, provider mismatch, or invalid output without fallback",
 		"own no Patch mutation, inactive-engine cache, prepared object, graph, UI state, file I/O, SoundFont/Braids branch, or renderer factory",
@@ -126,43 +128,53 @@ project: contexts: Synth: applicationServices: DescriptorDefaultConfigFactory: {
 	contributesTo: [
 		{capability: "capability.instrument_capability_model", contribution: "turns the existing descriptor defaults into one validated generic config"},
 		{capability: "capability.asynchronous_engine_selection", contribution: "defines the target config without engine-specific selection logic or cached inactive values"},
+		{capability: "capability.soundfont_preset_selection", contribution: "builds the adjacent preset candidate as one exact generic assignment replacement"},
 	]
 }
 
 project: contexts: Control: {
 	valueObjects: PatchControlId: {
 		description: "a stable semantic focus target inside the PATCH context"
-		from: "Engine"
+		from: "Engine | Envelope(VoiceEnvelopeParameter) | Capability(ParameterId)"
 		invariants: [
-			"Engine is the only focusable PATCH control in this increment and serializes as patch.engine",
-			"the value is never a widget index, text line, capability id, or platform input code",
+			"the base ordered surface is Engine followed by the four VoiceEnvelope surface-descriptor parameters Attack, Decay, Sustain, and Release exactly once; the focused Patch resolver appends each visible enabled active-descriptor StructuralChoice ParameterId exactly once in descriptor order",
+			"Engine serializes as patch.engine, Envelope(parameter) derives patch.envelope.<VoiceEnvelopeParameter.name>, and Capability(parameter) derives patch.capability.<ParameterId> without declaring a second ADSR or capability-field enum",
+			"the value is never a widget index, text line, capability id, display label, choice label, or platform input code",
 		]
 		contributesTo: [
-			{capability: "capability.schema_driven_patch_page", contribution: "gives the engine row one stable focus identity"},
+			{capability: "capability.schema_driven_patch_page", contribution: "gives Engine and the four canonical ADSR rows stable ordered focus identities"},
+			{capability: "capability.per_voice_envelope", contribution: "reuses VoiceEnvelopeParameter rather than duplicating the four envelope concepts in control state"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "lets the reducer resolve Edit+Left/Right without UI-owned focus"},
+			{capability: "capability.soundfont_preset_selection", contribution: "addresses the descriptor-owned preset row by the existing ParameterId"},
 		]
 	}
 
 	valueObjects: EngineSelectionRequestId: {
-		description: "a monotonic correlation identity for one structural engine-selection attempt"
+		description: "a monotonic correlation identity for one structural instrument-config replacement attempt"
 		from: "u64"
 		invariants: [
 			"zero denotes no request; accepted requests use a greater nonzero id and overflow is a typed unchanged rejection",
 			"the value is copyable and contains no clock, pointer, worker handle, graph, or destructor",
 		]
-		contributesTo: [{capability: "capability.asynchronous_engine_selection", contribution: "correlates reducer state, worker results, graph publication, activation, retirement, and trace evidence"}]
+		contributesTo: [
+			{capability: "capability.asynchronous_engine_selection", contribution: "correlates reducer state, worker results, graph publication, activation, retirement, and trace evidence"},
+			{capability: "capability.soundfont_preset_selection", contribution: "shares the same request sequence and one-in-flight guard with engine selection"},
+		]
 	}
 
 	valueObjects: EngineSelectionFailure: {
 		description: "the stable visible control-side reason an engine candidate could not be prepared"
 		state: {
-			kind: "UnknownCapability | MissingDefault | InvalidDefaultConfig | ProviderMismatch | PreparerMissing | AssetUnavailable | UnsupportedAudioConfig | PreparationFailed | GraphIncompatible | WorkerUnavailable"
+			kind: "UnknownCapability | MissingDefault | InvalidDefaultConfig | ProviderMismatch | PreparerMissing | AssetUnavailable | PresetUnavailable | UnsupportedAudioConfig | PreparationFailed | GraphIncompatible | WorkerUnavailable"
 		}
 		invariants: [
 			"the value contains no adapter error string, path, engine, graph, decoder, allocation owner, or fallback choice",
 			"adapters map concrete errors to exactly one declared case outside the callback and retain diagnostic detail only outside canonical state",
 		]
-		contributesTo: [{capability: "capability.asynchronous_engine_selection", contribution: "makes failed preparation explicit, serializable, and recoverable"}]
+		contributesTo: [
+			{capability: "capability.asynchronous_engine_selection", contribution: "makes failed preparation explicit, serializable, and recoverable"},
+			{capability: "capability.soundfont_preset_selection", contribution: "preserves an unavailable selected preset as a typed source-preserving failure"},
+		]
 	}
 
 	valueObjects: EngineSelectionStatus: {
@@ -170,7 +182,7 @@ project: contexts: Control: {
 		state: {
 			kind: "Ready | Preparing | Activating | Failed"
 			activeGraphRevision: "GraphRevision"
-			correlation: "Option<{requestId: EngineSelectionRequestId, patchId: PatchId, sourceCapabilityId: CapabilityId, targetCapabilityId: CapabilityId, sourceGraphRevision: GraphRevision, targetGraphRevision: Option<GraphRevision>}>"
+			correlation: "Option<{requestId: EngineSelectionRequestId, patchId: PatchId, intent: StructuralEditIntent, sourceCapabilityId: CapabilityId, targetCapabilityId: CapabilityId, sourceGraphRevision: GraphRevision, targetGraphRevision: Option<GraphRevision>}>"
 			failure: "Option<EngineSelectionFailure>"
 		}
 		invariants: [
@@ -182,6 +194,7 @@ project: contexts: Control: {
 		contributesTo: [
 			{capability: "capability.asynchronous_engine_selection", contribution: "is the canonical pending, activation, and failure state"},
 			{capability: "capability.schema_driven_patch_page", contribution: "projects exact engine-row status without UI-owned lifecycle state"},
+			{capability: "capability.soundfont_preset_selection", contribution: "projects the same lifecycle on the targeted descriptor-owned preset row"},
 		]
 	}
 
@@ -191,6 +204,7 @@ project: contexts: Control: {
 			kind: "PrepareRequested | CandidateCommitted | GraphStaged | GraphPublished | ActivationAcknowledged"
 			requestId: "EngineSelectionRequestId"
 			patchId: "PatchId"
+			intent: "StructuralEditIntent"
 			sourceCapabilityId: "CapabilityId"
 			targetCapabilityId: "CapabilityId"
 			sourceGraphRevision: "GraphRevision"
@@ -203,6 +217,7 @@ project: contexts: Control: {
 		]
 		contributesTo: [
 			{capability: "capability.asynchronous_engine_selection", contribution: "makes structural orchestration observable without leaking graph ownership into AppState"},
+			{capability: "capability.soundfont_preset_selection", contribution: "records preset preparation, commit, publication, and acknowledgement without label matching"},
 			{capability: "capability.observable_demo_scene", contribution: "adds exact lifecycle effects to schema-derived coverage"},
 		]
 	}
@@ -214,6 +229,7 @@ project: contexts: RealTime: {
 		state: {
 			requestId: "EngineSelectionRequestId"
 			patchId: "PatchId"
+			intent: "StructuralEditIntent"
 			sourceCapabilityId: "CapabilityId"
 			targetCapabilityId: "CapabilityId"
 			sourceGraphRevision: "GraphRevision"
@@ -223,19 +239,22 @@ project: contexts: RealTime: {
 			audioConfig: "AudioDeviceConfig"
 		}
 		invariants: [
-			"candidatePatches has the exact active PatchIds, order, capacity, routes, mixer values, and envelopes with only patchId's InstrumentConfig replaced by the one descriptor-default target config",
+			"candidatePatches has the exact active PatchIds, order, capacity, routes, mixer values, and envelopes with only patchId's InstrumentConfig replaced by the intent's descriptor-default capability config or one-assignment structural-choice config",
 			"candidateParameters is compatible with candidatePatches and targetGraphRevision; the prepared graph is refreshed from the exact committed target snapshot before publication",
-			"targetGraphRevision is greater than sourceGraphRevision and the selected candidate Patch config matches targetCapabilityId through the immutable registry",
+			"targetGraphRevision is greater than sourceGraphRevision and the selected candidate Patch config matches targetCapabilityId plus StructuralEditIntent through the immutable registry",
 			"the request is created and consumed outside the callback and contains no active graph, device owner, UI object, or fallback",
 		]
-		contributesTo: [{capability: "capability.asynchronous_engine_selection", contribution: "freezes the exact candidate and correlation sent to off-callback preparation"}]
+		contributesTo: [
+			{capability: "capability.asynchronous_engine_selection", contribution: "freezes the exact candidate and correlation sent to off-callback preparation"},
+			{capability: "capability.soundfont_preset_selection", contribution: "freezes the exact single-preset delta sent to off-callback preparation"},
+		]
 	}
 
 	valueObjects: GraphPreparationResult: {
 		description: "one ownership-bearing worker outcome returned to the control coordinator"
 		state: {
 			kind: "Prepared | Failed"
-			correlation: "{requestId: EngineSelectionRequestId, patchId: PatchId, sourceCapabilityId: CapabilityId, targetCapabilityId: CapabilityId, sourceGraphRevision: GraphRevision, targetGraphRevision: GraphRevision}"
+			correlation: "{requestId: EngineSelectionRequestId, patchId: PatchId, intent: StructuralEditIntent, sourceCapabilityId: CapabilityId, targetCapabilityId: CapabilityId, sourceGraphRevision: GraphRevision, targetGraphRevision: GraphRevision}"
 			candidateConfig: "Option<InstrumentConfig>"
 			preparedGraph: "Option<PreparedGraph>"
 			failure: "Option<EngineSelectionFailure>"
@@ -247,6 +266,7 @@ project: contexts: RealTime: {
 		]
 		contributesTo: [
 			{capability: "capability.asynchronous_engine_selection", contribution: "keeps complete graph ownership external to canonical control state"},
+			{capability: "capability.soundfont_preset_selection", contribution: "returns the exact preset candidate or typed failure without moving graph ownership into AppState"},
 			{capability: "capability.prepared_engine_rack", contribution: "returns a complete capability-neutral candidate or an explicit failure"},
 		]
 	}
@@ -267,6 +287,7 @@ project: contexts: RealTime: {
 		]
 		contributesTo: [
 			{capability: "capability.asynchronous_engine_selection", contribution: "separates slow preparation from reducer, UI tick, and callback ownership"},
+			{capability: "capability.soundfont_preset_selection", contribution: "prepares a preset replacement through the same capacity-one worker"},
 			{capability: "capability.realtime_execution", contribution: "keeps structural construction and destruction off the callback"},
 		]
 	}
@@ -278,13 +299,16 @@ project: adapters: ThreadedGraphPreparationWorker: {
 	profile: {kind: "in_process", medium: "standard-library-thread-and-bounded-channels"}
 	meta: rules: [
 		"own one dedicated standard-library thread with one-slot request and result transports; no async runtime is added",
-		"use only the injected immutable registry, ordered preparers, PreparedGraphBuilder, negotiated AudioDeviceConfig, and the already provider-validated candidate in GraphPreparationRequest",
+		"use only the injected immutable registry, ordered preparers, PreparedGraphBuilder, negotiated AudioDeviceConfig, StructuralEditIntent, and the already provider-validated candidate in GraphPreparationRequest",
 		"revalidate the candidate config and exact Patch/layout correlation before invoking preparers; never call a provider twice or reconstruct a different candidate inside the worker",
 		"preserve exact request correlation, return one typed failure without fallback, and never call AppState.apply, publish a graph, render audio, or mutate a report",
 		"return all unconsumed ownership to the control-side shutdown path after the audio stream has stopped",
 	]
 	validations: [{id: "validation.adapter.threaded_graph_preparation_worker", kind: "test", command: ["cargo", "test", "threaded_graph_preparation_worker"], description: "capacity, both real engine directions, failure mapping, correlation, nonblocking polling, and control-side shutdown are exact"}]
-	contributesTo: [{capability: "capability.asynchronous_engine_selection", contribution: "implements production off-callback structural preparation without adding an async runtime"}]
+	contributesTo: [
+		{capability: "capability.asynchronous_engine_selection", contribution: "implements production off-callback structural preparation without adding an async runtime"},
+		{capability: "capability.soundfont_preset_selection", contribution: "uses the same production thread and correlation for preset preparation"},
+	]
 }
 
 project: adapters: DeterministicGraphPreparationWorker: {
@@ -293,13 +317,14 @@ project: adapters: DeterministicGraphPreparationWorker: {
 	profile: {kind: "test_double", medium: "manual-step-same-thread"}
 	meta: rules: [
 		"trySubmit stores the same capacity-one GraphPreparationRequest and advance performs exactly one deterministic unit of work only when the scene asks",
-		"the composed healthy path receives a request created by the real DescriptorDefaultConfigFactory and production provider, then calls the production preparers and PreparedGraphBuilder; it does not return a fake PreparedGraph",
+		"the composed healthy path receives a request created by the real DescriptorDefaultConfigFactory engine-default or structural-choice operation and production provider, then calls the production preparers and PreparedGraphBuilder; it does not return a fake PreparedGraph",
 		"one declared controlled mode returns a typed EngineSelectionFailure at the worker seam without editing AppState, EventLog, DemoSceneReport, or audio measurements",
 		"logical outputs contain no thread timing, wall clock, pointer, or nondeterministic ordering so two fresh scene runs are byte-identical",
 	]
 	validations: [{id: "validation.adapter.deterministic_graph_preparation_worker", kind: "test", command: ["cargo", "test", "deterministic_graph_preparation_worker"], description: "manual pending, real healthy preparation, controlled failure, capacity, and deterministic ownership are exact"}]
 	contributesTo: [
 		{capability: "capability.asynchronous_engine_selection", contribution: "makes the asynchronous lifecycle deterministically controllable without weakening production preparation"},
+		{capability: "capability.soundfont_preset_selection", contribution: "makes preset pending, success, failure, and acknowledgement deterministic through production preparation"},
 		{capability: "capability.observable_demo_scene", contribution: "lets the demo prove pending, completion, failure, and acknowledgement at explicit steps"},
 	]
 }

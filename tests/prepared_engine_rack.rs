@@ -300,7 +300,8 @@ fn note_on(channel: MidiChannel) -> MidiMessage {
 
 #[test]
 fn prepared_engine_rack_acceptance() {
-    let provider = HiDefSoundFontCapability::new().expect("production capability is valid");
+    let provider = crest_synth::adapter::production_instruments::production_soundfont_capability()
+        .expect("production capability is valid");
     let patches = patches(&provider);
 
     prove_atomic_capability_matching(&provider, &patches);
@@ -510,7 +511,10 @@ fn prove_atomic_capability_matching(provider: &HiDefSoundFontCapability, patches
 }
 
 fn prove_hidef_preparation(patch: &Patch) {
-    let preparer = HiDefSoundFontPreparer::new().expect("the production SoundFont parses");
+    let preparer = HiDefSoundFontPreparer::new(
+        crest_synth::adapter::production_instruments::production_soundfont_asset().unwrap(),
+    )
+    .expect("the production SoundFont parses");
     assert_eq!(preparer.parsed_bank_count(), 1);
     assert_eq!(preparer.prepared_shared_asset_count(), 1);
     let mut instrument = preparer

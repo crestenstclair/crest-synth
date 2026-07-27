@@ -178,7 +178,7 @@ pub struct RuntimeAudioWitness {
     initial_graph_revision: GraphRevision,
     active_graph_revision: GraphRevision,
     engine_switches: usize,
-    ready_capabilities: [Option<RuntimeReadyCapability>; 2],
+    ready_capabilities: [Option<RuntimeReadyCapability>; 3],
     fallbacks: usize,
     callback_allocations: usize,
     callback_destructions: usize,
@@ -213,7 +213,7 @@ impl RuntimeAudioWitness {
             initial_graph_revision: active_graph_revision,
             active_graph_revision,
             engine_switches: 0,
-            ready_capabilities: [None, None],
+            ready_capabilities: [None, None, None],
             fallbacks: 0,
             callback_allocations,
             callback_destructions,
@@ -292,6 +292,7 @@ impl RuntimeAudioWitness {
         matches!(
             self.ready_capabilities,
             [
+                Some(RuntimeReadyCapability::SoundFont),
                 Some(RuntimeReadyCapability::Braids),
                 Some(RuntimeReadyCapability::SoundFont)
             ]
@@ -336,7 +337,7 @@ pub struct LiveEventLogSummary {
 }
 
 impl LiveEventLogSummary {
-    pub const SCHEMA_VERSION: u32 = 2;
+    pub const SCHEMA_VERSION: u32 = 3;
 
     fn from_event_log(event_log: &EventLog, active_graph_revision: GraphRevision) -> Self {
         let first = event_log.records().first();
@@ -361,7 +362,7 @@ impl LiveEventLogSummary {
 }
 
 impl LiveDemoReport {
-    pub const SCHEMA_VERSION: u32 = 3;
+    pub const SCHEMA_VERSION: u32 = 5;
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -419,13 +420,14 @@ impl LiveDemoReport {
             && final_observation.non_finite_samples() == 0;
         let checkpoints_agree = !checkpoints.is_empty()
             && checkpoints.iter().all(LiveCheckpoint::agrees)
-            && engine_checkpoint_sequence_is_complete(&checkpoints, &coverage);
+            && engine_checkpoint_sequence_is_complete(&checkpoints, &coverage)
+            && patch_adsr_checkpoint_sequence_is_complete(&checkpoints, installed_patches);
         let runtime_complete = runtime_audio.parsed_soundfont_banks() > 0
             && runtime_audio.prepared_instruments() == installed_patches.len()
             && runtime_composition_matches(&state_tree, runtime_audio)
             && runtime_audio.initial_graph_revision() < runtime_audio.active_graph_revision()
             && runtime_audio.active_graph_revision() == state_tree.graph_revision()
-            && runtime_audio.engine_switches() == 2
+            && runtime_audio.engine_switches() == 3
             && runtime_audio.has_exact_ready_sequence()
             && runtime_audio.fallbacks() == 0
             && runtime_audio.callback_allocations() == 0
@@ -591,11 +593,71 @@ fn engine_checkpoint_sequence_is_complete(
         {
             return false;
         }
+        if expected == "SoundFontPresetToNext"
+            && (!lifecycle[0].source_audio_nonzero()
+                || lifecycle.iter().any(|checkpoint| {
+                    checkpoint.preset().is_none()
+                        || !matches!(
+                            checkpoint.intent(),
+                            crate::control::StructuralEditIntent::ReplaceParameterChoice { .. }
+                        )
+                }))
+        {
+            return false;
+        }
+        if expected != "SoundFontPresetToNext"
+            && lifecycle.iter().any(|checkpoint| {
+                checkpoint.preset().is_some()
+                    || !matches!(
+                        checkpoint.intent(),
+                        crate::control::StructuralEditIntent::ReplaceCapability { .. }
+                    )
+            })
+        {
+            return false;
+        }
         if index > 0 && lifecycle[2].graph_revision() <= engines[offset - 1].graph_revision() {
             return false;
         }
     }
     true
+}
+
+fn patch_adsr_checkpoint_sequence_is_complete(
+    checkpoints: &[LiveCheckpoint],
+    installed_patches: &[PatchId],
+) -> bool {
+    let Some(focused_patch) = installed_patches.first().copied() else {
+        return false;
+    };
+    let patch_adsr = checkpoints
+        .iter()
+        .filter_map(LiveCheckpoint::as_parameter)
+        .filter(|checkpoint| {
+            checkpoint
+                .expected_transition()
+                .patch_control_id()
+                .is_some()
+        })
+        .collect::<Vec<_>>();
+    if patch_adsr.len() != crate::synth::VoiceEnvelope::surface_descriptor().len() {
+        return false;
+    }
+    patch_adsr
+        .iter()
+        .zip(crate::synth::VoiceEnvelope::surface_descriptor())
+        .all(|(checkpoint, descriptor)| {
+            let parameter = descriptor.parameter();
+            checkpoint.expected_transition().patch_control_id()
+                == Some(crate::control::PatchControlId::Envelope(parameter))
+                && matches!(
+                    checkpoint.expected_transition().editable_parameter(),
+                    Some(LiveEditableParameter::Patch {
+                        patch_id,
+                        target: crate::synth::PatchEditableTarget::Envelope(actual),
+                    }) if *patch_id == focused_patch && *actual == parameter
+                )
+        })
 }
 
 fn final_soundfont_config_is_default(tree: &StateTree) -> bool {
@@ -613,12 +675,22 @@ fn final_soundfont_config_is_default(tree: &StateTree) -> bool {
     ) else {
         return false;
     };
-    let Ok(providers) = crate::adapter::production_instruments::production_instrument_providers()
-    else {
+    let Some(descriptor) = registry.descriptor(actual.capability_id()) else {
         return false;
     };
-    let factory = crate::synth::DescriptorDefaultConfigFactory::new(registry, providers);
-    let Ok(expected) = factory.create(actual.capability_id()) else {
+    let mut values = Vec::new();
+    let mut assets = Vec::new();
+    for parameter in descriptor.parameters() {
+        match parameter.default_value() {
+            crate::synth::ParameterDefault::Value(value) => values.push(
+                crate::synth::ParameterAssignment::new(parameter.id().clone(), value.clone()),
+            ),
+            crate::synth::ParameterDefault::Asset(reference) => assets.push(
+                crate::synth::AssetAssignment::new(parameter.id().clone(), reference.clone()),
+            ),
+        }
+    }
+    let Ok(expected) = descriptor.create_config(&values, &assets) else {
         return false;
     };
     value

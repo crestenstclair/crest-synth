@@ -1,8 +1,6 @@
 use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
-use crest_synth::adapter::hidef_soundfont_capability::{
-    HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
-};
+use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::kernel::midi_channel::MidiChannel;
@@ -382,7 +380,9 @@ fn initial_audio_boundary() -> LockFreeAudioBoundary {
 }
 
 fn hidef_provider() -> Box<dyn InstrumentCapabilityProvider> {
-    Box::new(HiDefSoundFontCapability::new().unwrap())
+    Box::new(
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap(),
+    )
 }
 
 fn braids_provider() -> Box<dyn InstrumentCapabilityProvider> {
@@ -631,7 +631,8 @@ fn graph_fixture(
     max_frames: usize,
     probe: &Arc<PreparationProbe>,
 ) -> GraphFixture {
-    let provider = HiDefSoundFontCapability::new().unwrap();
+    let provider =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
     let registry = provider.registry().unwrap();
     let patch = Patch::new(
         PatchId::new(1).unwrap(),

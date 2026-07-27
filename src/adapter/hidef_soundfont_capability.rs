@@ -1,60 +1,55 @@
 use crate::kernel::midi_message::MidiMessageKind;
-use crate::synth::capability_id::CapabilityId;
-use crate::synth::instrument_capability::{
+use crate::synth::{
     AssetAssignment, AssetKind, AssetReference, AssetRequirement, CapabilityDescriptor,
-    CapabilityError, CapabilityRegistry, CapabilitySection, InstrumentConfig, ParameterAssignment,
-    ParameterDefault, ParameterKind, ParameterRange, ParameterSpec, ParameterUpdate,
-    ParameterValue, VoicePolicy,
+    CapabilityError, CapabilityId, CapabilityRegistry, CapabilitySection,
+    InstrumentCapabilityProvider, InstrumentConfig, ParameterAssignment, ParameterChoice,
+    ParameterDefault, ParameterId, ParameterKind, ParameterSpec, ParameterUpdate, ParameterValue,
+    PatchInteraction, SoundFontPresetCatalog, VoicePolicy,
 };
-use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
-use crate::synth::parameter_id::ParameterId;
+use std::sync::Arc;
 
 pub const HIDEF_CAPABILITY_ID: &str = "instrument.soundfont.hidef";
 pub const HIDEF_SOUNDFONT_PATH: &str = "./sf2/HiDef.sf2";
-pub const SOUNDFONT_BANK_PARAMETER_ID: &str = "soundfont.bank";
-pub const SOUNDFONT_PROGRAM_PARAMETER_ID: &str = "soundfont.program";
-pub const SOUNDFONT_PERCUSSION_PARAMETER_ID: &str = "soundfont.percussion";
+pub const SOUNDFONT_PRESET_PARAMETER_ID: &str = "soundfont.preset";
 pub const SOUNDFONT_FILE_PARAMETER_ID: &str = "soundfont.file";
 pub const HIDEF_POLYPHONY_CEILING: u16 = 64;
+pub const HIDEF_SUPPORTED_MIDI_KINDS: [MidiMessageKind; 6] = [
+    MidiMessageKind::NoteOn,
+    MidiMessageKind::NoteOff,
+    MidiMessageKind::ControlChange,
+    MidiMessageKind::ChannelPressure,
+    MidiMessageKind::PitchBend,
+    MidiMessageKind::AllNotesOff,
+];
 
-/// Control-side descriptor/config provider for the installed HiDef SoundFont.
+/// Control-side descriptor/config provider hydrated from the one shared asset
+/// catalog. Provider operations perform no file I/O or SF2 parsing.
 #[derive(Clone, Debug)]
 pub struct HiDefSoundFontCapability {
     descriptor: CapabilityDescriptor,
 }
 
 impl HiDefSoundFontCapability {
-    pub fn new() -> Result<Self, CapabilityError> {
-        let bank = numeric_parameter(
-            SOUNDFONT_BANK_PARAMETER_ID,
-            "Bank",
-            0,
-            0,
-            u16::MAX.into(),
-            1.0,
-            128.0,
-        )?;
-        let program = numeric_parameter(
-            SOUNDFONT_PROGRAM_PARAMETER_ID,
-            "Program",
-            0,
-            0,
-            127,
-            1.0,
-            8.0,
-        )?;
-        let percussion = ParameterSpec::new(
-            parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID)?,
-            "Percussion",
-            ParameterKind::Toggle,
+    pub fn new(catalog: Arc<SoundFontPresetCatalog>) -> Result<Self, CapabilityError> {
+        let preset_id = parameter_id(SOUNDFONT_PRESET_PARAMETER_ID)?;
+        let choices = catalog
+            .entries()
+            .iter()
+            .map(|entry| ParameterChoice::new(entry.choice_id(), entry.name()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let preset = ParameterSpec::new_with_patch_interaction(
+            preset_id,
+            "Preset",
+            ParameterKind::Choice,
             ParameterUpdate::Structural,
-            ParameterDefault::Value(ParameterValue::Toggle(false)),
+            PatchInteraction::StructuralChoice,
+            ParameterDefault::Value(ParameterValue::Choice(catalog.default_entry().choice_id())),
             None,
-            Vec::new(),
+            choices,
             None,
             None,
             None,
-            "toggle",
+            "choice",
             None,
             None,
         )?;
@@ -86,16 +81,15 @@ impl HiDefSoundFontCapability {
             vec![CapabilitySection::new(
                 "soundfont",
                 "SoundFont",
-                vec![bank, program, percussion, file],
+                vec![preset, file],
             )?],
             vec![AssetRequirement::new(file_id, true)],
             VoicePolicy::EngineManaged,
-            MidiMessageKind::ALL.to_vec(),
+            HIDEF_SUPPORTED_MIDI_KINDS.to_vec(),
         )?;
         Ok(Self { descriptor })
     }
 
-    /// Builds the exact immutable registry installed by current composition roots.
     pub fn registry(&self) -> Result<CapabilityRegistry, CapabilityError> {
         CapabilityRegistry::new(vec![self.descriptor()])
     }
@@ -115,32 +109,6 @@ impl InstrumentCapabilityProvider for HiDefSoundFontCapability {
     }
 }
 
-fn numeric_parameter(
-    id: &str,
-    label: &str,
-    default: i64,
-    minimum: i64,
-    maximum: i64,
-    fine_step: f64,
-    coarse_step: f64,
-) -> Result<ParameterSpec, CapabilityError> {
-    ParameterSpec::new(
-        parameter_id(id)?,
-        label,
-        ParameterKind::Stepped,
-        ParameterUpdate::Structural,
-        ParameterDefault::Value(ParameterValue::Stepped(default)),
-        Some(ParameterRange::new(minimum as f64, maximum as f64)?),
-        Vec::new(),
-        Some(fine_step),
-        Some(coarse_step),
-        None,
-        "integer",
-        None,
-        None,
-    )
-}
-
 fn parameter_id(value: &str) -> Result<ParameterId, CapabilityError> {
     ParameterId::new(value)
         .map_err(|_| CapabilityError::InvalidMetadataIdentifier(value.to_owned()))
@@ -149,130 +117,96 @@ fn parameter_id(value: &str) -> Result<ParameterId, CapabilityError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn config(
-        provider: &HiDefSoundFontCapability,
-        bank: i64,
-        program: i64,
-        percussion: bool,
-    ) -> Result<InstrumentConfig, CapabilityError> {
-        provider.create_config(
-            &[
-                ParameterAssignment::new(
-                    parameter_id(SOUNDFONT_BANK_PARAMETER_ID).unwrap(),
-                    ParameterValue::Stepped(bank),
-                ),
-                ParameterAssignment::new(
-                    parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap(),
-                    ParameterValue::Stepped(program),
-                ),
-                ParameterAssignment::new(
-                    parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID).unwrap(),
-                    ParameterValue::Toggle(percussion),
-                ),
-            ],
-            &[AssetAssignment::new(
-                parameter_id(SOUNDFONT_FILE_PARAMETER_ID).unwrap(),
-                AssetReference::new(AssetKind::SoundFont, HIDEF_SOUNDFONT_PATH).unwrap(),
-            )],
-        )
-    }
+    use crate::adapter::hidef_soundfont_asset::HiDefSoundFontAsset;
 
     #[test]
-    fn hidef_soundfont_capability_declares_the_exact_ordered_schema() {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+    fn hidef_soundfont_capability_declares_the_exact_catalog_backed_schema() {
+        let asset = HiDefSoundFontAsset::load().unwrap();
+        let catalog = asset.catalog();
+        let provider = HiDefSoundFontCapability::new(Arc::clone(&catalog)).unwrap();
         let descriptor = provider.descriptor();
 
         assert_eq!(descriptor.id().as_str(), HIDEF_CAPABILITY_ID);
-        assert_eq!(descriptor.label(), "HiDef SoundFont");
-        assert_eq!(descriptor.semantic_accent(), "instrument.soundfont");
         assert_eq!(descriptor.voice_policy(), VoicePolicy::EngineManaged);
-        assert_eq!(descriptor.supported_midi_kinds(), MidiMessageKind::ALL);
-        assert_eq!(descriptor.sections().len(), 1);
         let parameters = descriptor.sections()[0].parameters();
         assert_eq!(
             parameters
                 .iter()
                 .map(|parameter| parameter.id().as_str())
                 .collect::<Vec<_>>(),
-            [
-                SOUNDFONT_BANK_PARAMETER_ID,
-                SOUNDFONT_PROGRAM_PARAMETER_ID,
-                SOUNDFONT_PERCUSSION_PARAMETER_ID,
-                SOUNDFONT_FILE_PARAMETER_ID,
-            ]
+            [SOUNDFONT_PRESET_PARAMETER_ID, SOUNDFONT_FILE_PARAMETER_ID]
         );
-        assert!(parameters
-            .iter()
-            .all(|parameter| parameter.update() == ParameterUpdate::Structural));
-        assert_eq!(parameters[0].kind(), ParameterKind::Stepped);
-        assert_eq!(parameters[1].range().unwrap().maximum(), 127.0);
-        assert_eq!(parameters[2].kind(), ParameterKind::Toggle);
-        assert_eq!(parameters[3].kind(), ParameterKind::Asset);
-        assert_eq!(descriptor.asset_requirements().len(), 1);
-        assert!(descriptor.asset_requirements()[0].required());
+        assert_eq!(parameters[0].kind(), ParameterKind::Choice);
+        assert_eq!(parameters[0].update(), ParameterUpdate::Structural);
+        assert_eq!(
+            parameters[0].patch_interaction(),
+            PatchInteraction::StructuralChoice
+        );
+        assert_eq!(parameters[1].kind(), ParameterKind::Asset);
+        assert_eq!(
+            parameters[1].patch_interaction(),
+            PatchInteraction::ReadOnly
+        );
+        assert_eq!(
+            parameters[0]
+                .choices()
+                .iter()
+                .map(|choice| (choice.id(), choice.label()))
+                .collect::<Vec<_>>(),
+            catalog
+                .entries()
+                .iter()
+                .map(|entry| (entry.choice_id(), entry.name().to_owned()))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|(id, name)| (id.as_str(), name.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            parameters[0].default_value(),
+            &ParameterDefault::Value(ParameterValue::Choice(catalog.default_entry().choice_id()))
+        );
     }
 
     #[test]
-    fn hidef_soundfont_capability_creates_exact_configs_without_fallback() {
-        let provider = HiDefSoundFontCapability::new().unwrap();
-        let instrument_config = config(&provider, 128, 42, true).unwrap();
+    fn hidef_soundfont_capability_validates_exact_preset_and_locked_asset() {
+        let asset = HiDefSoundFontAsset::load().unwrap();
+        let catalog = asset.catalog();
+        let provider = HiDefSoundFontCapability::new(Arc::clone(&catalog)).unwrap();
+        let preset_id = parameter_id(SOUNDFONT_PRESET_PARAMETER_ID).unwrap();
+        let file_id = parameter_id(SOUNDFONT_FILE_PARAMETER_ID).unwrap();
+        let config = provider
+            .create_config(
+                &[ParameterAssignment::new(
+                    preset_id.clone(),
+                    ParameterValue::Choice(catalog.default_entry().choice_id()),
+                )],
+                &[AssetAssignment::new(
+                    file_id.clone(),
+                    AssetReference::new(AssetKind::SoundFont, HIDEF_SOUNDFONT_PATH).unwrap(),
+                )],
+            )
+            .unwrap();
         provider
             .registry()
             .unwrap()
-            .validate_config(&instrument_config)
+            .validate_config(&config)
             .unwrap();
+        assert_eq!(config.values().len(), 1);
+        assert_eq!(config.asset_references().len(), 1);
 
-        assert_eq!(
-            instrument_config.capability_id().as_str(),
-            HIDEF_CAPABILITY_ID
-        );
-        assert_eq!(
-            instrument_config.value(&parameter_id(SOUNDFONT_BANK_PARAMETER_ID).unwrap()),
-            Some(&ParameterValue::Stepped(128))
-        );
-        assert_eq!(
-            instrument_config.value(&parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()),
-            Some(&ParameterValue::Stepped(42))
-        );
-        assert_eq!(
-            instrument_config.value(&parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID).unwrap()),
-            Some(&ParameterValue::Toggle(true))
-        );
-        assert_eq!(
-            instrument_config
-                .asset_reference(&parameter_id(SOUNDFONT_FILE_PARAMETER_ID).unwrap())
-                .unwrap()
-                .locator(),
-            HIDEF_SOUNDFONT_PATH
-        );
-
-        assert!(matches!(
-            config(&provider, 0, 128, false),
-            Err(CapabilityError::ValueOutOfRange(_))
-        ));
         assert!(matches!(
             provider.create_config(
-                &[
-                    ParameterAssignment::new(
-                        parameter_id(SOUNDFONT_BANK_PARAMETER_ID).unwrap(),
-                        ParameterValue::Stepped(0),
-                    ),
-                    ParameterAssignment::new(
-                        parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap(),
-                        ParameterValue::Stepped(0),
-                    ),
-                    ParameterAssignment::new(
-                        parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID).unwrap(),
-                        ParameterValue::Toggle(false),
-                    ),
-                ],
+                &[ParameterAssignment::new(
+                    preset_id,
+                    ParameterValue::Choice("sf2.bank-65535.program-127".to_owned()),
+                )],
                 &[AssetAssignment::new(
-                    parameter_id(SOUNDFONT_FILE_PARAMETER_ID).unwrap(),
-                    AssetReference::new(AssetKind::SoundFont, "./sf2/Other.sf2").unwrap(),
+                    file_id,
+                    AssetReference::new(AssetKind::SoundFont, HIDEF_SOUNDFONT_PATH).unwrap(),
                 )],
             ),
-            Err(CapabilityError::AssetDoesNotMatch(_))
+            Err(CapabilityError::UnknownChoice(_))
         ));
     }
 }

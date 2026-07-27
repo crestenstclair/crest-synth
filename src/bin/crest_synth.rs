@@ -6,6 +6,7 @@ use crest_synth::adapter::braids_preparer::BraidsPreparer;
 use crest_synth::adapter::corridors_midi_event_source::CorridorsMidiEventSource;
 use crest_synth::adapter::cpal_audio_output::CpalAudioOutput;
 use crest_synth::adapter::eframe_text_window::EframeTextWindow;
+use crest_synth::adapter::hidef_soundfont_asset::HiDefSoundFontAsset;
 use crest_synth::adapter::hidef_soundfont_capability::{
     HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
 };
@@ -28,7 +29,7 @@ use crest_synth::synth::{InstrumentCapabilityProvider, InstrumentPreparer};
 use crest_synth::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport};
 use crest_synth::testing::{
     BehavioralMutationCase, BehavioralMutationHarness, BehavioralMutationObservation,
-    LiveDemoReport,
+    LiveDemoReport, LIVE_DEMO_NO_PROGRESS_TIMEOUT, LIVE_DEMO_TOTAL_TIMEOUT,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -47,9 +48,11 @@ fn run(options: Options) -> Result<()> {
         let initial_parameters = ParameterSnapshot::new(0, config.global_parameters(), &[])
             .context("failed to construct the initial audio parameter snapshot")?;
         let boundary = LockFreeAudioBoundary::new(AUDIO_COMMAND_CAPACITY, initial_parameters);
+        let soundfont_asset = HiDefSoundFontAsset::load()
+            .context("failed to load the fixed HiDef SoundFont asset")?;
         let providers: Vec<Box<dyn InstrumentCapabilityProvider>> = vec![
             Box::new(
-                HiDefSoundFontCapability::new()
+                HiDefSoundFontCapability::new(soundfont_asset.catalog())
                     .context("failed to construct the HiDef capability provider")?,
             ),
             Box::new(
@@ -59,7 +62,7 @@ fn run(options: Options) -> Result<()> {
         ];
         let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
             Box::new(
-                HiDefSoundFontPreparer::new()
+                HiDefSoundFontPreparer::new(&soundfont_asset)
                     .context("failed to prepare the HiDef instrument factory")?,
             ),
             Box::new(
@@ -72,6 +75,11 @@ fn run(options: Options) -> Result<()> {
             GraphHandoffStatus::with_active(GraphRevision::INITIAL),
         )
         .context("failed to prepare the structural graph boundary")?;
+        let window = if options.demo_live {
+            EframeTextWindow::new("crest-synth — autonomous live demo")
+        } else {
+            EframeTextWindow::default()
+        };
         StandaloneApplication::new(
             boundary,
             providers,
@@ -79,7 +87,7 @@ fn run(options: Options) -> Result<()> {
             structural,
             AtomicAudioObservation::default(),
             CorridorsMidiEventSource::new(),
-            EframeTextWindow::default(),
+            window,
             CpalAudioOutput::new(),
             config,
         )
@@ -87,6 +95,11 @@ fn run(options: Options) -> Result<()> {
     };
 
     if options.demo_live {
+        eprintln!(
+            "crest-synth live demo: autonomous and input-isolated; expected duration about 90 seconds; no-progress timeout={}s; total timeout={}s; closing the window cancels the proof",
+            LIVE_DEMO_NO_PROGRESS_TIMEOUT.as_secs(),
+            LIVE_DEMO_TOTAL_TIMEOUT.as_secs(),
+        );
         make_application()?
             .run_live_demo(
                 |checkpoint| {
@@ -261,6 +274,10 @@ struct DemoSceneObservation {
     navigate_directions_exercised: usize,
     parameter_projection_matches_state: bool,
     parsed_soundfont_banks: usize,
+    patch_adsr_control_cases_exercised: usize,
+    patch_focus_projection_exact: bool,
+    patch_adsr_scalar_only: bool,
+    patch_adsr_structural_coexistence_exact: bool,
     post_rejection_event_accepted: bool,
     prepared_instruments: usize,
     rejection_variants_exercised: usize,
@@ -381,6 +398,47 @@ impl DemoSceneObservation {
                 .any(|parameter| identifier.ends_with(&format!(".{parameter}")))
             })
             .count();
+        let routed_patch_adsr = report
+            .checkpoints()
+            .iter()
+            .filter_map(|checkpoint| checkpoint.patch_adsr())
+            .filter(|checkpoint| checkpoint.lifecycle().is_none())
+            .collect::<Vec<_>>();
+        let patch_adsr_control_cases_exercised = routed_patch_adsr.len();
+        let patch_focus_projection_exact = patch_adsr_control_cases_exercised
+            == crest_synth::synth::VoiceEnvelope::surface_descriptor().len()
+            && routed_patch_adsr
+                .iter()
+                .all(|checkpoint| checkpoint.focus_projection_exact());
+        let patch_adsr_checkpoints = report
+            .checkpoints()
+            .iter()
+            .filter_map(|checkpoint| checkpoint.patch_adsr())
+            .collect::<Vec<_>>();
+        let patch_adsr_scalar_only = !patch_adsr_checkpoints.is_empty()
+            && patch_adsr_checkpoints
+                .iter()
+                .all(|checkpoint| checkpoint.scalar_only());
+        let preparing_adsr = patch_adsr_checkpoints.iter().find(|checkpoint| {
+            checkpoint.lifecycle()
+                == Some(crest_synth::control::EngineSelectionStatusKind::Preparing)
+        });
+        let activating_adsr = patch_adsr_checkpoints.iter().find(|checkpoint| {
+            checkpoint.lifecycle()
+                == Some(crest_synth::control::EngineSelectionStatusKind::Activating)
+        });
+        let patch_adsr_structural_coexistence_exact = match (preparing_adsr, activating_adsr) {
+            (Some(preparing), Some(activating)) => {
+                [preparing, activating].into_iter().all(|checkpoint| {
+                    checkpoint.scalar_only()
+                        && checkpoint.focus_projection_exact()
+                        && checkpoint.all_envelope_values_exact()
+                        && checkpoint.untargeted_patches_exact()
+                        && checkpoint.graph_revision_exact()
+                }) && activating.renderer_graph_revision() > preparing.renderer_graph_revision()
+            }
+            _ => false,
+        };
         let patch_capabilities: Vec<(u64, String)> = tree_json
             .as_ref()
             .and_then(|tree| tree.get("patches"))
@@ -553,6 +611,10 @@ impl DemoSceneObservation {
             navigate_directions_exercised: navigate_directions.len(),
             parameter_projection_matches_state,
             parsed_soundfont_banks: 1,
+            patch_adsr_control_cases_exercised,
+            patch_focus_projection_exact,
+            patch_adsr_scalar_only,
+            patch_adsr_structural_coexistence_exact,
             post_rejection_event_accepted,
             prepared_instruments: report.final_state_tree().patch_count(),
             rejection_variants_exercised: rejections.exercised().len(),

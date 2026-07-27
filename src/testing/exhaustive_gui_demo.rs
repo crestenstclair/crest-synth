@@ -11,7 +11,10 @@ use crate::control::event_record::{
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
 use crate::control::TopLevelContext;
-use crate::control::{EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind};
+use crate::control::{
+    EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, PatchControlId,
+    StructuralEditIntent,
+};
 use crate::real_time::audio_boundary::{AudioThreadBoundary, BoundaryFull, ControlAudioBoundary};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation::CallbackAudioObservation;
@@ -20,11 +23,13 @@ use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 use crate::testing::demo_scene::{
-    DemoEngineExpectation, DemoEngineProbe, DemoScene, DemoSceneStep, DemoWorkerAdvance,
+    DemoEngineExpectation, DemoEngineProbe, DemoPatchAdsrExpectation, DemoPresetExpectation,
+    DemoScene, DemoSceneStep, DemoWorkerAdvance,
 };
 use crate::testing::demo_scene_report::{
-    DemoAudioEvidence, DemoCoverageGroup, DemoEngineCheckpoint, DemoSceneCheckpoint,
-    DemoSceneCheckpointError, DemoSceneCoverage, DemoSceneReport, DemoSceneReportError,
+    DemoAudioEvidence, DemoCoverageGroup, DemoEngineCheckpoint, DemoPatchAdsrCheckpoint,
+    DemoPresetCheckpoint, DemoSceneCheckpoint, DemoSceneCheckpointError, DemoSceneCoverage,
+    DemoSceneReport, DemoSceneReportError,
 };
 use crate::testing::DeterministicGraphPreparationHandle;
 use core::fmt;
@@ -32,13 +37,14 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-const COVERAGE_GROUPS: [DemoCoverageGroup; 10] = [
+const COVERAGE_GROUPS: [DemoCoverageGroup; 11] = [
     DemoCoverageGroup::Inputs,
     DemoCoverageGroup::Events,
     DemoCoverageGroup::Contexts,
     DemoCoverageGroup::Directions,
     DemoCoverageGroup::MidiKinds,
     DemoCoverageGroup::EditableParameters,
+    DemoCoverageGroup::PatchControls,
     DemoCoverageGroup::SerializedProperties,
     DemoCoverageGroup::Rejections,
     DemoCoverageGroup::Projections,
@@ -252,6 +258,7 @@ where
             initial_measurement,
             self.mixed_engine_stems_are_nonzero(),
             self.renderer.active_revision(),
+            self.app_loop.patches().to_vec(),
         );
 
         self.dispatch_semantic(
@@ -355,6 +362,22 @@ where
                                 &mut run,
                             )?);
                     }
+                    if let Some(expectation) = checkpoint.preset_expectation() {
+                        observation =
+                            observation.with_preset_selection(self.verify_preset_checkpoint(
+                                checkpoint.name(),
+                                expectation,
+                                &mut run,
+                            )?);
+                    }
+                    if let Some(expectation) = checkpoint.patch_adsr_expectation() {
+                        observation =
+                            observation.with_patch_adsr(self.verify_patch_adsr_checkpoint(
+                                checkpoint.name(),
+                                *expectation,
+                                &mut run,
+                            )?);
+                    }
                     run.checkpoints.push(observation);
                 }
             }
@@ -444,6 +467,7 @@ where
                     AppEvent::EnginePreparationFailed {
                         request_id: stale_request,
                         patch_id: correlation.patch_id(),
+                        intent: correlation.intent().clone(),
                         source_capability_id: correlation.source_capability_id().clone(),
                         target_capability_id: correlation.target_capability_id().clone(),
                         source_graph_revision: correlation.source_graph_revision(),
@@ -456,6 +480,7 @@ where
             DemoEngineProbe::EarlyAcknowledgement => (
                 AppEvent::EngineActivationAcknowledged {
                     request_id: correlation.request_id(),
+                    intent: correlation.intent().clone(),
                     target_graph_revision: target_revision,
                     retired_graph_revision: correlation.source_graph_revision(),
                     collected: true,
@@ -465,6 +490,7 @@ where
             DemoEngineProbe::MismatchedAcknowledgement => (
                 AppEvent::EngineActivationAcknowledged {
                     request_id: correlation.request_id(),
+                    intent: correlation.intent().clone(),
                     target_graph_revision: target_revision,
                     retired_graph_revision: target_revision,
                     collected: true,
@@ -486,6 +512,8 @@ where
                 reason: "PATCH projection is unavailable".to_owned(),
             }
         })?;
+        run.observed
+            .insert(format!("patchControl.{}", page.focused_control_id()));
         let engine = page.engine();
         let mismatch = engine.status() != expected.status()
             || engine.active_capability_id() != expected.active_capability_id()
@@ -508,9 +536,12 @@ where
             });
         }
         if engine.request_id().is_some() {
+            run.observed
+                .insert("projection.structuralIntent.replaceCapability".to_owned());
             for property in [
                 "patchId",
                 "requestId",
+                "intent",
                 "sourceCapabilityId",
                 "sourceGraphRevision",
                 "targetCapabilityId",
@@ -600,6 +631,415 @@ where
         .map_err(ExhaustiveGuiDemoError::from)
     }
 
+    fn verify_preset_checkpoint(
+        &self,
+        step: &str,
+        expected: &DemoPresetExpectation,
+        run: &mut RunObservations,
+    ) -> Result<DemoPresetCheckpoint, ExhaustiveGuiDemoError> {
+        let page = self.app_loop.current_patch_page().ok_or_else(|| {
+            ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "preset checkpoint has no PATCH projection".to_owned(),
+            }
+        })?;
+        let row = page
+            .sections()
+            .iter()
+            .flat_map(|section| section.parameters())
+            .find(|row| row.id() == expected.parameter_id())
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "descriptor-derived preset row is absent".to_owned(),
+            })?;
+        let requested_choice_id = expected.requested_choice().map(|(id, _)| id);
+        let requested_label = expected.requested_choice().map(|(_, label)| label);
+        let expected_row_status =
+            (expected.status() != EngineSelectionStatusKind::Ready).then_some(expected.status());
+        let mismatch = row.status() != expected_row_status
+            || row.selected_choice_id() != Some(expected.selected_choice_id())
+            || row.selected_label() != Some(expected.selected_label())
+            || row.requested_choice_id() != requested_choice_id
+            || row.requested_label() != requested_label
+            || row.failure() != expected.failure();
+        if mismatch {
+            return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: format!(
+                    "expected preset {:?}/{}/{} requested {:?}/{:?} failure {:?}; got {:?}/{:?}/{:?} requested {:?}/{:?} failure {:?}",
+                    expected.status(),
+                    expected.selected_choice_id(),
+                    expected.selected_label(),
+                    requested_choice_id,
+                    requested_label,
+                    expected.failure(),
+                    row.status(),
+                    row.selected_choice_id(),
+                    row.selected_label(),
+                    row.requested_choice_id(),
+                    row.requested_label(),
+                    row.failure(),
+                ),
+            });
+        }
+
+        let status = self.app_loop.state().engine_selection();
+        let intent = status
+            .correlation()
+            .map(|correlation| correlation.intent().clone());
+        let intent_exact = match (intent.as_ref(), requested_choice_id) {
+            (None, None) => true,
+            (
+                Some(StructuralEditIntent::ReplaceParameterChoice {
+                    capability_id,
+                    parameter_id,
+                    choice_id,
+                }),
+                Some(expected_choice),
+            ) => {
+                capability_id == page.engine().active_capability_id()
+                    && parameter_id == expected.parameter_id()
+                    && choice_id == expected_choice
+            }
+            _ => false,
+        };
+        if !intent_exact {
+            return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "preset structural intent does not match the projected request".to_owned(),
+            });
+        }
+        if status.correlation().is_some() {
+            run.observed
+                .insert("projection.structuralIntent.replaceParameterChoice".to_owned());
+            for property in [
+                "patchId",
+                "requestId",
+                "intent",
+                "sourceCapabilityId",
+                "sourceGraphRevision",
+                "targetCapabilityId",
+                "targetGraphRevision",
+            ] {
+                run.observed.insert(format!(
+                    "property.stateTree.engineSelection.correlation.{property}"
+                ));
+            }
+        }
+
+        let state_revision = self.app_loop.graph_revision();
+        let renderer_revision = self.renderer.active_revision();
+        if state_revision != renderer_revision {
+            return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: format!(
+                    "preset state targets graph {state_revision} while renderer owns {renderer_revision}"
+                ),
+            });
+        }
+        match expected.status() {
+            EngineSelectionStatusKind::Preparing | EngineSelectionStatusKind::Failed
+                if state_revision != run.last_ready_graph_revision =>
+            {
+                return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                    step: step.to_owned(),
+                    reason: "preset preparation or failure changed the active graph revision"
+                        .to_owned(),
+                });
+            }
+            EngineSelectionStatusKind::Activating
+                if state_revision <= run.last_ready_graph_revision =>
+            {
+                return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                    step: step.to_owned(),
+                    reason: "preset activating revision did not advance".to_owned(),
+                });
+            }
+            EngineSelectionStatusKind::Ready => {
+                if state_revision <= run.last_ready_graph_revision {
+                    return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                        step: step.to_owned(),
+                        reason: "preset acknowledged revision did not advance".to_owned(),
+                    });
+                }
+                run.last_ready_graph_revision = state_revision;
+            }
+            _ => {}
+        }
+
+        let patch_index = self
+            .app_loop
+            .patches()
+            .iter()
+            .position(|patch| patch.id() == expected.patch_id())
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "preset target Patch is absent".to_owned(),
+            })?;
+        let patch = &self.app_loop.patches()[patch_index];
+        let target_peak = self
+            .renderer
+            .active_patch_audio()
+            .stem(patch_index, expected.patch_id())
+            .map(|stem| {
+                stem.samples()
+                    .iter()
+                    .fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+            })
+            .unwrap_or(0.0);
+        if expected.require_target_audio() && target_peak <= 1.0e-6 {
+            return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "preset target Patch stem is silent".to_owned(),
+            });
+        }
+
+        let descriptor = self
+            .app_loop
+            .capabilities()
+            .descriptor(patch.instrument_config().capability_id())
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "preset capability descriptor is absent".to_owned(),
+            })?;
+        let spec = descriptor
+            .parameter(expected.parameter_id())
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "preset parameter spec is absent".to_owned(),
+            })?;
+        let authored_order_exact = row.choices() == spec.choices()
+            && row
+                .choices()
+                .iter()
+                .find(|choice| choice.id() == expected.selected_choice_id())
+                .is_some_and(|choice| choice.label() == expected.selected_label());
+        for choice in row.choices() {
+            run.observed.insert(format!(
+                "projection.patch.choice.{}.{}={}",
+                expected.parameter_id(),
+                choice.id(),
+                choice.label()
+            ));
+        }
+
+        let baseline = run
+            .baseline_patches
+            .iter()
+            .find(|baseline| baseline.id() == expected.patch_id())
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "preset baseline Patch is absent".to_owned(),
+            })?;
+        let assignment_delta_exact = config_assignment_delta_matches(
+            baseline.instrument_config(),
+            patch.instrument_config(),
+            expected.parameter_id(),
+            expected.expected_assignment_changes(),
+        ) && baseline
+            .instrument_config()
+            .value(expected.parameter_id())
+            .is_some_and(|value| {
+                matches!(value, crate::synth::ParameterValue::Choice(choice) if choice == expected.baseline_choice_id())
+            });
+        let untargeted_patches_exact = self
+            .app_loop
+            .patches()
+            .iter()
+            .filter(|candidate| candidate.id() != expected.patch_id())
+            .all(|candidate| {
+                run.baseline_patches
+                    .iter()
+                    .find(|baseline| baseline.id() == candidate.id())
+                    == Some(candidate)
+            });
+        let tree = self.app_loop.current_state_tree();
+        let tree_json: Value = serde_json::from_str(tree.json())
+            .map_err(|_| ExhaustiveGuiDemoError::StateTreeSerialization)?;
+        let text = self.app_loop.current_text();
+        let control = expected.control_id();
+        let control_id = control.as_str();
+        let selected_text = text
+            .body()
+            .lines()
+            .nth(text.selected_line())
+            .unwrap_or_default();
+        let focus_projection_exact = page.patch().id() == expected.patch_id()
+            && page.focused_control_id() == control
+            && row.control_id() == Some(control.clone())
+            && text.context() == TopLevelContext::Patch
+            && text.state_hash() == tree.state_hash()
+            && selected_text.starts_with("> PARAMETER ")
+            && selected_text.contains(expected.selected_label())
+            && tree_json
+                .pointer("/interaction/patchControlFocus")
+                .and_then(Value::as_str)
+                == Some(control_id.as_ref())
+            && tree_json
+                .pointer("/patchPage/focusedControlId")
+                .and_then(Value::as_str)
+                == Some(control_id.as_ref());
+        run.observed.insert(format!("patchControl.{control}"));
+
+        DemoPresetCheckpoint::new(
+            expected.patch_id(),
+            expected.parameter_id().clone(),
+            expected.status(),
+            expected.selected_choice_id().to_owned(),
+            expected.selected_label().to_owned(),
+            requested_choice_id.map(str::to_owned),
+            requested_label.map(str::to_owned),
+            row.choices().to_vec(),
+            intent,
+            status
+                .correlation()
+                .map(|correlation| correlation.request_id()),
+            state_revision,
+            renderer_revision,
+            expected.failure(),
+            target_peak,
+            authored_order_exact,
+            focus_projection_exact,
+            assignment_delta_exact,
+            untargeted_patches_exact,
+        )
+        .map_err(ExhaustiveGuiDemoError::from)
+    }
+
+    fn verify_patch_adsr_checkpoint(
+        &self,
+        step: &str,
+        expected: DemoPatchAdsrExpectation,
+        run: &mut RunObservations,
+    ) -> Result<DemoPatchAdsrCheckpoint, ExhaustiveGuiDemoError> {
+        let control = expected.control_id();
+        let page = self.app_loop.current_patch_page().ok_or_else(|| {
+            ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "PATCH ADSR checkpoint has no PATCH projection".to_owned(),
+            }
+        })?;
+        let tree = self.app_loop.current_state_tree();
+        let text = self.app_loop.current_text();
+        let patch = self
+            .app_loop
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == expected.patch_id())
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "PATCH ADSR target Patch is absent".to_owned(),
+            })?;
+        let page_row = page
+            .envelope()
+            .iter()
+            .find(|row| row.control_id() == control)
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "PATCH ADSR row is absent".to_owned(),
+            })?;
+        let snapshot = self
+            .app_loop
+            .current_parameters()
+            .patch(expected.patch_id())
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "PATCH ADSR scalar snapshot is absent".to_owned(),
+            })?;
+        let renderer_snapshot = self
+            .renderer
+            .parameters()
+            .patch(expected.patch_id())
+            .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "PATCH ADSR renderer snapshot is absent".to_owned(),
+            })?;
+        let tree_json: Value = serde_json::from_str(tree.json())
+            .map_err(|_| ExhaustiveGuiDemoError::StateTreeSerialization)?;
+        let selected_text = text
+            .body()
+            .lines()
+            .nth(text.selected_line())
+            .unwrap_or_default();
+        let control_id = control.as_str();
+        let focus_projection_exact = self.app_loop.state().context() == TopLevelContext::Patch
+            && page.patch().id() == expected.patch_id()
+            && page.focused_control_id() == control
+            && text.context() == TopLevelContext::Patch
+            && text.state_hash() == tree.state_hash()
+            && text.selected_line() == tree.selected_line()
+            && selected_text.starts_with("> ENVELOPE ")
+            && selected_text.contains(control_id.as_ref())
+            && tree_json
+                .pointer("/interaction/patchControlFocus")
+                .and_then(Value::as_str)
+                == Some(control_id.as_ref())
+            && tree_json
+                .pointer("/patchPage/focusedControlId")
+                .and_then(Value::as_str)
+                == Some(control_id.as_ref());
+        let last_record = self.app_loop.event_log_ref().records().last();
+        let scalar_only = last_record.is_some_and(|record| {
+            record.outcome() == EventOutcome::Accepted
+                && matches!(record.input(), EventInput::Adjust { .. })
+                && record.generation_after() == tree.generation()
+                && record.parameter_generation() == tree.generation()
+                && record.emitted_events().len() == 2
+                && matches!(
+                    record.emitted_events()[0],
+                    EmittedEvent::StateAccepted { .. }
+                )
+                && matches!(
+                    record.emitted_events()[1],
+                    EmittedEvent::ParameterSnapshotPublished { .. }
+                )
+        });
+        let all_envelope_values_exact = patch.envelope() == snapshot.envelope()
+            && snapshot.envelope() == renderer_snapshot.envelope();
+        let untargeted_patches_exact = self
+            .app_loop
+            .patches()
+            .iter()
+            .filter(|patch| patch.id() != expected.patch_id())
+            .all(|patch| {
+                run.baseline_patches
+                    .iter()
+                    .find(|baseline| baseline.id() == patch.id())
+                    == Some(patch)
+            });
+        if expected
+            .lifecycle()
+            .is_some_and(|status| self.app_loop.state().engine_selection().kind() != status)
+        {
+            return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                step: step.to_owned(),
+                reason: "PATCH ADSR lifecycle status differs from its frozen expectation"
+                    .to_owned(),
+            });
+        }
+        run.observed.insert(format!("patchControl.{control}"));
+
+        DemoPatchAdsrCheckpoint::new(
+            expected.patch_id(),
+            expected.parameter(),
+            expected.expected_value(),
+            patch.envelope().value(expected.parameter()),
+            page_row.value(),
+            snapshot.envelope().value(expected.parameter()),
+            renderer_snapshot.envelope().value(expected.parameter()),
+            expected.lifecycle(),
+            self.app_loop.graph_revision(),
+            self.app_loop.current_parameters().graph_revision(),
+            self.renderer.active_revision(),
+            focus_projection_exact,
+            all_envelope_values_exact,
+            scalar_only,
+            untargeted_patches_exact,
+            run.audio_measurement.is_finite(),
+        )
+        .map_err(ExhaustiveGuiDemoError::from)
+    }
+
     fn dispatch_semantic(
         &mut self,
         event: AppEvent,
@@ -609,7 +1049,11 @@ where
     ) -> Result<(), ExhaustiveGuiDemoError> {
         let before_tree = self.app_loop.current_state_tree();
         let adjustment = matches!(event, AppEvent::Adjust(_))
-            && self.app_loop.state().context() == TopLevelContext::Mixer;
+            && (self.app_loop.state().context() == TopLevelContext::Mixer
+                || matches!(
+                    self.app_loop.state().interaction().patch_control_focus(),
+                    Some(PatchControlId::Envelope(_))
+                ));
 
         match self.app_loop.dispatch_from(event, source) {
             Ok(result) => {
@@ -714,6 +1158,7 @@ struct RunObservations {
     mixed_engine_stems_nonzero: bool,
     all_accepted_adjustments_isolated: bool,
     last_ready_graph_revision: crate::real_time::GraphRevision,
+    baseline_patches: Vec<crate::synth::Patch>,
 }
 
 impl RunObservations {
@@ -721,6 +1166,7 @@ impl RunObservations {
         audio_measurement: f64,
         mixed_engine_stems_nonzero: bool,
         last_ready_graph_revision: crate::real_time::GraphRevision,
+        baseline_patches: Vec<crate::synth::Patch>,
     ) -> Self {
         Self {
             observed: BTreeSet::new(),
@@ -730,8 +1176,36 @@ impl RunObservations {
             mixed_engine_stems_nonzero,
             all_accepted_adjustments_isolated: true,
             last_ready_graph_revision,
+            baseline_patches,
         }
     }
+}
+
+fn config_assignment_delta_matches(
+    baseline: &crate::synth::InstrumentConfig,
+    candidate: &crate::synth::InstrumentConfig,
+    parameter_id: &crate::synth::ParameterId,
+    expected_changes: usize,
+) -> bool {
+    if baseline.capability_id() != candidate.capability_id()
+        || baseline.asset_references() != candidate.asset_references()
+        || baseline.values().len() != candidate.values().len()
+    {
+        return false;
+    }
+    let mut changed = Vec::new();
+    for (source, target) in baseline.values().iter().zip(candidate.values()) {
+        if source.parameter_id() != target.parameter_id() {
+            return false;
+        }
+        if source != target {
+            changed.push(source.parameter_id());
+        }
+    }
+    changed.len() == expected_changes
+        && changed
+            .into_iter()
+            .all(|changed_parameter| changed_parameter == parameter_id)
 }
 
 fn ensure_installed_fixture(event_log: &EventLog) -> Result<(), ExhaustiveGuiDemoError> {
@@ -805,12 +1279,15 @@ fn coverage_group(identifier: &str) -> Option<DemoCoverageGroup> {
         Some(DemoCoverageGroup::MidiKinds)
     } else if identifier.starts_with("parameter.") {
         Some(DemoCoverageGroup::EditableParameters)
+    } else if identifier.starts_with("patchControl.") {
+        Some(DemoCoverageGroup::PatchControls)
     } else if identifier.starts_with("rejection.") {
         Some(DemoCoverageGroup::Rejections)
     } else if identifier.starts_with("effect.") {
         Some(DemoCoverageGroup::AudioEffects)
     } else if identifier.starts_with("property.stateTree.projection.")
         || identifier.starts_with("property.textProjection.")
+        || identifier.starts_with("projection.")
     {
         Some(DemoCoverageGroup::Projections)
     } else if identifier.starts_with("property.") {

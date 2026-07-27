@@ -2,6 +2,7 @@ use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::synth::prepared_instrument::PreparedInstrumentError;
 use crate::synth::voice_envelope::VoiceEnvelope;
 use crate::synth::voice_envelope_state::VoiceEnvelopeState;
+use crate::synth::SoundFontPresetId;
 use rustysynth::{LoopMode, SoundFont};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -28,25 +29,51 @@ pub fn soundfont_engine_lifecycle_counts() -> SoundFontEngineLifecycleCounts {
     }
 }
 
-/// Immutable sample and preset metadata prepared once beside the parsed bank.
+/// A typed failure while converting parser-owned SF2 data to callback-safe
+/// numeric storage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PreparedSoundFontBankError {
+    SampleStorage,
+    InvalidPresetAddress { source_ordinal: usize },
+    InvalidInstrumentReference { source_ordinal: usize },
+    InvalidSampleReference { source_ordinal: usize },
+    InvalidRegion { source_ordinal: usize },
+}
+
+/// Immutable numeric sample and preset data prepared once from the parsed bank.
+///
+/// This type deliberately owns no `rustysynth::SoundFont`, string, name,
+/// filesystem path, or catalog value.
 pub(crate) struct PreparedSoundFontBank {
-    sound_font: Arc<SoundFont>,
+    wave_data: Arc<[i16]>,
     presets: Vec<PreparedPreset>,
 }
 
 impl PreparedSoundFontBank {
-    pub(crate) fn new(sound_font: Arc<SoundFont>) -> Result<Self, ()> {
+    pub(crate) fn from_sound_font(
+        sound_font: &SoundFont,
+    ) -> Result<(Self, Vec<usize>), PreparedSoundFontBankError> {
+        let wave_data = Arc::<[i16]>::from(sound_font.get_wave_data());
+        if wave_data.len() != sound_font.get_wave_data().len() {
+            return Err(PreparedSoundFontBankError::SampleStorage);
+        }
         let mut presets = Vec::new();
         presets
             .try_reserve_exact(sound_font.get_presets().len())
-            .map_err(|_| ())?;
-        for preset in sound_font.get_presets() {
+            .map_err(|_| PreparedSoundFontBankError::SampleStorage)?;
+        let mut playable_source_ordinals = Vec::new();
+        playable_source_ordinals
+            .try_reserve_exact(sound_font.get_presets().len())
+            .map_err(|_| PreparedSoundFontBankError::SampleStorage)?;
+        for (source_ordinal, preset) in sound_font.get_presets().iter().enumerate() {
             let mut regions = Vec::new();
             for preset_region in preset.get_regions() {
                 let instrument = sound_font
                     .get_instruments()
                     .get(preset_region.get_instrument_id())
-                    .ok_or(())?;
+                    .ok_or(PreparedSoundFontBankError::InvalidInstrumentReference {
+                        source_ordinal,
+                    })?;
                 for instrument_region in instrument.get_regions() {
                     let key_start = preset_region
                         .get_key_range_start()
@@ -67,20 +94,30 @@ impl PreparedSoundFontBank {
                     let sample = sound_font
                         .get_sample_headers()
                         .get(instrument_region.get_sample_id())
-                        .ok_or(())?;
-                    let sample_start =
-                        usize::try_from(instrument_region.get_sample_start()).map_err(|_| ())?;
+                        .ok_or(PreparedSoundFontBankError::InvalidSampleReference {
+                            source_ordinal,
+                        })?;
+                    let sample_start = usize::try_from(instrument_region.get_sample_start())
+                        .map_err(|_| PreparedSoundFontBankError::InvalidRegion {
+                            source_ordinal,
+                        })?;
                     let sample_end =
-                        usize::try_from(instrument_region.get_sample_end()).map_err(|_| ())?;
+                        usize::try_from(instrument_region.get_sample_end()).map_err(|_| {
+                            PreparedSoundFontBankError::InvalidRegion { source_ordinal }
+                        })?;
                     let loop_start = usize::try_from(instrument_region.get_sample_start_loop())
-                        .map_err(|_| ())?;
-                    let loop_end =
-                        usize::try_from(instrument_region.get_sample_end_loop()).map_err(|_| ())?;
+                        .map_err(|_| PreparedSoundFontBankError::InvalidRegion {
+                            source_ordinal,
+                        })?;
+                    let loop_end = usize::try_from(instrument_region.get_sample_end_loop())
+                        .map_err(|_| PreparedSoundFontBankError::InvalidRegion {
+                            source_ordinal,
+                        })?;
                     if sample_start >= sample_end
                         || sample_end >= sound_font.get_wave_data().len()
                         || sample.get_sample_rate() <= 0
                     {
-                        return Err(());
+                        return Err(PreparedSoundFontBankError::InvalidRegion { source_ordinal });
                     }
                     let loop_mode = match instrument_region.get_sample_modes() {
                         LoopMode::NoLoop => PreparedLoopMode::NoLoop,
@@ -90,7 +127,7 @@ impl PreparedSoundFontBank {
                     if loop_mode != PreparedLoopMode::NoLoop
                         && (loop_start >= loop_end || loop_end > sample_end)
                     {
-                        return Err(());
+                        return Err(PreparedSoundFontBankError::InvalidRegion { source_ordinal });
                     }
 
                     let attenuation_db = (preset_region.get_initial_attenuation()
@@ -126,33 +163,59 @@ impl PreparedSoundFontBank {
                     });
                 }
             }
-            presets.push(PreparedPreset {
-                bank: preset.get_bank_number(),
-                program: u8::try_from(preset.get_patch_number()).map_err(|_| ())?,
-                regions,
-            });
+            if regions.is_empty() {
+                continue;
+            }
+            let bank = u16::try_from(preset.get_bank_number())
+                .map_err(|_| PreparedSoundFontBankError::InvalidPresetAddress { source_ordinal })?;
+            let program = u8::try_from(preset.get_patch_number())
+                .map_err(|_| PreparedSoundFontBankError::InvalidPresetAddress { source_ordinal })?;
+            let id = SoundFontPresetId::new(bank, program)
+                .map_err(|_| PreparedSoundFontBankError::InvalidPresetAddress { source_ordinal })?;
+            playable_source_ordinals.push(source_ordinal);
+            if presets
+                .iter()
+                .any(|candidate: &PreparedPreset| candidate.id == id)
+            {
+                continue;
+            }
+            presets.push(PreparedPreset { id, regions });
         }
-        Ok(Self {
-            sound_font,
-            presets,
-        })
+        presets.sort_by_key(|preset| preset.id);
+        Ok((Self { wave_data, presets }, playable_source_ordinals))
     }
 
-    pub(crate) fn has_preset(&self, bank: i32, program: u8) -> bool {
-        self.preset_index(bank, program).is_some()
+    pub(crate) fn has_preset(&self, id: SoundFontPresetId) -> bool {
+        self.preset_index(id).is_some()
     }
 
-    fn preset_index(&self, bank: i32, program: u8) -> Option<usize> {
+    fn preset_index(&self, id: SoundFontPresetId) -> Option<usize> {
         self.presets
-            .iter()
-            .position(|preset| preset.bank == bank && preset.program == program)
+            .binary_search_by_key(&id, |preset| preset.id)
+            .ok()
+    }
+
+    pub(crate) fn callback_metadata_counts(&self) -> CallbackSoundFontMetadataCounts {
+        CallbackSoundFontMetadataCounts {
+            strings: 0,
+            paths: 0,
+            catalog_entries: 0,
+            parser_structures: 0,
+        }
     }
 }
 
 struct PreparedPreset {
-    bank: i32,
-    program: u8,
+    id: SoundFontPresetId,
     regions: Vec<PreparedSampleRegion>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CallbackSoundFontMetadataCounts {
+    pub strings: usize,
+    pub paths: usize,
+    pub catalog_entries: usize,
+    pub parser_structures: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -222,10 +285,7 @@ pub(crate) struct SoundFontVoiceEngine<const VOICES: usize> {
     voices: [SoundFontSampleVoice; VOICES],
     sample_rate: f32,
     max_frames: usize,
-    current_bank: i32,
-    current_program: u8,
-    bank_msb: u8,
-    bank_lsb: u8,
+    preset_id: SoundFontPresetId,
     expression: f32,
     pressure: f32,
     pitch_bend_semitones: f64,
@@ -237,14 +297,13 @@ impl<const VOICES: usize> SoundFontVoiceEngine<VOICES> {
         bank: Arc<PreparedSoundFontBank>,
         sample_rate: f32,
         max_frames: usize,
-        initial_bank: i32,
-        initial_program: u8,
+        preset_id: SoundFontPresetId,
     ) -> Result<Self, ()> {
         if VOICES == 0
             || !sample_rate.is_finite()
             || sample_rate <= 0.0
             || max_frames == 0
-            || !bank.has_preset(initial_bank, initial_program)
+            || !bank.has_preset(preset_id)
         {
             return Err(());
         }
@@ -255,10 +314,7 @@ impl<const VOICES: usize> SoundFontVoiceEngine<VOICES> {
             voices: [SoundFontSampleVoice::IDLE; VOICES],
             sample_rate,
             max_frames,
-            current_bank: initial_bank,
-            current_program: initial_program,
-            bank_msb: ((initial_bank >> 7) & 0x7f) as u8,
-            bank_lsb: (initial_bank & 0x7f) as u8,
+            preset_id,
             expression: 1.0,
             pressure: 1.0,
             pitch_bend_semitones: 0.0,
@@ -281,29 +337,13 @@ impl<const VOICES: usize> SoundFontVoiceEngine<VOICES> {
             }
             MidiMessageKind::ControlChange => {
                 match message.data1() {
-                    0 => {
-                        self.bank_msb = message.data2();
-                        self.current_bank =
-                            (i32::from(self.bank_msb) << 7) | i32::from(self.bank_lsb);
-                    }
-                    32 => {
-                        self.bank_lsb = message.data2();
-                        self.current_bank =
-                            (i32::from(self.bank_msb) << 7) | i32::from(self.bank_lsb);
-                    }
+                    0 | 32 => return Err(PreparedInstrumentError::DispatchRejected),
                     7 | 11 => self.expression = f32::from(message.data2()) / 127.0,
                     _ => {}
                 }
                 Ok(())
             }
-            MidiMessageKind::ProgramChange => {
-                if self.bank.has_preset(self.current_bank, message.data1()) {
-                    self.current_program = message.data1();
-                    Ok(())
-                } else {
-                    Err(PreparedInstrumentError::DispatchRejected)
-                }
-            }
+            MidiMessageKind::ProgramChange => Err(PreparedInstrumentError::DispatchRejected),
             MidiMessageKind::ChannelPressure => {
                 self.pressure = f32::from(message.data1()) / 127.0;
                 Ok(())
@@ -330,7 +370,7 @@ impl<const VOICES: usize> SoundFontVoiceEngine<VOICES> {
     ) -> Result<(), PreparedInstrumentError> {
         let preset_index = self
             .bank
-            .preset_index(self.current_bank, self.current_program)
+            .preset_index(self.preset_id)
             .ok_or(PreparedInstrumentError::DispatchRejected)?;
         let region_count = self.bank.presets[preset_index].regions.len();
         let mut started = false;
@@ -401,7 +441,7 @@ impl<const VOICES: usize> SoundFontVoiceEngine<VOICES> {
 
     pub(crate) fn render(&mut self, output: &mut [f32], frame_count: usize) {
         let frame_count = frame_count.min(self.max_frames).min(output.len() / 2);
-        let wave_data = self.bank.sound_font.get_wave_data();
+        let wave_data = &self.bank.wave_data;
         let expression = self.expression * self.pressure;
         for voice in &mut self.voices {
             let Some(region) = voice.region else {

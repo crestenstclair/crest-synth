@@ -3,9 +3,7 @@ use core::cell::Cell;
 use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
 use crest_synth::adapter::braids_native::BRAIDS_VOICE_COUNT;
 use crest_synth::adapter::braids_preparer::BraidsPreparer;
-use crest_synth::adapter::hidef_soundfont_capability::{
-    HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
-};
+use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::hidef_soundfont_preparer::HiDefSoundFontPreparer;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::production_instruments::{
@@ -15,13 +13,17 @@ use crest_synth::adapter::soundfont_voice_engine::soundfont_engine_lifecycle_cou
 use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
+use crest_synth::control::event_record::EmittedEvent;
 use crest_synth::control::state_projector::StateProjector;
+use crest_synth::control::{PatchControlId, TopLevelContext};
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
-use crest_synth::real_time::audio_boundary::{AudioBoundary, ControlAudioBoundary};
+use crest_synth::real_time::audio_boundary::{
+    AudioBoundary, AudioThreadBoundary, ControlAudioBoundary,
+};
 use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::audio_renderer::AudioRenderer;
 use crest_synth::real_time::parameter_snapshot::{
@@ -105,6 +107,12 @@ fn finish_memory_count() -> (usize, usize) {
 #[derive(Serialize)]
 struct EnvelopeObservation {
     parameter_cases_exercised: usize,
+    patch_control_cases_exercised: usize,
+    patch_focus_order_exact: bool,
+    fine_coarse_adjustment_exact: bool,
+    mixer_patch_mutation_shared: bool,
+    scalar_only_publication: bool,
+    target_patch_isolated: bool,
     soundfont_synthesizers_per_patch: usize,
     braids_voices_per_patch: usize,
     state_text_snapshot_exact: bool,
@@ -119,7 +127,10 @@ struct EnvelopeObservation {
 
 #[test]
 fn common_adsr_is_per_voice_in_both_production_engines() {
-    let soundfont_preparer = HiDefSoundFontPreparer::new().expect("SoundFont bank prepares");
+    let soundfont_preparer = HiDefSoundFontPreparer::new(
+        crest_synth::adapter::production_instruments::production_soundfont_asset().unwrap(),
+    )
+    .expect("SoundFont bank prepares");
     let braids_preparer = BraidsPreparer::new().expect("Braids preparer is valid");
     let soundfont_patch = soundfont_patch(1, 0);
     let braids_patch = braids_patch(2, 1);
@@ -131,6 +142,21 @@ fn common_adsr_is_per_voice_in_both_production_engines() {
     let all_fields_audible = soundfont_cases.iter().all(|audible| *audible)
         && braids_cases.iter().all(|audible| *audible);
     assert!(all_fields_audible);
+
+    let (
+        patch_control_cases_exercised,
+        patch_focus_order_exact,
+        fine_coarse_adjustment_exact,
+        mixer_patch_mutation_shared,
+        scalar_only_publication,
+        target_patch_isolated,
+    ) = prove_patch_control_contract();
+    assert_eq!(patch_control_cases_exercised, 4);
+    assert!(patch_focus_order_exact);
+    assert!(fine_coarse_adjustment_exact);
+    assert!(mixer_patch_mutation_shared);
+    assert!(scalar_only_publication);
+    assert!(target_patch_isolated);
 
     let soundfont_overlap_independent =
         prove_overlapping_release(&soundfont_preparer, &soundfont_patch);
@@ -168,6 +194,12 @@ fn common_adsr_is_per_voice_in_both_production_engines() {
 
     let observation = EnvelopeObservation {
         parameter_cases_exercised,
+        patch_control_cases_exercised,
+        patch_focus_order_exact,
+        fine_coarse_adjustment_exact,
+        mixer_patch_mutation_shared,
+        scalar_only_publication,
+        target_patch_isolated,
         soundfont_synthesizers_per_patch,
         braids_voices_per_patch,
         state_text_snapshot_exact,
@@ -191,7 +223,8 @@ fn globals() -> GlobalParameters {
 }
 
 fn soundfont_patch(id: u32, channel: u8) -> Patch {
-    let provider = HiDefSoundFontCapability::new().unwrap();
+    let provider =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
     Patch::new(
         PatchId::new(id).unwrap(),
         format!("SoundFont {id}"),
@@ -453,6 +486,145 @@ fn prove_state_text_snapshot_projection() -> bool {
         && tree_json["projection"]["selectedLine"].as_u64() == Some(text.selected_line() as u64)
         && tree_json["projection"]["stateHash"].as_str() == Some(text.state_hash())
         && tree.state_hash() == text.state_hash()
+}
+
+fn prove_patch_control_contract() -> (usize, bool, bool, bool, bool, bool) {
+    let envelope = VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap();
+    let patches = vec![
+        soundfont_patch(1, 0).with_envelope(envelope),
+        braids_patch(2, 1).with_envelope(envelope),
+    ];
+    let comparison = patches[1].clone();
+    let mut state = AppState::for_graph(
+        production_capability_registry().unwrap(),
+        globals(),
+        GraphRevision::INITIAL,
+    );
+    state.apply(AppEvent::InstallPatches(patches)).unwrap();
+    let initial = ParameterSnapshot::for_graph(0, GraphRevision::INITIAL, globals(), &[]).unwrap();
+    let boundary = LockFreeAudioBoundary::new(64, initial);
+    let (control, mut audio) = boundary.into_handles();
+    let mut app_loop = AppLoop::new(
+        state,
+        StateProjector::for_graph(GraphRevision::INITIAL),
+        control,
+    )
+    .unwrap();
+    app_loop
+        .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+
+    let mut focus_order = vec![app_loop.current_patch_page().unwrap().focused_control_id()];
+    let mut patch_control_cases_exercised = 0;
+    let mut fine_coarse_adjustment_exact = true;
+    let mut scalar_only_publication = true;
+
+    for descriptor in VoiceEnvelope::surface_descriptor() {
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+        let control_id = PatchControlId::Envelope(descriptor.parameter());
+        let page = app_loop.current_patch_page().unwrap();
+        focus_order.push(page.focused_control_id());
+        patch_control_cases_exercised += 1;
+        fine_coarse_adjustment_exact &= page.focused_control_id() == control_id;
+
+        let baseline = envelope.value(descriptor.parameter());
+        for (direction, expected) in [
+            (Direction::Right, baseline + descriptor.fine_step()),
+            (
+                Direction::Up,
+                baseline + descriptor.fine_step() + descriptor.coarse_step(),
+            ),
+            (Direction::Down, baseline + descriptor.fine_step()),
+            (Direction::Left, baseline),
+        ] {
+            app_loop.dispatch(AppEvent::Adjust(direction)).unwrap();
+            let canonical = app_loop.patches()[0]
+                .envelope()
+                .value(descriptor.parameter());
+            let projected = app_loop
+                .current_parameters()
+                .patch(PatchId::new(1).unwrap())
+                .unwrap()
+                .envelope()
+                .value(descriptor.parameter());
+            let page_value = app_loop
+                .current_patch_page()
+                .unwrap()
+                .envelope()
+                .iter()
+                .find(|row| row.control_id() == control_id)
+                .unwrap()
+                .value();
+            fine_coarse_adjustment_exact &=
+                canonical == expected && projected == expected && page_value == expected;
+
+            let record = app_loop.event_log_ref().records().last().unwrap();
+            scalar_only_publication &= record.emitted_events().len() == 2
+                && matches!(
+                    record.emitted_events()[0],
+                    EmittedEvent::StateAccepted { .. }
+                )
+                && matches!(
+                    record.emitted_events()[1],
+                    EmittedEvent::ParameterSnapshotPublished {
+                        graph_revision: GraphRevision::INITIAL,
+                        ..
+                    }
+                )
+                && app_loop.current_parameters().generation() == record.generation_after()
+                && app_loop.current_parameters().graph_revision() == GraphRevision::INITIAL
+                && audio.pop_command().is_none();
+        }
+    }
+
+    let patch_focus_order_exact = focus_order == PatchControlId::surface_descriptor();
+    let target_patch_isolated = app_loop.patches()[1] == comparison;
+
+    let mut mixer_patch_mutation_shared = true;
+    for (parameter_index, descriptor) in VoiceEnvelope::surface_descriptor().iter().enumerate() {
+        let make_state = || {
+            let mut state = AppState::new(production_capability_registry().unwrap(), globals());
+            state
+                .apply(AppEvent::InstallPatches(vec![
+                    soundfont_patch(1, 0).with_envelope(envelope),
+                    braids_patch(2, 1).with_envelope(envelope),
+                ]))
+                .unwrap();
+            state
+        };
+
+        let mut mixer = make_state();
+        for _ in 0..(ChannelParameters::surface_descriptor().len() + parameter_index) {
+            mixer.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+        mixer.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+
+        let mut patch = make_state();
+        patch
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        for _ in 0..=parameter_index {
+            patch.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+        patch.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+
+        mixer_patch_mutation_shared &= mixer.patches()[0].envelope()
+            == patch.patches()[0].envelope()
+            && mixer.patches()[0].envelope().value(descriptor.parameter())
+                == envelope.value(descriptor.parameter()) + descriptor.fine_step()
+            && mixer.patches()[1] == patch.patches()[1];
+    }
+
+    (
+        patch_control_cases_exercised,
+        patch_focus_order_exact,
+        fine_coarse_adjustment_exact,
+        mixer_patch_mutation_shared,
+        scalar_only_publication,
+        target_patch_isolated,
+    )
 }
 
 fn prove_mixed_callback_contract() -> (usize, usize, bool) {

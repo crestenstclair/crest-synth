@@ -12,7 +12,9 @@ use crate::testing::live_demo_scene::{
 use core::fmt;
 use serde::Serialize;
 
-use crate::control::{EngineSelectionRequestId, EngineSelectionStatusKind};
+use crate::control::{
+    EngineSelectionRequestId, EngineSelectionStatusKind, PatchControlId, StructuralEditIntent,
+};
 use crate::kernel::PatchId;
 
 /// Exact selected values copied from the canonical state, text, and RT projections.
@@ -21,6 +23,7 @@ use crate::kernel::PatchId;
 pub struct LiveProjectedValue {
     selected_line: usize,
     selected_text: String,
+    patch_control_id: Option<PatchControlId>,
     state_value: f32,
     parameter_value: f32,
 }
@@ -32,6 +35,10 @@ impl LiveProjectedValue {
 
     pub fn selected_text(&self) -> &str {
         &self.selected_text
+    }
+
+    pub fn patch_control_id(&self) -> Option<PatchControlId> {
+        self.patch_control_id.clone()
     }
 
     pub const fn state_value(&self) -> f32 {
@@ -145,6 +152,24 @@ impl LiveDemoCheckpoint {
         {
             return Err(LiveDemoCheckpointError::ExpectedProjectionMismatch);
         }
+        let patch_control_id = expected_transition.patch_control_id();
+        if let Some(control) = patch_control_id.as_ref() {
+            let control_id = control.as_str();
+            let tree: serde_json::Value = serde_json::from_str(state_tree.json())
+                .map_err(|_| LiveDemoCheckpointError::CanonicalProjectionMismatch)?;
+            if tree
+                .pointer("/interaction/patchControlFocus")
+                .and_then(serde_json::Value::as_str)
+                != Some(control_id.as_ref())
+                || tree
+                    .pointer("/patchPage/focusedControlId")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(control_id.as_ref())
+                || !selected_text.starts_with("> ENVELOPE ")
+            {
+                return Err(LiveDemoCheckpointError::CanonicalProjectionMismatch);
+            }
+        }
 
         Ok(Self {
             step,
@@ -156,6 +181,7 @@ impl LiveDemoCheckpoint {
             projected_value: LiveProjectedValue {
                 selected_line: record.selected_line(),
                 selected_text,
+                patch_control_id,
                 state_value,
                 parameter_value,
             },
@@ -216,6 +242,7 @@ impl LiveDemoCheckpoint {
             && self.expected_transition.selected_line() == Some(self.projected_value.selected_line)
             && self.expected_transition.selected_text()
                 == Some(self.projected_value.selected_text.as_str())
+            && self.expected_transition.patch_control_id() == self.projected_value.patch_control_id
             && self.projected_value.state_value == self.projected_value.parameter_value
             && self.audio_observation.parameter_generation() == self.generation
             && self.audio_predicate_passed
@@ -280,8 +307,11 @@ pub struct LiveEngineCheckpoint {
     status: EngineSelectionStatusKind,
     request_id: EngineSelectionRequestId,
     patch_id: PatchId,
+    focused_control_id: PatchControlId,
     source_capability_id: CapabilityId,
     target_capability_id: CapabilityId,
+    intent: StructuralEditIntent,
+    preset: Option<LivePresetProjection>,
     active_capability_id: CapabilityId,
     requested_capability_id: Option<CapabilityId>,
     generation: u64,
@@ -292,10 +322,83 @@ pub struct LiveEngineCheckpoint {
     staged_revision: Option<GraphRevision>,
     in_flight_revision: Option<GraphRevision>,
     event_sequence: u64,
+    source_audio_observation: Option<AudioObservationSnapshot>,
+    source_audio_nonzero: bool,
     audio_observation: Option<AudioObservationSnapshot>,
     target_audio_nonzero: bool,
     callback_allocations: usize,
     callback_destructions: usize,
+}
+
+/// Exact authored and projected choice evidence for a structural preset replacement.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivePresetProjection {
+    source_choice_id: String,
+    source_label: String,
+    target_choice_id: String,
+    target_label: String,
+    active_choice_id: String,
+    active_label: String,
+    requested_choice_id: Option<String>,
+    requested_label: Option<String>,
+}
+
+impl LivePresetProjection {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        source_choice_id: impl Into<String>,
+        source_label: impl Into<String>,
+        target_choice_id: impl Into<String>,
+        target_label: impl Into<String>,
+        active_choice_id: impl Into<String>,
+        active_label: impl Into<String>,
+        requested_choice_id: Option<String>,
+        requested_label: Option<String>,
+    ) -> Self {
+        Self {
+            source_choice_id: source_choice_id.into(),
+            source_label: source_label.into(),
+            target_choice_id: target_choice_id.into(),
+            target_label: target_label.into(),
+            active_choice_id: active_choice_id.into(),
+            active_label: active_label.into(),
+            requested_choice_id,
+            requested_label,
+        }
+    }
+
+    pub fn source_choice_id(&self) -> &str {
+        &self.source_choice_id
+    }
+
+    pub fn source_label(&self) -> &str {
+        &self.source_label
+    }
+
+    pub fn target_choice_id(&self) -> &str {
+        &self.target_choice_id
+    }
+
+    pub fn target_label(&self) -> &str {
+        &self.target_label
+    }
+
+    pub fn active_choice_id(&self) -> &str {
+        &self.active_choice_id
+    }
+
+    pub fn active_label(&self) -> &str {
+        &self.active_label
+    }
+
+    pub fn requested_choice_id(&self) -> Option<&str> {
+        self.requested_choice_id.as_deref()
+    }
+
+    pub fn requested_label(&self) -> Option<&str> {
+        self.requested_label.as_deref()
+    }
 }
 
 impl LiveEngineCheckpoint {
@@ -306,8 +409,11 @@ impl LiveEngineCheckpoint {
         status: EngineSelectionStatusKind,
         request_id: EngineSelectionRequestId,
         patch_id: PatchId,
+        focused_control_id: PatchControlId,
         source_capability_id: CapabilityId,
         target_capability_id: CapabilityId,
+        intent: StructuralEditIntent,
+        preset: Option<LivePresetProjection>,
         active_capability_id: CapabilityId,
         requested_capability_id: Option<CapabilityId>,
         generation: u64,
@@ -318,10 +424,17 @@ impl LiveEngineCheckpoint {
         staged_revision: Option<GraphRevision>,
         in_flight_revision: Option<GraphRevision>,
         event_sequence: u64,
+        source_audio_observation: Option<AudioObservationSnapshot>,
         audio_observation: Option<AudioObservationSnapshot>,
         callback_allocations: usize,
         callback_destructions: usize,
     ) -> Result<Self, LiveDemoCheckpointError> {
+        let source_audio_nonzero = source_audio_observation.is_some_and(|observation| {
+            audio_fields_are_finite(observation)
+                && observation.primary_patch_id() == Some(patch_id)
+                && observation.primary_active_notes() > 0
+                && observation.primary_patch_rms() > 0.0
+        });
         let target_audio_nonzero = audio_observation.is_some_and(|observation| {
             audio_fields_are_finite(observation)
                 && observation.active_graph_revision() == graph_revision
@@ -337,8 +450,11 @@ impl LiveEngineCheckpoint {
             status,
             request_id,
             patch_id,
+            focused_control_id,
             source_capability_id,
             target_capability_id,
+            intent,
+            preset,
             active_capability_id,
             requested_capability_id,
             generation,
@@ -349,6 +465,8 @@ impl LiveEngineCheckpoint {
             staged_revision,
             in_flight_revision,
             event_sequence,
+            source_audio_observation,
+            source_audio_nonzero,
             audio_observation,
             target_audio_nonzero,
             callback_allocations,
@@ -380,6 +498,10 @@ impl LiveEngineCheckpoint {
         self.patch_id
     }
 
+    pub fn focused_control_id(&self) -> PatchControlId {
+        self.focused_control_id.clone()
+    }
+
     pub const fn source_capability_id(&self) -> &CapabilityId {
         &self.source_capability_id
     }
@@ -388,12 +510,28 @@ impl LiveEngineCheckpoint {
         &self.target_capability_id
     }
 
+    pub const fn intent(&self) -> &StructuralEditIntent {
+        &self.intent
+    }
+
+    pub const fn preset(&self) -> Option<&LivePresetProjection> {
+        self.preset.as_ref()
+    }
+
     pub const fn graph_revision(&self) -> GraphRevision {
         self.graph_revision
     }
 
     pub const fn audio_observation(&self) -> Option<AudioObservationSnapshot> {
         self.audio_observation
+    }
+
+    pub const fn source_audio_observation(&self) -> Option<AudioObservationSnapshot> {
+        self.source_audio_observation
+    }
+
+    pub const fn source_audio_nonzero(&self) -> bool {
+        self.source_audio_nonzero
     }
 
     pub const fn target_audio_nonzero(&self) -> bool {
@@ -409,9 +547,16 @@ impl LiveEngineCheckpoint {
     }
 
     pub fn agrees(&self) -> bool {
+        let expected_control = match &self.intent {
+            StructuralEditIntent::ReplaceCapability { .. } => PatchControlId::Engine,
+            StructuralEditIntent::ReplaceParameterChoice { parameter_id, .. } => {
+                PatchControlId::Capability(parameter_id.clone())
+            }
+        };
         if self.transition.trim().is_empty()
             || self.request_id.is_none()
             || self.state_hash.is_empty()
+            || self.focused_control_id != expected_control
             || self.callback_allocations != 0
             || self.callback_destructions != 0
         {
@@ -419,35 +564,81 @@ impl LiveEngineCheckpoint {
         }
         let target_pending = self.staged_revision == Some(self.graph_revision)
             || self.in_flight_revision == Some(self.graph_revision);
-        match self.status {
-            EngineSelectionStatusKind::Preparing => {
-                self.active_capability_id == self.source_capability_id
-                    && self.requested_capability_id.as_ref() == Some(&self.target_capability_id)
-                    && self.handoff_active_revision == Some(self.graph_revision)
-                    && self.staged_revision.is_none()
-                    && self.in_flight_revision.is_none()
-                    && self.audio_observation.is_none()
-                    && !self.target_audio_nonzero
+        let capability_projection_exact = match &self.intent {
+            StructuralEditIntent::ReplaceCapability {
+                target_capability_id,
+            } => {
+                target_capability_id == &self.target_capability_id
+                    && self.source_capability_id != self.target_capability_id
+                    && self.preset.is_none()
+                    && self.source_audio_observation.is_none()
+                    && !self.source_audio_nonzero
+                    && self.active_capability_id
+                        == if self.status == EngineSelectionStatusKind::Preparing {
+                            self.source_capability_id.clone()
+                        } else {
+                            self.target_capability_id.clone()
+                        }
+                    && self.requested_capability_id
+                        == (self.status != EngineSelectionStatusKind::Ready)
+                            .then_some(self.target_capability_id.clone())
             }
-            EngineSelectionStatusKind::Activating => {
-                self.active_capability_id == self.target_capability_id
-                    && self.requested_capability_id.as_ref() == Some(&self.target_capability_id)
-                    && self.handoff_active_revision.is_some()
-                    && target_pending
-                    && self.audio_observation.is_none()
-                    && !self.target_audio_nonzero
-            }
-            EngineSelectionStatusKind::Ready => {
-                self.active_capability_id == self.target_capability_id
+            StructuralEditIntent::ReplaceParameterChoice {
+                capability_id,
+                parameter_id: _,
+                choice_id,
+            } => {
+                let Some(preset) = &self.preset else {
+                    return false;
+                };
+                capability_id == &self.source_capability_id
+                    && self.source_capability_id == self.target_capability_id
+                    && self.active_capability_id == self.source_capability_id
                     && self.requested_capability_id.is_none()
-                    && self.handoff_active_revision == Some(self.graph_revision)
-                    && self.staged_revision.is_none()
-                    && self.in_flight_revision.is_none()
-                    && self.audio_observation.is_some()
-                    && self.target_audio_nonzero
+                    && choice_id == preset.target_choice_id()
+                    && preset.active_choice_id()
+                        == if self.status == EngineSelectionStatusKind::Preparing {
+                            preset.source_choice_id()
+                        } else {
+                            preset.target_choice_id()
+                        }
+                    && preset.requested_choice_id()
+                        == (self.status != EngineSelectionStatusKind::Ready)
+                            .then_some(preset.target_choice_id())
+                    && preset.requested_label()
+                        == (self.status != EngineSelectionStatusKind::Ready)
+                            .then_some(preset.target_label())
+                    && !preset.source_label().is_empty()
+                    && !preset.target_label().is_empty()
+                    && !preset.active_label().is_empty()
+                    && (self.status != EngineSelectionStatusKind::Preparing
+                        || self.source_audio_nonzero)
             }
-            EngineSelectionStatusKind::Failed => false,
-        }
+        };
+        capability_projection_exact
+            && match self.status {
+                EngineSelectionStatusKind::Preparing => {
+                    self.handoff_active_revision == Some(self.graph_revision)
+                        && self.staged_revision.is_none()
+                        && self.in_flight_revision.is_none()
+                        && self.audio_observation.is_none()
+                        && !self.target_audio_nonzero
+                }
+                EngineSelectionStatusKind::Activating => {
+                    self.handoff_active_revision.is_some()
+                        && target_pending
+                        && self.audio_observation.is_none()
+                        && !self.target_audio_nonzero
+                }
+                EngineSelectionStatusKind::Ready => {
+                    self.handoff_active_revision == Some(self.graph_revision)
+                        && self.staged_revision.is_none()
+                        && self.in_flight_revision.is_none()
+                        && self.audio_observation.is_some()
+                        && self.target_audio_nonzero
+                }
+                EngineSelectionStatusKind::Failed => false,
+            }
     }
 }
 

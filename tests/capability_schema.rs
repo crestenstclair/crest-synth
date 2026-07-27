@@ -4,8 +4,7 @@ use crest_synth::adapter::braids_capability::{
 };
 use crest_synth::adapter::hidef_soundfont_capability::HIDEF_SOUNDFONT_PATH;
 use crest_synth::adapter::hidef_soundfont_capability::{
-    HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID,
-    SOUNDFONT_FILE_PARAMETER_ID, SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+    HIDEF_CAPABILITY_ID, SOUNDFONT_FILE_PARAMETER_ID, SOUNDFONT_PRESET_PARAMETER_ID,
 };
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::production_instruments::production_capability_registry;
@@ -26,7 +25,7 @@ use crest_synth::synth::{
     CapabilityDescriptor, CapabilityError, CapabilityId, CapabilityRegistry, CapabilitySection,
     InstrumentCapabilityProvider, InstrumentConfig, ParameterAssignment, ParameterDefault,
     ParameterId, ParameterKind, ParameterPredicate, ParameterRange, ParameterSpec, ParameterUpdate,
-    ParameterValue, Patch, VoicePolicy,
+    ParameterValue, Patch, PatchInteraction, VoicePolicy,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
@@ -79,7 +78,8 @@ fn candidate(valid: &InstrumentConfig, values: Vec<ParameterAssignment>) -> Inst
 
 #[test]
 fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
-    let provider = HiDefSoundFontCapability::new().unwrap();
+    let provider =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
     let descriptor = provider.descriptor();
     let braids_provider = BraidsCapability::new().unwrap();
     let braids_descriptor = braids_provider.descriptor();
@@ -93,30 +93,41 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
     assert_eq!(descriptor.label(), "HiDef SoundFont");
     assert_eq!(descriptor.semantic_accent(), "instrument.soundfont");
     assert_eq!(descriptor.voice_policy(), VoicePolicy::EngineManaged);
-    assert_eq!(descriptor.supported_midi_kinds(), MidiMessageKind::ALL);
+    assert_eq!(
+        descriptor.supported_midi_kinds(),
+        MidiMessageKind::ALL
+            .iter()
+            .copied()
+            .filter(|kind| *kind != MidiMessageKind::ProgramChange)
+            .collect::<Vec<_>>()
+    );
     let parameters = descriptor.sections()[0].parameters();
     assert_eq!(
         parameters
             .iter()
             .map(|parameter| parameter.id().as_str())
             .collect::<Vec<_>>(),
-        [
-            SOUNDFONT_BANK_PARAMETER_ID,
-            SOUNDFONT_PROGRAM_PARAMETER_ID,
-            SOUNDFONT_PERCUSSION_PARAMETER_ID,
-            SOUNDFONT_FILE_PARAMETER_ID,
-        ]
+        [SOUNDFONT_PRESET_PARAMETER_ID, SOUNDFONT_FILE_PARAMETER_ID,]
     );
     assert!(parameters
         .iter()
         .all(|parameter| parameter.update() == ParameterUpdate::Structural));
-    assert_eq!(parameters[0].range().unwrap().maximum(), u16::MAX as f64);
-    assert_eq!(parameters[0].fine_step(), Some(1.0));
-    assert_eq!(parameters[1].range().unwrap().maximum(), 127.0);
-    assert_eq!(parameters[2].kind(), ParameterKind::Toggle);
-    assert_eq!(parameters[3].kind(), ParameterKind::Asset);
+    let catalog = crest_synth::adapter::production_instruments::production_soundfont_asset()
+        .unwrap()
+        .catalog();
+    assert_eq!(parameters[0].kind(), ParameterKind::Choice);
     assert_eq!(
-        parameters[3].default_value(),
+        parameters[0].patch_interaction(),
+        PatchInteraction::StructuralChoice
+    );
+    assert_eq!(parameters[0].choices().len(), catalog.entries().len());
+    assert_eq!(parameters[1].kind(), ParameterKind::Asset);
+    assert_eq!(
+        parameters[1].patch_interaction(),
+        PatchInteraction::ReadOnly
+    );
+    assert_eq!(
+        parameters[1].default_value(),
         &ParameterDefault::Asset(
             crest_synth::synth::AssetReference::new(
                 crest_synth::synth::AssetKind::SoundFont,
@@ -160,16 +171,22 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
     registry.validate_config(&braids).unwrap();
     assert_ne!(lead, drums);
     assert_eq!(
-        lead.value(&parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID)),
-        Some(&ParameterValue::Stepped(80))
+        lead.value(&parameter_id(SOUNDFONT_PRESET_PARAMETER_ID)),
+        Some(&ParameterValue::Choice(
+            SoundFontInstrument::new(0, 80, false)
+                .unwrap()
+                .preset_id()
+                .choice_id()
+        ))
     );
     assert_eq!(
-        drums.value(&parameter_id(SOUNDFONT_BANK_PARAMETER_ID)),
-        Some(&ParameterValue::Stepped(128))
-    );
-    assert_eq!(
-        drums.value(&parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID)),
-        Some(&ParameterValue::Toggle(true))
+        drums.value(&parameter_id(SOUNDFONT_PRESET_PARAMETER_ID)),
+        Some(&ParameterValue::Choice(
+            SoundFontInstrument::new(128, 0, true)
+                .unwrap()
+                .preset_id()
+                .choice_id()
+        ))
     );
 
     let (mut installed, _audio) = app_loop(registry.clone());
@@ -183,7 +200,7 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         )
         .unwrap();
     let tree: Value = serde_json::from_str(installed.current_state_tree().json()).unwrap();
-    assert_eq!(tree["schemaVersion"], 6);
+    assert_eq!(tree["schemaVersion"], 8);
     assert_eq!(tree["parameters"]["graphRevision"], 1);
     assert_eq!(
         tree["capabilities"]["descriptors"]
@@ -233,13 +250,9 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         &[0.0, 0.5, 0.5]
     );
     let text = installed.current_text().body().to_owned();
-    let bank = text.find("Bank (soundfont.bank)=0").unwrap();
-    let program = text.find("Program (soundfont.program)=80").unwrap();
-    let percussion = text
-        .find("Percussion (soundfont.percussion)=false")
-        .unwrap();
+    let preset = text.find("Preset (soundfont.preset)=").unwrap();
     let file = text.find("SoundFont File (soundfont.file)=").unwrap();
-    assert!(bank < program && program < percussion && percussion < file);
+    assert!(preset < file);
     let model = text.find("Model (braids.model)=").unwrap();
     let timbre = text.find("Timbre (braids.timbre)=0.5").unwrap();
     let color = text.find("Color (braids.color)=0.5").unwrap();
@@ -270,21 +283,21 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
     ));
     let mut wrong_kind = valid_values.clone();
     wrong_kind[0] = ParameterAssignment::new(
-        parameter_id(SOUNDFONT_BANK_PARAMETER_ID),
+        parameter_id(SOUNDFONT_PRESET_PARAMETER_ID),
         ParameterValue::Toggle(false),
     );
     assert!(matches!(
         registry.validate_config(&candidate(&lead, wrong_kind)),
         Err(CapabilityError::WrongValueKind(_))
     ));
-    let mut out_of_range = valid_values;
-    out_of_range[1] = ParameterAssignment::new(
-        parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID),
-        ParameterValue::Stepped(128),
+    let mut unknown_choice = valid_values;
+    unknown_choice[0] = ParameterAssignment::new(
+        parameter_id(SOUNDFONT_PRESET_PARAMETER_ID),
+        ParameterValue::Choice("sf2.bank-65535.program-127".to_owned()),
     );
     assert!(matches!(
-        registry.validate_config(&candidate(&lead, out_of_range)),
-        Err(CapabilityError::ValueOutOfRange(_))
+        registry.validate_config(&candidate(&lead, unknown_choice)),
+        Err(CapabilityError::UnknownChoice(_))
     ));
     let mut non_finite = braids.values().to_vec();
     non_finite[1] = ParameterAssignment::new(

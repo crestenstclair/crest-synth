@@ -5,7 +5,7 @@ use crate::shell::audio_output::{
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
     BufferSize, Device, ErrorKind, FromSample, SampleFormat, SizedSample, Stream, StreamConfig,
-    SupportedBufferSize, SupportedStreamConfig, I24, U24,
+    SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange, I24, U24,
 };
 
 const STEREO_SCRATCH_SAMPLES: usize = 2_048;
@@ -91,19 +91,48 @@ impl NegotiatedAudioOutput for CpalNegotiatedAudioOutput {
 }
 
 fn select_output_config(device: &Device) -> Result<SupportedStreamConfig, AudioOutputError> {
-    let default_config = device.default_output_config().map_err(|error| {
-        AudioOutputError::new(format!(
-            "failed to query the default output configuration: {error}"
-        ))
-    })?;
-    let ranges = device.supported_output_configs().map_err(|error| {
-        AudioOutputError::new(format!(
-            "failed to query PCM output configurations: {error}"
-        ))
-    })?;
-    let pcm_ranges = ranges
-        .filter(|config| config.channels() >= 2 && !config.sample_format().is_dsd())
-        .collect::<Vec<_>>();
+    let default_config = device
+        .default_output_config()
+        .map_err(|error| error.to_string());
+    choose_output_config(default_config, || {
+        device
+            .supported_output_configs()
+            .map(|ranges| ranges.filter(is_usable_range).collect::<Vec<_>>())
+            .map_err(|error| error.to_string())
+    })
+}
+
+fn choose_output_config<QueryRanges>(
+    default_result: Result<SupportedStreamConfig, String>,
+    query_ranges: QueryRanges,
+) -> Result<SupportedStreamConfig, AudioOutputError>
+where
+    QueryRanges: FnOnce() -> Result<Vec<SupportedStreamConfigRange>, String>,
+{
+    let (default_config, default_error) = match default_result {
+        Ok(config) => (Some(config), None),
+        Err(error) => (None, Some(error)),
+    };
+
+    if let Some(config) = default_config.filter(is_preferred_config) {
+        return Ok(config);
+    }
+
+    let pcm_ranges = match query_ranges() {
+        Ok(ranges) => ranges,
+        Err(range_error) => {
+            if let Some(config) = default_config.filter(is_usable_config) {
+                return Ok(config);
+            }
+            let message = match default_error {
+                Some(default_error) => format!(
+                    "failed to query the default output configuration: {default_error}; failed to query PCM output configurations: {range_error}"
+                ),
+                None => format!("failed to query PCM output configurations: {range_error}"),
+            };
+            return Err(AudioOutputError::new(message));
+        }
+    };
 
     if let Some(preferred) = pcm_ranges
         .iter()
@@ -115,8 +144,8 @@ fn select_output_config(device: &Device) -> Result<SupportedStreamConfig, AudioO
         return Ok(preferred);
     }
 
-    if default_config.channels() >= 2 && !default_config.sample_format().is_dsd() {
-        return Ok(default_config);
+    if let Some(config) = default_config.filter(is_usable_config) {
+        return Ok(config);
     }
 
     pcm_ranges
@@ -128,10 +157,28 @@ fn select_output_config(device: &Device) -> Result<SupportedStreamConfig, AudioO
                 .unwrap_or_else(|| range.with_max_sample_rate())
         })
         .ok_or_else(|| {
-            AudioOutputError::new(
-                "default output device has no PCM configuration with two channels",
-            )
+            let message = default_error.map_or_else(
+                || "default output device has no PCM configuration with two channels".to_owned(),
+                |error| {
+                    format!(
+                        "failed to query the default output configuration: {error}; default output device has no PCM configuration with two channels"
+                    )
+                },
+            );
+            AudioOutputError::new(message)
         })
+}
+
+fn is_usable_config(config: &SupportedStreamConfig) -> bool {
+    config.channels() >= 2 && !config.sample_format().is_dsd()
+}
+
+fn is_preferred_config(config: &SupportedStreamConfig) -> bool {
+    is_usable_config(config) && config.sample_rate() == PREFERRED_SAMPLE_RATE
+}
+
+fn is_usable_range(config: &SupportedStreamConfigRange) -> bool {
+    config.channels() >= 2 && !config.sample_format().is_dsd()
 }
 
 fn configure_buffer_size(supported: &SupportedStreamConfig) -> (StreamConfig, usize) {
@@ -299,17 +346,61 @@ fn bound_sample(sample: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        bound_sample, canonical_sample_format, map_runtime_error, map_stereo_samples,
-        CpalAudioOutput, STEREO_SCRATCH_SAMPLES,
+        bound_sample, canonical_sample_format, choose_output_config, map_runtime_error,
+        map_stereo_samples, CpalAudioOutput, STEREO_SCRATCH_SAMPLES,
     };
     use crate::shell::audio_output::{AudioDeviceRuntimeError, AudioOutput, AudioSampleFormat};
-    use cpal::{ErrorKind, SampleFormat};
+    use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfig};
+    use std::cell::Cell;
+
+    fn config(sample_rate: u32) -> SupportedStreamConfig {
+        SupportedStreamConfig::new(
+            2,
+            sample_rate,
+            SupportedBufferSize::Range { min: 128, max: 512 },
+            SampleFormat::F32,
+        )
+    }
 
     #[test]
     fn adapter_implements_the_audio_output_port() {
         fn assert_audio_output<Output: AudioOutput>() {}
         assert_audio_output::<CpalAudioOutput>();
         let _output = CpalAudioOutput::new();
+    }
+
+    #[test]
+    fn preferred_default_does_not_require_optional_range_enumeration() {
+        let queried = Cell::new(false);
+        let selected = choose_output_config(Ok(config(48_000)), || {
+            queried.set(true);
+            Err("optional ranges unavailable".to_owned())
+        })
+        .expect("the valid preferred default is sufficient");
+
+        assert_eq!(selected.sample_rate(), 48_000);
+        assert!(!queried.get());
+    }
+
+    #[test]
+    fn valid_default_survives_optional_range_query_failure() {
+        let selected =
+            choose_output_config(Ok(config(44_100)), || Err("Unknown property".to_owned()))
+                .expect("a valid reported default remains usable");
+
+        assert_eq!(selected.sample_rate(), 44_100);
+        assert_eq!(selected.channels(), 2);
+    }
+
+    #[test]
+    fn failed_default_and_range_queries_remain_one_actionable_error() {
+        let error = choose_output_config(Err("default failed".to_owned()), || {
+            Err("ranges failed".to_owned())
+        })
+        .expect_err("no device configuration was reported");
+
+        assert!(error.message().contains("default failed"));
+        assert!(error.message().contains("ranges failed"));
     }
 
     #[test]

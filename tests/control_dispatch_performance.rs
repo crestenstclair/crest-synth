@@ -1,4 +1,3 @@
-use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::production_instruments::production_capability_registry;
 use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::app_loop::AppLoop;
@@ -45,7 +44,8 @@ fn globals() -> GlobalParameters {
 }
 
 fn installed_state() -> AppState {
-    let provider = HiDefSoundFontCapability::new().unwrap();
+    let provider =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
     let mut state = AppState::new(production_capability_registry().unwrap(), globals());
     let patches = (0..PATCH_COUNT)
         .map(|index| {

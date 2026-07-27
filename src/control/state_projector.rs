@@ -16,7 +16,7 @@ use core::fmt;
 
 const MIXER_HEADER: &str =
     "MIXER | 1 MIXER | 2 PATCH | W/S parameters | A/D channels | K+direction edit";
-const PATCH_HEADER: &str = "PATCH | 1 MIXER | 2 PATCH | K+A/D engine";
+const PATCH_HEADER: &str = "PATCH | 1 MIXER | 2 PATCH | W/S controls | K+direction edit";
 const SEPARATOR: &str = "------------------------------------------------------------";
 
 /// A projection failure detected on the control side before publication.
@@ -498,20 +498,30 @@ fn render_patch_text(
     state_hash: &str,
 ) -> Result<TextProjection, StateProjectionError> {
     let mut lines = vec![PATCH_HEADER.to_owned()];
+    let mut selected_line = None;
     lines.push(format!(
         " PATCH {}",
         serde_json::to_string(page.patch())
             .map_err(|_| StateProjectionError::StateSerialization)?
     ));
-    let engine_marker = if page.engine().editable() { '>' } else { ' ' };
+    let engine_selected = page.engine().control_id() == page.focused_control_id();
+    if engine_selected {
+        selected_line = Some(lines.len());
+    }
+    let engine_marker = if engine_selected { '>' } else { ' ' };
     lines.push(format!(
         "{engine_marker} ENGINE {}",
         serde_json::to_string(page.engine())
             .map_err(|_| StateProjectionError::StateSerialization)?
     ));
     for row in page.envelope() {
+        let selected = row.control_id() == page.focused_control_id();
+        if selected {
+            selected_line = Some(lines.len());
+        }
+        let marker = if selected { '>' } else { ' ' };
         lines.push(format!(
-            " ENVELOPE {}",
+            "{marker} ENVELOPE {}",
             serde_json::to_string(row).map_err(|_| StateProjectionError::StateSerialization)?
         ));
     }
@@ -522,17 +532,24 @@ fn render_patch_text(
             section.label()
         ));
         for row in section.parameters() {
+            let selected = row.control_id() == Some(page.focused_control_id());
+            if selected {
+                selected_line = Some(lines.len());
+            }
+            let marker = if selected { '>' } else { ' ' };
             lines.push(format!(
-                " PARAMETER {}",
+                "{marker} PARAMETER {}",
                 serde_json::to_string(row).map_err(|_| StateProjectionError::StateSerialization)?
             ));
         }
     }
 
+    let selected_line = selected_line.ok_or(StateProjectionError::InvalidSelection)?;
+
     Ok(TextProjection::for_context(
         crate::control::TopLevelContext::Patch,
         lines.join("\n"),
-        2,
+        selected_line,
         state_hash.to_owned(),
     ))
 }
@@ -608,7 +625,7 @@ mod tests {
     use super::*;
     use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
     use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID,
+        HIDEF_CAPABILITY_ID, SOUNDFONT_PRESET_PARAMETER_ID,
     };
     use crate::adapter::production_instruments::production_capability_registry;
     use crate::control::app_event::{AppEvent, Direction};
@@ -623,6 +640,7 @@ mod tests {
     use crate::real_time::MAX_PATCHES;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::PatchInteraction;
     use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn global_parameters() -> GlobalParameters {
@@ -630,13 +648,14 @@ mod tests {
     }
 
     fn patch(id: u32, gain_db: f32) -> Patch {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
             create_soundfont_config(
                 &provider,
-                SoundFontInstrument::new(128, (id - 1) as u8, (id & 1) == 0).unwrap(),
+                SoundFontInstrument::new(128, ((id - 1) % 2) as u8, (id & 1) == 0).unwrap(),
             )
             .unwrap(),
             MidiChannel::new(((id - 1) % 16) as u8).unwrap(),
@@ -645,7 +664,8 @@ mod tests {
     }
 
     fn installed_state_for_graph(graph_revision: GraphRevision) -> AppState {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let mut state = AppState::for_graph(
             provider.registry().unwrap(),
             global_parameters(),
@@ -665,13 +685,23 @@ mod tests {
     }
 
     fn mixed_patch_state() -> AppState {
+        mixed_patch_state_with_config(patch(1, -6.0).instrument_config().clone())
+    }
+
+    fn mixed_patch_state_with_config(config: InstrumentConfig) -> AppState {
         let mut state = AppState::new(
             production_capability_registry().unwrap(),
             global_parameters(),
         );
-        state
-            .apply(AppEvent::InstallPatches(vec![patch(1, -6.0)]))
-            .unwrap();
+        let patch = Patch::new(
+            PatchId::new(1).unwrap(),
+            "Patch 1".to_owned(),
+            config,
+            MidiChannel::new(0).unwrap(),
+            ChannelParameters::new(-6.0, 0.1, 0.2, 0.3).unwrap(),
+        )
+        .with_envelope(crate::synth::VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap());
+        state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
         state
             .apply(AppEvent::SelectContext(
                 crate::control::TopLevelContext::Patch,
@@ -701,8 +731,13 @@ mod tests {
         assert_eq!(
             decoded.patches[0]
                 .instrument
-                .value(&crate::synth::ParameterId::new(SOUNDFONT_BANK_PARAMETER_ID).unwrap()),
-            Some(&ParameterValue::Stepped(128))
+                .value(&crate::synth::ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Choice(
+                SoundFontInstrument::new(128, 0, false)
+                    .unwrap()
+                    .preset_id()
+                    .choice_id()
+            ))
         );
         assert_eq!(decoded.patches[0].gain_db, -6.0);
         assert_eq!(decoded.global.delay_milliseconds, 375.0);
@@ -729,7 +764,9 @@ mod tests {
         assert!(text
             .body()
             .contains("PATCH id=1 name=Patch 1 channel=0 capability=HiDef SoundFont (instrument.soundfont.hidef)"));
-        assert!(text.body().contains("Bank (soundfont.bank)=128"));
+        assert!(text
+            .body()
+            .contains("Preset (soundfont.preset)=sf2.bank-0.program-0"));
         assert!(text
             .body()
             .contains("SoundFont File (soundfont.file)=soundfont:./sf2/HiDef.sf2"));
@@ -774,7 +811,8 @@ mod tests {
 
     #[test]
     fn rejects_oversized_patch_installation_before_projection() {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let mut state = AppState::new(provider.registry().unwrap(), global_parameters());
         let patches = (1..=(MAX_PATCHES as u32 + 1))
             .map(|id| patch(id, -6.0))
@@ -908,6 +946,129 @@ mod tests {
     }
 
     #[test]
+    fn patch_text_marker_and_selected_line_follow_every_canonical_control() {
+        let mut state = mixed_patch_state();
+        for (index, expected_control) in crate::control::PatchControlId::surface_descriptor()
+            .iter()
+            .cloned()
+            .enumerate()
+        {
+            let (_, page, text, _, _) = StateProjector::new().project_with_tree(&state).unwrap();
+            let page = page.unwrap();
+            assert_eq!(page.focused_control_id(), expected_control);
+            assert_eq!(text.selected_line(), index + 2);
+            assert_eq!(
+                text.body()
+                    .lines()
+                    .filter(|line| line.starts_with('>'))
+                    .count(),
+                1
+            );
+            assert!(text
+                .body()
+                .lines()
+                .nth(text.selected_line())
+                .unwrap()
+                .contains(expected_control.as_str().as_ref()));
+
+            if index + 1 < crate::control::PatchControlId::surface_descriptor().len() {
+                state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+            }
+        }
+
+        let mut preparing = mixed_patch_state();
+        preparing.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        let (_, page, text, _, _) = StateProjector::new().project_with_tree(&preparing).unwrap();
+        let page = page.unwrap();
+        assert_eq!(
+            page.focused_control_id(),
+            crate::control::PatchControlId::Engine
+        );
+        assert!(!page.engine().editable());
+        assert_eq!(text.selected_line(), 2);
+        assert!(text.body().lines().nth(2).unwrap().starts_with("> ENGINE"));
+    }
+
+    #[test]
+    fn patch_projection_is_generic_for_both_engines_every_focus_and_context_round_trip() {
+        let soundfont = patch(1, -6.0).instrument_config().clone();
+        let braids = BraidsCapability::new().unwrap().default_config().unwrap();
+
+        for config in [soundfont, braids] {
+            let mut state = mixed_patch_state_with_config(config);
+            let descriptor = state
+                .capabilities()
+                .descriptor(state.patches()[0].instrument_config().capability_id())
+                .unwrap()
+                .clone();
+            let controls = crate::control::PatchControlId::resolve(
+                &descriptor,
+                state.patches()[0].instrument_config(),
+            );
+
+            for (index, control) in controls.iter().cloned().enumerate() {
+                let (_, page, text, _, tree) =
+                    StateProjector::new().project_with_tree(&state).unwrap();
+                let page = page.unwrap();
+                assert_eq!(page.focused_control_id(), control);
+                assert_eq!(
+                    text.body()
+                        .lines()
+                        .filter(|line| line.starts_with('>'))
+                        .count(),
+                    1
+                );
+                assert_eq!(page.sections().len(), descriptor.sections().len());
+                for (section, section_spec) in page.sections().iter().zip(descriptor.sections()) {
+                    assert_eq!(section.id(), section_spec.id());
+                    for (row, spec) in section.parameters().iter().zip(section_spec.parameters()) {
+                        assert_eq!(row.id(), spec.id());
+                        assert!(text.body().contains(spec.id().as_str()));
+                        assert_eq!(
+                            row.editable(),
+                            spec.patch_interaction() == PatchInteraction::StructuralChoice
+                        );
+                    }
+                }
+                let tree_json: serde_json::Value = serde_json::from_str(tree.json()).unwrap();
+                assert_eq!(
+                    tree_json["patchPage"]["focusedControlId"],
+                    control.as_str().as_ref()
+                );
+
+                if index + 1 < controls.len() {
+                    state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+                }
+            }
+
+            let retained = state.interaction().patch_control_focus();
+            let retained_line = StateProjector::new()
+                .project_with_tree(&state)
+                .unwrap()
+                .2
+                .selected_line();
+            state
+                .apply(AppEvent::SelectContext(
+                    crate::control::TopLevelContext::Mixer,
+                ))
+                .unwrap();
+            assert!(StateProjector::new()
+                .project_with_tree(&state)
+                .unwrap()
+                .1
+                .is_none());
+            state
+                .apply(AppEvent::SelectContext(
+                    crate::control::TopLevelContext::Patch,
+                ))
+                .unwrap();
+            let (_, page, text, _, _) = StateProjector::new().project_with_tree(&state).unwrap();
+            assert_eq!(page.unwrap().focused_control_id(), retained.unwrap());
+            assert_eq!(text.selected_line(), retained_line);
+        }
+    }
+
+    #[test]
     fn every_engine_selection_generation_is_cross_projection_coherent() {
         let projector = StateProjector::new();
         let mut state = mixed_patch_state();
@@ -926,8 +1087,14 @@ mod tests {
                 let snapshot_value: serde_json::Value =
                     serde_json::from_str(snapshot.json()).unwrap();
                 let tree_value: serde_json::Value = serde_json::from_str(tree.json()).unwrap();
+                let focused_control = state.interaction().patch_control_focus().unwrap();
+                let focused_index = crate::control::PatchControlId::surface_descriptor()
+                    .iter()
+                    .position(|control| *control == focused_control)
+                    .unwrap();
 
                 assert_eq!(page.engine().status(), expected_kind);
+                assert_eq!(page.focused_control_id(), focused_control);
                 assert_eq!(page.engine().editable(), expected_editable);
                 assert_eq!(page.engine().failure(), expected_failure);
                 assert_eq!(parameters.generation(), state.generation());
@@ -937,6 +1104,13 @@ mod tests {
                 assert_eq!(page.state_hash(), snapshot.hash());
                 assert_eq!(text.state_hash(), snapshot.hash());
                 assert_eq!(tree.state_hash(), snapshot.hash());
+                assert_eq!(text.selected_line(), focused_index + 2);
+                assert!(text
+                    .body()
+                    .lines()
+                    .nth(text.selected_line())
+                    .unwrap()
+                    .starts_with('>'));
                 assert_eq!(
                     snapshot_value["engineSelection"],
                     tree_value["engineSelection"]
@@ -958,7 +1132,7 @@ mod tests {
                         .find(|line| line.contains("ENGINE"))
                         .unwrap()
                         .starts_with('>'),
-                    expected_editable
+                    page.focused_control_id() == crate::control::PatchControlId::Engine
                 );
                 if let Some(failure) = expected_failure {
                     assert!(text
@@ -987,12 +1161,22 @@ mod tests {
             None,
         );
 
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert_projection(
+            &state,
+            EngineSelectionStatusKind::Preparing,
+            source_revision,
+            false,
+            None,
+        );
+
         let failed_correlation = state.engine_selection().correlation().unwrap().clone();
         let target_revision = source_revision.checked_next().unwrap();
         state
             .apply(AppEvent::EnginePreparationFailed {
                 request_id: failed_correlation.request_id(),
                 patch_id: failed_correlation.patch_id(),
+                intent: failed_correlation.intent().clone(),
                 source_capability_id: failed_correlation.source_capability_id().clone(),
                 target_capability_id: failed_correlation.target_capability_id().clone(),
                 source_graph_revision: failed_correlation.source_graph_revision(),
@@ -1009,7 +1193,10 @@ mod tests {
             Some(EngineSelectionFailure::WorkerUnavailable),
         );
 
+        state.apply(AppEvent::Navigate(Direction::Up)).unwrap();
         state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         assert_projection(
             &state,
             EngineSelectionStatusKind::Preparing,
@@ -1023,6 +1210,7 @@ mod tests {
             .apply(AppEvent::EnginePrepared {
                 request_id: correlation.request_id(),
                 patch_id: correlation.patch_id(),
+                intent: correlation.intent().clone(),
                 source_capability_id: correlation.source_capability_id().clone(),
                 target_capability_id: correlation.target_capability_id().clone(),
                 source_graph_revision: correlation.source_graph_revision(),
@@ -1045,9 +1233,19 @@ mod tests {
             None,
         );
 
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert_projection(
+            &state,
+            EngineSelectionStatusKind::Activating,
+            target_revision,
+            false,
+            None,
+        );
+
         state
             .apply(AppEvent::EngineActivationAcknowledged {
                 request_id: correlation.request_id(),
+                intent: correlation.intent().clone(),
                 target_graph_revision: target_revision,
                 retired_graph_revision: source_revision,
                 collected: true,

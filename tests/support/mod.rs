@@ -1,5 +1,4 @@
 use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
-use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::adapter::production_instruments::{
@@ -68,7 +67,8 @@ fn parts() -> Vec<InstrumentPart> {
 }
 
 fn scene_patches() -> Vec<Patch> {
-    let soundfont = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+    let soundfont = crest_synth::adapter::production_instruments::production_soundfont_capability()
+        .expect("fixture capability is valid");
     let braids = BraidsCapability::new().expect("fixture capability is valid");
     parts()
         .into_iter()

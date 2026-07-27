@@ -4,11 +4,11 @@ project: contexts: Synth: {
 	purpose: "capability-polymorphic Patch identity, off-thread instrument preparation, and bounded prepared rendering"
 	ubiquitousLanguage: {
 		Patch: "one playable instrument configuration identified by a capability rather than an engine-specific aggregate shape"
-		SoundFontInstrument: "the bank, program, and percussion identity selected in HiDef.sf2"
+		SoundFontInstrument: "the MIDI fixture's source bank, program, and percussion request before catalog resolution"
 	}
 
 	valueObjects: SoundFontInstrument: {
-		description: "the preset selector derived from a MIDI instrument part"
+		description: "the source instrument request derived from a MIDI fixture part before resolving the fixed SoundFont catalog"
 		state: {
 			bank: "u16"
 			program: "u8"
@@ -16,10 +16,12 @@ project: contexts: Synth: {
 		}
 		invariants: [
 			"program is in 0..=127",
-			"percussion identity remains distinct from a melodic preset with the same numeric bank and program",
+			"percussion identity remains distinct from a melodic request with the same numeric bank and program",
+			"the SoundFont fixture edge normalizes the value to one SoundFontPresetId and requires an exact catalog match before Patch installation; it never becomes a second stored preset identity",
 		]
 		contributesTo: [
 			{capability: "capability.soundfont_audio", contribution: "selects the correct HiDef.sf2 instrument for a Patch"},
+			{capability: "capability.soundfont_preset_selection", contribution: "resolves fixture requests to exact catalog choice ids without name matching or fallback"},
 			{capability: "capability.automatic_test_midi", contribution: "preserves the instrument identity discovered in the MIDI fixture"},
 		]
 	}
@@ -41,8 +43,8 @@ project: contexts: Synth: {
 		]
 		contributesTo: [
 			{capability: "capability.per_voice_envelope", contribution: "defines one common envelope contract for every admitted engine"},
-			{capability: "capability.one_way_parameter_control", contribution: "adds four schema-derived Patch values to the existing semantic adjustment path"},
-			{capability: "capability.schema_driven_patch_page", contribution: "supplies the four canonical ADSR rows without creating UI-owned envelope state"},
+			{capability: "capability.one_way_parameter_control", contribution: "adds four schema-derived Patch values to one shared semantic adjustment path used by MIXER and PATCH"},
+			{capability: "capability.schema_driven_patch_page", contribution: "supplies the four canonical focusable/editable ADSR rows without creating UI-owned envelope state"},
 		]
 	}
 
@@ -60,7 +62,7 @@ project: contexts: Synth: {
 		invariants: [
 			"id is stable for the process lifetime",
 			"instrument capability and configuration are validated against the installed CapabilityRegistry before Patch construction",
-			"descriptor-classified Scalar values may change through the canonical reducer; the only structural mutation in this increment atomically replaces the complete InstrumentConfig after a correlated engine candidate is prepared",
+			"descriptor-classified Scalar values may change through the canonical reducer; engine and descriptor-declared structural-choice edits atomically replace the complete InstrumentConfig only after one correlated candidate is prepared",
 			"channel is assigned by the input adapter and is in 0..=15",
 			"ChannelParameters, VoiceEnvelope, and active descriptor-classified Scalar instrument values form one schema-derived editable surface",
 			"Patch contains no SoundFont-only field, engine object, descriptor copy, prepared renderer, decoded asset, UI state, or fallback configuration",
@@ -72,6 +74,7 @@ project: contexts: Synth: {
 			{capability: "capability.one_way_parameter_control", contribution: "is the unit listed and edited by the text view"},
 			{capability: "capability.schema_driven_patch_page", contribution: "supplies stable Patch identity, MIDI channel, active config, and envelope to the focused page"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "retains Patch identity, MIDI channel, envelope, and mixer routing while replacing only its prepared InstrumentConfig"},
+			{capability: "capability.soundfont_preset_selection", contribution: "retains every Patch field while replacing only the preset assignment inside its validated config"},
 		]
 	}
 
@@ -160,23 +163,25 @@ project: adapters: HiDefSoundFontPreparer: {
 	meta: {
 		framework: "rustysynth"
 		rules: [
-			"expect exactly ./sf2/HiDef.sf2 and parse it once outside the callback; return a clear preparation error if it is missing or invalid",
-			"own one HiDefSoundFontPreparer and share its immutable parsed SoundFont bank across the per-Patch PreparedInstrument values it creates; never parse or clone the full bank per Patch",
-			"prepare exactly one rustysynth synthesizer for each accepted instrument.soundfont.hidef Patch using its exact bank, program, percussion, channel, and fixed asset assignments; all Patch synthesizers share only the parsed immutable bank",
+			"be constructed from the catalog and numeric PreparedSoundFontBank produced together by the single HiDefSoundFontAsset load; never open, parse, or clone the full SF2 per preparer or Patch",
+			"resolve the exact soundfont.preset stable choice id through the immutable catalog, require the fixed soundfont.file assignment, and reject an absent or malformed address without parsing or matching the authored label",
+			"prepare exactly one rustysynth-compatible synthesizer for each accepted instrument.soundfont.hidef Patch using the resolved numeric bank, program, derived percussion channel, and fixed asset assignment; all Patch synthesizers share only the numeric immutable bank",
 			"inside each prepared instrument use rustysynth's percussion channel for a percussion Patch and a melodic channel for every other Patch, regardless of the Patch's logical assigned channel",
 			"the private prepared value implements PreparedInstrument, delegates polyphony to its one Patch-local synthesizer, and applies the Patch VoiceEnvelope independently through an engine-native per-note seam before native voices enter the caller-owned stem",
 			"disable rustysynth's built-in reverb and chorus so the declared global effects are the only effects",
 			"the descriptor declares EngineManaged polyphony and Crest does not impose a sixteen-note limit, create a synthesizer per note, or share mutable synthesizer state between Patches; the preparer still declares and proves a finite internal callback-work ceiling",
 			"if rustysynth cannot implement the common ADSR independently on overlapping native voices, extend the adapter or replace the backend rather than apply a post-stem envelope, create sixteen synthesizers per Patch, ignore a control, or claim conformance",
-			"prepared dispatch, all-notes-off, and render use only bounded warmed state and perform no callback allocation, deallocation, locking, blocking, I/O, logging, formatting, panic, unwinding, or destruction",
+			"the PreparedInstrument and its shared bank retain no raw rustysynth SoundFont, String, authored name, catalog, descriptor, InstrumentConfig, or filesystem path",
+			"prepared dispatch, all-notes-off, and render use only bounded warmed numeric state and perform no callback allocation, deallocation, locking, blocking, I/O, logging, formatting, panic, unwinding, or destruction",
 		]
 	}
 	validations: [{id: "validation.adapter.hidef_soundfont_preparer", kind: "test", command: ["cargo", "test", "hidef_soundfont_preparer"], description: "one parsed bank prepares independent melodic and percussion instruments whose targeted MIDI and bounded non-silent stems remain isolated behind PreparedInstrument"}]
 	contributesTo: [
 		{capability: "capability.instrument_capability_model", contribution: "prepares the existing renderer from a generic capability config without becoming the Patch model"},
 		{capability: "capability.asynchronous_engine_selection", contribution: "prepares a selected default SoundFont candidate on worker ownership"},
+		{capability: "capability.soundfont_preset_selection", contribution: "resolves the selected catalog id to one numeric address and prepares it without callback metadata"},
 		{capability: "capability.prepared_engine_rack", contribution: "supplies the SoundFont production preparer and capability-neutral per-Patch prepared instruments"},
-		{capability: "capability.soundfont_audio", contribution: "preserves one parsed HiDef.sf2 bank while adapting SoundFont to the generic prepared boundary"},
+		{capability: "capability.soundfont_audio", contribution: "preserves one numeric HiDef.sf2 PCM/zone bank while adapting SoundFont to the generic prepared boundary"},
 		{capability: "capability.per_voice_envelope", contribution: "applies the common envelope through one Patch-local synthesizer's independent native voices"},
 		{capability: "capability.realtime_execution", contribution: "keeps prepared SoundFont operations inside the callback contract"},
 	]

@@ -8,6 +8,7 @@ pub mod parameter_id;
 pub mod patch;
 pub mod prepared_engine_rack_builder;
 pub mod prepared_instrument;
+pub mod sound_font_preset;
 
 pub use capability_id::{CapabilityId, IdentifierError};
 pub use descriptor_default_config_factory::DescriptorDefaultConfigFactory;
@@ -15,7 +16,7 @@ pub use instrument_capability::{
     AssetAssignment, AssetKind, AssetReference, AssetRequirement, CapabilityDescriptor,
     CapabilityError, CapabilityRegistry, CapabilitySection, InstrumentConfig, ParameterAdjustment,
     ParameterAssignment, ParameterChoice, ParameterDefault, ParameterKind, ParameterPredicate,
-    ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue, VoicePolicy,
+    ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue, PatchInteraction, VoicePolicy,
     MAX_INSTRUMENT_SCALAR_PARAMETERS,
 };
 pub use instrument_capability_provider::InstrumentCapabilityProvider;
@@ -28,6 +29,10 @@ pub mod sound_font_instrument;
 pub mod voice_envelope;
 pub mod voice_envelope_state;
 pub use parameter_id::ParameterId;
+pub use sound_font_preset::{
+    SoundFontPresetCatalog, SoundFontPresetCatalogEntry, SoundFontPresetCatalogError,
+    SoundFontPresetCollision, SoundFontPresetId, SoundFontPresetIdError, SoundFontPresetSource,
+};
 pub use voice_envelope::{
     VoiceEnvelope, VoiceEnvelopeError, VoiceEnvelopeParameter, VoiceEnvelopeParameterDescriptor,
 };

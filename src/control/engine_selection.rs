@@ -1,6 +1,7 @@
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::synth::capability_id::CapabilityId;
+use crate::synth::ParameterId;
 use core::fmt;
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
@@ -76,6 +77,7 @@ pub enum EngineSelectionFailure {
     ProviderMismatch,
     PreparerMissing,
     AssetUnavailable,
+    PresetUnavailable,
     UnsupportedAudioConfig,
     PreparationFailed,
     GraphIncompatible,
@@ -83,13 +85,14 @@ pub enum EngineSelectionFailure {
 }
 
 impl EngineSelectionFailure {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::UnknownCapability,
         Self::MissingDefault,
         Self::InvalidDefaultConfig,
         Self::ProviderMismatch,
         Self::PreparerMissing,
         Self::AssetUnavailable,
+        Self::PresetUnavailable,
         Self::UnsupportedAudioConfig,
         Self::PreparationFailed,
         Self::GraphIncompatible,
@@ -108,10 +111,65 @@ impl EngineSelectionFailure {
             Self::ProviderMismatch => "providerMismatch",
             Self::PreparerMissing => "preparerMissing",
             Self::AssetUnavailable => "assetUnavailable",
+            Self::PresetUnavailable => "presetUnavailable",
             Self::UnsupportedAudioConfig => "unsupportedAudioConfig",
             Self::PreparationFailed => "preparationFailed",
             Self::GraphIncompatible => "graphIncompatible",
             Self::WorkerUnavailable => "workerUnavailable",
+        }
+    }
+}
+
+/// The complete permitted config delta for one shared structural request.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum StructuralEditIntent {
+    ReplaceCapability {
+        target_capability_id: CapabilityId,
+    },
+    ReplaceParameterChoice {
+        capability_id: CapabilityId,
+        parameter_id: ParameterId,
+        choice_id: String,
+    },
+}
+
+impl StructuralEditIntent {
+    pub const fn target_capability_id(&self) -> &CapabilityId {
+        match self {
+            Self::ReplaceCapability {
+                target_capability_id,
+            } => target_capability_id,
+            Self::ReplaceParameterChoice { capability_id, .. } => capability_id,
+        }
+    }
+
+    pub const fn parameter_id(&self) -> Option<&ParameterId> {
+        match self {
+            Self::ReplaceCapability { .. } => None,
+            Self::ReplaceParameterChoice { parameter_id, .. } => Some(parameter_id),
+        }
+    }
+
+    pub fn choice_id(&self) -> Option<&str> {
+        match self {
+            Self::ReplaceCapability { .. } => None,
+            Self::ReplaceParameterChoice { choice_id, .. } => Some(choice_id),
+        }
+    }
+
+    fn matches_capabilities(&self, source: &CapabilityId, target: &CapabilityId) -> bool {
+        match self {
+            Self::ReplaceCapability {
+                target_capability_id,
+            } => source != target && target_capability_id == target,
+            Self::ReplaceParameterChoice { capability_id, .. } => {
+                source == target && capability_id == source
+            }
         }
     }
 }
@@ -184,6 +242,7 @@ impl EngineSelectionStatusKind {
 pub struct EngineSelectionCorrelation {
     request_id: EngineSelectionRequestId,
     patch_id: PatchId,
+    intent: StructuralEditIntent,
     source_capability_id: CapabilityId,
     target_capability_id: CapabilityId,
     source_graph_revision: GraphRevision,
@@ -197,6 +256,10 @@ impl EngineSelectionCorrelation {
 
     pub const fn patch_id(&self) -> PatchId {
         self.patch_id
+    }
+
+    pub const fn intent(&self) -> &StructuralEditIntent {
+        &self.intent
     }
 
     pub const fn source_capability_id(&self) -> &CapabilityId {
@@ -223,6 +286,7 @@ pub struct EngineSelectionEffect {
     kind: EngineSelectionEffectKind,
     request_id: EngineSelectionRequestId,
     patch_id: PatchId,
+    intent: StructuralEditIntent,
     source_capability_id: CapabilityId,
     target_capability_id: CapabilityId,
     source_graph_revision: GraphRevision,
@@ -249,6 +313,7 @@ impl EngineSelectionEffect {
             kind,
             request_id: correlation.request_id(),
             patch_id: correlation.patch_id(),
+            intent: correlation.intent().clone(),
             source_capability_id: correlation.source_capability_id().clone(),
             target_capability_id: correlation.target_capability_id().clone(),
             source_graph_revision: correlation.source_graph_revision(),
@@ -266,6 +331,10 @@ impl EngineSelectionEffect {
 
     pub const fn patch_id(&self) -> PatchId {
         self.patch_id
+    }
+
+    pub const fn intent(&self) -> &StructuralEditIntent {
+        &self.intent
     }
 
     pub const fn source_capability_id(&self) -> &CapabilityId {
@@ -313,8 +382,33 @@ impl EngineSelectionStatus {
         source_capability_id: CapabilityId,
         target_capability_id: CapabilityId,
     ) -> Result<Self, EngineSelectionStatusError> {
+        let intent = StructuralEditIntent::ReplaceCapability {
+            target_capability_id: target_capability_id.clone(),
+        };
+        Self::preparing_with_intent(
+            active_graph_revision,
+            request_id,
+            patch_id,
+            intent,
+            source_capability_id,
+            target_capability_id,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn preparing_with_intent(
+        active_graph_revision: GraphRevision,
+        request_id: EngineSelectionRequestId,
+        patch_id: PatchId,
+        intent: StructuralEditIntent,
+        source_capability_id: CapabilityId,
+        target_capability_id: CapabilityId,
+    ) -> Result<Self, EngineSelectionStatusError> {
         if request_id.is_none() {
             return Err(EngineSelectionStatusError::MissingRequestIdentity);
+        }
+        if !intent.matches_capabilities(&source_capability_id, &target_capability_id) {
+            return Err(EngineSelectionStatusError::IntentMismatch);
         }
         Ok(Self {
             kind: EngineSelectionStatusKind::Preparing,
@@ -322,6 +416,7 @@ impl EngineSelectionStatus {
             correlation: Some(EngineSelectionCorrelation {
                 request_id,
                 patch_id,
+                intent,
                 source_capability_id,
                 target_capability_id,
                 source_graph_revision: active_graph_revision,
@@ -430,7 +525,10 @@ impl EngineSelectionStatus {
         let correlation_valid = self.correlation.as_ref().is_none_or(|correlation| {
             !correlation.request_id.is_none()
                 && correlation.source_graph_revision == self.active_graph_revision
-                && correlation.source_capability_id != correlation.target_capability_id
+                && correlation.intent.matches_capabilities(
+                    &correlation.source_capability_id,
+                    &correlation.target_capability_id,
+                )
         });
         if !correlation_valid {
             return Err(EngineSelectionStatusError::InvalidSerializedState);
@@ -502,6 +600,7 @@ pub enum EngineSelectionStatusError {
     UnexpectedTargetRevision,
     InvalidSerializedState,
     InvalidTransition,
+    IntentMismatch,
 }
 
 impl fmt::Display for EngineSelectionStatusError {
@@ -522,6 +621,9 @@ impl fmt::Display for EngineSelectionStatusError {
                 "serialized engine-selection lifecycle violates its correlation invariants"
             }
             Self::InvalidTransition => "engine-selection lifecycle transition is invalid",
+            Self::IntentMismatch => {
+                "structural edit intent does not match its source and target capabilities"
+            }
         };
         formatter.write_str(message)
     }
@@ -557,7 +659,7 @@ mod tests {
 
     #[test]
     fn engine_selection_values_have_unique_exhaustive_stable_serialized_names() {
-        assert_eq!(EngineSelectionFailure::surface_descriptor().len(), 10);
+        assert_eq!(EngineSelectionFailure::surface_descriptor().len(), 11);
         assert_eq!(EngineSelectionStatusKind::surface_descriptor().len(), 4);
         for failures in EngineSelectionFailure::surface_descriptor().windows(2) {
             assert_ne!(failures[0], failures[1]);

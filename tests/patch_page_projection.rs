@@ -1,6 +1,5 @@
 use crest_synth::adapter::braids_capability::BraidsCapability;
 use crest_synth::adapter::eframe_text_window::EframeApplication;
-use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::adapter::production_instruments::{
@@ -12,7 +11,9 @@ use crest_synth::control::app_state::{AppState, EventRejection};
 use crest_synth::control::event_record::{EmittedEvent, EventInput, EventOutcome};
 use crest_synth::control::patch_page_projection::PatchPageProjection;
 use crest_synth::control::state_projector::StateProjector;
-use crest_synth::control::{EngineSelectionStatusKind, TopLevelContext};
+use crest_synth::control::{
+    EngineSelectionFailure, EngineSelectionStatusKind, PatchControlId, TopLevelContext,
+};
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
@@ -32,7 +33,8 @@ use crest_synth::shell::app_window::{AppInputCallback, ProjectionCallback, TickC
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
     CapabilityId, InstrumentConfig, InstrumentPreparationError, InstrumentPreparer,
-    ParameterDefault, ParameterKind, Patch, PreparedInstrument, VoiceEnvelope,
+    ParameterDefault, ParameterKind, ParameterValue, Patch, PatchInteraction, PreparedInstrument,
+    VoiceEnvelope, VoiceEnvelopeParameter,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use eframe::egui;
@@ -164,7 +166,8 @@ fn globals() -> GlobalParameters {
 }
 
 fn soundfont_config() -> InstrumentConfig {
-    let provider = HiDefSoundFontCapability::new().unwrap();
+    let provider =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
     create_soundfont_config(&provider, SoundFontInstrument::new(0, 80, false).unwrap()).unwrap()
 }
 
@@ -177,7 +180,7 @@ fn production_patches() -> Vec<Patch> {
             MidiChannel::new(3).unwrap(),
             ChannelParameters::new(-4.0, -0.31, 0.0, 0.0).unwrap(),
         )
-        .with_envelope(VoiceEnvelope::new(0.0, 37.0, 0.72, 91.0).unwrap()),
+        .with_envelope(VoiceEnvelope::new(0.0, 37.0, 1.0, 91.0).unwrap()),
         Patch::new(
             PatchId::new(29).unwrap(),
             "Schema Braids".to_owned(),
@@ -200,6 +203,16 @@ fn key_event(key: egui::Key) -> egui::Event {
         key,
         physical_key: None,
         pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    }
+}
+
+fn key_release(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: false,
         repeat: false,
         modifiers: egui::Modifiers::default(),
     }
@@ -237,6 +250,10 @@ fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
         .unwrap();
 
     assert_eq!(page.context(), TopLevelContext::Patch);
+    assert_eq!(
+        page.focused_control_id(),
+        state.interaction().patch_control_focus().unwrap()
+    );
     assert_eq!(page.patch().id(), patch.id());
     assert_eq!(page.patch().name(), patch.name());
     assert_eq!(page.patch().midi_channel(), patch.channel());
@@ -266,6 +283,7 @@ fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
         .iter()
         .zip(VoiceEnvelope::surface_descriptor())
     {
+        assert_eq!(row.control_id(), PatchControlId::Envelope(spec.parameter()));
         assert_eq!(row.id(), spec.name());
         assert_eq!(row.label(), spec.label());
         assert_eq!(row.value(), patch.envelope().value(spec.parameter()));
@@ -274,7 +292,7 @@ fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
         assert_eq!(row.fine_step(), spec.fine_step());
         assert_eq!(row.coarse_step(), spec.coarse_step());
         assert_eq!(row.unit(), spec.unit());
-        assert!(!row.editable());
+        assert!(row.editable());
     }
 
     assert_eq!(page.sections().len(), descriptor.sections().len());
@@ -287,13 +305,13 @@ fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
             assert_eq!(row.label(), spec.label());
             assert_eq!(row.kind(), spec.kind());
             assert_eq!(row.update(), spec.update());
+            assert_eq!(row.patch_interaction(), spec.patch_interaction());
             assert_eq!(row.range(), spec.range());
             assert_eq!(row.choices(), spec.choices());
             assert_eq!(row.fine_step(), spec.fine_step());
             assert_eq!(row.coarse_step(), spec.coarse_step());
             assert_eq!(row.unit(), spec.unit());
             assert_eq!(row.formatter(), spec.formatter());
-            assert!(!row.editable());
 
             let predicate_satisfied =
                 |predicate: Option<&crest_synth::synth::ParameterPredicate>| {
@@ -304,6 +322,14 @@ fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
                 };
             assert_eq!(row.enabled(), predicate_satisfied(spec.enabled_when()));
             assert_eq!(row.visible(), predicate_satisfied(spec.visible_when()));
+            let structural = spec.patch_interaction() == PatchInteraction::StructuralChoice
+                && row.enabled()
+                && row.visible();
+            assert_eq!(
+                row.control_id(),
+                structural.then(|| PatchControlId::Capability(spec.id().clone()))
+            );
+            assert_eq!(row.editable(), structural);
 
             if spec.kind() == ParameterKind::Asset {
                 let expected = patch
@@ -322,6 +348,22 @@ fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
                     patch.instrument_config().value(spec.id())
                 );
                 assert_eq!(row.value().asset(), None);
+                match patch.instrument_config().value(spec.id()) {
+                    Some(ParameterValue::Choice(choice_id)) => {
+                        assert_eq!(row.selected_choice_id(), Some(choice_id.as_str()));
+                        assert_eq!(
+                            row.selected_label(),
+                            spec.choices()
+                                .iter()
+                                .find(|choice| choice.id() == choice_id)
+                                .map(|choice| choice.label())
+                        );
+                    }
+                    _ => {
+                        assert_eq!(row.selected_choice_id(), None);
+                        assert_eq!(row.selected_label(), None);
+                    }
+                }
             }
         }
     }
@@ -368,6 +410,112 @@ fn prove_both_production_pages() {
     }
 }
 
+fn prove_patch_lifecycle_visibility() {
+    let mut state = installed_state(vec![production_patches().remove(0)]);
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state
+        .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
+        .unwrap();
+    state
+        .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
+        .unwrap();
+    let failed_correlation = state.engine_selection().correlation().unwrap().clone();
+    let target_revision = GraphRevision::new(2).unwrap();
+
+    let (_, page, text, _, _) = StateProjector::new().project_with_tree(&state).unwrap();
+    let page = page.unwrap();
+    assert_eq!(page.engine().status(), EngineSelectionStatusKind::Preparing);
+    assert!(!page.engine().editable());
+    assert_eq!(
+        page.focused_control_id(),
+        PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+    );
+    assert_eq!(text.selected_line(), 3);
+
+    state
+        .apply(AppEvent::EnginePreparationFailed {
+            request_id: failed_correlation.request_id(),
+            patch_id: failed_correlation.patch_id(),
+            intent: failed_correlation.intent().clone(),
+            source_capability_id: failed_correlation.source_capability_id().clone(),
+            target_capability_id: failed_correlation.target_capability_id().clone(),
+            source_graph_revision: failed_correlation.source_graph_revision(),
+            target_graph_revision: target_revision,
+            failure: EngineSelectionFailure::AssetUnavailable,
+        })
+        .unwrap();
+    let (_, page, text, _, _) = StateProjector::new().project_with_tree(&state).unwrap();
+    let page = page.unwrap();
+    assert_eq!(page.engine().status(), EngineSelectionStatusKind::Failed);
+    assert!(page.engine().editable());
+    assert_eq!(
+        page.focused_control_id(),
+        PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+    );
+    assert_eq!(text.selected_line(), 3);
+
+    state
+        .apply(AppEvent::Navigate(crest_synth::control::Direction::Up))
+        .unwrap();
+    state
+        .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
+        .unwrap();
+    state
+        .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
+        .unwrap();
+    state
+        .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
+        .unwrap();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    state
+        .apply(AppEvent::EnginePrepared {
+            request_id: correlation.request_id(),
+            patch_id: correlation.patch_id(),
+            intent: correlation.intent().clone(),
+            source_capability_id: correlation.source_capability_id().clone(),
+            target_capability_id: correlation.target_capability_id().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: target_revision,
+            candidate_config: BraidsCapability::new().unwrap().default_config().unwrap(),
+        })
+        .unwrap();
+    let (_, page, text, parameters, _) = StateProjector::new().project_with_tree(&state).unwrap();
+    let page = page.unwrap();
+    assert_eq!(
+        page.engine().status(),
+        EngineSelectionStatusKind::Activating
+    );
+    assert!(!page.engine().editable());
+    assert_eq!(
+        page.focused_control_id(),
+        PatchControlId::Envelope(VoiceEnvelopeParameter::DecayMilliseconds)
+    );
+    assert_eq!(text.selected_line(), 4);
+    assert_eq!(parameters.graph_revision(), target_revision);
+
+    state
+        .apply(AppEvent::EngineActivationAcknowledged {
+            request_id: correlation.request_id(),
+            intent: correlation.intent().clone(),
+            target_graph_revision: target_revision,
+            retired_graph_revision: GraphRevision::INITIAL,
+            collected: true,
+        })
+        .unwrap();
+    let (_, page, text, parameters, _) = StateProjector::new().project_with_tree(&state).unwrap();
+    let page = page.unwrap();
+    assert_eq!(page.engine().status(), EngineSelectionStatusKind::Ready);
+    assert!(page.engine().editable());
+    assert_eq!(
+        page.focused_control_id(),
+        PatchControlId::Envelope(VoiceEnvelopeParameter::DecayMilliseconds)
+    );
+    assert_eq!(text.selected_line(), 4);
+    assert_eq!(parameters.graph_revision(), target_revision);
+}
+
 fn same_parameter_values(before: ParameterSnapshot, after: ParameterSnapshot) -> bool {
     before.graph_revision() == after.graph_revision()
         && before.global() == after.global()
@@ -391,6 +539,7 @@ where
 #[test]
 fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     prove_both_production_pages();
+    prove_patch_lifecycle_visibility();
 
     let patches = production_patches();
     let observations = Arc::new(Mutex::new(BoundaryObservations::default()));
@@ -537,30 +686,244 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         );
     }
 
+    let mut frame_time = 0.25;
     run_frame(
         &mut application,
         &context,
         &mut frame,
-        vec![key_event(egui::Key::W)],
-        0.25,
+        vec![key_event(egui::Key::W), key_release(egui::Key::W)],
+        frame_time,
     );
+    frame_time += 0.25;
+
+    let baseline_envelope = *patches[0].envelope();
+    let mut focus_parameters = None;
+    for (index, parameter) in [
+        VoiceEnvelopeParameter::AttackMilliseconds,
+        VoiceEnvelopeParameter::DecayMilliseconds,
+        VoiceEnvelopeParameter::Sustain,
+        VoiceEnvelopeParameter::ReleaseMilliseconds,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        run_frame(
+            &mut application,
+            &context,
+            &mut frame,
+            vec![key_event(egui::Key::S), key_release(egui::Key::S)],
+            frame_time,
+        );
+        frame_time += 0.25;
+
+        {
+            let app_loop = shared.borrow();
+            let focused = *app_loop.current_parameters();
+            let page = app_loop.current_patch_page().unwrap();
+            let text = app_loop.current_text();
+            let tree: Value = serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
+            let record = app_loop.event_log_ref().records().last().unwrap();
+            assert_eq!(
+                page.focused_control_id(),
+                PatchControlId::Envelope(parameter)
+            );
+            assert_eq!(text.selected_line(), index + 3);
+            assert!(text
+                .body()
+                .lines()
+                .nth(text.selected_line())
+                .unwrap()
+                .starts_with('>'));
+            assert_eq!(
+                tree["patchPage"]["focusedControlId"],
+                page.focused_control_id().as_str().as_ref()
+            );
+            assert_eq!(
+                tree["patchPage"],
+                serde_json::from_str::<Value>(&serde_json::to_string(&page).unwrap()).unwrap()
+            );
+            assert_eq!(
+                focused.patch(patches[0].id()).unwrap().envelope(),
+                app_loop.patches()[0].envelope()
+            );
+            assert_eq!(record.outcome(), EventOutcome::Accepted);
+            assert!(record
+                .emitted_events()
+                .iter()
+                .all(|event| !matches!(event, EmittedEvent::EngineSelection { .. })));
+            if index == 0 {
+                assert_eq!(focused.generation(), after_parameters.generation() + 1);
+                assert!(same_parameter_values(after_parameters, focused));
+                focus_parameters = Some(focused);
+            }
+        }
+
+        let boundary_key = match parameter {
+            VoiceEnvelopeParameter::AttackMilliseconds => Some(egui::Key::A),
+            VoiceEnvelopeParameter::Sustain => Some(egui::Key::D),
+            VoiceEnvelopeParameter::DecayMilliseconds
+            | VoiceEnvelopeParameter::ReleaseMilliseconds => None,
+        };
+        if let Some(key) = boundary_key {
+            let before = shared.borrow().current_state_tree();
+            run_frame(
+                &mut application,
+                &context,
+                &mut frame,
+                vec![
+                    key_event(egui::Key::K),
+                    key_event(key),
+                    key_release(key),
+                    key_release(egui::Key::K),
+                ],
+                frame_time,
+            );
+            frame_time += 0.25;
+            assert_eq!(shared.borrow().current_state_tree(), before);
+        }
+
+        let descriptor = parameter.descriptor();
+        let baseline = baseline_envelope.value(parameter);
+        let edits = if parameter == VoiceEnvelopeParameter::Sustain {
+            [
+                (egui::Key::A, baseline - descriptor.fine_step()),
+                (egui::Key::D, baseline),
+                (egui::Key::S, baseline - descriptor.coarse_step()),
+                (egui::Key::W, baseline),
+            ]
+        } else {
+            [
+                (egui::Key::D, baseline + descriptor.fine_step()),
+                (egui::Key::A, baseline),
+                (egui::Key::W, baseline + descriptor.coarse_step()),
+                (egui::Key::S, baseline),
+            ]
+        };
+        for (key, expected) in edits {
+            run_frame(
+                &mut application,
+                &context,
+                &mut frame,
+                vec![
+                    key_event(egui::Key::K),
+                    key_event(key),
+                    key_release(key),
+                    key_release(egui::Key::K),
+                ],
+                frame_time,
+            );
+            frame_time += 0.25;
+
+            let app_loop = shared.borrow();
+            let page = app_loop.current_patch_page().unwrap();
+            let tree: Value = serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
+            let row = page
+                .envelope()
+                .iter()
+                .find(|row| row.control_id() == PatchControlId::Envelope(parameter))
+                .unwrap();
+            assert_eq!(row.value(), expected);
+            assert_eq!(app_loop.patches()[0].envelope().value(parameter), expected);
+            assert_eq!(
+                app_loop
+                    .current_parameters()
+                    .patch(patches[0].id())
+                    .unwrap()
+                    .envelope()
+                    .value(parameter),
+                expected
+            );
+            assert_eq!(
+                tree["patchPage"],
+                serde_json::from_str::<Value>(&serde_json::to_string(&page).unwrap()).unwrap()
+            );
+            assert_eq!(
+                tree["parameters"]["patches"][0]["envelope"][parameter.name()],
+                expected
+            );
+            let record = app_loop.event_log_ref().records().last().unwrap();
+            assert_eq!(record.outcome(), EventOutcome::Accepted);
+            assert!(record
+                .emitted_events()
+                .iter()
+                .all(|event| !matches!(event, EmittedEvent::EngineSelection { .. })));
+        }
+    }
+    let focus_parameters = focus_parameters.unwrap();
+    assert_eq!(*shared.borrow().patches()[0].envelope(), baseline_envelope);
+
     run_frame(
         &mut application,
         &context,
         &mut frame,
-        vec![key_event(egui::Key::K), key_event(egui::Key::D)],
-        0.5,
+        vec![key_event(egui::Key::S), key_release(egui::Key::S)],
+        frame_time,
     );
+    frame_time += 0.25;
+    run_frame(
+        &mut application,
+        &context,
+        &mut frame,
+        vec![key_event(egui::Key::W), key_release(egui::Key::W)],
+        frame_time,
+    );
+    frame_time += 0.25;
+    run_frame(
+        &mut application,
+        &context,
+        &mut frame,
+        vec![key_event(egui::Key::S), key_release(egui::Key::S)],
+        frame_time,
+    );
+    frame_time += 0.25;
+    run_frame(
+        &mut application,
+        &context,
+        &mut frame,
+        (0..5)
+            .flat_map(|_| [key_event(egui::Key::W), key_release(egui::Key::W)])
+            .collect(),
+        frame_time,
+    );
+    frame_time += 0.25;
+    assert_eq!(
+        shared
+            .borrow()
+            .current_patch_page()
+            .unwrap()
+            .focused_control_id(),
+        PatchControlId::Engine
+    );
+
+    let generation_before_request = shared.borrow().current_state_tree().generation();
+    let records_before_request = shared.borrow().event_log_ref().records().len();
+    run_frame(
+        &mut application,
+        &context,
+        &mut frame,
+        vec![
+            key_event(egui::Key::K),
+            key_event(egui::Key::D),
+            key_release(egui::Key::D),
+            key_release(egui::Key::K),
+        ],
+        frame_time,
+    );
+    frame_time += 0.25;
     assert_eq!(
         rejections.borrow().as_slice(),
-        &[EventRejection::ActionUnavailableInContext]
+        &[
+            EventRejection::ActionUnavailableInContext,
+            EventRejection::ParameterAtBoundary,
+            EventRejection::ParameterAtBoundary,
+        ]
     );
     {
         let app_loop = shared.borrow();
         let pending_page = app_loop.current_patch_page().unwrap();
         assert_eq!(
             app_loop.current_state_tree().generation(),
-            patch_generation + 1
+            generation_before_request + 1
         );
         assert_eq!(
             pending_page.engine().status(),
@@ -580,15 +943,22 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
             *app_loop.current_parameters(),
             after_parameters
         ));
+        assert_eq!(
+            app_loop.event_log_ref().records().len(),
+            records_before_request + 1
+        );
     }
-    assert_eq!(observations.lock().unwrap().parameters.len(), 3);
+    assert_eq!(
+        observations.lock().unwrap().parameters.last(),
+        Some(shared.borrow().current_parameters())
+    );
 
     run_frame(
         &mut application,
         &context,
         &mut frame,
         vec![key_event(egui::Key::Num1)],
-        0.75,
+        frame_time,
     );
     {
         let app_loop = shared.borrow();
@@ -616,7 +986,10 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     }
     {
         let observations = observations.lock().unwrap();
-        assert_eq!(observations.parameters.len(), 4);
+        assert_eq!(
+            observations.parameters.last(),
+            Some(shared.borrow().current_parameters())
+        );
         assert!(observations.commands.is_empty());
     }
     assert_eq!(preparations.load(Ordering::SeqCst), 0);
@@ -639,7 +1012,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
             .build(
                 GraphRevision::INITIAL,
                 &patches,
-                after_parameters,
+                focus_parameters,
                 SAMPLE_RATE,
                 BLOCK_FRAMES,
             )
@@ -647,7 +1020,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     assert_eq!(preparations.load(Ordering::SeqCst), patches.len() * 2);
 
     let before_boundary = LockFreeAudioBoundary::new(16, before_parameters);
-    let after_boundary = LockFreeAudioBoundary::new(16, after_parameters);
+    let after_boundary = LockFreeAudioBoundary::new(16, focus_parameters);
     let (mut before_control, before_audio) = before_boundary.into_handles();
     let (mut after_control, after_audio) = after_boundary.into_handles();
     for patch in &patches {

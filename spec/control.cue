@@ -25,8 +25,8 @@ project: contexts: Control: {
 			"initial context is MIXER so normal startup preserves the existing interface",
 			"mixerSelection retains the existing complete Patch/GLOBAL navigation position while PATCH is active",
 			"after at least one Patch is installed patchFocus contains exactly one installed stable PatchId, never a vector or widget index; before installation it is None",
-			"InstallPatches initializes patchFocus to the first Patch in accepted stable installation order and patchControlFocus to Engine; later context switches preserve both",
-			"patchControlFocus is Engine exactly when a Patch is installed; the engine row is the only PATCH focus target in this increment",
+			"InstallPatches initializes patchFocus to the first Patch in accepted stable installation order and patchControlFocus to Engine; later context switches and structural lifecycle events preserve both",
+			"when a Patch is installed patchControlFocus is exactly one member of the focused Patch resolver's Engine, canonical ADSR, then descriptor-declared StructuralChoice order; before installation it is None",
 			"the value contains no Patch/config copy, capability descriptor copy, engine, graph, parameter snapshot, UI widget, or device state",
 		]
 		contributesTo: [
@@ -47,12 +47,12 @@ project: contexts: Control: {
 			"Navigate and Adjust carry Direction",
 			"InstallPatches is accepted only during startup on the control thread",
 			"Midi carries PatchId and MidiMessage",
-			"EnginePrepared carries stable request/Patch/capability/revision correlation plus one candidate InstrumentConfig but never a PreparedGraph",
+			"EnginePrepared carries stable request/Patch/StructuralEditIntent/capability/revision correlation plus one candidate InstrumentConfig but never a PreparedGraph; the historical variant name covers every prepared instrument-config replacement",
 			"EnginePreparationFailed carries the same correlation plus one typed EngineSelectionFailure and no adapter error string",
 			"EngineActivationAcknowledged carries requestId, target GraphRevision, retired GraphRevision, and collected=true from control ownership",
 			"raw key codes, window objects, clocks, files, and audio devices never appear in AppEvent",
 			"surfaceDescriptor is produced beside the closed enum and is the only exhaustive event source consumed by DemoScene; adding or removing a variant cannot compile or pass schema equality without updating the descriptor",
-			"surfaceDescriptor entries are unique before set conversion and enumerate SelectContext with both TopLevelContext values, Navigate and Adjust with all four Direction payloads, InstallPatches and Midi, plus every correlated engine prepared, failed, and activation payload shape",
+			"surfaceDescriptor entries are unique before set conversion and enumerate SelectContext with both TopLevelContext values, Navigate and Adjust with all four Direction payloads, InstallPatches and Midi, plus every correlated structural prepared, failed, and activation payload shape",
 		]
 		contributesTo: [
 			{capability: "capability.one_way_parameter_control", contribution: "gives every input one semantic route into AppState"},
@@ -65,7 +65,7 @@ project: contexts: Control: {
 		state: {
 			sequence: "u64"
 			source: "Startup | Keyboard | AutomaticMidi | DemoScene | Worker | System"
-			input: "stable tagged AppEvent representation including TopLevelContext, Direction, PatchId, MidiMessage, engine-selection correlation, config, failure, and acknowledgement payloads when present"
+			input: "stable tagged AppEvent representation including TopLevelContext, Direction, PatchId, MidiMessage, structural-edit intent/correlation, config, failure, and acknowledgement payloads when present"
 			outcome: "Accepted | Rejected"
 			rejection: "Option<EventRejection>"
 			generationBefore: "u64"
@@ -157,27 +157,31 @@ project: contexts: Control: {
 		state: {
 			context: "Patch"
 			patch: "{id: PatchId, name: String, midiChannel: MidiChannel}"
+			focusedControlId: "PatchControlId"
 			engine: "{controlId: PatchControlId, activeCapabilityId: CapabilityId, activeLabel: String, choices: Vec<{capabilityId: CapabilityId, label: String}>, status: Ready | Preparing | Activating | Failed, activeGraphRevision: GraphRevision, requestedCapabilityId: Option<CapabilityId>, requestId: Option<EngineSelectionRequestId>, targetGraphRevision: Option<GraphRevision>, failure: Option<EngineSelectionFailure>, editable: bool}"
-			envelope: "Vec<{id: stable semantic id, label: String, value: f32, minimum: f32, maximum: f32, unit: Option<String>, editable: false}>"
-			sections: "Vec<{id: stable descriptor section id, label: String, parameters: Vec<{id: ParameterId, label: String, kind, update, value: ParameterValue | AssetReference, unit: Option<String>, enabled: bool, visible: bool, editable: false}>}>"
+			envelope: "Vec<{controlId: PatchControlId, id: stable VoiceEnvelopeParameter id, label: String, value: f32, minimum: f32, maximum: f32, fineStep: f32, coarseStep: f32, unit: Option<String>, editable: true}>"
+			sections: "Vec<{id: stable descriptor section id, label: String, parameters: Vec<{controlId: Option<PatchControlId>, id: ParameterId, label: String, kind, update, patchInteraction, value: ParameterValue | AssetReference, choices: Vec<{id, label}>, requestedChoiceId: Option<String>, status: Option<Ready | Preparing | Activating | Failed>, requestId: Option<EngineSelectionRequestId>, targetGraphRevision: Option<GraphRevision>, failure: Option<EngineSelectionFailure>, unit: Option<String>, enabled: bool, visible: bool, editable: bool}>}>"
 			stateHash: "String"
 			serializedLeafDescriptor: "typed stable paths for every Patch-page field and row variant"
 		}
 		invariants: [
 			"patch resolves InteractionState.patchFocus by stable PatchId and copies identity, name, and MIDI channel from that exact canonical Patch",
-			"engine active identity and label resolve from the Patch InstrumentConfig and installed CapabilityRegistry; choices contain every registry entry exactly once in registry order and controlId is the reducer-owned Engine focus",
-			"status, activeGraphRevision, requestedCapabilityId, requestId, targetGraphRevision, and failure are exact projections of EngineSelectionStatus; the active identity changes only at the accepted EnginePrepared commit while activeGraphRevision advances only at acknowledgement",
-			"editable is true only when the focused Patch exists, at least two installed choices exist, and status is Ready or Failed; Preparing and Activating remain visible but disabled",
-			"envelope contains exactly Attack, Decay, Sustain, and Release from the canonical Patch VoiceEnvelope descriptor in stable order; it owns no second envelope state and is read-only in this increment",
-			"sections and parameters exactly preserve the active CapabilityDescriptor order, stable ids, labels, kinds, update classes, units, dependency visibility/enabled results, and canonical InstrumentConfig values or assets; Structural and Scalar fields are all read-only in this increment",
-			"projection walks descriptors generically and contains no SoundFont, Braids, bank, program, percussion, Model, Timbre, or Color field list or capability-id branch",
+			"focusedControlId exactly equals InteractionState.patchControlFocus; engine active identity and label resolve from the Patch InstrumentConfig and installed CapabilityRegistry; choices contain every registry entry exactly once in registry order and engine.controlId is Engine",
+			"status, activeGraphRevision, requestId, targetGraphRevision, intent, and failure are exact projections of EngineSelectionStatus; active capability or preset choice changes only at the accepted EnginePrepared commit while activeGraphRevision advances only at acknowledgement",
+			"engine editable is true only when the focused Patch exists, at least two installed choices exist, and status is Ready or Failed; Preparing and Activating remain visible but disabled without changing focus",
+			"envelope contains exactly Attack, Decay, Sustain, and Release from the canonical Patch VoiceEnvelope descriptor in stable order; each row derives controlId from the same VoiceEnvelopeParameter, is editable in every lifecycle status, and owns no second envelope state",
+			"sections and parameters exactly preserve the active CapabilityDescriptor order, stable ids, labels, kinds, update classes, patch interactions, choices, units, dependency visibility/enabled results, and canonical InstrumentConfig values or assets; only visible enabled StructuralChoice fields receive Capability(ParameterId), adjacent-choice metadata, and structural editability",
+			"the targeted engine or capability row projects active and requested identity, Preparing/Activating/Failed status, request/revision correlation, and failure while every other structural row remains inactive; Ready has no pending target",
+			"projection walks descriptors generically and contains no SoundFont, Braids, preset, bank, program, percussion, Model, Timbre, or Color field list or capability-id branch",
 			"stateHash equals the StateSnapshot hash for the accepted InteractionState and session values used to create the page",
 		]
 		validations: [{id: "validation.value_object.patch_page_projection", kind: "integration", command: ["cargo", "test", "--test", "patch_page_projection", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE patch_page_projection passed"}], description: "both production capabilities project exact descriptor-derived rows, registry choices, Patch identity, MIDI channel, and ADSR without engine-specific page logic"}]
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "projects active instrument configuration through its owning descriptor"},
-			{capability: "capability.schema_driven_patch_page", contribution: "is the canonical PATCH page data with one editable structural engine row"},
+			{capability: "capability.schema_driven_patch_page", contribution: "is the canonical PATCH page data with one structural engine row, four scalar ADSR rows, and descriptor-declared structural-choice rows under one focus identity"},
+			{capability: "capability.per_voice_envelope", contribution: "projects editable rows directly from canonical VoiceEnvelope state and descriptors"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "projects active/requested identity and exact lifecycle without owning worker or graph state"},
+			{capability: "capability.soundfont_preset_selection", contribution: "projects the exact authored preset label, ordered choices, focus, request status, and typed failure from the generic descriptor/config/lifecycle"},
 		]
 	}
 
@@ -193,9 +197,9 @@ project: contexts: Control: {
 		invariants: [
 			"context exactly equals InteractionState.context and the body begins with its semantic PATCH or MIXER identity plus the direct 1/2 page bindings",
 			"in MIXER, each Patch appears once in stable AppState order with id, name, channel, capability id and label, every InstrumentConfig value/asset rendered in CapabilityDescriptor order, gainDb, pan, reverbSend, delaySend, the four envelope values, and every Scalar engine value; Patch sections retain the literal separator and the final GLOBAL section retains all seven values",
-			"in PATCH, the body is a lossless deterministic rendering of PatchPageProjection including Patch identity, MIDI channel, active/requested engine, Ready/Preparing/Activating/Failed status, typed failure, installed choices, ADSR, and every descriptor-provided field with its stable id and editability status",
+			"in PATCH, the body is a lossless deterministic rendering of PatchPageProjection including Patch identity, MIDI channel, active/requested structural target, Ready/Preparing/Activating/Failed status, typed failure, installed engine and parameter choices, ADSR, and every descriptor-provided field with its stable id and editability status",
 			"the text projector contains no SoundFont/Braids capability-id branch or duplicate engine-specific field list",
-			"the selected line begins with > and every other parameter line begins with one space",
+			"the line matching focusedControlId begins with > even when the focused structural action is temporarily disabled; every other parameter line begins with one space and selectedLine names the marked line",
 			"stateHash equals the StateSnapshot hash used to create the body",
 		]
 		contributesTo: [
@@ -206,7 +210,7 @@ project: contexts: Control: {
 
 	aggregates: AppState: {
 		root: true
-		purpose: "own the immutable installed capability registry, installed Patches, global parameters, interaction state, engine-selection runtime status, and accepted generation"
+		purpose: "own the immutable installed capability registry, installed Patches, global parameters, interaction state, one structural-edit runtime status, and accepted generation"
 		state: {
 			capabilities: "CapabilityRegistry"
 			patches: "Vec<Patch>"
@@ -223,11 +227,14 @@ project: contexts: Control: {
 			"SelectContext changes only InteractionState.context, requires an installed valid patchFocus before selecting PATCH, preserves mixerSelection and patchFocus, emits no AudioCommand, and accepts both direct context values through the same reducer",
 			"in MIXER, Navigate changes only InteractionState.mixerSelection; bare Up/Down moves between parameters and bare Left/Right moves between Patch sections plus the GLOBAL section",
 			"in MIXER, Adjust resolves the selected Patch target as mixer, common envelope, then descriptor-classified Scalar value and transactionally changes exactly that value within its owning descriptor; Structural values remain nonselectable",
-			"in PATCH, Navigate is unavailable because Engine is the sole focus; Adjust Left/Right on Engine resolves the adjacent nonwrapping registry capability and accepts one PrepareRequested transition, while Adjust Up/Down is ActionUnavailableInContext",
-			"an accepted engine request allocates the next nonzero EngineSelectionRequestId, enters Preparing, emits exactly one EngineSelectionEffect::PrepareRequested, and leaves every Patch InstrumentConfig plus the active GraphRevision unchanged",
-			"while Preparing or Activating another PATCH engine Adjust is StructuralEditBusy and unchanged; MIDI, SelectContext, and valid MIXER Navigate/Adjust events retain their normal behavior",
+			"in PATCH, Navigate Up/Down moves one step through the focused Patch resolver's nonwrapping Engine, Attack, Decay, Sustain, Release, then visible descriptor StructuralChoice order and changes only InteractionState; Navigate Left/Right and navigation beyond either endpoint are ActionUnavailableInContext",
+			"in PATCH, Adjust Left/Right on Engine resolves the adjacent nonwrapping registry capability and accepts one PrepareRequested transition, while Adjust Up/Down on Engine is ActionUnavailableInContext",
+			"in PATCH, Adjust on Envelope(parameter) reuses the canonical VoiceEnvelope descriptor and mutation path: Left/Right is fine decrement/increment, Down/Up is coarse decrement/increment, and exactly that focused Patch envelope field changes",
+			"in PATCH, Adjust Left/Right on Capability(parameter) validates that the active descriptor marks it StructuralChoice, resolves the adjacent nonwrapping declared choice, and requests a candidate changing only that assignment; Adjust Up/Down is ActionUnavailableInContext and a choice endpoint is ParameterAtBoundary",
+			"an accepted engine or capability-choice request allocates the next nonzero EngineSelectionRequestId, records one StructuralEditIntent, enters Preparing, emits exactly one EngineSelectionEffect::PrepareRequested, and leaves every Patch InstrumentConfig plus the active GraphRevision unchanged",
+			"while Preparing or Activating another PATCH structural Adjust is StructuralEditBusy and unchanged; MIDI, SelectContext, PATCH focus Navigate, and valid scalar Adjust events from MIXER or PATCH ADSR retain their normal behavior",
 			"a correlated EnginePreparationFailed transition enters Failed with its typed visible failure and preserves every Patch config, graph revision, route, parameter, and unrelated state; Failed may accept a later adjacent request",
-			"a correlated EnginePrepared transition revalidates the candidate config, changes only the requested Patch InstrumentConfig, enters Activating with the target GraphRevision, and preserves Patch identity, MIDI channel, envelope, mixer parameters, every unrelated Patch, and all accepted scalar edits made while preparing",
+			"a correlated EnginePrepared transition revalidates the candidate config against StructuralEditIntent, changes only the requested Patch InstrumentConfig and only the permitted capability or single structural assignment, enters Activating with the target GraphRevision, and preserves Patch identity, MIDI channel, envelope, mixer parameters, every unrelated Patch, and all accepted scalar edits made while preparing",
 			"EngineActivationAcknowledged reaches Ready only when request id, target active revision, retired source revision, and control-side collection all match; early, duplicate, stale, or mismatched worker and acknowledgement events are typed unchanged rejections",
 			"Adjust toward a boundary when the selected value is already at that boundary is rejected as ParameterAtBoundary and leaves state identical",
 			"Adjust Left/Right is the fine decrement/increment and Adjust Down/Up is the coarse decrement/increment",
@@ -246,6 +253,7 @@ project: contexts: Control: {
 			{capability: "capability.one_way_parameter_control", contribution: "is the single source of mutable control state"},
 			{capability: "capability.schema_driven_patch_page", contribution: "owns page context and stable Patch focus without moving state into the UI"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "owns every request, failure, candidate commit, and activation transition while prepared graph ownership stays external"},
+			{capability: "capability.soundfont_preset_selection", contribution: "owns preset intent, boundary, source-preserving pending state, exact single-assignment commit, and failure through the same reducer"},
 		]
 	}
 
@@ -269,12 +277,13 @@ project: contexts: Control: {
 			meta: rules: [
 				"construct one canonical borrowed serialized-state view per eager projection, serialize AppState deterministically with serde_json, and verify round-trip identity in tests rather than deserializing Crest's own JSON on the production dispatch path",
 				"derive InteractionState and TextProjection only from the accepted StateSnapshot; in MIXER render the preserved diagnostic body from mixerSelection, and in PATCH first derive PatchPageProjection by stable PatchId and then render it without capability-specific matching",
-				"derive PatchPageProjection from the focused canonical Patch, VoiceEnvelope descriptor, active CapabilityDescriptor, InstrumentConfig, EngineSelectionStatus, and complete installed registry; use stable ids and descriptor order and never match on SoundFont or Braids",
+			"derive PatchPageProjection from the focused canonical Patch, PatchControlId, VoiceEnvelope descriptor, active CapabilityDescriptor, InstrumentConfig, EngineSelectionStatus, and complete installed registry; expose the exact focusedControlId, use stable ids and descriptor order, and never match on SoundFont or Braids",
+			"derive the focused PATCH control order from Engine, the VoiceEnvelope descriptor, and visible enabled CapabilityDescriptor parameters classified StructuralChoice; the same resolver supplies reducer navigation, row control ids, schema coverage, and demos",
 				"copy every mixer and envelope value plus at most sixteen descriptor-ordered Scalar engine values and the caller-owned target GraphRevision into a fixed-capacity ParameterSnapshot; reject Patch or scalar capacity overflow",
 				"derive StateTree from the exact same StateSnapshot, TextProjection, and ParameterSnapshot without reading or mutating any second state copy",
 				"when accepted Midi changes only generation, share the prior immutable state suffix, text body, and StateTree template; advance snapshot, text, fixed parameters, and tree coherently and materialize large JSON only on observation",
 				"force generation-only snapshot and tree JSON to materialize in equivalence tests and require byte-for-byte equality with an eager projection from the same accepted AppState",
-			"for a discriminating projection, compare every installed capability/parameter descriptor, Patch identity, MIDI channel, InstrumentConfig value/asset, envelope value, Patch parameter value, global value, interaction context/focus, engine choice, selection marker, selectedLine, and stateHash exactly against accepted state; nonempty text or mere property presence is not sufficient",
+		"for a discriminating projection, compare every installed capability/parameter descriptor including patchInteraction and authored choice labels, Patch identity, MIDI channel, InstrumentConfig value/asset, envelope value and descriptor, Patch parameter value, global value, interaction context/focus, PatchControlId, structural intent, engine/preset choice, selection marker, selectedLine, and stateHash exactly against accepted state; nonempty text or mere property presence is not sufficient",
 			"publish production-owned typed surface/leaf descriptors beside their enum or serializer and require exact equality with recursively discovered EventLog, EventRecord, StateTree, TextProjection, and ParameterSnapshot paths",
 		]
 			validations: [
@@ -287,6 +296,7 @@ project: contexts: Control: {
 			{capability: "capability.one_way_parameter_control", contribution: "keeps text and audio projections consistent with serialized accepted state"},
 			{capability: "capability.schema_driven_patch_page", contribution: "derives the PATCH view model and text from canonical state and installed descriptors"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "projects every lifecycle generation and candidate scalar layout from committed canonical state"},
+			{capability: "capability.soundfont_preset_selection", contribution: "derives the authored-name preset row, dynamic focus, requested choice, and structural lifecycle generically from catalog-backed schema"},
 			{capability: "capability.realtime_execution", contribution: "converts control-owned collections into bounded callback values"},
 			{capability: "capability.observable_demo_scene", contribution: "builds the canonical complete tree from one coherent accepted generation"},
 		]
@@ -320,9 +330,12 @@ project: contexts: Control: {
 			"construction receives the nonzero revision of the complete initial graph and initializes EngineSelectionStatus.activeGraphRevision; later revisions advance only through correlated prepared and acknowledgement events and never become a second mutable Patch config",
 			"dispatch order is reduce AppEvent through AppState.apply, commit accepted AppState, derive StateSnapshot/PatchPageProjection when active/TextProjection/ParameterSnapshot tagged with the target GraphRevision, publish parameters, then enqueue any AudioCommand",
 			"an accepted SelectContext publishes a generation-coherent ParameterSnapshot with identical parameter values and GraphRevision, publishes no AudioCommand or structural request, and changes no prepared or rendered state",
-			"after an accepted PATCH engine request, build the descriptor-default candidate request from committed state and trySubmit it exactly once; WorkerBusy after reducer acceptance is a retained typed application fault and never causes fallback or a hidden second queue",
+			"an accepted PATCH focus Navigate publishes generation-coherent logical projections and a same-revision ParameterSnapshot with identical values, emits no AudioCommand or EngineSelectionEffect, and changes no Patch, graph, engine, mixer, or audio behavior",
+			"an accepted PATCH ADSR Adjust commits one VoiceEnvelope field before projection, publishes the complete same-graph-revision fixed ParameterSnapshot, emits no AudioCommand, preparation request, or structural ownership, and lets the renderer consume the value through the existing per-voice envelope seam",
+			"after an accepted PATCH structural request, use StructuralEditIntent to build either the descriptor-default engine candidate or the active config with exactly one adjacent StructuralChoice assignment through the installed provider, revalidate it against the immutable registry, and trySubmit it exactly once; WorkerBusy after reducer acceptance is a retained typed application fault and never causes fallback or a hidden second queue",
 			"advanceStructural polls at most one worker result and graph status per control tick, maps only stable semantic payloads into AppEvents, and routes every lifecycle mutation back through AppState.apply with EventSource::Worker",
-			"for a prepared result, first correlate and retain graph ownership, dispatch EnginePrepared, commit the candidate config, derive the exact target-revision StateSnapshot/PatchPageProjection/TextProjection/ParameterSnapshot, refresh PreparedGraph.initialParameters from that committed projection, publish scalar parameters, then stage or publish the complete graph",
+			"for a prepared result, first correlate intent and retain graph ownership, dispatch EnginePrepared, commit only its permitted candidate config delta, derive the exact target-revision StateSnapshot/PatchPageProjection/TextProjection/ParameterSnapshot, refresh PreparedGraph.initialParameters from that committed projection, publish scalar parameters, then stage or publish the complete graph",
+			"a PATCH ADSR edit during Preparing publishes against the active source revision and is included when the candidate's initial parameters are refreshed after commit; during Activating it publishes against the target revision for exact consumption on activation while the old source continues with its last compatible snapshot",
 			"if structural publication is full after commit, retain exactly one staged graph, remain Activating, retry on later control ticks, and reject new structural work without rollback, drop, or substitution",
 			"only after GraphHandoffStatus reports the target active, the source retired, and collectRetiredOnControl has destroyed the returned source graph may AppLoop dispatch EngineActivationAcknowledged and reach Ready",
 			"a failed, stale, mismatched, or rejected worker result publishes no graph; every owned candidate is destroyed on worker/control ownership and later valid input remains dispatchable",
@@ -346,6 +359,7 @@ project: contexts: Control: {
 			{capability: "capability.one_way_parameter_control", contribution: "orchestrates the complete reducer-to-projection-to-audio flow"},
 			{capability: "capability.schema_driven_patch_page", contribution: "exposes immutable current-context projections after semantic page events"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "coordinates request, worker outcome, reducer commit, snapshot publication, graph handoff, acknowledgement, and trace ordering"},
+			{capability: "capability.soundfont_preset_selection", contribution: "routes an adjacent preset intent through the identical candidate, worker, commit, projection, graph, acknowledgement, and trace order"},
 			{capability: "capability.realtime_execution", contribution: "uses distinct discrete/scalar, preparation-worker, and structural-ownership seams without moving work into the callback"},
 			{capability: "capability.observable_demo_scene", contribution: "records the production reducer's complete event/state/effect trace"},
 		]

@@ -127,9 +127,7 @@ impl std::error::Error for InstrumentCompositionError {}
 mod tests {
     use super::{compose_instrument_registry, InstrumentCompositionError};
     use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
-    use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
-    };
+    use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::kernel::patch_id::PatchId;
     use crate::synth::{
         CapabilityId, InstrumentCapabilityProvider, InstrumentPreparationError, InstrumentPreparer,
@@ -162,7 +160,7 @@ mod tests {
     }
 
     fn hidef() -> Box<dyn InstrumentCapabilityProvider> {
-        Box::new(HiDefSoundFontCapability::new().unwrap())
+        Box::new(crate::adapter::production_instruments::production_soundfont_capability().unwrap())
     }
 
     fn braids() -> Box<dyn InstrumentCapabilityProvider> {

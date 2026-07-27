@@ -1,8 +1,6 @@
 use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
-use crest_synth::adapter::hidef_soundfont_capability::{
-    HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
-};
+use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::adapter::production_instruments::{
@@ -12,7 +10,7 @@ use crest_synth::adapter::production_instruments::{
 use crest_synth::control::event_record::{EmittedEvent, EventSource};
 use crest_synth::control::{
     AppEvent, AppLoop, AppState, Direction, EngineSelectionEffectKind, EngineSelectionFailure,
-    EngineSelectionStatusKind, EventRejection, StateProjector, TopLevelContext,
+    EngineSelectionStatusKind, EventRejection, PatchControlId, StateProjector, TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -26,7 +24,9 @@ use crest_synth::real_time::{
 };
 use crest_synth::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
-use crest_synth::synth::{CapabilityId, DescriptorDefaultConfigFactory, Patch};
+use crest_synth::synth::{
+    CapabilityId, DescriptorDefaultConfigFactory, Patch, VoiceEnvelopeParameter,
+};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use crest_synth::testing::DeterministicGraphPreparationWorker;
 use serde::Serialize;
@@ -184,7 +184,7 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
     let braids_id = CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap();
     let descriptor_default_soundfont = defaults.create(&soundfont_id).unwrap();
     let initial_soundfont = create_soundfont_config(
-        &HiDefSoundFontCapability::new().unwrap(),
+        &crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap(),
         SoundFontInstrument::new(0, 8, false).unwrap(),
     )
     .unwrap();
@@ -300,6 +300,26 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         && app_loop.staged_graph_revision().is_none()
         && app_loop.in_flight_graph_revision().is_none();
 
+    assert_eq!(failed_page.focused_control_id(), PatchControlId::Engine);
+    app_loop
+        .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
+        .unwrap();
+    app_loop
+        .dispatch_from(AppEvent::Adjust(Direction::Right), EventSource::Keyboard)
+        .unwrap();
+    assert_eq!(
+        app_loop.current_patch_page().unwrap().focused_control_id(),
+        PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+    );
+    assert_eq!(app_loop.patches()[0].envelope().attack_milliseconds(), 1.0);
+    app_loop
+        .dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::Keyboard)
+        .unwrap();
+    assert_eq!(
+        app_loop.current_patch_page().unwrap().focused_control_id(),
+        PatchControlId::Engine
+    );
+
     // Retry through the normal semantic path. Source MIDI remains audible while preparing.
     app_loop
         .dispatch_from(AppEvent::Adjust(Direction::Right), EventSource::Keyboard)
@@ -311,6 +331,9 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         AppEvent::EnginePreparationFailed {
             request_id: failed_request_id,
             patch_id: selected_patch_id,
+            intent: crest_synth::control::StructuralEditIntent::ReplaceCapability {
+                target_capability_id: braids_id.clone(),
+            },
             source_capability_id: soundfont_id.clone(),
             target_capability_id: braids_id.clone(),
             source_graph_revision: GraphRevision::INITIAL,
@@ -319,6 +342,25 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         },
         EventSource::Worker,
     ) == Err(EventRejection::StaleEngineSelection);
+    app_loop
+        .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
+        .unwrap();
+    app_loop
+        .dispatch_from(AppEvent::Adjust(Direction::Right), EventSource::Keyboard)
+        .unwrap();
+    assert_eq!(
+        app_loop.current_parameters().graph_revision(),
+        GraphRevision::INITIAL
+    );
+    assert_eq!(
+        app_loop
+            .current_parameters()
+            .patch(selected_patch_id)
+            .unwrap()
+            .envelope()
+            .attack_milliseconds(),
+        2.0
+    );
     app_loop
         .dispatch_from(
             note(selected_patch_id, selected_channel),
@@ -331,6 +373,15 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
     let source_observation = reader.read_latest_on_control();
     let preparing_source_audible = app_loop.current_patch_page().unwrap().engine().status()
         == EngineSelectionStatusKind::Preparing
+        && app_loop.current_patch_page().unwrap().focused_control_id()
+            == PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+        && renderer
+            .parameters()
+            .patch(selected_patch_id)
+            .unwrap()
+            .envelope()
+            .attack_milliseconds()
+            == 2.0
         && source_observation.active_graph_revision() == GraphRevision::INITIAL
         && source_observation.primary_patch_id() == Some(selected_patch_id)
         && source_observation.primary_patch_rms() > 0.0;
@@ -343,16 +394,51 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         app_loop.current_patch_page().unwrap().engine().status(),
         EngineSelectionStatusKind::Activating
     );
+    assert_eq!(
+        app_loop.current_patch_page().unwrap().focused_control_id(),
+        PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+    );
+    app_loop
+        .dispatch_from(AppEvent::Adjust(Direction::Right), EventSource::Keyboard)
+        .unwrap();
+    assert_eq!(
+        app_loop.current_parameters().graph_revision(),
+        forward_revision
+    );
+    assert_eq!(
+        app_loop
+            .current_parameters()
+            .patch(selected_patch_id)
+            .unwrap()
+            .envelope()
+            .attack_milliseconds(),
+        3.0
+    );
     assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
     let memory = counted_render(&mut renderer, &mut output);
     callback_allocations += memory.0;
     callback_deallocations += memory.1;
+    assert_eq!(renderer.active_revision(), forward_revision);
+    assert_eq!(
+        renderer
+            .parameters()
+            .patch(selected_patch_id)
+            .unwrap()
+            .envelope()
+            .attack_milliseconds(),
+        3.0
+    );
     let forward_ack = app_loop.advance_structural().unwrap();
     retired_collected += forward_ack.collected_count() as usize;
     assert_eq!(
         forward_ack.activation_acknowledged(),
         Some(forward_revision)
     );
+    assert_eq!(
+        app_loop.current_patch_page().unwrap().focused_control_id(),
+        PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+    );
+    assert_eq!(app_loop.patches()[0].envelope().attack_milliseconds(), 3.0);
     app_loop
         .dispatch_from(
             note(selected_patch_id, selected_channel),
@@ -364,6 +450,13 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
     callback_deallocations += memory.1;
     let braids_observation = reader.read_latest_on_control();
 
+    app_loop
+        .dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::Keyboard)
+        .unwrap();
+    assert_eq!(
+        app_loop.current_patch_page().unwrap().focused_control_id(),
+        PatchControlId::Engine
+    );
     app_loop
         .dispatch_from(AppEvent::Adjust(Direction::Left), EventSource::Keyboard)
         .unwrap();
@@ -454,7 +547,9 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         untargeted_patch_exact: app_loop.patches()[1] == untargeted_before,
         final_descriptor_default_sound_font: final_page.engine().status()
             == EngineSelectionStatusKind::Ready
-            && app_loop.patches()[0].instrument_config() == &descriptor_default_soundfont,
+            && final_page.focused_control_id() == PatchControlId::Engine
+            && app_loop.patches()[0].instrument_config() == &descriptor_default_soundfont
+            && app_loop.patches()[0].envelope().attack_milliseconds() == 3.0,
         callback_allocations,
         callback_deallocations,
         callback_destructions: 0,

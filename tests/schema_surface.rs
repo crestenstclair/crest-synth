@@ -1,9 +1,11 @@
 mod support;
 
 use crest_synth::adapter::braids_capability::BraidsCapability;
-use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::production_instruments::production_capability_registry;
-use crest_synth::control::{AppEvent, AppState, StateProjector, StateTree, TopLevelContext};
+use crest_synth::control::{
+    AppEvent, AppState, PatchControlId, PatchPageProjection, StateProjector, StateTree,
+    TopLevelContext,
+};
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::channel_parameters::ChannelParameters;
@@ -22,6 +24,7 @@ fn state_tree_with_first_config(
     second: InstrumentConfig,
     context: TopLevelContext,
     request_engine: bool,
+    request_preset: bool,
 ) -> StateTree {
     let patches = [first, second]
         .into_iter()
@@ -45,7 +48,17 @@ fn state_tree_with_first_config(
     if context == TopLevelContext::Patch {
         state.apply(AppEvent::SelectContext(context)).unwrap();
     }
+    assert!(!(request_engine && request_preset));
     if request_engine {
+        state
+            .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
+            .unwrap();
+    } else if request_preset {
+        for _ in 0..PatchControlId::surface_descriptor().len() {
+            state
+                .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
+                .unwrap();
+        }
         state
             .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
             .unwrap();
@@ -76,8 +89,9 @@ fn discover_leaves(value: &Value, prefix: &str, output: &mut BTreeSet<String>) {
     }
 }
 
-fn assert_state_tree_leaf_surface_exact() {
-    let soundfont = HiDefSoundFontCapability::new().unwrap();
+fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
+    let soundfont =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
     let soundfont_config = create_soundfont_config(
         &soundfont,
         SoundFontInstrument::new(128, 11, false).unwrap(),
@@ -90,11 +104,13 @@ fn assert_state_tree_leaf_surface_exact() {
             braids_config.clone(),
             TopLevelContext::Mixer,
             false,
+            false,
         ),
         state_tree_with_first_config(
             soundfont_config.clone(),
             braids_config.clone(),
             TopLevelContext::Patch,
+            false,
             false,
         ),
         state_tree_with_first_config(
@@ -102,11 +118,20 @@ fn assert_state_tree_leaf_surface_exact() {
             braids_config.clone(),
             TopLevelContext::Patch,
             true,
+            false,
+        ),
+        state_tree_with_first_config(
+            soundfont_config.clone(),
+            braids_config.clone(),
+            TopLevelContext::Patch,
+            false,
+            true,
         ),
         state_tree_with_first_config(
             braids_config,
             soundfont_config,
             TopLevelContext::Patch,
+            false,
             false,
         ),
     ];
@@ -126,12 +151,79 @@ fn assert_state_tree_leaf_surface_exact() {
 
     assert_eq!(descriptor.len(), described.len(), "duplicate typed leaf");
     assert_eq!(described, discovered);
+    discovered
 }
 
 #[test]
 fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact() {
-    assert_state_tree_leaf_surface_exact();
+    let discovered = assert_state_tree_leaf_surface_exact();
+    assert_eq!(StateTree::SCHEMA_VERSION, 8);
+    assert!(StateTree::serialized_leaf_descriptor().contains(&"patchPage.focusedControlId"));
+    assert!(StateTree::serialized_leaf_descriptor().contains(&"patchPage.envelope[].controlId"));
+    assert!(PatchPageProjection::serialized_leaf_descriptor().contains(&"focusedControlId"));
+    assert!(PatchPageProjection::serialized_leaf_descriptor().contains(&"envelope[].controlId"));
+
+    for control in PatchControlId::surface_descriptor() {
+        let serialized = serde_json::to_string(control).unwrap();
+        assert_eq!(serialized, format!("\"{}\"", control.as_str()));
+        assert_eq!(
+            serde_json::from_str::<PatchControlId>(&serialized).unwrap(),
+            *control
+        );
+    }
+
+    let described = StateTree::serialized_leaf_descriptor()
+        .iter()
+        .map(|path| (*path).to_owned())
+        .collect::<BTreeSet<_>>();
+    let mut missing_leaf = discovered.clone();
+    assert!(missing_leaf.remove("patchPage.focusedControlId"));
+    assert_eq!(described.difference(&missing_leaf).count(), 1);
+    assert_eq!(missing_leaf.difference(&described).count(), 0);
+    let mut unexpected_leaf = discovered;
+    assert!(unexpected_leaf.insert("patchPage.unexpectedControlId".to_owned()));
+    assert_eq!(described.difference(&unexpected_leaf).count(), 0);
+    assert_eq!(unexpected_leaf.difference(&described).count(), 1);
+
+    let soundfont =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
+    let mut state = AppState::new(
+        production_capability_registry().unwrap(),
+        support::globals(),
+    );
+    state
+        .apply(AppEvent::InstallPatches(vec![Patch::new(
+            PatchId::new(1).unwrap(),
+            "Focus schema".to_owned(),
+            create_soundfont_config(&soundfont, SoundFontInstrument::new(0, 11, false).unwrap())
+                .unwrap(),
+            MidiChannel::new(0).unwrap(),
+            ChannelParameters::default(),
+        )]))
+        .unwrap();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    for (index, control) in PatchControlId::surface_descriptor().iter().enumerate() {
+        let tree = StateProjector::new().project_with_tree(&state).unwrap().4;
+        let value: Value = serde_json::from_str(tree.json()).unwrap();
+        assert_eq!(
+            value["interaction"]["patchControlFocus"],
+            control.as_str().as_ref()
+        );
+        assert_eq!(
+            value["patchPage"]["focusedControlId"],
+            control.as_str().as_ref()
+        );
+        if index + 1 < PatchControlId::surface_descriptor().len() {
+            state
+                .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
+                .unwrap();
+        }
+    }
+
     let run = support::run_demo();
+    assert_eq!(run.report.schema_version(), 6);
     let serialized = run
         .report
         .coverage()

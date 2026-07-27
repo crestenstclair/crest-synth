@@ -2,7 +2,7 @@ use crate::control::app_event::AppEvent;
 use crate::control::app_state::{AppState, EventRejection, StateAccepted};
 use crate::control::engine_selection::{
     EngineSelectionEffect, EngineSelectionEffectKind, EngineSelectionFailure,
-    EngineSelectionRequestId, EngineSelectionStatusError,
+    EngineSelectionRequestId, EngineSelectionStatusError, StructuralEditIntent,
 };
 use crate::control::event_log::EventLog;
 use crate::control::event_record::{EventRecord, EventSource};
@@ -366,16 +366,43 @@ where
             return;
         };
 
-        let candidate_config = match runtime.factory.create(effect.target_capability_id()) {
+        let source_config = self
+            .state
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == effect.patch_id())
+            .map(|patch| patch.instrument_config());
+        let candidate_result = match effect.intent() {
+            StructuralEditIntent::ReplaceCapability { .. } => {
+                runtime.factory.create(effect.target_capability_id())
+            }
+            StructuralEditIntent::ReplaceParameterChoice {
+                parameter_id,
+                choice_id,
+                ..
+            } => source_config
+                .ok_or_else(|| {
+                    CapabilityError::UnknownCapability(effect.source_capability_id().clone())
+                })
+                .and_then(|source| {
+                    runtime
+                        .factory
+                        .replace_structural_choice(source, parameter_id, choice_id)
+                }),
+        };
+        let candidate_config = match candidate_result {
             Ok(config) => config,
             Err(error) => {
-                self.deferred_engine_failure = Some(failure_event(map_capability_failure(&error)));
+                self.deferred_engine_failure = Some(failure_event(
+                    map_structural_capability_failure(effect.intent(), &error),
+                ));
                 return;
             }
         };
-        let correlation = match GraphPreparationCorrelation::new(
+        let correlation = match GraphPreparationCorrelation::new_with_intent(
             effect.request_id(),
             effect.patch_id(),
+            effect.intent().clone(),
             effect.source_capability_id().clone(),
             effect.target_capability_id().clone(),
             effect.source_graph_revision(),
@@ -471,6 +498,7 @@ where
             }
             let event = AppEvent::EngineActivationAcknowledged {
                 request_id: correlation.request_id(),
+                intent: correlation.intent().clone(),
                 target_graph_revision,
                 retired_graph_revision: correlation.source_graph_revision(),
                 collected: true,
@@ -502,6 +530,7 @@ where
                 let event = AppEvent::EnginePreparationFailed {
                     request_id: correlation.request_id(),
                     patch_id: correlation.patch_id(),
+                    intent: correlation.intent().clone(),
                     source_capability_id: correlation.source_capability_id().clone(),
                     target_capability_id: correlation.target_capability_id().clone(),
                     source_graph_revision: correlation.source_graph_revision(),
@@ -521,6 +550,7 @@ where
                 let event = AppEvent::EnginePrepared {
                     request_id: correlation.request_id(),
                     patch_id: correlation.patch_id(),
+                    intent: correlation.intent().clone(),
                     source_capability_id: correlation.source_capability_id().clone(),
                     target_capability_id: correlation.target_capability_id().clone(),
                     source_graph_revision: correlation.source_graph_revision(),
@@ -638,6 +668,11 @@ where
         self.current_parameters.graph_revision()
     }
 
+    /// Borrows the canonical one-in-flight structural lifecycle.
+    pub const fn engine_selection_status(&self) -> &crate::control::EngineSelectionStatus {
+        self.state.engine_selection()
+    }
+
     /// Returns the callback-published structural status when engine selection
     /// is configured. Live observers use this read-only view; they never own
     /// or advance the coordinator.
@@ -693,11 +728,32 @@ fn engine_preparation_failed_event(
     AppEvent::EnginePreparationFailed {
         request_id: effect.request_id(),
         patch_id: effect.patch_id(),
+        intent: effect.intent().clone(),
         source_capability_id: effect.source_capability_id().clone(),
         target_capability_id: effect.target_capability_id().clone(),
         source_graph_revision: effect.source_graph_revision(),
         target_graph_revision,
         failure,
+    }
+}
+
+fn map_structural_capability_failure(
+    intent: &StructuralEditIntent,
+    error: &CapabilityError,
+) -> EngineSelectionFailure {
+    if matches!(intent, StructuralEditIntent::ReplaceParameterChoice { .. })
+        && matches!(
+            error,
+            CapabilityError::UnknownChoice(_)
+                | CapabilityError::MissingParameter(_)
+                | CapabilityError::UndeclaredParameter(_)
+                | CapabilityError::WrongValueKind(_)
+                | CapabilityError::StructuralParameter(_)
+        )
+    {
+        EngineSelectionFailure::PresetUnavailable
+    } else {
+        map_capability_failure(error)
     }
 }
 
@@ -724,6 +780,8 @@ fn map_request_failure(error: GraphPreparationRequestError) -> EngineSelectionFa
         }
         GraphPreparationRequestError::MissingRequestIdentity
         | GraphPreparationRequestError::CapabilityUnchanged
+        | GraphPreparationRequestError::IntentMismatch
+        | GraphPreparationRequestError::ConfigDeltaMismatch
         | GraphPreparationRequestError::TargetRevisionNotNewer
         | GraphPreparationRequestError::PatchCapacityExceeded
         | GraphPreparationRequestError::DuplicatePatchId
@@ -735,10 +793,11 @@ fn map_request_failure(error: GraphPreparationRequestError) -> EngineSelectionFa
 mod tests {
     use super::{AppLoop, DispatchResult};
     use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
-    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
-    use crate::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
+    use crate::adapter::lock_free_structural_graph_boundary::{
+        LockFreeStructuralControlHandle, LockFreeStructuralGraphBoundary,
+    };
     use crate::adapter::production_instruments::{
         production_capability_registry, production_instrument_preparers,
         production_instrument_providers,
@@ -761,15 +820,19 @@ mod tests {
     use crate::real_time::audio_renderer::AudioRenderer;
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
     use crate::real_time::{
-        AudioBoundary, GraphHandoffStatus, GraphRevision, GraphStageOutcome, PreparedGraphBuilder,
-        StructuralGraphBoundary,
+        AudioBoundary, ControlStructuralGraphBoundary, GraphHandoffStatus, GraphRevision,
+        GraphStageOutcome, NoStructuralGraphChanges, PreparedGraph, PreparedGraphBuilder,
+        StructuralBoundaryFull, StructuralGraphBoundary,
     };
     use crate::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
-    use crate::synth::{CapabilityId, DescriptorDefaultConfigFactory};
+    use crate::synth::{
+        CapabilityId, DescriptorDefaultConfigFactory, VoiceEnvelope, VoiceEnvelopeParameter,
+    };
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use crate::testing::DeterministicGraphPreparationWorker;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Debug, Default, PartialEq)]
@@ -810,12 +873,44 @@ mod tests {
         }
     }
 
+    struct ObservedStructuralControl {
+        inner: LockFreeStructuralControlHandle,
+        blocked: Arc<AtomicBool>,
+        attempted_parameters: Arc<Mutex<Vec<ParameterSnapshot>>>,
+    }
+
+    impl ControlStructuralGraphBoundary for ObservedStructuralControl {
+        fn publish_prepared_on_control(
+            &mut self,
+            graph: PreparedGraph,
+        ) -> Result<(), StructuralBoundaryFull> {
+            self.attempted_parameters
+                .lock()
+                .unwrap()
+                .push(*graph.initial_parameters());
+            if self.blocked.load(Ordering::SeqCst) {
+                Err(StructuralBoundaryFull::new(graph))
+            } else {
+                self.inner.publish_prepared_on_control(graph)
+            }
+        }
+
+        fn collect_retired_on_control(&mut self) -> Option<GraphRevision> {
+            self.inner.collect_retired_on_control()
+        }
+
+        fn read_status_on_control(&self) -> GraphHandoffStatus {
+            self.inner.read_status_on_control()
+        }
+    }
+
     fn global_parameters() -> GlobalParameters {
         GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap()
     }
 
     fn patch(id: u32, gain_db: f32) -> Patch {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
@@ -830,7 +925,8 @@ mod tests {
     }
 
     fn installed_state_with_gains(gains: &[f32]) -> AppState {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let mut state = AppState::new(provider.registry().unwrap(), global_parameters());
         let patches = gains
             .iter()
@@ -943,6 +1039,189 @@ mod tests {
             crate::control::TopLevelContext::Mixer
         );
         assert_eq!(app_loop.state().selection(), retained_selection);
+    }
+
+    #[test]
+    fn ready_and_recoverable_failed_patch_adsr_edits_publish_source_revision_to_renderer() {
+        let registry = production_capability_registry().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
+        let patch_id = PatchId::new(1).unwrap();
+        let patch = Patch::new(
+            patch_id,
+            "Envelope lifecycle".to_owned(),
+            create_soundfont_config(&provider, SoundFontInstrument::new(0, 8, false).unwrap())
+                .unwrap(),
+            MidiChannel::new(0).unwrap(),
+            ChannelParameters::default(),
+        )
+        .with_envelope(VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap());
+        let mut state = AppState::for_graph(
+            registry.clone(),
+            global_parameters(),
+            GraphRevision::INITIAL,
+        );
+        state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+
+        let initial_transport = ParameterSnapshot::new(0, global_parameters(), &[]).unwrap();
+        let boundary = LockFreeAudioBoundary::new(64, initial_transport);
+        let (audio_control, audio_handle) = boundary.into_handles();
+        let mut app_loop = AppLoop::new(
+            state,
+            StateProjector::for_graph(GraphRevision::INITIAL),
+            audio_control,
+        )
+        .unwrap();
+        let graph =
+            PreparedGraphBuilder::new(&registry, &production_instrument_preparers().unwrap())
+                .build(
+                    GraphRevision::INITIAL,
+                    app_loop.patches(),
+                    *app_loop.current_parameters(),
+                    48_000.0,
+                    512,
+                )
+                .unwrap();
+        let mut renderer = AudioRenderer::new(audio_handle, NoStructuralGraphChanges::new(), graph);
+        let mut output = [0.0_f32; 1_024];
+
+        app_loop
+            .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+        app_loop
+            .dispatch(AppEvent::Adjust(Direction::Right))
+            .unwrap();
+        let ready_edit = app_loop.event_log_ref().records().last().unwrap();
+        assert_eq!(
+            ready_edit.emitted_events(),
+            &[
+                EmittedEvent::StateAccepted {
+                    generation: ready_edit.generation_after()
+                },
+                EmittedEvent::ParameterSnapshotPublished {
+                    generation: ready_edit.generation_after(),
+                    graph_revision: GraphRevision::INITIAL
+                }
+            ]
+        );
+        assert_eq!(
+            app_loop
+                .current_parameters()
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            501.0
+        );
+        let note = MidiMessage::try_new(
+            MidiChannel::new(0).unwrap(),
+            MidiMessageKind::NoteOn,
+            60,
+            110,
+        )
+        .unwrap();
+        app_loop
+            .dispatch(AppEvent::Midi {
+                patch_id,
+                message: note,
+            })
+            .unwrap();
+        renderer.render(&mut output);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        assert_eq!(
+            renderer
+                .parameters()
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            501.0
+        );
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(output.iter().any(|sample| sample.abs() > f32::EPSILON));
+
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Up))
+            .unwrap();
+        app_loop
+            .dispatch(AppEvent::Adjust(Direction::Right))
+            .unwrap();
+        let correlation = app_loop
+            .state()
+            .engine_selection()
+            .correlation()
+            .unwrap()
+            .clone();
+        let failure_focus = app_loop.state().interaction().patch_control_focus();
+        let failure_envelope = *app_loop.patches()[0].envelope();
+        app_loop
+            .dispatch_from(
+                AppEvent::EnginePreparationFailed {
+                    request_id: correlation.request_id(),
+                    patch_id: correlation.patch_id(),
+                    intent: correlation.intent().clone(),
+                    source_capability_id: correlation.source_capability_id().clone(),
+                    target_capability_id: correlation.target_capability_id().clone(),
+                    source_graph_revision: correlation.source_graph_revision(),
+                    target_graph_revision: GraphRevision::new(2).unwrap(),
+                    failure: EngineSelectionFailure::AssetUnavailable,
+                },
+                EventSource::Worker,
+            )
+            .unwrap();
+        assert_eq!(
+            app_loop.state().engine_selection().kind(),
+            EngineSelectionStatusKind::Failed
+        );
+        assert_eq!(
+            app_loop.state().interaction().patch_control_focus(),
+            failure_focus
+        );
+        assert_eq!(*app_loop.patches()[0].envelope(), failure_envelope);
+        assert_eq!(
+            app_loop.current_patch_page().unwrap().focused_control_id(),
+            crate::control::PatchControlId::Engine
+        );
+
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+        app_loop
+            .dispatch(AppEvent::Adjust(Direction::Right))
+            .unwrap();
+        let failed_edit = app_loop.event_log_ref().records().last().unwrap();
+        assert!(failed_edit
+            .emitted_events()
+            .iter()
+            .all(|event| !matches!(event, EmittedEvent::EngineSelection { .. })));
+        assert_eq!(
+            app_loop.current_parameters().graph_revision(),
+            GraphRevision::INITIAL
+        );
+        assert_eq!(
+            app_loop
+                .current_parameters()
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            502.0
+        );
+        renderer.render(&mut output);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        assert_eq!(
+            renderer
+                .parameters()
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            502.0
+        );
+        assert!(output.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]
@@ -1144,6 +1423,303 @@ mod tests {
         ] {
             assert!(tree.json().contains(property));
         }
+    }
+
+    #[test]
+    fn patch_adsr_coexists_with_preparing_staged_activation_and_latest_target_snapshot() {
+        let registry = production_capability_registry().unwrap();
+        let config_factory = DescriptorDefaultConfigFactory::new(
+            registry.clone(),
+            production_instrument_providers().unwrap(),
+        );
+        let patch_id = PatchId::new(1).unwrap();
+        let soundfont_config = config_factory
+            .create(&CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap())
+            .unwrap();
+        let mut state = AppState::for_graph(
+            registry.clone(),
+            global_parameters(),
+            GraphRevision::INITIAL,
+        );
+        state
+            .apply(AppEvent::InstallPatches(vec![Patch::new(
+                patch_id,
+                "Lifecycle envelope".to_owned(),
+                soundfont_config,
+                MidiChannel::new(0).unwrap(),
+                ChannelParameters::default(),
+            )
+            .with_envelope(
+                VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap(),
+            )]))
+            .unwrap();
+
+        let initial_transport = ParameterSnapshot::new(0, global_parameters(), &[]).unwrap();
+        let audio_boundary = LockFreeAudioBoundary::new(64, initial_transport);
+        let (audio_control, audio_handle) = audio_boundary.into_handles();
+        let mut app_loop = AppLoop::new(
+            state,
+            StateProjector::for_graph(GraphRevision::INITIAL),
+            audio_control,
+        )
+        .unwrap();
+        let audio_config =
+            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 512).unwrap();
+        let initial_graph =
+            PreparedGraphBuilder::new(&registry, &production_instrument_preparers().unwrap())
+                .build(
+                    GraphRevision::INITIAL,
+                    app_loop.patches(),
+                    *app_loop.current_parameters(),
+                    audio_config.sample_rate(),
+                    audio_config.render_capacity_frames(),
+                )
+                .unwrap();
+        let structural = LockFreeStructuralGraphBoundary::new(
+            1,
+            1,
+            GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+        )
+        .unwrap();
+        let (structural_control, structural_audio) = structural.into_handles();
+        let blocked = Arc::new(AtomicBool::new(true));
+        let attempted_parameters = Arc::new(Mutex::new(Vec::new()));
+        let worker = DeterministicGraphPreparationWorker::new(
+            registry.clone(),
+            production_instrument_preparers().unwrap(),
+            audio_config,
+        );
+        let worker_handle = worker.advance_handle();
+        app_loop
+            .configure_engine_selection(
+                DescriptorDefaultConfigFactory::new(
+                    registry,
+                    production_instrument_providers().unwrap(),
+                ),
+                worker,
+                ObservedStructuralControl {
+                    inner: structural_control,
+                    blocked: Arc::clone(&blocked),
+                    attempted_parameters: Arc::clone(&attempted_parameters),
+                },
+                &initial_graph,
+                audio_config,
+            )
+            .unwrap();
+        let mut renderer = AudioRenderer::new(audio_handle, structural_audio, initial_graph);
+        let mut output = [0.0_f32; 1_024];
+        let note = MidiMessage::try_new(
+            MidiChannel::new(0).unwrap(),
+            MidiMessageKind::NoteOn,
+            60,
+            110,
+        )
+        .unwrap();
+
+        app_loop
+            .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        app_loop
+            .dispatch(AppEvent::Adjust(Direction::Right))
+            .unwrap();
+        assert_eq!(
+            app_loop.state().engine_selection().kind(),
+            EngineSelectionStatusKind::Preparing
+        );
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+        app_loop
+            .dispatch(AppEvent::Adjust(Direction::Right))
+            .unwrap();
+        assert_eq!(
+            app_loop.current_patch_page().unwrap().focused_control_id(),
+            crate::control::PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+        );
+        assert_eq!(
+            app_loop.current_parameters().graph_revision(),
+            GraphRevision::INITIAL
+        );
+        assert_eq!(
+            app_loop
+                .current_parameters()
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            501.0
+        );
+
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Up))
+            .unwrap();
+        let busy_state = app_loop.current_state_tree();
+        assert_eq!(
+            app_loop.dispatch(AppEvent::Adjust(Direction::Right)),
+            Err(EventRejection::StructuralEditBusy)
+        );
+        assert_eq!(app_loop.current_state_tree(), busy_state);
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+
+        app_loop
+            .dispatch(AppEvent::Midi {
+                patch_id,
+                message: note,
+            })
+            .unwrap();
+        renderer.render(&mut output);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        assert_eq!(
+            renderer
+                .parameters()
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            501.0
+        );
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(output.iter().any(|sample| sample.abs() > f32::EPSILON));
+
+        assert!(worker_handle.advance());
+        let prepared = app_loop.advance_structural().unwrap();
+        let target_revision = GraphRevision::new(2).unwrap();
+        assert!(prepared.worker_result_polled());
+        assert_eq!(prepared.graph_stage(), Some(GraphStageOutcome::Staged));
+        assert_eq!(prepared.graph_published(), None);
+        assert_eq!(app_loop.staged_graph_revision(), Some(target_revision));
+        assert_eq!(app_loop.in_flight_graph_revision(), None);
+        assert_eq!(
+            app_loop.state().engine_selection().kind(),
+            EngineSelectionStatusKind::Activating
+        );
+        assert_eq!(
+            app_loop.current_parameters().graph_revision(),
+            target_revision
+        );
+        assert_eq!(
+            app_loop.current_patch_page().unwrap().focused_control_id(),
+            crate::control::PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+        );
+        let first_attempt = attempted_parameters.lock().unwrap()[0];
+        assert_eq!(first_attempt.graph_revision(), target_revision);
+        assert_eq!(
+            first_attempt
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            501.0,
+            "candidate activation fallback refreshes from the latest Preparing edit"
+        );
+
+        let activating_edit = app_loop
+            .dispatch(AppEvent::Adjust(Direction::Right))
+            .unwrap();
+        assert_eq!(activating_edit.boundary_full(), None);
+        assert_eq!(
+            app_loop
+                .current_parameters()
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            502.0
+        );
+        assert_eq!(
+            app_loop.current_parameters().graph_revision(),
+            target_revision
+        );
+        assert!(app_loop
+            .event_log_ref()
+            .records()
+            .last()
+            .unwrap()
+            .emitted_events()
+            .iter()
+            .all(|event| !matches!(event, EmittedEvent::EngineSelection { .. })));
+
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Up))
+            .unwrap();
+        assert_eq!(
+            app_loop.dispatch(AppEvent::Adjust(Direction::Left)),
+            Err(EventRejection::StructuralEditBusy)
+        );
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+
+        output.fill(0.0);
+        renderer.render(&mut output);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        assert_eq!(
+            renderer
+                .parameters()
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            501.0,
+            "the source holds its last compatible source-revision snapshot"
+        );
+        assert!(renderer.handoff_status().incompatible_snapshots() > 0);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+
+        blocked.store(false, Ordering::SeqCst);
+        let published = app_loop.advance_structural().unwrap();
+        assert_eq!(published.graph_published(), Some(target_revision));
+        assert_eq!(app_loop.staged_graph_revision(), None);
+        assert_eq!(app_loop.in_flight_graph_revision(), Some(target_revision));
+        let attempts = attempted_parameters.lock().unwrap();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0], attempts[1]);
+        drop(attempts);
+
+        app_loop
+            .dispatch(AppEvent::Midi {
+                patch_id,
+                message: note,
+            })
+            .unwrap();
+        output.fill(0.0);
+        renderer.render(&mut output);
+        assert_eq!(renderer.active_revision(), target_revision);
+        assert_eq!(
+            renderer
+                .parameters()
+                .patch(patch_id)
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            502.0,
+            "the activated graph consumes the latest target-revision edit"
+        );
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(output.iter().any(|sample| sample.abs() > f32::EPSILON));
+
+        let acknowledged = app_loop.advance_structural().unwrap();
+        assert_eq!(
+            acknowledged.activation_acknowledged(),
+            Some(target_revision)
+        );
+        assert_eq!(
+            app_loop.state().engine_selection().kind(),
+            EngineSelectionStatusKind::Ready
+        );
+        assert_eq!(
+            app_loop.current_patch_page().unwrap().focused_control_id(),
+            crate::control::PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+        );
+        assert_eq!(
+            app_loop.patches()[0].envelope().attack_milliseconds(),
+            502.0
+        );
+
+        drop(renderer);
+        app_loop.shutdown_engine_selection_on_control().unwrap();
     }
 
     #[test]

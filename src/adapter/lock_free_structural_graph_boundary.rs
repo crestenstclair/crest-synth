@@ -207,9 +207,7 @@ mod tests {
         AtomicGraphHandoffStatus, LockFreeStructuralGraphBoundary,
         StructuralBoundaryConfigurationError,
     };
-    use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
-    };
+    use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
@@ -292,7 +290,8 @@ mod tests {
     }
 
     fn graph(revision: u64, drops: &Arc<AtomicUsize>) -> PreparedGraph {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let registry = provider.registry().unwrap();
         let patch = Patch::new(
             PatchId::new(1).unwrap(),

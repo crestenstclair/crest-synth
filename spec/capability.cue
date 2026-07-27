@@ -73,6 +73,7 @@ project: contexts: Synth: {
 			label: "String"
 			kind: "Continuous | Stepped | Choice | Toggle | Asset"
 			update: "Scalar | Structural"
+			patchInteraction: "ReadOnly | StructuralChoice"
 			defaultValue: "ParameterValue | AssetReference"
 			range: "Option<{minimum, maximum}>"
 			choices: "Vec<{id, label}>"
@@ -89,11 +90,13 @@ project: contexts: Synth: {
 			"continuous and stepped parameters have finite ordered bounds and positive fine/coarse steps",
 			"choice ids are unique and stable; labels are presentation only",
 			"Asset and every value that changes preparation topology use Structural update",
+			"StructuralChoice is valid only for a non-Asset Structural Choice with at least two choices; every other parameter is ReadOnly on PATCH",
 			"dependency predicates reference earlier parameters in the same descriptor and contain no callbacks or engine code",
 		]
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "defines the schema the control path validates"},
 			{capability: "capability.schema_driven_patch_page", contribution: "defines each PATCH row's stable identity, presentation, value kind, update class, bounds, and dependencies"},
+			{capability: "capability.soundfont_preset_selection", contribution: "declares whether one capability-owned structural Choice joins the PATCH focus/edit surface without a capability branch"},
 		]
 	}
 
@@ -116,12 +119,14 @@ project: contexts: Synth: {
 			"voice policy encodes neither a capability-specific Patch-count limit nor a global voice budget; the engine-agnostic prepared-rack capacity governs concurrent Patch count separately",
 			"supportedMidiKinds contains no duplicates and unsupported input is rejected explicitly rather than silently remapped",
 			"at most sixteen parameters are classified Scalar so their descriptor-ordered values fit the fixed real-time projection",
+			"PATCH-editable parameters are derived only from patchInteraction and descriptor order; the registry contains no duplicated per-capability PATCH field list",
 			"the descriptor contains immutable control metadata only and owns no engine, renderer, factory closure, decoded asset, buffer, lock, device, or callback state",
 		]
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "is the single schema source for installed instrument configuration and projection"},
 			{capability: "capability.schema_driven_patch_page", contribution: "supplies the active engine label, ordered sections, and generic parameter rows"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "supplies the ordered defaults and required asset references for a new target config"},
+			{capability: "capability.soundfont_preset_selection", contribution: "supplies the ordered authored-name preset choices and their explicit structural PATCH interaction"},
 		]
 	}
 
@@ -143,6 +148,7 @@ project: contexts: Synth: {
 			{capability: "capability.soundfont_audio", contribution: "carries the current SoundFont preset and asset through a generic Patch-owned contract"},
 			{capability: "capability.schema_driven_patch_page", contribution: "supplies the active values and asset references rendered against the descriptor"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "is the only candidate configuration committed when a prepared target succeeds"},
+			{capability: "capability.soundfont_preset_selection", contribution: "carries one stable preset Choice id plus the fixed SoundFont asset without duplicating bank/program/percussion assignments"},
 		]
 	}
 
@@ -161,6 +167,7 @@ project: contexts: Synth: {
 			{capability: "capability.instrument_capability_model", contribution: "makes the installed instrument schema explicit and deterministic without coupling AppState to an adapter"},
 			{capability: "capability.schema_driven_patch_page", contribution: "supplies the complete ordered engine-choice projection without placeholders"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "defines deterministic adjacent choice order and validates every committed candidate"},
+			{capability: "capability.soundfont_preset_selection", contribution: "freezes the catalog-backed SoundFont choices used by config validation, projection, and reducer selection"},
 		]
 	}
 
@@ -184,6 +191,7 @@ project: contexts: Synth: {
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "lets a concrete engine adapter supply schema/config data without defining Patch"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "validates descriptor-default candidates without owning selection or mutation"},
+			{capability: "capability.soundfont_preset_selection", contribution: "validates catalog-backed preset assignments without owning SF2 parsing or rendering"},
 		]
 	}
 }
@@ -196,18 +204,21 @@ project: adapters: HiDefSoundFontCapability: {
 		framework: "rust"
 		rules: [
 			"provide the SoundFont descriptor with CapabilityId instrument.soundfont.hidef, label HiDef SoundFont, a stable semantic instrument accent, EngineManaged voice policy, and the MIDI kinds supported by HiDefSoundFontPreparer",
-			"declare soundfont.bank as Structural Stepped, soundfont.program as Structural Stepped, soundfont.percussion as Structural Toggle, and soundfont.file as a required Structural Asset fixed to ./sf2/HiDef.sf2",
-			"create InstrumentConfig from caller-supplied generic assignments and asset references without reading a file, loading an engine, changing a Patch, or inventing a second SoundFont preset model",
+			"be constructed from the immutable SoundFontPresetCatalog produced by the single shared HiDef asset load; provider methods themselves perform no file I/O or parsing",
+			"declare soundfont.preset as one Structural Choice whose ordered ids and exact labels come from the catalog and whose PATCH interaction is StructuralChoice, plus soundfont.file as a required Structural Asset fixed to ./sf2/HiDef.sf2 and ReadOnly on PATCH",
+			"use the first bank/program-sorted playable catalog entry as the descriptor default and fail construction if no playable entry exists",
+			"create InstrumentConfig from caller-supplied generic assignments and asset references without loading an engine, changing a Patch, decoding a choice label, or inventing a second SoundFont preset model",
 			"return a typed error for invalid or unknown values and never substitute a preset, percussion identity, asset, descriptor, or engine",
-			"own no InstrumentPreparer, PreparedInstrument, PreparedEngineRack, renderer factory closure, C++/FFI type, engine selection, ADSR, or Patch-page behavior; preparation remains a separate port even when ids match",
+			"own no InstrumentPreparer, PreparedInstrument, PreparedEngineRack, numeric prepared bank, renderer factory closure, C++/FFI type, structural lifecycle, ADSR, or Patch-page behavior; preparation remains a separate port even when ids and shared catalog provenance match",
 		]
 	}
 	validations: [{id: "validation.adapter.hidef_soundfont_capability", kind: "test", command: ["cargo", "test", "hidef_soundfont_capability"], description: "the descriptor and every fixture-derived config are exact, deterministic, schema-valid, and rejected when altered"}]
 	contributesTo: [
 		{capability: "capability.instrument_capability_model", contribution: "proves SoundFont is one registry entry rather than the universal Patch model"},
 		{capability: "capability.asynchronous_engine_selection", contribution: "builds the exact descriptor-default SoundFont candidate including HiDef.sf2 without fallback"},
+		{capability: "capability.soundfont_preset_selection", contribution: "projects exact authored names over stable numeric-address choice ids and validates adjacent selections"},
 		{capability: "capability.prepared_engine_rack", contribution: "provides the stable capability identity independently matched to the production SoundFont preparer"},
-		{capability: "capability.soundfont_audio", contribution: "preserves the fixed bank/program/percussion and HiDef.sf2 identity used by the existing renderer"},
+		{capability: "capability.soundfont_audio", contribution: "preserves one catalog-backed numeric preset identity and HiDef.sf2 reference for the existing renderer"},
 	]
 }
 
@@ -219,8 +230,8 @@ project: adapters: BraidsCapability: {
 		framework: "rust"
 		rules: [
 			"provide CapabilityId instrument.braids with FixedPerPatch { voices: 16 } and only the MIDI kinds implemented by BraidsPreparer",
-			"declare braids.model as a Scalar Choice containing the 47 named playable upstream models in stable source order, excluding the question-mark sentinel",
-			"declare braids.timbre and braids.color as finite Scalar Continuous values in 0..=1 with positive fine and coarse steps",
+			"declare braids.model as a Scalar Choice containing the 47 named playable upstream models in stable source order, excluding the question-mark sentinel, and keep it ReadOnly on PATCH",
+			"declare braids.timbre and braids.color as finite Scalar Continuous values in 0..=1 with positive fine and coarse steps and keep both ReadOnly on PATCH",
 			"create a canonical descriptor-ordered InstrumentConfig without reading files, constructing C++ objects, or selecting another capability",
 			"return typed errors for missing, duplicate, undeclared, wrong-kind, non-finite, out-of-range, or unknown-choice values and never substitute a model, descriptor, config, or engine",
 			"own no InstrumentPreparer, PreparedInstrument, PreparedEngineRack, C++/FFI value, envelope, engine selector, or Patch-page behavior",

@@ -1,5 +1,5 @@
 use crate::control::top_level_context::TopLevelContext;
-use crate::control::{EngineSelectionFailure, EngineSelectionRequestId};
+use crate::control::{EngineSelectionFailure, EngineSelectionRequestId, StructuralEditIntent};
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::GraphRevision;
@@ -36,6 +36,7 @@ pub enum AppEventPayloadShape {
     InstrumentConfig,
     EngineSelectionFailure,
     Boolean,
+    StructuralEditIntent,
 }
 
 /// One typed entry in the exhaustive application-event surface.
@@ -63,6 +64,7 @@ pub enum AppEventSurfaceDescriptor {
     EnginePrepared {
         request_id: AppEventPayloadShape,
         patch_id: AppEventPayloadShape,
+        intent: AppEventPayloadShape,
         source_capability_id: AppEventPayloadShape,
         target_capability_id: AppEventPayloadShape,
         source_graph_revision: AppEventPayloadShape,
@@ -72,6 +74,7 @@ pub enum AppEventSurfaceDescriptor {
     EnginePreparationFailed {
         request_id: AppEventPayloadShape,
         patch_id: AppEventPayloadShape,
+        intent: AppEventPayloadShape,
         source_capability_id: AppEventPayloadShape,
         target_capability_id: AppEventPayloadShape,
         source_graph_revision: AppEventPayloadShape,
@@ -80,6 +83,7 @@ pub enum AppEventSurfaceDescriptor {
     },
     EngineActivationAcknowledged {
         request_id: AppEventPayloadShape,
+        intent: AppEventPayloadShape,
         target_graph_revision: AppEventPayloadShape,
         retired_graph_revision: AppEventPayloadShape,
         collected: AppEventPayloadShape,
@@ -127,6 +131,7 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 15] = [
     AppEventSurfaceDescriptor::EnginePrepared {
         request_id: AppEventPayloadShape::EngineSelectionRequestId,
         patch_id: AppEventPayloadShape::PatchId,
+        intent: AppEventPayloadShape::StructuralEditIntent,
         source_capability_id: AppEventPayloadShape::CapabilityId,
         target_capability_id: AppEventPayloadShape::CapabilityId,
         source_graph_revision: AppEventPayloadShape::GraphRevision,
@@ -135,6 +140,7 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 15] = [
     },
     AppEventSurfaceDescriptor::EnginePreparationFailed {
         request_id: AppEventPayloadShape::EngineSelectionRequestId,
+        intent: AppEventPayloadShape::StructuralEditIntent,
         patch_id: AppEventPayloadShape::PatchId,
         source_capability_id: AppEventPayloadShape::CapabilityId,
         target_capability_id: AppEventPayloadShape::CapabilityId,
@@ -144,6 +150,7 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 15] = [
     },
     AppEventSurfaceDescriptor::EngineActivationAcknowledged {
         request_id: AppEventPayloadShape::EngineSelectionRequestId,
+        intent: AppEventPayloadShape::StructuralEditIntent,
         target_graph_revision: AppEventPayloadShape::GraphRevision,
         retired_graph_revision: AppEventPayloadShape::GraphRevision,
         collected: AppEventPayloadShape::Boolean,
@@ -176,6 +183,7 @@ pub enum AppEvent {
     EnginePrepared {
         request_id: EngineSelectionRequestId,
         patch_id: PatchId,
+        intent: StructuralEditIntent,
         source_capability_id: CapabilityId,
         target_capability_id: CapabilityId,
         source_graph_revision: GraphRevision,
@@ -186,6 +194,7 @@ pub enum AppEvent {
     EnginePreparationFailed {
         request_id: EngineSelectionRequestId,
         patch_id: PatchId,
+        intent: StructuralEditIntent,
         source_capability_id: CapabilityId,
         target_capability_id: CapabilityId,
         source_graph_revision: GraphRevision,
@@ -195,6 +204,7 @@ pub enum AppEvent {
     /// Reaches Ready only after activation, retirement, and control collection.
     EngineActivationAcknowledged {
         request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
         target_graph_revision: GraphRevision,
         retired_graph_revision: GraphRevision,
         collected: bool,
@@ -232,6 +242,7 @@ impl AppEvent {
             Self::EnginePrepared { .. } => AppEventSurfaceDescriptor::EnginePrepared {
                 request_id: AppEventPayloadShape::EngineSelectionRequestId,
                 patch_id: AppEventPayloadShape::PatchId,
+                intent: AppEventPayloadShape::StructuralEditIntent,
                 source_capability_id: AppEventPayloadShape::CapabilityId,
                 target_capability_id: AppEventPayloadShape::CapabilityId,
                 source_graph_revision: AppEventPayloadShape::GraphRevision,
@@ -242,6 +253,7 @@ impl AppEvent {
                 AppEventSurfaceDescriptor::EnginePreparationFailed {
                     request_id: AppEventPayloadShape::EngineSelectionRequestId,
                     patch_id: AppEventPayloadShape::PatchId,
+                    intent: AppEventPayloadShape::StructuralEditIntent,
                     source_capability_id: AppEventPayloadShape::CapabilityId,
                     target_capability_id: AppEventPayloadShape::CapabilityId,
                     source_graph_revision: AppEventPayloadShape::GraphRevision,
@@ -252,6 +264,7 @@ impl AppEvent {
             Self::EngineActivationAcknowledged { .. } => {
                 AppEventSurfaceDescriptor::EngineActivationAcknowledged {
                     request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                    intent: AppEventPayloadShape::StructuralEditIntent,
                     target_graph_revision: AppEventPayloadShape::GraphRevision,
                     retired_graph_revision: AppEventPayloadShape::GraphRevision,
                     collected: AppEventPayloadShape::Boolean,
@@ -341,6 +354,7 @@ mod tests {
             descriptor.contains(&AppEventSurfaceDescriptor::EnginePrepared {
                 request_id: AppEventPayloadShape::EngineSelectionRequestId,
                 patch_id: AppEventPayloadShape::PatchId,
+                intent: AppEventPayloadShape::StructuralEditIntent,
                 source_capability_id: AppEventPayloadShape::CapabilityId,
                 target_capability_id: AppEventPayloadShape::CapabilityId,
                 source_graph_revision: AppEventPayloadShape::GraphRevision,
@@ -352,6 +366,7 @@ mod tests {
             descriptor.contains(&AppEventSurfaceDescriptor::EnginePreparationFailed {
                 request_id: AppEventPayloadShape::EngineSelectionRequestId,
                 patch_id: AppEventPayloadShape::PatchId,
+                intent: AppEventPayloadShape::StructuralEditIntent,
                 source_capability_id: AppEventPayloadShape::CapabilityId,
                 target_capability_id: AppEventPayloadShape::CapabilityId,
                 source_graph_revision: AppEventPayloadShape::GraphRevision,
@@ -362,6 +377,7 @@ mod tests {
         assert!(
             descriptor.contains(&AppEventSurfaceDescriptor::EngineActivationAcknowledged {
                 request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                intent: AppEventPayloadShape::StructuralEditIntent,
                 target_graph_revision: AppEventPayloadShape::GraphRevision,
                 retired_graph_revision: AppEventPayloadShape::GraphRevision,
                 collected: AppEventPayloadShape::Boolean,

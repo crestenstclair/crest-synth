@@ -193,9 +193,7 @@ impl std::error::Error for RackPreparationError {
 #[cfg(test)]
 mod tests {
     use super::{PreparedEngineRackBuilder, RackPreparationError};
-    use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
-    };
+    use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -215,7 +213,8 @@ mod tests {
     use std::sync::Arc;
 
     fn patch(id: u32) -> Patch {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
@@ -230,7 +229,10 @@ mod tests {
     }
 
     fn registry() -> CapabilityRegistry {
-        HiDefSoundFontCapability::new().unwrap().registry().unwrap()
+        crate::adapter::production_instruments::production_soundfont_capability()
+            .unwrap()
+            .registry()
+            .unwrap()
     }
 
     fn message() -> MidiMessage {

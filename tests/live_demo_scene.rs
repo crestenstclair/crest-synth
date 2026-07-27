@@ -9,11 +9,14 @@ use crest_synth::adapter::production_instruments::{
     production_instrument_providers,
 };
 use crest_synth::adapter::threaded_graph_preparation_worker::ThreadedGraphPreparationWorker;
+use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
 use crest_synth::control::event_log::EventLog;
-use crest_synth::control::event_record::{EventOutcome, EventSource};
+use crest_synth::control::event_record::{EmittedEvent, EventOutcome, EventSource};
 use crest_synth::control::state_projector::StateProjector;
+use crest_synth::control::{PatchControlId, StructuralEditIntent};
+use crest_synth::kernel::midi_message::MidiMessageKind;
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::real_time::audio_observation::AudioObservation;
@@ -24,7 +27,9 @@ use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
 use crest_synth::real_time::structural_graph_boundary::NoStructuralGraphChanges;
 use crest_synth::real_time::{GraphHandoffStatus, StructuralGraphBoundary};
 use crest_synth::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
-use crest_synth::synth::{DescriptorDefaultConfigFactory, InstrumentPreparer};
+use crest_synth::synth::{
+    DescriptorDefaultConfigFactory, InstrumentPreparer, PatchEditableTarget, VoiceEnvelope,
+};
 use crest_synth::testing::automatic_midi_test::AutomaticMidiTest;
 use crest_synth::testing::live_demo_runner::LiveDemoRunner;
 use crest_synth::testing::live_demo_scene::LiveDemoScene;
@@ -70,21 +75,107 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         + GlobalParameters::surface_descriptor().len();
     assert_eq!(scene.expected_editable_parameters().len(), expected_count);
     assert_eq!(scene.minimum_parameter_dwell(), Duration::from_millis(500));
+    assert_eq!(
+        scene
+            .expected_engine_transitions()
+            .iter()
+            .map(|transition| transition.identifier())
+            .collect::<Vec<_>>(),
+        [
+            "SoundFontPresetToNext",
+            "SoundFontToBraids",
+            "BraidsToDescriptorDefaultSoundFont",
+        ]
+    );
+    assert!(matches!(
+        scene.expected_engine_transitions()[0].intent(),
+        StructuralEditIntent::ReplaceParameterChoice { .. }
+    ));
+    assert!(scene.expected_engine_transitions()[0]
+        .source_label()
+        .is_some());
+    assert!(scene.expected_engine_transitions()[0]
+        .target_label()
+        .is_some());
+    let focused_patch_id = app_loop.patches()[0].id();
     for parameter in scene.expected_editable_parameters() {
-        assert!(scene.steps().iter().any(|step| {
-            step.requires_checkpoint() && step.editable_parameter() == Some(parameter)
-        }));
+        let (checkpoint_index, _) = scene
+            .steps()
+            .iter()
+            .enumerate()
+            .find(|(_, step)| {
+                step.requires_checkpoint() && step.editable_parameter() == Some(parameter)
+            })
+            .expect("every frozen parameter has one checkpoint");
+        let expected_probe_patch = match parameter {
+            crest_synth::testing::live_demo_scene::LiveEditableParameter::Patch {
+                patch_id,
+                ..
+            } => *patch_id,
+            crest_synth::testing::live_demo_scene::LiveEditableParameter::Global { .. } => {
+                focused_patch_id
+            }
+        };
+        let (note_on_patch, note_on) = match scene.steps()[checkpoint_index - 1].event() {
+            AppEvent::Midi { patch_id, message } => (*patch_id, *message),
+            other => panic!("checkpoint probe is not semantic MIDI: {other:?}"),
+        };
+        let (note_off_patch, note_off) = match scene.steps()[checkpoint_index + 1].event() {
+            AppEvent::Midi { patch_id, message } => (*patch_id, *message),
+            other => panic!("checkpoint release is not semantic MIDI: {other:?}"),
+        };
+        assert_eq!(note_on_patch, expected_probe_patch);
+        assert_eq!(note_off_patch, expected_probe_patch);
+        assert_eq!(note_on.kind(), MidiMessageKind::NoteOn);
+        assert_eq!(note_off.kind(), MidiMessageKind::NoteOff);
+        assert_eq!(note_on.data1(), note_off.data1());
+        assert!(note_on.data2() > 0);
+        assert_eq!(note_off.data2(), 0);
     }
+    let mut patch_adsr_step_indices = Vec::new();
+    for descriptor in VoiceEnvelope::surface_descriptor() {
+        let control = PatchControlId::Envelope(descriptor.parameter());
+        let matches = scene
+            .steps()
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| {
+                step.requires_checkpoint()
+                    && step.patch_control_id() == Some(control.clone())
+                    && matches!(
+                        step.editable_parameter(),
+                        Some(crest_synth::testing::live_demo_scene::LiveEditableParameter::Patch {
+                            patch_id,
+                            target: PatchEditableTarget::Envelope(parameter),
+                        }) if *patch_id == focused_patch_id && *parameter == descriptor.parameter()
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "{control}");
+        patch_adsr_step_indices.push(matches[0].0);
+    }
+    assert!(patch_adsr_step_indices
+        .windows(2)
+        .all(|pair| pair[0] < pair[1]));
     let rejection_index = scene
         .steps()
         .iter()
         .position(|step| step.expected_outcome() == EventOutcome::Rejected)
         .expect("scene includes a boundary rejection probe");
-    assert_eq!(
-        scene.steps()[rejection_index + 1].expected_outcome(),
-        EventOutcome::Accepted
-    );
-    assert!(scene.steps()[rejection_index + 1].requires_checkpoint());
+    let rejected_parameter = scene.steps()[rejection_index]
+        .editable_parameter()
+        .expect("boundary rejection identifies its parameter");
+    let recovery = scene
+        .steps()
+        .iter()
+        .skip(rejection_index + 1)
+        .find(|step| {
+            step.expected_outcome() == EventOutcome::Accepted
+                && step.requires_checkpoint()
+                && step.editable_parameter() == Some(rejected_parameter)
+        })
+        .expect("a probed accepted adjustment follows the boundary rejection");
+    assert!(recovery.requires_checkpoint());
 
     let observation = AtomicAudioObservation::default();
     let (writer, reader) = observation.into_handles();
@@ -140,10 +231,17 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     let mut runner = LiveDemoRunner::start(scene.clone(), automatic, reader, runtime_audio);
 
     let mut checkpoints = Vec::new();
-    assert!(runner
-        .advance(Duration::from_millis(100), &mut app_loop)
-        .expect("first edit dispatches")
-        .is_none());
+    let first_checkpoint_step = scene
+        .steps()
+        .iter()
+        .position(|step| step.requires_checkpoint())
+        .expect("scene contains a scalar checkpoint");
+    for _ in 0..=first_checkpoint_step {
+        assert!(runner
+            .advance(Duration::from_millis(100), &mut app_loop)
+            .expect("first PATCH route dispatches")
+            .is_none());
+    }
     let records_after_dispatch = app_loop.event_log().total_observed();
     assert!(runner
         .advance(Duration::ZERO, &mut app_loop)
@@ -155,7 +253,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     );
     renderer.render(&mut output);
 
-    let mut deterministic_elapsed = Duration::from_millis(100);
+    let mut deterministic_elapsed = Duration::from_millis(100 * (first_checkpoint_step as u64 + 1));
     let mut first_checkpoint_elapsed = None;
     for _ in 0..4_000 {
         app_loop
@@ -206,6 +304,95 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     assert!(report.coverage().missing().is_empty());
     assert!(report.coverage().unexpected().is_empty());
     assert!(report.coverage().duplicate_expected().is_empty());
+    let patch_adsr_checkpoints = report
+        .checkpoints()
+        .iter()
+        .filter_map(|checkpoint| checkpoint.as_parameter())
+        .filter(|checkpoint| {
+            checkpoint
+                .expected_transition()
+                .patch_control_id()
+                .is_some()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(patch_adsr_checkpoints.len(), 4);
+    for (checkpoint, descriptor) in patch_adsr_checkpoints
+        .iter()
+        .zip(VoiceEnvelope::surface_descriptor())
+    {
+        let control = PatchControlId::Envelope(descriptor.parameter());
+        assert_eq!(
+            checkpoint.expected_transition().patch_control_id(),
+            Some(control.clone())
+        );
+        assert_eq!(
+            checkpoint.projected_value().patch_control_id(),
+            Some(control)
+        );
+        assert_eq!(
+            checkpoint.projected_value().state_value(),
+            checkpoint.projected_value().parameter_value()
+        );
+        assert_eq!(
+            checkpoint.audio_observation().parameter_generation(),
+            checkpoint.generation()
+        );
+        assert_eq!(checkpoint.emitted_effects().len(), 2);
+        assert!(matches!(
+            checkpoint.emitted_effects()[0],
+            EmittedEvent::StateAccepted { .. }
+        ));
+        assert!(matches!(
+            checkpoint.emitted_effects()[1],
+            EmittedEvent::ParameterSnapshotPublished { .. }
+        ));
+    }
+    let engine_checkpoints = report
+        .checkpoints()
+        .iter()
+        .filter_map(|checkpoint| checkpoint.as_engine())
+        .collect::<Vec<_>>();
+    assert_eq!(engine_checkpoints.len(), 9);
+    let preset_checkpoints = &engine_checkpoints[..3];
+    assert_eq!(
+        preset_checkpoints
+            .iter()
+            .map(|checkpoint| checkpoint.status())
+            .collect::<Vec<_>>(),
+        [
+            crest_synth::control::EngineSelectionStatusKind::Preparing,
+            crest_synth::control::EngineSelectionStatusKind::Activating,
+            crest_synth::control::EngineSelectionStatusKind::Ready,
+        ]
+    );
+    assert!(preset_checkpoints.iter().all(|checkpoint| matches!(
+        checkpoint.intent(),
+        StructuralEditIntent::ReplaceParameterChoice { .. }
+    )));
+    assert!(preset_checkpoints
+        .iter()
+        .all(|checkpoint| checkpoint.preset().is_some()));
+    assert!(preset_checkpoints[0].source_audio_nonzero());
+    assert!(preset_checkpoints[2].target_audio_nonzero());
+    assert!(engine_checkpoints[3..]
+        .iter()
+        .all(|checkpoint| checkpoint.focused_control_id() == PatchControlId::Engine));
+    assert_eq!(
+        report.coverage().expected_engine_transitions(),
+        [
+            "SoundFontPresetToNext",
+            "SoundFontToBraids",
+            "BraidsToDescriptorDefaultSoundFont",
+        ]
+    );
+    assert_eq!(
+        report.coverage().exercised_engine_transitions(),
+        [
+            "BraidsToDescriptorDefaultSoundFont",
+            "SoundFontPresetToNext",
+            "SoundFontToBraids",
+        ]
+    );
     assert!(report
         .event_log()
         .records()
@@ -234,8 +421,9 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     assert!(report.runtime_audio().alternating_capabilities());
     assert_eq!(
         report.runtime_audio().active_graph_revision(),
-        GraphRevision::new(3).unwrap()
+        GraphRevision::new(4).unwrap()
     );
+    assert_eq!(report.runtime_audio().engine_switches(), 3);
     assert_eq!(report.runtime_audio().callback_destructions(), 0);
     let event_log_summary = serde_json::to_value(report.event_log_summary()).unwrap();
     assert_eq!(event_log_summary["lossless"], true);
@@ -247,7 +435,13 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         event_log_summary["generationAfter"],
         report.state_tree().generation()
     );
-    assert_eq!(event_log_summary["activeGraphRevision"], 3);
+    assert_eq!(event_log_summary["activeGraphRevision"], 4);
+    let final_tree_value: serde_json::Value =
+        serde_json::from_str(report.state_tree().json()).unwrap();
+    assert_eq!(
+        final_tree_value["interaction"]["patchControlFocus"],
+        "patch.engine"
+    );
 
     let final_log = app_loop.event_log().to_json().unwrap();
     let final_tree = app_loop.current_state_tree().into_json();
@@ -271,7 +465,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
 }
 
 #[test]
-fn early_close_uses_semantic_cleanup_without_success_report() {
+fn live_demo_early_close_uses_semantic_cleanup_without_success_report() {
     let global = globals();
     let initial = ParameterSnapshot::new(0, global, &[]).unwrap();
     let boundary = LockFreeAudioBoundary::new(64, initial);

@@ -40,7 +40,7 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SerializedInteractionState {
     pub(crate) context: TopLevelContext,

@@ -1,6 +1,5 @@
 use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
 use crest_synth::adapter::eframe_text_window::EframeApplication;
-use crest_synth::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::production_instruments::production_capability_registry;
 use crest_synth::control::app_event::AppEvent;
@@ -11,7 +10,8 @@ use crest_synth::control::event_record::{
 };
 use crest_synth::control::state_projector::StateProjector;
 use crest_synth::control::{
-    EngineSelectionEffectKind, EngineSelectionRequestId, EngineSelectionStatusKind, TopLevelContext,
+    EngineSelectionEffectKind, EngineSelectionRequestId, EngineSelectionStatusKind, PatchControlId,
+    TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
@@ -21,6 +21,7 @@ use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::shell::app_window::{AppInputCallback, ProjectionCallback, TickCallback};
 use crest_synth::synth::patch::Patch;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
+use crest_synth::synth::{VoiceEnvelope, VoiceEnvelopeParameter};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use eframe::egui;
 use eframe::App;
@@ -35,7 +36,8 @@ fn globals() -> GlobalParameters {
 }
 
 fn patch(id: u32, channel: u8, parameters: ChannelParameters) -> Patch {
-    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+    let provider = crest_synth::adapter::production_instruments::production_soundfont_capability()
+        .expect("fixture capability is valid");
     Patch::new(
         PatchId::new(id).expect("fixture PatchId is valid"),
         format!("Egui Fixture {id}"),
@@ -47,6 +49,7 @@ fn patch(id: u32, channel: u8, parameters: ChannelParameters) -> Patch {
         MidiChannel::new(channel).expect("fixture channel is valid"),
         parameters,
     )
+    .with_envelope(VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap())
 }
 
 fn installed_state() -> AppState {
@@ -169,6 +172,8 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
     events.extend((0..6).map(|_| key_event(egui::Key::S)));
     events.push(key_event(egui::Key::K));
     events.push(key_event(egui::Key::D));
+    events.push(key_release(egui::Key::D));
+    events.push(key_release(egui::Key::K));
 
     context.begin_pass(raw_input(events, 0.0));
     application.update(&context, &mut frame);
@@ -242,6 +247,106 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         assert!(clip_rect.contains(selected.center()));
     }
 
+    let mut patch_frame_time = 1.6;
+    for (index, parameter) in [
+        VoiceEnvelopeParameter::AttackMilliseconds,
+        VoiceEnvelopeParameter::DecayMilliseconds,
+        VoiceEnvelopeParameter::Sustain,
+        VoiceEnvelopeParameter::ReleaseMilliseconds,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        context.begin_pass(raw_input(
+            vec![key_event(egui::Key::S), key_release(egui::Key::S)],
+            patch_frame_time,
+        ));
+        application.update(&context, &mut frame);
+        let focused_output = context.end_pass();
+        patch_frame_time += 0.1;
+
+        let app_loop = shared.borrow();
+        let text = app_loop.current_text();
+        let page = app_loop.current_patch_page().unwrap();
+        assert_eq!(
+            page.focused_control_id(),
+            PatchControlId::Envelope(parameter)
+        );
+        assert_eq!(text.selected_line(), index + 3);
+        assert_eq!(
+            text.body()
+                .lines()
+                .filter(|line| line.starts_with('>'))
+                .count(),
+            1
+        );
+        let (clip_rect, text_shape) = painted_projection(&focused_output, text.body())
+            .expect("the next frame paints the reducer-selected PATCH row");
+        let selected = text_shape.galley.rows[text.selected_line()]
+            .rect()
+            .translate(text_shape.pos.to_vec2());
+        assert!(clip_rect.contains(selected.center()));
+        drop(app_loop);
+
+        if index == 0 {
+            let baseline = shared.borrow().patches()[0]
+                .envelope()
+                .attack_milliseconds();
+            context.begin_pass(raw_input(
+                vec![
+                    key_event(egui::Key::K),
+                    key_event(egui::Key::D),
+                    key_event(egui::Key::A),
+                    key_event(egui::Key::W),
+                    key_event(egui::Key::S),
+                    key_release(egui::Key::K),
+                ],
+                patch_frame_time,
+            ));
+            application.update(&context, &mut frame);
+            let adjusted_output = context.end_pass();
+            patch_frame_time += 0.1;
+
+            let app_loop = shared.borrow();
+            let text = app_loop.current_text();
+            assert_eq!(
+                app_loop.patches()[0].envelope().attack_milliseconds(),
+                baseline,
+                "K+D/A/W/S must use the reducer's reversible fine/coarse steps"
+            );
+            assert_eq!(text.selected_line(), 3);
+            let (clip_rect, text_shape) = painted_projection(&adjusted_output, text.body())
+                .expect("the adjustment frame paints the next canonical projection");
+            let selected = text_shape.galley.rows[text.selected_line()]
+                .rect()
+                .translate(text_shape.pos.to_vec2());
+            assert!(clip_rect.contains(selected.center()));
+        }
+    }
+
+    context.begin_pass(raw_input(
+        (0..4)
+            .flat_map(|_| [key_event(egui::Key::W), key_release(egui::Key::W)])
+            .collect(),
+        patch_frame_time,
+    ));
+    application.update(&context, &mut frame);
+    let engine_focus_output = context.end_pass();
+    patch_frame_time += 0.1;
+    {
+        let app_loop = shared.borrow();
+        let text = app_loop.current_text();
+        let page = app_loop.current_patch_page().unwrap();
+        assert_eq!(page.focused_control_id(), PatchControlId::Engine);
+        assert_eq!(text.selected_line(), 2);
+        let (clip_rect, text_shape) = painted_projection(&engine_focus_output, text.body())
+            .expect("bare W returns focus through the canonical PATCH projection");
+        let selected = text_shape.galley.rows[text.selected_line()]
+            .rect()
+            .translate(text_shape.pos.to_vec2());
+        assert!(clip_rect.contains(selected.center()));
+    }
+
     context.begin_pass(raw_input(
         vec![
             key_event(egui::Key::K),
@@ -249,7 +354,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
             key_release(egui::Key::D),
             key_release(egui::Key::K),
         ],
-        1.75,
+        patch_frame_time,
     ));
     application.update(&context, &mut frame);
     let pending_output = context.end_pass();
@@ -266,7 +371,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
             .last()
             .expect("the normalized chord emits exactly one semantic event");
 
-        assert_eq!(records.len(), 11);
+        assert_eq!(records.len(), 23);
         assert_eq!(page.engine().status(), EngineSelectionStatusKind::Preparing);
         assert!(!page.engine().editable());
         assert_eq!(
@@ -309,7 +414,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
             .lines()
             .nth(pending_text.selected_line())
             .expect("the engine line exists")
-            .starts_with("  ENGINE"));
+            .starts_with("> ENGINE"));
         assert!(matches!(
             record.input(),
             EventInput::Adjust {
@@ -342,7 +447,10 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         assert!(clip_rect.contains(selected.center()));
     }
 
-    context.begin_pass(raw_input(vec![key_event(egui::Key::Num1)], 2.0));
+    context.begin_pass(raw_input(
+        vec![key_event(egui::Key::Num1)],
+        patch_frame_time + 0.25,
+    ));
     application.update(&context, &mut frame);
     let output = context.end_pass();
 
@@ -402,7 +510,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         Some(expected_line.as_str())
     );
 
-    assert_eq!(records.len(), 12);
+    assert_eq!(records.len(), 24);
     let adjustment = &records.records()[8];
     assert_eq!(adjustment.source(), EventSource::System);
     assert_eq!(adjustment.outcome(), EventOutcome::Accepted);
@@ -442,7 +550,7 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
         clip_rect.contains(selected_rect.center()),
         "the exact selected line must be the scroll target: clip={clip_rect:?}, selected={selected_rect:?}"
     );
-    assert_eq!(tick_count.get(), 9);
+    assert_eq!(tick_count.get(), 15);
     assert_eq!(
         idle_output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
         Duration::from_millis(16),

@@ -1643,14 +1643,14 @@ fn channels_are_round_robin(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplicationConfig, DegenerateMode, StandaloneApplication};
+    use super::{ApplicationConfig, ApplicationError, DegenerateMode, StandaloneApplication};
     use crate::adapter::atomic_audio_observation::AtomicAudioObservation;
     use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
-    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
     use crate::control::app_event::{AppEvent, Direction};
     use crate::control::event_record::EventSource;
     use crate::control::text_projection::TextProjection;
+    use crate::control::PatchControlId;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -1670,12 +1670,13 @@ mod tests {
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::{
         CapabilityId, InstrumentCapabilityProvider, InstrumentPreparationError, InstrumentPreparer,
-        Patch, PreparedInstrument, PreparedInstrumentError,
+        Patch, PreparedInstrument, PreparedInstrumentError, VoiceEnvelope,
     };
     use crate::testing::instrument_part::InstrumentPart;
     use crate::testing::midi_event_source::{
         FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
     };
+    use crate::testing::{LiveDemoError, LIVE_DEMO_NO_PROGRESS_TIMEOUT, LIVE_DEMO_TOTAL_TIMEOUT};
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1948,6 +1949,75 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
+    struct StalledLiveWitness {
+        close_requests: Arc<Mutex<usize>>,
+        reports: Arc<Mutex<usize>>,
+        stream_released: Arc<Mutex<bool>>,
+    }
+
+    struct StalledStreamHandle {
+        released: Arc<Mutex<bool>>,
+    }
+
+    impl Drop for StalledStreamHandle {
+        fn drop(&mut self) {
+            *self.released.lock().unwrap() = true;
+        }
+    }
+
+    struct StalledLiveOutput {
+        released: Arc<Mutex<bool>>,
+    }
+
+    impl AudioOutput for StalledLiveOutput {
+        type Negotiated = Self;
+
+        fn negotiate(self) -> Result<Self::Negotiated, AudioOutputError> {
+            Ok(self)
+        }
+    }
+
+    impl NegotiatedAudioOutput for StalledLiveOutput {
+        fn config(&self) -> AudioDeviceConfig {
+            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 16).unwrap()
+        }
+
+        fn start(
+            self,
+            _render: AudioRenderCallback,
+            _on_runtime_error: AudioDeviceStatusCallback,
+        ) -> Result<AudioStream, AudioOutputError> {
+            Ok(AudioStream::new(StalledStreamHandle {
+                released: self.released,
+            }))
+        }
+    }
+
+    struct StalledLiveWindow {
+        close_requests: Arc<Mutex<usize>>,
+        tick_duration: Duration,
+    }
+
+    impl AppWindow for StalledLiveWindow {
+        fn run(
+            &self,
+            _on_input: AppInputCallback,
+            _projection: ProjectionCallback,
+            mut on_tick: TickCallback,
+        ) -> Result<(), WindowError> {
+            for _ in 0..64 {
+                if !on_tick(self.tick_duration) {
+                    *self.close_requests.lock().unwrap() += 1;
+                    return Ok(());
+                }
+            }
+            Err(WindowError::new(
+                "stalled live window did not receive a bounded close request",
+            ))
+        }
+    }
+
+    #[derive(Clone, Default)]
     struct LiveWindowWitness {
         reports: Arc<Mutex<Vec<crate::testing::LiveDemoReport>>>,
         final_projection: Arc<Mutex<Option<TextProjection>>>,
@@ -2025,6 +2095,7 @@ mod tests {
                     render(&mut buffer);
                 }
                 std::thread::yield_now();
+                std::thread::sleep(Duration::from_millis(1));
                 last_rendered_projection = projection();
             }
             Err(WindowError::new(
@@ -2072,7 +2143,9 @@ mod tests {
 
     fn providers() -> Vec<Box<dyn InstrumentCapabilityProvider>> {
         vec![
-            Box::new(HiDefSoundFontCapability::new().unwrap()),
+            Box::new(
+                crate::adapter::production_instruments::production_soundfont_capability().unwrap(),
+            ),
             Box::new(BraidsCapability::new().unwrap()),
         ]
     }
@@ -2206,6 +2279,43 @@ mod tests {
         .unwrap()
     }
 
+    fn stalled_live_application(
+        witness: StalledLiveWitness,
+        tick_duration: Duration,
+    ) -> TestApplication<StalledLiveWindow, StalledLiveOutput> {
+        StandaloneApplication::new(
+            TestBoundary {
+                bus: Arc::new(Mutex::new(Bus {
+                    commands: VecDeque::new(),
+                    parameters: parameters(),
+                    parameter_publications: 0,
+                })),
+            },
+            providers(),
+            preparers(Arc::new(Mutex::new(EngineState::default()))),
+            structural_boundary(),
+            AtomicAudioObservation::default(),
+            TestSource {
+                parts: parts(),
+                due: vec![TargetedMidiEvent::new(0, message())],
+                started: false,
+            },
+            StalledLiveWindow {
+                close_requests: Arc::clone(&witness.close_requests),
+                tick_duration,
+            },
+            StalledLiveOutput {
+                released: Arc::clone(&witness.stream_released),
+            },
+            ApplicationConfig::new(
+                48_000.0,
+                16,
+                ApplicationConfig::default().global_parameters(),
+            ),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn normal_run_loads_once_and_joins_window_input_to_the_shared_loop() {
         let engine_state = Arc::new(Mutex::new(EngineState::default()));
@@ -2278,6 +2388,40 @@ mod tests {
         let report = &reports[0];
         assert!(report.complete(), "{}", report.summary());
         assert_eq!(checkpoints.lock().unwrap().as_slice(), report.checkpoints());
+        let patch_adsr = report
+            .checkpoints()
+            .iter()
+            .filter_map(|checkpoint| checkpoint.as_parameter())
+            .filter(|checkpoint| {
+                checkpoint
+                    .expected_transition()
+                    .patch_control_id()
+                    .is_some()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(patch_adsr.len(), VoiceEnvelope::surface_descriptor().len());
+        assert!(patch_adsr.iter().all(|checkpoint| {
+            checkpoint
+                .expected_transition()
+                .patch_control_id()
+                .is_some_and(|control| control != PatchControlId::Engine)
+                && checkpoint.projected_value().patch_control_id()
+                    == checkpoint.expected_transition().patch_control_id()
+        }));
+        let structural = report
+            .checkpoints()
+            .iter()
+            .filter_map(|checkpoint| checkpoint.as_engine())
+            .collect::<Vec<_>>();
+        assert_eq!(structural.len(), 9);
+        assert!(structural[..3]
+            .iter()
+            .all(|checkpoint| checkpoint.preset().is_some()));
+        assert!(structural[3..]
+            .iter()
+            .all(|checkpoint| checkpoint.focused_control_id() == PatchControlId::Engine));
+        assert_eq!(report.runtime_audio().callback_allocations(), 0);
+        assert_eq!(report.runtime_audio().callback_destructions(), 0);
         assert!(*witness.input_injected.lock().unwrap());
         assert_eq!(*witness.close_requests.lock().unwrap(), 1);
         assert_eq!(*witness.post_completion_ticks.lock().unwrap(), 0);
@@ -2309,6 +2453,46 @@ mod tests {
         assert!(matches!(error, super::ApplicationError::LiveDemoIncomplete));
         assert_eq!(*checkpoints.lock().unwrap(), 0);
         assert_eq!(*reports.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn standalone_live_demo_stall_times_out_closes_and_releases_stream() {
+        let witness = StalledLiveWitness::default();
+        let reports_for_callback = Arc::clone(&witness.reports);
+
+        let error = stalled_live_application(witness.clone(), Duration::from_secs(1))
+            .run_live_demo(|_| {}, move |_| *reports_for_callback.lock().unwrap() += 1)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ApplicationError::LiveDemo(LiveDemoError::ProgressTimedOut {
+                stage: "parameter audio observation",
+                stalled_for,
+            }) if stalled_for >= LIVE_DEMO_NO_PROGRESS_TIMEOUT
+        ));
+        assert_eq!(*witness.reports.lock().unwrap(), 0);
+        assert_eq!(*witness.close_requests.lock().unwrap(), 1);
+        assert!(*witness.stream_released.lock().unwrap());
+    }
+
+    #[test]
+    fn standalone_live_demo_total_bound_closes_and_releases_stream() {
+        let witness = StalledLiveWitness::default();
+        let reports_for_callback = Arc::clone(&witness.reports);
+
+        let error = stalled_live_application(witness.clone(), LIVE_DEMO_TOTAL_TIMEOUT)
+            .run_live_demo(|_| {}, move |_| *reports_for_callback.lock().unwrap() += 1)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ApplicationError::LiveDemo(LiveDemoError::TotalTimeout { elapsed })
+                if elapsed >= LIVE_DEMO_TOTAL_TIMEOUT
+        ));
+        assert_eq!(*witness.reports.lock().unwrap(), 0);
+        assert_eq!(*witness.close_requests.lock().unwrap(), 1);
+        assert!(*witness.stream_released.lock().unwrap());
     }
 
     #[test]

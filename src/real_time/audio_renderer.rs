@@ -702,7 +702,8 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let provider = HiDefSoundFontCapability::new().unwrap();
+            let provider =
+                crate::adapter::production_instruments::production_soundfont_capability().unwrap();
             let patch = |id: u32| {
                 Patch::new(
                     PatchId::new(id).unwrap(),
@@ -1018,7 +1019,8 @@ mod tests {
 
     #[test]
     fn hidef_soundfont_preparer_callback_operations_allocate_and_deallocate_nothing() {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let patch = Patch::new(
             PatchId::new(1).unwrap(),
             "Prepared piano".to_owned(),
@@ -1027,7 +1029,10 @@ mod tests {
             MidiChannel::new(0).unwrap(),
             ChannelParameters::default(),
         );
-        let preparer = HiDefSoundFontPreparer::new().unwrap();
+        let preparer = HiDefSoundFontPreparer::new(
+            crate::adapter::production_instruments::production_soundfont_asset().unwrap(),
+        )
+        .unwrap();
         let mut instrument = preparer.prepare(&patch, 48_000.0, 512).unwrap();
         let message =
             MidiMessage::try_new(patch.channel(), MidiMessageKind::NoteOn, 60, 100).unwrap();

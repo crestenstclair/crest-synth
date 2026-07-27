@@ -357,13 +357,16 @@ fn fixture_globals() -> GlobalParameters {
         .expect("fixture global parameters are valid")
 }
 
-fn fixture_patch(id: u32, parameters: ChannelParameters) -> Patch {
-    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+fn fixture_patch(
+    provider: &HiDefSoundFontCapability,
+    id: u32,
+    parameters: ChannelParameters,
+) -> Patch {
     Patch::new(
         PatchId::new(id).expect("fixture PatchId is nonzero"),
         format!("Fixture {id}"),
         create_soundfont_config(
-            &provider,
+            provider,
             SoundFontInstrument::new(0, (id * 8) as u8, false)
                 .expect("fixture SoundFont instrument is valid"),
         )
@@ -389,15 +392,18 @@ fn route_state() -> AppState {
 }
 
 fn state_with_parameters(first: ChannelParameters, second: ChannelParameters) -> AppState {
-    let provider = HiDefSoundFontCapability::new().expect("fixture capability is valid");
+    let asset = crate::adapter::hidef_soundfont_asset::HiDefSoundFontAsset::load()
+        .expect("fixture SoundFont asset is valid");
+    let provider =
+        HiDefSoundFontCapability::new(asset.catalog()).expect("fixture capability is valid");
     let mut state = AppState::new(
         provider.registry().expect("fixture registry is valid"),
         fixture_globals(),
     );
     state
         .apply(AppEvent::InstallPatches(vec![
-            fixture_patch(1, first),
-            fixture_patch(2, second),
+            fixture_patch(&provider, 1, first),
+            fixture_patch(&provider, 2, second),
         ]))
         .expect("fixture installation is accepted");
     state

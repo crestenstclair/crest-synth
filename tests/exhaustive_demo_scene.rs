@@ -2,17 +2,20 @@ mod support;
 
 use crest_synth::control::app_state::EventRejection;
 use crest_synth::control::event_record::{EventOutcome, EventSource};
+use crest_synth::control::{EngineSelectionStatusKind, PatchControlId};
+use crest_synth::synth::{ParameterId, VoiceEnvelope};
 use crest_synth::testing::demo_scene_report::DemoCoverageGroup;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-const COVERAGE_GROUPS: [DemoCoverageGroup; 10] = [
+const COVERAGE_GROUPS: [DemoCoverageGroup; 11] = [
     DemoCoverageGroup::Inputs,
     DemoCoverageGroup::Events,
     DemoCoverageGroup::Contexts,
     DemoCoverageGroup::Directions,
     DemoCoverageGroup::MidiKinds,
     DemoCoverageGroup::EditableParameters,
+    DemoCoverageGroup::PatchControls,
     DemoCoverageGroup::SerializedProperties,
     DemoCoverageGroup::Rejections,
     DemoCoverageGroup::Projections,
@@ -101,6 +104,71 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .exercised(),
         &["context.mixer".to_owned(), "context.patch".to_owned()]
     );
+    let mut expected_patch_controls = PatchControlId::surface_descriptor()
+        .iter()
+        .map(|control| format!("patchControl.{control}"))
+        .collect::<Vec<_>>();
+    expected_patch_controls.push(format!(
+        "patchControl.{}",
+        PatchControlId::Capability(
+            ParameterId::new(
+                crest_synth::adapter::hidef_soundfont_capability::SOUNDFONT_PRESET_PARAMETER_ID,
+            )
+            .unwrap(),
+        )
+    ));
+    expected_patch_controls.sort();
+    assert_eq!(
+        report
+            .coverage()
+            .group(DemoCoverageGroup::PatchControls)
+            .exercised(),
+        expected_patch_controls.as_slice()
+    );
+
+    let routed_patch_adsr = report
+        .checkpoints()
+        .iter()
+        .filter_map(|checkpoint| checkpoint.patch_adsr())
+        .filter(|checkpoint| checkpoint.lifecycle().is_none())
+        .collect::<Vec<_>>();
+    assert_eq!(routed_patch_adsr.len(), 4);
+    assert_eq!(
+        routed_patch_adsr
+            .iter()
+            .map(|checkpoint| checkpoint.parameter())
+            .collect::<Vec<_>>(),
+        VoiceEnvelope::surface_descriptor()
+            .iter()
+            .map(|descriptor| descriptor.parameter())
+            .collect::<Vec<_>>()
+    );
+    assert!(routed_patch_adsr.iter().all(|checkpoint| {
+        checkpoint.focus_projection_exact()
+            && checkpoint.scalar_only()
+            && checkpoint.all_envelope_values_exact()
+            && checkpoint.untargeted_patches_exact()
+            && checkpoint.graph_revision_exact()
+    }));
+
+    let preparing_adsr = report
+        .checkpoints()
+        .iter()
+        .filter_map(|checkpoint| checkpoint.patch_adsr())
+        .find(|checkpoint| checkpoint.lifecycle() == Some(EngineSelectionStatusKind::Preparing))
+        .expect("Preparing carries a source-revision PATCH ADSR checkpoint");
+    let activating_adsr = report
+        .checkpoints()
+        .iter()
+        .filter_map(|checkpoint| checkpoint.patch_adsr())
+        .find(|checkpoint| checkpoint.lifecycle() == Some(EngineSelectionStatusKind::Activating))
+        .expect("Activating carries a replacement-revision PATCH ADSR checkpoint");
+    assert!(preparing_adsr.scalar_only() && preparing_adsr.graph_revision_exact());
+    assert!(activating_adsr.scalar_only() && activating_adsr.graph_revision_exact());
+    assert!(preparing_adsr.all_envelope_values_exact());
+    assert!(activating_adsr.all_envelope_values_exact());
+    assert_ne!(preparing_adsr.parameter(), activating_adsr.parameter());
+    assert!(activating_adsr.renderer_graph_revision() > preparing_adsr.renderer_graph_revision());
 
     let expected = first
         .expected_coverage
@@ -238,15 +306,14 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
     );
     assert_eq!(
         final_patches[0]["instrument"]["values"][0]["value"]["value"],
-        0
+        "sf2.bank-0.program-0"
     );
     assert_eq!(
-        final_patches[0]["instrument"]["values"][1]["value"]["value"],
-        0
-    );
-    assert_eq!(
-        final_patches[0]["instrument"]["values"][2]["value"]["value"],
-        false
+        final_patches[0]["instrument"]["values"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
     assert_eq!(
         final_patches[0]["instrument"]["assetReferences"][0]["reference"]["locator"],

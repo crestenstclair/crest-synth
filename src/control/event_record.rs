@@ -1,7 +1,7 @@
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::{EventRejection, StateAccepted};
 use crate::control::engine_selection::{
-    EngineSelectionEffect, EngineSelectionFailure, EngineSelectionRequestId,
+    EngineSelectionEffect, EngineSelectionFailure, EngineSelectionRequestId, StructuralEditIntent,
 };
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
@@ -243,6 +243,7 @@ pub enum EventInput {
         request_id: EngineSelectionRequestId,
         #[serde(rename = "patchId")]
         patch_id: u32,
+        intent: StructuralEditIntent,
         #[serde(rename = "sourceCapabilityId")]
         source_capability_id: crate::synth::CapabilityId,
         #[serde(rename = "targetCapabilityId")]
@@ -257,6 +258,7 @@ pub enum EventInput {
     EnginePreparationFailed {
         #[serde(rename = "requestId")]
         request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
         #[serde(rename = "patchId")]
         patch_id: u32,
         #[serde(rename = "sourceCapabilityId")]
@@ -272,6 +274,7 @@ pub enum EventInput {
     EngineActivationAcknowledged {
         #[serde(rename = "requestId")]
         request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
         #[serde(rename = "targetGraphRevision")]
         target_graph_revision: GraphRevision,
         #[serde(rename = "retiredGraphRevision")]
@@ -300,6 +303,7 @@ impl From<&AppEvent> for EventInput {
             AppEvent::EnginePrepared {
                 request_id,
                 patch_id,
+                intent,
                 source_capability_id,
                 target_capability_id,
                 source_graph_revision,
@@ -308,6 +312,7 @@ impl From<&AppEvent> for EventInput {
             } => Self::EnginePrepared {
                 request_id: *request_id,
                 patch_id: patch_id.value(),
+                intent: intent.clone(),
                 source_capability_id: source_capability_id.clone(),
                 target_capability_id: target_capability_id.clone(),
                 source_graph_revision: *source_graph_revision,
@@ -317,6 +322,7 @@ impl From<&AppEvent> for EventInput {
             AppEvent::EnginePreparationFailed {
                 request_id,
                 patch_id,
+                intent,
                 source_capability_id,
                 target_capability_id,
                 source_graph_revision,
@@ -325,6 +331,7 @@ impl From<&AppEvent> for EventInput {
             } => Self::EnginePreparationFailed {
                 request_id: *request_id,
                 patch_id: patch_id.value(),
+                intent: intent.clone(),
                 source_capability_id: source_capability_id.clone(),
                 target_capability_id: target_capability_id.clone(),
                 source_graph_revision: *source_graph_revision,
@@ -333,11 +340,13 @@ impl From<&AppEvent> for EventInput {
             },
             AppEvent::EngineActivationAcknowledged {
                 request_id,
+                intent,
                 target_graph_revision,
                 retired_graph_revision,
                 collected,
             } => Self::EngineActivationAcknowledged {
                 request_id: *request_id,
+                intent: intent.clone(),
                 target_graph_revision: *target_graph_revision,
                 retired_graph_revision: *retired_graph_revision,
                 collected: *collected,
@@ -476,6 +485,11 @@ impl EventRecord {
     /// and must be compared with the union of discriminating accepted and
     /// rejected records rather than with one convenient record.
     pub const SERIALIZED_LEAF_DESCRIPTOR: &[&str] = &[
+        "emittedEvents[].effect.intent.capabilityId",
+        "emittedEvents[].effect.intent.choiceId",
+        "emittedEvents[].effect.intent.kind",
+        "emittedEvents[].effect.intent.parameterId",
+        "emittedEvents[].effect.intent.targetCapabilityId",
         "emittedEvents[].effect.kind",
         "emittedEvents[].effect.message.channel",
         "emittedEvents[].effect.message.data1",
@@ -503,6 +517,11 @@ impl EventRecord {
         "input.context",
         "input.direction",
         "input.failure",
+        "input.intent.capabilityId",
+        "input.intent.choiceId",
+        "input.intent.kind",
+        "input.intent.parameterId",
+        "input.intent.targetCapabilityId",
         "input.kind",
         "input.message.channel",
         "input.message.data1",
@@ -784,8 +803,7 @@ mod tests {
         EventRecordError, EventSource, MidiInput, MidiKind, PatchInput,
     };
     use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_BANK_PARAMETER_ID,
-        SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+        HIDEF_CAPABILITY_ID, SOUNDFONT_PRESET_PARAMETER_ID,
     };
     use crate::control::app_event::{AppEvent, Direction};
     use crate::control::app_state::{AppState, EventRejection};
@@ -793,7 +811,7 @@ mod tests {
     use crate::control::text_projection::TextProjection;
     use crate::control::{
         EngineSelectionEffect, EngineSelectionEffectKind, EngineSelectionFailure,
-        EngineSelectionRequestId, EngineSelectionStatus, TopLevelContext,
+        EngineSelectionRequestId, EngineSelectionStatus, StructuralEditIntent, TopLevelContext,
     };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -810,7 +828,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn patch(id: u32) -> Patch {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
@@ -825,7 +844,8 @@ mod tests {
     }
 
     fn installed_state() -> AppState {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let mut state = AppState::new(
             provider.registry().unwrap(),
             GlobalParameters::new(-3.0, 0.5, 0.4, 0.25, 250.0, 0.3, 0.2).unwrap(),
@@ -871,7 +891,8 @@ mod tests {
     }
 
     fn discriminating_schema_records() -> Vec<EventRecord> {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let patch = PatchInput {
             id: 7,
             name: "Schema Patch".to_owned(),
@@ -912,6 +933,26 @@ mod tests {
         let engine_effect = EngineSelectionEffect::from_correlation(
             EngineSelectionEffectKind::CandidateCommitted,
             effect_status.correlation().unwrap(),
+        )
+        .unwrap();
+        let preset_status = EngineSelectionStatus::preparing_with_intent(
+            GraphRevision::INITIAL,
+            request_id,
+            PatchId::new(7).unwrap(),
+            StructuralEditIntent::ReplaceParameterChoice {
+                capability_id: source_capability_id.clone(),
+                parameter_id: ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap(),
+                choice_id: "sf2.bank-128.program-0".to_owned(),
+            },
+            source_capability_id.clone(),
+            source_capability_id.clone(),
+        )
+        .unwrap()
+        .activating(target_graph_revision)
+        .unwrap();
+        let preset_effect = EngineSelectionEffect::from_correlation(
+            EngineSelectionEffectKind::CandidateCommitted,
+            preset_status.correlation().unwrap(),
         )
         .unwrap();
 
@@ -989,11 +1030,12 @@ mod tests {
                 EventInput::EnginePrepared {
                     request_id,
                     patch_id: 7,
+                    intent: effect_status.correlation().unwrap().intent().clone(),
                     source_capability_id: source_capability_id.clone(),
                     target_capability_id: target_capability_id.clone(),
                     source_graph_revision: GraphRevision::INITIAL,
                     target_graph_revision,
-                    candidate_config,
+                    candidate_config: candidate_config.clone(),
                 },
                 EventOutcome::Accepted,
                 vec![EmittedEvent::EngineSelection {
@@ -1006,7 +1048,8 @@ mod tests {
                 EventInput::EnginePreparationFailed {
                     request_id,
                     patch_id: 7,
-                    source_capability_id,
+                    intent: effect_status.correlation().unwrap().intent().clone(),
+                    source_capability_id: source_capability_id.clone(),
                     target_capability_id,
                     source_graph_revision: GraphRevision::INITIAL,
                     target_graph_revision,
@@ -1020,12 +1063,31 @@ mod tests {
                 EventSource::Worker,
                 EventInput::EngineActivationAcknowledged {
                     request_id,
+                    intent: effect_status.correlation().unwrap().intent().clone(),
                     target_graph_revision,
                     retired_graph_revision: GraphRevision::INITIAL,
                     collected: true,
                 },
                 EventOutcome::Accepted,
                 Vec::new(),
+                None,
+            ),
+            schema_record(
+                EventSource::Worker,
+                EventInput::EnginePrepared {
+                    request_id,
+                    patch_id: 7,
+                    intent: preset_status.correlation().unwrap().intent().clone(),
+                    source_capability_id: source_capability_id.clone(),
+                    target_capability_id: source_capability_id,
+                    source_graph_revision: GraphRevision::INITIAL,
+                    target_graph_revision,
+                    candidate_config,
+                },
+                EventOutcome::Accepted,
+                vec![EmittedEvent::EngineSelection {
+                    effect: preset_effect,
+                }],
                 None,
             ),
         ]
@@ -1218,20 +1280,13 @@ mod tests {
         assert_eq!(
             installed
                 .instrument_config()
-                .value(&ParameterId::new(SOUNDFONT_BANK_PARAMETER_ID).unwrap()),
-            Some(&ParameterValue::Stepped(128))
-        );
-        assert_eq!(
-            installed
-                .instrument_config()
-                .value(&ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()),
-            Some(&ParameterValue::Stepped(2))
-        );
-        assert_eq!(
-            installed
-                .instrument_config()
-                .value(&ParameterId::new(SOUNDFONT_PERCUSSION_PARAMETER_ID).unwrap()),
-            Some(&ParameterValue::Toggle(false))
+                .value(&ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Choice(
+                SoundFontInstrument::new(128, 2, false)
+                    .unwrap()
+                    .preset_id()
+                    .choice_id()
+            ))
         );
         assert_eq!(installed.gain_db(), -6.0);
         assert_eq!(installed.pan(), 0.25);

@@ -148,9 +148,7 @@ impl std::error::Error for GraphPreparationError {
 #[cfg(test)]
 mod tests {
     use super::{GraphPreparationError, PreparedGraphBuilder};
-    use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
-    };
+    use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
@@ -169,7 +167,8 @@ mod tests {
     use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn patch(id: u32) -> Patch {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
@@ -263,7 +262,8 @@ mod tests {
 
     #[test]
     fn builder_returns_one_complete_ordered_callback_ready_graph() {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let registry = provider.registry().unwrap();
         let preparers = vec![FixturePreparer::boxed(false)];
         let builder = PreparedGraphBuilder::new(&registry, &preparers);
@@ -294,7 +294,8 @@ mod tests {
 
     #[test]
     fn prepared_graph_refreshes_only_an_exact_target_revision_and_engine_layout() {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let registry = provider.registry().unwrap();
         let preparers = vec![FixturePreparer::boxed(false)];
         let builder = PreparedGraphBuilder::new(&registry, &preparers);
@@ -339,7 +340,8 @@ mod tests {
 
     #[test]
     fn candidate_failures_leave_an_existing_graph_unchanged() {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let registry = provider.registry().unwrap();
         let good_preparers = vec![FixturePreparer::boxed(false)];
         let builder = PreparedGraphBuilder::new(&registry, &good_preparers);

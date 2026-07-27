@@ -139,6 +139,14 @@ pub enum ParameterUpdate {
     Structural,
 }
 
+/// Whether a descriptor parameter participates in the PATCH focus/edit surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PatchInteraction {
+    ReadOnly,
+    StructuralChoice,
+}
+
 /// Patch-local note-allocation policy declared by one capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -267,6 +275,7 @@ pub struct ParameterSpec {
     label: String,
     kind: ParameterKind,
     update: ParameterUpdate,
+    patch_interaction: PatchInteraction,
     default_value: ParameterDefault,
     range: Option<ParameterRange>,
     choices: Vec<ParameterChoice>,
@@ -295,11 +304,47 @@ impl ParameterSpec {
         enabled_when: Option<ParameterPredicate>,
         visible_when: Option<ParameterPredicate>,
     ) -> Result<Self, CapabilityError> {
+        Self::new_with_patch_interaction(
+            id,
+            label,
+            kind,
+            update,
+            PatchInteraction::ReadOnly,
+            default_value,
+            range,
+            choices,
+            fine_step,
+            coarse_step,
+            unit,
+            formatter,
+            enabled_when,
+            visible_when,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_patch_interaction(
+        id: ParameterId,
+        label: impl Into<String>,
+        kind: ParameterKind,
+        update: ParameterUpdate,
+        patch_interaction: PatchInteraction,
+        default_value: ParameterDefault,
+        range: Option<ParameterRange>,
+        choices: Vec<ParameterChoice>,
+        fine_step: Option<f64>,
+        coarse_step: Option<f64>,
+        unit: Option<String>,
+        formatter: impl Into<String>,
+        enabled_when: Option<ParameterPredicate>,
+        visible_when: Option<ParameterPredicate>,
+    ) -> Result<Self, CapabilityError> {
         let spec = Self {
             id,
             label: label.into(),
             kind,
             update,
+            patch_interaction,
             default_value,
             range,
             choices,
@@ -328,6 +373,10 @@ impl ParameterSpec {
 
     pub const fn update(&self) -> ParameterUpdate {
         self.update
+    }
+
+    pub const fn patch_interaction(&self) -> PatchInteraction {
+        self.patch_interaction
     }
 
     pub const fn default_value(&self) -> &ParameterDefault {
@@ -490,6 +539,16 @@ impl ParameterSpec {
                     choice_id: choice.id.clone(),
                 });
             }
+        }
+        if self.patch_interaction == PatchInteraction::StructuralChoice
+            && (self.kind != ParameterKind::Choice
+                || self.update != ParameterUpdate::Structural
+                || self.choices.len() < 2)
+        {
+            return Err(CapabilityError::InvalidParameterShape {
+                parameter_id: self.id.clone(),
+                reason: "StructuralChoice PATCH interaction requires a Structural Choice with at least two choices",
+            });
         }
 
         match self.kind {

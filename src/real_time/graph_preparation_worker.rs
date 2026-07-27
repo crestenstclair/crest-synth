@@ -1,4 +1,4 @@
-use crate::control::{EngineSelectionFailure, EngineSelectionRequestId};
+use crate::control::{EngineSelectionFailure, EngineSelectionRequestId, StructuralEditIntent};
 use crate::kernel::PatchId;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::{
@@ -12,10 +12,12 @@ use crate::synth::{
 use core::fmt;
 
 /// Complete immutable correlation shared by one worker request and result.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GraphPreparationCorrelation {
     request_id: EngineSelectionRequestId,
     patch_id: PatchId,
+    intent: StructuralEditIntent,
     source_capability_id: CapabilityId,
     target_capability_id: CapabilityId,
     source_graph_revision: GraphRevision,
@@ -32,11 +34,38 @@ impl GraphPreparationCorrelation {
         source_graph_revision: GraphRevision,
         target_graph_revision: GraphRevision,
     ) -> Result<Self, GraphPreparationRequestError> {
+        if source_capability_id == target_capability_id {
+            return Err(GraphPreparationRequestError::CapabilityUnchanged);
+        }
+        let intent = StructuralEditIntent::ReplaceCapability {
+            target_capability_id: target_capability_id.clone(),
+        };
+        Self::new_with_intent(
+            request_id,
+            patch_id,
+            intent,
+            source_capability_id,
+            target_capability_id,
+            source_graph_revision,
+            target_graph_revision,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_intent(
+        request_id: EngineSelectionRequestId,
+        patch_id: PatchId,
+        intent: StructuralEditIntent,
+        source_capability_id: CapabilityId,
+        target_capability_id: CapabilityId,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+    ) -> Result<Self, GraphPreparationRequestError> {
         if request_id.is_none() {
             return Err(GraphPreparationRequestError::MissingRequestIdentity);
         }
-        if source_capability_id == target_capability_id {
-            return Err(GraphPreparationRequestError::CapabilityUnchanged);
+        if !intent_matches_capabilities(&intent, &source_capability_id, &target_capability_id) {
+            return Err(GraphPreparationRequestError::IntentMismatch);
         }
         if target_graph_revision <= source_graph_revision {
             return Err(GraphPreparationRequestError::TargetRevisionNotNewer);
@@ -44,6 +73,7 @@ impl GraphPreparationCorrelation {
         Ok(Self {
             request_id,
             patch_id,
+            intent,
             source_capability_id,
             target_capability_id,
             source_graph_revision,
@@ -57,6 +87,10 @@ impl GraphPreparationCorrelation {
 
     pub const fn patch_id(&self) -> PatchId {
         self.patch_id
+    }
+
+    pub const fn intent(&self) -> &StructuralEditIntent {
+        &self.intent
     }
 
     pub const fn source_capability_id(&self) -> &CapabilityId {
@@ -128,6 +162,11 @@ impl GraphPreparationRequest {
         registry
             .validate_config(&candidate_config)
             .map_err(|_| GraphPreparationRequestError::InvalidCandidateConfig)?;
+        validate_candidate_delta(
+            active_patches[selected_index].instrument_config(),
+            &candidate_config,
+            correlation.intent(),
+        )?;
 
         let mut candidate_patches = active_patches.to_vec();
         candidate_patches[selected_index].set_instrument_config(candidate_config);
@@ -318,6 +357,8 @@ impl std::error::Error for WorkerShutdownError {}
 pub enum GraphPreparationRequestError {
     MissingRequestIdentity,
     CapabilityUnchanged,
+    IntentMismatch,
+    ConfigDeltaMismatch,
     TargetRevisionNotNewer,
     PatchCapacityExceeded,
     DuplicatePatchId,
@@ -333,6 +374,12 @@ impl fmt::Display for GraphPreparationRequestError {
         formatter.write_str(match self {
             Self::MissingRequestIdentity => "graph preparation requires a request identity",
             Self::CapabilityUnchanged => "graph preparation must change capability identity",
+            Self::IntentMismatch => {
+                "graph preparation intent does not match source and target capabilities"
+            }
+            Self::ConfigDeltaMismatch => {
+                "graph preparation candidate exceeds its declared structural intent"
+            }
             Self::TargetRevisionNotNewer => {
                 "graph preparation target revision must be newer than its source"
             }
@@ -347,6 +394,65 @@ impl fmt::Display for GraphPreparationRequestError {
             Self::InvalidCandidateConfig => "the candidate Patch config is invalid",
         })
     }
+}
+
+fn intent_matches_capabilities(
+    intent: &StructuralEditIntent,
+    source: &CapabilityId,
+    target: &CapabilityId,
+) -> bool {
+    match intent {
+        StructuralEditIntent::ReplaceCapability {
+            target_capability_id,
+        } => source != target && target_capability_id == target,
+        StructuralEditIntent::ReplaceParameterChoice { capability_id, .. } => {
+            source == target && capability_id == source
+        }
+    }
+}
+
+fn validate_candidate_delta(
+    source: &InstrumentConfig,
+    candidate: &InstrumentConfig,
+    intent: &StructuralEditIntent,
+) -> Result<(), GraphPreparationRequestError> {
+    match intent {
+        StructuralEditIntent::ReplaceCapability {
+            target_capability_id,
+        } => {
+            if source.capability_id() == candidate.capability_id()
+                || candidate.capability_id() != target_capability_id
+            {
+                return Err(GraphPreparationRequestError::ConfigDeltaMismatch);
+            }
+        }
+        StructuralEditIntent::ReplaceParameterChoice {
+            capability_id,
+            parameter_id,
+            choice_id,
+        } => {
+            if source.capability_id() != capability_id
+                || candidate.capability_id() != capability_id
+                || source.asset_references() != candidate.asset_references()
+                || source.values().len() != candidate.values().len()
+                || source.value(parameter_id)
+                    == Some(&crate::synth::ParameterValue::Choice(choice_id.clone()))
+                || candidate.value(parameter_id)
+                    != Some(&crate::synth::ParameterValue::Choice(choice_id.clone()))
+                || candidate
+                    .values()
+                    .iter()
+                    .zip(source.values())
+                    .any(|(next, prior)| {
+                        next.parameter_id() != prior.parameter_id()
+                            || (next.parameter_id() != parameter_id && next != prior)
+                    })
+            {
+                return Err(GraphPreparationRequestError::ConfigDeltaMismatch);
+            }
+        }
+    }
+    Ok(())
 }
 
 impl std::error::Error for GraphPreparationRequestError {}

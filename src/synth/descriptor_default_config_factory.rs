@@ -1,9 +1,10 @@
 use crate::synth::capability_id::CapabilityId;
 use crate::synth::instrument_capability::{
     AssetAssignment, CapabilityError, CapabilityRegistry, InstrumentConfig, ParameterAssignment,
-    ParameterDefault,
+    ParameterDefault, ParameterKind, ParameterUpdate, ParameterValue, PatchInteraction,
 };
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
+use crate::synth::ParameterId;
 
 /// Constructs provider-validated instrument configs from descriptor defaults.
 ///
@@ -41,18 +42,7 @@ impl DescriptorDefaultConfigFactory {
             .descriptor(capability_id)
             .ok_or_else(|| CapabilityError::UnknownCapability(capability_id.clone()))?;
 
-        let mut matching = self
-            .providers
-            .iter()
-            .filter(|provider| provider.descriptor().id() == capability_id);
-        let provider = matching
-            .next()
-            .ok_or_else(|| CapabilityError::ProviderRegistryMismatch(capability_id.clone()))?;
-        if matching.next().is_some() || provider.descriptor() != *descriptor {
-            return Err(CapabilityError::ProviderRegistryMismatch(
-                capability_id.clone(),
-            ));
-        }
+        let provider = self.provider_for(capability_id, descriptor)?;
 
         let mut values = Vec::with_capacity(descriptor.parameters().count());
         let mut assets = Vec::with_capacity(descriptor.asset_requirements().len());
@@ -78,6 +68,83 @@ impl DescriptorDefaultConfigFactory {
         }
         Ok(config)
     }
+
+    /// Replaces exactly one descriptor-declared PATCH structural Choice and
+    /// returns the provider- and registry-validated canonical candidate.
+    pub fn replace_structural_choice(
+        &self,
+        source: &InstrumentConfig,
+        parameter_id: &ParameterId,
+        choice_id: &str,
+    ) -> Result<InstrumentConfig, CapabilityError> {
+        self.registry.validate_config(source)?;
+        let descriptor = self
+            .registry
+            .descriptor(source.capability_id())
+            .ok_or_else(|| CapabilityError::UnknownCapability(source.capability_id().clone()))?;
+        let spec = descriptor
+            .parameter(parameter_id)
+            .ok_or_else(|| CapabilityError::UndeclaredParameter(parameter_id.clone()))?;
+        if spec.kind() != ParameterKind::Choice
+            || spec.update() != ParameterUpdate::Structural
+            || spec.patch_interaction() != PatchInteraction::StructuralChoice
+        {
+            return Err(CapabilityError::StructuralParameter(parameter_id.clone()));
+        }
+        if !spec.choices().iter().any(|choice| choice.id() == choice_id) {
+            return Err(CapabilityError::UnknownChoice(parameter_id.clone()));
+        }
+
+        let mut values = source.values().to_vec();
+        let assignment = values
+            .iter_mut()
+            .find(|assignment| assignment.parameter_id() == parameter_id)
+            .ok_or_else(|| CapabilityError::MissingParameter(parameter_id.clone()))?;
+        *assignment = ParameterAssignment::new(
+            parameter_id.clone(),
+            ParameterValue::Choice(choice_id.to_owned()),
+        );
+        let provider = self.provider_for(source.capability_id(), descriptor)?;
+        let candidate = provider.create_config(&values, source.asset_references())?;
+        self.registry.validate_config(&candidate)?;
+        if candidate.capability_id() != source.capability_id()
+            || candidate.asset_references() != source.asset_references()
+            || candidate.values().len() != source.values().len()
+            || candidate
+                .values()
+                .iter()
+                .zip(source.values())
+                .any(|(candidate, original)| {
+                    candidate.parameter_id() != original.parameter_id()
+                        || (candidate.parameter_id() != parameter_id && candidate != original)
+                })
+        {
+            return Err(CapabilityError::ProviderRegistryMismatch(
+                source.capability_id().clone(),
+            ));
+        }
+        Ok(candidate)
+    }
+
+    fn provider_for<'a>(
+        &'a self,
+        capability_id: &CapabilityId,
+        descriptor: &crate::synth::CapabilityDescriptor,
+    ) -> Result<&'a dyn InstrumentCapabilityProvider, CapabilityError> {
+        let mut matching = self
+            .providers
+            .iter()
+            .filter(|provider| provider.descriptor().id() == capability_id);
+        let provider = matching
+            .next()
+            .ok_or_else(|| CapabilityError::ProviderRegistryMismatch(capability_id.clone()))?;
+        if matching.next().is_some() || provider.descriptor() != *descriptor {
+            return Err(CapabilityError::ProviderRegistryMismatch(
+                capability_id.clone(),
+            ));
+        }
+        Ok(provider.as_ref())
+    }
 }
 
 #[cfg(test)]
@@ -88,9 +155,8 @@ mod tests {
         BRAIDS_MODEL_PARAMETER_ID, BRAIDS_TIMBRE_PARAMETER_ID,
     };
     use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, HIDEF_SOUNDFONT_PATH,
-        SOUNDFONT_BANK_PARAMETER_ID, SOUNDFONT_FILE_PARAMETER_ID,
-        SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+        HIDEF_CAPABILITY_ID, HIDEF_SOUNDFONT_PATH, SOUNDFONT_FILE_PARAMETER_ID,
+        SOUNDFONT_PRESET_PARAMETER_ID,
     };
     use crate::synth::instrument_capability::{
         AssetAssignment, CapabilityDescriptor, CapabilityError, CapabilityRegistry,
@@ -110,7 +176,9 @@ mod tests {
 
     fn production_factory() -> DescriptorDefaultConfigFactory {
         let providers: Vec<Box<dyn InstrumentCapabilityProvider>> = vec![
-            Box::new(HiDefSoundFontCapability::new().unwrap()),
+            Box::new(
+                crate::adapter::production_instruments::production_soundfont_capability().unwrap(),
+            ),
             Box::new(BraidsCapability::new().unwrap()),
         ];
         let registry = CapabilityRegistry::new(
@@ -129,16 +197,14 @@ mod tests {
 
         let soundfont = factory.create(&capability_id(HIDEF_CAPABILITY_ID)).unwrap();
         assert_eq!(
-            soundfont.value(&parameter_id(SOUNDFONT_BANK_PARAMETER_ID)),
-            Some(&ParameterValue::Stepped(0))
-        );
-        assert_eq!(
-            soundfont.value(&parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID)),
-            Some(&ParameterValue::Stepped(0))
-        );
-        assert_eq!(
-            soundfont.value(&parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID)),
-            Some(&ParameterValue::Toggle(false))
+            soundfont.value(&parameter_id(SOUNDFONT_PRESET_PARAMETER_ID)),
+            Some(&ParameterValue::Choice(
+                crate::adapter::production_instruments::production_soundfont_asset()
+                    .unwrap()
+                    .catalog()
+                    .default_entry()
+                    .choice_id()
+            ))
         );
         assert_eq!(
             soundfont
@@ -210,14 +276,17 @@ mod tests {
     #[test]
     fn descriptor_default_config_factory_rejects_unknown_missing_duplicate_and_mismatched_providers_without_fallback(
     ) {
-        let hidef = HiDefSoundFontCapability::new().unwrap();
+        let hidef =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let braids = BraidsCapability::new().unwrap();
         let registry =
             CapabilityRegistry::new(vec![hidef.descriptor(), braids.descriptor()]).unwrap();
 
         let missing = DescriptorDefaultConfigFactory::new(
             registry.clone(),
-            vec![Box::new(HiDefSoundFontCapability::new().unwrap())],
+            vec![Box::new(
+                crate::adapter::production_instruments::production_soundfont_capability().unwrap(),
+            )],
         );
         assert_eq!(
             missing.create(&capability_id(BRAIDS_CAPABILITY_ID)),
@@ -234,8 +303,14 @@ mod tests {
         let duplicate = DescriptorDefaultConfigFactory::new(
             registry.clone(),
             vec![
-                Box::new(HiDefSoundFontCapability::new().unwrap()),
-                Box::new(HiDefSoundFontCapability::new().unwrap()),
+                Box::new(
+                    crate::adapter::production_instruments::production_soundfont_capability()
+                        .unwrap(),
+                ),
+                Box::new(
+                    crate::adapter::production_instruments::production_soundfont_capability()
+                        .unwrap(),
+                ),
                 Box::new(BraidsCapability::new().unwrap()),
             ],
         );
@@ -276,7 +351,8 @@ mod tests {
 
     #[test]
     fn descriptor_default_config_factory_revalidates_provider_output() {
-        let hidef = HiDefSoundFontCapability::new().unwrap();
+        let hidef =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let registry = CapabilityRegistry::new(vec![hidef.descriptor()]).unwrap();
         let factory = DescriptorDefaultConfigFactory::new(
             registry,
@@ -288,8 +364,37 @@ mod tests {
         assert_eq!(
             factory.create(&capability_id(HIDEF_CAPABILITY_ID)),
             Err(CapabilityError::MissingParameter(parameter_id(
-                SOUNDFONT_BANK_PARAMETER_ID
+                SOUNDFONT_PRESET_PARAMETER_ID
             )))
         );
+    }
+
+    #[test]
+    fn descriptor_default_config_factory_replaces_exactly_one_structural_choice() {
+        let factory = production_factory();
+        let source = factory.create(&capability_id(HIDEF_CAPABILITY_ID)).unwrap();
+        let catalog = crate::adapter::production_instruments::production_soundfont_asset()
+            .unwrap()
+            .catalog();
+        let next = catalog.entries()[1].choice_id();
+        let candidate = factory
+            .replace_structural_choice(&source, &parameter_id(SOUNDFONT_PRESET_PARAMETER_ID), &next)
+            .unwrap();
+
+        assert_eq!(candidate.capability_id(), source.capability_id());
+        assert_eq!(candidate.asset_references(), source.asset_references());
+        assert_eq!(candidate.values().len(), source.values().len());
+        assert_eq!(
+            candidate.value(&parameter_id(SOUNDFONT_PRESET_PARAMETER_ID)),
+            Some(&ParameterValue::Choice(next))
+        );
+        assert!(matches!(
+            factory.replace_structural_choice(
+                &source,
+                &parameter_id(SOUNDFONT_PRESET_PARAMETER_ID),
+                "sf2.bank-65535.program-127",
+            ),
+            Err(CapabilityError::UnknownChoice(_))
+        ));
     }
 }

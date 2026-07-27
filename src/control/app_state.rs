@@ -2,6 +2,7 @@ use crate::control::app_event::{AppEvent, Direction};
 use crate::control::engine_selection::{
     EngineSelectionEffect, EngineSelectionEffectKind, EngineSelectionFailure,
     EngineSelectionRequestId, EngineSelectionStatus, EngineSelectionStatusKind,
+    StructuralEditIntent,
 };
 use crate::control::interaction_state::{InteractionState, Selection, SelectionSection};
 use crate::control::top_level_context::TopLevelContext;
@@ -10,9 +11,11 @@ use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
-    CapabilityError, CapabilityRegistry, ParameterAdjustment,
+    CapabilityError, CapabilityRegistry, ParameterAdjustment, ParameterKind, ParameterValue,
+    PatchInteraction,
 };
 use crate::synth::patch::{Patch, PatchEditableTarget};
+use crate::synth::{ParameterId, VoiceEnvelopeParameter};
 use core::fmt;
 
 const GLOBAL_PARAMETER_COUNT: usize = GlobalParameters::surface_descriptor().len();
@@ -493,6 +496,30 @@ impl AppState {
             .map_err(|_| EventRejection::InvalidInstrumentConfig)
     }
 
+    /// Resolves the active PATCH surface through the canonical descriptor-owned
+    /// control resolver.
+    pub fn focused_patch_controls(
+        &self,
+    ) -> Result<Vec<crate::control::PatchControlId>, EventRejection> {
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let descriptor = self
+            .capabilities
+            .descriptor(patch.instrument_config().capability_id())
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        Ok(crate::control::PatchControlId::resolve(
+            descriptor,
+            patch.instrument_config(),
+        ))
+    }
+
     /// Applies the only permitted control-state mutation.
     ///
     /// Rejected events leave every field byte-for-byte logically identical.
@@ -534,22 +561,19 @@ impl AppState {
                 Ok(ReducerEffects::default())
             }
             AppEvent::Navigate(direction) => {
-                self.require_mixer_context()?;
-                self.navigate(direction)?;
+                match self.context() {
+                    TopLevelContext::Mixer => self.navigate(direction)?,
+                    TopLevelContext::Patch => self.navigate_patch_control(direction)?,
+                }
                 Ok(ReducerEffects::default())
             }
-            AppEvent::Adjust(direction) => {
-                if self.context() == TopLevelContext::Patch {
-                    let engine_selection_effect = self.request_engine_selection(direction)?;
-                    Ok(ReducerEffects {
-                        audio_command: None,
-                        engine_selection_effect: Some(engine_selection_effect),
-                    })
-                } else {
+            AppEvent::Adjust(direction) => match self.context() {
+                TopLevelContext::Mixer => {
                     self.adjust(direction)?;
                     Ok(ReducerEffects::default())
                 }
-            }
+                TopLevelContext::Patch => self.adjust_patch_control(direction),
+            },
             AppEvent::InstallPatches(patches) => {
                 self.install_patches(patches)?;
                 Ok(ReducerEffects::default())
@@ -558,6 +582,7 @@ impl AppState {
             AppEvent::EnginePrepared {
                 request_id,
                 patch_id,
+                intent,
                 source_capability_id,
                 target_capability_id,
                 source_graph_revision,
@@ -567,6 +592,7 @@ impl AppState {
                 let engine_selection_effect = self.engine_prepared(
                     request_id,
                     patch_id,
+                    intent,
                     source_capability_id,
                     target_capability_id,
                     source_graph_revision,
@@ -581,6 +607,7 @@ impl AppState {
             AppEvent::EnginePreparationFailed {
                 request_id,
                 patch_id,
+                intent,
                 source_capability_id,
                 target_capability_id,
                 source_graph_revision,
@@ -590,6 +617,7 @@ impl AppState {
                 self.engine_preparation_failed(
                     request_id,
                     patch_id,
+                    &intent,
                     &source_capability_id,
                     &target_capability_id,
                     source_graph_revision,
@@ -600,12 +628,14 @@ impl AppState {
             }
             AppEvent::EngineActivationAcknowledged {
                 request_id,
+                intent,
                 target_graph_revision,
                 retired_graph_revision,
                 collected,
             } => {
                 let engine_selection_effect = self.engine_activation_acknowledged(
                     request_id,
+                    &intent,
                     target_graph_revision,
                     retired_graph_revision,
                     collected,
@@ -667,14 +697,6 @@ impl AppState {
         Ok(())
     }
 
-    fn require_mixer_context(&self) -> Result<(), EventRejection> {
-        if self.interaction.context() == TopLevelContext::Mixer {
-            Ok(())
-        } else {
-            Err(EventRejection::ActionUnavailableInContext)
-        }
-    }
-
     fn request_engine_selection(
         &mut self,
         direction: Direction,
@@ -720,10 +742,14 @@ impl AppState {
         }
         .ok_or(EventRejection::EngineSelectionUnavailable)?;
         let target_capability_id = descriptors[target_index].id().clone();
-        let status = EngineSelectionStatus::preparing(
+        let intent = StructuralEditIntent::ReplaceCapability {
+            target_capability_id: target_capability_id.clone(),
+        };
+        let status = EngineSelectionStatus::preparing_with_intent(
             self.engine_selection.active_graph_revision(),
             request_id,
             patch_id,
+            intent,
             source_capability_id,
             target_capability_id,
         )
@@ -745,6 +771,7 @@ impl AppState {
         &mut self,
         request_id: EngineSelectionRequestId,
         patch_id: crate::kernel::patch_id::PatchId,
+        intent: StructuralEditIntent,
         source_capability_id: crate::synth::CapabilityId,
         target_capability_id: crate::synth::CapabilityId,
         source_graph_revision: GraphRevision,
@@ -753,6 +780,7 @@ impl AppState {
     ) -> Result<EngineSelectionEffect, EventRejection> {
         let correlation = self.pending_correlation(request_id)?.clone();
         if correlation.patch_id() != patch_id
+            || correlation.intent() != &intent
             || correlation.source_capability_id() != &source_capability_id
             || correlation.target_capability_id() != &target_capability_id
             || correlation.source_graph_revision() != source_graph_revision
@@ -770,7 +798,9 @@ impl AppState {
             .iter_mut()
             .find(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::MismatchedEngineSelection)?;
-        if patch.instrument_config().capability_id() != &source_capability_id {
+        if patch.instrument_config().capability_id() != &source_capability_id
+            || !candidate_matches_intent(patch.instrument_config(), &candidate_config, &intent)
+        {
             return Err(EventRejection::MismatchedEngineSelection);
         }
         let status = self
@@ -786,6 +816,8 @@ impl AppState {
         .expect("Activating correlation owns a target revision");
         patch.set_instrument_config(candidate_config);
         self.engine_selection = status;
+        let controls = self.focused_patch_controls()?;
+        self.interaction.clamp_patch_control_focus(&controls);
         Ok(effect)
     }
 
@@ -794,6 +826,7 @@ impl AppState {
         &mut self,
         request_id: EngineSelectionRequestId,
         patch_id: crate::kernel::patch_id::PatchId,
+        intent: &StructuralEditIntent,
         source_capability_id: &crate::synth::CapabilityId,
         target_capability_id: &crate::synth::CapabilityId,
         source_graph_revision: GraphRevision,
@@ -802,6 +835,7 @@ impl AppState {
     ) -> Result<(), EventRejection> {
         let correlation = self.pending_correlation(request_id)?;
         if correlation.patch_id() != patch_id
+            || correlation.intent() != intent
             || correlation.source_capability_id() != source_capability_id
             || correlation.target_capability_id() != target_capability_id
             || correlation.source_graph_revision() != source_graph_revision
@@ -819,6 +853,7 @@ impl AppState {
     fn engine_activation_acknowledged(
         &mut self,
         request_id: EngineSelectionRequestId,
+        intent: &StructuralEditIntent,
         target_graph_revision: GraphRevision,
         retired_graph_revision: GraphRevision,
         collected: bool,
@@ -833,6 +868,9 @@ impl AppState {
         if correlation.request_id() != request_id {
             return Err(EventRejection::StaleEngineSelection);
         }
+        if correlation.intent() != intent {
+            return Err(EventRejection::MismatchedEngineSelection);
+        }
         if correlation.target_graph_revision() != Some(target_graph_revision)
             || correlation.source_graph_revision() != retired_graph_revision
             || !collected
@@ -844,7 +882,7 @@ impl AppState {
             .iter()
             .find(|patch| patch.id() == correlation.patch_id())
             .ok_or(EventRejection::MismatchedEngineSelection)?;
-        if patch.instrument_config().capability_id() != correlation.target_capability_id() {
+        if !config_matches_committed_intent(patch.instrument_config(), correlation.intent()) {
             return Err(EventRejection::MismatchedEngineSelection);
         }
         let effect = EngineSelectionEffect::from_correlation(
@@ -883,6 +921,134 @@ impl AppState {
             Direction::Up => self.navigate_parameter(-1),
             Direction::Down => self.navigate_parameter(1),
         }
+    }
+
+    fn navigate_patch_control(&mut self, direction: Direction) -> Result<(), EventRejection> {
+        let controls = self.focused_patch_controls()?;
+        if self
+            .interaction
+            .move_patch_control_focus_with(direction, &controls)
+        {
+            Ok(())
+        } else {
+            Err(EventRejection::ActionUnavailableInContext)
+        }
+    }
+
+    fn adjust_patch_control(
+        &mut self,
+        direction: Direction,
+    ) -> Result<ReducerEffects, EventRejection> {
+        match self.interaction.patch_control_focus() {
+            Some(crate::control::PatchControlId::Engine) => {
+                let engine_selection_effect = self.request_engine_selection(direction)?;
+                Ok(ReducerEffects {
+                    audio_command: None,
+                    engine_selection_effect: Some(engine_selection_effect),
+                })
+            }
+            Some(crate::control::PatchControlId::Envelope(parameter)) => {
+                let patch_id = self
+                    .interaction
+                    .patch_focus()
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                let patch_index = self
+                    .patches
+                    .iter()
+                    .position(|patch| patch.id() == patch_id)
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                self.adjust_patch_envelope(patch_index, parameter, direction)?;
+                Ok(ReducerEffects::default())
+            }
+            Some(crate::control::PatchControlId::Capability(parameter_id)) => {
+                let structural_effect = self.request_parameter_choice(parameter_id, direction)?;
+                Ok(ReducerEffects {
+                    audio_command: None,
+                    engine_selection_effect: Some(structural_effect),
+                })
+            }
+            None => Err(EventRejection::NoPatchesInstalled),
+        }
+    }
+
+    fn request_parameter_choice(
+        &mut self,
+        parameter_id: ParameterId,
+        direction: Direction,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        if matches!(direction, Direction::Up | Direction::Down) {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let source_capability_id = patch.instrument_config().capability_id().clone();
+        let descriptor = self
+            .capabilities
+            .descriptor(&source_capability_id)
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        let spec = descriptor
+            .parameter(&parameter_id)
+            .ok_or(EventRejection::InvalidSelection)?;
+        if spec.kind() != ParameterKind::Choice
+            || spec.patch_interaction() != PatchInteraction::StructuralChoice
+        {
+            return Err(EventRejection::InvalidSelection);
+        }
+        let current_choice = match patch.instrument_config().value(&parameter_id) {
+            Some(ParameterValue::Choice(choice)) => choice,
+            _ => return Err(EventRejection::InvalidInstrumentConfig),
+        };
+        let current_index = spec
+            .choices()
+            .iter()
+            .position(|choice| choice.id() == current_choice)
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        let target_index = match direction {
+            Direction::Left => current_index.checked_sub(1),
+            Direction::Right => current_index
+                .checked_add(1)
+                .filter(|index| *index < spec.choices().len()),
+            Direction::Up | Direction::Down => unreachable!("vertical edits were rejected"),
+        }
+        .ok_or(EventRejection::ParameterAtBoundary)?;
+        let request_id = self
+            .last_engine_selection_request_id
+            .checked_next()
+            .map_err(|_| EventRejection::RequestIdOverflow)?;
+        let intent = StructuralEditIntent::ReplaceParameterChoice {
+            capability_id: source_capability_id.clone(),
+            parameter_id,
+            choice_id: spec.choices()[target_index].id().to_owned(),
+        };
+        let status = EngineSelectionStatus::preparing_with_intent(
+            self.engine_selection.active_graph_revision(),
+            request_id,
+            patch_id,
+            intent,
+            source_capability_id.clone(),
+            source_capability_id,
+        )
+        .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+        let effect = EngineSelectionEffect::from_correlation(
+            EngineSelectionEffectKind::PrepareRequested,
+            status
+                .correlation()
+                .expect("Preparing status always owns correlation"),
+        )
+        .expect("Preparing correlation has no target revision");
+        self.engine_selection = status;
+        self.last_engine_selection_request_id = request_id;
+        Ok(effect)
     }
 
     fn navigate_section(&mut self, amount: isize) -> Result<(), EventRejection> {
@@ -968,25 +1134,7 @@ impl AppState {
                 Ok(())
             }
             PatchEditableTarget::Envelope(parameter) => {
-                let descriptor = parameter.descriptor();
-                let patch = self
-                    .patches
-                    .get_mut(patch_index)
-                    .ok_or(EventRejection::NoPatchesInstalled)?;
-                let envelope = *patch.envelope();
-                let value = adjusted_value(
-                    envelope.value(parameter),
-                    descriptor.minimum(),
-                    descriptor.maximum(),
-                    direction,
-                    descriptor.fine_step(),
-                    descriptor.coarse_step(),
-                )?;
-                let updated = envelope
-                    .with_value(parameter, value)
-                    .map_err(|_| EventRejection::InvalidParameterValue)?;
-                patch.set_envelope(updated);
-                Ok(())
+                self.adjust_patch_envelope(patch_index, parameter, direction)
             }
             PatchEditableTarget::Instrument(parameter_id) => {
                 let updated = {
@@ -1021,6 +1169,33 @@ impl AppState {
                 Ok(())
             }
         }
+    }
+
+    fn adjust_patch_envelope(
+        &mut self,
+        patch_index: usize,
+        parameter: VoiceEnvelopeParameter,
+        direction: Direction,
+    ) -> Result<(), EventRejection> {
+        let descriptor = parameter.descriptor();
+        let patch = self
+            .patches
+            .get_mut(patch_index)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let envelope = *patch.envelope();
+        let value = adjusted_value(
+            envelope.value(parameter),
+            descriptor.minimum(),
+            descriptor.maximum(),
+            direction,
+            descriptor.fine_step(),
+            descriptor.coarse_step(),
+        )?;
+        let updated = envelope
+            .with_value(parameter, value)
+            .map_err(|_| EventRejection::InvalidParameterValue)?;
+        patch.set_envelope(updated);
+        Ok(())
     }
 
     fn adjust_global(&mut self, direction: Direction) -> Result<(), EventRejection> {
@@ -1096,6 +1271,69 @@ fn adjusted_value(
     }
 }
 
+fn candidate_matches_intent(
+    source: &crate::synth::InstrumentConfig,
+    candidate: &crate::synth::InstrumentConfig,
+    intent: &StructuralEditIntent,
+) -> bool {
+    match intent {
+        StructuralEditIntent::ReplaceCapability {
+            target_capability_id,
+        } => {
+            source.capability_id() != target_capability_id
+                && candidate.capability_id() == target_capability_id
+        }
+        StructuralEditIntent::ReplaceParameterChoice {
+            capability_id,
+            parameter_id,
+            choice_id,
+        } => {
+            source.capability_id() == capability_id
+                && candidate.capability_id() == capability_id
+                && source.asset_references() == candidate.asset_references()
+                && source.values().len() == candidate.values().len()
+                && matches!(
+                    candidate.value(parameter_id),
+                    Some(ParameterValue::Choice(value)) if value == choice_id
+                )
+                && !matches!(
+                    source.value(parameter_id),
+                    Some(ParameterValue::Choice(value)) if value == choice_id
+                )
+                && candidate
+                    .values()
+                    .iter()
+                    .zip(source.values())
+                    .all(|(next, prior)| {
+                        next.parameter_id() == prior.parameter_id()
+                            && (next.parameter_id() == parameter_id || next == prior)
+                    })
+        }
+    }
+}
+
+fn config_matches_committed_intent(
+    config: &crate::synth::InstrumentConfig,
+    intent: &StructuralEditIntent,
+) -> bool {
+    match intent {
+        StructuralEditIntent::ReplaceCapability {
+            target_capability_id,
+        } => config.capability_id() == target_capability_id,
+        StructuralEditIntent::ReplaceParameterChoice {
+            capability_id,
+            parameter_id,
+            choice_id,
+        } => {
+            config.capability_id() == capability_id
+                && matches!(
+                    config.value(parameter_id),
+                    Some(ParameterValue::Choice(value)) if value == choice_id
+                )
+        }
+    }
+}
+
 fn decimal_scale(step: f32) -> f32 {
     let mut scale = 1.0;
     while scale < 1_000_000.0 && (step * scale - (step * scale).round()).abs() > f32::EPSILON {
@@ -1111,7 +1349,7 @@ mod tests {
         BraidsCapability, BRAIDS_CAPABILITY_ID, BRAIDS_MODEL_PARAMETER_ID,
     };
     use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_PRESET_PARAMETER_ID,
     };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -1121,7 +1359,7 @@ mod tests {
     use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn provider() -> HiDefSoundFontCapability {
-        HiDefSoundFontCapability::new().unwrap()
+        crate::adapter::production_instruments::production_soundfont_capability().unwrap()
     }
 
     fn registry() -> CapabilityRegistry {
@@ -1213,6 +1451,7 @@ mod tests {
         AppEvent::EnginePrepared {
             request_id: correlation.request_id(),
             patch_id: correlation.patch_id(),
+            intent: correlation.intent().clone(),
             source_capability_id: correlation.source_capability_id().clone(),
             target_capability_id: correlation.target_capability_id().clone(),
             source_graph_revision: correlation.source_graph_revision(),
@@ -1230,6 +1469,7 @@ mod tests {
         AppEvent::EnginePreparationFailed {
             request_id: correlation.request_id(),
             patch_id: correlation.patch_id(),
+            intent: correlation.intent().clone(),
             source_capability_id: correlation.source_capability_id().clone(),
             target_capability_id: correlation.target_capability_id().clone(),
             source_graph_revision: correlation.source_graph_revision(),
@@ -1411,7 +1651,7 @@ mod tests {
             .unwrap();
         let before = state.clone();
         assert_eq!(
-            state.apply(AppEvent::Navigate(Direction::Down)),
+            state.apply(AppEvent::Navigate(Direction::Left)),
             Err(EventRejection::ActionUnavailableInContext)
         );
         assert_eq!(state, before);
@@ -1420,11 +1660,341 @@ mod tests {
             Err(EventRejection::EngineSelectionUnavailable)
         );
         assert_eq!(state, before);
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert_eq!(
+            state.interaction().patch_control_focus(),
+            Some(crate::control::PatchControlId::Envelope(
+                VoiceEnvelopeParameter::AttackMilliseconds
+            ))
+        );
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
             .unwrap();
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         assert_eq!(state.context(), TopLevelContext::Mixer);
+    }
+
+    #[test]
+    fn patch_navigation_and_adjustment_route_by_focused_control() {
+        let mut state = mixed_state();
+        let engine = state.clone();
+
+        assert_eq!(
+            state.apply(AppEvent::Navigate(Direction::Left)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, engine);
+        assert_eq!(
+            state.apply(AppEvent::Navigate(Direction::Up)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, engine);
+
+        let navigated = state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert_eq!(navigated.audio_command(), None);
+        assert_eq!(navigated.engine_selection_effect(), None);
+        assert_eq!(
+            state.interaction().patch_control_focus(),
+            Some(crate::control::PatchControlId::Envelope(
+                VoiceEnvelopeParameter::AttackMilliseconds
+            ))
+        );
+
+        for (direction, expected) in [
+            (Direction::Right, 1.0),
+            (Direction::Up, 101.0),
+            (Direction::Left, 100.0),
+            (Direction::Down, 0.0),
+        ] {
+            let outcome = state.apply(AppEvent::Adjust(direction)).unwrap();
+            assert_eq!(outcome.audio_command(), None);
+            assert_eq!(outcome.engine_selection_effect(), None);
+            assert_eq!(
+                state.patches()[0].envelope().attack_milliseconds(),
+                expected
+            );
+        }
+
+        let boundary = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Adjust(Direction::Down)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state, boundary);
+    }
+
+    #[test]
+    fn patch_focus_reducer_covers_every_control_edge_and_direction_without_wrapping() {
+        let controls = mixed_state().focused_patch_controls().unwrap();
+        assert_eq!(
+            controls.last(),
+            Some(&crate::control::PatchControlId::Capability(
+                ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()
+            ))
+        );
+        for (index, expected) in controls.iter().cloned().enumerate() {
+            let mut focused = mixed_state();
+            for _ in 0..index {
+                focused.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+            }
+            assert_eq!(focused.interaction().patch_control_focus(), Some(expected));
+
+            for direction in [Direction::Left, Direction::Right] {
+                let mut state = focused.clone();
+                let before = state.clone();
+                assert_eq!(
+                    state.apply(AppEvent::Navigate(direction)),
+                    Err(EventRejection::ActionUnavailableInContext)
+                );
+                assert_eq!(state, before);
+            }
+
+            let mut up = focused.clone();
+            if index == 0 {
+                let before = up.clone();
+                assert_eq!(
+                    up.apply(AppEvent::Navigate(Direction::Up)),
+                    Err(EventRejection::ActionUnavailableInContext)
+                );
+                assert_eq!(up, before);
+            } else {
+                up.apply(AppEvent::Navigate(Direction::Up)).unwrap();
+                assert_eq!(
+                    up.interaction().patch_control_focus(),
+                    Some(controls[index - 1].clone())
+                );
+            }
+
+            let mut down = focused.clone();
+            if index + 1 == controls.len() {
+                let before = down.clone();
+                assert_eq!(
+                    down.apply(AppEvent::Navigate(Direction::Down)),
+                    Err(EventRejection::ActionUnavailableInContext)
+                );
+                assert_eq!(down, before);
+            } else {
+                down.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+                assert_eq!(
+                    down.interaction().patch_control_focus(),
+                    Some(controls[index + 1].clone())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_patch_envelope_field_uses_descriptor_steps_bounds_and_target_isolation() {
+        let middle = crate::synth::VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap();
+
+        for (parameter_index, descriptor) in crate::synth::VoiceEnvelope::surface_descriptor()
+            .iter()
+            .enumerate()
+        {
+            for direction in [
+                Direction::Left,
+                Direction::Right,
+                Direction::Down,
+                Direction::Up,
+            ] {
+                let mut state = installed_state();
+                state.patches[0].set_envelope(middle);
+                let comparison = state.patches()[1].clone();
+                state
+                    .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                    .unwrap();
+                for _ in 0..=parameter_index {
+                    state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+                }
+
+                let expected = adjusted_value(
+                    middle.value(descriptor.parameter()),
+                    descriptor.minimum(),
+                    descriptor.maximum(),
+                    direction,
+                    descriptor.fine_step(),
+                    descriptor.coarse_step(),
+                )
+                .unwrap();
+                let outcome = state.apply(AppEvent::Adjust(direction)).unwrap();
+
+                assert_eq!(outcome.audio_command(), None);
+                assert_eq!(outcome.engine_selection_effect(), None);
+                assert_eq!(
+                    state.patches()[0].envelope().value(descriptor.parameter()),
+                    expected
+                );
+                for other in crate::synth::VoiceEnvelope::surface_descriptor() {
+                    if other.parameter() != descriptor.parameter() {
+                        assert_eq!(
+                            state.patches()[0].envelope().value(other.parameter()),
+                            middle.value(other.parameter())
+                        );
+                    }
+                }
+                assert_eq!(state.patches()[1], comparison);
+            }
+
+            for (boundary, directions) in [
+                (descriptor.minimum(), [Direction::Left, Direction::Down]),
+                (descriptor.maximum(), [Direction::Right, Direction::Up]),
+            ] {
+                for direction in directions {
+                    let mut state = installed_state();
+                    let envelope = middle.with_value(descriptor.parameter(), boundary).unwrap();
+                    state.patches[0].set_envelope(envelope);
+                    state
+                        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                        .unwrap();
+                    for _ in 0..=parameter_index {
+                        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+                    }
+                    let before = state.clone();
+                    assert_eq!(
+                        state.apply(AppEvent::Adjust(direction)),
+                        Err(EventRejection::ParameterAtBoundary)
+                    );
+                    assert_eq!(state, before);
+
+                    let recovery_direction = match direction {
+                        Direction::Left => Direction::Right,
+                        Direction::Right => Direction::Left,
+                        Direction::Down => Direction::Up,
+                        Direction::Up => Direction::Down,
+                    };
+                    state
+                        .apply(AppEvent::Adjust(recovery_direction))
+                        .expect("a valid later adjustment recovers after rejection");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixer_and_patch_envelope_routes_produce_identical_canonical_mutation() {
+        let middle = crate::synth::VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap();
+
+        for (parameter_index, descriptor) in crate::synth::VoiceEnvelope::surface_descriptor()
+            .iter()
+            .enumerate()
+        {
+            for direction in [
+                Direction::Left,
+                Direction::Right,
+                Direction::Down,
+                Direction::Up,
+            ] {
+                let mut mixer = installed_state();
+                mixer.patches[0].set_envelope(middle);
+                let mixer_target_index = mixer
+                    .patch_editable_targets(0)
+                    .unwrap()
+                    .iter()
+                    .position(|target| {
+                        *target == PatchEditableTarget::Envelope(descriptor.parameter())
+                    })
+                    .unwrap();
+                mixer.interaction.mixer_selection_mut().parameter_index = mixer_target_index;
+
+                let mut patch = installed_state();
+                patch.patches[0].set_envelope(middle);
+                patch.interaction.select_context(TopLevelContext::Patch);
+                for _ in 0..=parameter_index {
+                    assert!(patch.interaction.move_patch_control_focus(Direction::Down));
+                }
+
+                let mixer_outcome = mixer.apply(AppEvent::Adjust(direction)).unwrap();
+                let patch_outcome = patch.apply(AppEvent::Adjust(direction)).unwrap();
+
+                assert_eq!(mixer.patches(), patch.patches());
+                assert_eq!(mixer_outcome.audio_command(), patch_outcome.audio_command());
+                assert_eq!(
+                    mixer_outcome.engine_selection_effect(),
+                    patch_outcome.engine_selection_effect()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_patch_actions_reject_then_valid_focus_and_adsr_events_recover() {
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        let engine = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Adjust(Direction::Right)),
+            Err(EventRejection::EngineSelectionUnavailable)
+        );
+        assert_eq!(state, engine);
+
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        let adjusted = state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        assert_eq!(adjusted.audio_command(), None);
+        assert_eq!(adjusted.engine_selection_effect(), None);
+        assert_eq!(state.patches()[0].envelope().attack_milliseconds(), 1.0);
+
+        assert_eq!(
+            crate::control::PatchControlId::surface_descriptor().len(),
+            5
+        );
+        assert!(crate::control::PatchControlId::surface_descriptor()
+            .iter()
+            .all(|control| !control.as_str().contains("soundFont")
+                && !control.as_str().contains("braids")));
+    }
+
+    #[test]
+    fn patch_focus_and_adsr_generation_and_effect_accounting_is_exact() {
+        let mut state = mixed_state();
+        let patches = state.patches().to_vec();
+        let engine_status = state.engine_selection().clone();
+        let start_generation = state.generation();
+
+        let focus = state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert_eq!(focus.accepted().generation(), start_generation + 1);
+        assert_eq!(state.generation(), start_generation + 1);
+        assert_eq!(focus.audio_command(), None);
+        assert_eq!(focus.engine_selection_effect(), None);
+        assert_eq!(state.patches(), patches);
+        assert_eq!(state.engine_selection(), &engine_status);
+
+        let adjusted = state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        assert_eq!(adjusted.accepted().generation(), start_generation + 2);
+        assert_eq!(state.generation(), start_generation + 2);
+        assert_eq!(adjusted.audio_command(), None);
+        assert_eq!(adjusted.engine_selection_effect(), None);
+        assert_eq!(state.engine_selection(), &engine_status);
+
+        for direction in [Direction::Left, Direction::Right] {
+            let before = state.clone();
+            assert_eq!(
+                state.apply(AppEvent::Navigate(direction)),
+                Err(EventRejection::ActionUnavailableInContext)
+            );
+            assert_eq!(state.generation(), start_generation + 2);
+            assert_eq!(state, before);
+        }
+
+        let mut endpoint = mixed_state();
+        let before = endpoint.clone();
+        assert_eq!(
+            endpoint.apply(AppEvent::Navigate(Direction::Up)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(endpoint, before);
+
+        let boundary_envelope = (*state.patches[0].envelope())
+            .with_value(VoiceEnvelopeParameter::AttackMilliseconds, 0.0)
+            .unwrap();
+        state.patches[0].set_envelope(boundary_envelope);
+        let boundary = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Adjust(Direction::Left)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state, boundary);
     }
 
     #[test]
@@ -1756,6 +2326,7 @@ mod tests {
         let mismatched = AppEvent::EnginePreparationFailed {
             request_id: correlation.request_id(),
             patch_id: PatchId::new(99).unwrap(),
+            intent: correlation.intent().clone(),
             source_capability_id: correlation.source_capability_id().clone(),
             target_capability_id: correlation.target_capability_id().clone(),
             source_graph_revision: correlation.source_graph_revision(),
@@ -1779,8 +2350,13 @@ mod tests {
         let unrelated = state.patches()[1].clone();
         let original_soundfont = state.patches()[0].instrument_config().clone();
         assert_eq!(
-            original_soundfont.value(&ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()),
-            Some(&crate::synth::ParameterValue::Stepped(1))
+            original_soundfont.value(&ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()),
+            Some(&crate::synth::ParameterValue::Choice(
+                SoundFontInstrument::new(0, 1, false)
+                    .unwrap()
+                    .preset_id()
+                    .choice_id()
+            ))
         );
 
         state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
@@ -1804,10 +2380,17 @@ mod tests {
         assert_eq!(state.patches()[0].instrument_config(), &braids);
 
         let request_id = state.engine_selection().correlation().unwrap().request_id();
+        let intent = state
+            .engine_selection()
+            .correlation()
+            .unwrap()
+            .intent()
+            .clone();
         let activating = state.clone();
         assert_eq!(
             state.apply(AppEvent::EngineActivationAcknowledged {
                 request_id,
+                intent: intent.clone(),
                 target_graph_revision: revision_two,
                 retired_graph_revision: GraphRevision::INITIAL,
                 collected: false,
@@ -1818,6 +2401,7 @@ mod tests {
         let acknowledged = state
             .apply(AppEvent::EngineActivationAcknowledged {
                 request_id,
+                intent: intent.clone(),
                 target_graph_revision: revision_two,
                 retired_graph_revision: GraphRevision::INITIAL,
                 collected: true,
@@ -1836,6 +2420,7 @@ mod tests {
         assert_eq!(
             state.apply(AppEvent::EngineActivationAcknowledged {
                 request_id,
+                intent: intent.clone(),
                 target_graph_revision: revision_two,
                 retired_graph_revision: GraphRevision::INITIAL,
                 collected: true,
@@ -1855,9 +2440,16 @@ mod tests {
             ))
             .unwrap();
         let reverse_request_id = state.engine_selection().correlation().unwrap().request_id();
+        let reverse_intent = state
+            .engine_selection()
+            .correlation()
+            .unwrap()
+            .intent()
+            .clone();
         state
             .apply(AppEvent::EngineActivationAcknowledged {
                 request_id: reverse_request_id,
+                intent: reverse_intent,
                 target_graph_revision: revision_three,
                 retired_graph_revision: revision_two,
                 collected: true,

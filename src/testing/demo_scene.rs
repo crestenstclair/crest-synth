@@ -4,7 +4,7 @@ use crate::control::event_log::EventLog;
 use crate::control::event_record::EventRecord;
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
-use crate::control::{EngineSelectionFailure, EngineSelectionStatusKind};
+use crate::control::{EngineSelectionFailure, EngineSelectionStatusKind, PatchControlId};
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
@@ -12,9 +12,10 @@ use crate::mixer::global_parameters::GlobalParameters;
 use crate::real_time::audio_command::AudioCommand;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 use crate::synth::instrument_capability::{
-    CapabilityDescriptor, CapabilityRegistry, ParameterKind,
+    CapabilityDescriptor, CapabilityRegistry, ParameterKind, ParameterValue,
 };
 use crate::synth::patch::{Patch, PatchEditableTarget};
+use crate::synth::{ParameterId, VoiceEnvelopeParameter};
 use core::fmt;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -26,6 +27,8 @@ pub struct DemoCheckpoint {
     name: String,
     expected_last_rejection: Option<EventRejection>,
     engine: Option<DemoEngineExpectation>,
+    preset: Option<DemoPresetExpectation>,
+    patch_adsr: Option<DemoPatchAdsrExpectation>,
 }
 
 impl DemoCheckpoint {
@@ -34,6 +37,8 @@ impl DemoCheckpoint {
             name: name.into(),
             expected_last_rejection: None,
             engine: None,
+            preset: None,
+            patch_adsr: None,
         }
     }
 
@@ -45,6 +50,8 @@ impl DemoCheckpoint {
             name: name.into(),
             expected_last_rejection: Some(expected_last_rejection),
             engine: None,
+            preset: None,
+            patch_adsr: None,
         }
     }
 
@@ -66,6 +73,63 @@ impl DemoCheckpoint {
                 failure,
                 require_target_audio,
             }),
+            preset: None,
+            patch_adsr: None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn preset(
+        name: impl Into<String>,
+        patch_id: PatchId,
+        status: EngineSelectionStatusKind,
+        parameter_id: ParameterId,
+        baseline_choice_id: impl Into<String>,
+        selected_choice_id: impl Into<String>,
+        selected_label: impl Into<String>,
+        requested_choice: Option<(String, String)>,
+        failure: Option<EngineSelectionFailure>,
+        require_target_audio: bool,
+        expected_assignment_changes: usize,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            expected_last_rejection: None,
+            engine: None,
+            preset: Some(DemoPresetExpectation {
+                patch_id,
+                status,
+                parameter_id,
+                baseline_choice_id: baseline_choice_id.into(),
+                selected_choice_id: selected_choice_id.into(),
+                selected_label: selected_label.into(),
+                requested_choice,
+                failure,
+                require_target_audio,
+                expected_assignment_changes,
+            }),
+            patch_adsr: None,
+        }
+    }
+
+    pub fn patch_adsr(
+        name: impl Into<String>,
+        patch_id: PatchId,
+        parameter: VoiceEnvelopeParameter,
+        expected_value: f32,
+        lifecycle: Option<EngineSelectionStatusKind>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            expected_last_rejection: None,
+            engine: None,
+            preset: None,
+            patch_adsr: Some(DemoPatchAdsrExpectation {
+                patch_id,
+                parameter,
+                expected_value_bits: expected_value.to_bits(),
+                lifecycle,
+            }),
         }
     }
 
@@ -79,6 +143,106 @@ impl DemoCheckpoint {
 
     pub const fn engine_expectation(&self) -> Option<&DemoEngineExpectation> {
         self.engine.as_ref()
+    }
+
+    pub const fn preset_expectation(&self) -> Option<&DemoPresetExpectation> {
+        self.preset.as_ref()
+    }
+
+    pub const fn patch_adsr_expectation(&self) -> Option<&DemoPatchAdsrExpectation> {
+        self.patch_adsr.as_ref()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DemoPresetExpectation {
+    patch_id: PatchId,
+    status: EngineSelectionStatusKind,
+    parameter_id: ParameterId,
+    baseline_choice_id: String,
+    selected_choice_id: String,
+    selected_label: String,
+    requested_choice: Option<(String, String)>,
+    failure: Option<EngineSelectionFailure>,
+    require_target_audio: bool,
+    expected_assignment_changes: usize,
+}
+
+impl DemoPresetExpectation {
+    pub const fn patch_id(&self) -> PatchId {
+        self.patch_id
+    }
+
+    pub const fn status(&self) -> EngineSelectionStatusKind {
+        self.status
+    }
+
+    pub const fn parameter_id(&self) -> &ParameterId {
+        &self.parameter_id
+    }
+
+    pub fn control_id(&self) -> PatchControlId {
+        PatchControlId::Capability(self.parameter_id.clone())
+    }
+
+    pub fn baseline_choice_id(&self) -> &str {
+        &self.baseline_choice_id
+    }
+
+    pub fn selected_choice_id(&self) -> &str {
+        &self.selected_choice_id
+    }
+
+    pub fn selected_label(&self) -> &str {
+        &self.selected_label
+    }
+
+    pub fn requested_choice(&self) -> Option<(&str, &str)> {
+        self.requested_choice
+            .as_ref()
+            .map(|(id, label)| (id.as_str(), label.as_str()))
+    }
+
+    pub const fn failure(&self) -> Option<EngineSelectionFailure> {
+        self.failure
+    }
+
+    pub const fn require_target_audio(&self) -> bool {
+        self.require_target_audio
+    }
+
+    pub const fn expected_assignment_changes(&self) -> usize {
+        self.expected_assignment_changes
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DemoPatchAdsrExpectation {
+    patch_id: PatchId,
+    parameter: VoiceEnvelopeParameter,
+    expected_value_bits: u32,
+    lifecycle: Option<EngineSelectionStatusKind>,
+}
+
+impl DemoPatchAdsrExpectation {
+    pub const fn patch_id(self) -> PatchId {
+        self.patch_id
+    }
+
+    pub const fn parameter(self) -> VoiceEnvelopeParameter {
+        self.parameter
+    }
+
+    pub const fn control_id(self) -> PatchControlId {
+        PatchControlId::Envelope(self.parameter)
+    }
+
+    pub const fn expected_value(self) -> f32 {
+        f32::from_bits(self.expected_value_bits)
+    }
+
+    pub const fn lifecycle(self) -> Option<EngineSelectionStatusKind> {
+        self.lifecycle
     }
 }
 
@@ -178,7 +342,7 @@ pub enum DemoSceneStep {
     AdvanceWorker(DemoWorkerAdvance),
     AdvanceStructural,
     EngineProbe(DemoEngineProbe),
-    Checkpoint(DemoCheckpoint),
+    Checkpoint(Box<DemoCheckpoint>),
 }
 
 /// A complete deterministic control-surface scene derived from installed Patches.
@@ -192,7 +356,7 @@ pub struct DemoScene {
 
 impl DemoScene {
     pub const NAME: &'static str = "exhaustive-gui-demo";
-    pub const SCHEMA_VERSION: u32 = 3;
+    pub const SCHEMA_VERSION: u32 = 5;
 
     /// Derives the complete current scene from the accepted fixture Patch list.
     ///
@@ -232,10 +396,18 @@ impl DemoScene {
             return Err(DemoSceneError::EngineFixtureUnavailable);
         }
 
+        let preset_fixture = DemoPresetFixture::from_patch(capabilities, &installed_patches[0])
+            .ok_or(DemoSceneError::PresetFixtureUnavailable)?;
+
         Ok(Self {
             name: Self::NAME.to_owned(),
             schema_version: Self::SCHEMA_VERSION,
-            steps: build_steps(capabilities, installed_patches, global_parameters),
+            steps: build_steps(
+                capabilities,
+                installed_patches,
+                global_parameters,
+                &preset_fixture,
+            ),
             expected_coverage: build_expected_coverage(capabilities, installed_patches),
         })
     }
@@ -272,6 +444,7 @@ pub enum DemoSceneError {
     InsufficientPatches { actual: usize },
     InvalidInstrumentConfig,
     EngineFixtureUnavailable,
+    PresetFixtureUnavailable,
 }
 
 impl fmt::Display for DemoSceneError {
@@ -287,16 +460,57 @@ impl fmt::Display for DemoSceneError {
             Self::EngineFixtureUnavailable => formatter.write_str(
                 "the exhaustive demo requires a first SoundFont Patch and installed Braids capability",
             ),
+            Self::PresetFixtureUnavailable => formatter.write_str(
+                "the exhaustive demo requires an installed SoundFont preset with an adjacent choice",
+            ),
         }
     }
 }
 
 impl std::error::Error for DemoSceneError {}
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DemoPresetFixture {
+    parameter_id: ParameterId,
+    source_choice_id: String,
+    source_label: String,
+    target_choice_id: String,
+    target_label: String,
+}
+
+impl DemoPresetFixture {
+    fn from_patch(capabilities: &CapabilityRegistry, patch: &Patch) -> Option<Self> {
+        let parameter_id = ParameterId::new(
+            crate::adapter::hidef_soundfont_capability::SOUNDFONT_PRESET_PARAMETER_ID,
+        )
+        .ok()?;
+        let descriptor = capabilities.descriptor(patch.instrument_config().capability_id())?;
+        let spec = descriptor.parameter(&parameter_id)?;
+        let source_choice_id = match patch.instrument_config().value(&parameter_id)? {
+            ParameterValue::Choice(choice_id) => choice_id,
+            _ => return None,
+        };
+        let source_index = spec
+            .choices()
+            .iter()
+            .position(|choice| choice.id() == source_choice_id)?;
+        let source = spec.choices().get(source_index)?;
+        let target = spec.choices().get(source_index.checked_add(1)?)?;
+        Some(Self {
+            parameter_id,
+            source_choice_id: source.id().to_owned(),
+            source_label: source.label().to_owned(),
+            target_choice_id: target.id().to_owned(),
+            target_label: target.label().to_owned(),
+        })
+    }
+}
+
 fn build_steps(
     capabilities: &CapabilityRegistry,
     patches: &[Patch],
     global_parameters: &GlobalParameters,
+    preset_fixture: &DemoPresetFixture,
 ) -> Vec<DemoSceneStep> {
     let mut steps = Vec::new();
     let mut boundary_probed = BTreeSet::new();
@@ -345,7 +559,9 @@ fn build_steps(
     push_key_press(&mut steps, WindowKey::S);
     push_checkpoint(&mut steps, DemoCheckpoint::new("input.vocabulary"));
 
-    for patch in patches {
+    push_patch_adsr_control_steps(&mut steps, &patches[0], &mut boundary_probed);
+
+    for (patch_index, patch) in patches.iter().enumerate() {
         let descriptor = capabilities
             .descriptor(patch.instrument_config().capability_id())
             .expect("validated scene Patch capability is installed");
@@ -355,7 +571,9 @@ fn build_steps(
         for target in targets {
             let metadata = patch_target_metadata(patch, descriptor, &target)
                 .expect("every editable target has bounded adjustment metadata");
-            if boundary_probed.insert(target.name().to_owned()) {
+            let focused_patch_envelope =
+                patch_index == 0 && matches!(target, PatchEditableTarget::Envelope(_));
+            if !focused_patch_envelope && boundary_probed.insert(target.name().to_owned()) {
                 push_parameter_boundary_probe(
                     &mut steps,
                     &format!("patch.{}.{}", patch.id().value(), target.name()),
@@ -366,15 +584,19 @@ fn build_steps(
                     metadata.4,
                 );
             }
-            push_reversible_adjustments(&mut steps, metadata.0, metadata.1, metadata.2, metadata.4);
-            push_checkpoint(
-                &mut steps,
-                DemoCheckpoint::new(format!(
-                    "patch.{}.parameter.{}",
-                    patch.id().value(),
-                    target.name()
-                )),
-            );
+            if !focused_patch_envelope {
+                push_reversible_adjustments(
+                    &mut steps, metadata.0, metadata.1, metadata.2, metadata.4,
+                );
+                push_checkpoint(
+                    &mut steps,
+                    DemoCheckpoint::new(format!(
+                        "patch.{}.parameter.{}",
+                        patch.id().value(),
+                        target.name()
+                    )),
+                );
+            }
             push_key_press(&mut steps, WindowKey::S);
         }
         push_key_press(&mut steps, WindowKey::D);
@@ -414,6 +636,7 @@ fn build_steps(
     push_key_press(&mut steps, WindowKey::D);
     push_checkpoint(&mut steps, DemoCheckpoint::new("selection.restored"));
 
+    push_preset_selection_steps(&mut steps, &patches[0], preset_fixture);
     push_engine_selection_steps(&mut steps, &patches[0]);
 
     for patch in patches {
@@ -453,6 +676,340 @@ fn build_steps(
     push_checkpoint(&mut steps, DemoCheckpoint::new("scene.complete"));
 
     steps
+}
+
+fn push_preset_selection_steps(
+    steps: &mut Vec<DemoSceneStep>,
+    patch: &Patch,
+    fixture: &DemoPresetFixture,
+) {
+    let requested_target = || {
+        Some((
+            fixture.target_choice_id.clone(),
+            fixture.target_label.clone(),
+        ))
+    };
+    let requested_source = || {
+        Some((
+            fixture.source_choice_id.clone(),
+            fixture.source_label.clone(),
+        ))
+    };
+
+    push_key_press(steps, WindowKey::Digit2);
+    for _ in PatchControlId::surface_descriptor() {
+        push_key_press(steps, WindowKey::S);
+    }
+    push_single_adjustment(steps, WindowKey::W);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            "preset.vertical.unavailable",
+            EventRejection::ActionUnavailableInContext,
+        ),
+    );
+
+    steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
+        patch.id(),
+        midi_message(patch.channel(), MidiMessageKind::NoteOn, 60, 110),
+    )));
+    steps.push(DemoSceneStep::Tick(TICK_DURATION));
+    push_single_adjustment(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::preset(
+            "preset.forward.preparing",
+            patch.id(),
+            EngineSelectionStatusKind::Preparing,
+            fixture.parameter_id.clone(),
+            &fixture.source_choice_id,
+            &fixture.source_choice_id,
+            &fixture.source_label,
+            requested_target(),
+            None,
+            true,
+            0,
+        ),
+    );
+    push_single_adjustment(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            "preset.forward.busyRejected",
+            EventRejection::StructuralEditBusy,
+        ),
+    );
+    steps.push(DemoSceneStep::EngineProbe(
+        DemoEngineProbe::StaleWorkerFailure,
+    ));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            "preset.forward.staleRejected",
+            EventRejection::StaleEngineSelection,
+        ),
+    );
+    steps.push(DemoSceneStep::EngineProbe(
+        DemoEngineProbe::EarlyAcknowledgement,
+    ));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            "preset.forward.earlyAckRejected",
+            EventRejection::StaleEngineSelection,
+        ),
+    );
+    push_successful_preset_transition(
+        steps,
+        patch,
+        fixture,
+        "preset.forward",
+        &fixture.target_choice_id,
+        &fixture.target_label,
+        requested_target(),
+        1,
+    );
+
+    push_single_adjustment(steps, WindowKey::A);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::preset(
+            "preset.restore.preparing",
+            patch.id(),
+            EngineSelectionStatusKind::Preparing,
+            fixture.parameter_id.clone(),
+            &fixture.source_choice_id,
+            &fixture.target_choice_id,
+            &fixture.target_label,
+            requested_source(),
+            None,
+            false,
+            1,
+        ),
+    );
+    push_successful_preset_transition(
+        steps,
+        patch,
+        fixture,
+        "preset.restore",
+        &fixture.source_choice_id,
+        &fixture.source_label,
+        requested_source(),
+        0,
+    );
+
+    push_single_adjustment(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::preset(
+            "preset.failure.preparing",
+            patch.id(),
+            EngineSelectionStatusKind::Preparing,
+            fixture.parameter_id.clone(),
+            &fixture.source_choice_id,
+            &fixture.source_choice_id,
+            &fixture.source_label,
+            requested_target(),
+            None,
+            false,
+            0,
+        ),
+    );
+    steps.push(DemoSceneStep::AdvanceWorker(DemoWorkerAdvance::Fail(
+        EngineSelectionFailure::PresetUnavailable,
+    )));
+    steps.push(DemoSceneStep::AdvanceStructural);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::preset(
+            "preset.failure.preserved",
+            patch.id(),
+            EngineSelectionStatusKind::Failed,
+            fixture.parameter_id.clone(),
+            &fixture.source_choice_id,
+            &fixture.source_choice_id,
+            &fixture.source_label,
+            requested_target(),
+            Some(EngineSelectionFailure::PresetUnavailable),
+            false,
+            0,
+        ),
+    );
+
+    push_single_adjustment(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::preset(
+            "preset.recovery.preparing",
+            patch.id(),
+            EngineSelectionStatusKind::Preparing,
+            fixture.parameter_id.clone(),
+            &fixture.source_choice_id,
+            &fixture.source_choice_id,
+            &fixture.source_label,
+            requested_target(),
+            None,
+            false,
+            0,
+        ),
+    );
+    push_successful_preset_transition(
+        steps,
+        patch,
+        fixture,
+        "preset.recovery",
+        &fixture.target_choice_id,
+        &fixture.target_label,
+        requested_target(),
+        1,
+    );
+
+    push_single_adjustment(steps, WindowKey::A);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::preset(
+            "preset.final.preparing",
+            patch.id(),
+            EngineSelectionStatusKind::Preparing,
+            fixture.parameter_id.clone(),
+            &fixture.source_choice_id,
+            &fixture.target_choice_id,
+            &fixture.target_label,
+            requested_source(),
+            None,
+            false,
+            1,
+        ),
+    );
+    push_successful_preset_transition(
+        steps,
+        patch,
+        fixture,
+        "preset.final",
+        &fixture.source_choice_id,
+        &fixture.source_label,
+        requested_source(),
+        0,
+    );
+
+    for _ in PatchControlId::surface_descriptor() {
+        push_key_press(steps, WindowKey::W);
+    }
+    push_key_press(steps, WindowKey::Digit1);
+    push_checkpoint(steps, DemoCheckpoint::new("preset.context.restored"));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_successful_preset_transition(
+    steps: &mut Vec<DemoSceneStep>,
+    patch: &Patch,
+    fixture: &DemoPresetFixture,
+    prefix: &str,
+    selected_choice_id: &str,
+    selected_label: &str,
+    requested_choice: Option<(String, String)>,
+    expected_assignment_changes: usize,
+) {
+    steps.push(DemoSceneStep::AdvanceWorker(DemoWorkerAdvance::Healthy));
+    steps.push(DemoSceneStep::AdvanceStructural);
+    steps.push(DemoSceneStep::EngineProbe(
+        DemoEngineProbe::MismatchedAcknowledgement,
+    ));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            format!("{prefix}.mismatchedAckRejected"),
+            EventRejection::MismatchedEngineSelection,
+        ),
+    );
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::preset(
+            format!("{prefix}.activating"),
+            patch.id(),
+            EngineSelectionStatusKind::Activating,
+            fixture.parameter_id.clone(),
+            &fixture.source_choice_id,
+            selected_choice_id,
+            selected_label,
+            requested_choice,
+            None,
+            false,
+            expected_assignment_changes,
+        ),
+    );
+    steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
+        patch.id(),
+        midi_message(patch.channel(), MidiMessageKind::NoteOn, 60, 110),
+    )));
+    steps.push(DemoSceneStep::Tick(TICK_DURATION));
+    steps.push(DemoSceneStep::AdvanceStructural);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::preset(
+            format!("{prefix}.ready"),
+            patch.id(),
+            EngineSelectionStatusKind::Ready,
+            fixture.parameter_id.clone(),
+            &fixture.source_choice_id,
+            selected_choice_id,
+            selected_label,
+            None,
+            None,
+            true,
+            expected_assignment_changes,
+        ),
+    );
+    steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
+        patch.id(),
+        MidiMessage::all_notes_off(patch.channel()),
+    )));
+}
+
+fn push_patch_adsr_control_steps(
+    steps: &mut Vec<DemoSceneStep>,
+    patch: &Patch,
+    boundary_probed: &mut BTreeSet<String>,
+) {
+    push_key_press(steps, WindowKey::Digit2);
+    for descriptor in crate::synth::VoiceEnvelope::surface_descriptor() {
+        let parameter = descriptor.parameter();
+        let initial = patch.envelope().value(parameter);
+        push_key_press(steps, WindowKey::S);
+        if boundary_probed.insert(descriptor.name().to_owned()) {
+            push_parameter_boundary_probe(
+                steps,
+                &format!("patch.{}.{}", patch.id().value(), descriptor.name()),
+                initial,
+                descriptor.minimum(),
+                descriptor.maximum(),
+                descriptor.fine_step(),
+                descriptor.coarse_step(),
+            );
+        }
+        push_reversible_adjustments(
+            steps,
+            initial,
+            descriptor.minimum(),
+            descriptor.maximum(),
+            descriptor.coarse_step(),
+        );
+        push_checkpoint(
+            steps,
+            DemoCheckpoint::patch_adsr(
+                format!("patch.control.{}.restored", descriptor.name()),
+                patch.id(),
+                parameter,
+                initial,
+                None,
+            ),
+        );
+    }
+    for _ in crate::synth::VoiceEnvelope::surface_descriptor() {
+        push_key_press(steps, WindowKey::W);
+    }
+    push_key_press(steps, WindowKey::Digit1);
+    push_checkpoint(steps, DemoCheckpoint::new("patch.control.contextRestored"));
 }
 
 fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
@@ -513,6 +1070,24 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
             EventRejection::StaleEngineSelection,
         ),
     );
+    let attack = VoiceEnvelopeParameter::AttackMilliseconds;
+    let decay = VoiceEnvelopeParameter::DecayMilliseconds;
+    let attack_initial = patch.envelope().value(attack);
+    let decay_initial = patch.envelope().value(decay);
+    let attack_edited = attack_initial + attack.descriptor().fine_step();
+    let decay_edited = decay_initial + decay.descriptor().fine_step();
+    push_key_press(steps, WindowKey::S);
+    push_single_adjustment(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::patch_adsr(
+            "engine.forward.preparing.patchAdsr",
+            patch.id(),
+            attack,
+            attack_edited,
+            Some(EngineSelectionStatusKind::Preparing),
+        ),
+    );
     push_successful_engine_transition(
         steps,
         patch,
@@ -520,7 +1095,27 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
         braids.clone(),
         Some(braids.clone()),
         DemoWorkerAdvance::Healthy,
+        Some(DemoTransitionAdsrEdit {
+            parameter: decay,
+            before: decay_initial,
+            after: decay_edited,
+        }),
     );
+
+    push_single_adjustment(steps, WindowKey::A);
+    push_key_press(steps, WindowKey::W);
+    push_single_adjustment(steps, WindowKey::A);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::patch_adsr(
+            "engine.forward.patchAdsrRestored",
+            patch.id(),
+            attack,
+            attack_initial,
+            Some(EngineSelectionStatusKind::Ready),
+        ),
+    );
+    push_key_press(steps, WindowKey::W);
 
     push_engine_adjustment(steps, WindowKey::A);
     push_checkpoint(
@@ -541,6 +1136,7 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
         soundfont.clone(),
         Some(soundfont.clone()),
         DemoWorkerAdvance::Healthy,
+        None,
     );
 
     push_engine_adjustment(steps, WindowKey::D);
@@ -590,6 +1186,7 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
         braids.clone(),
         Some(braids.clone()),
         DemoWorkerAdvance::Healthy,
+        None,
     );
 
     push_engine_adjustment(steps, WindowKey::A);
@@ -611,9 +1208,17 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
         soundfont.clone(),
         Some(soundfont),
         DemoWorkerAdvance::Healthy,
+        None,
     );
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("engine.context.restored"));
+}
+
+#[derive(Clone, Copy)]
+struct DemoTransitionAdsrEdit {
+    parameter: VoiceEnvelopeParameter,
+    before: f32,
+    after: f32,
 }
 
 fn push_successful_engine_transition(
@@ -623,6 +1228,7 @@ fn push_successful_engine_transition(
     active_capability_id: crate::synth::CapabilityId,
     requested_capability_id: Option<crate::synth::CapabilityId>,
     worker: DemoWorkerAdvance,
+    activating_adsr: Option<DemoTransitionAdsrEdit>,
 ) {
     steps.push(DemoSceneStep::AdvanceWorker(worker));
     steps.push(DemoSceneStep::AdvanceStructural);
@@ -647,6 +1253,24 @@ fn push_successful_engine_transition(
             false,
         ),
     );
+    if let Some(edit) = activating_adsr {
+        push_key_press(steps, WindowKey::S);
+        push_single_adjustment(steps, WindowKey::D);
+        debug_assert_eq!(
+            edit.after,
+            edit.before + edit.parameter.descriptor().fine_step()
+        );
+        push_checkpoint(
+            steps,
+            DemoCheckpoint::patch_adsr(
+                format!("{prefix}.activating.patchAdsr"),
+                patch.id(),
+                edit.parameter,
+                edit.after,
+                Some(EngineSelectionStatusKind::Activating),
+            ),
+        );
+    }
     steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
         patch.id(),
         midi_message(patch.channel(), MidiMessageKind::NoteOn, 60, 110),
@@ -667,6 +1291,16 @@ fn push_successful_engine_transition(
     steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
         patch.id(),
         MidiMessage::all_notes_off(patch.channel()),
+    )));
+}
+
+fn push_single_adjustment(steps: &mut Vec<DemoSceneStep>, key: WindowKey) {
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+        WindowKey::K,
+    )));
+    push_key_press(steps, key);
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
     )));
 }
 
@@ -840,7 +1474,7 @@ fn restoration_steps(from: f32, to: f32, fine_step: f32, coarse_step: f32) -> (u
 }
 
 fn push_checkpoint(steps: &mut Vec<DemoSceneStep>, checkpoint: DemoCheckpoint) {
-    steps.push(DemoSceneStep::Checkpoint(checkpoint));
+    steps.push(DemoSceneStep::Checkpoint(Box::new(checkpoint)));
 }
 
 fn midi_messages(channel: MidiChannel, kinds: &[MidiMessageKind]) -> Vec<MidiMessage> {
@@ -919,6 +1553,17 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
             .into_iter()
             .map(|direction| format!("direction.{}", direction_identifier(direction))),
     );
+
+    for patch in patches {
+        let descriptor = capabilities
+            .descriptor(patch.instrument_config().capability_id())
+            .expect("validated coverage Patch capability is installed");
+        expected.extend(
+            PatchControlId::resolve(descriptor, patch.instrument_config())
+                .into_iter()
+                .map(|control| format!("patchControl.{control}")),
+        );
+    }
 
     for patch in patches {
         let descriptor = capabilities
@@ -1034,6 +1679,7 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
                     "label",
                     "kind",
                     "update",
+                    "patchInteraction",
                     "defaultValue",
                     "range",
                     "choices",
@@ -1049,6 +1695,17 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
                         descriptor.id(),
                         parameter.id()
                     ));
+                }
+                if parameter.patch_interaction() == crate::synth::PatchInteraction::StructuralChoice
+                {
+                    for choice in parameter.choices() {
+                        expected.push(format!(
+                            "projection.patch.choice.{}.{}={}",
+                            parameter.id(),
+                            choice.id(),
+                            choice.label()
+                        ));
+                    }
                 }
             }
         }
@@ -1102,6 +1759,10 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
             .iter()
             .map(|kind| format!("effect.emitted.engineSelection.{}", kind.name())),
     );
+    expected.extend([
+        "projection.structuralIntent.replaceCapability".to_owned(),
+        "projection.structuralIntent.replaceParameterChoice".to_owned(),
+    ]);
 
     expected.sort_unstable();
     expected.dedup();
@@ -1161,10 +1822,8 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{DemoScene, DemoSceneError, DemoSceneStep, MidiProbe};
-    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::control::app_state::EventRejection;
     use crate::kernel::midi_channel::MidiChannel;
-    use crate::kernel::midi_message::MidiMessageKind;
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
@@ -1175,7 +1834,8 @@ mod tests {
     use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn patch(id: u32, channel: u8) -> Patch {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
@@ -1248,17 +1908,13 @@ mod tests {
                 .filter(|probe| probe.patch_id() == patch.id())
                 .map(|probe| probe.message().kind())
                 .collect::<Vec<_>>();
-            let expected = [
-                MidiMessageKind::NoteOn,
-                MidiMessageKind::NoteOff,
-                MidiMessageKind::ControlChange,
-                MidiMessageKind::ProgramChange,
-                MidiMessageKind::ChannelPressure,
-                MidiMessageKind::PitchBend,
-                MidiMessageKind::AllNotesOff,
-            ];
+            let descriptor = registry()
+                .descriptor(patch.instrument_config().capability_id())
+                .expect("fixture capability is installed")
+                .clone();
+            let expected = descriptor.supported_midi_kinds();
             assert!(kinds.len() >= expected.len());
-            assert_eq!(&kinds[kinds.len() - expected.len()..], &expected);
+            assert_eq!(&kinds[kinds.len() - expected.len()..], expected);
         }
         assert_eq!(
             probes

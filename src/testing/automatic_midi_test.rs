@@ -1,6 +1,6 @@
 use crate::adapter::hidef_soundfont_capability::{
-    HIDEF_CAPABILITY_ID, HIDEF_SOUNDFONT_PATH, SOUNDFONT_BANK_PARAMETER_ID,
-    SOUNDFONT_FILE_PARAMETER_ID, SOUNDFONT_PERCUSSION_PARAMETER_ID, SOUNDFONT_PROGRAM_PARAMETER_ID,
+    HIDEF_CAPABILITY_ID, HIDEF_SOUNDFONT_PATH, SOUNDFONT_FILE_PARAMETER_ID,
+    SOUNDFONT_PRESET_PARAMETER_ID,
 };
 use crate::control::app_event::AppEvent;
 use crate::control::app_loop::AppLoop;
@@ -349,17 +349,12 @@ fn create_fixture_config(
                 assets.push(AssetAssignment::new(spec.id().clone(), reference.clone()))
             }
             ParameterDefault::Value(default) => {
-                let value = match spec.id().as_str() {
-                    SOUNDFONT_BANK_PARAMETER_ID => {
-                        ParameterValue::Stepped(i64::from(instrument.bank()))
-                    }
-                    SOUNDFONT_PROGRAM_PARAMETER_ID => {
-                        ParameterValue::Stepped(i64::from(instrument.program()))
-                    }
-                    SOUNDFONT_PERCUSSION_PARAMETER_ID => {
-                        ParameterValue::Toggle(instrument.percussion())
-                    }
-                    _ => default.clone(),
+                let value = if descriptor.id().as_str() == HIDEF_CAPABILITY_ID
+                    && spec.id().as_str() == SOUNDFONT_PRESET_PARAMETER_ID
+                {
+                    ParameterValue::Choice(instrument.preset_id().choice_id())
+                } else {
+                    default.clone()
                 };
                 values.push(ParameterAssignment::new(spec.id().clone(), value));
             }
@@ -390,20 +385,10 @@ where
             .map_err(|_| CapabilityError::InvalidMetadataIdentifier(value.to_owned()))
     };
     provider.create_config(
-        &[
-            ParameterAssignment::new(
-                parameter_id(SOUNDFONT_BANK_PARAMETER_ID)?,
-                ParameterValue::Stepped(i64::from(instrument.bank())),
-            ),
-            ParameterAssignment::new(
-                parameter_id(SOUNDFONT_PROGRAM_PARAMETER_ID)?,
-                ParameterValue::Stepped(i64::from(instrument.program())),
-            ),
-            ParameterAssignment::new(
-                parameter_id(SOUNDFONT_PERCUSSION_PARAMETER_ID)?,
-                ParameterValue::Toggle(instrument.percussion()),
-            ),
-        ],
+        &[ParameterAssignment::new(
+            parameter_id(SOUNDFONT_PRESET_PARAMETER_ID)?,
+            ParameterValue::Choice(instrument.preset_id().choice_id()),
+        )],
         &[AssetAssignment::new(
             parameter_id(SOUNDFONT_FILE_PARAMETER_ID)?,
             AssetReference::new(AssetKind::SoundFont, HIDEF_SOUNDFONT_PATH)?,
@@ -415,9 +400,7 @@ where
 mod tests {
     use super::{AutomaticMidiTest, TestInputError};
     use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
-    use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, SOUNDFONT_PROGRAM_PARAMETER_ID,
-    };
+    use crate::adapter::hidef_soundfont_capability::SOUNDFONT_PRESET_PARAMETER_ID;
     use crate::control::app_loop::AppLoop;
     use crate::control::app_state::AppState;
     use crate::control::event_record::EventSource;
@@ -542,7 +525,9 @@ mod tests {
     }
 
     fn app_loop() -> (AppLoop<TestBoundary>, Arc<Mutex<Observations>>, Providers) {
-        let providers: Providers = vec![Box::new(HiDefSoundFontCapability::new().unwrap())];
+        let providers: Providers = vec![Box::new(
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap(),
+        )];
         let registry = CapabilityRegistry::new(
             providers
                 .iter()
@@ -556,7 +541,9 @@ mod tests {
 
     fn mixed_app_loop() -> (AppLoop<TestBoundary>, CapabilityRegistry, Providers) {
         let providers: Providers = vec![
-            Box::new(HiDefSoundFontCapability::new().unwrap()),
+            Box::new(
+                crate::adapter::production_instruments::production_soundfont_capability().unwrap(),
+            ),
             Box::new(BraidsCapability::new().unwrap()),
         ];
         let registry = CapabilityRegistry::new(
@@ -584,8 +571,8 @@ mod tests {
             _values: &[ParameterAssignment],
             _asset_references: &[AssetAssignment],
         ) -> Result<InstrumentConfig, CapabilityError> {
-            Err(CapabilityError::ValueOutOfRange(
-                ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap(),
+            Err(CapabilityError::UnknownChoice(
+                ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap(),
             ))
         }
     }
@@ -648,14 +635,24 @@ mod tests {
         assert_eq!(
             app_loop.patches()[0]
                 .instrument_config()
-                .value(&ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()),
-            Some(&ParameterValue::Stepped(0))
+                .value(&ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Choice(
+                SoundFontInstrument::new(0, 0, false)
+                    .unwrap()
+                    .preset_id()
+                    .choice_id()
+            ))
         );
         assert_eq!(
             app_loop.patches()[2]
                 .instrument_config()
-                .value(&ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()),
-            Some(&ParameterValue::Stepped(48))
+                .value(&ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()),
+            Some(&ParameterValue::Choice(
+                SoundFontInstrument::new(0, 48, false)
+                    .unwrap()
+                    .preset_id()
+                    .choice_id()
+            ))
         );
         let braids_default = BraidsCapability::new().unwrap().default_config().unwrap();
         assert_eq!(app_loop.patches()[1].instrument_config(), &braids_default);
@@ -664,7 +661,9 @@ mod tests {
 
     #[test]
     fn initialize_rejects_provider_conversion_failure_atomically_without_substitution() {
-        let descriptor = HiDefSoundFontCapability::new().unwrap().descriptor();
+        let descriptor = crate::adapter::production_instruments::production_soundfont_capability()
+            .unwrap()
+            .descriptor();
         let registry = CapabilityRegistry::new(vec![descriptor.clone()]).unwrap();
         let providers: Providers = vec![Box::new(FailingConfigProvider { descriptor })];
         let (mut app_loop, observations) = app_loop_for_registry(registry);
@@ -674,8 +673,8 @@ mod tests {
 
         assert_eq!(
             error,
-            TestInputError::Capability(CapabilityError::ValueOutOfRange(
-                ParameterId::new(SOUNDFONT_PROGRAM_PARAMETER_ID).unwrap()
+            TestInputError::Capability(CapabilityError::UnknownChoice(
+                ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()
             ))
         );
         assert!(app_loop.patches().is_empty());
@@ -694,7 +693,10 @@ mod tests {
 
     #[test]
     fn initialize_rejects_provider_registry_mismatch_before_patch_installation() {
-        let registry = HiDefSoundFontCapability::new().unwrap().registry().unwrap();
+        let registry = crate::adapter::production_instruments::production_soundfont_capability()
+            .unwrap()
+            .registry()
+            .unwrap();
         let providers: Providers = vec![Box::new(BraidsCapability::new().unwrap())];
         let mismatched_capability = providers[0].descriptor().id().clone();
         let (mut app_loop, observations) = app_loop_for_registry(registry);
@@ -724,7 +726,10 @@ mod tests {
 
     #[test]
     fn initialize_rejects_missing_provider_before_patch_installation() {
-        let registry = HiDefSoundFontCapability::new().unwrap().registry().unwrap();
+        let registry = crate::adapter::production_instruments::production_soundfont_capability()
+            .unwrap()
+            .registry()
+            .unwrap();
         let missing_capability = registry.descriptors()[0].id().clone();
         let providers: Providers = Vec::new();
         let (mut app_loop, observations) = app_loop_for_registry(registry);

@@ -126,7 +126,7 @@ struct MidiTreeTemplate {
 
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
-    pub const SCHEMA_VERSION: u32 = 6;
+    pub const SCHEMA_VERSION: u32 = 8;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -142,6 +142,7 @@ impl StateTree {
         "engineSelection.kind",
         "engineSelection.activeGraphRevision",
         "engineSelection.correlation",
+        "engineSelection.correlation.intent",
         "engineSelection.correlation.requestId",
         "engineSelection.correlation.patchId",
         "engineSelection.correlation.sourceCapabilityId",
@@ -172,6 +173,7 @@ impl StateTree {
         "capabilities.descriptors[].sections[].parameters[].id",
         "capabilities.descriptors[].sections[].parameters[].label",
         "capabilities.descriptors[].sections[].parameters[].kind",
+        "capabilities.descriptors[].sections[].parameters[].patchInteraction",
         "capabilities.descriptors[].sections[].parameters[].update",
         "capabilities.descriptors[].sections[].parameters[].defaultValue.kind",
         "capabilities.descriptors[].sections[].parameters[].defaultValue.value.kind",
@@ -227,6 +229,11 @@ impl StateTree {
         "engineSelection.kind",
         "engineSelection.activeGraphRevision",
         "engineSelection.correlation",
+        "engineSelection.correlation.intent.capabilityId",
+        "engineSelection.correlation.intent.choiceId",
+        "engineSelection.correlation.intent.kind",
+        "engineSelection.correlation.intent.parameterId",
+        "engineSelection.correlation.intent.targetCapabilityId",
         "engineSelection.correlation.requestId",
         "engineSelection.correlation.patchId",
         "engineSelection.correlation.sourceCapabilityId",
@@ -249,6 +256,7 @@ impl StateTree {
         "patchPage.engine.status",
         "patchPage.engine.targetGraphRevision",
         "patchPage.envelope[].coarseStep",
+        "patchPage.envelope[].controlId",
         "patchPage.envelope[].editable",
         "patchPage.envelope[].fineStep",
         "patchPage.envelope[].id",
@@ -257,24 +265,36 @@ impl StateTree {
         "patchPage.envelope[].minimum",
         "patchPage.envelope[].unit",
         "patchPage.envelope[].value",
+        "patchPage.focusedControlId",
         "patchPage.patch.id",
         "patchPage.patch.midiChannel",
         "patchPage.patch.name",
         "patchPage.sections[].id",
         "patchPage.sections[].label",
+        "patchPage.sections[].parameters[].activeGraphRevision",
         "patchPage.sections[].parameters[].choices[].id",
         "patchPage.sections[].parameters[].choices[].label",
         "patchPage.sections[].parameters[].coarseStep",
+        "patchPage.sections[].parameters[].controlId",
         "patchPage.sections[].parameters[].editable",
         "patchPage.sections[].parameters[].enabled",
+        "patchPage.sections[].parameters[].failure",
         "patchPage.sections[].parameters[].fineStep",
         "patchPage.sections[].parameters[].formatter",
         "patchPage.sections[].parameters[].id",
         "patchPage.sections[].parameters[].kind",
         "patchPage.sections[].parameters[].label",
+        "patchPage.sections[].parameters[].patchInteraction",
         "patchPage.sections[].parameters[].range.maximum",
         "patchPage.sections[].parameters[].range.minimum",
         "patchPage.sections[].parameters[].range",
+        "patchPage.sections[].parameters[].requestId",
+        "patchPage.sections[].parameters[].requestedChoiceId",
+        "patchPage.sections[].parameters[].requestedLabel",
+        "patchPage.sections[].parameters[].selectedChoiceId",
+        "patchPage.sections[].parameters[].selectedLabel",
+        "patchPage.sections[].parameters[].status",
+        "patchPage.sections[].parameters[].targetGraphRevision",
         "patchPage.sections[].parameters[].unit",
         "patchPage.sections[].parameters[].update",
         "patchPage.sections[].parameters[].value.reference.kind",
@@ -360,36 +380,52 @@ impl StateTree {
         if projection.context() != state.interaction.context {
             return Err(StateTreeError::ContextMismatch);
         }
+        let engine_targeted = state
+            .engine_selection
+            .correlation()
+            .is_some_and(|correlation| {
+                matches!(
+                    correlation.intent(),
+                    crate::control::StructuralEditIntent::ReplaceCapability { .. }
+                )
+            });
+        let projected_engine_status = if engine_targeted {
+            state.engine_selection.kind()
+        } else {
+            crate::control::EngineSelectionStatusKind::Ready
+        };
+        let projected_engine_correlation = state
+            .engine_selection
+            .correlation()
+            .filter(|_| engine_targeted);
         match (state.interaction.context, patch_page) {
             (TopLevelContext::Mixer, None) => {}
             (TopLevelContext::Patch, Some(page))
                 if page.context() == TopLevelContext::Patch
                     && page.state_hash() == snapshot.hash()
                     && Some(page.patch().id().value()) == state.interaction.patch_focus
-                    && page.engine().control_id()
+                    && page.focused_control_id()
                         == state
                             .interaction
                             .patch_control_focus
+                            .clone()
                             .ok_or(StateTreeError::PatchPageMismatch)?
-                    && page.engine().status() == state.engine_selection.kind()
+                    && page.engine().status() == projected_engine_status
                     && page.engine().active_graph_revision()
                         == state.engine_selection.active_graph_revision()
                     && page.engine().requested_capability_id()
-                        == state
-                            .engine_selection
-                            .correlation()
+                        == projected_engine_correlation
                             .map(|correlation| correlation.target_capability_id())
                     && page.engine().request_id()
-                        == state
-                            .engine_selection
-                            .correlation()
+                        == projected_engine_correlation
                             .map(|correlation| correlation.request_id())
                     && page.engine().target_graph_revision()
-                        == state
-                            .engine_selection
-                            .correlation()
+                        == projected_engine_correlation
                             .and_then(|correlation| correlation.target_graph_revision())
-                    && page.engine().failure() == state.engine_selection.failure() => {}
+                    && page.engine().failure()
+                        == engine_targeted
+                            .then(|| state.engine_selection.failure())
+                            .flatten() => {}
             _ => return Err(StateTreeError::PatchPageMismatch),
         }
         validate_parameter_projection(state, parameters)?;
@@ -537,7 +573,7 @@ impl PartialEq for StateTree {
 
 impl MidiTreeTemplate {
     fn from_json(json: &str, generation: u64, state_hash: &str) -> Option<Self> {
-        const ROOT_MARKER: &str = "{\"schemaVersion\":6,\"generation\":";
+        const ROOT_MARKER: &str = "{\"schemaVersion\":8,\"generation\":";
         const PARAMETER_MARKER: &str = "\"parameters\":{\"generation\":";
 
         let root_start = ROOT_MARKER.len();
@@ -794,9 +830,7 @@ impl From<&GlobalParameters> for TreeGlobalParameters {
 #[cfg(test)]
 mod tests {
     use super::{StateTree, StateTreeError};
-    use crate::adapter::hidef_soundfont_capability::{
-        HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
-    };
+    use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::control::state_snapshot::StateSnapshot;
     use crate::control::text_projection::TextProjection;
     use crate::kernel::patch_id::PatchId;
@@ -808,7 +842,8 @@ mod tests {
     use serde_json::{json, Value};
 
     fn snapshot() -> StateSnapshot {
-        let provider = HiDefSoundFontCapability::new().unwrap();
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         StateSnapshot::new(
             json!({
                 "generation": 42,
@@ -963,11 +998,18 @@ mod tests {
         );
         assert_eq!(
             value["patches"][1]["instrument"]["values"][0]["value"],
-            json!({"kind": "stepped", "value": 128})
+            json!({"kind": "choice", "value": "sf2.bank-128.program-0"})
         );
         assert_eq!(
-            value["patches"][1]["instrument"]["values"][2]["value"],
-            json!({"kind": "toggle", "value": true})
+            value["patches"][1]["instrument"]["values"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            value["patches"][1]["instrument"]["assetReferences"][0]["reference"],
+            json!({"kind": "soundFont", "locator": "./sf2/HiDef.sf2"})
         );
         assert_eq!(
             value["global"],
@@ -1046,7 +1088,7 @@ mod tests {
         assert_eq!(first.json(), second.json());
         assert!(first
             .json()
-            .starts_with("{\"schemaVersion\":6,\"generation\":42,\"capabilities\":"));
+            .starts_with("{\"schemaVersion\":8,\"generation\":42,\"capabilities\":"));
         assert_eq!(first.clone().into_json(), first.json());
     }
 

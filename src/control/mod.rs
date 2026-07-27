@@ -17,6 +17,7 @@ pub use engine_selection::{
     EngineSelectionCorrelation, EngineSelectionEffect, EngineSelectionEffectKind,
     EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionRequestIdError,
     EngineSelectionStatus, EngineSelectionStatusError, EngineSelectionStatusKind,
+    StructuralEditIntent,
 };
 pub use event_record::{
     AudioEffect, EmittedEvent, EventDirection, EventInput, EventOutcome, EventRecord,

@@ -2,12 +2,13 @@ use crate::control::app_state::AppState;
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
     EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, PatchControlId,
+    StructuralEditIntent,
 };
 use crate::kernel::{MidiChannel, PatchId};
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
     AssetReference, ParameterChoice, ParameterDefault, ParameterKind, ParameterRange,
-    ParameterUpdate, ParameterValue,
+    ParameterUpdate, ParameterValue, PatchInteraction,
 };
 use crate::synth::{CapabilityId, ParameterId};
 use core::fmt;
@@ -73,8 +74,8 @@ pub struct PatchPageEngine {
 }
 
 impl PatchPageEngine {
-    pub const fn control_id(&self) -> PatchControlId {
-        self.control_id
+    pub fn control_id(&self) -> PatchControlId {
+        self.control_id.clone()
     }
 
     pub const fn active_capability_id(&self) -> &CapabilityId {
@@ -118,10 +119,11 @@ impl PatchPageEngine {
     }
 }
 
-/// One canonical, read-only ADSR row projected without a second field list.
+/// One canonical editable ADSR row projected without a second field list.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PatchPageEnvelopeRow {
+    control_id: PatchControlId,
     id: String,
     label: String,
     value: f32,
@@ -134,6 +136,37 @@ pub struct PatchPageEnvelopeRow {
 }
 
 impl PatchPageEnvelopeRow {
+    pub(crate) fn for_parameter(
+        parameter: crate::synth::VoiceEnvelopeParameter,
+        value: f32,
+    ) -> Self {
+        let spec = parameter.descriptor();
+        Self {
+            control_id: PatchControlId::Envelope(parameter),
+            id: spec.name().to_owned(),
+            label: spec.label().to_owned(),
+            value,
+            minimum: spec.minimum(),
+            maximum: spec.maximum(),
+            fine_step: spec.fine_step(),
+            coarse_step: spec.coarse_step(),
+            unit: spec.unit().map(str::to_owned),
+            editable: true,
+        }
+    }
+
+    pub(crate) fn selected_text(
+        parameter: crate::synth::VoiceEnvelopeParameter,
+        value: f32,
+    ) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&Self::for_parameter(parameter, value))
+            .map(|row| format!("> ENVELOPE {row}"))
+    }
+
+    pub fn control_id(&self) -> PatchControlId {
+        self.control_id.clone()
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -199,23 +232,38 @@ impl PatchPageParameterValue {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PatchPageParameterRow {
+    control_id: Option<PatchControlId>,
     id: ParameterId,
     label: String,
     kind: ParameterKind,
     update: ParameterUpdate,
+    patch_interaction: PatchInteraction,
     value: PatchPageParameterValue,
+    selected_choice_id: Option<String>,
+    selected_label: Option<String>,
     range: Option<ParameterRange>,
     choices: Vec<ParameterChoice>,
     fine_step: Option<f64>,
     coarse_step: Option<f64>,
     unit: Option<String>,
     formatter: String,
+    requested_choice_id: Option<String>,
+    requested_label: Option<String>,
+    status: Option<EngineSelectionStatusKind>,
+    request_id: Option<EngineSelectionRequestId>,
+    active_graph_revision: Option<GraphRevision>,
+    target_graph_revision: Option<GraphRevision>,
+    failure: Option<EngineSelectionFailure>,
     enabled: bool,
     visible: bool,
     editable: bool,
 }
 
 impl PatchPageParameterRow {
+    pub fn control_id(&self) -> Option<PatchControlId> {
+        self.control_id.clone()
+    }
+
     pub const fn id(&self) -> &ParameterId {
         &self.id
     }
@@ -232,8 +280,20 @@ impl PatchPageParameterRow {
         self.update
     }
 
+    pub const fn patch_interaction(&self) -> PatchInteraction {
+        self.patch_interaction
+    }
+
     pub const fn value(&self) -> &PatchPageParameterValue {
         &self.value
+    }
+
+    pub fn selected_choice_id(&self) -> Option<&str> {
+        self.selected_choice_id.as_deref()
+    }
+
+    pub fn selected_label(&self) -> Option<&str> {
+        self.selected_label.as_deref()
     }
 
     pub const fn range(&self) -> Option<ParameterRange> {
@@ -258,6 +318,34 @@ impl PatchPageParameterRow {
 
     pub fn formatter(&self) -> &str {
         &self.formatter
+    }
+
+    pub fn requested_choice_id(&self) -> Option<&str> {
+        self.requested_choice_id.as_deref()
+    }
+
+    pub fn requested_label(&self) -> Option<&str> {
+        self.requested_label.as_deref()
+    }
+
+    pub const fn status(&self) -> Option<EngineSelectionStatusKind> {
+        self.status
+    }
+
+    pub const fn request_id(&self) -> Option<EngineSelectionRequestId> {
+        self.request_id
+    }
+
+    pub const fn active_graph_revision(&self) -> Option<GraphRevision> {
+        self.active_graph_revision
+    }
+
+    pub const fn target_graph_revision(&self) -> Option<GraphRevision> {
+        self.target_graph_revision
+    }
+
+    pub const fn failure(&self) -> Option<EngineSelectionFailure> {
+        self.failure
     }
 
     pub const fn enabled(&self) -> bool {
@@ -300,6 +388,7 @@ impl PatchPageSection {
 #[serde(rename_all = "camelCase")]
 struct PatchPageContent {
     context: TopLevelContext,
+    focused_control_id: PatchControlId,
     patch: PatchPageIdentity,
     engine: PatchPageEngine,
     envelope: Vec<PatchPageEnvelopeRow>,
@@ -329,6 +418,7 @@ impl PatchPageProjection {
         "engine.status",
         "engine.targetGraphRevision",
         "envelope[].coarseStep",
+        "envelope[].controlId",
         "envelope[].editable",
         "envelope[].fineStep",
         "envelope[].id",
@@ -337,24 +427,36 @@ impl PatchPageProjection {
         "envelope[].minimum",
         "envelope[].unit",
         "envelope[].value",
+        "focusedControlId",
         "patch.id",
         "patch.midiChannel",
         "patch.name",
         "sections[].id",
         "sections[].label",
+        "sections[].parameters[].activeGraphRevision",
         "sections[].parameters[].choices[].id",
         "sections[].parameters[].choices[].label",
         "sections[].parameters[].coarseStep",
+        "sections[].parameters[].controlId",
         "sections[].parameters[].editable",
         "sections[].parameters[].enabled",
+        "sections[].parameters[].failure",
         "sections[].parameters[].fineStep",
         "sections[].parameters[].formatter",
         "sections[].parameters[].id",
         "sections[].parameters[].kind",
         "sections[].parameters[].label",
+        "sections[].parameters[].patchInteraction",
         "sections[].parameters[].range.maximum",
         "sections[].parameters[].range.minimum",
         "sections[].parameters[].range",
+        "sections[].parameters[].requestId",
+        "sections[].parameters[].requestedChoiceId",
+        "sections[].parameters[].requestedLabel",
+        "sections[].parameters[].selectedChoiceId",
+        "sections[].parameters[].selectedLabel",
+        "sections[].parameters[].status",
+        "sections[].parameters[].targetGraphRevision",
         "sections[].parameters[].unit",
         "sections[].parameters[].update",
         "sections[].parameters[].value.reference.kind",
@@ -372,6 +474,10 @@ impl PatchPageProjection {
 
     pub fn context(&self) -> TopLevelContext {
         self.content.context
+    }
+
+    pub fn focused_control_id(&self) -> PatchControlId {
+        self.content.focused_control_id.clone()
     }
 
     pub fn patch(&self) -> &PatchPageIdentity {
@@ -414,6 +520,10 @@ impl PatchPageProjection {
             .interaction()
             .patch_focus()
             .ok_or(PatchPageProjectionError::MissingPatchFocus)?;
+        let focused_control_id = state
+            .interaction()
+            .patch_control_focus()
+            .ok_or(PatchPageProjectionError::MissingPatchControlFocus)?;
         let patch = state
             .patches()
             .iter()
@@ -427,6 +537,12 @@ impl PatchPageProjection {
             .capabilities()
             .validate_config(patch.instrument_config())
             .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
+        let resolved_controls = state
+            .focused_patch_controls()
+            .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
+        if !resolved_controls.contains(&focused_control_id) {
+            return Err(PatchPageProjectionError::InvalidInstrumentConfig);
+        }
 
         let choices = state
             .capabilities()
@@ -439,24 +555,24 @@ impl PatchPageProjection {
             .collect();
         let engine_selection = state.engine_selection();
         let correlation = engine_selection.correlation();
-        let editable = state.interaction().patch_control_focus() == Some(PatchControlId::Engine)
-            && state.capabilities().descriptors().len() >= 2
+        let engine_targeted = correlation.is_some_and(|correlation| {
+            matches!(
+                correlation.intent(),
+                StructuralEditIntent::ReplaceCapability { .. }
+            ) && correlation.patch_id() == patch.id()
+        });
+        let editable = state.capabilities().descriptors().len() >= 2
             && matches!(
                 engine_selection.kind(),
                 EngineSelectionStatusKind::Ready | EngineSelectionStatusKind::Failed
             );
         let envelope = crate::synth::VoiceEnvelope::surface_descriptor()
             .iter()
-            .map(|spec| PatchPageEnvelopeRow {
-                id: spec.name().to_owned(),
-                label: spec.label().to_owned(),
-                value: patch.envelope().value(spec.parameter()),
-                minimum: spec.minimum(),
-                maximum: spec.maximum(),
-                fine_step: spec.fine_step(),
-                coarse_step: spec.coarse_step(),
-                unit: spec.unit().map(str::to_owned),
-                editable: false,
+            .map(|spec| {
+                PatchPageEnvelopeRow::for_parameter(
+                    spec.parameter(),
+                    patch.envelope().value(spec.parameter()),
+                )
             })
             .collect();
         let sections = descriptor
@@ -495,21 +611,76 @@ impl PatchPageProjection {
                                         == Some(predicate.equals())
                                 })
                             };
+                        let enabled = predicate_satisfied(spec.enabled_when());
+                        let visible = predicate_satisfied(spec.visible_when());
+                        let control_id = (spec.patch_interaction()
+                            == PatchInteraction::StructuralChoice
+                            && enabled
+                            && visible)
+                            .then(|| PatchControlId::Capability(spec.id().clone()));
+                        let selected_choice_id = match &value {
+                            PatchPageParameterValue::Parameter {
+                                value: ParameterValue::Choice(choice_id),
+                            } => Some(choice_id.clone()),
+                            _ => None,
+                        };
+                        let selected_label = selected_choice_id.as_deref().and_then(|choice_id| {
+                            spec.choices()
+                                .iter()
+                                .find(|choice| choice.id() == choice_id)
+                                .map(|choice| choice.label().to_owned())
+                        });
+                        let row_correlation = correlation.filter(|correlation| {
+                            correlation.patch_id() == patch.id()
+                                && matches!(
+                                    correlation.intent(),
+                                    StructuralEditIntent::ReplaceParameterChoice {
+                                        capability_id,
+                                        parameter_id,
+                                        ..
+                                    } if capability_id == descriptor.id() && parameter_id == spec.id()
+                                )
+                        });
+                        let requested_choice_id = row_correlation.and_then(|correlation| {
+                            correlation.intent().choice_id().map(str::to_owned)
+                        });
+                        let requested_label = requested_choice_id.as_deref().and_then(|choice_id| {
+                            spec.choices()
+                                .iter()
+                                .find(|choice| choice.id() == choice_id)
+                                .map(|choice| choice.label().to_owned())
+                        });
                         Ok(PatchPageParameterRow {
+                            control_id: control_id.clone(),
                             id: spec.id().clone(),
                             label: spec.label().to_owned(),
                             kind: spec.kind(),
                             update: spec.update(),
+                            patch_interaction: spec.patch_interaction(),
                             value,
+                            selected_choice_id,
+                            selected_label,
                             range: spec.range(),
                             choices: spec.choices().to_vec(),
                             fine_step: spec.fine_step(),
                             coarse_step: spec.coarse_step(),
                             unit: spec.unit().map(str::to_owned),
                             formatter: spec.formatter().to_owned(),
-                            enabled: predicate_satisfied(spec.enabled_when()),
-                            visible: predicate_satisfied(spec.visible_when()),
-                            editable: false,
+                            requested_choice_id,
+                            requested_label,
+                            status: row_correlation.map(|_| engine_selection.kind()),
+                            request_id: row_correlation
+                                .map(|correlation| correlation.request_id()),
+                            active_graph_revision: control_id
+                                .as_ref()
+                                .map(|_| engine_selection.active_graph_revision()),
+                            target_graph_revision: row_correlation.and_then(|correlation| {
+                                correlation.target_graph_revision()
+                            }),
+                            failure: row_correlation.and_then(|_| engine_selection.failure()),
+                            enabled,
+                            visible,
+                            editable: control_id.is_some() && !engine_selection.is_in_flight(),
                         })
                     })
                     .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
@@ -524,6 +695,7 @@ impl PatchPageProjection {
         Ok(Self {
             content: Arc::new(PatchPageContent {
                 context: TopLevelContext::Patch,
+                focused_control_id,
                 patch: PatchPageIdentity {
                     id: patch.id(),
                     name: patch.name().to_owned(),
@@ -534,14 +706,24 @@ impl PatchPageProjection {
                     active_capability_id: descriptor.id().clone(),
                     active_label: descriptor.label().to_owned(),
                     choices,
-                    status: engine_selection.kind(),
+                    status: if engine_targeted {
+                        engine_selection.kind()
+                    } else {
+                        EngineSelectionStatusKind::Ready
+                    },
                     active_graph_revision: engine_selection.active_graph_revision(),
                     requested_capability_id: correlation
+                        .filter(|_| engine_targeted)
                         .map(|correlation| correlation.target_capability_id().clone()),
-                    request_id: correlation.map(|correlation| correlation.request_id()),
+                    request_id: correlation
+                        .filter(|_| engine_targeted)
+                        .map(|correlation| correlation.request_id()),
                     target_graph_revision: correlation
+                        .filter(|_| engine_targeted)
                         .and_then(|correlation| correlation.target_graph_revision()),
-                    failure: engine_selection.failure(),
+                    failure: engine_targeted
+                        .then(|| engine_selection.failure())
+                        .flatten(),
                     editable,
                 },
                 envelope,
@@ -567,6 +749,7 @@ impl Serialize for PatchPageProjection {
         #[serde(rename_all = "camelCase")]
         struct SerializablePatchPage<'a> {
             context: TopLevelContext,
+            focused_control_id: PatchControlId,
             patch: &'a PatchPageIdentity,
             engine: &'a PatchPageEngine,
             envelope: &'a [PatchPageEnvelopeRow],
@@ -576,6 +759,7 @@ impl Serialize for PatchPageProjection {
 
         SerializablePatchPage {
             context: self.context(),
+            focused_control_id: self.focused_control_id(),
             patch: self.patch(),
             engine: self.engine(),
             envelope: self.envelope(),
@@ -590,6 +774,7 @@ impl Serialize for PatchPageProjection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PatchPageProjectionError {
     MissingPatchFocus,
+    MissingPatchControlFocus,
     UnknownPatchFocus,
     InvalidInstrumentConfig,
 }
@@ -598,6 +783,7 @@ impl fmt::Display for PatchPageProjectionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::MissingPatchFocus => "PATCH context has no stable Patch focus",
+            Self::MissingPatchControlFocus => "PATCH context has no stable control focus",
             Self::UnknownPatchFocus => "PATCH focus does not resolve to an installed Patch",
             Self::InvalidInstrumentConfig => {
                 "focused Patch config does not resolve through its capability descriptor"
@@ -612,7 +798,6 @@ impl std::error::Error for PatchPageProjectionError {}
 mod tests {
     use super::*;
     use crate::adapter::braids_capability::BraidsCapability;
-    use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
     use crate::adapter::production_instruments::production_capability_registry;
     use crate::control::{AppEvent, AppState, StateProjector, TopLevelContext};
     use crate::kernel::{MidiChannel, PatchId};
@@ -662,6 +847,10 @@ mod tests {
         assert_eq!(page.patch().id(), patch.id());
         assert_eq!(page.patch().name(), patch.name());
         assert_eq!(page.patch().midi_channel(), patch.channel());
+        assert_eq!(
+            page.focused_control_id(),
+            state.interaction().patch_control_focus().unwrap()
+        );
         assert_eq!(page.engine().active_capability_id(), descriptor.id());
         assert_eq!(page.engine().active_label(), descriptor.label());
         assert_eq!(page.engine().control_id(), PatchControlId::Engine);
@@ -693,13 +882,14 @@ mod tests {
             .iter()
             .zip(crate::synth::VoiceEnvelope::surface_descriptor())
         {
+            assert_eq!(row.control_id(), PatchControlId::Envelope(spec.parameter()));
             assert_eq!(row.id(), spec.name());
             assert_eq!(row.label(), spec.label());
             assert_eq!(row.value(), patch.envelope().value(spec.parameter()));
             assert_eq!(row.minimum(), spec.minimum());
             assert_eq!(row.maximum(), spec.maximum());
             assert_eq!(row.unit(), spec.unit());
-            assert!(!row.editable());
+            assert!(row.editable());
         }
         assert_eq!(page.sections().len(), descriptor.sections().len());
         for (section, declared) in page.sections().iter().zip(descriptor.sections()) {
@@ -716,7 +906,14 @@ mod tests {
                 assert_eq!(row.unit(), spec.unit());
                 assert!(row.enabled());
                 assert!(row.visible());
-                assert!(!row.editable());
+                assert_eq!(row.patch_interaction(), spec.patch_interaction());
+                let structural =
+                    spec.patch_interaction() == crate::synth::PatchInteraction::StructuralChoice;
+                assert_eq!(row.editable(), structural);
+                assert_eq!(
+                    row.control_id(),
+                    structural.then(|| PatchControlId::Capability(spec.id().clone()))
+                );
                 match row.value() {
                     PatchPageParameterValue::Parameter { value } => {
                         assert_eq!(Some(value), patch.instrument_config().value(spec.id()));
@@ -734,7 +931,8 @@ mod tests {
 
     #[test]
     fn both_production_capabilities_share_one_exact_generic_projection_walk() {
-        let soundfont = HiDefSoundFontCapability::new().unwrap();
+        let soundfont =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let soundfont_state = state_with_config(
             create_soundfont_config(
                 &soundfont,
@@ -747,6 +945,69 @@ mod tests {
 
         assert_descriptor_walk(&soundfont_state, &project(&soundfont_state));
         assert_descriptor_walk(&braids_state, &project(&braids_state));
+    }
+
+    #[test]
+    fn focus_identity_is_independent_from_engine_action_availability() {
+        fn selected_row_count(page: &PatchPageProjection) -> usize {
+            usize::from(page.engine().control_id() == page.focused_control_id())
+                + page
+                    .envelope()
+                    .iter()
+                    .filter(|row| row.control_id() == page.focused_control_id())
+                    .count()
+        }
+
+        let soundfont =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
+        let mut state = state_with_config(
+            create_soundfont_config(
+                &soundfont,
+                SoundFontInstrument::new(128, 11, false).unwrap(),
+            )
+            .unwrap(),
+        );
+
+        let engine_ready = project(&state);
+        assert_eq!(engine_ready.focused_control_id(), PatchControlId::Engine);
+        assert!(engine_ready.engine().editable());
+        assert_eq!(selected_row_count(&engine_ready), 1);
+
+        state
+            .apply(AppEvent::Navigate(crate::control::Direction::Down))
+            .unwrap();
+        let attack_ready = project(&state);
+        assert_eq!(
+            attack_ready.focused_control_id(),
+            PatchControlId::Envelope(crate::synth::VoiceEnvelopeParameter::AttackMilliseconds)
+        );
+        assert!(attack_ready.engine().editable());
+        assert_eq!(selected_row_count(&attack_ready), 1);
+
+        state
+            .apply(AppEvent::Navigate(crate::control::Direction::Up))
+            .unwrap();
+        state
+            .apply(AppEvent::Adjust(crate::control::Direction::Right))
+            .unwrap();
+        let engine_preparing = project(&state);
+        assert_eq!(
+            engine_preparing.focused_control_id(),
+            PatchControlId::Engine
+        );
+        assert!(!engine_preparing.engine().editable());
+        assert_eq!(selected_row_count(&engine_preparing), 1);
+
+        state
+            .apply(AppEvent::Navigate(crate::control::Direction::Down))
+            .unwrap();
+        let attack_preparing = project(&state);
+        assert_eq!(
+            attack_preparing.focused_control_id(),
+            PatchControlId::Envelope(crate::synth::VoiceEnvelopeParameter::AttackMilliseconds)
+        );
+        assert!(!attack_preparing.engine().editable());
+        assert_eq!(selected_row_count(&attack_preparing), 1);
     }
 
     #[test]
@@ -781,7 +1042,8 @@ mod tests {
         }
 
         let mut discovered = BTreeSet::new();
-        let soundfont = HiDefSoundFontCapability::new().unwrap();
+        let soundfont =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         for page in [
             project(&state_with_config(
                 create_soundfont_config(

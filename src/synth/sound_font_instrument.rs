@@ -77,6 +77,21 @@ impl SoundFontInstrument {
     pub const fn percussion(&self) -> bool {
         self.percussion
     }
+
+    /// Resolves the fixture's MIDI percussion convention to the canonical SF2
+    /// numeric preset address before Patch configuration.
+    pub const fn preset_id(&self) -> crate::synth::SoundFontPresetId {
+        let bank = if self.percussion {
+            self.bank | 128
+        } else {
+            self.bank & !128
+        };
+        // Construction already validates the program range.
+        match crate::synth::SoundFontPresetId::new(bank, self.program) {
+            Ok(id) => id,
+            Err(_) => unreachable!(),
+        }
+    }
 }
 
 #[cfg(test)]

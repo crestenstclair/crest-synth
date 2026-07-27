@@ -156,7 +156,7 @@ pub struct EventLog {
 
 impl EventLog {
     /// The stable schema version emitted in every serialized log.
-    pub const SCHEMA_VERSION: u32 = 4;
+    pub const SCHEMA_VERSION: u32 = 5;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "totalObserved",
