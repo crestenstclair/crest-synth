@@ -1,0 +1,1087 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A Figma-only interpretation of the Crest Synth controller-first interface.">
+  <title>Crest Synth — Figma interpretation</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #090e14;
+      --surface: #0d141d;
+      --surface-2: #111a25;
+      --selected: #141e2a;
+      --line: #263342;
+      --line-strong: #3b4d60;
+      --text: #eef4f8;
+      --muted: #8ea0b4;
+      --quiet: #64758a;
+      --focus: #56e5ff;
+      --context: #ff69bd;
+      --engine: #bd8cff;
+      --effect: #fff16a;
+      --sample: #ffb34e;
+      --positive: #62f59a;
+      --warning: #ff626c;
+      --max: 1240px;
+      --mono: "Azeret Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--canvas);
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        linear-gradient(rgba(86, 229, 255, .025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(86, 229, 255, .025) 1px, transparent 1px),
+        var(--canvas);
+      background-size: 40px 40px;
+      font-family: var(--sans);
+      line-height: 1.55;
+    }
+
+    a { color: var(--focus); }
+    a:hover { color: var(--text); }
+    img { display: block; max-width: 100%; }
+
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 10;
+      padding: 10px 14px;
+      color: var(--canvas);
+      background: var(--focus);
+    }
+
+    .skip-link:focus { left: 8px; }
+
+    .wrap {
+      width: min(calc(100% - 40px), var(--max));
+      margin-inline: auto;
+    }
+
+    .mono,
+    .eyebrow,
+    .chip,
+    .tag,
+    nav,
+    h1,
+    h2,
+    h3,
+    h4,
+    table,
+    .metric,
+    .key,
+    .node,
+    figcaption,
+    .source-link {
+      font-family: var(--mono);
+    }
+
+    .hero {
+      min-height: 72vh;
+      display: grid;
+      align-items: end;
+      border-bottom: 1px solid var(--line);
+      background:
+        radial-gradient(circle at 82% 18%, rgba(255, 105, 189, .12), transparent 26%),
+        radial-gradient(circle at 15% 85%, rgba(86, 229, 255, .11), transparent 32%);
+    }
+
+    .hero-inner { padding: 84px 0 64px; }
+
+    .eyebrow {
+      margin: 0 0 24px;
+      color: var(--focus);
+      font-size: .76rem;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 1050px;
+      margin: 0;
+      font-size: clamp(2.35rem, 6.5vw, 5.8rem);
+      line-height: .98;
+      letter-spacing: -.055em;
+      text-transform: uppercase;
+    }
+
+    .hero-lead {
+      max-width: 790px;
+      margin: 30px 0 0;
+      color: #c4d1dc;
+      font-size: clamp(1.05rem, 2vw, 1.35rem);
+    }
+
+    .scope-lock {
+      max-width: 920px;
+      margin-top: 34px;
+      padding: 16px 18px;
+      border: 1px solid var(--focus);
+      background: rgba(86, 229, 255, .055);
+      color: #c9f7ff;
+      font-family: var(--mono);
+      font-size: .8rem;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
+      margin-top: 46px;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .metric {
+      padding: 20px;
+      background: rgba(9, 14, 20, .92);
+    }
+
+    .metric strong {
+      display: block;
+      color: var(--text);
+      font-size: 1.8rem;
+      line-height: 1;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: .68rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      border-bottom: 1px solid var(--line);
+      background: rgba(9, 14, 20, .94);
+      backdrop-filter: blur(14px);
+    }
+
+    nav .wrap {
+      display: flex;
+      gap: 24px;
+      overflow-x: auto;
+      padding-block: 14px;
+      scrollbar-width: none;
+    }
+
+    nav a {
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-decoration: none;
+      text-transform: uppercase;
+    }
+
+    nav a:hover { color: var(--focus); }
+
+    main section {
+      padding: 86px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(240px, .7fr) minmax(0, 1.3fr);
+      gap: 56px;
+      align-items: end;
+      margin-bottom: 42px;
+    }
+
+    .section-kicker {
+      margin: 0 0 12px;
+      color: var(--focus);
+      font-family: var(--mono);
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(1.8rem, 4vw, 3.2rem);
+      line-height: 1.04;
+      letter-spacing: -.035em;
+      text-transform: uppercase;
+    }
+
+    .section-summary {
+      max-width: 690px;
+      margin: 0;
+      color: #b9c6d1;
+      font-size: 1.05rem;
+    }
+
+    .thesis {
+      display: grid;
+      grid-template-columns: 1.25fr .75fr;
+      gap: 24px;
+    }
+
+    .thesis-card,
+    .evidence-card,
+    .panel,
+    .screen-card,
+    .question,
+    .source-card {
+      border: 1px solid var(--line);
+      background: rgba(13, 20, 29, .9);
+    }
+
+    .thesis-card { padding: clamp(26px, 5vw, 54px); }
+
+    .thesis-card .big {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: clamp(1.45rem, 3vw, 2.4rem);
+      font-weight: 700;
+      line-height: 1.25;
+      letter-spacing: -.025em;
+    }
+
+    .thesis-card .big span { color: var(--focus); }
+
+    .thesis-card p:last-child {
+      max-width: 720px;
+      margin: 26px 0 0;
+      color: var(--muted);
+    }
+
+    .evidence-card { padding: 28px; }
+
+    .evidence-card h3,
+    .panel h3,
+    .screen-card h3,
+    .question h3,
+    .source-card h3 {
+      margin: 0;
+      font-size: 1rem;
+      letter-spacing: .02em;
+      text-transform: uppercase;
+    }
+
+    .legend {
+      display: grid;
+      gap: 18px;
+      margin-top: 24px;
+    }
+
+    .legend-item {
+      display: grid;
+      grid-template-columns: 74px 1fr;
+      gap: 14px;
+      color: var(--muted);
+      font-size: .88rem;
+    }
+
+    .tag {
+      align-self: start;
+      padding: 3px 7px;
+      border: 1px solid currentColor;
+      font-size: .62rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .seen { color: var(--focus); }
+    .stated { color: var(--positive); }
+    .inferred { color: var(--sample); }
+
+    .model-grid {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 24px;
+    }
+
+    .panel { padding: 30px; }
+    .panel > p { color: var(--muted); }
+
+    .context-map {
+      display: grid;
+      grid-template-columns: 1fr 90px 1fr;
+      align-items: center;
+      gap: 14px;
+      margin-top: 28px;
+    }
+
+    .node {
+      min-height: 92px;
+      display: grid;
+      align-content: center;
+      padding: 18px;
+      border: 1px solid var(--line-strong);
+      background: var(--surface-2);
+      color: var(--text);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .node small {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: .66rem;
+      font-weight: 400;
+      text-transform: none;
+    }
+
+    .node.active {
+      border-color: var(--context);
+      color: var(--context);
+    }
+
+    .connection {
+      position: relative;
+      height: 1px;
+      background: var(--focus);
+    }
+
+    .connection::after {
+      content: "SHIFT";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      padding: 4px 6px;
+      transform: translate(-50%, -50%);
+      color: var(--focus);
+      background: var(--canvas);
+      font-family: var(--mono);
+      font-size: .58rem;
+    }
+
+    .patch-layers {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .patch-layers .node { min-height: 74px; font-size: .8rem; }
+
+    .shell {
+      display: grid;
+      grid-template-rows: 48px 72px 268px 64px;
+      max-width: 560px;
+      margin: 28px auto 0;
+      border: 1px solid var(--line-strong);
+      background: var(--canvas);
+    }
+
+    .shell-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .66rem;
+      text-transform: uppercase;
+    }
+
+    .shell-row:last-child { border-bottom: 0; }
+
+    .shell-workspace {
+      display: grid;
+      grid-template-columns: 1500fr 420fr;
+    }
+
+    .shell-workspace > div {
+      display: grid;
+      place-items: center;
+      padding: 14px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .66rem;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .shell-workspace > div:first-child { border-right: 1px solid var(--line); }
+    .shell-workspace strong { display: block; color: var(--text); font-size: .9rem; }
+
+    .keys {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 1px;
+      margin-top: 28px;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .key {
+      min-height: 108px;
+      padding: 16px;
+      background: var(--surface);
+    }
+
+    .key strong {
+      display: block;
+      color: var(--text);
+      font-size: .78rem;
+    }
+
+    .key span {
+      display: block;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: .66rem;
+    }
+
+    .screen-stack { display: grid; gap: 28px; }
+
+    .screen-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr);
+      overflow: hidden;
+    }
+
+    .screen-card:nth-child(even) { grid-template-columns: minmax(300px, .65fr) minmax(0, 1.35fr); }
+    .screen-card:nth-child(even) .screen-figure { order: 2; }
+
+    .screen-figure {
+      min-width: 0;
+      margin: 0;
+      border-right: 1px solid var(--line);
+      background: #070b10;
+    }
+
+    .screen-card:nth-child(even) .screen-figure {
+      border-right: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .screen-figure a {
+      display: block;
+      overflow: hidden;
+    }
+
+    .screen-figure img {
+      width: 100%;
+      height: 100%;
+      min-height: 330px;
+      object-fit: cover;
+      object-position: center top;
+      transition: transform .25s ease;
+    }
+
+    .screen-figure a:hover img { transform: scale(1.012); }
+
+    figcaption {
+      padding: 9px 12px;
+      border-top: 1px solid var(--line);
+      color: var(--quiet);
+      font-size: .62rem;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .screen-copy { padding: clamp(24px, 4vw, 38px); }
+
+    .screen-copy .number {
+      display: block;
+      margin-bottom: 18px;
+      color: var(--focus);
+      font-family: var(--mono);
+      font-size: .68rem;
+      font-weight: 700;
+    }
+
+    .screen-copy > p { color: var(--muted); }
+
+    .finding-list {
+      display: grid;
+      gap: 14px;
+      margin: 24px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .finding-list li {
+      display: grid;
+      grid-template-columns: 65px 1fr;
+      gap: 12px;
+      align-items: start;
+      color: #bdc9d4;
+      font-size: .86rem;
+    }
+
+    .source-link {
+      display: inline-block;
+      margin-top: 24px;
+      color: var(--focus);
+      font-size: .66rem;
+      letter-spacing: .05em;
+      text-decoration: none;
+      text-transform: uppercase;
+    }
+
+    .source-link::after { content: " ↗"; }
+
+    .option-pair,
+    .component-figures {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+      margin-top: 28px;
+    }
+
+    .option-pair figure,
+    .component-figures figure {
+      margin: 0;
+      border: 1px solid var(--line);
+      background: #070b10;
+    }
+
+    .component-figures img {
+      width: 100%;
+      min-height: 210px;
+      object-fit: contain;
+    }
+
+    .variant-table {
+      width: 100%;
+      margin-top: 34px;
+      border-collapse: collapse;
+      font-size: .76rem;
+    }
+
+    .variant-table th,
+    .variant-table td {
+      padding: 14px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .variant-table th {
+      color: var(--quiet);
+      font-size: .62rem;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+
+    .variant-table td:first-child { color: var(--text); }
+    .variant-table td:not(:first-child) { color: var(--muted); }
+
+    .map-figure {
+      margin: 0;
+      border: 1px solid var(--line);
+      background: #070b10;
+    }
+
+    .map-figure img { width: 100%; }
+
+    .state-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 1px;
+      margin-top: 28px;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .state-layer {
+      padding: 18px;
+      background: var(--surface);
+    }
+
+    .state-layer h4 {
+      margin: 0;
+      color: var(--focus);
+      font-size: .7rem;
+      text-transform: uppercase;
+    }
+
+    .state-layer p {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: .75rem;
+    }
+
+    .questions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .question { padding: 26px; }
+
+    .question .q-num {
+      display: block;
+      margin-bottom: 18px;
+      color: var(--warning);
+      font-family: var(--mono);
+      font-size: .7rem;
+      font-weight: 700;
+    }
+
+    .question p {
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: .9rem;
+    }
+
+    .sources {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .source-card { padding: 28px; }
+    .source-card p, .source-card li { color: var(--muted); font-size: .88rem; }
+    .source-card ul { margin: 20px 0 0; padding-left: 20px; }
+    .source-card li + li { margin-top: 9px; }
+
+    .source-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 18px;
+      margin-top: 20px;
+    }
+
+    .source-list a {
+      font-family: var(--mono);
+      font-size: .7rem;
+      text-decoration: none;
+    }
+
+    footer {
+      padding: 34px 0 54px;
+      color: var(--quiet);
+      font-family: var(--mono);
+      font-size: .68rem;
+    }
+
+    footer .wrap {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    @media (max-width: 900px) {
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .section-head, .thesis, .model-grid, .sources { grid-template-columns: 1fr; }
+      .section-head { gap: 20px; }
+      .screen-card,
+      .screen-card:nth-child(even) { grid-template-columns: 1fr; }
+      .screen-card:nth-child(even) .screen-figure { order: 0; }
+      .screen-figure,
+      .screen-card:nth-child(even) .screen-figure { border: 0; border-bottom: 1px solid var(--line); }
+      .keys, .state-grid { grid-template-columns: repeat(2, 1fr); }
+      .keys .key:last-child, .state-grid .state-layer:last-child { grid-column: 1 / -1; }
+    }
+
+    @media (max-width: 620px) {
+      .wrap { width: min(calc(100% - 24px), var(--max)); }
+      .hero-inner { padding: 60px 0 44px; }
+      main section { padding: 62px 0; }
+      .metrics, .option-pair, .component-figures, .questions, .source-list { grid-template-columns: 1fr; }
+      .context-map { grid-template-columns: 1fr; }
+      .connection { width: 1px; height: 46px; margin: auto; }
+      .connection::after { content: "SHIFT ↕"; }
+      .patch-layers { grid-template-columns: 1fr; }
+      .keys, .state-grid { grid-template-columns: 1fr; }
+      .keys .key:last-child, .state-grid .state-layer:last-child { grid-column: auto; }
+      .screen-figure img { min-height: 220px; }
+      footer .wrap { flex-direction: column; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .screen-figure img { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to interpretation</a>
+
+  <header class="hero" id="top">
+    <div class="wrap hero-inner">
+      <p class="eyebrow">Figma-only product reading · 26 July 2026</p>
+      <h1>What the Figma says Crest Synth is</h1>
+      <p class="hero-lead">A controller-first musical instrument organized around spatial memory, a tiny command grammar, and one stable editing shell—not a conventional desktop synth UI.</p>
+      <div class="scope-lock">SCOPE LOCK — This revision uses the Figma file as its sole product source. It contains no requirements or architecture derived from DESIGN.md, CUE, OpenSpec, or source code.</div>
+      <div class="metrics" aria-label="Figma inspection summary">
+        <div class="metric"><strong>5</strong><span>Figma canvases read</span></div>
+        <div class="metric"><strong>8</strong><span>screen + state frames</span></div>
+        <div class="metric"><strong>5 / 31</strong><span>component sets / variants</span></div>
+        <div class="metric"><strong>0</strong><span>screen prototype reactions</span></div>
+      </div>
+    </div>
+  </header>
+
+  <nav aria-label="Document sections">
+    <div class="wrap">
+      <a href="#thesis">Thesis</a>
+      <a href="#model">Product model</a>
+      <a href="#screens">Screen atlas</a>
+      <a href="#components">Components</a>
+      <a href="#interaction">Interaction</a>
+      <a href="#questions">Open questions</a>
+      <a href="#sources">Sources</a>
+    </div>
+  </nav>
+
+  <main id="main">
+    <section id="thesis">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">01 / Thesis</p>
+            <h2>The product is the control grammar</h2>
+          </div>
+          <p class="section-summary">The strongest design idea is not any engine, effect, or waveform. It is the promise that the same few physical actions mean the same thing everywhere, while the screen preserves the user’s location.</p>
+        </div>
+
+        <div class="thesis">
+          <article class="thesis-card">
+            <p class="big">Crest Synth behaves like a <span>hardware instrument rendered as text</span>: focus moves spatially, Edit changes the thing under focus, and Shift changes the user’s depth or context.</p>
+            <p>The file repeatedly trades ornament for orientation. There are no card grids, tab bars, skeuomorphic knobs, or game-controller keycaps. Instead, hierarchy comes from fixed regions, hairlines, aligned values, color roles, and terse command hints.</p>
+          </article>
+
+          <aside class="evidence-card" aria-label="Evidence legend">
+            <h3>How to read this report</h3>
+            <div class="legend">
+              <div class="legend-item"><span class="tag seen">Seen</span><span>Directly visible in a frame, component, layer name, or measured geometry.</span></div>
+              <div class="legend-item"><span class="tag stated">Stated</span><span>Explicitly written in the Figma interaction map or on-canvas notes.</span></div>
+              <div class="legend-item"><span class="tag inferred">Inferred</span><span>A product conclusion synthesized from multiple Figma signals.</span></div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section id="model">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">02 / Product model</p>
+            <h2>Two contexts, one stable shell</h2>
+          </div>
+          <p class="section-summary">Figma encodes PATCH and MIXER as the only peer contexts. Everything else is a layer inside PATCH or a remembered location within one of those contexts.</p>
+        </div>
+
+        <div class="model-grid">
+          <article class="panel">
+            <h3>Context and depth</h3>
+            <p>The interface is shallow by design: switch context with Shift, then move through related surfaces without losing the originating row.</p>
+            <div class="context-map" aria-label="Patch and Mixer context map">
+              <div class="node active">Patch<small>primary composition + editing context</small></div>
+              <div class="connection" aria-hidden="true"></div>
+              <div class="node">Mixer<small>16-track level / pan / mute / solo context</small></div>
+            </div>
+            <div class="patch-layers" aria-label="Patch layers">
+              <div class="node">Strip<small>instrument + post-FX selectors</small></div>
+              <div class="node">Detail<small>polymorphic parameter editor</small></div>
+              <div class="node">Choice modal<small>all selector options visible</small></div>
+              <div class="node">Sample browser<small>nested file-selection subflow</small></div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <h3>Measured screen anatomy</h3>
+            <p>Every 1920×1080 PATCH frame uses the same four horizontal bands. Inside the workspace, the content/utility split is exactly 1500/420.</p>
+            <div class="shell" aria-label="Measured 1920 by 1080 shell">
+              <div class="shell-row"><span>Context line</span><strong>48 px</strong></div>
+              <div class="shell-row"><span>Patch identity</span><strong>72 px</strong></div>
+              <div class="shell-workspace">
+                <div><span><strong>Main content</strong>1500 px</span></div>
+                <div><span><strong>Utility</strong>420 px</span></div>
+              </div>
+              <div class="shell-row"><span>Status + live hints</span><strong>64 px</strong></div>
+            </div>
+          </article>
+        </div>
+
+        <div class="keys" aria-label="Hardware command grammar">
+          <div class="key"><strong>D-PAD</strong><span>Move focus when unmodified.</span></div>
+          <div class="key"><strong>EDIT</strong><span>Modify, adjust, choose, or toggle.</span></div>
+          <div class="key"><strong>SHIFT</strong><span>Navigate or open a related view.</span></div>
+          <div class="key"><strong>SELECT</strong><span>Enter multi-select mode.</span></div>
+          <div class="key"><strong>START</strong><span>Reserved; intentionally no action.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="screens">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">03 / Screen atlas</p>
+            <h2>What each surface is for</h2>
+          </div>
+          <p class="section-summary">These are not independent screens with independent rules. They form a small family of views that reuse the same coordinates, focus language, footer, and return behavior.</p>
+        </div>
+
+        <div class="screen-stack">
+          <article class="screen-card">
+            <figure class="screen-figure">
+              <a href="assets/patch-strip.png" aria-label="Open Patch Strip render at full size"><img src="assets/patch-strip.png" width="1600" height="900" loading="lazy" decoding="async" alt="Figma render of the Crest Synth Patch Strip"></a>
+              <figcaption>Figma node 36:3 · native frame 1920×1080</figcaption>
+            </figure>
+            <div class="screen-copy">
+              <span class="number">01 / HOME</span>
+              <h3>Patch Strip</h3>
+              <p>The orchestration surface: choose an instrument, arrange post effects, and keep patch-wide controls visible.</p>
+              <ul class="finding-list">
+                <li><span class="tag seen">Seen</span><span>The waveform region is explicitly reserved and omitted from focus order.</span></li>
+                <li><span class="tag stated">Stated</span><span>Instrument and FX rows open the same Detail shell with different schemas.</span></li>
+                <li><span class="tag inferred">Inferred</span><span>This is a routing and selection surface, not the place for deep sound editing.</span></li>
+              </ul>
+              <a class="source-link" href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=36-3">Open source node</a>
+            </div>
+          </article>
+
+          <article class="screen-card">
+            <figure class="screen-figure">
+              <a href="assets/instrument-detail.png" aria-label="Open Instrument Detail render at full size"><img src="assets/instrument-detail.png" width="1600" height="900" loading="lazy" decoding="async" alt="Figma render of the polymorphic Instrument Detail screen"></a>
+              <figcaption>Figma node 37:7 · Plaits example</figcaption>
+            </figure>
+            <div class="screen-copy">
+              <span class="number">02 / DEEP EDIT</span>
+              <h3>Instrument Detail</h3>
+              <p>A stable editor whose content changes by instrument. Group labels add structure without introducing panels or tabs.</p>
+              <ul class="finding-list">
+                <li><span class="tag seen">Seen</span><span>Seven ordered rows reuse the Compact Parameter Slider component.</span></li>
+                <li><span class="tag stated">Stated</span><span>The instrument supplies label, accent, schema, ranges, units, defaults, and disabled dependencies.</span></li>
+                <li><span class="tag inferred">Inferred</span><span>Engine diversity is absorbed by data and color; the operator’s muscle memory remains unchanged.</span></li>
+              </ul>
+              <a class="source-link" href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=37-7">Open source node</a>
+            </div>
+          </article>
+
+          <article class="screen-card">
+            <figure class="screen-figure">
+              <a href="assets/fx-detail.png" aria-label="Open FX Detail render at full size"><img src="assets/fx-detail.png" width="1600" height="900" loading="lazy" decoding="async" alt="Figma render of the polymorphic FX Detail screen"></a>
+              <figcaption>Figma node 38:60 · Chorus example</figcaption>
+            </figure>
+            <div class="screen-copy">
+              <span class="number">03 / SAME GRAMMAR</span>
+              <h3>FX Detail</h3>
+              <p>The instrument editor’s twin. The title, accent, units, and parameter count change; the interaction model does not.</p>
+              <ul class="finding-list">
+                <li><span class="tag seen">Seen</span><span>The origin remains legible as “POST FX 01 / CHORUS.”</span></li>
+                <li><span class="tag stated">Stated</span><span>Shift+Down returns to the same FX row in Patch Strip.</span></li>
+                <li><span class="tag inferred">Inferred</span><span>Return-location memory is a first-class usability requirement encoded by the design.</span></li>
+              </ul>
+              <a class="source-link" href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=38-60">Open source node</a>
+            </div>
+          </article>
+
+          <article class="screen-card">
+            <figure class="screen-figure">
+              <a href="assets/sample-detail.png" aria-label="Open Sample Detail render at full size"><img src="assets/sample-detail.png" width="1600" height="900" loading="lazy" decoding="async" alt="Figma render of Sample Detail with waveform and loop markers"></a>
+              <figcaption>Figma node 39:92 · loaded-sample state</figcaption>
+            </figure>
+            <div class="screen-copy">
+              <span class="number">04 / SPECIALIZED DETAIL</span>
+              <h3>Sample Detail</h3>
+              <p>Sample is treated as an instrument schema, but earns a specialized, non-focusable waveform because time landmarks need spatial feedback.</p>
+              <ul class="finding-list">
+                <li><span class="tag seen">Seen</span><span>Start, loop-in, play, loop-out, and end markers sit above ten visible parameter rows.</span></li>
+                <li><span class="tag stated">Stated</span><span>Waveform overlays update live while values are edited; unloaded state swaps in an empty message.</span></li>
+                <li><span class="tag inferred">Inferred</span><span>Visualizations are admitted only when they clarify a control relationship; they do not become separate interaction regions.</span></li>
+              </ul>
+              <a class="source-link" href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=39-92">Open source node</a>
+            </div>
+          </article>
+
+          <article class="screen-card">
+            <figure class="screen-figure">
+              <a href="assets/sample-browser.png" aria-label="Open Sample Browser render at full size"><img src="assets/sample-browser.png" width="1600" height="900" loading="lazy" decoding="async" alt="Figma render of the controller-operated Sample Browser"></a>
+              <figcaption>Figma node 41:138 · nested PATCH modal</figcaption>
+            </figure>
+            <div class="screen-copy">
+              <span class="number">05 / NESTED SUBFLOW</span>
+              <h3>Sample Browser</h3>
+              <p>A controller-native file picker, not a generic operating-system dialog. The left side navigates; the right side explains and previews.</p>
+              <ul class="finding-list">
+                <li><span class="tag seen">Seen</span><span>Rows distinguish parent, folder, file, and cancel using terse text markers.</span></li>
+                <li><span class="tag stated">Stated</span><span>The browser remains inside PATCH and returns to the exact Sample control that opened it.</span></li>
+                <li><span class="tag inferred">Inferred</span><span>The browser is designed as an instrument operation, not as global asset management.</span></li>
+              </ul>
+              <a class="source-link" href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=41-138">Open source node</a>
+            </div>
+          </article>
+
+          <article class="screen-card">
+            <figure class="screen-figure">
+              <a href="assets/mixer.png" aria-label="Open Mixer render at full size"><img src="assets/mixer.png" width="1600" height="900" loading="lazy" decoding="async" alt="Figma render of the sixteen-track Mixer"></a>
+              <figcaption>Figma node 42:3 · 16-track context</figcaption>
+            </figure>
+            <div class="screen-copy">
+              <span class="number">06 / PEER CONTEXT</span>
+              <h3>Mixer</h3>
+              <p>A dense 16-track control field. Horizontal movement changes track; vertical movement changes the active control; the inspector expands the cursor into meaning.</p>
+              <ul class="finding-list">
+                <li><span class="tag seen">Seen</span><span>All tracks remain visible; hairlines, not cards, preserve density.</span></li>
+                <li><span class="tag stated">Stated</span><span>Edit adjusts or toggles; Select enters multi-select; Shift+Up returns to PATCH.</span></li>
+                <li><span class="tag inferred">Inferred</span><span>The focused channel is simultaneously highlighted in the field, named in the header/footer, and expanded in the inspector.</span></li>
+              </ul>
+              <a class="source-link" href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=42-3">Open source node</a>
+            </div>
+          </article>
+        </div>
+
+        <article class="panel" style="margin-top: 28px;">
+          <h3>Choice states are full-list modals</h3>
+          <p>Engine and post-FX selectors use the same 920×680 state frame: the current item is explicit, every available option is visible, Edit chooses, and Shift+Down closes. Figma shows concrete lists but does not state whether those lists are exhaustive.</p>
+          <div class="option-pair">
+            <figure><a href="assets/engine-options.png"><img src="assets/engine-options.png" width="920" height="680" loading="lazy" decoding="async" alt="Figma Engine Type Options state"></a><figcaption>Node 48:173 · Engine options</figcaption></figure>
+            <figure><a href="assets/post-fx-options.png"><img src="assets/post-fx-options.png" width="920" height="680" loading="lazy" decoding="async" alt="Figma Post FX Options state"></a><figcaption>Node 48:207 · Post-FX options</figcaption></figure>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="components">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">04 / Component grammar</p>
+            <h2>Variants encode behavior</h2>
+          </div>
+          <p class="section-summary">The component page is small but systematic. It defines states the user can perceive—selected, focused, editing, disabled, muted, solo—rather than a broad catalogue of decorative widgets.</p>
+        </div>
+
+        <div class="component-figures">
+          <figure><a href="assets/context-switch-hints.png"><img src="assets/context-switch-hints.png" width="1200" height="307" loading="lazy" decoding="async" alt="Figma context switch and command hint components"></a><figcaption>Context and command language</figcaption></figure>
+          <figure><a href="assets/mixer-faders.png"><img src="assets/mixer-faders.png" width="1200" height="608" loading="lazy" decoding="async" alt="Figma compact mixer fader variants"></a><figcaption>Default · focused · muted · solo</figcaption></figure>
+          <figure><a href="assets/parameter-sliders.png"><img src="assets/parameter-sliders.png" width="1200" height="225" loading="lazy" decoding="async" alt="Figma compact parameter slider tone and state matrix"></a><figcaption>Three semantic tones × four interaction states</figcaption></figure>
+          <figure><a href="assets/browser-rows.png"><img src="assets/browser-rows.png" width="1200" height="434" loading="lazy" decoding="async" alt="Figma CLI browser row type and focus variants"></a><figcaption>Parent · folder · file · cancel</figcaption></figure>
+        </div>
+
+        <table class="variant-table">
+          <thead><tr><th>Component set</th><th>Dimensions of variation</th><th>Variants</th><th>Interpretation</th></tr></thead>
+          <tbody>
+            <tr><td>Context Switch</td><td>State</td><td>3</td><td>Default, selected, and focused are distinct; context and cursor are not conflated.</td></tr>
+            <tr><td>CLI Hint</td><td>Tone</td><td>4</td><td>Neutral, focus, adjust, and back make commands semantically scannable.</td></tr>
+            <tr><td>CLI Browser Line</td><td>Type × state</td><td>8</td><td>Parent, folder, file, and cancel share one list grammar with a focused form.</td></tr>
+            <tr><td>Compact Parameter Slider</td><td>Tone × state</td><td>12</td><td>Engine, sample, and effect color roles cross default, focused, editing, and disabled states.</td></tr>
+            <tr><td>Compact Mixer Fader</td><td>State</td><td>4</td><td>Focus, mute, and solo remain legible in a very narrow channel.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="interaction">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">05 / Interaction synthesis</p>
+            <h2>Navigation is layered state</h2>
+          </div>
+          <p class="section-summary">The interaction map is not a prototype. It is a design declaration: the same keys produce predictable movement across context, surface, focus, and edit state.</p>
+        </div>
+
+        <figure class="map-figure">
+          <a href="assets/interaction-map.png"><img src="assets/interaction-map.png" width="1600" height="1387" loading="lazy" decoding="async" alt="Figma interaction map showing Crest Synth view and control transitions"></a>
+          <figcaption>Figma node 49:3 · authored interaction map (open for full resolution)</figcaption>
+        </figure>
+
+        <div class="state-grid" aria-label="Inferred interaction state layers">
+          <article class="state-layer"><h4>Context</h4><p>PATCH or MIXER.</p></article>
+          <article class="state-layer"><h4>Surface</h4><p>Strip, detail, utility, modal, or browser.</p></article>
+          <article class="state-layer"><h4>Focus</h4><p>Region plus row/control coordinates.</p></article>
+          <article class="state-layer"><h4>Mode</h4><p>Navigate, adjust, choose, toggle, or multi-select.</p></article>
+          <article class="state-layer"><h4>Origin</h4><p>Remembered row for a precise return path.</p></article>
+        </div>
+
+        <article class="thesis-card" style="margin-top: 28px;">
+          <p class="big">The inferred state model is <span>hierarchical, not screen-based</span>. A “screen” is the projection of context + surface + focus + mode + origin.</p>
+          <p>This explains why the same Detail shell can represent an instrument, an effect, or a sample without becoming three unrelated interaction systems.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="questions">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">06 / Figma gaps</p>
+            <h2>What the file does not settle</h2>
+          </div>
+          <p class="section-summary">These are ambiguities inside the Figma evidence itself. They should be resolved in the design before anyone treats the interaction model as implementation-ready.</p>
+        </div>
+
+        <div class="questions">
+          <article class="question"><span class="q-num">Q01 / SELECTOR CHANGE</span><h3>Is unmodified Left/Right navigation or mutation?</h3><p>Patch rows say “L/R:change,” while the interaction map says the unmodified D-pad moves focus and Edit+Left/Right performs fine adjustment. The selector’s direct-change rule needs one unambiguous binding.</p></article>
+          <article class="question"><span class="q-num">Q02 / SAMPLE PREVIEW</span><h3>What physical control is “X”?</h3><p>The Sample Browser note says “X previews only while held,” but the hardware legend defines only Select, Start, Edit, Shift, and D-pad. The visible footer also omits preview. This action is not grounded to the declared controller vocabulary.</p></article>
+          <article class="question"><span class="q-num">Q03 / MULTI-SELECT</span><h3>What can a multi-selection do?</h3><p>Select enters multi-select mode, but the map and Mixer frame do not show selection accumulation, range rules, batch operations, cancellation, or visual examples.</p></article>
+          <article class="question"><span class="q-num">Q04 / PROTOTYPE COVERAGE</span><h3>Which transitions are executable in Figma?</h3><p>The inspected screen and state nodes contain no prototype reactions. Flow is communicated through annotations, labels, and the interaction map, so click-through behavior cannot confirm edge cases.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">07 / Provenance</p>
+            <h2>How this was derived</h2>
+          </div>
+          <p class="section-summary">The report is a synthesis of native Figma structure and rendered evidence, not a restatement of repository documents.</p>
+        </div>
+
+        <div class="sources">
+          <article class="source-card">
+            <h3>Inspection method</h3>
+            <ul>
+              <li>Enumerated all five pages through the Figma document tree.</li>
+              <li>Read frame hierarchy, layer names, exact text, geometry, component sets, properties, and variants.</li>
+              <li>Rendered each major screen and state directly from its Figma node.</li>
+              <li>Cross-checked on-canvas notes against the authored interaction map.</li>
+              <li>Separated direct observation, authored statements, and interpretation throughout this page.</li>
+            </ul>
+          </article>
+
+          <article class="source-card">
+            <h3>Primary nodes</h3>
+            <div class="source-list">
+              <a href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=36-3">36:3 Patch Strip</a>
+              <a href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=37-7">37:7 Instrument</a>
+              <a href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=38-60">38:60 FX</a>
+              <a href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=39-92">39:92 Sample</a>
+              <a href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=41-138">41:138 Browser</a>
+              <a href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=42-3">42:3 Mixer</a>
+              <a href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=48-173">48:173 Engine options</a>
+              <a href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=48-207">48:207 FX options</a>
+              <a href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=49-3">49:3 Interaction map</a>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>CREST SYNTH / FIGMA INTERPRETATION</span>
+      <span>Evidence snapshot · 2026-07-26</span>
+    </div>
+  </footer>
+</body>
+</html>
