@@ -1,200 +1,125 @@
-# Crest Synth Foundation Roadmap — Archived
+# Crest Synth Product Roadmap
 
-Status: **Archived and complete** — 2026-07-27
+Status: **Active**
 
-This is the historical record of the four foundation phases delivered between 2026-07-20 and 2026-07-27. It is no longer a living plan and must not be extended with another numbered phase. It is not an implementation specification or a replacement for `DESIGN.md`.
+This roadmap sequences the next product increments after the completed foundation program. The historical foundation roadmap is preserved at [`archive/ROADMAP-foundation-2026-07-27.md`](archive/ROADMAP-foundation-2026-07-27.md).
 
-The controller-first graphical interface is a separate successor program, not Phase 5. Its scope is larger than these foundation phases combined. `DESIGN.md` remains the single product and technical authority, its linked Figma file remains the visual and interaction reference, and future implementation work must be decomposed into bounded CUE and OpenSpec changes without creating a competing roadmap.
+`DESIGN.md` remains the product and technical authority, and the linked Figma file remains the visual and interaction reference. This document orders delivery; it does not replace either source.
 
-## Historical working method
+## Live-demo requirement for every phase
 
-For each increment:
+Every numbered phase must add a separately named, retained live demo scene. Demo scenes are a phase-completion gate because they are the primary human-verification path for confirming that the integrated product actually works.
 
-1. Review and narrow the increment with the user.
-2. Update only the CUE architecture needed for that increment.
-3. Create one OpenSpec proposal from the evaluated CUE context.
-4. Implement and verify that proposal without pulling in later roadmap work.
-5. Archive and checkpoint the completed change before starting the next one.
+- Run the optimized standalone application with the real production window and physical audio output; a headless, silent, mocked, or dry-run substitute does not satisfy this gate.
+- Play a real MIDI fixture through the production MIDI event source and normal routing/render path throughout the scene, following the established live-demo model. Direct state mutation, fabricated audio, and demo-only reducers or renderers are forbidden.
+- Exercise the phase's new behavior through semantic actions, `AppState::apply`, immutable view/audio projections, and the same adapters used by ordinary execution.
+- Pace the scene so the user can see the focused control, action, resulting state, and hear the corresponding musical consequence where the behavior affects sound.
+- Emit structured phase-specific checkpoints that correlate semantic input, accepted generation, visible projection, graph or parameter state, MIDI activity, and measured audio observations.
+- Finish with semantic all-notes-off, zero active notes, window close, stream release, worker shutdown, graph collection, and normal parent-process exit. A frozen window, timeout, dropped event, silent fallback, incomplete report, or teardown failure fails the phase.
+- Preserve every completed phase scene under a stable phase-specific `make demo-live-<scene>` target so later work cannot replace earlier evidence. `make demo-live` points to the newest cumulative scene.
+- A phase is not complete until its actual live target has been run successfully by the implementer and the resulting visible, audible, structured report covers every declared phase behavior.
 
-Modulation, dynamic effect-graph editing, and other later systems must not be introduced early.
+## Phase 1 — Graphical application shell blockout
 
-## Phase 1 — Live observable demo
+Establish the controller-first graphical shell around the existing application without moving mutation or navigation state into the UI.
 
-Status: **Complete** — 2026-07-20
+- Preserve PATCH and MIXER as the only top-level contexts.
+- Establish the context line, identity/header band, main workspace, persistent Utility/Inspector region, and footer.
+- Keep the existing reducer, semantic input path, immutable projections, audio path, and live-demo lifecycle intact.
+- Define the authored desktop composition and Steam Deck layout constraints without completing every product surface.
+- Add `make demo-live-graphical-shell`: play the real MIDI fixture while the scene opens the production graphical shell, switches between PATCH and MIXER, verifies every structural band and persistent region, then completes the full live teardown contract.
 
-Delivered and accepted through OpenSpec change `phase-1-live-observable-demo`. The production live run exercised all 67 current editable parameter instances across 15 Patches, emitted coherent control/audio evidence without dropped records, cleaned up to zero active notes, and preserved the final canonical view until manual close.
+## Phase 2 — Semantic graphical view model and focus contract
 
-Keep the existing deterministic, exhaustive headless demo. Add a separate human-observable demo that runs through the real standalone application.
+Project canonical application state into host-neutral graphical view models that can drive more than one layout without duplicating domain state.
 
-The live demo must:
+- Represent context, surface, semantic focus path, interaction mode, return path, valid actions, status, and errors explicitly.
+- Project instrument and effect content from capability descriptors rather than concrete engine or processor branches.
+- Keep components passive: they receive immutable data and emit semantic actions through the existing reducer path.
+- Prove deterministic focus recovery when responsive composition or schema changes alter visible placement.
+- Add `make demo-live-semantic-view-model`: play the real MIDI fixture while the scene traverses semantic focus, interaction modes, valid actions, return paths, status, and error projections across both contexts, proving that visible focus and canonical state remain correlated.
 
-- open the real Crest Synth UI;
-- open the physical audio output and produce audible SoundFont playback;
-- use the existing MIDI fixture;
-- run a paced autonomous scene through the normal semantic event, reducer, projection, and audio-publication path;
-- modify every currently editable parameter at least once, with enough dwell time for the change to be visible and audible;
-- update the visible UI from canonical projected state throughout the scene;
-- record accepted and rejected events using the existing event log;
-- expose useful structured checkpoints showing the input, expected transition, accepted state generation, projected value, emitted effects, and audio observation;
-- emit the final event log, state tree, coverage result, and human-readable summary;
-- stop active notes when the scene finishes and leave the final UI state visible until the user closes the window.
+## Phase 3 — Expandable effects and bus topology
 
-The live path must not mutate UI, engine, or audio state directly. Autonomous actions enter through the same application event path as other inputs. Audio-thread observations use bounded counters or snapshots; the callback does not log.
+Grow the fixed first-effect foundation into the bounded effect and routing model required by the product interface.
 
-Suggested entry point: `make demo-live`, backed by a dedicated interactive CLI option. The existing `make demo` headless proof remains unchanged.
+- Support descriptor-driven ordered Patch-effect slots without processor-specific UI structure.
+- Introduce explicit buses, sends, returns, and routing identities while preserving Patch ownership and hard real-time preparation boundaries.
+- Prepare and exchange complete structural graphs off the callback; never allocate, block, destroy, or silently bypass in real-time work.
+- Keep topology changes semantic, validated, observable, and recoverable without replacing the active graph on failure.
+- Add `make demo-live-effects-and-buses`: play real multi-Patch MIDI while the scene changes ordered Patch effects, sends, buses, and returns through production structural/scalar paths, audibly proves routing and isolation, exercises one controlled rejection, and verifies graph retirement and teardown.
 
-### Phase 1 completion
+## Phase 4 — Component library blockout
 
-- A user can launch one command, see the UI, hear the fixture, and watch the scene operate the synth.
-- Every current editable parameter is visibly exercised through the production event path.
-- The event records, state tree, parameter projection, and measured audio consequence agree at each declared checkpoint.
-- Existing headless demo, schema, mutation, real-time, and project checks continue to pass.
+Create the reusable component vocabulary before building the functional Patch and Mixer screens. This is an application component system, not a separate product and not a React runtime.
 
-## Phase 2 — Polymorphic engine foundation and Braids
+- Centralize semantic color, typography, spacing, geometry, focus, adjustment, disabled, loading, error, mute, solo, and selection tokens.
+- Define responsive density and sizing policies for authored desktop and Steam Deck viewports; pages must compose from policies instead of scattering resolution-specific constants.
+- Provide reusable primitives such as text roles, hairlines, keylines, focus frames, value displays, status marks, and action hints.
+- Provide configurable controls such as parameter rows, choice rows, toggles, compact sliders, faders, meters, browser rows, and modal options.
+- Provide reusable compositions such as the application shell, context switch, identity header, section, Patch strip row, Utility/Inspector panel, and footer.
+- Accept immutable props/view data and return typed semantic UI intent; components do not own Patch values, focus, navigation, reducer state, or audio state.
+- Permit carefully selected third-party egui utilities underneath the Crest layer, while Crest owns the stable component API, behavior, tokens, and visual contract.
+- Add a component gallery that renders every meaningful behavioral state and representative content at desktop and Steam Deck sizes.
+- Add `make demo-live-component-library`: play the real MIDI fixture while the scene renders the production shell through the shared components, traverses every currently applicable focus/edit/disabled/loading/error/status variant, exercises representative controls through semantic actions, and visibly demonstrates both desktop and Steam Deck composition policies.
 
-Status: **Complete** — 2026-07-25
+Phase 4 completes when later pages can be assembled from the shared vocabulary without copying paint, layout, focus, or state-visualization logic.
 
-Delivered and accepted through the Phase 2 capability-model, prepared-rack, Braids-engine, polymorphic-audio, common-envelope, and control/demo OpenSpec changes, followed by `repair-production-runtime-contracts`. The production fixture and both demos alternate SoundFont and Braids Patches through the capability-neutral reducer, prepared rack, per-voice ADSR, mixer, and hard-real-time render path; all 19 declared project checks passed at the archive checkpoint.
+## Phase 5 — Functional Patch editor blockout
 
-Prove the engine-capability architecture with two concrete engines before building a user-facing Patch page. The existing SoundFont implementation is the first engine. **Braids** is the second engine and replaces the previously planned Plaits milestone.
+Assemble the Patch experience from the component library and semantic view models.
 
-Patch and application state must describe instruments generically:
+- Implement Patch strip, Patch identity and routing, instrument selection, ordered effects, visible ADSR, and persistent Utility behavior.
+- Reuse one polymorphic detail shell for instruments and effects.
+- Render capability-provided sections, controls, bounds, units, choices, dependencies, status, and errors.
+- Keep every edit on the physical input → semantic action/event → reducer → projection path.
+- Favor functional completeness, hierarchy, focus, and responsive composition over final pixel polish.
+- Add `make demo-live-patch-editor`: play real MIDI while the scene navigates the Patch strip and polymorphic detail shell, changes the engine and effect topology where supported, edits ADSR and scalar parameters, verifies Utility behavior and exact return focus, and makes every audible edit observable.
 
-```text
-Patch
-├── stable PatchId and MIDI mapping
-├── InstrumentConfig { capability_id, values, asset references }
-├── VoiceEnvelope { attack_ms, decay_ms, sustain, release_ms }
-├── ordered PostFx slots
-└── MixerRoute
-```
+## Phase 6 — Functional Mixer blockout
 
-Instrument implementations register capability descriptors containing stable IDs, labels, ordered sections, parameter specifications, asset requirements, preparation behavior, and a prepared real-time renderer factory. A parameter specification must also declare whether a change is a latest-value scalar update or a structural change that requires off-thread preparation.
+Assemble the sixteen-track Mixer from the same component library and interaction model.
 
-The reducer, state projector, serialization, observation schema, and later UI must address capabilities and parameters by stable semantic IDs. They must not match on SoundFont or Braids to decide which fields exist. SoundFont-specific preset identity remains inside the SoundFont configuration and adapter rather than defining the shape of every Patch.
+- Keep all sixteen tracks addressable with stable semantic track/control focus.
+- Implement level, pan, mute, solo, routing summary, sends, meters, and the persistent Inspector.
+- Preserve row and track position across navigation and responsive density changes.
+- Keep status and control states explicit in text or shape as well as color.
+- Add `make demo-live-mixer`: play real MIDI across multiple Patches while the scene traverses all sixteen tracks, exercises level, pan, mute, solo, sends, meters, multi-select where implemented, and Inspector correlation, and audibly proves target isolation and routing.
 
-The real-time side owns a bounded prepared engine rack. Each Patch routes MIDI to exactly one prepared instrument and receives one distinct stereo stem. Polymorphic dispatch may occur once per Patch or render block, but never inside an engine's inner sample loop. Engine construction, asset loading, resampling preparation, graph replacement, and destruction remain off the callback. A failed or unavailable capability produces a typed visible error and never substitutes another engine.
+## Phase 7 — Detail, choice, and asset workflows
 
-### Braids adapter
+Complete the subordinate PATCH surfaces using the same shell and component vocabulary.
 
-Use and wrap the Mutable Instruments Braids C++ `MacroOscillator` implementation rather than reimplementing its synthesis algorithms. Pin the audited upstream source, preserve required copyright and license notices, compile only the required desktop-safe DSP subset, and keep C++ and FFI types behind the adapter.
+- Instrument detail and effect detail.
+- Engine, effect, route, and other choice modals with trapped focus and exact return paths.
+- Sample detail, waveform landmarks, and the controller-native Sample Browser.
+- Typed loading, unavailable, validation, and cancellation states without UI-owned domain copies.
+- Add `make demo-live-detail-and-assets`: play real MIDI while the scene opens instrument/effect details and choice surfaces, navigates the Sample Browser, previews and commits a valid asset through production preparation, exercises cancel/error paths, and returns focus to each exact origin.
 
-The first Braids descriptor exposes:
+## Phase 8 — Controller and resolution hardening
 
-- Model;
-- Timbre;
-- Color.
+Exercise the complete interface across supported input devices, viewport classes, content extremes, and lifecycle states.
 
-Pitch, note lifecycle, velocity, and voice assignment come from Crest Synth's canonical MIDI and Patch contracts. Every Braids Patch owns a distinct bank of exactly sixteen voices, using one fully prepared `MacroOscillator` instance and one independent envelope per voice. For `N` admitted active Braids Patches, capacity is `16 × N`; three Braids Patches own forty-eight voices. There is no Braids-specific Patch-count limit or global Braids voice budget—the only concurrent Patch bound is the engine-agnostic prepared rack capacity required by the hard-real-time contract. Note-on takes an idle slot or deterministically steals the oldest within only the targeted Patch, note-off releases matching slots there, and all-notes-off clears that Patch's bounded bank.
+- Verify keyboard and controller parity after input normalization.
+- Verify desktop and Steam Deck layouts, minimum targets, hierarchy, persistent context, and bounded density.
+- Test long labels, large registries, disabled dependencies, loading/failure states, rapid navigation, and schema changes.
+- Extend deterministic and physical live evidence to the graphical projections without weakening audio or teardown proofs.
+- Add `make demo-live-controller-resolution`: play real MIDI while the scene repeats a representative end-to-end workflow at desktop and Steam Deck viewports, verifies normalized keyboard/controller parity, stresses content and navigation boundaries, and proves focus, audio, and teardown remain coherent.
 
-SoundFont uses a different voice policy: each SoundFont Patch owns one synthesizer instance with engine-managed polyphony under a finite prepared real-time safety ceiling. Crest does not impose Braids' sixteen-voice limit on SoundFont and does not create one synthesizer per note. Its common envelope must reach independent native voices through the SoundFont backend; a nonconforming backend must be extended or replaced rather than hidden behind a post-stem envelope.
+## Phase 9 — Visual completion and product UI cutover
 
-Attack, Decay, Sustain, and Release are canonical Patch state rather than Braids fields. Both production engines apply that state per note; a post-stem envelope does not conform. The live scalar surface is derived generically as Patch mixer values, common ADSR values, then descriptor-classified engine values. SoundFont's preset and asset fields remain structural and visible but locked in this phase.
+Bring the functional interface to the authored visual standard and retire the diagnostic text view as the normal product surface.
 
-The upstream oscillator's 96 kHz and 24-sample rendering assumptions must be handled inside the prepared adapter with bounded scratch and an explicit sample-rate policy. Unsupported device configurations fail clearly before rendering. The callback performs no allocation, locking, blocking, I/O, logging, panic, unwinding, or destruction across the FFI boundary.
+- Reconcile composition, typography, spacing, colors, focus, adjustment, status, and responsive behavior with the Figma reference.
+- Remove accidental one-off styling and layout now covered by the shared component system.
+- Complete visual, behavioral, accessibility, performance, startup, shutdown, and physical-device acceptance.
+- Retain diagnostic projections only where they remain useful as explicit verification or support tools.
+- Add `make demo-live-product-ui`: run the final cumulative real-MIDI performance scene through PATCH, details, choices, assets, MIXER, effects, buses, responsive layouts, and production cleanup; this becomes the `make demo-live` target used for final product acceptance.
 
-Phase completion requires normal, smoke, headless-demo, and live-demo composition to alternate fixture Patches between SoundFont and Braids. Both engines must respond to targeted MIDI, render nonzero finite isolated stems, consume only their own capability parameters, and pass allocation, destruction, timing, routing, overlapping-envelope, deterministic-stealing, and controlled-negative proofs through the production reducer and render path. The headless and live scenes must modify every editable mixer, ADSR, Braids, and global parameter instance using the same schema-derived resolver.
-
-Implement this milestone as separate small OpenSpec changes:
-
-1. Introduce canonical capability descriptors, generic instrument configuration, parameter values, and update classifications; adapt the existing SoundFont path without changing its current behavior.
-2. Introduce the bounded prepared engine rack and structural graph handoff needed to host different engines on different Patches and retire replaced state off-thread.
-3. Add the canonical per-note ADSR and fixed descriptor-ordered scalar projection, including an engine-native envelope seam for the one synthesizer owned by each SoundFont Patch.
-4. Build, wrap, and prove one sixteen-voice Braids bank per Braids Patch behind the prepared-instrument boundary, including its scaling, sample-rate, block-size, FFI, source-pin, and license constraints.
-5. Prove alternating SoundFont and Braids Patches, schema-derived engine and envelope parameters, exact MIDI routing, parameter isolation, audible output, and hard real-time behavior in both demos.
-
-This phase does not add the Patch page, per-Patch effects, modulation routing, a modulation matrix, arbitrary graph editing, or plugin hosting.
-
-## Phase 3 — Schema-driven Patch page
-
-Status: **Complete** — 2026-07-26
-
-Completed increments:
-
-1. Page selection and the read-only, descriptor-driven Patch-page projection, accepted through OpenSpec change `phase-3-patch-page-projection`.
-2. Asynchronous focused-Patch engine selection, accepted on 2026-07-26 through OpenSpec change `phase-3-asynchronous-engine-selection`. The production path now performs descriptor-default SoundFont ↔ Braids replacement through one correlated capacity-one worker and complete graph handoff while the source remains audible, publishes no fallback, retires graphs off callback, and proves both directions in deterministic and physical live witnesses.
-3. Canonical PATCH ADSR focus and editing, completed on 2026-07-26 through OpenSpec change `phase-3-patch-adsr-editing`. PATCH now owns the nonwrapping Engine → Attack → Decay → Sustain → Release focus surface, reuses the existing per-voice envelope mutation and scalar snapshot path, remains coherent through engine preparation and activation, and proves every field through both engines plus the physical live demo.
-4. SoundFont preset discovery and semantic selection, completed on 2026-07-26 through OpenSpec change `phase-3-soundfont-preset-selection`. The fixed SF2 is parsed once into an authored-name, numerically ordered control catalog plus a metadata-free numeric render bank; PATCH derives Preset after Release from the descriptor and sends adjacent choices through the shared structural worker/graph lifecycle. Release-mode real-SF2, deterministic two-run, and physical live witnesses prove exact names/order, source-preserving failure and preparation, audible activation, no fallback, and zero callback allocation or destruction.
-
-Phase 3 has no remaining planned increment. Its schema-driven control and projection foundation is the base used by Phase 4's static per-Patch effect controls.
-
-Preserve the current basic interface while introducing two directly selectable pages:
-
-- `1` opens the existing view.
-- `2` opens the Patch page.
-
-Patch identity is the primary unit; MIDI channel is a Patch property rather than the thing being edited as if it were the instrument itself.
-
-The Patch page includes:
-
-- MIDI channel;
-- engine;
-- Attack;
-- Decay;
-- Sustain;
-- Release;
-- capability-provided engine-specific parameters.
-
-The page renders the active `CapabilityDescriptor`; it does not contain SoundFont or Braids field lists. The engine selector contains the installed registry entries, initially SoundFont and Braids. Selecting an engine requests off-thread preparation. The existing active instrument remains audible while the request is pending, successful preparation commits through the semantic event and prepared-graph path, and failure leaves the active configuration and graph unchanged while showing the typed error.
-
-The SoundFont descriptor exposes the locked `./sf2/HiDef.sf2` asset and the selected preset name. Holding Edit and pressing Left or Right cycles through valid discovered presets. The Braids descriptor exposes Model, Timbre, and Color.
-
-ADSR is already common semantic Patch configuration and is already applied per voice by SoundFont and Braids before this page begins. The Patch page renders those canonical fields; it must not create a second UI-owned envelope model.
-
-Implement this milestone as separate small OpenSpec changes:
-
-1. Add page selection and a Patch-page projection that renders installed capability descriptors and stable parameter IDs.
-2. Add asynchronous engine selection through worker preparation, semantic completion events, prepared-graph publication, acknowledgement, and visible failure handling.
-3. Render and edit the existing common per-voice ADSR values without duplicating their state or DSP behavior.
-4. Add SoundFont preset discovery, display by name, and Edit+Left/Right selection through the SoundFont descriptor.
-
-This phase does not add modulation routing or a modulation matrix.
-
-## Phase 4 — Static per-Patch effects
-
-Status: **Complete** — 2026-07-27
-
-Delivered and accepted through OpenSpec change `phase-4-first-static-patch-effect`, archived as `2026-07-27-phase-4-first-static-patch-effect`. The production fixture routes its first Patch through one prepared Chorus, derives Amount and Depth from the effect descriptor in the existing PATCH UI, preserves the effect configuration across structural engine changes, and proves post-engine/pre-mixer ordering, Patch isolation, independent instance state, audible stereo output, and hard-real-time callback safety in the accepted deterministic and physical live witnesses.
-
-Introduce the first per-Patch post-effects path with one MIT-licensed Mutable Instruments Rings Chorus, pinned to the audited eurorack/stmlib revisions recorded in `DESIGN.md` and exposed to the product as `Chorus`.
-
-The first topology is fixed and prebuilt:
-
-```text
-Patch engine → ordered Patch effects → Patch mix/routing
-```
-
-Effects use a separate capability descriptor/registry/provider/preparer family while sharing canonical parameter types with instruments. The first production fixture configures Chorus only on its first Patch and exposes descriptor-derived Amount and Depth rows. The Patch page renders only configured effect capabilities and their real fields; it does not expose placeholder slots or hard-code processor-specific controls.
-
-Although the topology is static, it must use the same engine/effect ownership and preparation boundaries that a later configurable graph can extend. Do not introduce arbitrary routing, dynamic graph editing, modulation, or plugin hosting in this phase.
-
-The initial adapter admits exactly 48 kHz, owns independent prepared delay/LFO state per instance, and must prove source/license hashes, order, Patch isolation, independent instances, audible stereo output, structural preservation, and callback safety through its named acceptance target plus both demos. Add later effects one at a time with their own source review and proof.
-
-Phase 4 completes this foundation roadmap.
-
-## Successor program — controller-first graphical interface
-
-This work is deliberately outside the archived phase sequence. It replaces the basic text adapter with the product interface defined by `DESIGN.md` and the linked Figma file, while preserving the proven reducer, schema-derived capability controls, audio projections, and real-time boundaries.
-
-The successor program includes the complete, integrated behavior of:
-
-- PATCH and MIXER top-level contexts;
-- Patch strip and Patch identity;
-- polymorphic instrument detail;
-- polymorphic effect detail;
-- visible ADSR editing;
-- Utility/Inspector behavior;
-- functional mixer faders;
-- sparse semantic color and minimal paneling.
-
-Those are product requirements, not a pre-sequenced implementation checklist. The program must first be explored against the complete Figma composition and current executable architecture, then divided into reviewable OpenSpec changes with their own behavioral and visual acceptance. No sequence or estimate is declared by this archived roadmap.
-
-## Other work outside this archived roadmap
+## Deferred beyond this roadmap
 
 - modulation sources and modulation routing;
-- modulation matrix UI;
-- dynamically configurable effect graphs;
-- arbitrary effect reordering and routing;
-- plugin hosting;
-- additional engines beyond SoundFont and Braids;
-- broad preset/session/library management.
+- a modulation matrix;
+- arbitrary plugin hosting;
+- additional engines and effects introduced without an individually bounded product need;
+- broad preset, session, and library management beyond the controller-first workflows above.
