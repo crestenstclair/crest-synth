@@ -165,7 +165,8 @@ impl LiveDemoCheckpoint {
                     .pointer("/patchPage/focusedControlId")
                     .and_then(serde_json::Value::as_str)
                     != Some(control_id.as_ref())
-                || !selected_text.starts_with("> ENVELOPE ")
+                || !(selected_text.starts_with("> ENVELOPE ")
+                    || selected_text.starts_with("> EFFECT_PARAMETER "))
             {
                 return Err(LiveDemoCheckpointError::CanonicalProjectionMismatch);
             }
@@ -430,12 +431,19 @@ impl LiveEngineCheckpoint {
         callback_destructions: usize,
     ) -> Result<Self, LiveDemoCheckpointError> {
         let source_audio_nonzero = source_audio_observation.is_some_and(|observation| {
+            let effect = observation.patch_effect();
             audio_fields_are_finite(observation)
                 && observation.primary_patch_id() == Some(patch_id)
                 && observation.primary_active_notes() > 0
                 && observation.primary_patch_rms() > 0.0
+                && effect.patch_id() == Some(patch_id)
+                && effect.input_rms() > 0.0
+                && effect.output_rms() > 0.0
+                && effect.difference_rms() > 0.0
+                && effect.side_rms() > 0.0
         });
         let target_audio_nonzero = audio_observation.is_some_and(|observation| {
+            let effect = observation.patch_effect();
             audio_fields_are_finite(observation)
                 && observation.active_graph_revision() == graph_revision
                 && observation.parameter_generation() == generation
@@ -443,6 +451,11 @@ impl LiveEngineCheckpoint {
                 && observation.primary_patch_id() == Some(patch_id)
                 && observation.primary_active_notes() > 0
                 && observation.primary_patch_rms() > 0.0
+                && effect.patch_id() == Some(patch_id)
+                && effect.input_rms() > 0.0
+                && effect.output_rms() > 0.0
+                && effect.difference_rms() > 0.0
+                && effect.side_rms() > 0.0
         });
         let checkpoint = Self {
             transition: transition.into(),
@@ -643,12 +656,17 @@ impl LiveEngineCheckpoint {
 }
 
 fn audio_fields_are_finite(observation: AudioObservationSnapshot) -> bool {
+    let effect = observation.patch_effect();
     observation.left_peak().is_finite()
         && observation.right_peak().is_finite()
         && observation.output_rms().is_finite()
         && observation.reverb_input_rms().is_finite()
         && observation.delay_input_rms().is_finite()
         && observation.wet_output_rms().is_finite()
+        && effect.input_rms().is_finite()
+        && effect.output_rms().is_finite()
+        && effect.difference_rms().is_finite()
+        && effect.side_rms().is_finite()
         && observation.non_finite_samples() == 0
 }
 

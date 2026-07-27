@@ -1,7 +1,7 @@
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::EventRejection;
 use crate::control::event_record::{EmittedEvent, EventDirection, EventInput, EventOutcome};
-use crate::control::patch_page_projection::PatchPageEnvelopeRow;
+use crate::control::patch_page_projection::{PatchPageEnvelopeRow, PatchPageParameterRow};
 use crate::control::state_projector::format_instrument_value;
 use crate::control::state_tree::StateTree;
 use crate::control::{PatchControlId, StructuralEditIntent, TopLevelContext};
@@ -19,7 +19,10 @@ use crate::synth::instrument_capability::{
 };
 use crate::synth::patch::{resolve_patch_editable_targets, PatchEditableTarget};
 use crate::synth::voice_envelope::VoiceEnvelope;
-use crate::synth::{CapabilityId, ParameterId};
+use crate::synth::{
+    CapabilityId, EffectCapabilityRegistry, EffectSlotId, ParameterId, PatchInteraction,
+    PostEffectConfig,
+};
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -39,6 +42,14 @@ pub enum LiveEditableParameter {
     Global {
         parameter: GlobalParameter,
     },
+    Effect {
+        #[serde(rename = "patchId")]
+        patch_id: PatchId,
+        #[serde(rename = "slotId")]
+        slot_id: EffectSlotId,
+        #[serde(rename = "parameterId")]
+        parameter_id: ParameterId,
+    },
 }
 
 impl LiveEditableParameter {
@@ -57,6 +68,14 @@ impl LiveEditableParameter {
         Self::Global { parameter }
     }
 
+    pub fn effect(patch_id: PatchId, slot_id: EffectSlotId, parameter_id: ParameterId) -> Self {
+        Self::Effect {
+            patch_id,
+            slot_id,
+            parameter_id,
+        }
+    }
+
     /// Returns a stable descriptor-derived coverage identifier.
     pub fn identifier(&self) -> String {
         match self {
@@ -64,6 +83,16 @@ impl LiveEditableParameter {
                 format!("patch.{}.{}", patch_id.value(), target.name())
             }
             Self::Global { parameter } => format!("global.{parameter}"),
+            Self::Effect {
+                patch_id,
+                slot_id,
+                parameter_id,
+            } => format!(
+                "patch.{}.effect.{}.{}",
+                patch_id.value(),
+                slot_id.value(),
+                parameter_id
+            ),
         }
     }
 
@@ -90,6 +119,9 @@ impl LiveEditableParameter {
             } => LiveAudioPredicate::DelayInput,
             Self::Patch { .. } => LiveAudioPredicate::OutputLevel,
             Self::Global { .. } => LiveAudioPredicate::WetOutput,
+            Self::Effect { patch_id, .. } => LiveAudioPredicate::PatchEffect {
+                patch_id: *patch_id,
+            },
         }
     }
 
@@ -97,6 +129,7 @@ impl LiveEditableParameter {
         match self {
             Self::Patch { target, .. } => target.name(),
             Self::Global { parameter } => parameter.name(),
+            Self::Effect { parameter_id, .. } => parameter_id.as_str(),
         }
     }
 }
@@ -110,6 +143,10 @@ pub enum LiveAudioPredicate {
     ReverbInput,
     DelayInput,
     WetOutput,
+    PatchEffect {
+        #[serde(rename = "patchId")]
+        patch_id: PatchId,
+    },
 }
 
 impl LiveAudioPredicate {
@@ -135,7 +172,19 @@ impl LiveAudioPredicate {
             Self::ReverbInput => observation.reverb_input_rms() > 0.0,
             Self::DelayInput => observation.delay_input_rms() > 0.0,
             Self::WetOutput => observation.wet_output_rms() > 0.0,
+            Self::PatchEffect { patch_id } => {
+                let effect = observation.patch_effect();
+                effect.patch_id() == Some(patch_id)
+                    && effect.input_rms() > 0.0
+                    && effect.output_rms() > 0.0
+                    && effect.difference_rms() > 0.0
+                    && effect.side_rms() > 0.0
+            }
         }
+    }
+
+    pub const fn is_patch_effect(self) -> bool {
+        matches!(self, Self::PatchEffect { .. })
     }
 }
 
@@ -423,7 +472,7 @@ pub struct LiveDemoScene {
 }
 
 impl LiveDemoScene {
-    pub const SCHEMA_VERSION: u32 = 4;
+    pub const SCHEMA_VERSION: u32 = 5;
     pub const MINIMUM_PARAMETER_DWELL: Duration = Duration::from_millis(500);
 
     /// Freezes the installed patch and current typed descriptor surface.
@@ -441,6 +490,27 @@ impl LiveDemoScene {
             || state.capabilities.descriptor(&braids).is_none()
         {
             return Err(LiveDemoSceneError::EngineFixtureUnavailable);
+        }
+        let expected_chorus = crate::adapter::chorus_capability::CHORUS_CAPABILITY_ID;
+        let expected_slot = crate::adapter::chorus_capability::CHORUS_EFFECT_SLOT_ID;
+        if state.effects.descriptors().len() != 1
+            || state.effects.descriptors()[0].id().as_str() != expected_chorus
+            || state.patches[0].post_effects.len() != 1
+            || state.patches[0].post_effects[0].capability_id().as_str() != expected_chorus
+            || state.patches[0].post_effects[0].slot_id().value() != expected_slot
+            || state
+                .patches
+                .iter()
+                .skip(1)
+                .any(|patch| !patch.post_effects.is_empty())
+            || state.patches.iter().any(|patch| {
+                state
+                    .effects
+                    .validate_patch_effects(&patch.post_effects)
+                    .is_err()
+            })
+        {
+            return Err(LiveDemoSceneError::InvalidEffectConfig);
         }
         if state.interaction.mixer_selection.section != "Patch"
             || state.interaction.mixer_selection.patch_index != 0
@@ -474,6 +544,26 @@ impl LiveDemoScene {
                     .into_iter()
                     .map(|target| LiveEditableParameter::patch_target(patch_id, target)),
             );
+            for effect in &patch.post_effects {
+                let effect_descriptor = state
+                    .effects
+                    .descriptor(effect.capability_id())
+                    .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+                expected.extend(effect_descriptor.parameters().filter_map(|spec| {
+                    let predicate_satisfied =
+                        |predicate: Option<&crate::synth::ParameterPredicate>| {
+                            predicate.is_none_or(|predicate| {
+                                effect.value(predicate.parameter_id()) == Some(predicate.equals())
+                            })
+                        };
+                    (spec.patch_interaction() == PatchInteraction::ScalarEdit
+                        && predicate_satisfied(spec.visible_when())
+                        && predicate_satisfied(spec.enabled_when()))
+                    .then(|| {
+                        LiveEditableParameter::effect(patch_id, effect.slot_id(), spec.id().clone())
+                    })
+                }));
+            }
         }
         expected.extend(
             GlobalParameters::surface_descriptor()
@@ -512,6 +602,7 @@ impl LiveDemoScene {
 
         let mut steps = Vec::new();
         build_focused_patch_envelope_steps(&state, patches[0], &mut steps)?;
+        build_focused_patch_effect_steps(&state, patches[0], &mut steps)?;
         build_patch_steps(&state, &patches, &mut steps)?;
         build_global_steps(&state, patches[0], &mut steps)?;
         let scalar_step_count = steps.len();
@@ -553,7 +644,7 @@ impl LiveDemoScene {
         }
 
         Ok(Self {
-            name: "phase-3-soundfont-preset-selection-live-demo".to_owned(),
+            name: "phase-4-first-static-patch-effect-live-demo".to_owned(),
             minimum_parameter_dwell: Self::MINIMUM_PARAMETER_DWELL,
             steps,
             scalar_step_count,
@@ -920,6 +1011,129 @@ fn build_focused_patch_envelope_steps(
             ),
         );
     }
+    Ok(())
+}
+
+fn build_focused_patch_effect_steps(
+    state: &DecodedStateTree,
+    patch: LivePatch,
+    steps: &mut Vec<LiveDemoStep>,
+) -> Result<(), LiveDemoSceneError> {
+    let decoded = state
+        .patches
+        .iter()
+        .find(|candidate| candidate.id == patch.patch_id.value())
+        .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+    if decoded.post_effects.is_empty() {
+        steps.push(LiveDemoStep::accepted_event(AppEvent::SelectContext(
+            TopLevelContext::Mixer,
+        )));
+        return Ok(());
+    }
+    let instrument_descriptor = state
+        .capabilities
+        .descriptor(decoded.instrument.capability_id())
+        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+    let controls = PatchControlId::resolve(
+        instrument_descriptor,
+        &decoded.instrument,
+        &state.effects,
+        &decoded.post_effects,
+    );
+    let mut configs = decoded.post_effects.clone();
+
+    let mut focused_index = controls
+        .iter()
+        .position(|control| {
+            control
+                == &PatchControlId::Envelope(
+                    crate::synth::VoiceEnvelopeParameter::ReleaseMilliseconds,
+                )
+        })
+        .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+    for config in &mut configs {
+        let descriptor = state
+            .effects
+            .descriptor(config.capability_id())
+            .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+        let parameter_ids = descriptor
+            .parameters()
+            .filter(|spec| {
+                let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
+                    predicate.is_none_or(|predicate| {
+                        config.value(predicate.parameter_id()) == Some(predicate.equals())
+                    })
+                };
+                spec.patch_interaction() == PatchInteraction::ScalarEdit
+                    && predicate_satisfied(spec.visible_when())
+                    && predicate_satisfied(spec.enabled_when())
+            })
+            .map(|spec| spec.id().clone())
+            .collect::<Vec<_>>();
+        for parameter_id in parameter_ids {
+            let spec = descriptor
+                .parameter(&parameter_id)
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            let control = PatchControlId::Effect(config.slot_id(), parameter_id.clone());
+            let target_index = controls
+                .iter()
+                .position(|candidate| candidate == &control)
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            for _ in focused_index..target_index {
+                steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+                    Direction::Down,
+                )));
+            }
+            focused_index = target_index;
+
+            let before_value = config
+                .value(&parameter_id)
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            let before = spec
+                .scalar_value(before_value)
+                .map_err(|_| LiveDemoSceneError::InvalidEffectConfig)?;
+            let range = spec
+                .range()
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            let direction = if f64::from(before) < range.maximum() {
+                Direction::Right
+            } else {
+                Direction::Left
+            };
+            let next = spec
+                .adjusted_scalar_value(before_value, parameter_adjustment(direction))
+                .map_err(|_| LiveDemoSceneError::InvalidPlannedAdjustment)?;
+            let after = spec
+                .scalar_value(&next)
+                .map_err(|_| LiveDemoSceneError::InvalidEffectConfig)?;
+            if before == after {
+                return Err(LiveDemoSceneError::InvalidPlannedAdjustment);
+            }
+            let updated = config
+                .with_scalar_value(descriptor, &parameter_id, next)
+                .map_err(|_| LiveDemoSceneError::InvalidEffectConfig)?;
+            let selected_text = PatchPageParameterRow::selected_effect_text(
+                descriptor,
+                &updated,
+                &parameter_id,
+                state.parameters.graph_revision,
+            )
+            .map_err(|_| LiveDemoSceneError::InvalidEffectConfig)?;
+            push_probed_checkpoint(
+                steps,
+                patch,
+                LiveDemoStep::patch_adjustment(
+                    LiveEditableParameter::effect(patch.patch_id, config.slot_id(), parameter_id),
+                    control,
+                    direction,
+                    before,
+                    after,
+                    selected_text,
+                ),
+            );
+            *config = updated;
+        }
+    }
     steps.push(LiveDemoStep::accepted_event(AppEvent::SelectContext(
         TopLevelContext::Mixer,
     )));
@@ -1239,6 +1453,45 @@ pub(crate) fn selected_parameter_value(
             }
             Ok(state.global.value(*parameter))
         }
+        LiveEditableParameter::Effect {
+            patch_id,
+            slot_id,
+            parameter_id,
+        } => {
+            let control = patch_control_id
+                .as_ref()
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            if state.interaction.context != TopLevelContext::Patch
+                || state.interaction.patch_focus != Some(patch_id.value())
+                || state.interaction.patch_control_focus.as_ref() != Some(control)
+                || control != &PatchControlId::Effect(*slot_id, parameter_id.clone())
+            {
+                return Err(LiveDemoSceneError::SelectedParameterMismatch);
+            }
+            let patch = state
+                .patches
+                .iter()
+                .find(|patch| patch.id == patch_id.value())
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            let config = patch
+                .post_effects
+                .iter()
+                .find(|config| config.slot_id() == *slot_id)
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            let descriptor = state
+                .effects
+                .descriptor(config.capability_id())
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            descriptor
+                .parameter(parameter_id)
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?
+                .scalar_value(
+                    config
+                        .value(parameter_id)
+                        .ok_or(LiveDemoSceneError::InvalidEffectConfig)?,
+                )
+                .map_err(|_| LiveDemoSceneError::InvalidEffectConfig)
+        }
     }
 }
 
@@ -1291,6 +1544,58 @@ pub(crate) fn projected_parameter_values(
             state.global.value(*parameter),
             state.parameters.global.value(*parameter),
         )),
+        LiveEditableParameter::Effect {
+            patch_id,
+            slot_id,
+            parameter_id,
+        } => {
+            let patch = state
+                .patches
+                .iter()
+                .find(|patch| patch.id == patch_id.value())
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            let config = patch
+                .post_effects
+                .iter()
+                .find(|config| config.slot_id() == *slot_id)
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            let descriptor = state
+                .effects
+                .descriptor(config.capability_id())
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            let scalar_index = descriptor
+                .scalar_parameters()
+                .position(|spec| spec.id() == parameter_id)
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            let state_value = descriptor
+                .parameter(parameter_id)
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?
+                .scalar_value(
+                    config
+                        .value(parameter_id)
+                        .ok_or(LiveDemoSceneError::InvalidEffectConfig)?,
+                )
+                .map_err(|_| LiveDemoSceneError::InvalidEffectConfig)?;
+            let projected = state
+                .parameters
+                .patches
+                .iter()
+                .find(|patch| patch.patch_id == patch_id.value())
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            if !projected.effect.active
+                || projected.effect.slot_id != Some(*slot_id)
+                || projected.effect.scalar_count != descriptor.scalar_parameter_count()
+                || projected.effect.scalars.len() != projected.effect.scalar_count
+            {
+                return Err(LiveDemoSceneError::InvalidEffectConfig);
+            }
+            let projected_value = *projected
+                .effect
+                .scalars
+                .get(scalar_index)
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            Ok((state_value, projected_value))
+        }
     }
 }
 
@@ -1298,6 +1603,8 @@ pub(crate) fn projected_parameter_values(
 #[serde(rename_all = "camelCase")]
 struct DecodedStateTree {
     capabilities: CapabilityRegistry,
+    #[serde(default)]
+    effects: EffectCapabilityRegistry,
     patches: Vec<DecodedPatch>,
     global: DecodedGlobal,
     interaction: DecodedInteraction,
@@ -1319,6 +1626,8 @@ struct DecodedPatch {
     id: u32,
     channel: u8,
     instrument: InstrumentConfig,
+    #[serde(default)]
+    post_effects: Vec<PostEffectConfig>,
     envelope: VoiceEnvelope,
     parameters: DecodedChannel,
 }
@@ -1380,6 +1689,7 @@ struct DecodedSelection {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecodedParameterSnapshot {
+    graph_revision: GraphRevision,
     patches: Vec<DecodedParameterPatch>,
     global: DecodedGlobal,
 }
@@ -1390,7 +1700,17 @@ struct DecodedParameterPatch {
     patch_id: u32,
     envelope: VoiceEnvelope,
     instrument: DecodedInstrumentParameters,
+    effect: DecodedEffectParameters,
     parameters: DecodedChannel,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecodedEffectParameters {
+    active: bool,
+    slot_id: Option<EffectSlotId>,
+    scalar_count: usize,
+    scalars: Vec<f32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1413,6 +1733,7 @@ pub enum LiveDemoSceneError {
     DuplicatePatchId(u32),
     InvalidMidiChannel(u8),
     InvalidInstrumentConfig,
+    InvalidEffectConfig,
     EngineFixtureUnavailable,
     PresetFixtureUnavailable,
     InvalidPlannedAdjustment,
@@ -1445,6 +1766,9 @@ impl fmt::Display for LiveDemoSceneError {
             ),
             Self::InvalidInstrumentConfig => {
                 formatter.write_str("installed state contains an invalid instrument schema/config")
+            }
+            Self::InvalidEffectConfig => {
+                formatter.write_str("installed state contains an invalid Patch effect schema/config")
             }
             Self::EngineFixtureUnavailable => formatter.write_str(
                 "live engine proof requires the focused first Patch on SoundFont and installed Braids",

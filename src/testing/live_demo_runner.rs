@@ -15,7 +15,8 @@ use crate::real_time::audio_boundary::ControlAudioBoundary;
 use crate::real_time::audio_observation::ControlAudioObservation;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
 use crate::synth::{
-    InstrumentConfig, ParameterDefault, ParameterKind, ParameterValue, VoiceEnvelope,
+    InstrumentConfig, ParameterDefault, ParameterKind, ParameterValue, PostEffectConfig,
+    VoiceEnvelope,
 };
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::live_demo_checkpoint::{
@@ -56,6 +57,7 @@ pub struct LiveDemoRunner<Source, Observation> {
     last_ready_graph_revision: crate::real_time::GraphRevision,
     engine_envelope_baseline: Option<VoiceEnvelope>,
     structural_config_baseline: Option<InstrumentConfig>,
+    structural_effect_baseline: Option<Vec<PostEffectConfig>>,
     cleanup_sequence_before: Option<u64>,
     completed_report: Option<LiveDemoReport>,
     runtime_audio: RuntimeAudioWitness,
@@ -97,6 +99,7 @@ where
             last_ready_graph_revision,
             engine_envelope_baseline: None,
             structural_config_baseline: None,
+            structural_effect_baseline: None,
             cleanup_sequence_before: None,
             completed_report: None,
             runtime_audio,
@@ -178,6 +181,8 @@ where
         if let Some(pending) = &self.pending_checkpoint {
             return if pending.checkpoint.is_some() {
                 "parameter projection dwell"
+            } else if pending.predicate.is_patch_effect() {
+                "Patch effect audio observation"
             } else {
                 "parameter audio observation"
             };
@@ -414,6 +419,7 @@ where
                     .ok_or(LiveDemoError::EngineLifecycleMismatch)?;
                 self.engine_envelope_baseline = Some(*patch.envelope());
                 self.structural_config_baseline = Some(patch.instrument_config().clone());
+                self.structural_effect_baseline = Some(patch.post_effects().to_vec());
                 self.engine_phase = LiveEnginePhase::FocusControl;
                 self.mark_progress();
                 Ok(None)
@@ -510,6 +516,7 @@ where
                     || observation.primary_patch_id() != Some(transition.patch_id())
                     || observation.primary_active_notes() == 0
                     || observation.primary_patch_rms() <= 0.0
+                    || !effect_stage_matches(observation, transition.patch_id())
                     || observation.routing_failures() != 0
                 {
                     return Ok(None);
@@ -703,6 +710,7 @@ where
                 if observation.primary_patch_id() != Some(transition.patch_id())
                     || observation.primary_active_notes() == 0
                     || observation.primary_patch_rms() <= 0.0
+                    || !effect_stage_matches(observation, transition.patch_id())
                 {
                     return Ok(None);
                 }
@@ -756,6 +764,7 @@ where
                         .ok_or(LiveDemoError::EngineLifecycleMismatch)?;
                     self.engine_envelope_baseline = Some(*patch.envelope());
                     self.structural_config_baseline = Some(patch.instrument_config().clone());
+                    self.structural_effect_baseline = Some(patch.post_effects().to_vec());
                     LiveEnginePhase::FocusControl
                 } else {
                     LiveEnginePhase::RestoreMixer
@@ -843,6 +852,9 @@ where
             .ok_or(LiveDemoError::EngineProjectionMismatch)?;
         if self.engine_envelope_baseline.as_ref() != Some(patch.envelope()) {
             return Err(LiveDemoError::EngineProjectionMismatch);
+        }
+        if self.structural_effect_baseline.as_deref() != Some(patch.post_effects()) {
+            return Err(LiveDemoError::EngineTargetConfigMismatch);
         }
         let baseline = self
             .structural_config_baseline
@@ -1009,6 +1021,19 @@ where
         }
         if !audio_is_finite(observation) {
             return Err(LiveDemoError::NonFiniteAudioObservation);
+        }
+        let focused_patch = self
+            .scene
+            .patch_ids()
+            .next()
+            .ok_or(LiveDemoError::EngineTargetConfigMismatch)?;
+        let final_patch = app_loop
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == focused_patch)
+            .ok_or(LiveDemoError::EngineTargetConfigMismatch)?;
+        if self.structural_effect_baseline.as_deref() != Some(final_patch.post_effects()) {
+            return Err(LiveDemoError::EngineTargetConfigMismatch);
         }
 
         let installed: Vec<_> = self.scene.patch_ids().collect();
@@ -1359,6 +1384,7 @@ fn verify_record(
 }
 
 fn audio_is_finite(observation: AudioObservationSnapshot) -> bool {
+    let effect = observation.patch_effect();
     observation.left_peak().is_finite()
         && observation.right_peak().is_finite()
         && observation.output_rms().is_finite()
@@ -1366,7 +1392,23 @@ fn audio_is_finite(observation: AudioObservationSnapshot) -> bool {
         && observation.delay_input_rms().is_finite()
         && observation.wet_output_rms().is_finite()
         && observation.primary_patch_rms().is_finite()
+        && effect.input_rms().is_finite()
+        && effect.output_rms().is_finite()
+        && effect.difference_rms().is_finite()
+        && effect.side_rms().is_finite()
         && observation.non_finite_samples() == 0
+}
+
+fn effect_stage_matches(
+    observation: AudioObservationSnapshot,
+    patch_id: crate::kernel::PatchId,
+) -> bool {
+    let effect = observation.patch_effect();
+    effect.patch_id() == Some(patch_id)
+        && effect.input_rms() > 0.0
+        && effect.output_rms() > 0.0
+        && effect.difference_rms() > 0.0
+        && effect.side_rms() > 0.0
 }
 
 /// A typed live orchestration failure suitable for visible standalone output.

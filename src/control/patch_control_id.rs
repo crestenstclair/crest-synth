@@ -1,6 +1,6 @@
 use crate::synth::{
-    CapabilityDescriptor, InstrumentConfig, ParameterId, PatchInteraction, VoiceEnvelope,
-    VoiceEnvelopeParameter,
+    CapabilityDescriptor, EffectCapabilityRegistry, EffectSlotId, InstrumentConfig, ParameterId,
+    PatchInteraction, PostEffectConfig, VoiceEnvelope, VoiceEnvelopeParameter,
 };
 use core::fmt;
 use core::str::FromStr;
@@ -15,6 +15,7 @@ pub enum PatchControlId {
     Engine,
     Envelope(VoiceEnvelopeParameter),
     Capability(ParameterId),
+    Effect(EffectSlotId, ParameterId),
 }
 
 impl PatchControlId {
@@ -48,13 +49,21 @@ impl PatchControlId {
             Self::Capability(parameter_id) => {
                 Cow::Owned(format!("patch.capability.{parameter_id}"))
             }
+            Self::Effect(slot_id, parameter_id) => {
+                Cow::Owned(format!("patch.effect.{slot_id}.{parameter_id}"))
+            }
         }
     }
 
     /// Resolves the complete PATCH focus surface from the active descriptor and
     /// canonical config. This is the sole ordering/filtering authority used by
     /// reducer navigation and projections.
-    pub fn resolve(descriptor: &CapabilityDescriptor, config: &InstrumentConfig) -> Vec<Self> {
+    pub fn resolve(
+        descriptor: &CapabilityDescriptor,
+        config: &InstrumentConfig,
+        effect_registry: &EffectCapabilityRegistry,
+        post_effects: &[PostEffectConfig],
+    ) -> Vec<Self> {
         let mut controls = Self::surface_descriptor().to_vec();
         for spec in descriptor.parameters() {
             let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
@@ -67,6 +76,24 @@ impl PatchControlId {
                 && predicate_satisfied(spec.enabled_when())
             {
                 controls.push(Self::Capability(spec.id().clone()));
+            }
+        }
+        for effect in post_effects {
+            let Some(effect_descriptor) = effect_registry.descriptor(effect.capability_id()) else {
+                continue;
+            };
+            for spec in effect_descriptor.parameters() {
+                let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
+                    predicate.is_none_or(|predicate| {
+                        effect.value(predicate.parameter_id()) == Some(predicate.equals())
+                    })
+                };
+                if spec.patch_interaction() == PatchInteraction::ScalarEdit
+                    && predicate_satisfied(spec.visible_when())
+                    && predicate_satisfied(spec.enabled_when())
+                {
+                    controls.push(Self::Effect(effect.slot_id(), spec.id().clone()));
+                }
             }
         }
         controls
@@ -114,6 +141,17 @@ impl FromStr for PatchControlId {
                 ParameterId::new(parameter)
                     .map(Self::Capability)
                     .map_err(|_| ParsePatchControlIdError)
+            }
+            value if value.starts_with("patch.effect.") => {
+                let suffix = value
+                    .strip_prefix("patch.effect.")
+                    .expect("the prefix was just matched");
+                let (slot, parameter) = suffix.split_once('.').ok_or(ParsePatchControlIdError)?;
+                let slot = slot.parse::<u16>().map_err(|_| ParsePatchControlIdError)?;
+                let slot = EffectSlotId::new(slot).map_err(|_| ParsePatchControlIdError)?;
+                let parameter =
+                    ParameterId::new(parameter).map_err(|_| ParsePatchControlIdError)?;
+                Ok(Self::Effect(slot, parameter))
             }
             _ => Err(ParsePatchControlIdError),
         }

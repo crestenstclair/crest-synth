@@ -23,6 +23,7 @@ project: contexts: RealTime: {
 			graphRevision: "GraphRevision"
 			patchCount: "usize"
 			patches: "[RtPatchParameters; MAX_PATCHES]"
+			postEffects: "[RtPostEffectParameters; MAX_PATCHES]"
 			global: "GlobalParameters"
 		}
 		invariants: [
@@ -31,12 +32,14 @@ project: contexts: RealTime: {
 			"unused entries are inactive",
 			"the snapshot is fully owned, fixed-size, and readable without allocation",
 			"each RtPatchParameters contains PatchId, ChannelParameters, VoiceEnvelope, scalarCount, and a descriptor-ordered [f32; 16] engine-scalar array fixed by the active graph revision",
+			"postEffects is a separate Patch-aligned zero-or-one-slot section whose active entry carries stable EffectSlotId, scalarCount, and descriptor-ordered [f32; 8] effect values fixed by the active graph revision",
 			"choice values are encoded as descriptor indices and snapshots contain no string, vector, asset, capability union, engine object, or destructor-bearing owner",
 			"a production-owned typed leaf descriptor covers generation, graphRevision, patchCount, every active PatchId/channel/envelope/scalar parameter, and every global parameter and exactly matches the StateTree parameters projection",
 		]
 		contributesTo: [
 			{capability: "capability.one_way_parameter_control", contribution: "carries accepted AppState values to audio"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "carries the exact descriptor scalar layout for the source or committed target graph revision"},
+			{capability: "capability.static_patch_effect", contribution: "carries the latest complete effect scalars without sharing instrument layout storage"},
 			{capability: "capability.realtime_execution", contribution: "provides a fixed-size latest-wins callback input"},
 		]
 	}
@@ -67,7 +70,7 @@ project: contexts: RealTime: {
 
 	aggregates: PreparedGraph: {
 		root: true
-		purpose: "own one complete callback-ready engine, mixer, effect, routing, stem, and scratch configuration"
+		purpose: "own one complete callback-ready engine, ordered Patch effect, mixer/global-effect, routing, stem, and scratch configuration"
 		state: {
 			revision: "GraphRevision"
 			sampleRate: "f32"
@@ -75,15 +78,16 @@ project: contexts: RealTime: {
 			initialParameters: "ParameterSnapshot"
 			engineRack: "PreparedEngineRack"
 			patchAudio: "PatchAudioBlock"
+			postEffectRack: "PreparedPostEffectRack"
 			mixer: "MixEngine<GlobalReverbDelay>"
 		}
 		invariants: [
 			"all owned engines, parsed assets, voices, effect memory, stems, routing, and scratch capacity are fully prepared outside the callback",
 			"revision is nonzero and equals initialParameters.graphRevision",
-			"the rack, parameter snapshot, descriptor scalar layouts, stems, and mixer routing contain the same PatchIds in the same bounded order",
+			"the engine rack, post-effect rack, parameter snapshot, instrument/effect scalar layouts, stems, and mixer routing contain the same PatchIds in the same bounded order",
 			"sampleRate and maxFrames come from the accepted negotiated AudioDeviceConfig and are validated once before the device stream starts",
 			"every graph render block is bounded by maxFrames; a larger native device callback is completely rendered as consecutive bounded blocks without truncation or a silent tail",
-			"a replacement preserves the accepted PatchId set, order, rack capacity, routes, mixer values, and device bounds while permitting exactly the selected Patch config delta named by StructuralEditIntent—capability/default layout or one descriptor-owned structural choice—to change to its validated candidate config",
+			"a replacement preserves the accepted PatchId set, order, rack capacity, routes, mixer values, ordered PostEffectConfigs, effect scalar layouts, and device bounds while permitting exactly the selected instrument config delta named by StructuralEditIntent—capability/default layout or one descriptor-owned structural choice—to change to its validated candidate config",
 			"initialParameters is refreshed from the exact committed EnginePrepared generation immediately before publication so scalar edits accepted during preparation cannot be reverted by the swap",
 			"moving graph ownership through a queue performs no allocation or destruction; destruction is permitted only after the retired graph reaches control or worker ownership",
 		]
@@ -91,6 +95,7 @@ project: contexts: RealTime: {
 			{capability: "capability.prepared_engine_rack", contribution: "makes structural audio state one complete ownership-transfer unit"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "carries one fully prepared target engine and its committed scalar layout as an atomic replacement"},
 			{capability: "capability.global_mix", contribution: "keeps the existing reverb, delay, routing, and mixer prepared with the engine rack"},
+			{capability: "capability.static_patch_effect", contribution: "owns the prepared ordered Patch-local processing stage independently from the mixer-owned global effects"},
 			{capability: "capability.realtime_execution", contribution: "prevents partially prepared topology from reaching the callback"},
 		]
 	}
@@ -117,7 +122,7 @@ project: contexts: RealTime: {
 	}
 
 	valueObjects: PatchAudioBlock: {
-		description: "caller-owned prepared stereo stems that preserve Patch identity between the prepared instrument rack and mixing"
+		description: "caller-owned prepared stereo stems that preserve Patch identity from instrument rendering through ordered Patch effects into mixing"
 		state: {
 			patchCount: "usize"
 			frameCount: "usize"
@@ -127,12 +132,14 @@ project: contexts: RealTime: {
 			"capacity for MAX_PATCHES and maxFrames is allocated only while building a PreparedGraph outside the callback",
 			"each active stem is keyed by the same PatchId and index as ParameterSnapshot.patches",
 			"one stem contains only audio produced by that Patch's assigned PreparedInstrument slot",
+			"a configured PreparedPostEffectRack slot may mutate only that same stem in place before MixEngine reads it",
 			"clearing, filling, and reading active frames are allocation-free",
 		]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "preserves one independently routable stem for each capability-neutral rack slot"},
 			{capability: "capability.soundfont_audio", contribution: "preserves Patch identity after synthesis instead of collapsing all voices to one master stream"},
 			{capability: "capability.global_mix", contribution: "gives MixEngine an independently controllable signal for every Patch"},
+			{capability: "capability.static_patch_effect", contribution: "is the exact identity-preserving carrier processed between engine and mixer"},
 			{capability: "capability.realtime_execution", contribution: "provides prepared callback-owned synthesis scratch storage"},
 		]
 	}
@@ -171,6 +178,7 @@ project: contexts: RealTime: {
 			reverbInputRms: "f32"
 			delayInputRms: "f32"
 			wetOutputRms: "f32"
+			patchEffect: "PatchEffectObservation"
 			nonFiniteSamples: "u64"
 			clippedSamples: "u64"
 		}
@@ -178,6 +186,7 @@ project: contexts: RealTime: {
 			"the snapshot is Copy, fixed-size, numeric, and contains no Vec, String, path, reference, mutex, decoder, allocation, or destructible owner",
 			"sequence and renderedBlocks increase monotonically and parameterGeneration is the exact ParameterSnapshot generation used for the measured block",
 			"peak, RMS, wet-input, and wet-output fields copy the MixObservation produced from the actual mixer-owned buffers for that observation window",
+			"patchEffect copies fixed pre/post/difference/side measurements from the exact configured Patch stem around PreparedPostEffectRack processing",
 			"activeNotes is maintained by a prepared fixed-capacity Patch/channel/note bitset updated only when the callback dispatches the corresponding MIDI lifecycle command; Patch-targeted or global all-notes-off clears it with bounded work",
 			"routingFailures increments exactly once for each PatchMidi command whose PatchId is absent from either the compatible parameter projection or prepared rack, and lastUnknownPatchId retains that exact identity without fallback or broadcast",
 			"the callback updates nonFiniteSamples and clippedSamples instead of logging, formatting, panicking, or performing I/O",
@@ -257,9 +266,10 @@ project: contexts: RealTime: {
 	}
 
 	applicationServices: PreparedGraphBuilder: {
-		purpose: "prepare one complete graph from a bounded engine rack and current mixer topology before publication"
+		purpose: "prepare one complete graph from bounded engine/effect racks and current mixer topology before publication"
 		uses: [
 			"applicationService.Synth.PreparedEngineRackBuilder",
+			"applicationService.Synth.PreparedPostEffectRackBuilder",
 			"aggregate.RealTime.PreparedGraph",
 			"valueObject.RealTime.ParameterSnapshot",
 			"domainService.Mixer.MixEngine",
@@ -269,16 +279,17 @@ project: contexts: RealTime: {
 			build: {input: {revision: "GraphRevision", patches: "&[Patch]", parameters: "ParameterSnapshot", sampleRate: "f32", maxFrames: "usize"}, output: {result: "Result<PreparedGraph, GraphPreparationError>"}}
 		}
 		meta: rules: [
-			"run only on control or worker ownership and finish engine, asset, voice, effect, routing, stem, and scratch preparation before returning",
-			"require the supplied parameter graphRevision, PatchIds, order, and count to match the prepared rack exactly",
+			"run only on control or worker ownership and finish engine, asset, voice, Patch effect, global effect, routing, stem, and scratch preparation before returning",
+			"require the supplied parameter graphRevision, PatchIds, order, count, stable effect slots, and instrument/effect scalar layouts to match both prepared racks exactly",
 			"fail atomically with a typed error on any capacity, format, capability, asset, engine, effect, routing, or allocation failure and never return a partial graph",
-			"use the existing one global reverb and one global delay topology without introducing Patch effects, arbitrary graph edges, or feedback cycles",
-			"for structural editing preserve PatchIds, order, count, routes, mixer values, envelopes, device bounds, and untargeted configs exactly while allowing only the selected Patch candidate config and any resulting descriptor scalar layout to differ according to StructuralEditIntent",
+			"construct the fixed PreparedEngineRack to PatchAudioBlock to PreparedPostEffectRack to MixEngine topology; MixEngine retains exactly one global reverb and delay and no arbitrary graph edge or feedback cycle exists",
+			"for structural editing preserve PatchIds, order, count, routes, mixer values, envelopes, ordered PostEffectConfigs, effect scalar layouts, device bounds, and untargeted instrument configs exactly while allowing only the selected Patch instrument candidate and resulting instrument scalar layout to differ according to StructuralEditIntent",
 		]
 		validations: [{id: "validation.service.prepared_graph_builder", kind: "test", command: ["cargo", "test", "prepared_graph_builder"], description: "complete compatible graphs prepare deterministically while every partial, mismatched, unsupported, or over-capacity input fails before publication"}]
 		contributesTo: [
 			{capability: "capability.prepared_engine_rack", contribution: "turns accepted structural state into one complete callback-ready ownership unit"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "builds the exact complete candidate consumed by the correlated worker result"},
+			{capability: "capability.static_patch_effect", contribution: "prepares the fixed ordered Patch effect stage and preserves it across instrument rebuilds"},
 			{capability: "capability.realtime_execution", contribution: "keeps every allocating preparation step outside the callback"},
 		]
 	}
@@ -300,7 +311,7 @@ project: contexts: RealTime: {
 			"run only outside the audio callback and preserve ownership of a graph rejected by queue pressure",
 			"allow exactly one correlated revision in flight and reject another submission until the previous target is active, its source is acknowledged retired, and the returned graph is collected",
 			"if publication pressure returns the graph, retain exactly one staged complete graph on control ownership and retry it before polling another worker result; never rollback committed AppState or drop, rebuild, or substitute the graph",
-			"a candidate may change only the selected Patch config delta and resulting scalar layout named by StructuralEditIntent while keeping PatchIds, order, capacities, routes, mixer values, and device configuration exact; retain the source layout until acknowledgement and adopt the target layout only after collection",
+			"a candidate may change only the selected Patch InstrumentConfig delta and resulting instrument scalar layout named by StructuralEditIntent while keeping PatchIds, order, capacities, routes, mixer values, ordered PostEffectConfigs, effect scalar layouts, and device configuration exact; retain the source layout until acknowledgement and adopt the target layout only after collection",
 			"collect returned graphs on control or worker ownership where destructors are allowed",
 			"never mutate AppState, fabricate an acknowledgement, publish a partial graph, or substitute another graph after failure",
 			"correlate request id, StructuralEditIntent, and source/target revisions with EngineSelectionStatus but never mutate AppState or store the status itself",
@@ -313,31 +324,34 @@ project: contexts: RealTime: {
 	}
 
 	applicationServices: AudioRenderer: {
-		purpose: "swap complete prepared graphs at block boundaries, consume ready commands and compatible parameters, render the active engine rack, then mix its prepared global effects"
+		purpose: "swap complete prepared graphs at block boundaries, consume ready commands and compatible parameters, render instruments, process ordered Patch effects, then mix prepared global effects"
 		uses: [
 			"port.RealTime.AudioBoundary",
 			"port.RealTime.StructuralGraphBoundary",
 			"port.RealTime.AudioObservation",
 			"aggregate.RealTime.PreparedGraph",
 			"aggregate.RealTime.PreparedEngineRack",
+			"aggregate.RealTime.PreparedPostEffectRack",
 			"valueObject.Mixer.MixObservation",
+			"valueObject.RealTime.PatchEffectObservation",
 		]
 		operations: {
 			fromPrepared: {input: {initialGraph: "PreparedGraph"}, output: {result: "Result<AudioRenderer, AudioError>"}}
 			render: {input: {interleavedStereo: "&mut [f32]"}, output: {}}
 		}
 		meta: rules: [
-			"construction receives one completely prepared initial graph before the callback starts and never prepares an engine, mixer, effect, route, or buffer itself",
+			"construction receives one completely prepared initial graph before the callback starts and never prepares an engine, Patch effect, mixer/global effect, route, or buffer itself",
 			"at the start of a render block, if no prior retired graph occupies the bounded callback retirement slot, take at most one prepared replacement, swap the complete graph, activate its initial parameters, and publish the active revision",
 			"every engine or preset replacement follows the identical bounded swap path; it may reset voices and global-effect tails and makes no seamless migration claim",
 			"move the replaced graph into the dedicated return queue; if that queue is full, retain it in the one preallocated callback retirement slot and retry on later blocks without taking another replacement or destroying it",
 			"publish retiredRevision only after the return queue owns the old graph; control does not submit another structure until that acknowledgement is observed and collected",
-			"render drains only currently available AudioCommands, reads one latest ParameterSnapshot compatible with the active graph revision, PatchIds, and scalar layouts, gives each targeted dispatch and each per-Patch render only its matching RtPatchParameters, passes all matching stems and mixer values to the active graph's MixEngine, and returns",
+			"render drains only currently available AudioCommands, reads one latest ParameterSnapshot compatible with the active graph revision, PatchIds, stable effect slots, and instrument/effect scalar layouts, gives each targeted dispatch and per-Patch render only its matching RtPatchParameters, processes each configured stem once through PreparedPostEffectRack using matching RtPostEffectParameters, then passes the processed stems and mixer values to MixEngine",
+			"the callback signal order is engine rack, PatchAudioBlock, ordered post-effect rack, then Patch gain/pan/sends and global mix; neither MixEngine nor a renderer capability branch implements Chorus",
 			"render divides an oversized interleaved stereo callback into complete consecutive blocks of at most PreparedGraph.maxFrames and renders every complete device frame without a silently cleared tail",
 			"an unknown PatchMidi identity leaves every prepared instrument unchanged and is preserved as one fixed-size routing failure in the same injected AudioObservation path",
 			"one engine-managed SoundFont synthesizer per SoundFont Patch plus every Patch-local Braids FFI bank, sixteen-voice bank iteration, 24-sample internal rendering, per-note envelopes, and 2:1 conversion remain inside the same no-allocation callback contract",
 			"PatchId and Patch index remain aligned from AudioCommand through the synthesis stem and ChannelParameters; a combined engine master buffer must never be treated as one Patch's input",
-			"after rendering each block, combine MixEngine's MixObservation with bounded command and active-note counters and publish one AudioObservationSnapshot tagged with the consumed ParameterSnapshot generation",
+			"after rendering each block, combine PatchEffectObservation, MixEngine's MixObservation, and bounded command/active-note counters into one AudioObservationSnapshot tagged with the consumed ParameterSnapshot generation",
 			"the active-note observer is prepared outside the callback, has explicit Patch, channel, and note bounds, saturates counters on overflow, and never controls or substitutes prepared instrument state",
 			"audio observations never change rendering, synth state, mix state, event coverage, or acceptance results and never call a control-side serializer or logger",
 			"render never allocates, deallocates, locks, blocks, performs I/O, logs, formats strings, grows a collection, panics, unwinds, or destroys owned state",
@@ -354,6 +368,7 @@ project: contexts: RealTime: {
 			{capability: "capability.soundfont_audio", contribution: "joins the SoundFont and global mixer into the callback"},
 			{capability: "capability.braids_engine", contribution: "joins the pinned Braids renderer through the same matching Patch projection and rack"},
 			{capability: "capability.per_voice_envelope", contribution: "delivers common ADSR values to independent note voices without adding a post-stem processor"},
+			{capability: "capability.static_patch_effect", contribution: "processes the matching Patch stem through the prepared effect rack before mix and publishes bounded causal measurements"},
 			{capability: "capability.live_observable_demo", contribution: "publishes measured callback consequences for the live scene without changing the render path"},
 			{capability: "capability.realtime_execution", contribution: "owns the hard real-time render operation"},
 		]

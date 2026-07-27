@@ -3,7 +3,7 @@ package crestsynth
 project: contexts: Synth: {
 	purpose: "capability-polymorphic Patch identity, off-thread instrument preparation, and bounded prepared rendering"
 	ubiquitousLanguage: {
-		Patch: "one playable instrument configuration identified by a capability rather than an engine-specific aggregate shape"
+		Patch: "one playable instrument configuration plus its ordered Patch-local post effects, identified by stable capability/config values"
 		SoundFontInstrument: "the MIDI fixture's source bank, program, and percussion request before catalog resolution"
 	}
 
@@ -50,11 +50,12 @@ project: contexts: Synth: {
 
 	aggregates: Patch: {
 		root: true
-		purpose: "own one instrument capability config, assigned MIDI channel, identity, common voice envelope, and editable mixer parameters"
+		purpose: "own one instrument capability config, ordered post-effect configs, assigned MIDI channel, identity, common voice envelope, and editable mixer parameters"
 		state: {
 			id: "PatchId"
 			name: "String"
 			instrument: "InstrumentConfig"
+			postEffects: "Vec<PostEffectConfig>"
 			channel: "MidiChannel"
 			envelope: "VoiceEnvelope"
 			parameters: "ChannelParameters"
@@ -62,10 +63,12 @@ project: contexts: Synth: {
 		invariants: [
 			"id is stable for the process lifetime",
 			"instrument capability and configuration are validated against the installed CapabilityRegistry before Patch construction",
+			"postEffects preserve declared order, contain unique stable EffectSlotIds, validate against the immutable EffectCapabilityRegistry, and have current capacity zero or one",
+			"the production fixture configures exactly one effect.chorus slot on its first Patch and no slot on every other Patch; the aggregate contains no placeholder, bypass, selector, or fallback effect",
 			"descriptor-classified Scalar values may change through the canonical reducer; engine and descriptor-declared structural-choice edits atomically replace the complete InstrumentConfig only after one correlated candidate is prepared",
 			"channel is assigned by the input adapter and is in 0..=15",
 			"ChannelParameters, VoiceEnvelope, and active descriptor-classified Scalar instrument values form one schema-derived editable surface",
-			"Patch contains no SoundFont-only field, engine object, descriptor copy, prepared renderer, decoded asset, UI state, or fallback configuration",
+			"Patch contains no SoundFont-only or Chorus-specific field, engine/effect object, descriptor copy, prepared renderer, decoded asset, UI state, or fallback configuration",
 		]
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "makes one canonical Patch aggregate support capability-owned instrument schemas"},
@@ -75,6 +78,7 @@ project: contexts: Synth: {
 			{capability: "capability.schema_driven_patch_page", contribution: "supplies stable Patch identity, MIDI channel, active config, and envelope to the focused page"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "retains Patch identity, MIDI channel, envelope, and mixer routing while replacing only its prepared InstrumentConfig"},
 			{capability: "capability.soundfont_preset_selection", contribution: "retains every Patch field while replacing only the preset assignment inside its validated config"},
+			{capability: "capability.static_patch_effect", contribution: "owns the canonical ordered effect configs independently from prepared DSP and mixer state"},
 		]
 	}
 
@@ -168,7 +172,7 @@ project: adapters: HiDefSoundFontPreparer: {
 			"prepare exactly one rustysynth-compatible synthesizer for each accepted instrument.soundfont.hidef Patch using the resolved numeric bank, program, derived percussion channel, and fixed asset assignment; all Patch synthesizers share only the numeric immutable bank",
 			"inside each prepared instrument use rustysynth's percussion channel for a percussion Patch and a melodic channel for every other Patch, regardless of the Patch's logical assigned channel",
 			"the private prepared value implements PreparedInstrument, delegates polyphony to its one Patch-local synthesizer, and applies the Patch VoiceEnvelope independently through an engine-native per-note seam before native voices enter the caller-owned stem",
-			"disable rustysynth's built-in reverb and chorus so the declared global effects are the only effects",
+			"disable rustysynth's built-in reverb and chorus so only the separately declared Patch Chorus and mixer-owned global reverb/delay stages process SoundFont output",
 			"the descriptor declares EngineManaged polyphony and Crest does not impose a sixteen-note limit, create a synthesizer per note, or share mutable synthesizer state between Patches; the preparer still declares and proves a finite internal callback-work ceiling",
 			"if rustysynth cannot implement the common ADSR independently on overlapping native voices, extend the adapter or replace the backend rather than apply a post-stem envelope, create sixteen synthesizers per Patch, ignore a control, or claim conformance",
 			"the PreparedInstrument and its shared bank retain no raw rustysynth SoundFont, String, authored name, catalog, descriptor, InstrumentConfig, or filesystem path",

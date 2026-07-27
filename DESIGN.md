@@ -19,7 +19,7 @@ Do not add another architecture, handoff, phase plan, or competing product desig
 
 Crest Synth is a standalone, controller-first MIDI instrument host for Steam Deck and desktop. A musician can navigate patches, edit an instrument and its post effects, mix sixteen output tracks, and perform without a pointer while the host produces stable, low-latency stereo audio.
 
-The first executable slice can be narrower than the architecture. The current baseline is a SoundFont-backed instrument using repository fixtures. New engines and effects enter through capability registries and must never be represented by silent fallbacks.
+The first executable slice can be narrower than the architecture. The current implemented baseline alternates HiDef SoundFont and Braids instruments using repository fixtures. The next bounded slice adds one statically configured first-Patch Chorus insert. New engines and effects enter through separate capability registries and must never be represented by silent fallbacks or effect bypasses.
 
 This product is not:
 
@@ -149,7 +149,7 @@ Different data has different delivery semantics:
 | structural changes | ownership-transfer queue of prepared graphs/assets | swap only at block boundaries; retire off-thread |
 | meters and RT health | atomics or latest-value `MeterSnapshot` | decimated; UI polls |
 
-`ParameterSnapshot` is fixed-size and copyable. It contains no `Vec`, `String`, path, mutex, decoder, or reference whose final drop could happen in the callback.
+`ParameterSnapshot` is fixed-size and copyable. Instrument scalars and the zero-or-one Patch-effect scalar slot occupy separate fixed sections so an effect layout cannot alias an engine layout. It contains no `Vec`, `String`, path, mutex, decoder, or reference whose final drop could happen in the callback.
 
 A worker builds a complete `PreparedGraph`: engines, effect state, sample zones, delay memory, routing, and scratch capacities are all ready before publication. The callback swaps it at a block boundary and moves the old graph into a bounded return queue for worker destruction. If the return queue is full, the callback retains the graph in a bounded retirement slot and retries; it never drops it.
 
@@ -256,10 +256,10 @@ Patch
 
 The control-side patch namespace is sparse and effectively unlimited for sibling navigation. An empty sibling remains virtual until its first accepted modification, which initializes it atomically. The running graph still has explicit capacity limits. Materialization beyond them is rejected visibly instead of overcommitting the callback.
 
-Instrument and effect implementations register descriptors:
+Instrument and effect implementations share canonical parameter types but register distinct descriptors because voice policy and MIDI semantics do not apply to post effects:
 
 ```text
-CapabilityDescriptor
+InstrumentCapabilityDescriptor
 ├── stable id, label, semantic accent
 ├── ordered sections and ParameterSpec[]
 ├── asset requirements
@@ -268,16 +268,25 @@ CapabilityDescriptor
 ├── off-thread preparation
 └── real-time renderer factory
 
+EffectCapabilityDescriptor
+├── stable id, label, semantic accent
+├── ordered sections and ParameterSpec[]
+├── asset requirements
+├── off-thread preparation
+└── real-time processor factory
+
 ParameterSpec
 ├── stable id and label
 ├── kind: continuous | stepped | choice | toggle | asset
 ├── range, default, fine step, coarse step, unit, formatter
 ├── update: scalar snapshot | prepared structural change
-├── PATCH interaction: read-only | structural choice
+├── PATCH interaction: read-only | scalar edit | structural choice
 └── optional enabled/visible dependency
 ```
 
-UI choices come from the installed registry. The Figma names are illustrative planned capabilities, not permission to expose placeholders. SoundFont is the first concrete registry entry. Braids is the second concrete engine and is wrapped around the pinned Mutable Instruments C++ macro-oscillator implementation; it exists to prove that Patch state, projection, preparation, MIDI routing, rendering, and verification are capability-polymorphic before the Patch page is built. Neither the reducer, projector, rack, renderer, nor demo coverage may switch on those two capability identities to define an instrument's fields. Later sample, physical-model, wavetable, FM, and effect implementations must satisfy the same preparation and callback contracts.
+UI choices come from the installed registries. The Figma names are illustrative planned capabilities, not permission to expose placeholders. SoundFont is the first concrete instrument entry. Braids is the second concrete engine and is wrapped around the pinned Mutable Instruments C++ macro-oscillator implementation; it exists to prove that Patch state, projection, preparation, MIDI routing, rendering, and verification are capability-polymorphic before the graphical Patch page is built. Neither the reducer, projector, rack, renderer, nor demo coverage may switch on concrete capability identities to define fields. Later sample, physical-model, wavetable, FM, and effect implementations must satisfy the same preparation and callback contracts.
+
+Chorus is the first concrete effect entry. Crest uses the MIT-licensed Mutable Instruments Rings Chorus pinned at `pichenettes/eurorack@08460a69a7e1f7a81c5a2abcc7189c9a6b7208d4` and `stmlib@e3bd7c9cc00e4364166f9905c0509b6ffd0535ec`, vendoring only the audited minimal source, table, header, license, and provenance subset behind an opaque exception-free C ABI. The product label is `Chorus`; upstream project names are provenance, not Crest branding. Each prepared instance owns its own 2,048-sample 16-bit delay buffer and LFO/tail state. This first adapter admits exactly 48 kHz and fails unsupported rates during preparation without bypass or substitution. Its descriptor exposes exactly `Amount` then `Depth`, each normalized to `0..=1`, default `0.5`, fine step `0.01`, and coarse step `0.1`.
 
 Voice policy is capability-polymorphic. Braids declares `FixedPerPatch(16)`: every admitted Braids Patch owns a distinct sixteen-oscillator bank, so `N` active Braids Patches own `16 × N` voices with no engine-global pool; three Braids Patches therefore own forty-eight voices. There is no Braids-specific Patch-count limit or shared Braids voice budget. SoundFont declares `EngineManaged`: every SoundFont Patch owns one synthesizer instance whose backend manages polyphony under a finite prepared real-time safety ceiling. The engine-agnostic active graph capacity bounds how many Patches of any type can be materialized concurrently for hard-real-time execution; it never changes a Braids Patch's sixteen voices or turns them into shared capacity.
 
@@ -285,12 +294,12 @@ Every admitted engine applies the Patch-owned ADSR independently inside each nat
 
 Braids is built from the official Mutable Instruments source pinned at `pichenettes/eurorack@08460a69a7e1f7a81c5a2abcc7189c9a6b7208d4` and `stmlib@e3bd7c9cc00e4364166f9905c0509b6ffd0535ec`. Crest vendors only the audited DSP subset and license/provenance files, compiles it behind a small exception-free opaque C ABI, and owns exactly sixteen fully initialized `MacroOscillator` instances per prepared Braids Patch. The descriptor exposes the 47 named playable upstream models plus scalar Timbre and Color. Braids retains its 96 kHz, 24-sample internal contract; the first admitted host format is exactly 48 kHz and uses a bounded 2:1 adapter. Unsupported rates fail during preparation and never select another engine.
 
-Scalar capability parameters use descriptor order within the immutable active graph revision. Control projection encodes at most sixteen scalar values into fixed destructor-free real-time storage; choices use their descriptor index. PATCH has one reducer-owned ordered focus surface resolved for the active descriptor: Engine, Attack, Decay, Sustain, Release, then each visible capability parameter explicitly classified `StructuralChoice` for PATCH. Bare Up/Down moves through that nonwrapping order; bare Left/Right remains unavailable until sibling-Patch navigation is introduced. On the engine row, Edit+Left/Right requests the adjacent installed capability without wrapping and Edit+Up/Down is unavailable. On an ADSR row, Edit+Left/Right applies the canonical fine decrement/increment and Edit+Down/Up applies the canonical coarse decrement/increment. On a descriptor-declared structural-choice row, Edit+Left/Right requests the adjacent declared choice without wrapping and Edit+Up/Down is unavailable. Engine targets are rebuilt from the selected descriptor's ordered defaults and required assets; structural-choice targets replace exactly one assignment in the active config. Both paths use the same correlated structural-edit lifecycle, keep no inactive-config cache, and never translate or substitute values. The HiDef SoundFont surface therefore adds Preset after Release while its asset stays visible and locked; the current Braids PATCH focus remains Engine through Release because its Scalar controls continue to live on MIXER.
+Scalar capability parameters use descriptor order within the immutable active graph revision. Control projection encodes at most sixteen instrument scalar values and, separately, at most eight values for the current zero-or-one effect slot into fixed destructor-free real-time storage; choices use their descriptor index. PATCH has one reducer-owned ordered focus surface resolved from both registries: Engine, Attack, Decay, Sustain, Release, visible instrument parameters classified `StructuralChoice`, then each configured ordered effect's visible parameters classified `ScalarEdit`. Bare Up/Down moves through that nonwrapping order; bare Left/Right remains unavailable until sibling-Patch navigation is introduced. On the engine row, Edit+Left/Right requests the adjacent installed capability without wrapping and Edit+Up/Down is unavailable. On ADSR and effect-scalar rows, Edit+Left/Right applies the canonical fine decrement/increment and Edit+Down/Up applies the canonical coarse decrement/increment. On a descriptor-declared structural-choice row, Edit+Left/Right requests the adjacent declared choice without wrapping and Edit+Up/Down is unavailable. Engine targets are rebuilt from the selected descriptor's ordered defaults and required assets; structural-choice targets replace exactly one assignment in the active config. Both paths use the same correlated structural-edit lifecycle, keep no inactive-config cache, and never translate or substitute values. The HiDef SoundFont surface therefore adds Preset after Release while its asset stays visible and locked; Braids instrument Scalar controls continue to live on MIXER; the configured first Patch appends read-only Chorus identity followed by editable Amount and Depth.
 
 Only one structural request is in flight application-wide, regardless of whether
 its intent selects an engine or a capability-owned structural choice. MIDI, context
 selection, focus navigation, and valid scalar edits from MIXER or the focused PATCH
-ADSR rows may continue while preparation or activation runs. An ADSR edit during
+ADSR/effect rows may continue while preparation or activation runs. An ADSR or effect edit during
 preparation updates the audible source revision and the candidate is refreshed from
 the latest committed snapshot before publication. An edit after candidate commit
 targets the newer graph revision and is exact when that graph activates; the source
@@ -298,7 +307,9 @@ remains audible with its last compatible snapshot until the swap. The old graph
 stays audible until the complete replacement swaps at a block boundary. A full
 structural publish queue retains exactly one staged graph on control ownership and
 retries; it does not roll back committed control state, drop the graph, or choose a
-substitute. A complete structural change may reset active voices and effect tails;
+substitute. A complete structural candidate preserves each Patch's ordered effect
+slot identity, capability, configuration, and scalar layout byte-for-byte. A complete
+structural change may reset active voices and effect tails;
 seamless migration is not claimed.
 
 ### SoundFont and sample pipeline
@@ -385,6 +396,8 @@ master gain / safety limiter
 stereo device output
 ```
 
+The fixed Phase 4 callback seam is `PreparedEngineRack → PatchAudioBlock → PreparedPostEffectRack → MixEngine`. The effect rack is Patch-aligned with the engine rack and fixed parameter snapshot; it mutates only the matching interleaved stereo stem in place. The current production bound is zero or one effect per Patch, with one Chorus on the first fixture Patch only. Focused tests may configure two Chorus instances to prove their delay, LFO, and tail ownership is independent.
+
 Meters observe each track before the mute/solo audibility gate so muted tracks remain diagnosable. Effects run in declared order. Feedback exists only inside bounded effect implementations, never as an arbitrary graph cycle.
 
 The interface has sixteen mixer tracks. More than sixteen patches may share tracks deterministically, but no patch may disappear or be silently rerouted.
@@ -419,7 +432,7 @@ The layout must also be verified at the Steam Deck viewport. Preserve the header
 
 ### Patch
 
-The strip contains patch identity/routing, one instrument selector, ordered post-effect selectors, and a persistent Utility panel for global/patch volume, MIDI input, output track, and voice limit. In the current executable slice PATCH resolves Engine, Attack, Decay, Sustain, Release, then descriptor-declared PATCH structural choices. Bare Up/Down moves focus without wrapping. The engine row accepts Edit+Left/Right to request the adjacent installed engine. The four ADSR rows edit the focused Patch's existing canonical `VoiceEnvelope` with its descriptor-owned bounds and fine/coarse steps; they do not own UI values or a second DSP path. A SoundFont Patch adds the authored-name Preset row after Release and Edit+Left/Right requests its adjacent catalog entry; its file row remains locked. The targeted structural row displays its active and requested value plus `Preparing`, `Activating`, or a typed failure while the active graph remains explicit. Braids capability rows remain read-only on PATCH, and no engine- or preset-choice modal is added yet.
+The strip contains patch identity/routing, one instrument selector, ordered post-effect selectors, and a persistent Utility panel for global/patch volume, MIDI input, output track, and voice limit. In the current bounded slice PATCH resolves Engine, Attack, Decay, Sustain, Release, descriptor-declared instrument `StructuralChoice` rows, then configured effect `ScalarEdit` rows. Bare Up/Down moves focus without wrapping. The engine row accepts Edit+Left/Right to request the adjacent installed engine. The four ADSR rows edit the focused Patch's existing canonical `VoiceEnvelope` with its descriptor-owned bounds and fine/coarse steps; they do not own UI values or a second DSP path. A SoundFont Patch adds the authored-name Preset row after Release and Edit+Left/Right requests its adjacent catalog entry; its file row remains locked. The targeted structural row displays its active and requested value plus `Preparing`, `Activating`, or a typed failure while the active graph remains explicit. Braids instrument capability rows remain read-only on PATCH. The production fixture's first Patch then shows read-only `Chorus` identity and editable `Amount` and `Depth`; Edit+Left/Right uses their descriptor fine step and Edit+Down/Up uses their coarse step. Other fixture Patches show no effect rows. This slice adds no engine/preset/effect modal, effect selector, bypass, reorder, second slot, or placeholder.
 
 Instrument and effect detail views reuse the shell. The active capability supplies the title, accent, sections, values, ranges, units, and dependency rules. Non-Sample synths that expose the shared Patch `VoiceEnvelope` render a live, non-focusable ADSR preview in the strip visualization slot and instrument detail. Sample detail keeps its asset selector and non-focusable waveform/loop visualization alongside the same ADSR control contract.
 
@@ -577,11 +590,11 @@ A completed behavior must be distinguishable from a no-op:
 
 - **Reducer:** exact accepted/rejected mutations, stable focus, implicit patch creation, input parity.
 - **Projection:** one state generation produces matching view and audio snapshots.
-- **DSP:** finite measured peak/RMS, stereo routing, mute/solo, effect order, `16 × N` Patch-local Braids scaling, deterministic Patch-local stealing, engine-managed SoundFont polyphony, and independent overlapping-note envelopes in both engines.
+- **DSP:** finite measured peak/RMS, stereo routing, mute/solo, synthesis → Patch effect → mix order, target-only Chorus difference and stereo side energy, independent effect instances/tails, `16 × N` Patch-local Braids scaling, deterministic Patch-local stealing, engine-managed SoundFont polyphony, and independent overlapping-note envelopes in both engines.
 - **RT:** allocator instrumentation, callback timing, overflow recovery, graph swap, off-thread destruction.
 - **Assets:** real SF2/sample fixtures, exact authored preset names, bank/program ordering, preset identity, malformed input, loop bounds, and atomic replacement.
 - **UI:** golden images at 1920×1080 and Steam Deck size, semantic tokens, single focus, complete controller navigation, modal return.
-- **Integration:** standalone, fixture, and synthetic inputs use the production reducer and render path; the production fixture alternates SoundFont and Braids Patches and the deterministic demo modifies every editable mixer, ADSR, capability-scalar, and global value, including all four focused-Patch ADSR values through PATCH navigation and adjustment, selects adjacent SoundFont presets by their exact catalog identities, then selects SoundFont → Braids → descriptor-default SoundFont through the same worker, reducer, graph handoff, and renderer path. It also proves catalog order/name fidelity, pending/busy/failure/stale handling, scalar/structural coexistence, block-boundary activation, off-callback retirement, target-only mutation, finite distinct preset output, and two-run logical determinism. The paced physical-device demo visibly performs an adjacent preset selection and the successful two-way engine selection through the production threaded worker, waits for each acknowledged graph revision, requires finite targeted output, restores descriptor-default SoundFont, and exits normally; exhaustive negative-path and two-run proof remains headless.
+- **Integration:** standalone, fixture, and synthetic inputs use the production reducer and render path; the production fixture alternates SoundFont and Braids Patches and configures Chorus only on its first Patch. The deterministic demo modifies every editable mixer, ADSR, instrument-scalar, Chorus, and global value, including all four focused-Patch ADSR values plus Chorus Amount/Depth through PATCH navigation and adjustment; proves exact pre/post-effect order, target isolation, independent instances, stereo output, and no fallback; selects adjacent SoundFont presets by exact catalog identity; then selects SoundFont → Braids → descriptor-default SoundFont through the same worker, reducer, complete graph handoff, and renderer while preserving the effect config/layout. It also proves catalog order/name fidelity, pending/busy/failure/stale handling, scalar/structural coexistence, block-boundary activation, off-callback retirement, target-only mutation, finite distinct output, and two-run logical determinism. The paced physical-device demo visibly and audibly edits both Chorus scalars before the structural sequence, waits for exact-generation effect observations and each acknowledged graph revision, restores descriptor-default SoundFont with Chorus still configured, and exits normally; exhaustive negative-path, independent-instance, and two-run proof remains headless.
 
 Offline render is the deterministic audio proof. Device smoke tests separately validate negotiation and underruns. Construction-only tests, success-token logs, and silent output are not evidence.
 
@@ -651,17 +664,20 @@ An architecture change must preserve the one-way state path and callback contrac
 - The UI is schema-driven; Figma example names are not a feature list.
 - SoundFont is the first concrete engine, not a reason to couple the domain to one library.
 - Braids is the second concrete engine; its C++ DSP remains behind the generic capability and prepared-renderer boundaries.
+- Instruments and effects have separate descriptor/registry/provider/preparer families while sharing canonical parameter ids, specs, assignments, values, and asset references; effect descriptors never inherit instrument voice or MIDI semantics.
+- Chorus is the first concrete Patch effect. It uses the pinned MIT-licensed Mutable Instruments Rings Chorus subset, is admitted only at exactly 48 kHz in this slice, and owns an independent 2,048-sample 16-bit delay buffer plus LFO/tail state per prepared instance.
+- The production topology is statically bounded to zero or one post effect per Patch and configures one Chorus on the first fixture Patch only: `PreparedEngineRack → PatchAudioBlock → PreparedPostEffectRack → MixEngine`. There is no selector, bypass, reorder, placeholder, or dynamic graph editing yet.
 - Every Braids Patch owns exactly sixteen voices; Braids capacity scales as `16 × active Braids Patch count` and is never pooled globally.
 - Every SoundFont Patch owns one synthesizer with engine-managed polyphony; SoundFont is not artificially capped at sixteen and is never split into one synthesizer per note.
 - SoundFont and Braids share the same Patch-owned per-note ADSR contract despite their distinct voice policies.
 - The production fixture and both demos intentionally mix the two engines; engine-specific editable fields come only from capability descriptors.
 - PATCH structural editability is descriptor-owned. The engine row and parameters classified `StructuralChoice` share one reducer/application-coordinator lifecycle, one in-flight limit, and one prepared-graph handoff; locked assets and Braids Scalar rows remain read-only on PATCH.
-- PATCH focus is the reducer-owned nonwrapping order Engine → Attack → Decay → Sustain → Release → active descriptor PATCH controls. The four ADSR rows reuse `VoiceEnvelopeParameter`, and capability controls reuse `ParameterId`; neither creates UI-owned state or duplicate field enums.
+- PATCH focus is the reducer-owned nonwrapping order Engine → Attack → Decay → Sustain → Release → active instrument `StructuralChoice` controls → configured effect `ScalarEdit` controls. The four ADSR rows reuse `VoiceEnvelopeParameter`, and instrument/effect controls reuse `ParameterId` plus stable effect-slot identity; none creates UI-owned state or duplicate field enums.
 - SoundFont exposes one `soundfont.preset` structural Choice ordered by numeric SF2 bank/program coordinates and labeled with exact authored SF2 names, plus the locked fixed asset. General MIDI supplies coordinate conventions, not replacement names or raw-file ordering.
 - SoundFont preset names and raw SF2 metadata remain control-side; prepared callback ownership contains only numeric PCM, zones, addresses, and bounded voice state.
 - Structural engine selection constructs the target from descriptor defaults and required default assets; structural parameter selection changes exactly one active assignment. Both keep no inactive-config cache, leave the old graph audible until block-boundary activation, and never fall back after failure.
 - A complete structural graph swap may reset voices and effect tails; seamless migration is outside the current contract.
-- Both autonomous demos select an adjacent authored-name SoundFont preset and select the focused first Patch SoundFont → Braids → descriptor-default SoundFont through production seams; the headless demo owns exhaustive deterministic and controlled-negative proof, while `demo-live` owns paced visible and physical-audio confirmation through the threaded worker.
+- Both autonomous demos edit first-Patch Chorus Amount and Depth, select an adjacent authored-name SoundFont preset, and select the focused first Patch SoundFont → Braids → descriptor-default SoundFont through production seams while preserving the effect config/layout; the headless demo owns exhaustive deterministic, independent-instance, and controlled-negative proof, while `demo-live` owns paced visible and physical-audio confirmation through the threaded worker.
 - Normal live input, fixtures, and UI share the canonical reducer/projector
   path.
 - The autonomous `demo-live` witness isolates mapped semantic input while its

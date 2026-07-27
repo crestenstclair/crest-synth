@@ -6,6 +6,7 @@ use crate::synth::instrument_capability::{
 };
 use crate::synth::parameter_id::ParameterId;
 use crate::synth::voice_envelope::{VoiceEnvelope, VoiceEnvelopeParameter};
+use crate::synth::PostEffectConfig;
 use serde::Serialize;
 
 /// One entry in the canonical schema-derived editable Patch surface.
@@ -82,6 +83,7 @@ pub struct Patch {
     channel: MidiChannel,
     envelope: VoiceEnvelope,
     parameters: ChannelParameters,
+    post_effects: Vec<PostEffectConfig>,
 }
 
 impl Patch {
@@ -100,6 +102,7 @@ impl Patch {
             channel,
             envelope: VoiceEnvelope::default(),
             parameters,
+            post_effects: Vec::new(),
         }
     }
 
@@ -133,6 +136,11 @@ impl Patch {
         &self.parameters
     }
 
+    /// Returns the canonical ordered Patch-local post-effect configurations.
+    pub fn post_effects(&self) -> &[PostEffectConfig] {
+        &self.post_effects
+    }
+
     /// Provides the aggregate's only mutable state surface.
     pub fn parameters_mut(&mut self) -> &mut ChannelParameters {
         &mut self.parameters
@@ -146,6 +154,13 @@ impl Patch {
     /// Supplies a non-default envelope while constructing a Patch fixture.
     pub fn with_envelope(mut self, envelope: VoiceEnvelope) -> Self {
         self.envelope = envelope;
+        self
+    }
+
+    /// Supplies the ordered post-effect list while constructing a Patch.
+    /// Installation validates its registry identity, config, and current capacity.
+    pub fn with_post_effects(mut self, post_effects: Vec<PostEffectConfig>) -> Self {
+        self.post_effects = post_effects;
         self
     }
 
@@ -163,6 +178,10 @@ impl Patch {
 
     pub(crate) fn set_instrument_config(&mut self, config: InstrumentConfig) {
         self.instrument = config;
+    }
+
+    pub(crate) fn set_post_effect_config(&mut self, index: usize, config: PostEffectConfig) {
+        self.post_effects[index] = config;
     }
 }
 

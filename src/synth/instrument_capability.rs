@@ -145,6 +145,7 @@ pub enum ParameterUpdate {
 pub enum PatchInteraction {
     ReadOnly,
     StructuralChoice,
+    ScalarEdit,
 }
 
 /// Patch-local note-allocation policy declared by one capability.
@@ -520,7 +521,7 @@ impl ParameterSpec {
         Ok(next)
     }
 
-    fn validate_shape(&self) -> Result<(), CapabilityError> {
+    pub(crate) fn validate_shape(&self) -> Result<(), CapabilityError> {
         if self.label.is_empty() {
             return Err(CapabilityError::EmptyLabel);
         }
@@ -540,15 +541,26 @@ impl ParameterSpec {
                 });
             }
         }
-        if self.patch_interaction == PatchInteraction::StructuralChoice
-            && (self.kind != ParameterKind::Choice
-                || self.update != ParameterUpdate::Structural
-                || self.choices.len() < 2)
-        {
-            return Err(CapabilityError::InvalidParameterShape {
-                parameter_id: self.id.clone(),
-                reason: "StructuralChoice PATCH interaction requires a Structural Choice with at least two choices",
-            });
+        match self.patch_interaction {
+            PatchInteraction::StructuralChoice
+                if self.kind != ParameterKind::Choice
+                    || self.update != ParameterUpdate::Structural
+                    || self.choices.len() < 2 =>
+            {
+                return Err(CapabilityError::InvalidParameterShape {
+                    parameter_id: self.id.clone(),
+                    reason: "StructuralChoice PATCH interaction requires a Structural Choice with at least two choices",
+                });
+            }
+            PatchInteraction::ScalarEdit
+                if self.kind == ParameterKind::Asset || self.update != ParameterUpdate::Scalar =>
+            {
+                return Err(CapabilityError::InvalidParameterShape {
+                    parameter_id: self.id.clone(),
+                    reason: "ScalarEdit PATCH interaction requires a non-asset Scalar",
+                });
+            }
+            _ => {}
         }
 
         match self.kind {

@@ -3,7 +3,7 @@ mod support;
 use crest_synth::control::app_state::EventRejection;
 use crest_synth::control::event_record::{EventOutcome, EventSource};
 use crest_synth::control::{EngineSelectionStatusKind, PatchControlId};
-use crest_synth::synth::{ParameterId, VoiceEnvelope};
+use crest_synth::synth::{EffectSlotId, ParameterId, VoiceEnvelope};
 use crest_synth::testing::demo_scene_report::DemoCoverageGroup;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -117,6 +117,15 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .unwrap(),
         )
     ));
+    for parameter in ["chorus.amount", "chorus.depth"] {
+        expected_patch_controls.push(format!(
+            "patchControl.{}",
+            PatchControlId::Effect(
+                EffectSlotId::new(1).unwrap(),
+                ParameterId::new(parameter).unwrap(),
+            )
+        ));
+    }
     expected_patch_controls.sort();
     assert_eq!(
         report
@@ -200,6 +209,8 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         "braids.model",
         "braids.timbre",
         "braids.color",
+        "chorus.amount",
+        "chorus.depth",
         "masterGainDb",
         "reverbRoomSize",
         "reverbDamping",
@@ -332,6 +343,14 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         .all(|checkpoint| checkpoint.audio_measurement().is_finite()));
     assert!(report.audio_evidence().mixed_engine_stems_nonzero());
     assert!(report.audio_evidence().mixed_engine_parameter_isolation());
+    assert!(report.audio_evidence().patch_effect_target_exact());
+    assert!(report.audio_evidence().patch_effect_difference_nonzero());
+    assert!(report.audio_evidence().patch_effect_side_nonzero());
+    assert!(report.audio_evidence().patch_effect_before_mix_stem_exact());
+    assert!(report.audio_evidence().unconfigured_patch_isolated());
+    assert!(report
+        .audio_evidence()
+        .patch_effect_structural_preservation());
     assert_eq!(first.expected_coverage, second.expected_coverage);
     assert_eq!(first.baseline, second.baseline);
     assert_eq!(

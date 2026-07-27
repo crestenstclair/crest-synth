@@ -17,7 +17,7 @@ use crate::control::{
 };
 use crate::real_time::audio_boundary::{AudioThreadBoundary, BoundaryFull, ControlAudioBoundary};
 use crate::real_time::audio_command::AudioCommand;
-use crate::real_time::audio_observation::CallbackAudioObservation;
+use crate::real_time::audio_observation::{CallbackAudioObservation, ControlAudioObservation};
 use crate::real_time::audio_renderer::AudioRenderer;
 use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
@@ -203,6 +203,7 @@ where
     audio_buffer: &'a mut [f32],
     translator: KeyboardInputTranslator,
     worker: Option<DeterministicGraphPreparationHandle>,
+    control_observation: Option<&'a dyn ControlAudioObservation>,
 }
 
 impl<'a, ControlBoundary, RenderBoundary, Structural, Observation>
@@ -225,6 +226,7 @@ where
             audio_buffer,
             translator: KeyboardInputTranslator::new(),
             worker: None,
+            control_observation: None,
         }
     }
 
@@ -240,6 +242,27 @@ where
             audio_buffer,
             translator: KeyboardInputTranslator::new(),
             worker: Some(worker),
+            control_observation: None,
+        }
+    }
+
+    pub fn new_with_worker_and_observation<ControlObservation>(
+        app_loop: &'a mut AppLoop<ControlBoundary>,
+        renderer: &'a mut AudioRenderer<RenderBoundary, Structural, Observation>,
+        audio_buffer: &'a mut [f32],
+        worker: DeterministicGraphPreparationHandle,
+        control_observation: &'a ControlObservation,
+    ) -> Self
+    where
+        ControlObservation: ControlAudioObservation + 'a,
+    {
+        Self {
+            app_loop,
+            renderer,
+            audio_buffer,
+            translator: KeyboardInputTranslator::new(),
+            worker: Some(worker),
+            control_observation: Some(control_observation),
         }
     }
 
@@ -260,6 +283,7 @@ where
             self.renderer.active_revision(),
             self.app_loop.patches().to_vec(),
         );
+        self.observe_effect_stage(&mut run)?;
 
         self.dispatch_semantic(
             AppEvent::InstallPatches(Vec::new()),
@@ -308,6 +332,7 @@ where
                 DemoSceneStep::Tick(elapsed) => {
                     run.audio_measurement = self.render_audio_tick(*elapsed)?;
                     run.mixed_engine_stems_nonzero |= self.mixed_engine_stems_are_nonzero();
+                    self.observe_effect_stage(&mut run)?;
                 }
                 DemoSceneStep::AdvanceWorker(advance) => {
                     let worker = self
@@ -345,6 +370,11 @@ where
 
                     run.audio_measurement = self.render_audio(checkpoint.name())?;
                     run.mixed_engine_stems_nonzero |= self.mixed_engine_stems_are_nonzero();
+                    self.observe_effect_stage(&mut run)?;
+                    if let Some(page) = self.app_loop.current_patch_page() {
+                        run.observed
+                            .insert(format!("patchControl.{}", page.focused_control_id()));
+                    }
                     let tree = self.app_loop.current_state_tree();
                     let mut observation = DemoSceneCheckpoint::new(
                         checkpoint.name(),
@@ -420,6 +450,41 @@ where
             &mut run.observed,
         )?;
 
+        if run.effect_observed && run.effect_target_exact {
+            run.observed
+                .insert("effect.patchEffect.targetExact".to_owned());
+        }
+        if run.effect_difference_nonzero {
+            run.observed
+                .insert("effect.patchEffect.differenceNonzero".to_owned());
+        }
+        if run.effect_side_nonzero {
+            run.observed
+                .insert("effect.patchEffect.sideNonzero".to_owned());
+        }
+        if run.effect_before_mix_stem_exact {
+            run.observed
+                .insert("effect.patchEffect.beforeMixStemExact".to_owned());
+        }
+        if run.unconfigured_patch_isolated {
+            run.observed
+                .insert("effect.patchEffect.unconfiguredIsolation".to_owned());
+        }
+        let structural_effects_preserved = self.app_loop.patches().iter().all(|patch| {
+            run.baseline_patches
+                .iter()
+                .find(|baseline| baseline.id() == patch.id())
+                .is_some_and(|baseline| baseline.post_effects() == patch.post_effects())
+        });
+        let effect_stage_required = run
+            .baseline_patches
+            .iter()
+            .any(|patch| !patch.post_effects().is_empty());
+        if effect_stage_required && structural_effects_preserved {
+            run.observed
+                .insert("effect.patchEffect.structuralPreservation".to_owned());
+        }
+
         for identifier in &run.observed {
             event_log.mark_exercised(identifier.clone());
         }
@@ -428,6 +493,14 @@ where
         let audio_evidence = DemoAudioEvidence::new(
             run.mixed_engine_stems_nonzero,
             run.mixed_engine_stems_nonzero && run.all_accepted_adjustments_isolated,
+        )
+        .with_patch_effect(
+            run.effect_observed && run.effect_target_exact,
+            run.effect_difference_nonzero,
+            run.effect_side_nonzero,
+            run.effect_before_mix_stem_exact,
+            run.unconfigured_patch_isolated,
+            structural_effects_preserved,
         );
         DemoSceneReport::new(
             scene.name(),
@@ -1052,7 +1125,7 @@ where
             && (self.app_loop.state().context() == TopLevelContext::Mixer
                 || matches!(
                     self.app_loop.state().interaction().patch_control_focus(),
-                    Some(PatchControlId::Envelope(_))
+                    Some(PatchControlId::Envelope(_) | PatchControlId::Effect(_, _))
                 ));
 
         match self.app_loop.dispatch_from(event, source) {
@@ -1083,6 +1156,7 @@ where
                     }
                 }
                 run.audio_measurement = measurement;
+                self.observe_effect_stage(run)?;
                 Ok(())
             }
             Err(actual) => {
@@ -1148,6 +1222,82 @@ where
         }
         soundfont && braids
     }
+
+    fn observe_effect_stage(
+        &self,
+        run: &mut RunObservations,
+    ) -> Result<(), ExhaustiveGuiDemoError> {
+        let Some(reader) = self.control_observation else {
+            return Ok(());
+        };
+        let observation = reader.read_latest_on_control();
+        let effect = observation.patch_effect();
+        let configured = self
+            .app_loop
+            .patches()
+            .iter()
+            .filter(|patch| !patch.post_effects().is_empty())
+            .collect::<Vec<_>>();
+        if configured.is_empty() {
+            return Ok(());
+        }
+        let finite = effect.input_rms().is_finite()
+            && effect.output_rms().is_finite()
+            && effect.difference_rms().is_finite()
+            && effect.side_rms().is_finite();
+        if !finite {
+            return Err(ExhaustiveGuiDemoError::NonFiniteAudioMeasurement {
+                step: "Patch effect observation".to_owned(),
+            });
+        }
+        run.effect_observed = true;
+        let configured_patch = configured.first().expect("configured effects are nonempty");
+        run.effect_target_exact &= configured.len() == 1
+            && effect.patch_id() == Some(configured_patch.id())
+            && observation.parameter_generation()
+                == self.app_loop.current_parameters().generation()
+            && observation.active_graph_revision() == self.renderer.active_revision()
+            && observation.routing_failures() == 0;
+        run.effect_difference_nonzero |= effect.difference_rms() > 1.0e-7;
+        run.effect_side_nonzero |= effect.side_rms() > 1.0e-7;
+
+        if let Some(index) = self
+            .app_loop
+            .patches()
+            .iter()
+            .position(|patch| patch.id() == configured_patch.id())
+        {
+            if let Some(stem) = self
+                .renderer
+                .active_patch_audio()
+                .stem(index, configured_patch.id())
+            {
+                let samples = stem.samples();
+                let energy = samples.iter().fold(0.0_f64, |sum, sample| {
+                    sum + f64::from(*sample) * f64::from(*sample)
+                });
+                let rms = (energy / samples.len().max(1) as f64).sqrt() as f32;
+                run.effect_before_mix_stem_exact |= (rms - effect.output_rms()).abs() <= 1.0e-6;
+            }
+        }
+        run.unconfigured_patch_isolated |= self
+            .app_loop
+            .patches()
+            .iter()
+            .enumerate()
+            .filter(|(_, patch)| patch.post_effects().is_empty())
+            .any(|(index, patch)| {
+                effect.patch_id() != Some(patch.id())
+                    && self
+                        .renderer
+                        .active_patch_audio()
+                        .stem(index, patch.id())
+                        .is_some_and(|stem| {
+                            stem.samples().iter().any(|sample| sample.abs() > 1.0e-6)
+                        })
+            });
+        Ok(())
+    }
 }
 
 struct RunObservations {
@@ -1159,6 +1309,12 @@ struct RunObservations {
     all_accepted_adjustments_isolated: bool,
     last_ready_graph_revision: crate::real_time::GraphRevision,
     baseline_patches: Vec<crate::synth::Patch>,
+    effect_observed: bool,
+    effect_target_exact: bool,
+    effect_difference_nonzero: bool,
+    effect_side_nonzero: bool,
+    effect_before_mix_stem_exact: bool,
+    unconfigured_patch_isolated: bool,
 }
 
 impl RunObservations {
@@ -1177,6 +1333,12 @@ impl RunObservations {
             all_accepted_adjustments_isolated: true,
             last_ready_graph_revision,
             baseline_patches,
+            effect_observed: false,
+            effect_target_exact: true,
+            effect_difference_nonzero: false,
+            effect_side_nonzero: false,
+            effect_before_mix_stem_exact: false,
+            unconfigured_patch_isolated: false,
         }
     }
 }
@@ -1403,6 +1565,9 @@ fn property_present(
     if let Some(rest) = property.strip_prefix("stateTree.capability.") {
         return dynamic_capability_property(tree, rest);
     }
+    if let Some(rest) = property.strip_prefix("stateTree.effectCapability.") {
+        return dynamic_effect_capability_property(tree, rest);
+    }
     if let Some(rest) = property.strip_prefix("stateTree.parameters.patch.") {
         return dynamic_patch_property(tree, rest, true);
     }
@@ -1461,7 +1626,10 @@ fn dynamic_patch_property(tree: &Value, rest: &str, parameter_projection: bool) 
     };
 
     if parameter_projection {
-        if path.starts_with("envelope.") || path.starts_with("instrument.") {
+        if path.starts_with("envelope.")
+            || path.starts_with("instrument.")
+            || path.starts_with("effect.")
+        {
             json_path_exists(patch, path)
         } else {
             json_path_exists(patch, &format!("parameters.{path}"))
@@ -1480,8 +1648,37 @@ fn dynamic_patch_property(tree: &Value, rest: &str, parameter_projection: bool) 
                 .and_then(|instrument| instrument.get("assetReferences")),
             rest,
         )
+    } else if let Some(rest) = path.strip_prefix("postEffect.") {
+        dynamic_post_effect_property(patch, rest)
     } else {
         json_path_exists(patch, path)
+    }
+}
+
+fn dynamic_post_effect_property(patch: &Value, rest: &str) -> bool {
+    let Some((slot_id, path)) = rest.split_once('.') else {
+        return false;
+    };
+    let Ok(slot_id) = slot_id.parse::<u64>() else {
+        return false;
+    };
+    let Some(config) = patch
+        .get("postEffects")
+        .and_then(Value::as_array)
+        .and_then(|effects| {
+            effects
+                .iter()
+                .find(|effect| effect.get("slotId").and_then(Value::as_u64) == Some(slot_id))
+        })
+    else {
+        return false;
+    };
+    if let Some(rest) = path.strip_prefix("value.") {
+        semantic_array_property(config.get("values"), rest)
+    } else if let Some(rest) = path.strip_prefix("asset.") {
+        semantic_array_property(config.get("assetReferences"), rest)
+    } else {
+        json_path_exists(config, path)
     }
 }
 
@@ -1516,6 +1713,40 @@ fn dynamic_capability_property(tree: &Value, rest: &str) -> bool {
             }
         }
         return false;
+    }
+    if let Some(rest) = path.strip_prefix("asset.") {
+        return semantic_array_property(descriptor.get("assetRequirements"), rest);
+    }
+    json_path_exists(descriptor, path)
+}
+
+fn dynamic_effect_capability_property(tree: &Value, rest: &str) -> bool {
+    let Some(descriptors) = tree
+        .get("effects")
+        .and_then(|capabilities| capabilities.get("descriptors"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    let Some((descriptor, path)) = semantic_object(descriptors, rest) else {
+        return false;
+    };
+    if let Some(rest) = path.strip_prefix("section.") {
+        let Some(sections) = descriptor.get("sections").and_then(Value::as_array) else {
+            return false;
+        };
+        let Some((section, path)) = semantic_object(sections, rest) else {
+            return false;
+        };
+        return json_path_exists(section, path);
+    }
+    if let Some(rest) = path.strip_prefix("parameter.") {
+        let Some(sections) = descriptor.get("sections").and_then(Value::as_array) else {
+            return false;
+        };
+        return sections
+            .iter()
+            .any(|section| semantic_array_property(section.get("parameters"), rest));
     }
     if let Some(rest) = path.strip_prefix("asset.") {
         return semantic_array_property(descriptor.get("assetRequirements"), rest);
@@ -1628,6 +1859,36 @@ fn changed_parameter_identifier(before: &StateTree, after: &StateTree) -> Option
                 changes.push(format!("parameter.patch.{patch_id}.{parameter_id}"));
             }
         }
+
+        let before_effects = before_patch.get("postEffects")?.as_array()?;
+        let after_effects = after_patch.get("postEffects")?.as_array()?;
+        if before_effects.len() != after_effects.len() {
+            return None;
+        }
+        for (before_effect, after_effect) in before_effects.iter().zip(after_effects) {
+            for property in ["slotId", "capabilityId", "assetReferences"] {
+                if before_effect.get(property) != after_effect.get(property) {
+                    return None;
+                }
+            }
+            let slot_id = after_effect.get("slotId")?.as_u64()?;
+            let before_values = before_effect.get("values")?.as_array()?;
+            let after_values = after_effect.get("values")?.as_array()?;
+            if before_values.len() != after_values.len() {
+                return None;
+            }
+            for (before_value, after_value) in before_values.iter().zip(after_values) {
+                let parameter_id = after_value.get("parameterId")?.as_str()?;
+                if before_value.get("parameterId") != after_value.get("parameterId") {
+                    return None;
+                }
+                if before_value.get("value") != after_value.get("value") {
+                    changes.push(format!(
+                        "parameter.patch.{patch_id}.effect.{slot_id}.{parameter_id}"
+                    ));
+                }
+            }
+        }
     }
 
     for parameter in [
@@ -1684,6 +1945,7 @@ const fn rejection_identifier(rejection: EventRejection) -> &'static str {
         EventRejection::TooManyPatches => "tooManyPatches",
         EventRejection::DuplicateMidiChannel => "duplicateMidiChannel",
         EventRejection::InvalidInstrumentConfig => "invalidInstrumentConfig",
+        EventRejection::InvalidEffectConfig => "invalidEffectConfig",
         EventRejection::NoPatchesInstalled => "noPatchesInstalled",
         EventRejection::UnknownPatch => "unknownPatch",
         EventRejection::InvalidSelection => "invalidSelection",

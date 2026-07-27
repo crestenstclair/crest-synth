@@ -40,7 +40,10 @@ use crate::synth::instrument_composition::{
 };
 use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
 use crate::synth::patch::Patch;
-use crate::synth::{DescriptorDefaultConfigFactory, VoicePolicy};
+use crate::synth::{
+    compose_effect_registry, DescriptorDefaultConfigFactory, EffectCapabilityProvider,
+    EffectCapabilityRegistry, EffectCompositionError, EffectPreparer, VoicePolicy,
+};
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::demo_scene::{DemoScene, DemoSceneError};
 use crate::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport, DemoSceneReportError};
@@ -160,6 +163,7 @@ pub struct SmokeObservation {
 pub enum ApplicationError {
     Capability(CapabilityError),
     InstrumentComposition(InstrumentCompositionError),
+    EffectComposition(EffectCompositionError),
     Instrument(InstrumentPreparationError),
     Graph(GraphPreparationError),
     GraphWorker(ThreadedGraphPreparationWorkerError),
@@ -189,6 +193,9 @@ impl fmt::Display for ApplicationError {
             Self::Capability(error) => write!(formatter, "capability setup failed: {error}"),
             Self::InstrumentComposition(error) => {
                 write!(formatter, "instrument composition failed: {error}")
+            }
+            Self::EffectComposition(error) => {
+                write!(formatter, "effect composition failed: {error}")
             }
             Self::Instrument(error) => write!(formatter, "instrument preparation failed: {error}"),
             Self::Graph(error) => write!(formatter, "prepared graph setup failed: {error}"),
@@ -236,6 +243,7 @@ impl std::error::Error for ApplicationError {
         match self {
             Self::Capability(error) => Some(error),
             Self::InstrumentComposition(error) => Some(error),
+            Self::EffectComposition(error) => Some(error),
             Self::Instrument(error) => Some(error),
             Self::Graph(error) => Some(error),
             Self::GraphWorker(error) => Some(error),
@@ -294,6 +302,12 @@ impl From<CapabilityError> for ApplicationError {
 impl From<InstrumentCompositionError> for ApplicationError {
     fn from(error: InstrumentCompositionError) -> Self {
         Self::InstrumentComposition(error)
+    }
+}
+
+impl From<EffectCompositionError> for ApplicationError {
+    fn from(error: EffectCompositionError) -> Self {
+        Self::EffectComposition(error)
     }
 }
 
@@ -369,6 +383,9 @@ struct InstrumentRuntimeComposition {
     providers: Vec<Box<dyn InstrumentCapabilityProvider>>,
     capabilities: CapabilityRegistry,
     preparers: Vec<Box<dyn InstrumentPreparer>>,
+    effect_providers: Vec<Box<dyn EffectCapabilityProvider>>,
+    effects: EffectCapabilityRegistry,
+    effect_preparers: Vec<Box<dyn EffectPreparer>>,
 }
 
 /// Owns the replaceable adapters and composes the single standalone runtime.
@@ -398,13 +415,48 @@ impl<Boundary, Structural, Observation, Source, Window, Output>
         audio_output: Output,
         config: ApplicationConfig,
     ) -> Result<Self, ApplicationError> {
+        Self::new_with_effects(
+            boundary,
+            providers,
+            preparers,
+            Vec::new(),
+            Vec::new(),
+            structural,
+            observation,
+            source,
+            window,
+            audio_output,
+            config,
+        )
+    }
+
+    /// Composes the complete instrument and Patch-effect capability families
+    /// once at the application boundary and freezes their exact preparers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_effects(
+        boundary: Boundary,
+        providers: Vec<Box<dyn InstrumentCapabilityProvider>>,
+        preparers: Vec<Box<dyn InstrumentPreparer>>,
+        effect_providers: Vec<Box<dyn EffectCapabilityProvider>>,
+        effect_preparers: Vec<Box<dyn EffectPreparer>>,
+        structural: Structural,
+        observation: Observation,
+        source: Source,
+        window: Window,
+        audio_output: Output,
+        config: ApplicationConfig,
+    ) -> Result<Self, ApplicationError> {
         let capabilities = compose_instrument_registry(&providers, &preparers)?;
+        let effects = compose_effect_registry(&effect_providers, &effect_preparers)?;
         Ok(Self {
             boundary,
             instruments: InstrumentRuntimeComposition {
                 providers,
                 capabilities,
                 preparers,
+                effect_providers,
+                effects,
+                effect_preparers,
             },
             structural,
             observation,
@@ -524,29 +576,39 @@ where
         providers,
         capabilities,
         preparers,
+        effect_providers,
+        effects,
+        effect_preparers,
     } = instruments;
     let revision = GraphRevision::INITIAL;
     let (control_boundary, audio_boundary) = boundary.into_handles();
-    let state = AppState::for_graph(capabilities.clone(), config.global_parameters(), revision);
+    let state = AppState::for_graph_with_effects(
+        capabilities.clone(),
+        effects.clone(),
+        config.global_parameters(),
+        revision,
+    );
     let projector = StateProjector::for_graph(revision);
     let mut app_loop = match plan.event_log {
         Some(event_log) => AppLoop::with_event_log(state, projector, control_boundary, event_log)?,
         None => AppLoop::new(state, projector, control_boundary)?,
     };
     let mut automatic = AutomaticMidiTest::new(source);
-    automatic.initialize(&providers, &mut app_loop)?;
+    automatic.initialize_with_effects(&providers, &effect_providers, &mut app_loop)?;
 
     let parsed_soundfont_banks = preparers
         .iter()
         .map(|preparer| preparer.prepared_shared_asset_count())
         .sum();
-    let initial_graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers).build(
-        revision,
-        app_loop.patches(),
-        *app_loop.current_parameters(),
-        plan.audio_config.sample_rate(),
-        plan.audio_config.render_capacity_frames(),
-    )?;
+    let initial_graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
+        .with_effects(app_loop.effects(), &effect_preparers)
+        .build(
+            revision,
+            app_loop.patches(),
+            *app_loop.current_parameters(),
+            plan.audio_config.sample_rate(),
+            plan.audio_config.render_capacity_frames(),
+        )?;
     let (structural_control, structural_audio) = structural.into_handles();
     let prepared_instruments = initial_graph.engine_rack().patch_count();
     let capability_composition =
@@ -554,8 +616,13 @@ where
     let factory = DescriptorDefaultConfigFactory::new(capabilities.clone(), providers);
     let deterministic_worker = match plan.worker {
         StartupWorker::Threaded => {
-            let worker =
-                ThreadedGraphPreparationWorker::new(capabilities, preparers, plan.audio_config)?;
+            let worker = ThreadedGraphPreparationWorker::new_with_effects(
+                capabilities,
+                preparers,
+                effects,
+                effect_preparers,
+                plan.audio_config,
+            )?;
             app_loop.configure_engine_selection(
                 factory,
                 worker,
@@ -566,9 +633,11 @@ where
             None
         }
         StartupWorker::Deterministic => {
-            let worker = DeterministicGraphPreparationWorker::new(
+            let worker = DeterministicGraphPreparationWorker::new_with_effects(
                 capabilities,
                 preparers,
+                effects,
+                effect_preparers,
                 plan.audio_config,
             );
             let handle = worker.advance_handle();
@@ -855,7 +924,7 @@ where
                 worker: StartupWorker::Deterministic,
             },
         )?;
-        let (observation_writer, _observation_reader) = observation.into_handles();
+        let (observation_writer, observation_reader) = observation.into_handles();
         let mut renderer = AudioRenderer::with_observation(
             audio_boundary,
             structural_audio,
@@ -869,8 +938,9 @@ where
         app_loop.dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::System)?;
 
         let installed_patches = installed_patches_from_log(&app_loop.event_log())?;
-        let scene = DemoScene::exhaustive(
+        let scene = DemoScene::exhaustive_with_effects(
             app_loop.capabilities(),
+            app_loop.effects(),
             &installed_patches,
             &global_parameters,
         )?;
@@ -884,11 +954,12 @@ where
             .ok_or(ApplicationError::ObservationOverflow)?;
         let mut audio_buffer = vec![0.0; sample_count];
 
-        let mut demo = ExhaustiveGuiDemo::new_with_worker(
+        let mut demo = ExhaustiveGuiDemo::new_with_worker_and_observation(
             &mut app_loop,
             &mut renderer,
             &mut audio_buffer,
             deterministic_worker.expect("deterministic startup returns its worker handle"),
+            &observation_reader,
         );
         let report = demo.run(scene)?;
         drop(demo);
@@ -1198,6 +1269,8 @@ fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, Applic
                 )
                 .expect("an accepted fixture record contains valid channel parameters"),
             )
+            .with_envelope(*patch.envelope())
+            .with_post_effects(patch.post_effects().to_vec())
         })
         .collect())
 }
@@ -1810,7 +1883,7 @@ mod tests {
             let amplitude = 0.15 + index as f32 * 0.11;
             for frame in output.chunks_exact_mut(2) {
                 frame[0] = amplitude;
-                frame[1] = amplitude * (1.0 + index as f32 * 0.07);
+                frame[1] = amplitude * (1.03 + index as f32 * 0.07);
             }
         }
 
@@ -1905,7 +1978,7 @@ mod tests {
 
     impl NegotiatedAudioOutput for TestOutput {
         fn config(&self) -> AudioDeviceConfig {
-            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 16).unwrap()
+            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 256).unwrap()
         }
 
         fn start(
@@ -1913,7 +1986,7 @@ mod tests {
             mut render: AudioRenderCallback,
             _on_runtime_error: AudioDeviceStatusCallback,
         ) -> Result<AudioStream, AudioOutputError> {
-            let mut buffer = [0.0; 32];
+            let mut buffer = [0.0; 512];
             render(&mut buffer);
             Ok(AudioStream::new(()))
         }
@@ -1935,7 +2008,7 @@ mod tests {
 
     impl NegotiatedAudioOutput for LiveTestOutput {
         fn config(&self) -> AudioDeviceConfig {
-            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 16).unwrap()
+            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 256).unwrap()
         }
 
         fn start(
@@ -2091,7 +2164,7 @@ mod tests {
                     let render = render
                         .as_mut()
                         .ok_or_else(|| WindowError::new("live audio callback was not opened"))?;
-                    let mut buffer = [0.0_f32; 32];
+                    let mut buffer = [0.0_f32; 512];
                     render(&mut buffer);
                 }
                 std::thread::yield_now();
@@ -2183,7 +2256,7 @@ mod tests {
         engine_state: Arc<Mutex<EngineState>>,
         projection: Arc<Mutex<Option<TextProjection>>>,
     ) -> TestApplication<TestWindow, TestOutput> {
-        StandaloneApplication::new(
+        StandaloneApplication::new_with_effects(
             TestBoundary {
                 bus: Arc::new(Mutex::new(Bus {
                     commands: VecDeque::new(),
@@ -2193,6 +2266,8 @@ mod tests {
             },
             providers(),
             preparers(engine_state),
+            crate::adapter::production_effects::production_effect_providers().unwrap(),
+            crate::adapter::production_effects::production_effect_preparers().unwrap(),
             structural_boundary(),
             AtomicAudioObservation::default(),
             TestSource {
@@ -2204,7 +2279,7 @@ mod tests {
             TestOutput,
             ApplicationConfig::new(
                 48_000.0,
-                16,
+                256,
                 ApplicationConfig::default().global_parameters(),
             ),
         )
@@ -2222,12 +2297,14 @@ mod tests {
             parameters: parameters(),
             parameter_publications: 0,
         }));
-        StandaloneApplication::new(
+        StandaloneApplication::new_with_effects(
             TestBoundary {
                 bus: Arc::clone(&bus),
             },
             providers(),
             preparers(engine_state),
+            crate::adapter::production_effects::production_effect_providers().unwrap(),
+            crate::adapter::production_effects::production_effect_preparers().unwrap(),
             structural_boundary(),
             AtomicAudioObservation::default(),
             TestSource {
@@ -2243,7 +2320,7 @@ mod tests {
             LiveTestOutput { render },
             ApplicationConfig::new(
                 48_000.0,
-                16,
+                256,
                 ApplicationConfig::default().global_parameters(),
             ),
         )
@@ -2251,7 +2328,7 @@ mod tests {
     }
 
     fn early_close_application() -> TestApplication<EarlyCloseWindow, TestOutput> {
-        StandaloneApplication::new(
+        StandaloneApplication::new_with_effects(
             TestBoundary {
                 bus: Arc::new(Mutex::new(Bus {
                     commands: VecDeque::new(),
@@ -2261,6 +2338,8 @@ mod tests {
             },
             providers(),
             preparers(Arc::new(Mutex::new(EngineState::default()))),
+            crate::adapter::production_effects::production_effect_providers().unwrap(),
+            crate::adapter::production_effects::production_effect_preparers().unwrap(),
             structural_boundary(),
             AtomicAudioObservation::default(),
             TestSource {
@@ -2272,7 +2351,7 @@ mod tests {
             TestOutput,
             ApplicationConfig::new(
                 48_000.0,
-                16,
+                256,
                 ApplicationConfig::default().global_parameters(),
             ),
         )
@@ -2283,7 +2362,7 @@ mod tests {
         witness: StalledLiveWitness,
         tick_duration: Duration,
     ) -> TestApplication<StalledLiveWindow, StalledLiveOutput> {
-        StandaloneApplication::new(
+        StandaloneApplication::new_with_effects(
             TestBoundary {
                 bus: Arc::new(Mutex::new(Bus {
                     commands: VecDeque::new(),
@@ -2293,6 +2372,8 @@ mod tests {
             },
             providers(),
             preparers(Arc::new(Mutex::new(EngineState::default()))),
+            crate::adapter::production_effects::production_effect_providers().unwrap(),
+            crate::adapter::production_effects::production_effect_preparers().unwrap(),
             structural_boundary(),
             AtomicAudioObservation::default(),
             TestSource {
@@ -2309,7 +2390,7 @@ mod tests {
             },
             ApplicationConfig::new(
                 48_000.0,
-                16,
+                256,
                 ApplicationConfig::default().global_parameters(),
             ),
         )
@@ -2350,7 +2431,14 @@ mod tests {
         .run_demo_scene(None)
         .unwrap();
 
-        assert!(report.is_complete());
+        assert!(
+            report.is_complete(),
+            "coverage={:?}; audio={:?}; eventMissing={:?}; eventUnexpected={:?}",
+            report.coverage(),
+            report.audio_evidence(),
+            report.event_log().coverage().missing(),
+            report.event_log().coverage().unexpected(),
+        );
         assert_eq!(report.coverage().missing_count(), 0);
         assert_eq!(report.event_log().dropped_records(), 0);
         assert!(report.event_log().records().len() > 1);
@@ -2393,10 +2481,10 @@ mod tests {
             .iter()
             .filter_map(|checkpoint| checkpoint.as_parameter())
             .filter(|checkpoint| {
-                checkpoint
-                    .expected_transition()
-                    .patch_control_id()
-                    .is_some()
+                matches!(
+                    checkpoint.expected_transition().patch_control_id(),
+                    Some(PatchControlId::Envelope(_))
+                )
             })
             .collect::<Vec<_>>();
         assert_eq!(patch_adsr.len(), VoiceEnvelope::surface_descriptor().len());
@@ -2407,6 +2495,24 @@ mod tests {
                 .is_some_and(|control| control != PatchControlId::Engine)
                 && checkpoint.projected_value().patch_control_id()
                     == checkpoint.expected_transition().patch_control_id()
+        }));
+        let patch_effects = report
+            .checkpoints()
+            .iter()
+            .filter_map(|checkpoint| checkpoint.as_parameter())
+            .filter(|checkpoint| {
+                matches!(
+                    checkpoint.expected_transition().patch_control_id(),
+                    Some(PatchControlId::Effect(_, _))
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(patch_effects.len(), 2);
+        assert!(patch_effects.iter().all(|checkpoint| {
+            let effect = checkpoint.audio_observation().patch_effect();
+            effect.patch_id() == Some(PatchId::new(1).unwrap())
+                && effect.difference_rms() > 0.0
+                && effect.side_rms() > 0.0
         }));
         let structural = report
             .checkpoints()

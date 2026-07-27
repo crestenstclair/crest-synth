@@ -1,6 +1,6 @@
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::mix_observation::MixObservation;
-use crate::real_time::GraphRevision;
+use crate::real_time::{GraphRevision, PatchEffectObservation};
 use serde::Serialize;
 
 /// Fixed-size numeric evidence from one completed real-time render block.
@@ -19,6 +19,7 @@ pub struct AudioObservationSnapshot {
     primary_patch_id: Option<PatchId>,
     primary_patch_rms: f32,
     primary_active_notes: u32,
+    patch_effect: PatchEffectObservation,
     left_peak: f32,
     right_peak: f32,
     output_rms: f32,
@@ -124,6 +125,41 @@ impl AudioObservationSnapshot {
         primary_active_notes: u32,
         mix: MixObservation,
     ) -> Self {
+        Self::from_mix_with_graph_routing_primary_and_effect(
+            sequence,
+            rendered_blocks,
+            rendered_frames,
+            parameter_generation,
+            active_graph_revision,
+            commands_consumed,
+            active_notes,
+            routing_failures,
+            last_unknown_patch_id,
+            primary_patch_id,
+            primary_patch_rms,
+            primary_active_notes,
+            PatchEffectObservation::EMPTY,
+            mix,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub const fn from_mix_with_graph_routing_primary_and_effect(
+        sequence: u64,
+        rendered_blocks: u64,
+        rendered_frames: u64,
+        parameter_generation: u64,
+        active_graph_revision: GraphRevision,
+        commands_consumed: u64,
+        active_notes: u32,
+        routing_failures: u64,
+        last_unknown_patch_id: Option<PatchId>,
+        primary_patch_id: Option<PatchId>,
+        primary_patch_rms: f32,
+        primary_active_notes: u32,
+        patch_effect: PatchEffectObservation,
+        mix: MixObservation,
+    ) -> Self {
         Self {
             sequence,
             rendered_blocks,
@@ -137,6 +173,7 @@ impl AudioObservationSnapshot {
             primary_patch_id,
             primary_patch_rms,
             primary_active_notes,
+            patch_effect,
             left_peak: mix.left_peak(),
             right_peak: mix.right_peak(),
             output_rms: mix.output_rms(),
@@ -294,6 +331,55 @@ impl AudioObservationSnapshot {
         non_finite_samples: u64,
         clipped_samples: u64,
     ) -> Self {
+        Self::from_parts_with_graph_routing_primary_and_effect(
+            sequence,
+            rendered_blocks,
+            rendered_frames,
+            parameter_generation,
+            active_graph_revision,
+            commands_consumed,
+            active_notes,
+            routing_failures,
+            last_unknown_patch_id,
+            primary_patch_id,
+            primary_patch_rms,
+            primary_active_notes,
+            PatchEffectObservation::EMPTY,
+            left_peak,
+            right_peak,
+            output_rms,
+            reverb_input_rms,
+            delay_input_rms,
+            wet_output_rms,
+            non_finite_samples,
+            clipped_samples,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) const fn from_parts_with_graph_routing_primary_and_effect(
+        sequence: u64,
+        rendered_blocks: u64,
+        rendered_frames: u64,
+        parameter_generation: u64,
+        active_graph_revision: GraphRevision,
+        commands_consumed: u64,
+        active_notes: u32,
+        routing_failures: u64,
+        last_unknown_patch_id: Option<PatchId>,
+        primary_patch_id: Option<PatchId>,
+        primary_patch_rms: f32,
+        primary_active_notes: u32,
+        patch_effect: PatchEffectObservation,
+        left_peak: f32,
+        right_peak: f32,
+        output_rms: f32,
+        reverb_input_rms: f32,
+        delay_input_rms: f32,
+        wet_output_rms: f32,
+        non_finite_samples: u64,
+        clipped_samples: u64,
+    ) -> Self {
         Self {
             sequence,
             rendered_blocks,
@@ -307,6 +393,7 @@ impl AudioObservationSnapshot {
             primary_patch_id,
             primary_patch_rms,
             primary_active_notes,
+            patch_effect,
             left_peak,
             right_peak,
             output_rms,
@@ -353,6 +440,9 @@ impl AudioObservationSnapshot {
     }
     pub const fn primary_active_notes(self) -> u32 {
         self.primary_active_notes
+    }
+    pub const fn patch_effect(self) -> PatchEffectObservation {
+        self.patch_effect
     }
     pub const fn left_peak(self) -> f32 {
         self.left_peak

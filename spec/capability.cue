@@ -5,6 +5,7 @@ project: contexts: Synth: {
 		CapabilityId: "a stable namespaced identifier for one installed instrument implementation"
 		ParameterId: "a stable namespaced identifier for one capability-owned parameter"
 		CapabilityDescriptor: "the immutable control-side schema supplied by one installed instrument capability"
+		ParameterSpec: "the canonical immutable parameter schema shared by installed instrument and effect capabilities"
 		InstrumentConfig: "one Patch's capability identity, parameter values, and asset references"
 	}
 
@@ -73,7 +74,7 @@ project: contexts: Synth: {
 			label: "String"
 			kind: "Continuous | Stepped | Choice | Toggle | Asset"
 			update: "Scalar | Structural"
-			patchInteraction: "ReadOnly | StructuralChoice"
+			patchInteraction: "ReadOnly | ScalarEdit | StructuralChoice"
 			defaultValue: "ParameterValue | AssetReference"
 			range: "Option<{minimum, maximum}>"
 			choices: "Vec<{id, label}>"
@@ -90,13 +91,14 @@ project: contexts: Synth: {
 			"continuous and stepped parameters have finite ordered bounds and positive fine/coarse steps",
 			"choice ids are unique and stable; labels are presentation only",
 			"Asset and every value that changes preparation topology use Structural update",
-			"StructuralChoice is valid only for a non-Asset Structural Choice with at least two choices; every other parameter is ReadOnly on PATCH",
+			"ScalarEdit is valid only for a non-Asset Scalar parameter with finite descriptor-owned adjustment semantics; StructuralChoice is valid only for a non-Asset Structural Choice with at least two choices",
 			"dependency predicates reference earlier parameters in the same descriptor and contain no callbacks or engine code",
 		]
 		contributesTo: [
 			{capability: "capability.instrument_capability_model", contribution: "defines the schema the control path validates"},
 			{capability: "capability.schema_driven_patch_page", contribution: "defines each PATCH row's stable identity, presentation, value kind, update class, bounds, and dependencies"},
 			{capability: "capability.soundfont_preset_selection", contribution: "declares whether one capability-owned structural Choice joins the PATCH focus/edit surface without a capability branch"},
+			{capability: "capability.static_patch_effect", contribution: "lets effect descriptors expose PATCH-editable scalar controls without processor-specific field types"},
 		]
 	}
 
@@ -119,7 +121,7 @@ project: contexts: Synth: {
 			"voice policy encodes neither a capability-specific Patch-count limit nor a global voice budget; the engine-agnostic prepared-rack capacity governs concurrent Patch count separately",
 			"supportedMidiKinds contains no duplicates and unsupported input is rejected explicitly rather than silently remapped",
 			"at most sixteen parameters are classified Scalar so their descriptor-ordered values fit the fixed real-time projection",
-			"PATCH-editable parameters are derived only from patchInteraction and descriptor order; the registry contains no duplicated per-capability PATCH field list",
+			"PATCH-editable parameters are derived only from patchInteraction and descriptor order; installed instrument descriptors in this increment use StructuralChoice or ReadOnly while ScalarEdit is reserved for effect descriptors, and the registry contains no duplicated per-capability PATCH field list",
 			"the descriptor contains immutable control metadata only and owns no engine, renderer, factory closure, decoded asset, buffer, lock, device, or callback state",
 		]
 		contributesTo: [

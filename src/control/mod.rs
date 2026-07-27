@@ -26,9 +26,9 @@ pub use event_record::{
 pub use interaction_state::{InteractionState, Selection, SelectionSection};
 pub use patch_control_id::PatchControlId;
 pub use patch_page_projection::{
-    PatchPageEngine, PatchPageEngineChoice, PatchPageEnvelopeRow, PatchPageIdentity,
-    PatchPageParameterRow, PatchPageParameterValue, PatchPageProjection, PatchPageProjectionError,
-    PatchPageSection,
+    PatchPageEffect, PatchPageEngine, PatchPageEngineChoice, PatchPageEnvelopeRow,
+    PatchPageIdentity, PatchPageParameterRow, PatchPageParameterValue, PatchPageProjection,
+    PatchPageProjectionError, PatchPageSection,
 };
 pub use state_projector::{StateProjectionError, StateProjector};
 pub use state_snapshot::StateSnapshot;

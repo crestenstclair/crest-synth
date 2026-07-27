@@ -10,6 +10,7 @@ use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{CapabilityRegistry, InstrumentConfig};
 use crate::synth::voice_envelope::VoiceEnvelope;
+use crate::synth::{EffectCapabilityRegistry, PostEffectConfig};
 use core::fmt;
 use serde::Serialize;
 use std::sync::{Arc, OnceLock};
@@ -126,11 +127,12 @@ struct MidiTreeTemplate {
 
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
-    pub const SCHEMA_VERSION: u32 = 8;
+    pub const SCHEMA_VERSION: u32 = 9;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
         "capabilities",
+        "effects",
         "patches",
         "global",
         "interaction.context",
@@ -195,6 +197,33 @@ impl StateTree {
         "capabilities.descriptors[].voicePolicy.kind",
         "capabilities.descriptors[].voicePolicy.voices",
         "capabilities.descriptors[].supportedMidiKinds[]",
+        "effects.descriptors[].id",
+        "effects.descriptors[].label",
+        "effects.descriptors[].semanticAccent",
+        "effects.descriptors[].sections[].id",
+        "effects.descriptors[].sections[].label",
+        "effects.descriptors[].sections[].parameters[].id",
+        "effects.descriptors[].sections[].parameters[].label",
+        "effects.descriptors[].sections[].parameters[].kind",
+        "effects.descriptors[].sections[].parameters[].patchInteraction",
+        "effects.descriptors[].sections[].parameters[].update",
+        "effects.descriptors[].sections[].parameters[].defaultValue.kind",
+        "effects.descriptors[].sections[].parameters[].defaultValue.value.kind",
+        "effects.descriptors[].sections[].parameters[].defaultValue.value.value",
+        "effects.descriptors[].sections[].parameters[].defaultValue.value.locator",
+        "effects.descriptors[].sections[].parameters[].range.minimum",
+        "effects.descriptors[].sections[].parameters[].range.maximum",
+        "effects.descriptors[].sections[].parameters[].range",
+        "effects.descriptors[].sections[].parameters[].choices[].id",
+        "effects.descriptors[].sections[].parameters[].choices[].label",
+        "effects.descriptors[].sections[].parameters[].fineStep",
+        "effects.descriptors[].sections[].parameters[].coarseStep",
+        "effects.descriptors[].sections[].parameters[].unit",
+        "effects.descriptors[].sections[].parameters[].formatter",
+        "effects.descriptors[].sections[].parameters[].enabledWhen",
+        "effects.descriptors[].sections[].parameters[].visibleWhen",
+        "effects.descriptors[].assetRequirements[].parameterId",
+        "effects.descriptors[].assetRequirements[].required",
         "patches[].id",
         "patches[].name",
         "patches[].channel",
@@ -205,6 +234,14 @@ impl StateTree {
         "patches[].instrument.assetReferences[].parameterId",
         "patches[].instrument.assetReferences[].reference.kind",
         "patches[].instrument.assetReferences[].reference.locator",
+        "patches[].postEffects[].slotId",
+        "patches[].postEffects[].capabilityId",
+        "patches[].postEffects[].values[].parameterId",
+        "patches[].postEffects[].values[].value.kind",
+        "patches[].postEffects[].values[].value.value",
+        "patches[].postEffects[].assetReferences[].parameterId",
+        "patches[].postEffects[].assetReferences[].reference.kind",
+        "patches[].postEffects[].assetReferences[].reference.locator",
         "patches[].envelope.attackMilliseconds",
         "patches[].envelope.decayMilliseconds",
         "patches[].envelope.releaseMilliseconds",
@@ -266,6 +303,39 @@ impl StateTree {
         "patchPage.envelope[].unit",
         "patchPage.envelope[].value",
         "patchPage.focusedControlId",
+        "patchPage.effects[].capabilityId",
+        "patchPage.effects[].editableIdentity",
+        "patchPage.effects[].label",
+        "patchPage.effects[].slotId",
+        "patchPage.effects[].sections[].id",
+        "patchPage.effects[].sections[].label",
+        "patchPage.effects[].sections[].parameters[].coarseStep",
+        "patchPage.effects[].sections[].parameters[].controlId",
+        "patchPage.effects[].sections[].parameters[].editable",
+        "patchPage.effects[].sections[].parameters[].enabled",
+        "patchPage.effects[].sections[].parameters[].activeGraphRevision",
+        "patchPage.effects[].sections[].parameters[].failure",
+        "patchPage.effects[].sections[].parameters[].fineStep",
+        "patchPage.effects[].sections[].parameters[].formatter",
+        "patchPage.effects[].sections[].parameters[].id",
+        "patchPage.effects[].sections[].parameters[].kind",
+        "patchPage.effects[].sections[].parameters[].label",
+        "patchPage.effects[].sections[].parameters[].patchInteraction",
+        "patchPage.effects[].sections[].parameters[].requestId",
+        "patchPage.effects[].sections[].parameters[].range.maximum",
+        "patchPage.effects[].sections[].parameters[].range.minimum",
+        "patchPage.effects[].sections[].parameters[].requestedChoiceId",
+        "patchPage.effects[].sections[].parameters[].requestedLabel",
+        "patchPage.effects[].sections[].parameters[].selectedChoiceId",
+        "patchPage.effects[].sections[].parameters[].selectedLabel",
+        "patchPage.effects[].sections[].parameters[].status",
+        "patchPage.effects[].sections[].parameters[].targetGraphRevision",
+        "patchPage.effects[].sections[].parameters[].unit",
+        "patchPage.effects[].sections[].parameters[].update",
+        "patchPage.effects[].sections[].parameters[].value.source",
+        "patchPage.effects[].sections[].parameters[].value.value.kind",
+        "patchPage.effects[].sections[].parameters[].value.value.value",
+        "patchPage.effects[].sections[].parameters[].visible",
         "patchPage.patch.id",
         "patchPage.patch.midiChannel",
         "patchPage.patch.name",
@@ -318,6 +388,10 @@ impl StateTree {
         "parameters.patches[].envelope.releaseMilliseconds",
         "parameters.patches[].instrument.count",
         "parameters.patches[].instrument.values[]",
+        "parameters.patches[].effect.active",
+        "parameters.patches[].effect.slotId",
+        "parameters.patches[].effect.scalarCount",
+        "parameters.patches[].effect.scalars[]",
         "parameters.patches[].parameters.gainDb",
         "parameters.patches[].parameters.pan",
         "parameters.patches[].parameters.reverbSend",
@@ -573,7 +647,7 @@ impl PartialEq for StateTree {
 
 impl MidiTreeTemplate {
     fn from_json(json: &str, generation: u64, state_hash: &str) -> Option<Self> {
-        const ROOT_MARKER: &str = "{\"schemaVersion\":8,\"generation\":";
+        const ROOT_MARKER: &str = "{\"schemaVersion\":9,\"generation\":";
         const PARAMETER_MARKER: &str = "\"parameters\":{\"generation\":";
 
         let root_start = ROOT_MARKER.len();
@@ -685,6 +759,35 @@ fn validate_parameter_projection(
         {
             return Err(StateTreeError::PatchParametersMismatch { index });
         }
+        match state_patch.post_effects.as_ref() {
+            [] if parameter_patch.effect().is_active() => {
+                return Err(StateTreeError::PatchParametersMismatch { index });
+            }
+            [] => {}
+            [config] => {
+                let descriptor = state
+                    .effects
+                    .descriptor(config.capability_id())
+                    .ok_or(StateTreeError::PatchParametersMismatch { index })?;
+                if parameter_patch.effect().slot_id() != Some(config.slot_id())
+                    || parameter_patch.effect().scalar_count()
+                        != descriptor.scalar_parameter_count()
+                    || descriptor
+                        .scalar_parameters()
+                        .enumerate()
+                        .any(|(scalar_index, spec)| {
+                            let Some(value) = config.value(spec.id()) else {
+                                return true;
+                            };
+                            spec.scalar_value(value).ok()
+                                != parameter_patch.effect().scalar(scalar_index)
+                        })
+                {
+                    return Err(StateTreeError::PatchParametersMismatch { index });
+                }
+            }
+            _ => return Err(StateTreeError::PatchParametersMismatch { index }),
+        }
     }
 
     if TreeGlobalParameters::from(&state.global) != TreeGlobalParameters::from(parameters.global())
@@ -701,6 +804,7 @@ struct SerializableStateTree<'a> {
     schema_version: u32,
     generation: u64,
     capabilities: &'a CapabilityRegistry,
+    effects: &'a EffectCapabilityRegistry,
     patches: Vec<TreePatch<'a>>,
     global: TreeGlobalParameters,
     interaction: &'a SerializedInteractionState,
@@ -721,6 +825,7 @@ impl<'a> SerializableStateTree<'a> {
             schema_version: StateTree::SCHEMA_VERSION,
             generation: state.generation,
             capabilities: state.capabilities.as_ref(),
+            effects: state.effects.as_ref(),
             patches: state.patches.iter().map(TreePatch::from).collect(),
             global: TreeGlobalParameters::from(&state.global),
             interaction: &state.interaction,
@@ -739,6 +844,7 @@ struct TreePatch<'a> {
     name: &'a str,
     channel: u8,
     instrument: &'a InstrumentConfig,
+    post_effects: &'a [PostEffectConfig],
     envelope: VoiceEnvelope,
     parameters: TreeChannelParameters,
 }
@@ -750,6 +856,7 @@ impl<'a> From<&'a SerializedPatch<'_>> for TreePatch<'a> {
             name: patch.name.as_ref(),
             channel: patch.channel,
             instrument: patch.instrument.as_ref(),
+            post_effects: patch.post_effects.as_ref(),
             envelope: patch.envelope,
             parameters: TreeChannelParameters::from(patch),
         }
@@ -951,11 +1058,12 @@ mod tests {
         assert_eq!(tree.state_hash(), snapshot.hash());
 
         let root = value.as_object().unwrap();
-        assert_eq!(root.len(), 10);
+        assert_eq!(root.len(), 11);
         for property in [
             "schemaVersion",
             "generation",
             "capabilities",
+            "effects",
             "patches",
             "global",
             "interaction",
@@ -974,6 +1082,7 @@ mod tests {
                 "name": "Lead",
                 "channel": 2,
                 "instrument": value["patches"][0]["instrument"].clone(),
+                "postEffects": [],
                 "envelope": {
                     "attackMilliseconds": 0.0,
                     "decayMilliseconds": 0.0,
@@ -1067,6 +1176,12 @@ mod tests {
                     "releaseMilliseconds": 0.0
                 },
                 "instrument": {"count": 0, "values": []},
+                "effect": {
+                    "active": false,
+                    "slotId": null,
+                    "scalarCount": 0,
+                    "scalars": []
+                },
                 "parameters": {
                     "gainDb": -12.0,
                     "pan": 0.5,
@@ -1088,7 +1203,7 @@ mod tests {
         assert_eq!(first.json(), second.json());
         assert!(first
             .json()
-            .starts_with("{\"schemaVersion\":8,\"generation\":42,\"capabilities\":"));
+            .starts_with("{\"schemaVersion\":9,\"generation\":42,\"capabilities\":"));
         assert_eq!(first.clone().into_json(), first.json());
     }
 

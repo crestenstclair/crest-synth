@@ -28,6 +28,7 @@ pub enum StateProjectionError {
     SelectionDoesNotMatchSnapshot,
     InvalidSelection,
     InvalidInstrumentConfig,
+    InvalidEffectConfig,
     PatchPage(PatchPageProjectionError),
     ParameterSnapshot(ParameterSnapshotError),
     StateTree(StateTreeError),
@@ -52,6 +53,9 @@ impl fmt::Display for StateProjectionError {
             }
             Self::InvalidInstrumentConfig => {
                 formatter.write_str("instrument config does not resolve through the registry")
+            }
+            Self::InvalidEffectConfig => {
+                formatter.write_str("effect config does not resolve through the registry")
             }
             Self::PatchPage(error) => error.fmt(formatter),
             Self::ParameterSnapshot(error) => error.fmt(formatter),
@@ -265,16 +269,20 @@ impl StateProjector {
         &self,
         state: &AppState,
     ) -> Result<ParameterSnapshot, StateProjectionError> {
-        ParameterSnapshot::project_patches(
+        ParameterSnapshot::project_patches_with_effects(
             state.generation(),
             state.engine_selection().projection_graph_revision(),
             *state.global(),
             state.patches(),
             state.capabilities(),
+            state.effects(),
         )
         .map_err(|error| match error {
             ParameterSnapshotError::InvalidInstrumentConfig { .. } => {
                 StateProjectionError::InvalidInstrumentConfig
+            }
+            ParameterSnapshotError::InvalidEffectConfig { .. } => {
+                StateProjectionError::InvalidEffectConfig
             }
             other => StateProjectionError::ParameterSnapshot(other),
         })
@@ -541,6 +549,33 @@ fn render_patch_text(
                 "{marker} PARAMETER {}",
                 serde_json::to_string(row).map_err(|_| StateProjectionError::StateSerialization)?
             ));
+        }
+    }
+    for effect in page.effects() {
+        lines.push(format!(
+            " EFFECT slot={} capability={} label={}",
+            effect.slot_id(),
+            effect.capability_id(),
+            effect.label()
+        ));
+        for section in effect.sections() {
+            lines.push(format!(
+                " EFFECT_SECTION id={} label={}",
+                section.id(),
+                section.label()
+            ));
+            for row in section.parameters().iter().filter(|row| row.visible()) {
+                let selected = row.control_id() == Some(page.focused_control_id());
+                if selected {
+                    selected_line = Some(lines.len());
+                }
+                let marker = if selected { '>' } else { ' ' };
+                lines.push(format!(
+                    "{marker} EFFECT_PARAMETER {}",
+                    serde_json::to_string(row)
+                        .map_err(|_| StateProjectionError::StateSerialization)?
+                ));
+            }
         }
     }
 
@@ -1004,6 +1039,8 @@ mod tests {
             let controls = crate::control::PatchControlId::resolve(
                 &descriptor,
                 state.patches()[0].instrument_config(),
+                state.effects(),
+                state.patches()[0].post_effects(),
             );
 
             for (index, control) in controls.iter().cloned().enumerate() {

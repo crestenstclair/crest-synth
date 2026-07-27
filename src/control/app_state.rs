@@ -15,7 +15,7 @@ use crate::synth::instrument_capability::{
     PatchInteraction,
 };
 use crate::synth::patch::{Patch, PatchEditableTarget};
-use crate::synth::{ParameterId, VoiceEnvelopeParameter};
+use crate::synth::{EffectCapabilityRegistry, EffectSlotId, ParameterId, VoiceEnvelopeParameter};
 use core::fmt;
 
 const GLOBAL_PARAMETER_COUNT: usize = GlobalParameters::surface_descriptor().len();
@@ -75,6 +75,7 @@ pub enum EventRejection {
     TooManyPatches,
     DuplicateMidiChannel,
     InvalidInstrumentConfig,
+    InvalidEffectConfig,
     NoPatchesInstalled,
     UnknownPatch,
     InvalidSelection,
@@ -131,7 +132,7 @@ impl EventRejectionDescriptor {
     }
 }
 
-const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 16] = [
+const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 17] = [
     EventRejectionDescriptor::new(
         EventRejection::InstallationClosed,
         "installationClosed",
@@ -151,6 +152,11 @@ const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 16] = [
         EventRejection::InvalidInstrumentConfig,
         "invalidInstrumentConfig",
         EventRejectionReachability::Scene,
+    ),
+    EventRejectionDescriptor::new(
+        EventRejection::InvalidEffectConfig,
+        "invalidEffectConfig",
+        EventRejectionReachability::ReducerTable,
     ),
     EventRejectionDescriptor::new(
         EventRejection::NoPatchesInstalled,
@@ -227,6 +233,7 @@ impl EventRejection {
             Self::TooManyPatches => "tooManyPatches",
             Self::DuplicateMidiChannel => "duplicateMidiChannel",
             Self::InvalidInstrumentConfig => "invalidInstrumentConfig",
+            Self::InvalidEffectConfig => "invalidEffectConfig",
             Self::NoPatchesInstalled => "noPatchesInstalled",
             Self::UnknownPatch => "unknownPatch",
             Self::InvalidSelection => "invalidSelection",
@@ -251,6 +258,9 @@ impl fmt::Display for EventRejection {
             Self::DuplicateMidiChannel => "installed Patches must use distinct MIDI channels",
             Self::InvalidInstrumentConfig => {
                 "an installed Patch instrument config does not match the capability registry"
+            }
+            Self::InvalidEffectConfig => {
+                "an installed Patch effect config does not match the effect capability registry"
             }
             Self::NoPatchesInstalled => "no Patch is available for the selected operation",
             Self::UnknownPatch => "the MIDI event targets a Patch that is not installed",
@@ -285,7 +295,7 @@ impl std::error::Error for EventRejection {}
 pub(crate) fn exercise_reducer_table_rejections(
     capabilities: &CapabilityRegistry,
     instrument_config: &crate::synth::instrument_capability::InstrumentConfig,
-) -> [EventRejection; 8] {
+) -> [EventRejection; 9] {
     fn probe_patch(
         id: u32,
         channel: u8,
@@ -335,6 +345,23 @@ pub(crate) fn exercise_reducer_table_rejections(
         )]))
         .expect_err("unknown config violates registry installation");
 
+    let invalid_effect_config = crate::synth::PostEffectConfig::from_parts(
+        crate::synth::EffectSlotId::new(1).expect("probe effect slot is valid"),
+        crate::synth::EffectCapabilityId::new("effect.unknown")
+            .expect("probe effect capability id is valid"),
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut invalid_effect = AppState::new(capabilities.clone(), global);
+    let invalid_effect = invalid_effect
+        .apply(AppEvent::InstallPatches(vec![probe_patch(
+            1,
+            0,
+            instrument_config,
+        )
+        .with_post_effects(vec![invalid_effect_config])]))
+        .expect_err("unknown effect config violates registry installation");
+
     let mut no_patches = AppState::new(capabilities.clone(), global);
     no_patches
         .interaction
@@ -345,6 +372,7 @@ pub(crate) fn exercise_reducer_table_rejections(
 
     let mut invalid_selection = AppState {
         capabilities: capabilities.clone(),
+        effects: EffectCapabilityRegistry::default(),
         patches: vec![probe_patch(1, 0, instrument_config)],
         global,
         interaction: InteractionState {
@@ -397,6 +425,7 @@ pub(crate) fn exercise_reducer_table_rejections(
         too_many,
         duplicate_channel,
         invalid_instrument,
+        invalid_effect,
         no_patch,
         invalid_selection,
         invalid_parameter,
@@ -413,6 +442,7 @@ pub(crate) fn exercise_reducer_table_rejections(
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
     capabilities: CapabilityRegistry,
+    effects: EffectCapabilityRegistry,
     patches: Vec<Patch>,
     global: GlobalParameters,
     interaction: InteractionState,
@@ -427,14 +457,39 @@ impl AppState {
         Self::for_graph(capabilities, global, GraphRevision::INITIAL)
     }
 
+    /// Creates startup state with the immutable installed effect registry.
+    pub fn new_with_effects(
+        capabilities: CapabilityRegistry,
+        effects: EffectCapabilityRegistry,
+        global: GlobalParameters,
+    ) -> Self {
+        Self::for_graph_with_effects(capabilities, effects, global, GraphRevision::INITIAL)
+    }
+
     /// Creates startup state for the exact complete graph revision already prepared.
     pub fn for_graph(
         capabilities: CapabilityRegistry,
         global: GlobalParameters,
         active_graph_revision: GraphRevision,
     ) -> Self {
+        Self::for_graph_with_effects(
+            capabilities,
+            EffectCapabilityRegistry::default(),
+            global,
+            active_graph_revision,
+        )
+    }
+
+    /// Creates startup state for one graph revision and installed effect registry.
+    pub fn for_graph_with_effects(
+        capabilities: CapabilityRegistry,
+        effects: EffectCapabilityRegistry,
+        global: GlobalParameters,
+        active_graph_revision: GraphRevision,
+    ) -> Self {
         Self {
             capabilities,
+            effects,
             patches: Vec::new(),
             global,
             interaction: InteractionState::new(),
@@ -450,6 +505,10 @@ impl AppState {
 
     pub const fn capabilities(&self) -> &CapabilityRegistry {
         &self.capabilities
+    }
+
+    pub const fn effects(&self) -> &EffectCapabilityRegistry {
+        &self.effects
     }
 
     pub const fn global(&self) -> &GlobalParameters {
@@ -517,6 +576,8 @@ impl AppState {
         Ok(crate::control::PatchControlId::resolve(
             descriptor,
             patch.instrument_config(),
+            &self.effects,
+            patch.post_effects(),
         ))
     }
 
@@ -661,6 +722,13 @@ impl AppState {
                 .is_err()
         }) {
             return Err(EventRejection::InvalidInstrumentConfig);
+        }
+        if patches.iter().any(|patch| {
+            self.effects
+                .validate_patch_effects(patch.post_effects())
+                .is_err()
+        }) {
+            return Err(EventRejection::InvalidEffectConfig);
         }
         for (index, patch) in patches.iter().enumerate() {
             if patches[..index]
@@ -967,8 +1035,63 @@ impl AppState {
                     engine_selection_effect: Some(structural_effect),
                 })
             }
+            Some(crate::control::PatchControlId::Effect(slot_id, parameter_id)) => {
+                self.adjust_patch_effect(slot_id, &parameter_id, direction)?;
+                Ok(ReducerEffects::default())
+            }
             None => Err(EventRejection::NoPatchesInstalled),
         }
+    }
+
+    fn adjust_patch_effect(
+        &mut self,
+        slot_id: EffectSlotId,
+        parameter_id: &ParameterId,
+        direction: Direction,
+    ) -> Result<(), EventRejection> {
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch_index = self
+            .patches
+            .iter()
+            .position(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let effect_index = self.patches[patch_index]
+            .post_effects()
+            .iter()
+            .position(|effect| effect.slot_id() == slot_id)
+            .ok_or(EventRejection::InvalidSelection)?;
+        let config = &self.patches[patch_index].post_effects()[effect_index];
+        let descriptor = self
+            .effects
+            .descriptor(config.capability_id())
+            .ok_or(EventRejection::InvalidEffectConfig)?;
+        let spec = descriptor
+            .parameter(parameter_id)
+            .ok_or(EventRejection::InvalidSelection)?;
+        if spec.patch_interaction() != PatchInteraction::ScalarEdit
+            || spec.update() != crate::synth::ParameterUpdate::Scalar
+        {
+            return Err(EventRejection::InvalidSelection);
+        }
+        let current = config
+            .value(parameter_id)
+            .ok_or(EventRejection::InvalidEffectConfig)?;
+        let value = spec
+            .adjusted_scalar_value(current, parameter_adjustment(direction))
+            .map_err(map_scalar_adjustment_error)?;
+        let candidate = config
+            .with_scalar_value(descriptor, parameter_id, value)
+            .map_err(|error| match error {
+                crate::synth::EffectCapabilityError::Capability(error) => {
+                    map_scalar_adjustment_error(error)
+                }
+                _ => EventRejection::InvalidEffectConfig,
+            })?;
+        self.patches[patch_index].set_post_effect_config(effect_index, candidate);
+        Ok(())
     }
 
     fn request_parameter_choice(
@@ -1520,7 +1643,7 @@ mod tests {
     #[test]
     fn rejection_descriptor_is_unique_and_reducer_table_exercises_its_partition() {
         let descriptor = EventRejection::surface_descriptor();
-        assert_eq!(descriptor.len(), 16);
+        assert_eq!(descriptor.len(), 17);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(!descriptor[..index].iter().any(|prior| prior.rejection()
                 == entry.rejection()
@@ -1540,6 +1663,7 @@ mod tests {
                 | EventRejection::StaleEngineSelection
                 | EventRejection::MismatchedEngineSelection => EventRejectionReachability::Scene,
                 EventRejection::NoPatchesInstalled
+                | EventRejection::InvalidEffectConfig
                 | EventRejection::InvalidSelection
                 | EventRejection::InvalidParameterValue
                 | EventRejection::RequestIdOverflow
@@ -1552,6 +1676,7 @@ mod tests {
             EventRejection::TooManyPatches,
             EventRejection::DuplicateMidiChannel,
             EventRejection::InvalidInstrumentConfig,
+            EventRejection::InvalidEffectConfig,
             EventRejection::NoPatchesInstalled,
             EventRejection::InvalidSelection,
             EventRejection::InvalidParameterValue,

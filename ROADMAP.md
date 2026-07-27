@@ -114,7 +114,7 @@ Completed increments:
 3. Canonical PATCH ADSR focus and editing, completed on 2026-07-26 through OpenSpec change `phase-3-patch-adsr-editing`. PATCH now owns the nonwrapping Engine → Attack → Decay → Sustain → Release focus surface, reuses the existing per-voice envelope mutation and scalar snapshot path, remains coherent through engine preparation and activation, and proves every field through both engines plus the physical live demo.
 4. SoundFont preset discovery and semantic selection, completed on 2026-07-26 through OpenSpec change `phase-3-soundfont-preset-selection`. The fixed SF2 is parsed once into an authored-name, numerically ordered control catalog plus a metadata-free numeric render bank; PATCH derives Preset after Release from the descriptor and sends adjacent choices through the shared structural worker/graph lifecycle. Release-mode real-SF2, deterministic two-run, and physical live witnesses prove exact names/order, source-preserving failure and preparation, audible activation, no fallback, and zero callback allocation or destruction.
 
-Phase 3 has no remaining planned increment. The next not-yet-implemented roadmap increment is Phase 4's first static per-Patch effect, after its exact processor and license are reviewed and narrowed with the user.
+Phase 3 has no remaining planned increment. Its schema-driven control and projection foundation is the base used by Phase 4's static per-Patch effect controls.
 
 Preserve the current basic interface while introducing two directly selectable pages:
 
@@ -150,9 +150,11 @@ This phase does not add modulation routing or a modulation matrix.
 
 ## Phase 4 — Static per-Patch effects
 
-Status: **Queued**
+Status: **Complete** — 2026-07-27
 
-Introduce the first per-Patch post-effects path using selected Mutable Instruments open-source effect implementations.
+Delivered and accepted through OpenSpec change `phase-4-first-static-patch-effect`, archived as `2026-07-27-phase-4-first-static-patch-effect`. The production fixture routes its first Patch through one prepared Chorus, derives Amount and Depth from the effect descriptor in the existing PATCH UI, preserves the effect configuration across structural engine changes, and proves post-engine/pre-mixer ordering, Patch isolation, independent instance state, audible stereo output, and hard-real-time callback safety in the accepted deterministic and physical live witnesses.
+
+Introduce the first per-Patch post-effects path with one MIT-licensed Mutable Instruments Rings Chorus, pinned to the audited eurorack/stmlib revisions recorded in `DESIGN.md` and exposed to the product as `Chorus`.
 
 The first topology is fixed and prebuilt:
 
@@ -160,11 +162,11 @@ The first topology is fixed and prebuilt:
 Patch engine → ordered Patch effects → Patch mix/routing
 ```
 
-Effects register the same kind of capability-owned parameter descriptors and preparation behavior as instruments. The Patch page renders only installed effect capabilities and their real fields; it does not expose placeholder slots or hard-code processor-specific controls.
+Effects use a separate capability descriptor/registry/provider/preparer family while sharing canonical parameter types with instruments. The first production fixture configures Chorus only on its first Patch and exposes descriptor-derived Amount and Depth rows. The Patch page renders only configured effect capabilities and their real fields; it does not expose placeholder slots or hard-code processor-specific controls.
 
 Although the topology is static, it must use the same engine/effect ownership and preparation boundaries that a later configurable graph can extend. Do not introduce arbitrary routing, dynamic graph editing, modulation, or plugin hosting in this phase.
 
-Choose the exact initial effects and confirm their source and license compatibility when this phase becomes current. Add effects one at a time so each processor has its own audible and real-time proof.
+The initial adapter admits exactly 48 kHz, owns independent prepared delay/LFO state per instance, and must prove source/license hashes, order, Patch isolation, independent instances, audible stereo output, structural preservation, and callback safety through its named acceptance target plus both demos. Add later effects one at a time with their own source review and proof.
 
 ## Phase 5 — Figma-derived interface
 

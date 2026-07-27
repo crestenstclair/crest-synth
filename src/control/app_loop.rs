@@ -414,7 +414,7 @@ where
                 return;
             }
         };
-        let request = match GraphPreparationRequest::replacement(
+        let request = match GraphPreparationRequest::replacement_with_effects(
             correlation,
             self.state.patches(),
             candidate_config,
@@ -422,6 +422,7 @@ where
             *self.state.global(),
             runtime.audio_config,
             runtime.factory.registry(),
+            self.state.effects(),
         ) {
             Ok(request) => request,
             Err(error) => {
@@ -651,6 +652,10 @@ where
         self.state.capabilities()
     }
 
+    pub const fn effects(&self) -> &crate::synth::EffectCapabilityRegistry {
+        self.state.effects()
+    }
+
     /// Returns the immutable accepted Patch set used to prepare audio graphs.
     pub fn patches(&self) -> &[crate::synth::patch::Patch] {
         self.state.patches()
@@ -775,6 +780,7 @@ fn map_request_failure(error: GraphPreparationRequestError) -> EngineSelectionFa
             EngineSelectionFailure::ProviderMismatch
         }
         GraphPreparationRequestError::InvalidActiveConfig
+        | GraphPreparationRequestError::InvalidActiveEffectConfig
         | GraphPreparationRequestError::InvalidCandidateConfig => {
             EngineSelectionFailure::InvalidDefaultConfig
         }

@@ -12,6 +12,7 @@ use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::InstrumentConfig;
 use crate::synth::patch::Patch;
 use crate::synth::voice_envelope::VoiceEnvelope;
+use crate::synth::PostEffectConfig;
 use core::fmt;
 use serde::{Serialize, Serializer};
 
@@ -156,6 +157,7 @@ pub struct PatchInput {
     name: String,
     channel: u8,
     instrument: InstrumentConfig,
+    post_effects: Vec<PostEffectConfig>,
     envelope: VoiceEnvelope,
     gain_db: f32,
     pan: f32,
@@ -178,6 +180,10 @@ impl PatchInput {
 
     pub const fn instrument_config(&self) -> &InstrumentConfig {
         &self.instrument
+    }
+
+    pub fn post_effects(&self) -> &[PostEffectConfig] {
+        &self.post_effects
     }
 
     pub const fn envelope(&self) -> &VoiceEnvelope {
@@ -208,6 +214,7 @@ impl From<&Patch> for PatchInput {
             name: patch.name().to_owned(),
             channel: patch.channel().value(),
             instrument: patch.instrument_config().clone(),
+            post_effects: patch.post_effects().to_vec(),
             envelope: *patch.envelope(),
             gain_db: patch.parameters().gain_db(),
             pan: patch.parameters().pan(),
@@ -545,6 +552,14 @@ impl EventRecord {
         "input.patches[].instrument.values[].value.value",
         "input.patches[].name",
         "input.patches[].pan",
+        "input.patches[].postEffects[].assetReferences[].parameterId",
+        "input.patches[].postEffects[].assetReferences[].reference.kind",
+        "input.patches[].postEffects[].assetReferences[].reference.locator",
+        "input.patches[].postEffects[].capabilityId",
+        "input.patches[].postEffects[].slotId",
+        "input.patches[].postEffects[].values[].parameterId",
+        "input.patches[].postEffects[].values[].value.kind",
+        "input.patches[].postEffects[].values[].value.value",
         "input.patches[].reverbSend",
         "input.requestId",
         "input.retiredGraphRevision",
@@ -781,6 +796,7 @@ const fn rejection_name(rejection: EventRejection) -> &'static str {
         EventRejection::TooManyPatches => "tooManyPatches",
         EventRejection::DuplicateMidiChannel => "duplicateMidiChannel",
         EventRejection::InvalidInstrumentConfig => "invalidInstrumentConfig",
+        EventRejection::InvalidEffectConfig => "invalidEffectConfig",
         EventRejection::NoPatchesInstalled => "noPatchesInstalled",
         EventRejection::UnknownPatch => "unknownPatch",
         EventRejection::InvalidSelection => "invalidSelection",
@@ -902,6 +918,25 @@ mod tests {
                 SoundFontInstrument::new(128, 11, false).unwrap(),
             )
             .unwrap(),
+            post_effects: vec![{
+                let chorus = crate::adapter::production_effects::production_chorus_config(
+                    crate::synth::EffectSlotId::new(1).unwrap(),
+                )
+                .unwrap();
+                crate::synth::PostEffectConfig::from_parts(
+                    chorus.slot_id(),
+                    chorus.capability_id().clone(),
+                    chorus.values().to_vec(),
+                    vec![crate::synth::AssetAssignment::new(
+                        crate::synth::ParameterId::new("chorus.schema.asset").unwrap(),
+                        crate::synth::AssetReference::new(
+                            crate::synth::AssetKind::Other,
+                            "schema://chorus",
+                        )
+                        .unwrap(),
+                    )],
+                )
+            }],
             envelope: VoiceEnvelope::default(),
             gain_db: -4.0,
             pan: 0.25,
@@ -1292,6 +1327,7 @@ mod tests {
         assert_eq!(installed.pan(), 0.25);
         assert_eq!(installed.reverb_send(), 0.5);
         assert_eq!(installed.delay_send(), 0.75);
+        assert!(installed.post_effects().is_empty());
     }
 
     #[test]

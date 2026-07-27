@@ -362,7 +362,7 @@ impl LiveEventLogSummary {
 }
 
 impl LiveDemoReport {
-    pub const SCHEMA_VERSION: u32 = 5;
+    pub const SCHEMA_VERSION: u32 = 6;
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -421,7 +421,11 @@ impl LiveDemoReport {
         let checkpoints_agree = !checkpoints.is_empty()
             && checkpoints.iter().all(LiveCheckpoint::agrees)
             && engine_checkpoint_sequence_is_complete(&checkpoints, &coverage)
-            && patch_adsr_checkpoint_sequence_is_complete(&checkpoints, installed_patches);
+            && patch_control_checkpoint_sequence_is_complete(
+                &checkpoints,
+                installed_patches,
+                &state_tree,
+            );
         let runtime_complete = runtime_audio.parsed_soundfont_banks() > 0
             && runtime_audio.prepared_instruments() == installed_patches.len()
             && runtime_composition_matches(&state_tree, runtime_audio)
@@ -623,9 +627,10 @@ fn engine_checkpoint_sequence_is_complete(
     true
 }
 
-fn patch_adsr_checkpoint_sequence_is_complete(
+fn patch_control_checkpoint_sequence_is_complete(
     checkpoints: &[LiveCheckpoint],
     installed_patches: &[PatchId],
+    state_tree: &StateTree,
 ) -> bool {
     let Some(focused_patch) = installed_patches.first().copied() else {
         return false;
@@ -634,16 +639,16 @@ fn patch_adsr_checkpoint_sequence_is_complete(
         .iter()
         .filter_map(LiveCheckpoint::as_parameter)
         .filter(|checkpoint| {
-            checkpoint
-                .expected_transition()
-                .patch_control_id()
-                .is_some()
+            matches!(
+                checkpoint.expected_transition().patch_control_id(),
+                Some(crate::control::PatchControlId::Envelope(_))
+            )
         })
         .collect::<Vec<_>>();
     if patch_adsr.len() != crate::synth::VoiceEnvelope::surface_descriptor().len() {
         return false;
     }
-    patch_adsr
+    let adsr_complete = patch_adsr
         .iter()
         .zip(crate::synth::VoiceEnvelope::surface_descriptor())
         .all(|(checkpoint, descriptor)| {
@@ -657,7 +662,78 @@ fn patch_adsr_checkpoint_sequence_is_complete(
                         target: crate::synth::PatchEditableTarget::Envelope(actual),
                     }) if *patch_id == focused_patch && *actual == parameter
                 )
+        });
+    if !adsr_complete {
+        return false;
+    }
+
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(state_tree.json()) else {
+        return false;
+    };
+    let Ok(registry) = serde_json::from_value::<crate::synth::EffectCapabilityRegistry>(
+        value.get("effects").cloned().unwrap_or_default(),
+    ) else {
+        return false;
+    };
+    let Some(configs) = value
+        .pointer("/patches/0/postEffects")
+        .cloned()
+        .and_then(|configs| {
+            serde_json::from_value::<Vec<crate::synth::PostEffectConfig>>(configs).ok()
         })
+    else {
+        return false;
+    };
+    let mut expected_effects = Vec::new();
+    for config in &configs {
+        let Some(descriptor) = registry.descriptor(config.capability_id()) else {
+            return false;
+        };
+        for spec in descriptor.parameters() {
+            let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
+                predicate.is_none_or(|predicate| {
+                    config.value(predicate.parameter_id()) == Some(predicate.equals())
+                })
+            };
+            if spec.patch_interaction() == crate::synth::PatchInteraction::ScalarEdit
+                && predicate_satisfied(spec.visible_when())
+                && predicate_satisfied(spec.enabled_when())
+            {
+                expected_effects.push((
+                    crate::control::PatchControlId::Effect(config.slot_id(), spec.id().clone()),
+                    crate::testing::live_demo_scene::LiveEditableParameter::effect(
+                        focused_patch,
+                        config.slot_id(),
+                        spec.id().clone(),
+                    ),
+                ));
+            }
+        }
+    }
+    let actual_effects = checkpoints
+        .iter()
+        .filter_map(LiveCheckpoint::as_parameter)
+        .filter(|checkpoint| {
+            matches!(
+                checkpoint.expected_transition().patch_control_id(),
+                Some(crate::control::PatchControlId::Effect(_, _))
+            )
+        })
+        .collect::<Vec<_>>();
+    actual_effects.len() == expected_effects.len()
+        && actual_effects
+            .iter()
+            .zip(expected_effects)
+            .all(|(checkpoint, (control, parameter))| {
+                checkpoint.expected_transition().patch_control_id() == Some(control)
+                    && checkpoint.expected_transition().editable_parameter() == Some(&parameter)
+                    && matches!(
+                        checkpoint.audio_predicate(),
+                        crate::testing::live_demo_scene::LiveAudioPredicate::PatchEffect {
+                            patch_id
+                        } if patch_id == focused_patch
+                    )
+            })
 }
 
 fn final_soundfont_config_is_default(tree: &StateTree) -> bool {
@@ -673,6 +749,20 @@ fn final_soundfont_config_is_default(tree: &StateTree) -> bool {
     let Ok(registry) = serde_json::from_value::<crate::synth::CapabilityRegistry>(
         value.get("capabilities").cloned().unwrap_or_default(),
     ) else {
+        return false;
+    };
+    let Ok(effect_registry) = serde_json::from_value::<crate::synth::EffectCapabilityRegistry>(
+        value.get("effects").cloned().unwrap_or_default(),
+    ) else {
+        return false;
+    };
+    let Some(post_effects) = value
+        .pointer("/patches/0/postEffects")
+        .cloned()
+        .and_then(|effects| {
+            serde_json::from_value::<Vec<crate::synth::PostEffectConfig>>(effects).ok()
+        })
+    else {
         return false;
     };
     let Some(descriptor) = registry.descriptor(actual.capability_id()) else {
@@ -699,6 +789,10 @@ fn final_soundfont_config_is_default(tree: &StateTree) -> bool {
         == Some("ready")
         && actual.capability_id().as_str() == HIDEF_CAPABILITY_ID
         && actual == expected
+        && post_effects.len() == 1
+        && effect_registry
+            .validate_patch_effects(&post_effects)
+            .is_ok()
 }
 
 impl Serialize for LiveDemoReport {

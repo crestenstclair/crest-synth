@@ -6,8 +6,8 @@ use crate::real_time::{
 };
 use crate::shell::audio_output::AudioDeviceConfig;
 use crate::synth::{
-    CapabilityId, CapabilityRegistry, InstrumentConfig, InstrumentPreparationError,
-    InstrumentPreparer, Patch, RackPreparationError,
+    CapabilityId, CapabilityRegistry, EffectCapabilityRegistry, EffectPreparer, InstrumentConfig,
+    InstrumentPreparationError, InstrumentPreparer, Patch, RackPreparationError,
 };
 use core::fmt;
 
@@ -131,6 +131,32 @@ impl GraphPreparationRequest {
         audio_config: AudioDeviceConfig,
         registry: &CapabilityRegistry,
     ) -> Result<Self, GraphPreparationRequestError> {
+        let effects = EffectCapabilityRegistry::default();
+        Self::replacement_with_effects(
+            correlation,
+            active_patches,
+            candidate_config,
+            generation,
+            global,
+            audio_config,
+            registry,
+            &effects,
+        )
+    }
+
+    /// Replaces exactly one instrument config while preserving and validating
+    /// every Patch-local post-effect config and fixed scalar layout.
+    #[allow(clippy::too_many_arguments)]
+    pub fn replacement_with_effects(
+        correlation: GraphPreparationCorrelation,
+        active_patches: &[Patch],
+        candidate_config: InstrumentConfig,
+        generation: u64,
+        global: GlobalParameters,
+        audio_config: AudioDeviceConfig,
+        registry: &CapabilityRegistry,
+        effects: &EffectCapabilityRegistry,
+    ) -> Result<Self, GraphPreparationRequestError> {
         if active_patches.len() > crate::real_time::MAX_PATCHES {
             return Err(GraphPreparationRequestError::PatchCapacityExceeded);
         }
@@ -144,6 +170,9 @@ impl GraphPreparationRequest {
             registry
                 .validate_config(patch.instrument_config())
                 .map_err(|_| GraphPreparationRequestError::InvalidActiveConfig)?;
+            effects
+                .validate_patch_effects(patch.post_effects())
+                .map_err(|_| GraphPreparationRequestError::InvalidActiveEffectConfig)?;
         }
         let selected_index = active_patches
             .iter()
@@ -170,12 +199,13 @@ impl GraphPreparationRequest {
 
         let mut candidate_patches = active_patches.to_vec();
         candidate_patches[selected_index].set_instrument_config(candidate_config);
-        let candidate_parameters = ParameterSnapshot::project_patches(
+        let candidate_parameters = ParameterSnapshot::project_patches_with_effects(
             generation,
             correlation.target_graph_revision(),
             global,
             &candidate_patches,
             registry,
+            effects,
         )
         .map_err(|_| GraphPreparationRequestError::InvalidCandidateConfig)?;
 
@@ -214,6 +244,7 @@ impl GraphPreparationRequest {
     fn validate_for_worker(
         &self,
         registry: &CapabilityRegistry,
+        effects: &EffectCapabilityRegistry,
         audio_config: AudioDeviceConfig,
     ) -> Result<(), EngineSelectionFailure> {
         if self.audio_config != audio_config {
@@ -234,12 +265,20 @@ impl GraphPreparationRequest {
         {
             return Err(EngineSelectionFailure::InvalidDefaultConfig);
         }
-        let expected = ParameterSnapshot::project_patches(
+        if self.candidate_patches.iter().any(|patch| {
+            effects
+                .validate_patch_effects(patch.post_effects())
+                .is_err()
+        }) {
+            return Err(EngineSelectionFailure::InvalidDefaultConfig);
+        }
+        let expected = ParameterSnapshot::project_patches_with_effects(
             self.candidate_parameters.generation(),
             self.correlation.target_graph_revision(),
             *self.candidate_parameters.global(),
             &self.candidate_patches,
             registry,
+            effects,
         )
         .map_err(|_| EngineSelectionFailure::InvalidDefaultConfig)?;
         if expected != self.candidate_parameters {
@@ -366,6 +405,7 @@ pub enum GraphPreparationRequestError {
     SourceCapabilityMismatch,
     TargetCapabilityMismatch,
     InvalidActiveConfig,
+    InvalidActiveEffectConfig,
     InvalidCandidateConfig,
 }
 
@@ -391,6 +431,7 @@ impl fmt::Display for GraphPreparationRequestError {
                 "candidate config does not match the target capability"
             }
             Self::InvalidActiveConfig => "an active Patch config is invalid",
+            Self::InvalidActiveEffectConfig => "an active Patch effect config is invalid",
             Self::InvalidCandidateConfig => "the candidate Patch config is invalid",
         })
     }
@@ -457,28 +498,32 @@ fn validate_candidate_delta(
 
 impl std::error::Error for GraphPreparationRequestError {}
 
-/// Executes one complete request on worker/control ownership.
-pub(crate) fn prepare_graph_request(
+/// Executes one effect-aware complete-graph request on worker ownership.
+pub(crate) fn prepare_graph_request_with_effects(
     registry: &CapabilityRegistry,
     preparers: &[Box<dyn InstrumentPreparer>],
+    effects: &EffectCapabilityRegistry,
+    effect_preparers: &[Box<dyn EffectPreparer>],
     audio_config: AudioDeviceConfig,
     request: GraphPreparationRequest,
 ) -> GraphPreparationResult {
     let correlation = request.correlation.clone();
-    if let Err(failure) = request.validate_for_worker(registry, audio_config) {
+    if let Err(failure) = request.validate_for_worker(registry, effects, audio_config) {
         return GraphPreparationResult::Failed {
             correlation,
             failure,
         };
     }
     let candidate_config = request.candidate_config().clone();
-    let result = PreparedGraphBuilder::new(registry, preparers).build(
-        correlation.target_graph_revision(),
-        request.candidate_patches(),
-        *request.candidate_parameters(),
-        audio_config.sample_rate(),
-        audio_config.render_capacity_frames(),
-    );
+    let result = PreparedGraphBuilder::new(registry, preparers)
+        .with_effects(effects, effect_preparers)
+        .build(
+            correlation.target_graph_revision(),
+            request.candidate_patches(),
+            *request.candidate_parameters(),
+            audio_config.sample_rate(),
+            audio_config.render_capacity_frames(),
+        );
     match result {
         Ok(prepared_graph) => GraphPreparationResult::Prepared {
             correlation,
@@ -545,6 +590,29 @@ fn map_graph_preparation_failure(error: &GraphPreparationError) -> EngineSelecti
         GraphPreparationError::PatchAudio(_) | GraphPreparationError::Effects(_) => {
             EngineSelectionFailure::PreparationFailed
         }
+        GraphPreparationError::EffectRack(error) => match error {
+            crate::synth::EffectRackPreparationError::InvalidSampleRate
+            | crate::synth::EffectRackPreparationError::InvalidFrameCapacity => {
+                EngineSelectionFailure::UnsupportedAudioConfig
+            }
+            crate::synth::EffectRackPreparationError::MissingPreparer { .. }
+            | crate::synth::EffectRackPreparationError::ExtraPreparer { .. } => {
+                EngineSelectionFailure::PreparerMissing
+            }
+            crate::synth::EffectRackPreparationError::InvalidConfiguration { .. } => {
+                EngineSelectionFailure::InvalidDefaultConfig
+            }
+            crate::synth::EffectRackPreparationError::Effect { .. }
+            | crate::synth::EffectRackPreparationError::StorageAllocationFailed { .. } => {
+                EngineSelectionFailure::PreparationFailed
+            }
+            crate::synth::EffectRackPreparationError::PatchCapacityExceeded { .. }
+            | crate::synth::EffectRackPreparationError::DuplicatePatchId { .. }
+            | crate::synth::EffectRackPreparationError::DuplicatePreparer { .. }
+            | crate::synth::EffectRackPreparationError::PreparedIdentityMismatch { .. } => {
+                EngineSelectionFailure::GraphIncompatible
+            }
+        },
     }
 }
 

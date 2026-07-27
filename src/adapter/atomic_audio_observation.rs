@@ -78,6 +78,11 @@ struct AtomicObservationFields {
     primary_patch_id: AtomicU32,
     primary_patch_rms: AtomicU32,
     primary_active_notes: AtomicU32,
+    effect_patch_id: AtomicU32,
+    effect_input_rms: AtomicU32,
+    effect_output_rms: AtomicU32,
+    effect_difference_rms: AtomicU32,
+    effect_side_rms: AtomicU32,
     left_peak: AtomicU32,
     right_peak: AtomicU32,
     output_rms: AtomicU32,
@@ -112,6 +117,18 @@ impl AtomicObservationFields {
             ),
             primary_patch_rms: AtomicU32::new(initial.primary_patch_rms().to_bits()),
             primary_active_notes: AtomicU32::new(initial.primary_active_notes()),
+            effect_patch_id: AtomicU32::new(
+                initial
+                    .patch_effect()
+                    .patch_id()
+                    .map_or(0, |patch_id| patch_id.value()),
+            ),
+            effect_input_rms: AtomicU32::new(initial.patch_effect().input_rms().to_bits()),
+            effect_output_rms: AtomicU32::new(initial.patch_effect().output_rms().to_bits()),
+            effect_difference_rms: AtomicU32::new(
+                initial.patch_effect().difference_rms().to_bits(),
+            ),
+            effect_side_rms: AtomicU32::new(initial.patch_effect().side_rms().to_bits()),
             left_peak: AtomicU32::new(initial.left_peak().to_bits()),
             right_peak: AtomicU32::new(initial.right_peak().to_bits()),
             output_rms: AtomicU32::new(initial.output_rms().to_bits()),
@@ -156,6 +173,29 @@ impl AtomicObservationFields {
             .store(snapshot.primary_patch_rms().to_bits(), Ordering::Relaxed);
         self.primary_active_notes
             .store(snapshot.primary_active_notes(), Ordering::Relaxed);
+        self.effect_patch_id.store(
+            snapshot
+                .patch_effect()
+                .patch_id()
+                .map_or(0, |patch_id| patch_id.value()),
+            Ordering::Relaxed,
+        );
+        self.effect_input_rms.store(
+            snapshot.patch_effect().input_rms().to_bits(),
+            Ordering::Relaxed,
+        );
+        self.effect_output_rms.store(
+            snapshot.patch_effect().output_rms().to_bits(),
+            Ordering::Relaxed,
+        );
+        self.effect_difference_rms.store(
+            snapshot.patch_effect().difference_rms().to_bits(),
+            Ordering::Relaxed,
+        );
+        self.effect_side_rms.store(
+            snapshot.patch_effect().side_rms().to_bits(),
+            Ordering::Relaxed,
+        );
         self.left_peak
             .store(snapshot.left_peak().to_bits(), Ordering::Relaxed);
         self.right_peak
@@ -183,37 +223,48 @@ impl AtomicObservationFields {
                 continue;
             }
 
-            let snapshot = AudioObservationSnapshot::from_parts_with_graph_routing_and_primary(
-                self.sequence.load(Ordering::Relaxed),
-                self.rendered_blocks.load(Ordering::Relaxed),
-                self.rendered_frames.load(Ordering::Relaxed),
-                self.parameter_generation.load(Ordering::Relaxed),
-                crate::real_time::GraphRevision::new(
-                    self.active_graph_revision.load(Ordering::Relaxed),
-                )
-                .expect("published observations always carry a valid graph revision"),
-                self.commands_consumed.load(Ordering::Relaxed),
-                self.active_notes.load(Ordering::Relaxed),
-                self.routing_failures.load(Ordering::Relaxed),
-                crate::kernel::patch_id::PatchId::new(
-                    self.last_unknown_patch_id.load(Ordering::Relaxed),
-                )
-                .ok(),
-                crate::kernel::patch_id::PatchId::new(
-                    self.primary_patch_id.load(Ordering::Relaxed),
-                )
-                .ok(),
-                f32::from_bits(self.primary_patch_rms.load(Ordering::Relaxed)),
-                self.primary_active_notes.load(Ordering::Relaxed),
-                f32::from_bits(self.left_peak.load(Ordering::Relaxed)),
-                f32::from_bits(self.right_peak.load(Ordering::Relaxed)),
-                f32::from_bits(self.output_rms.load(Ordering::Relaxed)),
-                f32::from_bits(self.reverb_input_rms.load(Ordering::Relaxed)),
-                f32::from_bits(self.delay_input_rms.load(Ordering::Relaxed)),
-                f32::from_bits(self.wet_output_rms.load(Ordering::Relaxed)),
-                self.non_finite_samples.load(Ordering::Relaxed),
-                self.clipped_samples.load(Ordering::Relaxed),
-            );
+            let snapshot =
+                AudioObservationSnapshot::from_parts_with_graph_routing_primary_and_effect(
+                    self.sequence.load(Ordering::Relaxed),
+                    self.rendered_blocks.load(Ordering::Relaxed),
+                    self.rendered_frames.load(Ordering::Relaxed),
+                    self.parameter_generation.load(Ordering::Relaxed),
+                    crate::real_time::GraphRevision::new(
+                        self.active_graph_revision.load(Ordering::Relaxed),
+                    )
+                    .expect("published observations always carry a valid graph revision"),
+                    self.commands_consumed.load(Ordering::Relaxed),
+                    self.active_notes.load(Ordering::Relaxed),
+                    self.routing_failures.load(Ordering::Relaxed),
+                    crate::kernel::patch_id::PatchId::new(
+                        self.last_unknown_patch_id.load(Ordering::Relaxed),
+                    )
+                    .ok(),
+                    crate::kernel::patch_id::PatchId::new(
+                        self.primary_patch_id.load(Ordering::Relaxed),
+                    )
+                    .ok(),
+                    f32::from_bits(self.primary_patch_rms.load(Ordering::Relaxed)),
+                    self.primary_active_notes.load(Ordering::Relaxed),
+                    crate::real_time::PatchEffectObservation::from_parts(
+                        crate::kernel::patch_id::PatchId::new(
+                            self.effect_patch_id.load(Ordering::Relaxed),
+                        )
+                        .ok(),
+                        f32::from_bits(self.effect_input_rms.load(Ordering::Relaxed)),
+                        f32::from_bits(self.effect_output_rms.load(Ordering::Relaxed)),
+                        f32::from_bits(self.effect_difference_rms.load(Ordering::Relaxed)),
+                        f32::from_bits(self.effect_side_rms.load(Ordering::Relaxed)),
+                    ),
+                    f32::from_bits(self.left_peak.load(Ordering::Relaxed)),
+                    f32::from_bits(self.right_peak.load(Ordering::Relaxed)),
+                    f32::from_bits(self.output_rms.load(Ordering::Relaxed)),
+                    f32::from_bits(self.reverb_input_rms.load(Ordering::Relaxed)),
+                    f32::from_bits(self.delay_input_rms.load(Ordering::Relaxed)),
+                    f32::from_bits(self.wet_output_rms.load(Ordering::Relaxed)),
+                    self.non_finite_samples.load(Ordering::Relaxed),
+                    self.clipped_samples.load(Ordering::Relaxed),
+                );
             let after = self.version.load(Ordering::Acquire);
             if before == after {
                 return snapshot;

@@ -13,6 +13,9 @@ use crest_synth::adapter::hidef_soundfont_capability::{
 use crest_synth::adapter::hidef_soundfont_preparer::HiDefSoundFontPreparer;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
+use crest_synth::adapter::production_effects::{
+    production_effect_preparers, production_effect_providers,
+};
 use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_state::EventRejection;
 use crest_synth::control::event_record::{EmittedEvent, EventInput, EventOutcome, EventSource};
@@ -69,6 +72,10 @@ fn run(options: Options) -> Result<()> {
                 BraidsPreparer::new().context("failed to prepare the Braids instrument factory")?,
             ),
         ];
+        let effect_providers = production_effect_providers()
+            .context("failed to construct the production effect capability providers")?;
+        let effect_preparers = production_effect_preparers()
+            .context("failed to construct the production effect preparers")?;
         let structural = LockFreeStructuralGraphBoundary::new(
             1,
             1,
@@ -80,10 +87,12 @@ fn run(options: Options) -> Result<()> {
         } else {
             EframeTextWindow::default()
         };
-        StandaloneApplication::new(
+        StandaloneApplication::new_with_effects(
             boundary,
             providers,
             preparers,
+            effect_providers,
+            effect_preparers,
             structural,
             AtomicAudioObservation::default(),
             CorridorsMidiEventSource::new(),

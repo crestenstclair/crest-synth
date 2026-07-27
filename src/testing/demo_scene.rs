@@ -15,7 +15,9 @@ use crate::synth::instrument_capability::{
     CapabilityDescriptor, CapabilityRegistry, ParameterKind, ParameterValue,
 };
 use crate::synth::patch::{Patch, PatchEditableTarget};
-use crate::synth::{ParameterId, VoiceEnvelopeParameter};
+use crate::synth::{
+    EffectCapabilityRegistry, ParameterId, PatchInteraction, VoiceEnvelopeParameter,
+};
 use core::fmt;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -356,7 +358,7 @@ pub struct DemoScene {
 
 impl DemoScene {
     pub const NAME: &'static str = "exhaustive-gui-demo";
-    pub const SCHEMA_VERSION: u32 = 5;
+    pub const SCHEMA_VERSION: u32 = 6;
 
     /// Derives the complete current scene from the accepted fixture Patch list.
     ///
@@ -364,6 +366,21 @@ impl DemoScene {
     /// must discriminate the edited Patch from an unaffected Patch.
     pub fn exhaustive(
         capabilities: &CapabilityRegistry,
+        installed_patches: &[Patch],
+        global_parameters: &GlobalParameters,
+    ) -> Result<Self, DemoSceneError> {
+        Self::exhaustive_with_effects(
+            capabilities,
+            &EffectCapabilityRegistry::default(),
+            installed_patches,
+            global_parameters,
+        )
+    }
+
+    /// Derives the complete scene from both installed capability families.
+    pub fn exhaustive_with_effects(
+        capabilities: &CapabilityRegistry,
+        effects: &EffectCapabilityRegistry,
         installed_patches: &[Patch],
         global_parameters: &GlobalParameters,
     ) -> Result<Self, DemoSceneError> {
@@ -378,6 +395,13 @@ impl DemoScene {
                 .is_err()
         }) {
             return Err(DemoSceneError::InvalidInstrumentConfig);
+        }
+        if installed_patches.iter().any(|patch| {
+            effects
+                .validate_patch_effects(patch.post_effects())
+                .is_err()
+        }) {
+            return Err(DemoSceneError::InvalidEffectConfig);
         }
         if installed_patches[0]
             .instrument_config()
@@ -404,11 +428,12 @@ impl DemoScene {
             schema_version: Self::SCHEMA_VERSION,
             steps: build_steps(
                 capabilities,
+                effects,
                 installed_patches,
                 global_parameters,
                 &preset_fixture,
             ),
-            expected_coverage: build_expected_coverage(capabilities, installed_patches),
+            expected_coverage: build_expected_coverage(capabilities, effects, installed_patches),
         })
     }
 
@@ -443,6 +468,7 @@ impl DemoScene {
 pub enum DemoSceneError {
     InsufficientPatches { actual: usize },
     InvalidInstrumentConfig,
+    InvalidEffectConfig,
     EngineFixtureUnavailable,
     PresetFixtureUnavailable,
 }
@@ -457,6 +483,8 @@ impl fmt::Display for DemoSceneError {
             Self::InvalidInstrumentConfig => {
                 formatter.write_str("installed Patch config does not match the capability registry")
             }
+            Self::InvalidEffectConfig => formatter
+                .write_str("installed Patch effect config does not match the effect registry"),
             Self::EngineFixtureUnavailable => formatter.write_str(
                 "the exhaustive demo requires a first SoundFont Patch and installed Braids capability",
             ),
@@ -508,6 +536,7 @@ impl DemoPresetFixture {
 
 fn build_steps(
     capabilities: &CapabilityRegistry,
+    effects: &EffectCapabilityRegistry,
     patches: &[Patch],
     global_parameters: &GlobalParameters,
     preset_fixture: &DemoPresetFixture,
@@ -560,6 +589,13 @@ fn build_steps(
     push_checkpoint(&mut steps, DemoCheckpoint::new("input.vocabulary"));
 
     push_patch_adsr_control_steps(&mut steps, &patches[0], &mut boundary_probed);
+    push_patch_effect_control_steps(
+        &mut steps,
+        capabilities,
+        effects,
+        &patches[0],
+        &mut boundary_probed,
+    );
 
     for (patch_index, patch) in patches.iter().enumerate() {
         let descriptor = capabilities
@@ -1010,6 +1046,96 @@ fn push_patch_adsr_control_steps(
     }
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("patch.control.contextRestored"));
+}
+
+fn push_patch_effect_control_steps(
+    steps: &mut Vec<DemoSceneStep>,
+    capabilities: &CapabilityRegistry,
+    effects: &EffectCapabilityRegistry,
+    patch: &Patch,
+    boundary_probed: &mut BTreeSet<String>,
+) {
+    if patch.post_effects().is_empty() {
+        return;
+    }
+    let instrument = capabilities
+        .descriptor(patch.instrument_config().capability_id())
+        .expect("validated effect scene Patch instrument is installed");
+    let controls = PatchControlId::resolve(
+        instrument,
+        patch.instrument_config(),
+        effects,
+        patch.post_effects(),
+    );
+    push_key_press(steps, WindowKey::Digit2);
+    let mut current_index = 0_usize;
+    for config in patch.post_effects() {
+        let descriptor = effects
+            .descriptor(config.capability_id())
+            .expect("validated effect scene capability is installed");
+        for spec in descriptor.parameters().filter(|spec| {
+            spec.patch_interaction() == PatchInteraction::ScalarEdit
+                && spec.visible_when().is_none_or(|predicate| {
+                    config.value(predicate.parameter_id()) == Some(predicate.equals())
+                })
+                && spec.enabled_when().is_none_or(|predicate| {
+                    config.value(predicate.parameter_id()) == Some(predicate.equals())
+                })
+        }) {
+            let control = PatchControlId::Effect(config.slot_id(), spec.id().clone());
+            let target_index = controls
+                .iter()
+                .position(|candidate| candidate == &control)
+                .expect("the canonical resolver contains each visible effect scalar");
+            for _ in current_index..target_index {
+                push_key_press(steps, WindowKey::S);
+            }
+            current_index = target_index;
+            let value = config
+                .value(spec.id())
+                .and_then(|value| spec.scalar_value(value).ok())
+                .expect("validated effect scalar has a finite value");
+            let range = spec
+                .range()
+                .expect("the current effect scalar admission is explicitly bounded");
+            let fine =
+                spec.fine_step()
+                    .expect("editable effect scalar declares a fine step") as f32;
+            let coarse =
+                spec.coarse_step()
+                    .expect("editable effect scalar declares a coarse step") as f32;
+            let identifier = format!(
+                "patch.{}.effect.{}.{}",
+                patch.id().value(),
+                config.slot_id().value(),
+                spec.id()
+            );
+            if boundary_probed.insert(identifier.clone()) {
+                push_parameter_boundary_probe(
+                    steps,
+                    &identifier,
+                    value,
+                    range.minimum() as f32,
+                    range.maximum() as f32,
+                    fine,
+                    coarse,
+                );
+            }
+            push_reversible_adjustments(
+                steps,
+                value,
+                range.minimum() as f32,
+                range.maximum() as f32,
+                coarse,
+            );
+            push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
+        }
+    }
+    for _ in 0..current_index {
+        push_key_press(steps, WindowKey::W);
+    }
+    push_key_press(steps, WindowKey::Digit1);
+    push_checkpoint(steps, DemoCheckpoint::new("patch.effect.contextRestored"));
 }
 
 fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
@@ -1504,7 +1630,11 @@ fn first_unknown_patch_id(patches: &[Patch]) -> PatchId {
     PatchId::new(candidate).expect("the candidate search starts at one")
 }
 
-fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch]) -> Vec<String> {
+fn build_expected_coverage(
+    capabilities: &CapabilityRegistry,
+    effects: &EffectCapabilityRegistry,
+    patches: &[Patch],
+) -> Vec<String> {
     let mut expected = Vec::new();
     for descriptor in AppEvent::surface_descriptor() {
         match descriptor {
@@ -1542,6 +1672,21 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
         }
     }
 
+    if patches.iter().any(|patch| !patch.post_effects().is_empty()) {
+        expected.extend(
+            [
+                "effect.patchEffect.targetExact",
+                "effect.patchEffect.differenceNonzero",
+                "effect.patchEffect.sideNonzero",
+                "effect.patchEffect.beforeMixStemExact",
+                "effect.patchEffect.unconfiguredIsolation",
+                "effect.patchEffect.structuralPreservation",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+    }
+
     expected.extend(
         complete_window_vocabulary()
             .iter()
@@ -1559,9 +1704,14 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
             .descriptor(patch.instrument_config().capability_id())
             .expect("validated coverage Patch capability is installed");
         expected.extend(
-            PatchControlId::resolve(descriptor, patch.instrument_config())
-                .into_iter()
-                .map(|control| format!("patchControl.{control}")),
+            PatchControlId::resolve(
+                descriptor,
+                patch.instrument_config(),
+                effects,
+                patch.post_effects(),
+            )
+            .into_iter()
+            .map(|control| format!("patchControl.{control}")),
         );
     }
 
@@ -1650,6 +1800,54 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
                 ));
             }
         }
+        for config in patch.post_effects() {
+            for property in ["slotId", "capabilityId"] {
+                expected.push(format!(
+                    "property.stateTree.patch.{}.postEffect.{}.{property}",
+                    patch.id().value(),
+                    config.slot_id().value()
+                ));
+            }
+            for assignment in config.values() {
+                let parameter = assignment.parameter_id();
+                expected.push(format!(
+                    "parameter.patch.{}.effect.{}.{}",
+                    patch.id().value(),
+                    config.slot_id().value(),
+                    parameter
+                ));
+                expected.push(format!(
+                    "effect.parameterSnapshot.patch.{}.effect.{}.{}",
+                    patch.id().value(),
+                    config.slot_id().value(),
+                    parameter
+                ));
+                for property in ["parameterId", "value.kind", "value.value"] {
+                    expected.push(format!(
+                        "property.stateTree.patch.{}.postEffect.{}.value.{}.{property}",
+                        patch.id().value(),
+                        config.slot_id().value(),
+                        parameter
+                    ));
+                }
+            }
+            for assignment in config.asset_references() {
+                for property in ["parameterId", "reference.kind", "reference.locator"] {
+                    expected.push(format!(
+                        "property.stateTree.patch.{}.postEffect.{}.asset.{}.{property}",
+                        patch.id().value(),
+                        config.slot_id().value(),
+                        assignment.parameter_id()
+                    ));
+                }
+            }
+            for property in ["active", "slotId", "scalarCount", "scalars"] {
+                expected.push(format!(
+                    "property.stateTree.parameters.patch.{}.effect.{property}",
+                    patch.id().value()
+                ));
+            }
+        }
     }
 
     for descriptor in capabilities.descriptors() {
@@ -1713,6 +1911,57 @@ fn build_expected_coverage(capabilities: &CapabilityRegistry, patches: &[Patch])
             for property in ["parameterId", "required"] {
                 expected.push(format!(
                     "property.stateTree.capability.{}.asset.{}.{property}",
+                    descriptor.id(),
+                    requirement.parameter_id()
+                ));
+            }
+        }
+    }
+
+    for descriptor in effects.descriptors() {
+        for property in ["id", "label", "semanticAccent"] {
+            expected.push(format!(
+                "property.stateTree.effectCapability.{}.{property}",
+                descriptor.id()
+            ));
+        }
+        for section in descriptor.sections() {
+            for property in ["id", "label"] {
+                expected.push(format!(
+                    "property.stateTree.effectCapability.{}.section.{}.{property}",
+                    descriptor.id(),
+                    section.id()
+                ));
+            }
+            for parameter in section.parameters() {
+                for property in [
+                    "id",
+                    "label",
+                    "kind",
+                    "update",
+                    "patchInteraction",
+                    "defaultValue",
+                    "range",
+                    "choices",
+                    "fineStep",
+                    "coarseStep",
+                    "unit",
+                    "formatter",
+                    "enabledWhen",
+                    "visibleWhen",
+                ] {
+                    expected.push(format!(
+                        "property.stateTree.effectCapability.{}.parameter.{}.{property}",
+                        descriptor.id(),
+                        parameter.id()
+                    ));
+                }
+            }
+        }
+        for requirement in descriptor.asset_requirements() {
+            for property in ["parameterId", "required"] {
+                expected.push(format!(
+                    "property.stateTree.effectCapability.{}.asset.{}.{property}",
                     descriptor.id(),
                     requirement.parameter_id()
                 ));
@@ -1946,7 +2195,7 @@ mod tests {
         );
         assert_eq!(ChannelParameters::surface_descriptor().len(), 4);
         assert_eq!(GlobalParameters::surface_descriptor().len(), 7);
-        assert_eq!(EventRejection::surface_descriptor().len(), 16);
+        assert_eq!(EventRejection::surface_descriptor().len(), 17);
         for patch in &patches {
             for descriptor in ChannelParameters::surface_descriptor() {
                 assert!(scene.expected_coverage().contains(&format!(

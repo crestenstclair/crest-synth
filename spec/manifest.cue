@@ -2,7 +2,7 @@ package crestsynth
 
 project: assets: CargoManifest: {
 	kind: "cargo-manifest"
-description: "Cargo.toml and build.rs for the capability-configured standalone synth with Rust SoundFont and pinned C++ Braids renderers"
+	description: "Cargo.toml and build.rs for the capability-configured standalone synth with Rust SoundFont plus pinned C++ Braids and Chorus renderers"
 	profile: {kind: "configuration", ecosystem: "cargo"}
 	targets: [
 		"adapter.HiDefSoundFontAsset",
@@ -10,6 +10,9 @@ description: "Cargo.toml and build.rs for the capability-configured standalone s
 		"adapter.HiDefSoundFontPreparer",
 		"adapter.BraidsCapability",
 		"adapter.BraidsPreparer",
+		"adapter.ChorusCapability",
+		"adapter.ChorusPreparer",
+		"asset.ChorusSourceBundle",
 		"adapter.GlobalReverbDelay",
 		"adapter.LockFreeAudioBoundary",
 		"adapter.LockFreeStructuralGraphBoundary",
@@ -25,8 +28,8 @@ description: "Cargo.toml and build.rs for the capability-configured standalone s
 	]
 	prompts: [
 		"Create Cargo.toml for one Rust library, the crest-synth product binary, and the crest-synth-witness verification-only binary.",
-		"Use only dependencies required by the declared resources: rustysynth, midly, cpal, eframe/egui, rtrb, triple_buffer, serde with derive, serde_json, thiserror, anyhow, and the build-only cc crate for the fixed Braids C++ source list. Complete graph destruction uses the dedicated ownership-return structural queue and no deferred-drop dependency. Development-only test helpers may be added when required by the declared tests.",
-		"Do not add synthesis, effect, GUI-widget, sequencing, persistence, plugin, database, networking, or async-runtime libraries.",
+		"Use only dependencies required by the declared resources: rustysynth, midly, cpal, eframe/egui, rtrb, triple_buffer, serde with derive, serde_json, thiserror, anyhow, and the build-only cc crate for the fixed audited Braids and Chorus C++ source lists. Complete graph destruction uses the dedicated ownership-return structural queue and no deferred-drop dependency. Development-only test helpers may be added when required by the declared tests.",
+		"Do not add another synthesis/effect framework, GUI-widget, sequencing, persistence, plugin, database, networking, or async-runtime library; the pinned vendored native subsets are built only through the declared opaque adapters.",
 	]
 	validations: [{id: "validation.asset.cargo_manifest", kind: "custom", command: ["cargo", "metadata", "--no-deps", "--format-version", "1"], description: "the manifest resolves"}]
 }
@@ -45,7 +48,7 @@ project: assets: BuildMakefile: {
 		"Create the project-root Makefile. The default target is help, which lists every public target and its one-line ## description.",
 		"Provide these Cargo-backed targets: build (cargo build), check (cargo check --all-targets), test (cargo test --all-targets), lint (cargo clippy --all-targets -- -D warnings), fmt (cargo fmt --all), fmt-check (cargo fmt --all -- --check), run (cargo run --bin crest-synth), smoke (cargo run --bin crest-synth -- --smoke), observe (cargo run --bin crest-synth -- --smoke --observe), demo (cargo run --bin crest-synth -- --smoke --observe --demo-scene), demo-live (cargo run --release --bin crest-synth -- --demo-live), and clean (cargo clean).",
 		"Provide play and ui as documented aliases for run because normal startup automatically plays the fixed MIDI fixture in the text window.",
-		"Keep demo exactly headless and deterministic. demo-live is the only autonomous target that opens the real window and physical audio device; it completes one adjacent SoundFont preset replacement plus both successful engine directions through the production threaded worker, then emits final evidence once, closes the window, releases the stream, and returns success.",
+		"Keep demo exactly headless and deterministic. demo-live is the only autonomous target that opens the real window and physical audio device; it edits the configured Chorus Amount and Depth, completes one adjacent SoundFont preset replacement plus both successful engine directions through the production threaded worker, then emits final evidence once, closes the window, releases the stream, and returns success.",
 		"Use portable Make syntax and declare non-file targets phony. Do not reference removed proof binaries, alternate MIDI files, afplay, or obsolete synth_ui commands.",
 	]
 	validations: [
@@ -75,6 +78,11 @@ project: assets: LibraryRoot: {
 		"valueObject.Synth.CapabilityDescriptor",
 		"valueObject.Synth.InstrumentConfig",
 		"valueObject.Synth.CapabilityRegistry",
+		"valueObject.Synth.EffectCapabilityId",
+		"valueObject.Synth.EffectSlotId",
+		"valueObject.Synth.EffectCapabilityDescriptor",
+		"valueObject.Synth.PostEffectConfig",
+		"valueObject.Synth.EffectCapabilityRegistry",
 		"valueObject.Synth.SoundFontPresetId",
 		"valueObject.Synth.SoundFontPresetCatalogEntry",
 		"valueObject.Synth.SoundFontPresetCatalog",
@@ -83,15 +91,22 @@ project: assets: LibraryRoot: {
 		"port.Synth.InstrumentCapabilityProvider",
 		"port.Synth.PreparedInstrument",
 		"port.Synth.InstrumentPreparer",
+		"port.Synth.EffectCapabilityProvider",
+		"port.Synth.PreparedPostEffect",
+		"port.Synth.EffectPreparer",
 		"applicationService.Synth.PreparedEngineRackBuilder",
+		"applicationService.Synth.PreparedPostEffectRackBuilder",
 		"applicationService.Synth.DescriptorDefaultConfigFactory",
 		"valueObject.Mixer.ChannelParameters",
 		"valueObject.Mixer.GlobalParameters",
 		"valueObject.Mixer.MixObservation",
 		"domainService.Mixer.MixEngine",
 		"valueObject.RealTime.ParameterSnapshot",
+		"valueObject.RealTime.RtPostEffectParameters",
+		"valueObject.RealTime.PatchEffectObservation",
 		"valueObject.RealTime.GraphRevision",
 		"aggregate.RealTime.PreparedEngineRack",
+		"aggregate.RealTime.PreparedPostEffectRack",
 		"aggregate.RealTime.PreparedGraph",
 		"valueObject.RealTime.GraphHandoffStatus",
 		"valueObject.RealTime.GraphPreparationRequest",
@@ -186,6 +201,8 @@ project: assets: BehavioralAcceptanceTests: {
 	profile: {kind: "verification_harness", witness: "compiled black-box acceptance targets", failurePolicy: "a missing target or unexecuted assertion fails cargo before evidence can pass"}
 	targets: [
 		"valueObject.Synth.CapabilityRegistry",
+		"valueObject.Synth.EffectCapabilityRegistry",
+		"valueObject.Synth.PostEffectConfig",
 		"valueObject.Synth.SoundFontPresetId",
 		"valueObject.Synth.SoundFontPresetCatalog",
 		"port.Synth.InstrumentCapabilityProvider",
@@ -194,11 +211,14 @@ project: assets: BehavioralAcceptanceTests: {
 		"adapter.BraidsCapability",
 		"adapter.HiDefSoundFontPreparer",
 		"adapter.BraidsPreparer",
+		"adapter.ChorusCapability",
+		"adapter.ChorusPreparer",
 		"valueObject.Synth.VoiceEnvelope",
 		"port.Synth.PreparedInstrument",
 		"port.Synth.InstrumentPreparer",
 		"applicationService.Synth.PreparedEngineRackBuilder",
 		"aggregate.RealTime.PreparedEngineRack",
+		"aggregate.RealTime.PreparedPostEffectRack",
 		"aggregate.RealTime.PreparedGraph",
 		"port.RealTime.StructuralGraphBoundary",
 		"adapter.LockFreeStructuralGraphBoundary",
@@ -234,8 +254,8 @@ project: assets: BehavioralAcceptanceTests: {
 	prompts: [
 		"Create thirteen explicit Cargo integration-test targets: tests/capability_schema.rs, tests/patch_page_projection.rs, tests/engine_selection_workflow.rs, tests/prepared_engine_rack.rs, tests/braids_engine.rs, tests/per_voice_envelope.rs, tests/soundfont_preset_selection.rs, tests/control_dispatch_performance.rs, tests/exhaustive_demo_scene.rs, tests/live_demo_scene.rs, tests/schema_surface.rs, tests/eframe_context.rs, and tests/behavioral_mutation_harness.rs. Project validations invoke them with cargo test --test, so a missing target is a hard failure.",
 		"Each target must call the public production seam it verifies. It may assemble deterministic fixtures, but it must not duplicate reducer, routing, state projection, GUI update, render, coverage, or mutation-verdict logic inside the test file.",
-		"capability_schema constructs both production providers and CapabilityRegistry, installs discriminating generic Patch configs through AppState, and asserts exact descriptor/config serialization plus generic text projection; it must also prove unknown, duplicate, missing, undeclared, wrong-kind, non-finite, and out-of-range mutations fail without fallback. patch_page_projection drives Digit1/Digit2 and W/S/A/D/K through the production translator and AppLoop, proves reducer-owned dynamic Engine-plus-ADSR-plus-descriptor-StructuralChoice focus, exact SoundFont and Braids rows, Ready/Preparing status, preserved MIXER selection/body, audio-neutral nonwrapping focus navigation, canonical fine/coarse ADSR edits, semantic structural requests, typed unsupported PATCH rejection, and absence of audio commands for focus/structural actions. soundfont_preset_selection parses the real fixed SF2 once, proves exact authored names and numeric bank/program order, drives adjacent preset changes through the generic reducer/worker/graph path, measures target-only audio, and proves callback-reachable storage is numeric. braids_engine proves source pins/license, exact-rate preparation, all 47 models, one sixteen-voice bank per Braids Patch, 16 × N scaling, Patch-local stealing, scalar isolation, finite audio, FFI lifecycle, and measured timing. per_voice_envelope drives all four ADSR fields through both MIXER and PATCH reducer paths, proves exact projections and fixed snapshots, and independently releases overlapping SoundFont and Braids notes while SoundFont retains one synthesizer per Patch. exhaustive_demo_scene asserts bidirectionally exact input/event/context/state/projection/audio and structural-lifecycle coverage, focused PATCH ADSR and preset edits including preparation/activation coexistence, every typed scalar boundary, one adjacent preset transition, both successful engine directions, controlled failure, and the declared descriptor-default SoundFont final state; schema_surface asserts bidirectional equality between production-owned typed descriptors and observed serialized leaves including both installed schemas, both contexts, every PatchControlId, and every structural-selection status/failure/effect.",
-		"live_demo_scene uses a deterministic monotonic clock, a frame-observation harness, the production worker/structural ports, and the production renderer plus AtomicAudioObservation to prove pacing, brackets every scalar checkpoint with a matching semantic Patch-targeted NoteOn/NoteOff probe so sparse fixture timing cannot strand exact-generation audio, routes the focused Patch's four ADSR instances through PATCH while exercising every frozen editable parameter instance exactly once, then proves one adjacent SoundFont preset replacement and SoundFont-to-Braids-to-descriptor-default-SoundFont with exact Preparing/Activating/Ready status, increasing revisions, targeted finite nonzero output, exact scalar and structural-transition coverage, rejection recovery, semantic all-notes-off, and an inert completed runner. It must not duplicate AppState::apply, worker orchestration, graph handoff, projection, render, coverage, or report logic, and it must not open or skip based on a native window or physical device.",
+		"capability_schema constructs the production instrument/effect providers and immutable registries, installs discriminating generic Patch configs through AppState, and asserts exact descriptor/config serialization plus generic text projection; it must also prove unknown, duplicate, missing, undeclared, wrong-kind, non-finite, out-of-range, and mismatched-slot mutations fail without fallback or bypass. patch_page_projection drives Digit1/Digit2 and W/S/A/D/K through the production translator and AppLoop, proves reducer-owned dynamic Engine-plus-ADSR-plus-descriptor-StructuralChoice-plus-effect-ScalarEdit focus, exact SoundFont/Braids/Chorus rows, Ready/Preparing status, preserved MIXER selection/body, audio-neutral nonwrapping focus navigation, canonical fine/coarse ADSR and effect edits, semantic structural requests, typed unsupported PATCH rejection, and absence of audio commands for focus/structural actions. soundfont_preset_selection parses the real fixed SF2 once, proves exact authored names and numeric bank/program order, drives adjacent preset changes through the generic reducer/worker/graph path while preserving effect config, measures target-only audio, and proves callback-reachable storage is numeric. braids_engine proves source pins/license, exact-rate preparation, all 47 models, one sixteen-voice bank per Braids Patch, 16 × N scaling, Patch-local stealing, scalar isolation, finite audio, FFI lifecycle, and measured timing. per_voice_envelope drives all four ADSR fields through both MIXER and PATCH reducer paths, proves exact projections and fixed snapshots, and independently releases overlapping SoundFont and Braids notes while SoundFont retains one synthesizer per Patch. exhaustive_demo_scene asserts bidirectionally exact input/event/context/state/projection/audio/effect and structural-lifecycle coverage, focused PATCH ADSR/Chorus/preset edits including preparation/activation coexistence, every typed scalar boundary, effect order/isolation/independent state, one adjacent preset transition, both successful engine directions, controlled failure, and the declared descriptor-default SoundFont plus Chorus final state; schema_surface asserts bidirectional equality between production-owned typed descriptors and observed serialized leaves including instrument/effect registries, both contexts, every PatchControlId, and every structural-selection status/failure/effect.",
+		"live_demo_scene uses a deterministic monotonic clock, a frame-observation harness, the production worker/structural ports, and the production renderer plus AtomicAudioObservation to prove pacing, brackets every scalar checkpoint with a matching semantic Patch-targeted NoteOn/NoteOff probe so sparse fixture timing cannot strand exact-generation audio, routes the focused Patch's four ADSR plus Chorus Amount/Depth instances through PATCH while exercising every frozen editable parameter instance exactly once, then proves one adjacent SoundFont preset replacement and SoundFont-to-Braids-to-descriptor-default-SoundFont with exact effect-config preservation, Preparing/Activating/Ready status, increasing revisions, targeted finite nonzero post-effect output, exact scalar and structural-transition coverage, rejection recovery, semantic all-notes-off, and an inert completed runner. It must not duplicate AppState::apply, worker orchestration, graph handoff, projection, render, coverage, or report logic, and it must not open or skip based on a native window or physical device.",
 		"control_dispatch_performance installs fifteen descriptor-configured Patches, sends 512 MIDI events through the production AppState, StateProjector, StateTree, EventLog, and ControlAudioBoundary path, requires completion within 50 ms in the unoptimized test profile, and relies on the projector unit equivalence proof that deferred snapshot/tree JSON equals eager canonical output.",
 		"prepared_engine_rack uses the production builders, HiDef preparer, generic rack, complete graph, structural boundary, coordinator, and renderer plus two distinct deterministic PreparedInstrument implementations to prove exact Patch targeting, isolated stems, block-boundary swap, graph-revision acknowledgement, one-in-flight throttling, queue-pressure retention, and destructor execution only during control collection; it must instrument the production callback path for zero allocation and destruction.",
 		"eframe_context drives real egui RawInput through EframeApplication.update with its callback wired to AppLoop.dispatch, then proves the next frame and EventLog reflect the exact accepted value and projection; rendering a separately supplied projection is forbidden. behavioral_mutation_harness executes every healthy/mutant pair and asserts the measured predicate that each named seam falsifies.",
@@ -244,7 +264,7 @@ project: assets: BehavioralAcceptanceTests: {
 	]
 	validations: [
 		{id: "validation.asset.acceptance_capability_schema", kind: "integration", command: ["cargo", "test", "--test", "capability_schema", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE capability_schema passed"}], description: "the named capability-schema target proves generic registry/config behavior and typed no-fallback rejection"},
-		{id: "validation.asset.acceptance_patch_page_projection", kind: "integration", command: ["cargo", "test", "--test", "patch_page_projection", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE patch_page_projection passed"}], description: "the named Patch-page target proves semantic page selection, schema-derived exact projection, stable Engine-plus-ADSR focus, canonical fine/coarse ADSR editing, and audio/structural neutrality of focus movement"},
+		{id: "validation.asset.acceptance_patch_page_projection", kind: "integration", command: ["cargo", "test", "--test", "patch_page_projection", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE patch_page_projection passed"}], description: "the named Patch-page target proves semantic page selection, schema-derived exact instrument/effect projection, dynamic focus, canonical fine/coarse ADSR/effect editing, and structural neutrality of scalar focus movement"},
 		{id: "validation.asset.acceptance_prepared_engine_rack", kind: "integration", command: ["cargo", "test", "--test", "prepared_engine_rack", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE prepared_engine_rack passed"}], description: "the named rack target proves capability-neutral prepared rendering and destruction-safe structural ownership handoff"},
 		{id: "validation.asset.acceptance_braids_engine", kind: "integration", command: ["cargo", "test", "--test", "braids_engine", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE braids_engine passed"}], description: "the named Braids target proves pinned sixteen-voice native DSP and hard-real-time mixed-engine behavior"},
 		{id: "validation.asset.acceptance_per_voice_envelope", kind: "integration", command: ["cargo", "test", "--test", "per_voice_envelope", "--", "--nocapture"], assertions: [{type: "exit-code", equals: 0}, {type: "stdout-contains", value: "CREST_ACCEPTANCE per_voice_envelope passed"}], description: "the named envelope target proves canonical PATCH/MIXER editing and independent overlapping note lifecycles in both engines"},
@@ -261,6 +281,7 @@ project: assets: BehavioralAcceptanceTests: {
 		{capability: "capability.soundfont_preset_selection", contribution: "provides the named real-SF2 acceptance target for exact catalog fidelity and correlated structural preset replacement"},
 		{capability: "capability.schema_driven_patch_page", contribution: "provides the named executable target for direct context selection and exact generic Patch projection"},
 		{capability: "capability.prepared_engine_rack", contribution: "provides the named executable target for generic preparation, heterogeneous rack dispatch, graph handoff, and off-callback retirement"},
+		{capability: "capability.static_patch_effect", contribution: "extends the named schema/page/demo gates with exact effect registry, control, preservation, order, isolation, and audible-output assertions"},
 		{capability: "capability.observable_demo_scene", contribution: "makes every existing headless acceptance gate structurally executable and impossible to satisfy with zero matched tests"},
 			{capability: "capability.live_observable_demo", contribution: "provides an executable deterministic harness for the interactive live orchestration contract"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "makes both live engine directions executable through the production worker and structural seams"},
@@ -278,6 +299,8 @@ project: assets: ProductionRuntimeContractTests: {
 		"valueObject.Shell.AudioDeviceRuntimeError",
 		"port.Synth.InstrumentCapabilityProvider",
 		"port.Synth.InstrumentPreparer",
+		"port.Synth.EffectCapabilityProvider",
+		"port.Synth.EffectPreparer",
 		"applicationService.Synth.DescriptorDefaultConfigFactory",
 		"port.RealTime.StructuralGraphBoundary",
 		"port.RealTime.GraphPreparationWorker",
@@ -286,7 +309,7 @@ project: assets: ProductionRuntimeContractTests: {
 		"applicationService.RealTime.AudioRenderer",
 	]
 	prompts: [
-		"Use the public production constructor with injected provider, preparer, capacity-one graph-preparation worker, structural, observation, device, and window fixtures; prove matching registration and typed duplicate, missing, unknown, and mismatched rejection before structural publication.",
+		"Use the public production constructor with injected instrument/effect providers and preparers, capacity-one graph-preparation worker, structural, observation, device, and window fixtures; prove matching registration and typed duplicate, missing, unknown, and mismatched rejection before structural publication.",
 		"Prove normal and early-error teardown release the audio stream before worker shutdown and drain every pending, staged, returned, or retired graph only on control/worker ownership.",
 		"Negotiate a supported non-default sample rate and exact render capacity before preparation, render both exact-capacity and oversized callbacks completely, reject unsupported negotiation before preparation, and surface a controlled post-start device failure as the exact ApplicationError on control ownership.",
 		"Provide ordinary exact tests named audio_renderer_realtime_contract, prepared_graph_handoff, and audio_observation_realtime_contract. Each prints its exact CREST_RT_VALIDATION marker only after assertions.",
@@ -301,6 +324,7 @@ project: assets: ProductionRuntimeContractTests: {
 	]
 	contributesTo: [
 		{capability: "capability.instrument_capability_model", contribution: "proves production constructor ownership and exact provider/preparer registration"},
+		{capability: "capability.static_patch_effect", contribution: "proves production effect provider/preparer injection, exact registration, negotiated preparation, and off-callback teardown"},
 		{capability: "capability.asynchronous_engine_selection", contribution: "proves production worker injection and control-owned lifecycle teardown"},
 		{capability: "capability.prepared_engine_rack", contribution: "proves negotiated preparation, complete callback chunking, structural replacement, and observable unknown-Patch failure"},
 		{capability: "capability.realtime_execution", contribution: "makes each declared callback witness non-vacuous and runtime device errors visible"},
@@ -310,7 +334,7 @@ project: assets: ProductionRuntimeContractTests: {
 project: assets: CrestSynthMain: {
 	kind: "rust-bin-target"
 	description: "src/bin/crest_synth.rs, the thin standalone composition root and smoke harness"
-	profile: {kind: "infrastructure", witness: "mixed SoundFont and Braids synth vertical slice", failurePolicy: "fail startup on missing fixture, SoundFont, Braids preparation, audio setup, or invalid configuration"}
+	profile: {kind: "infrastructure", witness: "mixed SoundFont/Braids instruments plus first-Patch Chorus vertical slice", failurePolicy: "fail startup on missing fixture, SoundFont, Braids/Chorus preparation, audio setup, or invalid configuration"}
 	targets: [
 		"applicationService.Shell.StandaloneApplication",
 		"applicationService.Testing.ExhaustiveGuiDemo",
@@ -322,7 +346,11 @@ project: assets: CrestSynthMain: {
 		"adapter.HiDefSoundFontPreparer",
 		"adapter.BraidsCapability",
 		"adapter.BraidsPreparer",
+		"adapter.ChorusCapability",
+		"adapter.ChorusPreparer",
+		"asset.ChorusSourceBundle",
 		"applicationService.Synth.PreparedEngineRackBuilder",
+		"applicationService.Synth.PreparedPostEffectRackBuilder",
 		"applicationService.Synth.DescriptorDefaultConfigFactory",
 		"applicationService.RealTime.PreparedGraphBuilder",
 		"applicationService.RealTime.StructuralGraphCoordinator",
@@ -336,18 +364,18 @@ project: assets: CrestSynthMain: {
 		"adapter.CpalAudioOutput",
 	]
 	prompts: [
-		"Create src/bin/crest_synth.rs as composition only. Parse HiDef.sf2 exactly once through HiDefSoundFontAsset, construct HiDefSoundFontCapability from its immutable catalog and HiDefSoundFontPreparer from that catalog plus its numeric prepared bank, then construct BraidsCapability, BraidsPreparer, ThreadedGraphPreparationWorker, and distinct audio, structural, and observation boundaries; inject all ports into StandaloneApplication, which validates and freezes the hydrated provider descriptors, and call run.",
-		"Fail startup for duplicate, missing, unknown, or mismatched capability or preparer registration. Install exactly instrument.soundfont.hidef and instrument.braids in production and never choose or substitute a fallback descriptor, config, asset, preset, provider, preparer, prepared instrument, graph, or renderer.",
-		"Normal invocation expects ./sf2/HiDef.sf2, the vendored pinned Braids DSP, and ./midi/Corridors of Time - Chrono Trigger.mid; resolves every fixture SoundFont identity to an exact catalog choice without fallback, negotiates the physical device without starting it, builds the complete alternating initial graph for that exact accepted configuration before starting the stream, and begins MIDI only after that succeeds. PATCH structural rows use the injected capacity-one preparation worker; there is no play command, transport, file chooser, preset browser/modal, engine-choice modal, or alternate effect selection.",
+		"Create src/bin/crest_synth.rs as composition only. Parse HiDef.sf2 exactly once through HiDefSoundFontAsset, construct HiDefSoundFontCapability from its immutable catalog and HiDefSoundFontPreparer from that catalog plus its numeric prepared bank, then construct BraidsCapability/BraidsPreparer, ChorusCapability/ChorusPreparer, both prepared rack builders, ThreadedGraphPreparationWorker, and distinct audio, structural, and observation boundaries; inject all ports into StandaloneApplication, which validates and freezes the hydrated instrument/effect descriptors, and call run.",
+		"Fail startup for duplicate, missing, unknown, or mismatched instrument/effect capability or preparer registration. Install exactly instrument.soundfont.hidef, instrument.braids, and effect.chorus in production and never choose or substitute a fallback descriptor, config, asset, preset, provider, preparer, prepared instrument/effect, bypass, graph, or renderer.",
+		"Normal invocation expects ./sf2/HiDef.sf2, the vendored pinned Braids and Chorus DSP, and ./midi/Corridors of Time - Chrono Trigger.mid; resolves every fixture SoundFont identity to an exact catalog choice without fallback, configures one Chorus slot on the first Patch only, negotiates the physical device without starting it, builds the complete alternating instrument plus effect graph for that exact accepted configuration before starting the stream, and begins MIDI only after that succeeds. PATCH structural rows use the injected capacity-one preparation worker; there is no play command, transport, file chooser, preset browser/modal, engine-choice modal, effect selector, bypass, or alternate effect selection.",
 		"Support --smoke for headless deterministic execution, --observe to print one CREST_OBSERVATION JSON object, --demo-scene only with --smoke --observe to run the exhaustive current-GUI scene, --demo-live by itself to run the paced scene in the normal window and physical audio stream, and verification-only --degenerate-audio or --degenerate-control only with --smoke --observe for behavioral falsification. Reject duplicate, mixed, or other options; --demo-live is mutually exclusive with every headless, observation, demo-scene, and degenerate flag.",
 		"When --demo-scene is present, print exactly one single-line CREST_EVENT_LOG JSON object, one single-line CREST_STATE_TREE JSON object, and one single-line CREST_OBSERVATION JSON object. Use stable Serialize data, never Debug output or Markdown; the ordinary interactive run emits no trace unless explicitly requested.",
 			"When --demo-live is present, pass StandaloneApplication.runLiveDemo control-side callbacks that print each returned checkpoint as CREST_LIVE_CHECKPOINT JSON, then print exactly one compact CREST_LIVE_EVENT_LOG_SUMMARY JSON with lossless counts and chain endpoints, CREST_LIVE_STATE_TREE JSON, CREST_LIVE_COVERAGE JSON, and CREST_LIVE_SUMMARY human-readable line from the completed report after note cleanup; retain the complete EventLog in LiveDemoReport verification and never dump every performance MIDI record or print/format from the runner or audio callback.",
-			"The live option uses the same HiDef.sf2, Braids adapter, alternating Corridors of Time composition, AppLoop, EframeTextWindow, CpalAudioOutput, prepared engine rack, PreparedGraph, AudioRenderer, and mixer as normal interactive execution. It has no fake window, null device, offline-only renderer, silent fallback, direct state edit, or alternate demo reducer.",
+			"The live option uses the same HiDef.sf2, Braids/Chorus adapters, alternating Corridors of Time composition with first-Patch Chorus, AppLoop, EframeTextWindow, CpalAudioOutput, prepared engine/effect racks, PreparedGraph, AudioRenderer, and mixer as normal interactive execution. It has no fake window, null device, offline-only renderer, silent fallback/bypass, direct state edit, or alternate demo reducer.",
 		"After frozen scalar coverage, --demo-live selects one adjacent preset on the focused first SoundFont Patch, then SoundFont to Braids and back to descriptor-default SoundFont through semantic AppEvents and ThreadedGraphPreparationWorker; wait nonblockingly for every Preparing, Activating, Ready sequence and newer acknowledged graph revision, dispatch targeted MIDI, and require finite nonzero target output before advancing or reporting completion.",
 		"Before --demo-live device startup, print one concise status explaining that the run is autonomous, input-isolated, and bounded. If the runner makes no semantic/checkpoint/lifecycle/cleanup progress for ten seconds or exceeds 120 seconds total, retain a typed stage-specific error, close the window, clean up notes, release the stream, shut down structural ownership off callback, and exit nonzero without a report.",
 		"During --demo-live, ignore mapped semantic window input so it cannot interleave an AppState generation with the autonomous checkpoint protocol; native window close remains available as typed incomplete-demo cancellation and normal interactive mode keeps its existing keyboard dispatch.",
 		"After live completion emit the four final records synchronously, return false from the same window tick to send a viewport-close command, release the physical stream after the window returns, and exit successfully when no runtime error was retained.",
-		"The smoke path loads the real fixed SoundFont, pinned Braids adapter, and MIDI fixture, installs alternating instrument Patches, applies keyboard-equivalent navigation and adjustment events, renders bounded mixed audio blocks, and reports measurements from the production services.",
+		"The smoke path loads the real fixed SoundFont, pinned Braids and Chorus adapters, and MIDI fixture, installs alternating instrument Patches with one first-Patch Chorus, applies keyboard-equivalent navigation and adjustment events, renders bounded synthesis-to-effect-to-mix audio blocks, and reports measurements from the production services.",
 		"The observation must exercise at least two simultaneously sounding Patches, edit a Patch whose id is greater than 1, compare the edited and unedited Patch stems separately, and prove the unedited stem is sample-identical while the edited stem changes.",
 		"The observation must also drive the selected parameter to a boundary, send one more adjustment toward that boundary, then prove a later valid edit is accepted without restarting the application.",
 		"The demo-scene observation delegates to ExhaustiveGuiDemo, includes its coverage summary in CREST_OBSERVATION, and returns a failure when the event journal drops a record, the final state tree disagrees, or any expected current event/property/parameter/effect identifier is missing.",
@@ -364,6 +392,7 @@ project: assets: CrestSynthMain: {
 		{capability: "capability.soundfont_audio", contribution: "starts the concrete SoundFont synth"},
 		{capability: "capability.braids_engine", contribution: "starts the pinned concrete Braids synth"},
 		{capability: "capability.per_voice_envelope", contribution: "composes the canonical ADSR into both prepared engines"},
+		{capability: "capability.static_patch_effect", contribution: "composes the one installed Chorus provider/preparer and first-Patch config into the complete graph and both demos"},
 		{capability: "capability.prepared_engine_rack", contribution: "composes generic preparation and the dedicated structural ownership handoff without owning their behavior"},
 		{capability: "capability.automatic_test_midi", contribution: "starts the fixed MIDI test input without transport controls"},
 		{capability: "capability.one_way_parameter_control", contribution: "hosts the text control loop without owning behavior"},

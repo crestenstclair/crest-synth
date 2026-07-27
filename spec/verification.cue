@@ -159,6 +159,10 @@ project: witnesses: exhaustive_demo_scene: {
 		"valueObject.Synth.SoundFontPresetCatalog",
 		"adapter.BraidsCapability",
 		"adapter.BraidsPreparer",
+		"valueObject.Synth.EffectCapabilityRegistry",
+		"valueObject.Synth.PostEffectConfig",
+		"adapter.ChorusCapability",
+		"adapter.ChorusPreparer",
 		"valueObject.Synth.VoiceEnvelope",
 		"valueObject.Control.TopLevelContext",
 		"valueObject.Control.InteractionState",
@@ -189,6 +193,8 @@ project: witnesses: exhaustive_demo_scene: {
 		"valueObject.RealTime.ParameterSnapshot",
 		"valueObject.RealTime.AudioCommand",
 		"valueObject.RealTime.PatchAudioBlock",
+		"valueObject.RealTime.PatchEffectObservation",
+		"aggregate.RealTime.PreparedPostEffectRack",
 		"applicationService.RealTime.AudioRenderer",
 		"applicationService.Shell.StandaloneApplication",
 		"asset.CrestSynthMain",
@@ -199,6 +205,10 @@ project: witnesses: exhaustive_demo_scene: {
 		"valueObject.Synth.SoundFontPresetCatalog",
 		"adapter.BraidsCapability",
 		"adapter.BraidsPreparer",
+		"valueObject.Synth.EffectCapabilityRegistry",
+		"valueObject.Synth.PostEffectConfig",
+		"adapter.ChorusCapability",
+		"adapter.ChorusPreparer",
 		"valueObject.Synth.VoiceEnvelope",
 		"valueObject.Control.TopLevelContext",
 		"valueObject.Control.InteractionState",
@@ -228,6 +238,8 @@ project: witnesses: exhaustive_demo_scene: {
 		"valueObject.RealTime.ParameterSnapshot",
 		"valueObject.RealTime.AudioCommand",
 		"valueObject.RealTime.PatchAudioBlock",
+		"valueObject.RealTime.PatchEffectObservation",
+		"aggregate.RealTime.PreparedPostEffectRack",
 		"applicationService.RealTime.AudioRenderer",
 		"applicationService.Shell.StandaloneApplication",
 		"asset.CrestSynthMain",
@@ -248,6 +260,8 @@ project: witnesses: exhaustive_demo_scene: {
 			parsed_soundfont_banks: "number"
 			prepared_instruments: "number"
 			braids_patches: "number"
+			prepared_post_effects: "number"
+			chorus_patches: "number"
 			alternating_capabilities: "bool"
 			callback_destructions: "number"
 			event_log_records: "number"
@@ -269,6 +283,15 @@ project: witnesses: exhaustive_demo_scene: {
 			patch_focus_projection_exact: "bool"
 			patch_adsr_scalar_only: "bool"
 				patch_adsr_structural_coexistence_exact: "bool"
+			patch_effect_control_cases_exercised: "number"
+			patch_effect_focus_projection_exact: "bool"
+			patch_effect_scalar_only: "bool"
+			patch_effect_order_exact: "bool"
+			patch_effect_target_audio_distinct: "bool"
+			patch_effect_stereo_side_energy_nonzero: "bool"
+			patch_effect_patch_isolation: "bool"
+			patch_effect_instances_independent: "bool"
+			patch_effect_structural_preservation: "bool"
 				soundfont_preset_control_cases_exercised: "number"
 				soundfont_preset_transitions_exercised: "number"
 				soundfont_preset_catalog_order_exact: "bool"
@@ -314,6 +337,8 @@ project: witnesses: exhaustive_demo_scene: {
 			{field: "parsed_soundfont_banks", op: "eq", value: 1, repairResources: ["adapter.HiDefSoundFontAsset", "applicationService.Shell.StandaloneApplication"]},
 		{field: "prepared_instruments", op: "gt", value: 1, repairResources: ["aggregate.RealTime.PreparedEngineRack", "applicationService.RealTime.PreparedGraphBuilder"]},
 		{field: "braids_patches", op: "gt", value: 0, repairResources: ["adapter.BraidsCapability", "adapter.BraidsPreparer", "applicationService.Testing.AutomaticMidiTest"]},
+		{field: "prepared_post_effects", op: "gt", value: 0, repairResources: ["adapter.ChorusPreparer", "aggregate.RealTime.PreparedPostEffectRack", "applicationService.RealTime.PreparedGraphBuilder"]},
+		{field: "chorus_patches", op: "eq", value: 1, repairResources: ["valueObject.Synth.PostEffectConfig", "applicationService.Testing.AutomaticMidiTest", "applicationService.Shell.StandaloneApplication"]},
 		{field: "alternating_capabilities", op: "eq", value: true, repairResources: ["applicationService.Testing.AutomaticMidiTest", "applicationService.Shell.StandaloneApplication"]},
 		{field: "callback_destructions", op: "eq", value: 0, repairResources: ["applicationService.RealTime.AudioRenderer", "port.RealTime.StructuralGraphBoundary"]},
 		{field: "event_log_records", op: "gt", value: 0, repairResources: ["valueObject.Control.EventLog", "applicationService.Control.AppLoop", "applicationService.Testing.ExhaustiveGuiDemo"]},
@@ -328,13 +353,22 @@ project: witnesses: exhaustive_demo_scene: {
 		{field: "adjust_directions_exercised", op: "eq", value: 4, repairResources: ["valueObject.Control.AppEvent", "valueObject.Testing.DemoScene", "applicationService.Shell.KeyboardInputTranslator"]},
 		{field: "midi_message_kinds_exercised", op: "eq", value: 7, repairResources: ["valueObject.Kernel.MidiMessage", "valueObject.Testing.DemoScene", "applicationService.Testing.AutomaticMidiTest"]},
 		{field: "audio_command_variants_exercised", op: "eq", value: 2, repairResources: ["valueObject.RealTime.AudioCommand", "applicationService.RealTime.AudioRenderer", "valueObject.Testing.DemoScene"]},
-		{field: "rejection_variants_exercised", op: "eq", value: 16, repairResources: ["aggregate.Control.AppState", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "rejection_variants_exercised", op: "eq", value: 17, repairResources: ["aggregate.Control.AppState", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "global_parameter_cases_exercised", op: "eq", value: 7, repairResources: ["valueObject.Mixer.GlobalParameters", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "envelope_parameter_cases_exercised", op: "gt", value: 0, repairResources: ["valueObject.Synth.VoiceEnvelope", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "patch_adsr_control_cases_exercised", op: "eq", value: 4, repairResources: ["valueObject.Control.PatchControlId", "valueObject.Synth.VoiceEnvelope", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
 		{field: "patch_focus_projection_exact", op: "eq", value: true, repairResources: ["valueObject.Control.InteractionState", "valueObject.Control.PatchPageProjection", "valueObject.Control.TextProjection", "domainService.Control.StateProjector"]},
 		{field: "patch_adsr_scalar_only", op: "eq", value: true, repairResources: ["aggregate.Control.AppState", "applicationService.Control.AppLoop", "valueObject.RealTime.ParameterSnapshot"]},
 			{field: "patch_adsr_structural_coexistence_exact", op: "eq", value: true, repairResources: ["aggregate.Control.AppState", "applicationService.Control.AppLoop", "applicationService.RealTime.StructuralGraphCoordinator", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "patch_effect_control_cases_exercised", op: "eq", value: 2, repairResources: ["valueObject.Control.PatchControlId", "valueObject.Synth.EffectCapabilityRegistry", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "patch_effect_focus_projection_exact", op: "eq", value: true, repairResources: ["valueObject.Control.InteractionState", "valueObject.Control.PatchPageProjection", "valueObject.Control.TextProjection", "domainService.Control.StateProjector"]},
+		{field: "patch_effect_scalar_only", op: "eq", value: true, repairResources: ["aggregate.Control.AppState", "applicationService.Control.AppLoop", "valueObject.RealTime.ParameterSnapshot"]},
+		{field: "patch_effect_order_exact", op: "eq", value: true, repairResources: ["aggregate.RealTime.PreparedPostEffectRack", "applicationService.RealTime.AudioRenderer", "domainService.Mixer.MixEngine"]},
+		{field: "patch_effect_target_audio_distinct", op: "eq", value: true, repairResources: ["adapter.ChorusPreparer", "valueObject.RealTime.PatchEffectObservation", "applicationService.RealTime.AudioRenderer"]},
+		{field: "patch_effect_stereo_side_energy_nonzero", op: "eq", value: true, repairResources: ["adapter.ChorusPreparer", "valueObject.RealTime.PatchEffectObservation", "applicationService.RealTime.AudioRenderer"]},
+		{field: "patch_effect_patch_isolation", op: "eq", value: true, repairResources: ["aggregate.RealTime.PreparedPostEffectRack", "applicationService.RealTime.AudioRenderer", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "patch_effect_instances_independent", op: "eq", value: true, repairResources: ["adapter.ChorusPreparer", "aggregate.RealTime.PreparedPostEffectRack", "applicationService.Testing.ExhaustiveGuiDemo"]},
+		{field: "patch_effect_structural_preservation", op: "eq", value: true, repairResources: ["aggregate.Control.AppState", "applicationService.RealTime.StructuralGraphCoordinator", "applicationService.Testing.ExhaustiveGuiDemo"]},
 			{field: "soundfont_preset_control_cases_exercised", op: "gt", value: 0, repairResources: ["valueObject.Control.PatchControlId", "valueObject.Synth.SoundFontPresetCatalog", "valueObject.Testing.DemoScene", "applicationService.Testing.ExhaustiveGuiDemo"]},
 			{field: "soundfont_preset_transitions_exercised", op: "gt", value: 0, repairResources: ["valueObject.Control.StructuralEditIntent", "aggregate.Control.AppState", "applicationService.Control.AppLoop", "applicationService.RealTime.StructuralGraphCoordinator"]},
 			{field: "soundfont_preset_catalog_order_exact", op: "eq", value: true, repairResources: ["adapter.HiDefSoundFontAsset", "valueObject.Synth.SoundFontPresetCatalog", "applicationService.Testing.ExhaustiveGuiDemo"]},

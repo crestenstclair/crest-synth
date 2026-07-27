@@ -10,6 +10,7 @@ use crate::real_time::parameter_snapshot::MAX_PATCHES;
 use crate::real_time::prepared_engine_rack::RackDispatchError;
 use crate::real_time::prepared_graph::PreparedGraph;
 use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
+use crate::real_time::PatchEffectObservation;
 /// Hard-real-time owner of one active complete prepared graph.
 ///
 /// Construction receives every engine, effect, stem, route, and scratch owner
@@ -97,7 +98,8 @@ where
         // delivery so note-on/note-off latching observes this generation.
         let latest = self.boundary.read_latest_parameters();
         let compatible = latest.graph_revision() == self.active_graph.revision()
-            && self.active_graph.engine_rack().matches_parameters(&latest);
+            && self.active_graph.engine_rack().matches_parameters(&latest)
+            && self.active_graph.effect_rack().matches_parameters(&latest);
         if compatible {
             self.parameters = latest;
         } else {
@@ -142,13 +144,23 @@ where
         }
 
         let parameters = self.parameters;
-        let (primary_patch_id, primary_patch_rms, mix) = {
-            let (rack, patch_audio, mixer) = self.active_graph.callback_parts_mut();
+        let mut effect_observations = [PatchEffectObservation::EMPTY; MAX_PATCHES];
+        let (primary_patch_id, primary_patch_rms, patch_effect, mix) = {
+            let (rack, effect_rack, patch_audio, mixer) =
+                self.active_graph.callback_parts_with_effects_mut();
             if patch_audio.begin_render(&parameters, frame_count).is_err() {
                 return;
             }
             if rack.render(patch_audio, &parameters).is_err() {
                 interleaved_stereo.fill(0.0);
+                return;
+            }
+            if effect_rack
+                .process(patch_audio, &parameters, &mut effect_observations)
+                .is_err()
+            {
+                interleaved_stereo.fill(0.0);
+                self.routing_failures = self.routing_failures.saturating_add(1);
                 return;
             }
             let primary = patch_audio.stems().first();
@@ -164,9 +176,15 @@ where
                     (energy / samples.len() as f64).sqrt() as f32
                 }
             });
+            let patch_effect = effect_observations
+                .iter()
+                .copied()
+                .find(|observation| observation.patch_id().is_some())
+                .unwrap_or(PatchEffectObservation::EMPTY);
             (
                 primary_patch_id,
                 primary_patch_rms,
+                patch_effect,
                 mixer.mix(patch_audio, &parameters, interleaved_stereo),
             )
         };
@@ -176,7 +194,7 @@ where
         let primary_active_notes =
             primary_patch_id.map_or(0, |patch_id| self.active_notes.count_patch(patch_id));
         self.observation.publish_from_callback(
-            AudioObservationSnapshot::from_mix_with_graph_routing_and_primary(
+            AudioObservationSnapshot::from_mix_with_graph_routing_primary_and_effect(
                 self.rendered_blocks,
                 self.rendered_blocks,
                 self.rendered_frames,
@@ -189,6 +207,7 @@ where
                 primary_patch_id,
                 primary_patch_rms,
                 primary_active_notes,
+                patch_effect,
                 mix,
             ),
         );

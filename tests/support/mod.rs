@@ -1,6 +1,11 @@
+use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
+use crest_synth::adapter::production_effects::{
+    production_chorus_config, production_effect_preparers, production_effect_providers,
+    production_effect_registry,
+};
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_instrument_providers,
 };
@@ -12,6 +17,7 @@ use crest_synth::control::state_projector::StateProjector;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::real_time::audio_boundary::AudioBoundary;
+use crest_synth::real_time::audio_observation::AudioObservation;
 use crest_synth::real_time::audio_renderer::AudioRenderer;
 use crest_synth::real_time::graph_revision::GraphRevision;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
@@ -21,8 +27,8 @@ use crest_synth::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
 use crest_synth::synth::patch::Patch;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityId, DescriptorDefaultConfigFactory, InstrumentPreparationError, InstrumentPreparer,
-    PreparedInstrument, PreparedInstrumentError,
+    CapabilityId, DescriptorDefaultConfigFactory, EffectSlotId, InstrumentPreparationError,
+    InstrumentPreparer, PreparedInstrument, PreparedInstrumentError,
 };
 use crest_synth::testing::automatic_midi_test::{create_soundfont_config, AutomaticMidiTest};
 use crest_synth::testing::demo_scene::DemoScene;
@@ -76,7 +82,7 @@ fn scene_patches() -> Vec<Patch> {
         .map(|(index, part)| {
             let patch_id = crest_synth::kernel::patch_id::PatchId::new(index as u32 + 1)
                 .expect("fixture PatchId is valid");
-            Patch::new(
+            let mut patch = Patch::new(
                 patch_id,
                 part.name().to_owned(),
                 if index % 2 == 0 {
@@ -89,7 +95,14 @@ fn scene_patches() -> Vec<Patch> {
                 },
                 part.assigned_channel(),
                 crest_synth::mixer::channel_parameters::ChannelParameters::default(),
-            )
+            );
+            if index == 0 {
+                patch = patch.with_post_effects(vec![production_chorus_config(
+                    EffectSlotId::new(1).expect("fixture effect slot is valid"),
+                )
+                .expect("fixture Chorus config is valid")]);
+            }
+            patch
         })
         .collect()
 }
@@ -250,10 +263,14 @@ impl PreparedInstrument for FixturePadInstrument {
 pub fn run_demo() -> DemoRun {
     let providers = production_instrument_providers().expect("production providers are valid");
     let registry = production_capability_registry().expect("production registry is valid");
+    let effect_providers =
+        production_effect_providers().expect("production effect providers are valid");
+    let effects = production_effect_registry().expect("production effect registry is valid");
     let patches = scene_patches();
     let global_parameters = globals();
-    let scene = DemoScene::exhaustive(&registry, &patches, &global_parameters)
-        .expect("the fixture contains two discriminating Patches");
+    let scene =
+        DemoScene::exhaustive_with_effects(&registry, &effects, &patches, &global_parameters)
+            .expect("the fixture contains two discriminating Patches");
     let expected_coverage = scene.expected_coverage().to_vec();
     let initial_parameters =
         ParameterSnapshot::new(0, global_parameters, &[]).expect("initial parameters are valid");
@@ -262,7 +279,7 @@ pub fn run_demo() -> DemoRun {
     let event_log = EventLog::new(scene.event_log_capacity().saturating_add(16))
         .expect("fixture EventLog capacity is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(registry.clone(), global_parameters),
+        AppState::new_with_effects(registry.clone(), effects.clone(), global_parameters),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         event_log,
@@ -271,13 +288,16 @@ pub fn run_demo() -> DemoRun {
 
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
     automatic
-        .initialize(&providers, &mut app_loop)
+        .initialize_with_effects(&providers, &effect_providers, &mut app_loop)
         .expect("automatic fixture initializes through AppLoop");
     let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
         Box::new(FixturePreparer::new()),
         Box::new(FixturePreparer::for_capability(BRAIDS_CAPABILITY_ID)),
     ];
+    let effect_preparers =
+        production_effect_preparers().expect("production effect preparers are valid");
     let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
+        .with_effects(app_loop.effects(), &effect_preparers)
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
@@ -297,10 +317,17 @@ pub fn run_demo() -> DemoRun {
         Box::new(FixturePreparer::new()),
         Box::new(FixturePreparer::for_capability(BRAIDS_CAPABILITY_ID)),
     ];
+    let worker_effect_preparers =
+        production_effect_preparers().expect("production worker effect preparers are valid");
     let audio_config = AudioDeviceConfig::new(SAMPLE_RATE, 2, AudioSampleFormat::F32, FRAME_COUNT)
         .expect("fixture audio config is valid");
-    let worker =
-        DeterministicGraphPreparationWorker::new(registry.clone(), worker_preparers, audio_config);
+    let worker = DeterministicGraphPreparationWorker::new_with_effects(
+        registry.clone(),
+        worker_preparers,
+        effects,
+        worker_effect_preparers,
+        audio_config,
+    );
     let worker_handle = worker.advance_handle();
     app_loop
         .configure_engine_selection(
@@ -311,7 +338,9 @@ pub fn run_demo() -> DemoRun {
             audio_config,
         )
         .expect("fixture engine-selection orchestration configures");
-    let mut renderer = AudioRenderer::new(audio, structural_audio, graph);
+    let (observation_writer, observation_reader) = AtomicAudioObservation::default().into_handles();
+    let mut renderer =
+        AudioRenderer::with_observation(audio, structural_audio, graph, observation_writer);
     automatic
         .start()
         .expect("automatic fixture starts after graph preparation");
@@ -329,11 +358,12 @@ pub fn run_demo() -> DemoRun {
     let baseline: Value = serde_json::from_str(app_loop.current_state_tree().json())
         .expect("baseline StateTree is valid JSON");
     let mut audio_buffer = vec![0.0_f32; FRAME_COUNT * 2];
-    let mut demo = ExhaustiveGuiDemo::new_with_worker(
+    let mut demo = ExhaustiveGuiDemo::new_with_worker_and_observation(
         &mut app_loop,
         &mut renderer,
         &mut audio_buffer,
         worker_handle,
+        &observation_reader,
     );
     let report = demo
         .run(scene)

@@ -4,17 +4,23 @@ use crate::mixer::mix_engine::MixEngine;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::patch_audio_block::{PatchAudioBlock, PatchAudioBlockError};
-use crate::real_time::prepared_graph::PreparedGraph;
+use crate::real_time::prepared_graph::{PreparedGraph, PreparedGraphResources};
 use crate::synth::instrument_capability::CapabilityRegistry;
 use crate::synth::instrument_preparer::InstrumentPreparer;
 use crate::synth::patch::Patch;
 use crate::synth::prepared_engine_rack_builder::{PreparedEngineRackBuilder, RackPreparationError};
+use crate::synth::{
+    EffectCapabilityRegistry, EffectPreparer, EffectRackPreparationError,
+    PreparedPostEffectRackBuilder,
+};
 use core::fmt;
 
 /// Control/worker-side composition service for one complete prepared graph.
 pub struct PreparedGraphBuilder<'a> {
     registry: &'a CapabilityRegistry,
     preparers: &'a [Box<dyn InstrumentPreparer>],
+    effect_registry: Option<&'a EffectCapabilityRegistry>,
+    effect_preparers: &'a [Box<dyn EffectPreparer>],
 }
 
 impl<'a> PreparedGraphBuilder<'a> {
@@ -25,7 +31,20 @@ impl<'a> PreparedGraphBuilder<'a> {
         Self {
             registry,
             preparers,
+            effect_registry: None,
+            effect_preparers: &[],
         }
+    }
+
+    /// Injects the complete installed effect registry and its exact preparers.
+    pub const fn with_effects(
+        mut self,
+        registry: &'a EffectCapabilityRegistry,
+        preparers: &'a [Box<dyn EffectPreparer>],
+    ) -> Self {
+        self.effect_registry = Some(registry);
+        self.effect_preparers = preparers;
+        self
     }
 
     /// Prepares every graph owner and buffer before returning one atomic
@@ -73,6 +92,20 @@ impl<'a> PreparedGraphBuilder<'a> {
             return Err(GraphPreparationError::ParameterLayoutMismatch);
         }
 
+        let empty_effect_registry = EffectCapabilityRegistry::default();
+        let effect_registry = self.effect_registry.unwrap_or(&empty_effect_registry);
+        let effect_rack = PreparedPostEffectRackBuilder::build(
+            patches,
+            effect_registry,
+            self.effect_preparers,
+            sample_rate,
+            max_frames,
+        )
+        .map_err(GraphPreparationError::EffectRack)?;
+        if !effect_rack.matches_parameters(&parameters) {
+            return Err(GraphPreparationError::ParameterLayoutMismatch);
+        }
+
         let patch_audio =
             PatchAudioBlock::prepare(max_frames).map_err(GraphPreparationError::PatchAudio)?;
         let mut mixer = MixEngine::new(GlobalReverbDelay::new());
@@ -85,9 +118,7 @@ impl<'a> PreparedGraphBuilder<'a> {
             sample_rate,
             max_frames,
             parameters,
-            engine_rack,
-            patch_audio,
-            mixer,
+            PreparedGraphResources::new(engine_rack, effect_rack, patch_audio, mixer),
         ))
     }
 }
@@ -103,6 +134,7 @@ pub enum GraphPreparationError {
     },
     ParameterLayoutMismatch,
     Rack(RackPreparationError),
+    EffectRack(EffectRackPreparationError),
     PatchAudio(PatchAudioBlockError),
     Effects(EffectError),
 }
@@ -124,6 +156,9 @@ impl fmt::Display for GraphPreparationError {
                 "prepared graph Patch count or ordered identities do not match parameters",
             ),
             Self::Rack(source) => write!(formatter, "prepared engine rack failed: {source}"),
+            Self::EffectRack(source) => {
+                write!(formatter, "prepared post-effect rack failed: {source}")
+            }
             Self::PatchAudio(source) => {
                 write!(formatter, "Patch stem preparation failed: {source}")
             }
@@ -138,6 +173,7 @@ impl std::error::Error for GraphPreparationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Rack(source) => Some(source),
+            Self::EffectRack(source) => Some(source),
             Self::PatchAudio(source) => Some(source),
             Self::Effects(source) => Some(source),
             _ => None,

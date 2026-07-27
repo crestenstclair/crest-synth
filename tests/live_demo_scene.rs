@@ -4,6 +4,9 @@ mod support;
 use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
+use crest_synth::adapter::production_effects::{
+    production_effect_preparers, production_effect_providers, production_effect_registry,
+};
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_instrument_preparers,
     production_instrument_providers,
@@ -46,8 +49,11 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     let event_log = EventLog::new(4096).expect("live test journal capacity is valid");
     let providers = production_instrument_providers().expect("production providers are valid");
     let registry = production_capability_registry().expect("production registry is valid");
+    let effect_providers =
+        production_effect_providers().expect("production effect providers are valid");
+    let effects = production_effect_registry().expect("production effect registry is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(registry.clone(), global),
+        AppState::new_with_effects(registry.clone(), effects.clone(), global),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         event_log,
@@ -56,7 +62,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
 
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
     automatic
-        .initialize(&providers, &mut app_loop)
+        .initialize_with_effects(&providers, &effect_providers, &mut app_loop)
         .expect("fixture initializes through AppLoop");
     let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())
         .expect("installed fixture produces a live scene");
@@ -72,6 +78,18 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
             patch.editable_targets(descriptor).unwrap().len()
         })
         .sum::<usize>()
+        + app_loop
+            .patches()
+            .iter()
+            .flat_map(|patch| patch.post_effects())
+            .map(|config| {
+                app_loop
+                    .effects()
+                    .descriptor(config.capability_id())
+                    .unwrap()
+                    .scalar_parameter_count()
+            })
+            .sum::<usize>()
         + GlobalParameters::surface_descriptor().len();
     assert_eq!(scene.expected_editable_parameters().len(), expected_count);
     assert_eq!(scene.minimum_parameter_dwell(), Duration::from_millis(500));
@@ -115,6 +133,10 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
             crest_synth::testing::live_demo_scene::LiveEditableParameter::Global { .. } => {
                 focused_patch_id
             }
+            crest_synth::testing::live_demo_scene::LiveEditableParameter::Effect {
+                patch_id,
+                ..
+            } => *patch_id,
         };
         let (note_on_patch, note_on) = match scene.steps()[checkpoint_index - 1].event() {
             AppEvent::Midi { patch_id, message } => (*patch_id, *message),
@@ -180,9 +202,12 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     let observation = AtomicAudioObservation::default();
     let (writer, reader) = observation.into_handles();
     let preparers = production_instrument_preparers().expect("production preparers are valid");
+    let effect_preparers =
+        production_effect_preparers().expect("production effect preparers are valid");
     let audio_config = AudioDeviceConfig::new(SAMPLE_RATE, 2, AudioSampleFormat::F32, FRAME_COUNT)
         .expect("live test audio configuration is valid");
     let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
+        .with_effects(app_loop.effects(), &effect_preparers)
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
@@ -198,9 +223,11 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     )
     .expect("live structural boundary is valid");
     let (structural_control, structural_audio) = structural.into_handles();
-    let worker = ThreadedGraphPreparationWorker::new(
+    let worker = ThreadedGraphPreparationWorker::new_with_effects(
         registry.clone(),
         production_instrument_preparers().expect("worker preparers are valid"),
+        effects,
+        production_effect_preparers().expect("worker effect preparers are valid"),
         audio_config,
     )
     .expect("production threaded worker starts");
@@ -309,10 +336,10 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         .iter()
         .filter_map(|checkpoint| checkpoint.as_parameter())
         .filter(|checkpoint| {
-            checkpoint
-                .expected_transition()
-                .patch_control_id()
-                .is_some()
+            matches!(
+                checkpoint.expected_transition().patch_control_id(),
+                Some(PatchControlId::Envelope(_))
+            )
         })
         .collect::<Vec<_>>();
     assert_eq!(patch_adsr_checkpoints.len(), 4);
@@ -347,6 +374,27 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
             EmittedEvent::ParameterSnapshotPublished { .. }
         ));
     }
+    let effect_checkpoints = report
+        .checkpoints()
+        .iter()
+        .filter_map(|checkpoint| checkpoint.as_parameter())
+        .filter(|checkpoint| {
+            matches!(
+                checkpoint.expected_transition().patch_control_id(),
+                Some(PatchControlId::Effect(_, _))
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(effect_checkpoints.len(), 2);
+    assert!(effect_checkpoints.iter().all(|checkpoint| {
+        let observation = checkpoint.audio_observation();
+        let effect = observation.patch_effect();
+        effect.patch_id() == Some(focused_patch_id)
+            && effect.input_rms() > 0.0
+            && effect.output_rms() > 0.0
+            && effect.difference_rms() > 0.0
+            && effect.side_rms() > 0.0
+    }));
     let engine_checkpoints = report
         .checkpoints()
         .iter()
@@ -471,23 +519,29 @@ fn live_demo_early_close_uses_semantic_cleanup_without_success_report() {
     let boundary = LockFreeAudioBoundary::new(64, initial);
     let (control, audio) = boundary.into_handles();
     let registry = production_capability_registry().unwrap();
+    let effects = production_effect_registry().unwrap();
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new(registry, global),
+        AppState::new_with_effects(registry, effects, global),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         EventLog::new(256).unwrap(),
     )
     .unwrap();
     let providers = production_instrument_providers().unwrap();
+    let effect_providers = production_effect_providers().unwrap();
     let mut automatic = AutomaticMidiTest::new(FixtureMidiSource::new());
-    automatic.initialize(&providers, &mut app_loop).unwrap();
+    automatic
+        .initialize_with_effects(&providers, &effect_providers, &mut app_loop)
+        .unwrap();
     let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
         Box::new(FixturePreparer::for_capability(
             "instrument.soundfont.hidef",
         )),
         Box::new(FixturePreparer::for_capability("instrument.braids")),
     ];
+    let effect_preparers = production_effect_preparers().unwrap();
     let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
+        .with_effects(app_loop.effects(), &effect_preparers)
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),

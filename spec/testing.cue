@@ -13,12 +13,12 @@ project: contexts: Testing: {
 			name: "String"
 			schemaVersion: "u32"
 			steps: "Vec<WindowInput | MidiProbe | Tick | AdvanceGraphWorker | RenderBlock | PollStructural | Checkpoint>"
-			surfaceDescriptor: "typed WindowInput kind/key, AppEvent, TopLevelContext, Direction, MidiMessageKind, installed capability, capability-parameter, PatchControlId, editable-parameter, StructuralEditIntent, structural-selection state/failure, rejection, emitted-effect, and serialized-leaf descriptors from production owners"
+			surfaceDescriptor: "typed WindowInput kind/key, AppEvent, TopLevelContext, Direction, MidiMessageKind, installed instrument/effect capability, parameter and slot, PatchControlId, editable-parameter, StructuralEditIntent, structural-selection state/failure, rejection, emitted-effect, and serialized-leaf descriptors from production owners"
 			rejectionDescriptor: "typed unique EventRejection cases partitioned into Scene and ReducerTable reachability"
 			expectedCoverage: "the exact normalized identifier set derived from surfaceDescriptor plus installed Patch identities"
 		}
 		invariants: [
-			"the exhaustive scene is derived from typed descriptors owned beside WindowInput, AppEvent, TopLevelContext, the installed CapabilityRegistry, parameter schemas, emitted effects, and serializers plus the installed fixture Patch list; it never defines a second hand-maintained list of GUI inputs, page identities, or field-name strings",
+			"the exhaustive scene is derived from typed descriptors owned beside WindowInput, AppEvent, TopLevelContext, installed instrument/effect registries, parameter schemas, effect slots, emitted effects, and serializers plus the installed fixture Patch list; it never defines a second hand-maintained list of GUI inputs, page identities, or field-name strings",
 			"a contract test discovers the serialized EventLog, EventRecord, StateTree, PatchPageProjection, TextProjection, and ParameterSnapshot leaf paths and requires exact bidirectional set equality with surfaceDescriptor, so an added, removed, renamed, duplicated, or unexercised item fails",
 			"descriptor uniqueness is asserted before converting to sets, and expectedCoverage is frozen before the first event so actual post-state, discovered output, or coverage observations can never define their own expected values",
 			"every expected state value is computed before dispatch from the captured baseline plus the typed owner descriptor's bound and step; it is never copied from the actual post-dispatch StateTree, TextProjection, ParameterSnapshot, or rendered audio",
@@ -41,7 +41,7 @@ project: contexts: Testing: {
 			eventLog: "EventLog"
 			initialStateTree: "StateTree"
 			finalStateTree: "StateTree"
-				coverage: "{expected, exercised, missing, unexpected} grouped by normalized GUI inputs, events, contexts, directions, MIDI kinds, editable parameters, structural choices/intents/states/failures/effects, serialized properties, rejections, projections, and audio effects"
+				coverage: "{expected, exercised, missing, unexpected} grouped by normalized GUI inputs, events, contexts, directions, MIDI kinds, instrument/effect capabilities and slots, editable parameters, structural choices/intents/states/failures/effects, serialized properties, rejections, projections, and audio effects"
 				checkpoints: "Vec<{step, expectedStateValues, actualStateValues, expectedProjectionValues, actualProjectionValues, stateHash, generation, selectedLine, parameterGeneration, graphRevision, structuralEditIntent, engineSelectionStatus, audioMeasurement, reverbInputEnergy, delayInputEnergy}>"
 		}
 		invariants: [
@@ -70,13 +70,14 @@ project: contexts: Testing: {
 		}
 		invariants: [
 				"construction begins only after AutomaticMidiTest installs the real Corridors of Time fixture Patches from exact catalog identities and freezes the expected editable-parameter and structural-transition sets before any live action is dispatched",
-			"the plan derives every mixer, envelope, descriptor-classified Scalar engine, and global parameter instance from the production Patch resolver and typed descriptors; it contains no duplicate hand-maintained field list or engine branch",
+			"the plan derives every mixer, envelope, descriptor-classified Scalar engine, configured effect ScalarEdit, and global parameter instance from the production Patch resolver and typed descriptors; it contains no duplicate hand-maintained field list or engine/effect branch",
 			"the focused first Patch's four envelope identifiers are exercised exactly once through PATCH focus Navigate and Adjust steps; every other editable instance uses the existing MIXER plan, so the frozen coverage set is unchanged and no identifier receives duplicate credit",
+			"the first Patch's configured Chorus Amount and Depth identifiers are exercised exactly once through PATCH after instrument controls; effect identity remains read-only and unconfigured Patches contribute no effect identifier",
 			"every expected editable parameter has at least one planned accepted value change, one checkpoint, a minimum dwell of 500 ms, and an audible observation requirement; the checkpoint is bracketed by one semantic NoteOn before the edit and matching NoteOff afterward for the owning Patch, while global edits use the focused first Patch",
 			"parameter-audio probes are ordinary bounded Patch-targeted Midi AppEvents through AppLoop, never direct AudioCommands; they establish schedule-independent signal while fixture advancement is frozen for exact-generation correlation, and they never earn editable-parameter coverage",
-			"navigation and adjustment steps contain AppEvents and expected transitions only; the scene contains no mutable AppState, TextProjection, ParameterSnapshot, SoundFont engine, mixer, audio buffer, UI widget, or device handle",
+			"navigation and adjustment steps contain AppEvents and expected transitions only; the scene contains no mutable AppState, TextProjection, ParameterSnapshot, SoundFont engine, Chorus processor, mixer, audio buffer, UI widget, or device handle",
 				"after frozen scalar coverage, the plan focuses the descriptor-derived Preset row and submits exactly one semantic Adjust Right to the next numerically ordered catalog entry, waits for Preparing, Activating, and Ready on a newer SoundFont graph revision, then returns focus to Engine, selects Braids, and returns to descriptor-default SoundFont through the same lifecycle",
-				"each Ready structural transition is followed by Patch-targeted semantic MIDI and a finite nonzero target-output checkpoint before the next transition or cleanup; preset and engine transition coverage is separate from the frozen editable-scalar set and cannot be credited by a changed label, constructed candidate, source audio, or nonzero unrelated Patch",
+			"each Ready structural transition is followed by Patch-targeted semantic MIDI and a finite nonzero target-output checkpoint before the next transition or cleanup; the first Patch's exact PostEffectConfig/effect layout remains present through every replacement while its tail may reset, and transition coverage cannot be credited by a label, constructed candidate, source audio, or unrelated Patch",
 			"at least one planned boundary adjustment is rejected as ParameterAtBoundary and is followed by a valid accepted adjustment proving the live scene remains active",
 			"Finish contains one Patch-targeted semantic all-notes-off Midi AppEvent for every installed Patch and no direct AudioCommand",
 			"the live scene is test/demo support around the existing MIDI fixture and exposes no transport, sequencer, song, clip, timeline, recording, or playback-control product model",
@@ -131,13 +132,13 @@ project: contexts: Testing: {
 			eventLog: "EventLog"
 			stateTree: "StateTree"
 				coverage: "{expectedEditableParameters, exercisedEditableParameters, missingEditableParameters, unexpectedEditableParameters, expectedStructuralTransitions, exercisedStructuralTransitions, missingStructuralTransitions, unexpectedStructuralTransitions}"
-				runtimeAudio: "{parsedSoundfontBanks, preparedInstruments, soundfontPatches, braidsPatches, alternatingCapabilities, initialGraphRevision, activeGraphRevision, structuralSwitches, readyCapabilities, readyPresetChoices, fallbacks, callbackAllocations, callbackDestructions}"
+				runtimeAudio: "{parsedSoundfontBanks, preparedInstruments, preparedPostEffects, soundfontPatches, braidsPatches, chorusPatches, alternatingCapabilities, initialGraphRevision, activeGraphRevision, structuralSwitches, readyCapabilities, readyPresetChoices, fallbacks, callbackAllocations, callbackDestructions}"
 			summary: "String"
 		}
 		invariants: [
 			"each checkpoint captures its expected transition before dispatch and then copies the actual outcome, generation, state hash, projected value, parameter generation, and emitted effects from the production EventRecord and canonical projections",
 				"each accepted parameter checkpoint requires an AudioObservationSnapshot whose sequence advanced after dispatch, whose parameterGeneration equals the accepted generation, whose output is finite, and whose parameter-specific audible predicate passed while fixture audio was nonzero; each structural checkpoint additionally proves the correlated intent/status, increasing active graph revision, exact active capability or preset choice, and finite nonzero targeted output after acknowledgement",
-				"complete is true only when every expected editable parameter changed, all three ordered structural transitions completed, both missing and unexpected pairs are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, the focused Patch is Ready on descriptor-default SoundFont and its descriptor-default preset, all semantic all-notes-off events were accepted, a later audio observation reports zero active notes, and runtimeAudio reports one parsed bank, one prepared instrument per Patch after each rebuild, exact final SoundFont/Braids Patch counts and alternation, three switches, increasing revisions ending at StateTree graph revision, zero fallbacks, and zero callback allocation or destruction",
+				"complete is true only when every expected editable parameter including Chorus Amount and Depth changed, all three ordered structural transitions completed, both missing and unexpected pairs are empty, at least one accepted and one rejected EventRecord exist, every checkpoint agrees, no event records were dropped, the focused Patch is Ready on descriptor-default SoundFont and its descriptor-default preset with the exact Chorus config, all semantic all-notes-off events were accepted, a later audio observation reports zero active notes, and runtimeAudio reports one parsed bank, one prepared instrument per Patch and one Chorus instance after each rebuild, exact final engine/effect Patch counts and alternation, three switches, increasing revisions ending at StateTree graph revision, zero fallbacks, and zero callback allocation or destruction",
 			"eventLog and stateTree are the existing canonical Control values, not live-demo copies; stateTree.generation equals the final checkpoint and EventLog chain endpoint",
 			"the complete EventLog remains retained for deterministic report verification while interactive terminal output uses one compact LiveEventLogSummary containing lossless counts and canonical first/last chain endpoints",
 			"summary is human-readable control-side text derived from the structured report after completion and is never constructed or printed in the audio callback",
@@ -216,8 +217,10 @@ project: contexts: Testing: {
 				"port.Testing.MidiEventSource",
 				"aggregate.Synth.Patch",
 				"valueObject.Synth.CapabilityRegistry",
+				"valueObject.Synth.EffectCapabilityRegistry",
 				"valueObject.Synth.SoundFontPresetCatalog",
 			"port.Synth.InstrumentCapabilityProvider",
+			"port.Synth.EffectCapabilityProvider",
 			"applicationService.Control.AppLoop",
 			"valueObject.Testing.InstrumentPart",
 		]
@@ -227,10 +230,10 @@ project: contexts: Testing: {
 			tick: {input: {elapsed: "Duration"}, output: {result: "Result<(), TestInputError>"}}
 		}
 		meta: rules: [
-			"initialize prepares the source and asks one injected capability-neutral config factory to create a schema-valid InstrumentConfig for each discovered part, assigns stable PatchIds plus default VoiceEnvelope and ChannelParameters, and dispatches one InstallPatches AppEvent without configuring or starting an engine",
+			"initialize prepares the source and asks injected capability-neutral factories to create a schema-valid InstrumentConfig for each discovered part plus one effect.chorus PostEffectConfig on the first Patch only, assigns stable PatchIds plus default VoiceEnvelope and ChannelParameters, and dispatches one InstallPatches AppEvent without configuring or starting an engine/effect",
 				"production composition maps zero-based even parts to a HiDef SoundFont config by resolving the fixture's normalized numeric bank/program identity to the exact SoundFontPresetCatalog choice and odd parts to the default Braids config; this alternation exists only in the fixture adapter and the resulting Patch/rack path remains capability-polymorphic",
 				"a missing or ambiguous fixture preset address is a typed initialization failure before Patch installation; authored labels, General MIDI names, nearest entries, first entries, or descriptor defaults are never used as identity fallback",
-			"initialization rejects a missing provider, registry/provider mismatch, invalid config, or factory failure before installation; it never substitutes a descriptor, config, preset, asset, preparer, prepared instrument, or engine",
+			"initialization rejects a missing instrument/effect provider, registry/provider mismatch, invalid config/slot, or factory failure before installation; it never substitutes a descriptor, config, preset, effect, asset, preparer, prepared processor, engine, or bypass",
 			"start is accepted exactly once after StandaloneApplication has successfully built the complete initial PreparedGraph; failed graph preparation leaves the source stopped",
 			"tick polls into reusable bounded storage and dispatches each item as AppEvent::Midi through AppLoop",
 			"no transport state or playback controls are added to AppState",
@@ -239,6 +242,7 @@ project: contexts: Testing: {
 			{capability: "capability.automatic_test_midi", contribution: "starts Corridors of Time automatically and sends all test input through the production reducer"},
 				{capability: "capability.instrument_capability_model", contribution: "creates all fixture Patch configs through the installed capability provider"},
 				{capability: "capability.soundfont_preset_selection", contribution: "resolves each fixture SoundFont identity to one exact stable catalog choice without fallback"},
+				{capability: "capability.static_patch_effect", contribution: "installs exactly one canonical Chorus config on the first fixture Patch without preparing DSP"},
 			{capability: "capability.prepared_engine_rack", contribution: "separates canonical Patch installation from later off-thread graph preparation and starts MIDI only after that graph is ready"},
 			{capability: "capability.one_way_parameter_control", contribution: "uses the same AppEvent/AppState path as keyboard input"},
 		]
@@ -260,6 +264,10 @@ project: contexts: Testing: {
 				"valueObject.Control.StructuralEditIntent",
 				"valueObject.Control.PatchPageProjection",
 			"valueObject.Kernel.MidiMessage",
+			"valueObject.Synth.EffectCapabilityRegistry",
+			"valueObject.Synth.PostEffectConfig",
+			"aggregate.RealTime.PreparedPostEffectRack",
+			"valueObject.RealTime.PatchEffectObservation",
 			"port.RealTime.AudioBoundary",
 			"port.RealTime.GraphPreparationWorker",
 			"adapter.DeterministicGraphPreparationWorker",
@@ -271,10 +279,12 @@ project: contexts: Testing: {
 			run: {input: {scene: "DemoScene"}, output: {report: "Result<DemoSceneReport, DemoSceneError>"}}
 		}
 		meta: rules: [
-			"begin after AutomaticMidiTest installs the real fixture Patches so the state tree contains the immutable installed capability registry and every current Patch identity, generic instrument config, asset reference, and mixer parameter set",
+			"begin after AutomaticMidiTest installs the real fixture Patches so the state tree contains immutable instrument/effect registries and every current Patch identity, generic instrument config, ordered PostEffectConfig, asset reference, and mixer parameter set",
 			"prove the registry contains instrument.soundfont.hidef and instrument.braids and the fixture alternates them in stable part order; every installed config matches its descriptor and unknown, duplicate, missing, undeclared, wrong-kind, non-finite, and out-of-range mutations fail without fallback or partial installation",
 			"exercise SelectContext, InstallPatches, Navigate, Adjust, Midi, EnginePrepared, EnginePreparationFailed, and EngineActivationAcknowledged; SelectContext exercises PATCH and MIXER, Navigate and Adjust each exercise Up, Down, Left, and Right, each Patch's MIDI probes cover exactly the kinds declared by its active descriptor with exact channel/data bytes, and the mixed scene covers the complete canonical MIDI union",
 			"exercise every valid normalized WindowInput from its production-owned descriptor through KeyboardInputTranslator and prove each emits the exact expected AppEvent or no event",
+			"navigate the configured first Patch through read-only Chorus identity to Amount and Depth, edit both through K+A/D and K+S/W, prove exact state/page/text/tree/fixed-effect-snapshot values with scalar-only effects, and measure target-only pre/post difference plus stereo side energy before exact restoration",
+			"render a focused test graph with two configured Chorus instances to prove independent delay/LFO/tail ownership while production fixture coverage retains only the first Patch slot",
 				"drive Digit2 through KeyboardInputTranslator and AppLoop, prove the accepted InteractionState context and stable PatchId focus, then compare PatchPageProjection and rendered PATCH text exactly against the focused Patch, focusedControlId, VoiceEnvelope descriptor, active CapabilityDescriptor, InstrumentConfig, and full registry choices for both SoundFont and Braids without capability-specific expected field lists; SoundFont ends with the exact authored Preset label while Braids ends at Release",
 				"from Engine drive bare S through every canonical ADSR row and descriptor-classified StructuralChoice row, verify exact nonwrapping focus, selected marker, selectedLine, unchanged session/audio values and graph revision, then use K+A/D for fine and K+S/W for coarse reversible edits on Attack, Decay, Sustain, and Release; compare exact canonical state, page/text/tree/snapshot values and require no AudioCommand or structural effect",
 				"on the focused SoundFont Preset row, drive K+D to the next numerically ordered catalog choice; checkpoint Preparing with the source config/revision and audible source graph exact, reject another request as StructuralEditBusy, manually advance real preparation, require target-only assignment change, checkpoint Activating, publish/render/collect/acknowledge, then send targeted MIDI and measure finite nonzero output distinct from identical fresh source state before restoring the source choice",
@@ -283,7 +293,7 @@ project: contexts: Testing: {
 			"drive K+A through the same path to descriptor-default HiDef SoundFont and measure finite nonzero engine-managed output; then run one controlled worker failure plus early, stale, and mismatched outcome/acknowledgement probes and prove exact source preservation, no publication or fallback, and later valid recovery",
 				"PATCH Navigate Left/Right, Navigate Up at Engine, Navigate Down at the final descriptor-derived row, and Adjust Up/Down on structural rows are ActionUnavailableInContext; adjacent engine or preset selection beyond its declared choice boundary is StructuralSelectionUnavailable, and every rejection leaves generation, hash, config, lifecycle, graph revision, and audio-command count exact and accepts a later valid event",
 			"prove context-only acceptance advances coherent serialization, TextProjection, StateTree, and ParameterSnapshot generation while retaining byte-identical session values, parameter values, active GraphRevision, prepared ownership, routing, and rendered audio",
-			"for every installed Patch exercise every target returned by the canonical editable resolver—mixer, common ADSR, and active descriptor Scalar fields—and perform reversible declared edits through GUI inputs; route the focused Patch's four ADSR identifiers through PATCH and the remaining targets through MIXER without duplicate coverage credit, then assert exact state/text/snapshot values, measured target behavior, and exact equality of every unrelated Patch/global value",
+			"for every installed Patch exercise every target returned by the canonical editable resolver—mixer, common ADSR, active instrument Scalar, and configured effect ScalarEdit fields—and perform reversible declared edits through GUI inputs; route the focused Patch's ADSR and effect identifiers through PATCH and the remaining targets through MIXER without duplicate credit, then assert exact state/text/snapshot values, measured target behavior, and exact equality of every unrelated Patch/global value",
 			"before global wet-parameter probes, make at least two Patches sound and establish nonzero reverbSend and delaySend through the same GUI/reducer path; assert nonzero reverb and delay input energy at GlobalEffectsProcessor, then compare each typed GlobalParameters field from identical reset effect state",
 			"the faithful effects observer may inspect and forward the supplied reverbInput and delayInput but may never synthesize wet excitation from dry output, bypass Patch sends, add report-only coverage, or mark an effect exercised merely because time-varying tails changed",
 			"select each typed GlobalParameters field and perform reversible fine and coarse edits; prove the exact selected value and complete expected mix response while Patch identity and unrelated values remain stable, then restore all global values and both sends to the captured baseline",
@@ -315,7 +325,8 @@ project: contexts: Testing: {
 			{capability: "capability.one_way_parameter_control", contribution: "proves all current editable values use the one reducer and projection path"},
 			{capability: "capability.schema_driven_patch_page", contribution: "proves both direct page events, exact generic Patch projection, stable Engine-plus-ADSR focus, canonical ADSR edits, typed unsupported-action rejection, and audio-neutral focus/context switching"},
 				{capability: "capability.per_voice_envelope", contribution: "proves all four PATCH ADSR controls reach only the canonical focused Patch and both real per-voice renderers"},
-				{capability: "capability.soundfont_preset_selection", contribution: "proves exact catalog-backed focus, ordered choice, correlated structural replacement, target audio, failures, boundaries, and restoration"},
+			{capability: "capability.soundfont_preset_selection", contribution: "proves exact catalog-backed focus, ordered choice, correlated structural replacement, target audio, failures, boundaries, and restoration"},
+			{capability: "capability.static_patch_effect", contribution: "proves schema-derived effect focus/editing, scalar publication, ordering, isolation, independent state, structural preservation, and audible output"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "proves both engine directions, pending/busy/failure/stale states, complete activation, off-callback retirement, and targeted audible output through production seams"},
 			{capability: "capability.global_mix", contribution: "measures every current Patch and global mix parameter case"},
 			{capability: "capability.realtime_execution", contribution: "observes parameter and command effects through the real-time boundary"},

@@ -17,6 +17,9 @@ use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::parameter_id::ParameterId;
 use crate::synth::patch::Patch;
 use crate::synth::sound_font_instrument::SoundFontInstrument;
+use crate::synth::{
+    EffectCapabilityDescriptor, EffectCapabilityError, EffectCapabilityProvider, EffectSlotId,
+};
 use crate::testing::midi_event_source::{FixedEventBatch, MidiEventSource, MidiSourceError};
 use core::fmt;
 use std::time::Duration;
@@ -26,6 +29,7 @@ use std::time::Duration;
 pub enum TestInputError {
     Source(MidiSourceError),
     Capability(CapabilityError),
+    EffectCapability(EffectCapabilityError),
     Control(EventRejection),
     AudioBoundaryFull(BoundaryFull),
     PatchIdentityOverflow { position: usize },
@@ -45,6 +49,12 @@ impl fmt::Display for TestInputError {
                 write!(
                     formatter,
                     "automatic MIDI capability configuration failed: {error}"
+                )
+            }
+            Self::EffectCapability(error) => {
+                write!(
+                    formatter,
+                    "automatic MIDI effect configuration failed: {error}"
                 )
             }
             Self::Control(error) => {
@@ -86,6 +96,7 @@ impl std::error::Error for TestInputError {
         match self {
             Self::Source(error) => Some(error),
             Self::Capability(error) => Some(error),
+            Self::EffectCapability(error) => Some(error),
             Self::Control(error) => Some(error),
             Self::AudioBoundaryFull(error) => Some(error),
             Self::PatchIdentityOverflow { .. }
@@ -108,6 +119,12 @@ impl From<MidiSourceError> for TestInputError {
 impl From<CapabilityError> for TestInputError {
     fn from(error: CapabilityError) -> Self {
         Self::Capability(error)
+    }
+}
+
+impl From<EffectCapabilityError> for TestInputError {
+    fn from(error: EffectCapabilityError) -> Self {
+        Self::EffectCapability(error)
     }
 }
 
@@ -203,11 +220,26 @@ where
     where
         Boundary: ControlAudioBoundary,
     {
+        self.initialize_with_effects(providers, &[], app_loop)
+    }
+
+    /// Installs the production fixture with one descriptor-built effect on its first Patch.
+    pub fn initialize_with_effects<Boundary>(
+        &mut self,
+        providers: &[Box<dyn InstrumentCapabilityProvider>],
+        effect_providers: &[Box<dyn EffectCapabilityProvider>],
+        app_loop: &mut AppLoop<Boundary>,
+    ) -> Result<(), TestInputError>
+    where
+        Boundary: ControlAudioBoundary,
+    {
         if self.initialized {
             return Err(TestInputError::AlreadyInitialized);
         }
 
         let descriptors = exact_provider_descriptors(providers, app_loop.capabilities())?;
+        let effect_descriptors =
+            exact_effect_provider_descriptors(effect_providers, app_loop.effects())?;
 
         let parts = self.source.prepare()?;
         let mut patch_ids = Vec::new();
@@ -252,13 +284,25 @@ where
             app_loop
                 .capabilities()
                 .validate_config(&instrument_config)?;
-            let patch = Patch::new(
+            let mut patch = Patch::new(
                 patch_id,
                 part.name().to_owned(),
                 instrument_config,
                 part.assigned_channel(),
                 ChannelParameters::default(),
             );
+            if position == 0 {
+                if let (Some(provider), Some(descriptor)) =
+                    (effect_providers.first(), effect_descriptors.first())
+                {
+                    let effect = create_default_effect_config(
+                        provider.as_ref(),
+                        descriptor,
+                        EffectSlotId::new(1).expect("the production fixture slot is nonzero"),
+                    )?;
+                    patch = patch.with_post_effects(vec![effect]);
+                }
+            }
 
             patch_ids.push((part.index(), patch_id));
             patches.push(patch);
@@ -330,6 +374,53 @@ where
 
         Ok(())
     }
+}
+
+fn exact_effect_provider_descriptors(
+    providers: &[Box<dyn EffectCapabilityProvider>],
+    registry: &crate::synth::EffectCapabilityRegistry,
+) -> Result<Vec<EffectCapabilityDescriptor>, EffectCapabilityError> {
+    let descriptors = providers
+        .iter()
+        .map(|provider| provider.descriptor())
+        .collect::<Vec<_>>();
+    if descriptors == registry.descriptors() {
+        return Ok(descriptors);
+    }
+    let id = descriptors
+        .first()
+        .map(|descriptor| descriptor.id().clone())
+        .or_else(|| {
+            registry
+                .descriptors()
+                .first()
+                .map(|descriptor| descriptor.id().clone())
+        })
+        .unwrap_or_else(|| {
+            crate::synth::EffectCapabilityId::new("effect.registry-mismatch")
+                .expect("static mismatch id is valid")
+        });
+    Err(EffectCapabilityError::ProviderRegistryMismatch(id))
+}
+
+fn create_default_effect_config(
+    provider: &dyn EffectCapabilityProvider,
+    descriptor: &EffectCapabilityDescriptor,
+    slot_id: EffectSlotId,
+) -> Result<crate::synth::PostEffectConfig, EffectCapabilityError> {
+    let mut values = Vec::new();
+    let mut assets = Vec::new();
+    for spec in descriptor.parameters() {
+        match spec.default_value() {
+            ParameterDefault::Value(value) => {
+                values.push(ParameterAssignment::new(spec.id().clone(), value.clone()))
+            }
+            ParameterDefault::Asset(reference) => {
+                assets.push(AssetAssignment::new(spec.id().clone(), reference.clone()))
+            }
+        }
+    }
+    provider.create_config(slot_id, &values, &assets)
 }
 
 /// Creates one fixture config through the selected provider, overriding only

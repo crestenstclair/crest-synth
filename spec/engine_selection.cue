@@ -68,7 +68,7 @@ project: requirements: {
 	}
 	atomic_prepared_activation: {
 		kind: "nonfunctional"
-		description: "A capacity-one off-callback worker builds one complete candidate graph; a correlated success commits only the selected Patch config, reprojects the exact committed target-revision snapshot, publishes the complete graph, swaps at a block boundary, and retires the prior graph off callback; active voices and effect tails may reset"
+		description: "A capacity-one off-callback worker builds one complete candidate graph; a correlated success commits only the selected instrument config, preserves every Patch PostEffectConfig and effect scalar layout, reprojects the exact committed target-revision snapshot, publishes the complete graph, swaps at a block boundary, and retires the prior graph off callback; active voices and effect tails may reset"
 		goals: ["goal.select_patch_engine"]
 		capabilities: ["capability.asynchronous_engine_selection", "capability.prepared_engine_rack", "capability.realtime_execution"]
 	}
@@ -135,10 +135,10 @@ project: contexts: Synth: applicationServices: DescriptorDefaultConfigFactory: {
 project: contexts: Control: {
 	valueObjects: PatchControlId: {
 		description: "a stable semantic focus target inside the PATCH context"
-		from: "Engine | Envelope(VoiceEnvelopeParameter) | Capability(ParameterId)"
+		from: "Engine | Envelope(VoiceEnvelopeParameter) | Capability(ParameterId) | Effect(EffectSlotId, ParameterId)"
 		invariants: [
-			"the base ordered surface is Engine followed by the four VoiceEnvelope surface-descriptor parameters Attack, Decay, Sustain, and Release exactly once; the focused Patch resolver appends each visible enabled active-descriptor StructuralChoice ParameterId exactly once in descriptor order",
-			"Engine serializes as patch.engine, Envelope(parameter) derives patch.envelope.<VoiceEnvelopeParameter.name>, and Capability(parameter) derives patch.capability.<ParameterId> without declaring a second ADSR or capability-field enum",
+			"the base ordered surface is Engine followed by the four VoiceEnvelope surface-descriptor parameters Attack, Decay, Sustain, and Release exactly once; the focused Patch resolver appends each visible enabled active-instrument StructuralChoice ParameterId, then every ordered PostEffectConfig visible enabled ScalarEdit ParameterId exactly once",
+			"Engine serializes as patch.engine, Envelope(parameter) derives patch.envelope.<VoiceEnvelopeParameter.name>, Capability(parameter) derives patch.capability.<ParameterId>, and Effect(slotId, parameter) derives patch.effect.<EffectSlotId>.<ParameterId> without declaring a second ADSR, instrument, or effect field enum",
 			"the value is never a widget index, text line, capability id, display label, choice label, or platform input code",
 		]
 		contributesTo: [
@@ -146,6 +146,7 @@ project: contexts: Control: {
 			{capability: "capability.per_voice_envelope", contribution: "reuses VoiceEnvelopeParameter rather than duplicating the four envelope concepts in control state"},
 			{capability: "capability.asynchronous_engine_selection", contribution: "lets the reducer resolve Edit+Left/Right without UI-owned focus"},
 			{capability: "capability.soundfont_preset_selection", contribution: "addresses the descriptor-owned preset row by the existing ParameterId"},
+			{capability: "capability.static_patch_effect", contribution: "addresses descriptor-owned effect scalars through stable slot and parameter identities"},
 		]
 	}
 
@@ -239,7 +240,7 @@ project: contexts: RealTime: {
 			audioConfig: "AudioDeviceConfig"
 		}
 		invariants: [
-			"candidatePatches has the exact active PatchIds, order, capacity, routes, mixer values, and envelopes with only patchId's InstrumentConfig replaced by the intent's descriptor-default capability config or one-assignment structural-choice config",
+			"candidatePatches has the exact active PatchIds, order, capacity, routes, mixer values, envelopes, and ordered PostEffectConfigs with only patchId's InstrumentConfig replaced by the intent's descriptor-default capability config or one-assignment structural-choice config",
 			"candidateParameters is compatible with candidatePatches and targetGraphRevision; the prepared graph is refreshed from the exact committed target snapshot before publication",
 			"targetGraphRevision is greater than sourceGraphRevision and the selected candidate Patch config matches targetCapabilityId plus StructuralEditIntent through the immutable registry",
 			"the request is created and consumed outside the callback and contains no active graph, device owner, UI object, or fallback",

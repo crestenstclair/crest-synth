@@ -26,7 +26,7 @@ project: goals: edit_patch_envelope: {
 project: requirements: {
 	patch_adsr_focus_surface: {
 		kind: "functional"
-		description: "PATCH exposes one reducer-owned nonwrapping focused-Patch order whose base is Engine, Attack, Decay, Sustain, Release from PatchControlId plus the canonical VoiceEnvelope descriptor and whose suffix is the active descriptor's StructuralChoice controls; bare Up/Down moves one row, bare Left/Right remains unavailable, exactly one projected row is focused, and endpoint navigation is a typed unchanged rejection"
+		description: "PATCH exposes one reducer-owned nonwrapping focused-Patch order whose base is Engine, Attack, Decay, Sustain, Release from PatchControlId plus the canonical VoiceEnvelope descriptor and whose suffix is the active instrument descriptor's StructuralChoice controls followed by ordered effect ScalarEdit controls; bare Up/Down moves one row, bare Left/Right remains unavailable, exactly one projected row is focused, and endpoint navigation is a typed unchanged rejection"
 		goals: ["goal.edit_patch_envelope"]
 		capabilities: ["capability.schema_driven_patch_page", "capability.one_way_parameter_control"]
 	}

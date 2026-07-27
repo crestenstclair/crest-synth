@@ -1,11 +1,13 @@
 use crate::control::EngineSelectionFailure;
-use crate::real_time::graph_preparation_worker::prepare_graph_request;
+use crate::real_time::graph_preparation_worker::prepare_graph_request_with_effects;
 use crate::real_time::{
     GraphPreparationRequest, GraphPreparationResult, GraphPreparationWorker, WorkerBusy,
     WorkerBusyReason, WorkerShutdownError,
 };
 use crate::shell::audio_output::AudioDeviceConfig;
-use crate::synth::{CapabilityRegistry, InstrumentPreparer};
+use crate::synth::{
+    CapabilityRegistry, EffectCapabilityRegistry, EffectPreparer, InstrumentPreparer,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -23,6 +25,8 @@ pub struct DeterministicGraphPreparationHandle {
 struct DeterministicGraphPreparationState {
     registry: CapabilityRegistry,
     preparers: Vec<Box<dyn InstrumentPreparer>>,
+    effects: EffectCapabilityRegistry,
+    effect_preparers: Vec<Box<dyn EffectPreparer>>,
     audio_config: AudioDeviceConfig,
     pending: Option<GraphPreparationRequest>,
     result: Option<GraphPreparationResult>,
@@ -36,10 +40,28 @@ impl DeterministicGraphPreparationWorker {
         preparers: Vec<Box<dyn InstrumentPreparer>>,
         audio_config: AudioDeviceConfig,
     ) -> Self {
+        Self::new_with_effects(
+            registry,
+            preparers,
+            EffectCapabilityRegistry::default(),
+            Vec::new(),
+            audio_config,
+        )
+    }
+
+    pub fn new_with_effects(
+        registry: CapabilityRegistry,
+        preparers: Vec<Box<dyn InstrumentPreparer>>,
+        effects: EffectCapabilityRegistry,
+        effect_preparers: Vec<Box<dyn EffectPreparer>>,
+        audio_config: AudioDeviceConfig,
+    ) -> Self {
         Self {
             inner: Rc::new(RefCell::new(DeterministicGraphPreparationState {
                 registry,
                 preparers,
+                effects,
+                effect_preparers,
                 audio_config,
                 pending: None,
                 result: None,
@@ -93,9 +115,11 @@ impl DeterministicGraphPreparationHandle {
                 failure,
             }
         } else {
-            prepare_graph_request(
+            prepare_graph_request_with_effects(
                 &state.registry,
                 &state.preparers,
+                &state.effects,
+                &state.effect_preparers,
                 state.audio_config,
                 request,
             )

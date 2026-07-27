@@ -10,7 +10,10 @@ use crate::synth::instrument_capability::{
     AssetReference, ParameterChoice, ParameterDefault, ParameterKind, ParameterRange,
     ParameterUpdate, ParameterValue, PatchInteraction,
 };
-use crate::synth::{CapabilityId, ParameterId};
+use crate::synth::{
+    CapabilityId, EffectCapabilityDescriptor, EffectCapabilityId, EffectSlotId, ParameterId,
+    ParameterSpec, PostEffectConfig,
+};
 use core::fmt;
 use serde::{Serialize, Serializer};
 use std::sync::Arc;
@@ -260,6 +263,88 @@ pub struct PatchPageParameterRow {
 }
 
 impl PatchPageParameterRow {
+    pub(crate) fn for_effect_parameter(
+        descriptor: &EffectCapabilityDescriptor,
+        config: &PostEffectConfig,
+        spec: &ParameterSpec,
+        active_graph_revision: GraphRevision,
+    ) -> Result<Self, PatchPageProjectionError> {
+        if descriptor.id() != config.capability_id() || descriptor.parameter(spec.id()).is_none() {
+            return Err(PatchPageProjectionError::InvalidEffectConfig);
+        }
+        let value = if spec.kind() == ParameterKind::Asset {
+            let reference = config
+                .asset_reference(spec.id())
+                .or_else(|| match spec.default_value() {
+                    ParameterDefault::Asset(reference) => Some(reference),
+                    ParameterDefault::Value(_) => None,
+                })
+                .ok_or(PatchPageProjectionError::InvalidEffectConfig)?;
+            PatchPageParameterValue::Asset {
+                reference: reference.clone(),
+            }
+        } else {
+            PatchPageParameterValue::Parameter {
+                value: config
+                    .value(spec.id())
+                    .ok_or(PatchPageProjectionError::InvalidEffectConfig)?
+                    .clone(),
+            }
+        };
+        let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
+            predicate.is_none_or(|predicate| {
+                config.value(predicate.parameter_id()) == Some(predicate.equals())
+            })
+        };
+        let enabled = predicate_satisfied(spec.enabled_when());
+        let visible = predicate_satisfied(spec.visible_when());
+        let control_id =
+            (spec.patch_interaction() == PatchInteraction::ScalarEdit && enabled && visible)
+                .then(|| PatchControlId::Effect(config.slot_id(), spec.id().clone()));
+        Ok(Self {
+            control_id: control_id.clone(),
+            id: spec.id().clone(),
+            label: spec.label().to_owned(),
+            kind: spec.kind(),
+            update: spec.update(),
+            patch_interaction: spec.patch_interaction(),
+            value,
+            selected_choice_id: None,
+            selected_label: None,
+            range: spec.range(),
+            choices: spec.choices().to_vec(),
+            fine_step: spec.fine_step(),
+            coarse_step: spec.coarse_step(),
+            unit: spec.unit().map(str::to_owned),
+            formatter: spec.formatter().to_owned(),
+            requested_choice_id: None,
+            requested_label: None,
+            status: None,
+            request_id: None,
+            active_graph_revision: control_id.as_ref().map(|_| active_graph_revision),
+            target_graph_revision: None,
+            failure: None,
+            enabled,
+            visible,
+            editable: control_id.is_some(),
+        })
+    }
+
+    pub(crate) fn selected_effect_text(
+        descriptor: &EffectCapabilityDescriptor,
+        config: &PostEffectConfig,
+        parameter_id: &ParameterId,
+        active_graph_revision: GraphRevision,
+    ) -> Result<String, PatchPageProjectionError> {
+        let spec = descriptor
+            .parameter(parameter_id)
+            .ok_or(PatchPageProjectionError::InvalidEffectConfig)?;
+        let row = Self::for_effect_parameter(descriptor, config, spec, active_graph_revision)?;
+        serde_json::to_string(&row)
+            .map(|row| format!("> EFFECT_PARAMETER {row}"))
+            .map_err(|_| PatchPageProjectionError::InvalidEffectConfig)
+    }
+
     pub fn control_id(&self) -> Option<PatchControlId> {
         self.control_id.clone()
     }
@@ -370,6 +455,39 @@ pub struct PatchPageSection {
     parameters: Vec<PatchPageParameterRow>,
 }
 
+/// One configured Patch effect identity and its descriptor-derived sections.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchPageEffect {
+    slot_id: EffectSlotId,
+    capability_id: EffectCapabilityId,
+    label: String,
+    editable_identity: bool,
+    sections: Vec<PatchPageSection>,
+}
+
+impl PatchPageEffect {
+    pub const fn slot_id(&self) -> EffectSlotId {
+        self.slot_id
+    }
+
+    pub const fn capability_id(&self) -> &EffectCapabilityId {
+        &self.capability_id
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub const fn editable_identity(&self) -> bool {
+        self.editable_identity
+    }
+
+    pub fn sections(&self) -> &[PatchPageSection] {
+        &self.sections
+    }
+}
+
 impl PatchPageSection {
     pub fn id(&self) -> &str {
         &self.id
@@ -393,6 +511,7 @@ struct PatchPageContent {
     engine: PatchPageEngine,
     envelope: Vec<PatchPageEnvelopeRow>,
     sections: Vec<PatchPageSection>,
+    effects: Vec<PatchPageEffect>,
 }
 
 /// Immutable host-neutral PATCH view model derived by one generic schema walk.
@@ -428,6 +547,39 @@ impl PatchPageProjection {
         "envelope[].unit",
         "envelope[].value",
         "focusedControlId",
+        "effects[].capabilityId",
+        "effects[].editableIdentity",
+        "effects[].label",
+        "effects[].slotId",
+        "effects[].sections[].id",
+        "effects[].sections[].label",
+        "effects[].sections[].parameters[].coarseStep",
+        "effects[].sections[].parameters[].controlId",
+        "effects[].sections[].parameters[].editable",
+        "effects[].sections[].parameters[].enabled",
+        "effects[].sections[].parameters[].activeGraphRevision",
+        "effects[].sections[].parameters[].failure",
+        "effects[].sections[].parameters[].fineStep",
+        "effects[].sections[].parameters[].formatter",
+        "effects[].sections[].parameters[].id",
+        "effects[].sections[].parameters[].kind",
+        "effects[].sections[].parameters[].label",
+        "effects[].sections[].parameters[].patchInteraction",
+        "effects[].sections[].parameters[].requestId",
+        "effects[].sections[].parameters[].range.maximum",
+        "effects[].sections[].parameters[].range.minimum",
+        "effects[].sections[].parameters[].requestedChoiceId",
+        "effects[].sections[].parameters[].requestedLabel",
+        "effects[].sections[].parameters[].selectedChoiceId",
+        "effects[].sections[].parameters[].selectedLabel",
+        "effects[].sections[].parameters[].status",
+        "effects[].sections[].parameters[].targetGraphRevision",
+        "effects[].sections[].parameters[].unit",
+        "effects[].sections[].parameters[].update",
+        "effects[].sections[].parameters[].value.source",
+        "effects[].sections[].parameters[].value.value.kind",
+        "effects[].sections[].parameters[].value.value.value",
+        "effects[].sections[].parameters[].visible",
         "patch.id",
         "patch.midiChannel",
         "patch.name",
@@ -496,6 +648,10 @@ impl PatchPageProjection {
         &self.content.sections
     }
 
+    pub fn effects(&self) -> &[PatchPageEffect] {
+        &self.content.effects
+    }
+
     pub fn state_hash(&self) -> &str {
         &self.state_hash
     }
@@ -537,6 +693,10 @@ impl PatchPageProjection {
             .capabilities()
             .validate_config(patch.instrument_config())
             .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
+        state
+            .effects()
+            .validate_patch_effects(patch.post_effects())
+            .map_err(|_| PatchPageProjectionError::InvalidEffectConfig)?;
         let resolved_controls = state
             .focused_patch_controls()
             .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
@@ -691,6 +851,46 @@ impl PatchPageProjection {
                 })
             })
             .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
+        let effects = patch
+            .post_effects()
+            .iter()
+            .map(|config| {
+                let effect_descriptor = state
+                    .effects()
+                    .descriptor(config.capability_id())
+                    .ok_or(PatchPageProjectionError::InvalidEffectConfig)?;
+                let sections = effect_descriptor
+                    .sections()
+                    .iter()
+                    .map(|section| {
+                        let parameters = section
+                            .parameters()
+                            .iter()
+                            .map(|spec| {
+                                PatchPageParameterRow::for_effect_parameter(
+                                    effect_descriptor,
+                                    config,
+                                    spec,
+                                    engine_selection.active_graph_revision(),
+                                )
+                            })
+                            .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
+                        Ok(PatchPageSection {
+                            id: section.id().to_owned(),
+                            label: section.label().to_owned(),
+                            parameters,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
+                Ok(PatchPageEffect {
+                    slot_id: config.slot_id(),
+                    capability_id: config.capability_id().clone(),
+                    label: effect_descriptor.label().to_owned(),
+                    editable_identity: false,
+                    sections,
+                })
+            })
+            .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
 
         Ok(Self {
             content: Arc::new(PatchPageContent {
@@ -728,6 +928,7 @@ impl PatchPageProjection {
                 },
                 envelope,
                 sections,
+                effects,
             }),
             state_hash: Arc::from(state_hash),
         })
@@ -754,6 +955,7 @@ impl Serialize for PatchPageProjection {
             engine: &'a PatchPageEngine,
             envelope: &'a [PatchPageEnvelopeRow],
             sections: &'a [PatchPageSection],
+            effects: &'a [PatchPageEffect],
             state_hash: &'a str,
         }
 
@@ -764,6 +966,7 @@ impl Serialize for PatchPageProjection {
             engine: self.engine(),
             envelope: self.envelope(),
             sections: self.sections(),
+            effects: self.effects(),
             state_hash: self.state_hash(),
         }
         .serialize(serializer)
@@ -777,6 +980,7 @@ pub enum PatchPageProjectionError {
     MissingPatchControlFocus,
     UnknownPatchFocus,
     InvalidInstrumentConfig,
+    InvalidEffectConfig,
 }
 
 impl fmt::Display for PatchPageProjectionError {
@@ -788,6 +992,9 @@ impl fmt::Display for PatchPageProjectionError {
             Self::InvalidInstrumentConfig => {
                 "focused Patch config does not resolve through its capability descriptor"
             }
+            Self::InvalidEffectConfig => {
+                "focused Patch effect config does not resolve through its capability descriptor"
+            }
         })
     }
 }
@@ -798,6 +1005,9 @@ impl std::error::Error for PatchPageProjectionError {}
 mod tests {
     use super::*;
     use crate::adapter::braids_capability::BraidsCapability;
+    use crate::adapter::production_effects::{
+        production_chorus_config, production_effect_registry,
+    };
     use crate::adapter::production_instruments::production_capability_registry;
     use crate::control::{AppEvent, AppState, StateProjector, TopLevelContext};
     use crate::kernel::{MidiChannel, PatchId};
@@ -822,6 +1032,31 @@ mod tests {
             ChannelParameters::default(),
         )
         .with_envelope(crate::synth::VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap());
+        state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+    }
+
+    fn state_with_configured_effect(config: crate::synth::InstrumentConfig) -> AppState {
+        let mut state = AppState::new_with_effects(
+            production_capability_registry().unwrap(),
+            production_effect_registry().unwrap(),
+            GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap(),
+        );
+        let patch = Patch::new(
+            PatchId::new(7).unwrap(),
+            "Focused".to_owned(),
+            config,
+            MidiChannel::new(3).unwrap(),
+            ChannelParameters::default(),
+        )
+        .with_envelope(crate::synth::VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap())
+        .with_post_effects(vec![production_chorus_config(
+            EffectSlotId::new(1).unwrap(),
+        )
+        .unwrap()]);
         state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
@@ -1053,6 +1288,9 @@ mod tests {
                 .unwrap(),
             )),
             page,
+            project(&state_with_configured_effect(
+                BraidsCapability::new().unwrap().default_config().unwrap(),
+            )),
         ] {
             leaves(&serde_json::to_value(page).unwrap(), "", &mut discovered);
         }

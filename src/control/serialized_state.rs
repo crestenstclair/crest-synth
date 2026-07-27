@@ -6,6 +6,7 @@ use crate::mixer::global_parameters::GlobalParameters;
 use crate::synth::instrument_capability::{CapabilityRegistry, InstrumentConfig};
 use crate::synth::patch::Patch;
 use crate::synth::voice_envelope::VoiceEnvelope;
+use crate::synth::{EffectCapabilityRegistry, PostEffectConfig};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
@@ -19,6 +20,8 @@ pub(crate) struct SerializedState<'a> {
     pub(crate) generation: u64,
     #[serde(borrow)]
     pub(crate) capabilities: Cow<'a, CapabilityRegistry>,
+    #[serde(borrow, default)]
+    pub(crate) effects: Cow<'a, EffectCapabilityRegistry>,
     #[serde(borrow)]
     pub(crate) patches: Vec<SerializedPatch<'a>>,
     pub(crate) global: SerializedGlobalParameters,
@@ -32,6 +35,7 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
         Self {
             generation: state.generation(),
             capabilities: Cow::Borrowed(state.capabilities()),
+            effects: Cow::Borrowed(state.effects()),
             patches: state.patches().iter().map(SerializedPatch::from).collect(),
             global: SerializedGlobalParameters::from(state.global()),
             interaction: SerializedInteractionState::from(state.interaction()),
@@ -80,6 +84,8 @@ pub(crate) struct SerializedPatch<'a> {
     pub(crate) channel: u8,
     #[serde(borrow)]
     pub(crate) instrument: Cow<'a, InstrumentConfig>,
+    #[serde(borrow, default)]
+    pub(crate) post_effects: Cow<'a, [PostEffectConfig]>,
     #[serde(default)]
     pub(crate) envelope: VoiceEnvelope,
     pub(crate) gain_db: f32,
@@ -95,6 +101,7 @@ impl<'a> From<&'a Patch> for SerializedPatch<'a> {
             name: Cow::Borrowed(patch.name()),
             channel: patch.channel().value(),
             instrument: Cow::Borrowed(patch.instrument_config()),
+            post_effects: Cow::Borrowed(patch.post_effects()),
             envelope: *patch.envelope(),
             gain_db: patch.parameters().gain_db(),
             pan: patch.parameters().pan(),

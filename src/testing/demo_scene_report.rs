@@ -32,6 +32,12 @@ pub enum DemoCoverageGroup {
 pub struct DemoAudioEvidence {
     mixed_engine_stems_nonzero: bool,
     mixed_engine_parameter_isolation: bool,
+    patch_effect_target_exact: bool,
+    patch_effect_difference_nonzero: bool,
+    patch_effect_side_nonzero: bool,
+    patch_effect_before_mix_stem_exact: bool,
+    unconfigured_patch_isolated: bool,
+    patch_effect_structural_preservation: bool,
 }
 
 impl DemoAudioEvidence {
@@ -42,7 +48,31 @@ impl DemoAudioEvidence {
         Self {
             mixed_engine_stems_nonzero,
             mixed_engine_parameter_isolation,
+            patch_effect_target_exact: false,
+            patch_effect_difference_nonzero: false,
+            patch_effect_side_nonzero: false,
+            patch_effect_before_mix_stem_exact: false,
+            unconfigured_patch_isolated: false,
+            patch_effect_structural_preservation: false,
         }
+    }
+
+    pub const fn with_patch_effect(
+        mut self,
+        target_exact: bool,
+        difference_nonzero: bool,
+        side_nonzero: bool,
+        before_mix_stem_exact: bool,
+        unconfigured_patch_isolated: bool,
+        structural_preservation: bool,
+    ) -> Self {
+        self.patch_effect_target_exact = target_exact;
+        self.patch_effect_difference_nonzero = difference_nonzero;
+        self.patch_effect_side_nonzero = side_nonzero;
+        self.patch_effect_before_mix_stem_exact = before_mix_stem_exact;
+        self.unconfigured_patch_isolated = unconfigured_patch_isolated;
+        self.patch_effect_structural_preservation = structural_preservation;
+        self
     }
 
     pub const fn mixed_engine_stems_nonzero(self) -> bool {
@@ -51,6 +81,30 @@ impl DemoAudioEvidence {
 
     pub const fn mixed_engine_parameter_isolation(self) -> bool {
         self.mixed_engine_parameter_isolation
+    }
+
+    pub const fn patch_effect_target_exact(self) -> bool {
+        self.patch_effect_target_exact
+    }
+
+    pub const fn patch_effect_difference_nonzero(self) -> bool {
+        self.patch_effect_difference_nonzero
+    }
+
+    pub const fn patch_effect_side_nonzero(self) -> bool {
+        self.patch_effect_side_nonzero
+    }
+
+    pub const fn patch_effect_before_mix_stem_exact(self) -> bool {
+        self.patch_effect_before_mix_stem_exact
+    }
+
+    pub const fn unconfigured_patch_isolated(self) -> bool {
+        self.unconfigured_patch_isolated
+    }
+
+    pub const fn patch_effect_structural_preservation(self) -> bool {
+        self.patch_effect_structural_preservation
     }
 }
 
@@ -810,7 +864,7 @@ pub struct DemoSceneReport {
 
 impl DemoSceneReport {
     /// Stable schema version for the top-level report.
-    pub const SCHEMA_VERSION: u32 = 6;
+    pub const SCHEMA_VERSION: u32 = 7;
 
     /// Packages a scene only after checking the journal/tree endpoint.
     ///
@@ -1085,7 +1139,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&first).unwrap();
 
         assert_eq!(first, second);
-        assert_eq!(json["schemaVersion"], 6);
+        assert_eq!(json["schemaVersion"], 7);
         assert_eq!(json["scene"], "exhaustive-gui");
         assert_eq!(json["complete"], true);
         assert_eq!(json["coverage"]["events"]["missing"], serde_json::json!([]));

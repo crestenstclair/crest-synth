@@ -5,6 +5,7 @@ use crate::real_time::graph_revision::GraphRevision;
 use crate::synth::instrument_capability::{CapabilityRegistry, MAX_INSTRUMENT_SCALAR_PARAMETERS};
 use crate::synth::patch::Patch;
 use crate::synth::voice_envelope::VoiceEnvelope;
+use crate::synth::{EffectCapabilityRegistry, EffectSlotId, MAX_EFFECT_SCALAR_PARAMETERS};
 use core::fmt;
 use serde::{Serialize, Serializer};
 
@@ -92,6 +93,94 @@ impl Default for RtInstrumentParameters {
     }
 }
 
+/// Fixed descriptor-ordered live values for one optional Patch post-effect slot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RtPostEffectParameters {
+    slot_id: Option<EffectSlotId>,
+    scalar_count: u8,
+    scalars: [f32; MAX_EFFECT_SCALAR_PARAMETERS],
+}
+
+impl RtPostEffectParameters {
+    pub const EMPTY: Self = Self {
+        slot_id: None,
+        scalar_count: 0,
+        scalars: [0.0; MAX_EFFECT_SCALAR_PARAMETERS],
+    };
+
+    pub fn new(slot_id: EffectSlotId, scalars: &[f32]) -> Result<Self, ParameterSnapshotError> {
+        if scalars.len() > MAX_EFFECT_SCALAR_PARAMETERS {
+            return Err(ParameterSnapshotError::TooManyEffectScalars {
+                count: scalars.len(),
+                capacity: MAX_EFFECT_SCALAR_PARAMETERS,
+            });
+        }
+        if let Some(index) = scalars.iter().position(|value| !value.is_finite()) {
+            return Err(ParameterSnapshotError::NonFiniteEffectScalar { index });
+        }
+        let mut storage = [0.0; MAX_EFFECT_SCALAR_PARAMETERS];
+        storage[..scalars.len()].copy_from_slice(scalars);
+        Ok(Self {
+            slot_id: Some(slot_id),
+            scalar_count: scalars.len() as u8,
+            scalars: storage,
+        })
+    }
+
+    pub const fn is_active(&self) -> bool {
+        self.slot_id.is_some()
+    }
+
+    pub const fn slot_id(&self) -> Option<EffectSlotId> {
+        self.slot_id
+    }
+
+    pub const fn scalar_count(&self) -> usize {
+        self.scalar_count as usize
+    }
+
+    pub fn scalars(&self) -> &[f32] {
+        &self.scalars[..self.scalar_count()]
+    }
+
+    pub fn scalar(&self, index: usize) -> Option<f32> {
+        self.scalars().get(index).copied()
+    }
+
+    pub const fn storage(&self) -> &[f32; MAX_EFFECT_SCALAR_PARAMETERS] {
+        &self.scalars
+    }
+}
+
+impl Default for RtPostEffectParameters {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl Serialize for RtPostEffectParameters {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SerializableEffectParameters<'a> {
+            active: bool,
+            slot_id: Option<EffectSlotId>,
+            scalar_count: usize,
+            scalars: &'a [f32],
+        }
+        SerializableEffectParameters {
+            active: self.is_active(),
+            slot_id: self.slot_id(),
+            scalar_count: self.scalar_count(),
+            scalars: self.scalars(),
+        }
+        .serialize(serializer)
+    }
+}
+
 /// The fixed-size audio parameters for one active Patch.
 ///
 /// The value is copyable and owns no heap storage. An absent Patch identity is
@@ -102,6 +191,7 @@ pub struct RtPatchParameters {
     parameters: ChannelParameters,
     envelope: VoiceEnvelope,
     instrument: RtInstrumentParameters,
+    effect: RtPostEffectParameters,
 }
 
 impl RtPatchParameters {
@@ -113,6 +203,7 @@ impl RtPatchParameters {
             parameters,
             envelope: VoiceEnvelope::DEFAULT,
             instrument: RtInstrumentParameters::EMPTY,
+            effect: RtPostEffectParameters::EMPTY,
         }
     }
 
@@ -128,6 +219,24 @@ impl RtPatchParameters {
             parameters,
             envelope,
             instrument,
+            effect: RtPostEffectParameters::EMPTY,
+        }
+    }
+
+    /// Copies the full live projection including one optional post-effect slot.
+    pub const fn projected_with_effect(
+        patch_id: PatchId,
+        parameters: ChannelParameters,
+        envelope: VoiceEnvelope,
+        instrument: RtInstrumentParameters,
+        effect: RtPostEffectParameters,
+    ) -> Self {
+        Self {
+            patch_id: Some(patch_id),
+            parameters,
+            envelope,
+            instrument,
+            effect,
         }
     }
 
@@ -154,12 +263,17 @@ impl RtPatchParameters {
         &self.instrument
     }
 
+    pub const fn effect(&self) -> &RtPostEffectParameters {
+        &self.effect
+    }
+
     fn inactive() -> Self {
         Self {
             patch_id: None,
             parameters: ChannelParameters::default(),
             envelope: VoiceEnvelope::DEFAULT,
             instrument: RtInstrumentParameters::EMPTY,
+            effect: RtPostEffectParameters::EMPTY,
         }
     }
 }
@@ -195,6 +309,7 @@ impl Serialize for RtPatchParameters {
             patch_id: Option<PatchId>,
             envelope: &'a VoiceEnvelope,
             instrument: &'a RtInstrumentParameters,
+            effect: &'a RtPostEffectParameters,
             parameters: SerializableChannelParameters,
         }
 
@@ -202,6 +317,7 @@ impl Serialize for RtPatchParameters {
             patch_id: self.patch_id(),
             envelope: self.envelope(),
             instrument: self.instrument(),
+            effect: self.effect(),
             parameters: SerializableChannelParameters::from(self.parameters()),
         }
         .serialize(serializer)
@@ -219,8 +335,14 @@ pub enum ParameterSnapshotError {
     TooManyInstrumentScalars { count: usize, capacity: usize },
     /// A scalar could not be represented as a finite real-time value.
     NonFiniteInstrumentScalar { index: usize },
+    /// An effect descriptor exceeded the fixed live effect scalar capacity.
+    TooManyEffectScalars { count: usize, capacity: usize },
+    /// An effect scalar could not be represented as a finite real-time value.
+    NonFiniteEffectScalar { index: usize },
     /// A Patch config did not resolve through the immutable registry.
     InvalidInstrumentConfig { index: usize },
+    /// A Patch effect config did not resolve through the immutable effect registry.
+    InvalidEffectConfig { index: usize },
 }
 
 impl fmt::Display for ParameterSnapshotError {
@@ -240,8 +362,18 @@ impl fmt::Display for ParameterSnapshotError {
             Self::NonFiniteInstrumentScalar { index } => {
                 write!(formatter, "instrument Scalar {index} is not finite")
             }
+            Self::TooManyEffectScalars { count, capacity } => write!(
+                formatter,
+                "effect projection has {count} Scalars; maximum is {capacity}"
+            ),
+            Self::NonFiniteEffectScalar { index } => {
+                write!(formatter, "effect Scalar {index} is not finite")
+            }
             Self::InvalidInstrumentConfig { index } => {
                 write!(formatter, "Patch {index} has an invalid instrument config")
+            }
+            Self::InvalidEffectConfig { index } => {
+                write!(formatter, "Patch {index} has an invalid effect config")
             }
         }
     }
@@ -275,6 +407,10 @@ impl ParameterSnapshot {
         "patches[].envelope.releaseMilliseconds",
         "patches[].instrument.count",
         "patches[].instrument.values[]",
+        "patches[].effect.active",
+        "patches[].effect.slotId",
+        "patches[].effect.scalarCount",
+        "patches[].effect.scalars[]",
         "patches[].parameters.gainDb",
         "patches[].parameters.pan",
         "patches[].parameters.reverbSend",
@@ -383,6 +519,78 @@ impl ParameterSnapshot {
             })
             .collect::<Result<Vec<_>, ParameterSnapshotError>>()?;
 
+        Self::for_graph(generation, graph_revision, global, &projected)
+    }
+
+    /// Projects instrument and post-effect values into their separate fixed layouts.
+    pub fn project_patches_with_effects(
+        generation: u64,
+        graph_revision: GraphRevision,
+        global: GlobalParameters,
+        patches: &[Patch],
+        registry: &CapabilityRegistry,
+        effect_registry: &EffectCapabilityRegistry,
+    ) -> Result<Self, ParameterSnapshotError> {
+        if patches.len() > MAX_PATCHES {
+            return Err(ParameterSnapshotError::TooManyPatches {
+                count: patches.len(),
+                capacity: MAX_PATCHES,
+            });
+        }
+        let projected = patches
+            .iter()
+            .enumerate()
+            .map(|(index, patch)| {
+                registry
+                    .validate_config(patch.instrument_config())
+                    .map_err(|_| ParameterSnapshotError::InvalidInstrumentConfig { index })?;
+                let descriptor = registry
+                    .descriptor(patch.instrument_config().capability_id())
+                    .ok_or(ParameterSnapshotError::InvalidInstrumentConfig { index })?;
+                let instrument_values = descriptor
+                    .scalar_parameters()
+                    .map(|spec| {
+                        let value = patch
+                            .instrument_config()
+                            .value(spec.id())
+                            .ok_or(ParameterSnapshotError::InvalidInstrumentConfig { index })?;
+                        spec.scalar_value(value)
+                            .map_err(|_| ParameterSnapshotError::InvalidInstrumentConfig { index })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let instrument = RtInstrumentParameters::new(&instrument_values)?;
+                effect_registry
+                    .validate_patch_effects(patch.post_effects())
+                    .map_err(|_| ParameterSnapshotError::InvalidEffectConfig { index })?;
+                let effect = match patch.post_effects().first() {
+                    None => RtPostEffectParameters::EMPTY,
+                    Some(config) => {
+                        let effect_descriptor = effect_registry
+                            .descriptor(config.capability_id())
+                            .ok_or(ParameterSnapshotError::InvalidEffectConfig { index })?;
+                        let effect_values = effect_descriptor
+                            .scalar_parameters()
+                            .map(|spec| {
+                                let value = config
+                                    .value(spec.id())
+                                    .ok_or(ParameterSnapshotError::InvalidEffectConfig { index })?;
+                                spec.scalar_value(value).map_err(|_| {
+                                    ParameterSnapshotError::InvalidEffectConfig { index }
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        RtPostEffectParameters::new(config.slot_id(), &effect_values)?
+                    }
+                };
+                Ok(RtPatchParameters::projected_with_effect(
+                    patch.id(),
+                    *patch.parameters(),
+                    *patch.envelope(),
+                    instrument,
+                    effect,
+                ))
+            })
+            .collect::<Result<Vec<_>, ParameterSnapshotError>>()?;
         Self::for_graph(generation, graph_revision, global, &projected)
     }
 
@@ -502,13 +710,14 @@ impl Serialize for ParameterSnapshot {
 mod tests {
     use super::{
         ParameterSnapshot, ParameterSnapshotError, RtInstrumentParameters, RtPatchParameters,
-        MAX_PATCHES,
+        RtPostEffectParameters, MAX_PATCHES,
     };
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::real_time::graph_revision::GraphRevision;
     use crate::synth::voice_envelope::VoiceEnvelope;
+    use crate::synth::EffectSlotId;
     use serde_json::Value;
     use std::collections::BTreeSet;
 
@@ -618,11 +827,12 @@ mod tests {
             }
         }
 
-        let projected = RtPatchParameters::projected(
+        let projected = RtPatchParameters::projected_with_effect(
             PatchId::new(7).unwrap(),
             ChannelParameters::new(-3.0, 0.25, 0.4, 0.2).unwrap(),
             VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap(),
             RtInstrumentParameters::new(&[2.0, 0.35, 0.65]).unwrap(),
+            RtPostEffectParameters::new(EffectSlotId::new(1).unwrap(), &[0.5, 0.75]).unwrap(),
         );
         let snapshot =
             ParameterSnapshot::for_graph(9, GraphRevision::new(4).unwrap(), global(), &[projected])

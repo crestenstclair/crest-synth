@@ -6,6 +6,8 @@ use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::parameter_snapshot::MAX_PATCHES;
 use crate::real_time::patch_audio_block::PatchAudioBlock;
 use crate::real_time::prepared_engine_rack::PreparedEngineRack;
+use crate::real_time::PreparedPostEffectRack;
+use crate::synth::EffectSlotId;
 use core::fmt;
 
 /// One complete callback-ready synthesis and mixing topology.
@@ -23,8 +25,32 @@ struct PreparedGraphState {
     max_frames: usize,
     initial_parameters: ParameterSnapshot,
     engine_rack: PreparedEngineRack,
+    effect_rack: PreparedPostEffectRack,
     patch_audio: PatchAudioBlock,
     mixer: MixEngine<GlobalReverbDelay>,
+}
+
+pub(crate) struct PreparedGraphResources {
+    engine_rack: PreparedEngineRack,
+    effect_rack: PreparedPostEffectRack,
+    patch_audio: PatchAudioBlock,
+    mixer: MixEngine<GlobalReverbDelay>,
+}
+
+impl PreparedGraphResources {
+    pub(crate) fn new(
+        engine_rack: PreparedEngineRack,
+        effect_rack: PreparedPostEffectRack,
+        patch_audio: PatchAudioBlock,
+        mixer: MixEngine<GlobalReverbDelay>,
+    ) -> Self {
+        Self {
+            engine_rack,
+            effect_rack,
+            patch_audio,
+            mixer,
+        }
+    }
 }
 
 /// Fixed-size identity and callback-capacity contract shared by every graph in
@@ -37,6 +63,8 @@ pub struct PreparedGraphLayout {
     patch_count: usize,
     patch_ids: [Option<PatchId>; MAX_PATCHES],
     scalar_counts: [u8; MAX_PATCHES],
+    effect_slot_ids: [Option<EffectSlotId>; MAX_PATCHES],
+    effect_scalar_counts: [u8; MAX_PATCHES],
 }
 
 impl PreparedGraph {
@@ -45,9 +73,7 @@ impl PreparedGraph {
         sample_rate: f32,
         max_frames: usize,
         initial_parameters: ParameterSnapshot,
-        engine_rack: PreparedEngineRack,
-        patch_audio: PatchAudioBlock,
-        mixer: MixEngine<GlobalReverbDelay>,
+        resources: PreparedGraphResources,
     ) -> Self {
         Self {
             inner: Box::new(PreparedGraphState {
@@ -55,9 +81,10 @@ impl PreparedGraph {
                 sample_rate,
                 max_frames,
                 initial_parameters,
-                engine_rack,
-                patch_audio,
-                mixer,
+                engine_rack: resources.engine_rack,
+                effect_rack: resources.effect_rack,
+                patch_audio: resources.patch_audio,
+                mixer: resources.mixer,
             }),
         }
     }
@@ -86,11 +113,17 @@ impl PreparedGraph {
         &self.inner.patch_audio
     }
 
+    pub const fn effect_rack(&self) -> &PreparedPostEffectRack {
+        &self.inner.effect_rack
+    }
+
     /// Returns the fixed replacement contract without borrowing graph-owned
     /// engine, effect, or scratch state.
     pub fn layout(&self) -> PreparedGraphLayout {
         let mut patch_ids = [None; MAX_PATCHES];
         let mut scalar_counts = [0; MAX_PATCHES];
+        let mut effect_slot_ids = [None; MAX_PATCHES];
+        let mut effect_scalar_counts = [0; MAX_PATCHES];
         let mut index = 0;
         while index < self.inner.engine_rack.patch_count() {
             patch_ids[index] = self.inner.engine_rack.patch_id(index);
@@ -99,6 +132,9 @@ impl PreparedGraph {
                     .engine_rack
                     .scalar_count(index)
                     .expect("active rack slots have a Scalar count") as u8;
+            effect_slot_ids[index] = self.inner.effect_rack.slot_id(index);
+            effect_scalar_counts[index] =
+                self.inner.effect_rack.scalar_count(index).unwrap_or(0) as u8;
             index += 1;
         }
         PreparedGraphLayout {
@@ -107,6 +143,8 @@ impl PreparedGraph {
             patch_count: self.inner.engine_rack.patch_count(),
             patch_ids,
             scalar_counts,
+            effect_slot_ids,
+            effect_scalar_counts,
         }
     }
 
@@ -121,7 +159,9 @@ impl PreparedGraph {
         if parameters.graph_revision() != self.revision() {
             return Err(PreparedGraphRefreshError::RevisionMismatch);
         }
-        if !self.inner.engine_rack.matches_parameters(&parameters) {
+        if !self.inner.engine_rack.matches_parameters(&parameters)
+            || !self.inner.effect_rack.matches_parameters(&parameters)
+        {
             return Err(PreparedGraphRefreshError::LayoutMismatch);
         }
         self.inner.initial_parameters = parameters;
@@ -143,6 +183,23 @@ impl PreparedGraph {
             &mut self.inner.mixer,
         )
     }
+
+    /// Borrows the complete callback pipeline in processing order.
+    pub fn callback_parts_with_effects_mut(
+        &mut self,
+    ) -> (
+        &mut PreparedEngineRack,
+        &mut PreparedPostEffectRack,
+        &mut PatchAudioBlock,
+        &mut MixEngine<GlobalReverbDelay>,
+    ) {
+        (
+            &mut self.inner.engine_rack,
+            &mut self.inner.effect_rack,
+            &mut self.inner.patch_audio,
+            &mut self.inner.mixer,
+        )
+    }
 }
 
 impl PreparedGraphLayout {
@@ -152,6 +209,8 @@ impl PreparedGraphLayout {
             || self.max_frames != candidate.max_frames
             || self.patch_count != candidate.patch_count
             || self.patch_ids != candidate.patch_ids
+            || self.effect_slot_ids != candidate.effect_slot_ids
+            || self.effect_scalar_counts != candidate.effect_scalar_counts
         {
             return false;
         }
@@ -223,6 +282,8 @@ mod tests {
             patch_count: 2,
             patch_ids,
             scalar_counts: counts,
+            effect_slot_ids: [None; MAX_PATCHES],
+            effect_scalar_counts: [0; MAX_PATCHES],
         }
     }
 

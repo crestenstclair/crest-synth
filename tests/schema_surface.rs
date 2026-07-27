@@ -1,6 +1,9 @@
 mod support;
 
 use crest_synth::adapter::braids_capability::BraidsCapability;
+use crest_synth::adapter::production_effects::{
+    production_chorus_config, production_effect_registry,
+};
 use crest_synth::adapter::production_instruments::production_capability_registry;
 use crest_synth::control::{
     AppEvent, AppState, PatchControlId, PatchPageProjection, StateProjector, StateTree,
@@ -10,7 +13,10 @@ use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
-use crest_synth::synth::{InstrumentConfig, Patch, VoiceEnvelope};
+use crest_synth::synth::{
+    CapabilityId, EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry,
+    EffectSlotId, InstrumentConfig, Patch, VoiceEnvelope,
+};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use crest_synth::testing::{
     BehavioralMutationCase, BehavioralMutationHarness, BehavioralMutationObservation,
@@ -26,24 +32,60 @@ fn state_tree_with_first_config(
     request_engine: bool,
     request_preset: bool,
 ) -> StateTree {
+    let capabilities = production_capability_registry().unwrap();
+    let chorus = production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap();
+    let production_effects = production_effect_registry().unwrap();
+    let soundfont_id =
+        CapabilityId::new(crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID)
+            .unwrap();
+    let soundfont_descriptor = capabilities.descriptor(&soundfont_id).unwrap();
+    let schema_effect = EffectCapabilityDescriptor::new(
+        EffectCapabilityId::new("effect.schema-fixture").unwrap(),
+        "Schema Fixture",
+        "effect.schema-fixture",
+        soundfont_descriptor.sections().to_vec(),
+        soundfont_descriptor.asset_requirements().to_vec(),
+    )
+    .unwrap();
+    let soundfont_provider =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
+    let schema_source_config = create_soundfont_config(
+        &soundfont_provider,
+        SoundFontInstrument::new(128, 11, false).unwrap(),
+    )
+    .unwrap();
+    let schema_effect_config = schema_effect
+        .create_config(
+            EffectSlotId::new(2).unwrap(),
+            schema_source_config.values(),
+            schema_source_config.asset_references(),
+        )
+        .unwrap();
+    let effects = EffectCapabilityRegistry::new(vec![
+        production_effects.descriptors()[0].clone(),
+        schema_effect,
+    ])
+    .unwrap();
     let patches = [first, second]
         .into_iter()
         .enumerate()
         .map(|(index, config)| {
-            Patch::new(
+            let patch = Patch::new(
                 PatchId::new(index as u32 + 1).unwrap(),
                 format!("Schema {index}"),
                 config,
                 MidiChannel::new(index as u8).unwrap(),
                 ChannelParameters::new(-3.0 - index as f32, 0.1, 0.2, 0.3).unwrap(),
             )
-            .with_envelope(VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap())
+            .with_envelope(VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap());
+            if index == 0 {
+                patch.with_post_effects(vec![chorus.clone()])
+            } else {
+                patch.with_post_effects(vec![schema_effect_config.clone()])
+            }
         })
         .collect();
-    let mut state = AppState::new(
-        production_capability_registry().unwrap(),
-        support::globals(),
-    );
+    let mut state = AppState::new_with_effects(capabilities, effects, support::globals());
     state.apply(AppEvent::InstallPatches(patches)).unwrap();
     if context == TopLevelContext::Patch {
         state.apply(AppEvent::SelectContext(context)).unwrap();
@@ -157,7 +199,7 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
 #[test]
 fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact() {
     let discovered = assert_state_tree_leaf_surface_exact();
-    assert_eq!(StateTree::SCHEMA_VERSION, 8);
+    assert_eq!(StateTree::SCHEMA_VERSION, 9);
     assert!(StateTree::serialized_leaf_descriptor().contains(&"patchPage.focusedControlId"));
     assert!(StateTree::serialized_leaf_descriptor().contains(&"patchPage.envelope[].controlId"));
     assert!(PatchPageProjection::serialized_leaf_descriptor().contains(&"focusedControlId"));
@@ -223,7 +265,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     }
 
     let run = support::run_demo();
-    assert_eq!(run.report.schema_version(), 6);
+    assert_eq!(run.report.schema_version(), 7);
     let serialized = run
         .report
         .coverage()

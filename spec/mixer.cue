@@ -1,7 +1,7 @@
 package crestsynth
 
 project: contexts: Mixer: {
-	purpose: "per-Patch level and pan followed by one shared reverb and one shared delay"
+	purpose: "mix post-effect Patch stems with per-Patch level/pan/sends followed by one shared reverb and one shared delay"
 
 	valueObjects: ChannelParameters: {
 		description: "all editable parameters owned by one Patch"
@@ -81,7 +81,7 @@ project: contexts: Mixer: {
 			process: "(reverbInput: &[f32], delayInput: &[f32], output: &mut [f32], parameters: &GlobalParameters)"
 		}
 		invariants: [
-			"the implementation contains exactly one reverb and one delay shared by every Patch",
+			"the implementation contains exactly one mixer-owned reverb and one mixer-owned delay shared by every Patch; the upstream PreparedPostEffectRack is not part of this port",
 			"prepare allocates all effect storage and process is allocation-free and lock-free",
 			"production and verification implementations derive wet excitation only from reverbInput and delayInput; dry output is never treated as an implicit send, and zero inputs cannot create a wet return",
 		]
@@ -89,7 +89,7 @@ project: contexts: Mixer: {
 	}
 
 	domainServices: MixEngine: {
-		purpose: "combine Patch output and process the two global effect returns"
+		purpose: "combine already post-effect-processed Patch output and process the two global effect returns"
 		uses: [
 			"valueObject.Mixer.ChannelParameters",
 			"valueObject.Mixer.GlobalParameters",
@@ -99,11 +99,11 @@ project: contexts: Mixer: {
 			"port.Mixer.GlobalEffectsProcessor",
 		]
 		meta: rules: [
-			"accept one independently rendered stereo stem per active Patch, matched by PatchId and ParameterSnapshot index",
+			"accept one independently rendered and already Patch-effect-processed stereo stem per active Patch, matched by PatchId and ParameterSnapshot index",
 			"for each Patch apply only that Patch's gain and pan to its stem, add only that stem scaled by reverbSend to one preallocated reverb input, add only that stem scaled by delaySend to one preallocated delay input, then sum dry audio and both global returns and apply masterGainDb",
 			"changing Patch N gain, pan, reverbSend, or delaySend must not change any other Patch's dry contribution or send contribution",
 			"reject or silence a missing or mismatched stem; never substitute a combined master stream or the first Patch's parameters",
-			"there are no inserts, per-channel effects, effect slots, effect chains, auxiliary buses, EQ, compression, chorus, distortion, or limiter",
+			"MixEngine owns no Patch insert, effect slot, processor selection, effect chain, EQ, compression, chorus, distortion, limiter, or arbitrary auxiliary bus; the only mixer-owned processors remain the shared reverb and delay",
 			"all scratch buffers are fixed-capacity and prepared before the audio callback",
 			"the mix operation returns one MixObservation measured from the mixer-owned reverb input, delay input, wet return, and final output buffers; callers never inspect or borrow those private buffers directly",
 			"behavioral tests establish measured nonzero reverb and delay inputs through Patch sends before comparing wet controls and render paired cases from identical reset effect state so unrelated tail evolution cannot satisfy a predicate",
@@ -117,6 +117,7 @@ project: contexts: Mixer: {
 		]
 		contributesTo: [
 			{capability: "capability.global_mix", contribution: "implements the complete channel-to-global-effects-to-master signal path"},
+			{capability: "capability.static_patch_effect", contribution: "consumes identity-preserving post-effect stems without owning or bypassing the upstream Patch processor"},
 			{capability: "capability.realtime_execution", contribution: "mixes through preallocated callback-owned buffers"},
 			{capability: "capability.live_observable_demo", contribution: "measures the exact mixer-owned signal stages needed by live checkpoints"},
 		]

@@ -24,4 +24,27 @@ fn main() {
     println!("cargo:rerun-if-changed=native/braids/crest_braids.h");
     println!("cargo:rerun-if-changed=vendor/braids/PROVENANCE.md");
     build.compile("crest_braids");
+
+    const CHORUS_SOURCES: &[&str] = &[
+        "native/chorus/crest_chorus.cpp",
+        "vendor/chorus/rings/resources.cc",
+    ];
+    let mut chorus = cc::Build::new();
+    chorus
+        .cpp(true)
+        .std("c++11")
+        .include("vendor/chorus")
+        .include("native/chorus")
+        .define("TEST", None)
+        .flag_if_supported("-fno-exceptions")
+        .flag_if_supported("-fno-rtti")
+        .warnings(false);
+    for source in CHORUS_SOURCES {
+        println!("cargo:rerun-if-changed={source}");
+        chorus.file(source);
+    }
+    println!("cargo:rerun-if-changed=native/chorus/crest_chorus.h");
+    println!("cargo:rerun-if-changed=vendor/chorus/PROVENANCE.md");
+    println!("cargo:rerun-if-changed=vendor/chorus/SHA256SUMS");
+    chorus.compile("crest_chorus");
 }

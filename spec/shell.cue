@@ -118,10 +118,14 @@ project: contexts: Shell: {
 		purpose: "compose the control loop, capacity-one graph-preparation worker, automatic MIDI fixture, exhaustive GUI demo, audio renderer, text window, and device output"
 			uses: [
 				"valueObject.Synth.CapabilityRegistry",
+				"valueObject.Synth.EffectCapabilityRegistry",
 				"valueObject.Synth.SoundFontPresetCatalog",
 				"port.Synth.InstrumentCapabilityProvider",
 			"port.Synth.InstrumentPreparer",
+			"port.Synth.EffectCapabilityProvider",
+			"port.Synth.EffectPreparer",
 			"applicationService.Synth.PreparedEngineRackBuilder",
+			"applicationService.Synth.PreparedPostEffectRackBuilder",
 			"applicationService.Control.AppLoop",
 			"applicationService.Testing.AutomaticMidiTest",
 			"applicationService.Testing.ExhaustiveGuiDemo",
@@ -146,13 +150,13 @@ project: contexts: Shell: {
 			runDemoScene: {input: {degenerate: "Option<DegenerateMode>"}, output: {result: "Result<DemoSceneReport, ApplicationError>"}}
 		}
 		meta: rules: [
-				"the crest-synth composition root parses HiDef.sf2 once through HiDefSoundFontAsset, constructs and injects the ordered InstrumentCapabilityProviders, matching InstrumentPreparers, shared SoundFontPresetCatalog, StructuralGraphBoundary, AudioObservation, AudioBoundary, MIDI source, window, and AudioOutput; StandaloneApplication imports no concrete infrastructure adapter and constructs none of those boundaries",
-				"startup validates duplicate, missing, unknown, and mismatched provider/preparer registrations plus every fixture SoundFont address, freezes the hydrated ordered CapabilityRegistry in AppState, and performs no structural publication before registration succeeds",
-			"physical startup negotiates AudioDeviceConfig first, prepares the complete initial graph from its exact sampleRate and renderCapacityFrames, constructs AudioRenderer, starts the same negotiated output owner, then opens the text window",
-			"startup fails visibly before audio on duplicate, missing, unknown, or mismatched capability or preparer registration and never chooses or substitutes a fallback provider, preparer, prepared instrument, config, asset, preset, graph, or engine",
+				"the crest-synth composition root parses HiDef.sf2 once through HiDefSoundFontAsset, constructs and injects ordered instrument and effect capability providers, their matching separate preparers, shared SoundFontPresetCatalog, StructuralGraphBoundary, AudioObservation, AudioBoundary, MIDI source, window, and AudioOutput; StandaloneApplication imports no concrete infrastructure adapter and constructs none of those boundaries",
+				"startup validates duplicate, missing, unknown, and mismatched instrument/effect provider/preparer registrations plus every fixture SoundFont address, freezes both hydrated ordered registries in AppState, and performs no structural publication before registration succeeds",
+			"physical startup negotiates AudioDeviceConfig first, prepares complete engine and effect racks plus the graph from its exact sampleRate and renderCapacityFrames, constructs AudioRenderer, starts the same negotiated output owner, then opens the text window",
+			"startup fails visibly before audio on duplicate, missing, unknown, or mismatched instrument/effect capability or preparer registration and never chooses or substitutes a fallback provider, preparer, prepared instrument/effect, config, asset, preset, graph, engine, or bypass",
 			"normal-mode MIDI begins automatically only after the initial graph is fully prepared; each window tick advances the private test input, polls at most one worker outcome and structural status, retries a staged graph, and collects returned graphs outside the callback",
-				"production startup alternates HiDef SoundFont and Braids instruments in PreparedEngineRack; PATCH exposes installed engines and descriptor-classified StructuralChoice parameters as adjacent nonwrapping controls, including the exact-name ordered SoundFont Preset row, and the injected worker prepares one complete replacement at a time without ever substituting an engine, preset, asset, or config",
-			"normal, smoke, headless-demo, and live-demo compositions inject the same registry, providers, preparers, DescriptorDefaultConfigFactory, GraphPreparationWorker port, graph builder, structural coordinator, reducer, projector, and renderer; only the deterministic headless harness manually advances its worker adapter while live uses ThreadedGraphPreparationWorker",
+				"production startup alternates HiDef SoundFont and Braids instruments in PreparedEngineRack, configures one effect.chorus slot only on the first fixture Patch, and prepares it through PreparedPostEffectRack; PATCH exposes instrument StructuralChoice and effect ScalarEdit rows generically, and the injected worker prepares one complete replacement at a time without substituting an engine, preset, effect, asset, or config",
+			"normal, smoke, headless-demo, and live-demo compositions inject the same instrument/effect registries, providers, preparers, DescriptorDefaultConfigFactory, GraphPreparationWorker port, graph builder, structural coordinator, reducer, projector, and renderer; only the deterministic headless harness manually advances its worker adapter while live uses ThreadedGraphPreparationWorker",
 			"runLiveDemo uses the exact normal startup order, real EframeTextWindow, physical CpalAudioOutput, HiDef.sf2, pinned Braids adapter, and Corridors of Time fixture, then starts LiveDemoRunner on the control side and advances it from the existing window-tick callback",
 			"runLiveDemo injects the same AppLoop into AutomaticMidiTest, LiveDemoRunner, and immutable projection callbacks; its live-mode window input callback is a stateless semantic no-op, none receives mutable AppState, and no live-specific reducer, engine, mixer, window, or audio-output implementation exists",
 			"in live mode only LiveDemoRunner advances AutomaticMidiTest; StandaloneApplication does not also tick the fixture and every due fixture event is dispatched exactly once",
@@ -184,6 +188,7 @@ project: contexts: Shell: {
 		contributesTo: [
 				{capability: "capability.instrument_capability_model", contribution: "constructs the immutable descriptor registry and injects the provider into the fixture installation path"},
 				{capability: "capability.soundfont_preset_selection", contribution: "validates the shared catalog, exact fixture choice identities, and production structural-preset composition before audio starts"},
+				{capability: "capability.static_patch_effect", contribution: "validates and composes the Chorus provider/preparer, first-Patch config, prepared rack, canonical control path, and physical demo"},
 			{capability: "capability.prepared_engine_rack", contribution: "composes registered preparation, the complete initial graph, distinct structural handoff, and control-side retirement collection"},
 			{capability: "capability.soundfont_audio", contribution: "composes the running SoundFont audio path"},
 			{capability: "capability.braids_engine", contribution: "composes the intentional second engine from its independent provider and preparer"},
@@ -211,7 +216,7 @@ project: adapters: EframeTextWindow: {
 				"normalize egui key presses, releases, and focus loss into WindowInput and delegate every 1/2/W/S/A/D/K decision to KeyboardInputTranslator",
 				"do not retain a second private keyboard state machine or duplicate the translator in tests",
 				"key handling emits AppEvents only and never mutates view selection, Patch values, AppState, snapshots, event logs, or audio",
-					"in PATCH mark exactly the TextProjection line selected by reducer-owned focusedControlId across Engine, Attack, Decay, Sustain, Release, and any descriptor-derived StructuralChoice rows; render active/requested structural target plus Ready/Preparing/Activating/Failed text and typed failure on the affected structural row, render the exact authored SoundFont preset label on Preset, render canonical descriptor values/bounds/steps on ADSR rows, and let the reducer alone interpret semantic Navigate or Adjust events",
+				"in PATCH mark exactly the TextProjection line selected by reducer-owned focusedControlId across Engine, Attack, Decay, Sustain, Release, instrument StructuralChoice rows, and ordered effect ScalarEdit rows; render structural lifecycle state on its target, read-only effect identity, exact authored Preset, canonical ADSR/effect values/bounds/steps, and let the reducer alone interpret semantic Navigate or Adjust events",
 				"the headless adapter contract drives real egui RawInput through an egui Context and EframeApplication.update with the production on_input callback wired to AppLoop.dispatch, then runs the next frame from AppLoop.currentText; capturing a callback without applying it is not acceptance evidence",
 				"the next frame must prove the event-log record, accepted generation, selected parameter value, every unrelated value, TextProjection body/stateHash/selectedLine, and selected-line scroll target all reflect that same dispatched GUI event",
 				"the headless adapter contract begins with a projection containing discriminating values for every Patch and global parameter and inspects egui output for the exact values; calling normalize_egui_event directly or rendering an unrelated supplied projection is not sufficient integration evidence",
@@ -229,6 +234,7 @@ project: adapters: EframeTextWindow: {
 		{capability: "capability.one_way_parameter_control", contribution: "implements the single text screen and exact keyboard vocabulary"},
 			{capability: "capability.schema_driven_patch_page", contribution: "renders PATCH and MIXER projections without owning their page state or schema"},
 			{capability: "capability.soundfont_preset_selection", contribution: "renders exact authored preset labels and generic structural lifecycle state without owning catalog or selection behavior"},
+			{capability: "capability.static_patch_effect", contribution: "renders the read-only Chorus identity and generic editable Amount/Depth rows without owning effect state or schema"},
 		{capability: "capability.observable_demo_scene", contribution: "shares its production input translator with the deterministic scene"},
 		{capability: "capability.live_observable_demo", contribution: "renders each accepted live generation and closes on the owner's completed-report tick"},
 	]

@@ -1,10 +1,12 @@
-use crate::real_time::graph_preparation_worker::prepare_graph_request;
+use crate::real_time::graph_preparation_worker::prepare_graph_request_with_effects;
 use crate::real_time::{
     GraphPreparationRequest, GraphPreparationResult, GraphPreparationWorker, WorkerBusy,
     WorkerBusyReason, WorkerShutdownError,
 };
 use crate::shell::audio_output::AudioDeviceConfig;
-use crate::synth::{CapabilityRegistry, InstrumentPreparer};
+use crate::synth::{
+    CapabilityRegistry, EffectCapabilityRegistry, EffectPreparer, InstrumentPreparer,
+};
 use core::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
@@ -27,22 +29,38 @@ impl ThreadedGraphPreparationWorker {
         preparers: Vec<Box<dyn InstrumentPreparer>>,
         audio_config: AudioDeviceConfig,
     ) -> Result<Self, ThreadedGraphPreparationWorkerError> {
+        Self::new_with_effects(
+            registry,
+            preparers,
+            EffectCapabilityRegistry::default(),
+            Vec::new(),
+            audio_config,
+        )
+    }
+
+    pub fn new_with_effects(
+        registry: CapabilityRegistry,
+        preparers: Vec<Box<dyn InstrumentPreparer>>,
+        effects: EffectCapabilityRegistry,
+        effect_preparers: Vec<Box<dyn EffectPreparer>>,
+        audio_config: AudioDeviceConfig,
+    ) -> Result<Self, ThreadedGraphPreparationWorkerError> {
         let (request_sender, request_receiver) = mpsc::sync_channel(1);
         let (result_sender, result_receiver) = mpsc::sync_channel(1);
         let outstanding = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown);
+        let resources = WorkerResources {
+            registry,
+            preparers,
+            effects,
+            effect_preparers,
+            audio_config,
+        };
         let worker = thread::Builder::new()
             .name("crest-graph-preparation".to_owned())
             .spawn(move || {
-                worker_main(
-                    registry,
-                    preparers,
-                    audio_config,
-                    request_receiver,
-                    result_sender,
-                    &worker_shutdown,
-                );
+                worker_main(resources, request_receiver, result_sender, &worker_shutdown);
             })
             .map_err(|_| ThreadedGraphPreparationWorkerError::ThreadStartFailed)?;
 
@@ -131,10 +149,16 @@ impl Drop for ThreadedGraphPreparationWorker {
     }
 }
 
-fn worker_main(
+struct WorkerResources {
     registry: CapabilityRegistry,
     preparers: Vec<Box<dyn InstrumentPreparer>>,
+    effects: EffectCapabilityRegistry,
+    effect_preparers: Vec<Box<dyn EffectPreparer>>,
     audio_config: AudioDeviceConfig,
+}
+
+fn worker_main(
+    resources: WorkerResources,
     request_receiver: Receiver<GraphPreparationRequest>,
     result_sender: SyncSender<GraphPreparationResult>,
     shutdown: &AtomicBool,
@@ -149,7 +173,14 @@ fn worker_main(
             drop(request);
             break;
         }
-        let mut result = prepare_graph_request(&registry, &preparers, audio_config, request);
+        let mut result = prepare_graph_request_with_effects(
+            &resources.registry,
+            &resources.preparers,
+            &resources.effects,
+            &resources.effect_preparers,
+            resources.audio_config,
+            request,
+        );
         loop {
             match result_sender.try_send(result) {
                 Ok(()) => break,
