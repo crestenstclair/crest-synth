@@ -19,7 +19,7 @@ Do not add another architecture, handoff, phase plan, or competing product desig
 
 Crest Synth is a standalone, controller-first MIDI instrument host for Steam Deck and desktop. A musician can navigate patches, edit an instrument and its post effects, mix sixteen output tracks, and perform without a pointer while the host produces stable, low-latency stereo audio.
 
-The first executable slice can be narrower than the architecture. The current implemented baseline alternates HiDef SoundFont and Braids instruments using repository fixtures. The next bounded slice adds one statically configured first-Patch Chorus insert. New engines and effects enter through separate capability registries and must never be represented by silent fallbacks or effect bypasses.
+The first executable slice can be narrower than the architecture. The current implemented baseline alternates HiDef SoundFont and Braids instruments using repository fixtures and routes the first fixture Patch through one statically configured Chorus insert. New engines and effects enter through separate capability registries and must never be represented by silent fallbacks or effect bypasses.
 
 This product is not:
 

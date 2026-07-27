@@ -1,10 +1,12 @@
-# Crest Synth Roadmap
+# Crest Synth Foundation Roadmap — Archived
 
-This is an ordered, living roadmap. It is not an implementation specification or a replacement for `DESIGN.md`.
+Status: **Archived and complete** — 2026-07-27
 
-Work proceeds one small change at a time. Only the current phase should be translated into detailed CUE architecture and an active OpenSpec change. Later phases remain directional until the preceding phase is complete and reviewed.
+This is the historical record of the four foundation phases delivered between 2026-07-20 and 2026-07-27. It is no longer a living plan and must not be extended with another numbered phase. It is not an implementation specification or a replacement for `DESIGN.md`.
 
-## Working method
+The controller-first graphical interface is a separate successor program, not Phase 5. Its scope is larger than these foundation phases combined. `DESIGN.md` remains the single product and technical authority, its linked Figma file remains the visual and interaction reference, and future implementation work must be decomposed into bounded CUE and OpenSpec changes without creating a competing roadmap.
+
+## Historical working method
 
 For each increment:
 
@@ -168,13 +170,13 @@ Although the topology is static, it must use the same engine/effect ownership an
 
 The initial adapter admits exactly 48 kHz, owns independent prepared delay/LFO state per instance, and must prove source/license hashes, order, Patch isolation, independent instances, audible stereo output, structural preservation, and callback safety through its named acceptance target plus both demos. Add later effects one at a time with their own source review and proof.
 
-## Phase 5 — Figma-derived interface
+Phase 4 completes this foundation roadmap.
 
-Status: **Queued**
+## Successor program — controller-first graphical interface
 
-Use the existing Crest Synth Figma design and `DESIGN.md` as the visual and interaction references. Derive the additional CUE architecture and OpenSpec requirements needed to replace the basic text interface with the compact controller-first UI.
+This work is deliberately outside the archived phase sequence. It replaces the basic text adapter with the product interface defined by `DESIGN.md` and the linked Figma file, while preserving the proven reducer, schema-derived capability controls, audio projections, and real-time boundaries.
 
-The target interface retains only the Crest Synth concepts established in the design:
+The successor program includes the complete, integrated behavior of:
 
 - PATCH and MIXER top-level contexts;
 - Patch strip and Patch identity;
@@ -185,9 +187,9 @@ The target interface retains only the Crest Synth concepts established in the de
 - functional mixer faders;
 - sparse semantic color and minimal paneling.
 
-This phase begins only after the SoundFont, Braids, envelope, and static effect capabilities are stable enough for the UI to describe real installed functionality rather than placeholders.
+Those are product requirements, not a pre-sequenced implementation checklist. The program must first be explored against the complete Figma composition and current executable architecture, then divided into reviewable OpenSpec changes with their own behavioral and visual acceptance. No sequence or estimate is declared by this archived roadmap.
 
-## Explicitly deferred
+## Other work outside this archived roadmap
 
 - modulation sources and modulation routing;
 - modulation matrix UI;
