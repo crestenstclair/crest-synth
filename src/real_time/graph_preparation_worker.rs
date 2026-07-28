@@ -1,6 +1,7 @@
 use crate::control::{EngineSelectionFailure, EngineSelectionRequestId, StructuralEditIntent};
 use crate::kernel::PatchId;
 use crate::mixer::global_parameters::GlobalParameters;
+use crate::mixer::mixer_state::MixerState;
 use crate::real_time::{
     GraphPreparationError, GraphRevision, ParameterSnapshot, PreparedGraph, PreparedGraphBuilder,
 };
@@ -128,6 +129,7 @@ impl GraphPreparationRequest {
         candidate_config: InstrumentConfig,
         generation: u64,
         global: GlobalParameters,
+        mixer: MixerState,
         audio_config: AudioDeviceConfig,
         registry: &CapabilityRegistry,
     ) -> Result<Self, GraphPreparationRequestError> {
@@ -138,6 +140,7 @@ impl GraphPreparationRequest {
             candidate_config,
             generation,
             global,
+            mixer,
             audio_config,
             registry,
             &effects,
@@ -153,6 +156,7 @@ impl GraphPreparationRequest {
         candidate_config: InstrumentConfig,
         generation: u64,
         global: GlobalParameters,
+        mixer: MixerState,
         audio_config: AudioDeviceConfig,
         registry: &CapabilityRegistry,
         effects: &EffectCapabilityRegistry,
@@ -203,6 +207,7 @@ impl GraphPreparationRequest {
             generation,
             correlation.target_graph_revision(),
             global,
+            mixer,
             &candidate_patches,
             registry,
             effects,
@@ -276,6 +281,7 @@ impl GraphPreparationRequest {
             self.candidate_parameters.generation(),
             self.correlation.target_graph_revision(),
             *self.candidate_parameters.global(),
+            MixerState::new(*self.candidate_parameters.mixer_tracks()),
             &self.candidate_patches,
             registry,
             effects,
@@ -628,8 +634,10 @@ mod tests {
     };
     use crate::control::EngineSelectionRequestId;
     use crate::kernel::{MidiChannel, PatchId};
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::GraphRevision;
     use crate::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
     use crate::synth::{CapabilityId, DescriptorDefaultConfigFactory, Patch};
@@ -647,7 +655,7 @@ mod tests {
             format!("Worker Patch {id}"),
             config(capability_id),
             MidiChannel::new(channel).unwrap(),
-            ChannelParameters::new(-3.0 * id as f32, 0.1, 0.2, 0.3).unwrap(),
+            PatchOutput::new(MixerTrackId::new(channel).unwrap(), -3.0 * id as f32).unwrap(),
         )
         .with_envelope(crate::synth::VoiceEnvelope::new(1.0, 2.0, 0.7, 3.0).unwrap())
     }
@@ -682,6 +690,7 @@ mod tests {
             config(BRAIDS_CAPABILITY_ID),
             9,
             globals(),
+            MixerState::default(),
             audio_config(),
             &registry,
         )
@@ -696,10 +705,7 @@ mod tests {
             request.candidate_patches()[0].channel(),
             active[0].channel()
         );
-        assert_eq!(
-            request.candidate_patches()[0].parameters(),
-            active[0].parameters()
-        );
+        assert_eq!(request.candidate_patches()[0].output(), active[0].output());
         assert_eq!(
             request.candidate_patches()[0].envelope(),
             active[0].envelope()
@@ -761,6 +767,7 @@ mod tests {
                 config(HIDEF_CAPABILITY_ID),
                 2,
                 globals(),
+                MixerState::default(),
                 audio_config(),
                 &registry,
             ),

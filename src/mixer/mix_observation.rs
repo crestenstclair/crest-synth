@@ -1,9 +1,13 @@
+use crate::mixer::mixer_track_id::{MixerTrackId, MixerTrackId as TrackId};
+use crate::mixer::track_meter::TrackMeter;
+
 /// Fixed-size measurements from one completed mixer block.
 ///
 /// The value contains only numeric callback-local data. It never owns or
 /// borrows mixer buffers and cannot influence rendering decisions.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MixObservation {
+    tracks: [TrackMeter; MixerTrackId::COUNT],
     left_peak: f32,
     right_peak: f32,
     output_rms: f32,
@@ -17,6 +21,7 @@ pub struct MixObservation {
 impl MixObservation {
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn new(
+        tracks: [TrackMeter; MixerTrackId::COUNT],
         left_peak: f32,
         right_peak: f32,
         output_rms: f32,
@@ -27,6 +32,7 @@ impl MixObservation {
         clipped_samples: u64,
     ) -> Self {
         Self {
+            tracks,
             left_peak,
             right_peak,
             output_rms,
@@ -36,6 +42,14 @@ impl MixObservation {
             non_finite_samples,
             clipped_samples,
         }
+    }
+
+    pub const fn tracks(self) -> [TrackMeter; MixerTrackId::COUNT] {
+        self.tracks
+    }
+
+    pub const fn track(self, id: TrackId) -> TrackMeter {
+        self.tracks[id.index()]
     }
 
     pub const fn left_peak(self) -> f32 {

@@ -1,15 +1,24 @@
-use crate::control::top_level_context::TopLevelContext;
-use crate::control::{Direction, PatchControlId};
-use crate::kernel::patch_id::PatchId;
+use crate::control::{
+    FocusPath, FocusPathError, InteractionMode, MixerControlId, PatchControlId, ReturnPath,
+    SemanticControlId, SurfaceId, TopLevelContext,
+};
+use crate::kernel::PatchId;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::mixer_track_parameters::MixerTrackParameter;
+use crate::mixer::patch_output::PatchOutputParameter;
 
-/// The kind of section selected in the transitional MIXER text projection.
+/// Compatibility classification derived from the canonical MixerControlId.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SelectionSection {
     Patch,
     Global,
 }
 
-/// A typed position in the complete Patch-plus-GLOBAL parameter list.
+/// Transitional diagnostic coordinates derived from a stable MixerControlId.
+///
+/// This value is never stored by InteractionState and is not an interaction
+/// authority. It remains available only while older text/test projections are
+/// migrated to semantic paths.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Selection {
     pub(super) section: SelectionSection,
@@ -18,7 +27,6 @@ pub struct Selection {
 }
 
 impl Selection {
-    /// Selects the first parameter of one Patch section.
     pub const fn patch(patch_index: usize) -> Self {
         Self {
             section: SelectionSection::Patch,
@@ -27,7 +35,6 @@ impl Selection {
         }
     }
 
-    /// Selects the first global parameter.
     pub const fn global() -> Self {
         Self {
             section: SelectionSection::Global,
@@ -49,111 +56,197 @@ impl Selection {
     }
 }
 
-/// Reducer-owned context and the independent focus retained for each context.
+/// Reducer-owned singular semantic focus, remembered roots, mode, and return.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InteractionState {
-    pub(super) context: TopLevelContext,
-    pub(super) mixer_selection: Selection,
-    pub(super) patch_focus: Option<PatchId>,
-    pub(super) patch_control_focus: Option<PatchControlId>,
+    pub(super) active_focus: FocusPath,
+    pub(super) remembered_patch_main: Option<FocusPath>,
+    pub(super) remembered_mixer_main: FocusPath,
+    pub(super) mode: InteractionMode,
+    pub(super) return_path: Option<ReturnPath>,
 }
 
 impl InteractionState {
-    /// Creates the startup interaction state before any Patch is installed.
-    pub const fn new() -> Self {
+    /// Creates startup interaction state on the always-available global mixer.
+    pub fn new() -> Self {
+        let mixer = FocusPath::mixer_track(MixerTrackId::default(), MixerTrackParameter::Level);
         Self {
-            context: TopLevelContext::Mixer,
-            mixer_selection: Selection::global(),
-            patch_focus: None,
-            patch_control_focus: None,
+            active_focus: mixer.clone(),
+            remembered_patch_main: None,
+            remembered_mixer_main: mixer,
+            mode: InteractionMode::Navigate,
+            return_path: None,
         }
     }
 
     pub const fn context(&self) -> TopLevelContext {
-        self.context
+        self.active_focus.context()
     }
 
-    pub const fn mixer_selection(&self) -> Selection {
-        self.mixer_selection
+    pub const fn active_surface(&self) -> SurfaceId {
+        self.active_focus.surface()
+    }
+
+    pub const fn focus_path(&self) -> &FocusPath {
+        &self.active_focus
+    }
+
+    pub const fn remembered_patch_main(&self) -> Option<&FocusPath> {
+        self.remembered_patch_main.as_ref()
+    }
+
+    pub const fn remembered_mixer_main(&self) -> &FocusPath {
+        &self.remembered_mixer_main
+    }
+
+    pub const fn mode(&self) -> InteractionMode {
+        self.mode
+    }
+
+    pub const fn return_path(&self) -> Option<&ReturnPath> {
+        self.return_path.as_ref()
     }
 
     pub const fn patch_focus(&self) -> Option<PatchId> {
-        self.patch_focus
+        match &self.remembered_patch_main {
+            Some(path) => path.patch_id(),
+            None => None,
+        }
     }
 
     pub fn patch_control_focus(&self) -> Option<PatchControlId> {
-        self.patch_control_focus.clone()
-    }
-
-    pub(super) fn select_context(&mut self, context: TopLevelContext) {
-        self.context = context;
-    }
-
-    pub(super) fn set_mixer_selection(&mut self, selection: Selection) {
-        self.mixer_selection = selection;
-    }
-
-    pub(super) fn initialize_patch_focus(&mut self, patch_focus: Option<PatchId>) {
-        self.patch_focus = patch_focus;
-        self.patch_control_focus = if patch_focus.is_some() {
-            Some(PatchControlId::Engine)
+        let path = if self.active_focus.context() == TopLevelContext::Patch {
+            &self.active_focus
         } else {
-            None
+            self.remembered_patch_main.as_ref()?
         };
-    }
-
-    /// Moves the reducer-owned PATCH focus one row without wrapping.
-    ///
-    /// Returns `false` for horizontal movement, missing focus, and either
-    /// endpoint so the reducer can preserve transactional rejection semantics.
-    #[cfg(test)]
-    pub(super) fn move_patch_control_focus(&mut self, direction: Direction) -> bool {
-        self.move_patch_control_focus_with(direction, PatchControlId::surface_descriptor())
-    }
-
-    pub(super) fn move_patch_control_focus_with(
-        &mut self,
-        direction: Direction,
-        controls: &[PatchControlId],
-    ) -> bool {
-        let amount = match direction {
-            Direction::Up => -1_isize,
-            Direction::Down => 1,
-            Direction::Left | Direction::Right => return false,
-        };
-        let Some(current) = self.patch_control_focus.as_ref() else {
-            return false;
-        };
-        let Some(index) = controls.iter().position(|control| control == current) else {
-            return false;
-        };
-        let Some(next) = index.checked_add_signed(amount) else {
-            return false;
-        };
-        let Some(control) = controls.get(next) else {
-            return false;
-        };
-        self.patch_control_focus = Some(control.clone());
-        true
-    }
-
-    pub(super) fn clamp_patch_control_focus(&mut self, controls: &[PatchControlId]) {
-        let Some(last) = controls.last() else {
-            self.patch_control_focus = None;
-            return;
-        };
-        let Some(current) = self.patch_control_focus.as_ref() else {
-            self.patch_control_focus = Some(PatchControlId::Engine);
-            return;
-        };
-        if controls.contains(current) {
-            return;
+        match path.control_id() {
+            SemanticControlId::Patch(control) => Some(control.clone()),
+            SemanticControlId::Mixer(_) | SemanticControlId::SurfaceRoot => None,
         }
-        self.patch_control_focus = Some(last.clone());
     }
 
-    pub(super) fn mixer_selection_mut(&mut self) -> &mut Selection {
-        &mut self.mixer_selection
+    pub fn mixer_control_focus(&self) -> &MixerControlId {
+        let path = if self.active_focus.context() == TopLevelContext::Mixer {
+            &self.active_focus
+        } else {
+            &self.remembered_mixer_main
+        };
+        match path.control_id() {
+            SemanticControlId::Mixer(control) => control,
+            SemanticControlId::Patch(_) | SemanticControlId::SurfaceRoot => {
+                unreachable!("remembered MixerMain path is always a Mixer control")
+            }
+        }
+    }
+
+    pub(super) fn initialize_patch_focus(&mut self, focus: Option<FocusPath>) {
+        self.remembered_patch_main = focus;
+    }
+
+    pub(super) fn set_active_main(&mut self, focus: FocusPath) -> Result<(), FocusPathError> {
+        focus.validate()?;
+        if !focus.surface().is_main() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
+        match focus.context() {
+            TopLevelContext::Patch => self.remembered_patch_main = Some(focus.clone()),
+            TopLevelContext::Mixer => self.remembered_mixer_main = focus.clone(),
+        }
+        self.active_focus = focus;
+        self.return_path = None;
+        Ok(())
+    }
+
+    pub(super) fn select_context(
+        &mut self,
+        context: TopLevelContext,
+    ) -> Result<(), FocusPathError> {
+        self.active_focus = match context {
+            TopLevelContext::Patch => self
+                .remembered_patch_main
+                .clone()
+                .ok_or(FocusPathError::PatchIdentityMismatch)?,
+            TopLevelContext::Mixer => self.remembered_mixer_main.clone(),
+        };
+        self.mode = InteractionMode::Navigate;
+        self.return_path = None;
+        Ok(())
+    }
+
+    pub(super) fn set_mode(&mut self, mode: InteractionMode) -> Result<(), FocusPathError> {
+        if !mode.is_phase_two_reachable() {
+            return Err(FocusPathError::ModalIdentityUnavailable);
+        }
+        self.mode = mode;
+        Ok(())
+    }
+
+    pub(super) fn enter_surface(&mut self, surface: SurfaceId) -> Result<(), FocusPathError> {
+        if !surface.is_persistent_side()
+            || !self.active_focus.surface().is_main()
+            || self.active_focus.context() != surface.context()
+        {
+            return Err(FocusPathError::ContextSurfaceMismatch);
+        }
+        let origin = self.active_focus.clone();
+        self.return_path = Some(ReturnPath::new(origin, surface)?);
+        self.active_focus = match surface {
+            SurfaceId::PatchUtility => FocusPath::patch_utility(
+                self.active_focus
+                    .patch_id()
+                    .ok_or(FocusPathError::PatchIdentityMismatch)?,
+                PatchControlId::Output(PatchOutputParameter::TrimGain),
+            ),
+            SurfaceId::MixerInspector => {
+                let SemanticControlId::Mixer(MixerControlId::Track { track_id, .. }) =
+                    self.active_focus.control_id()
+                else {
+                    return Err(FocusPathError::ControlSurfaceMismatch);
+                };
+                FocusPath::mixer_inspector(*track_id, MixerTrackParameter::ReverbSend)
+            }
+            SurfaceId::PatchMain | SurfaceId::MixerMain => {
+                return Err(FocusPathError::ControlSurfaceMismatch)
+            }
+        };
+        self.mode = InteractionMode::Navigate;
+        Ok(())
+    }
+
+    pub(super) fn return_to_origin(&mut self) -> Result<(), FocusPathError> {
+        let path = self
+            .return_path
+            .take()
+            .ok_or(FocusPathError::ContextSurfaceMismatch)?;
+        if path.entered_surface() != self.active_focus.surface() {
+            return Err(FocusPathError::ContextSurfaceMismatch);
+        }
+        self.active_focus = path.origin().clone();
+        self.mode = InteractionMode::Navigate;
+        Ok(())
+    }
+
+    pub(super) fn replace_remembered_patch_main(&mut self, focus: FocusPath) {
+        let was_active = self.active_focus.surface() == SurfaceId::PatchMain;
+        self.remembered_patch_main = Some(focus.clone());
+        if was_active {
+            self.active_focus = focus;
+        }
+    }
+
+    pub(super) fn replace_remembered_mixer_main(&mut self, focus: FocusPath) {
+        let was_active = self.active_focus.surface() == SurfaceId::MixerMain;
+        self.remembered_mixer_main = focus.clone();
+        if was_active {
+            self.active_focus = focus;
+        }
+    }
+
+    pub(super) fn replace_return_origin(&mut self, origin: FocusPath) {
+        if let Some(return_path) = self.return_path.as_ref() {
+            self.return_path = ReturnPath::new(origin, return_path.entered_surface()).ok();
+        }
     }
 }
 
@@ -165,76 +258,61 @@ impl Default for InteractionState {
 
 #[cfg(test)]
 mod tests {
-    use super::{InteractionState, PatchControlId, Selection, SelectionSection};
-    use crate::control::TopLevelContext;
+    use super::InteractionState;
+    use crate::control::{FocusPath, InteractionMode, PatchControlId, SurfaceId, TopLevelContext};
     use crate::kernel::PatchId;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::mixer_track_parameters::MixerTrackParameter;
 
     #[test]
-    fn interaction_state_starts_in_mixer_without_patch_focus() {
+    fn interaction_state_starts_with_one_stable_mixer_focus() {
         let state = InteractionState::new();
         assert_eq!(state.context(), TopLevelContext::Mixer);
-        assert_eq!(state.mixer_selection(), Selection::global());
-        assert_eq!(state.patch_focus(), None);
-        assert_eq!(state.patch_control_focus(), None);
-    }
-
-    #[test]
-    fn context_and_patch_focus_do_not_overwrite_mixer_selection() {
-        let mut state = InteractionState::new();
-        let selection = Selection::patch(2);
-        state.set_mixer_selection(selection);
-        state.initialize_patch_focus(Some(PatchId::new(7).unwrap()));
-        state.select_context(TopLevelContext::Patch);
-
-        assert_eq!(state.context(), TopLevelContext::Patch);
-        assert_eq!(state.mixer_selection(), selection);
-        assert_eq!(state.mixer_selection().section(), SelectionSection::Patch);
-        assert_eq!(state.patch_focus(), Some(PatchId::new(7).unwrap()));
-        assert_eq!(state.patch_control_focus(), Some(PatchControlId::Engine));
-    }
-
-    #[test]
-    fn patch_control_focus_moves_in_canonical_order_without_wrapping() {
-        let mut state = InteractionState::new();
-        state.initialize_patch_focus(Some(PatchId::new(7).unwrap()));
-
-        assert!(!state.move_patch_control_focus(crate::control::Direction::Up));
-        assert_eq!(state.patch_control_focus(), Some(PatchControlId::Engine));
-
-        for expected in &PatchControlId::surface_descriptor()[1..] {
-            assert!(state.move_patch_control_focus(crate::control::Direction::Down));
-            assert_eq!(state.patch_control_focus(), Some(expected.clone()));
-        }
-        assert!(!state.move_patch_control_focus(crate::control::Direction::Down));
+        assert_eq!(state.active_surface(), SurfaceId::MixerMain);
         assert_eq!(
-            state.patch_control_focus(),
-            PatchControlId::surface_descriptor().last().cloned()
+            state.focus_path(),
+            &FocusPath::mixer_track(MixerTrackId::default(), MixerTrackParameter::Level)
         );
-
-        for expected in PatchControlId::surface_descriptor()[..4].iter().rev() {
-            assert!(state.move_patch_control_focus(crate::control::Direction::Up));
-            assert_eq!(state.patch_control_focus(), Some(expected.clone()));
-        }
-        assert!(!state.move_patch_control_focus(crate::control::Direction::Left));
-        assert!(!state.move_patch_control_focus(crate::control::Direction::Right));
-        assert_eq!(state.patch_control_focus(), Some(PatchControlId::Engine));
+        assert_eq!(state.patch_focus(), None);
+        assert_eq!(state.mode(), InteractionMode::Navigate);
+        assert_eq!(state.return_path(), None);
     }
 
     #[test]
-    fn context_round_trip_preserves_independent_patch_and_mixer_focus() {
+    fn context_round_trip_preserves_independent_stable_paths() {
         let mut state = InteractionState::new();
-        let mixer = Selection::patch(2);
-        state.set_mixer_selection(mixer);
-        state.initialize_patch_focus(Some(PatchId::new(7).unwrap()));
-        assert!(state.move_patch_control_focus(crate::control::Direction::Down));
-        let patch_control = state.patch_control_focus();
-
-        state.select_context(TopLevelContext::Patch);
-        state.select_context(TopLevelContext::Mixer);
-        state.select_context(TopLevelContext::Patch);
-
+        let patch = FocusPath::patch_main(
+            PatchId::new(7).unwrap(),
+            None,
+            PatchControlId::Envelope(crate::synth::VoiceEnvelopeParameter::AttackMilliseconds),
+        );
+        state.initialize_patch_focus(Some(patch.clone()));
+        state.select_context(TopLevelContext::Patch).unwrap();
+        state.select_context(TopLevelContext::Mixer).unwrap();
+        state.select_context(TopLevelContext::Patch).unwrap();
+        assert_eq!(state.focus_path(), &patch);
         assert_eq!(state.patch_focus(), Some(PatchId::new(7).unwrap()));
-        assert_eq!(state.patch_control_focus(), patch_control);
-        assert_eq!(state.mixer_selection(), mixer);
+    }
+
+    #[test]
+    fn side_surface_round_trip_restores_exact_origin_and_navigate_mode() {
+        let mut state = InteractionState::new();
+        let origin = state.focus_path().clone();
+        state.set_mode(InteractionMode::Adjust).unwrap();
+        state.enter_surface(SurfaceId::MixerInspector).unwrap();
+        assert_eq!(state.active_surface(), SurfaceId::MixerInspector);
+        assert_eq!(state.return_path().unwrap().origin(), &origin);
+        assert_eq!(state.mode(), InteractionMode::Navigate);
+        state.return_to_origin().unwrap();
+        assert_eq!(state.focus_path(), &origin);
+        assert_eq!(state.return_path(), None);
+    }
+
+    #[test]
+    fn phase_two_rejects_reserved_modes_and_cross_context_surface_entry() {
+        let mut state = InteractionState::new();
+        assert!(state.set_mode(InteractionMode::Modal).is_err());
+        assert!(state.enter_surface(SurfaceId::PatchUtility).is_err());
+        assert_eq!(state.mode(), InteractionMode::Navigate);
     }
 }

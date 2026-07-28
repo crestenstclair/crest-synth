@@ -6,12 +6,14 @@ use crest_synth::adapter::production_effects::{
 };
 use crest_synth::adapter::production_instruments::production_capability_registry;
 use crest_synth::control::{
-    AppEvent, AppState, PatchControlId, PatchPageProjection, StateProjector, StateTree,
-    TopLevelContext,
+    AppEvent, AppState, EngineSelectionFailure, GraphicalShellProjection, PatchControlId,
+    PatchPageProjection, StateProjector, StateTree, SurfaceId, TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
+use crest_synth::real_time::GraphRevision;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
     CapabilityId, EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry,
@@ -25,13 +27,7 @@ use crest_synth::testing::{
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-fn state_tree_with_first_config(
-    first: InstrumentConfig,
-    second: InstrumentConfig,
-    context: TopLevelContext,
-    request_engine: bool,
-    request_preset: bool,
-) -> StateTree {
+fn configured_state(first: InstrumentConfig, second: InstrumentConfig) -> AppState {
     let capabilities = production_capability_registry().unwrap();
     let chorus = production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap();
     let production_effects = production_effect_registry().unwrap();
@@ -75,7 +71,8 @@ fn state_tree_with_first_config(
                 format!("Schema {index}"),
                 config,
                 MidiChannel::new(index as u8).unwrap(),
-                ChannelParameters::new(-3.0 - index as f32, 0.1, 0.2, 0.3).unwrap(),
+                PatchOutput::new(MixerTrackId::new(index as u8).unwrap(), -3.0 - index as f32)
+                    .unwrap(),
             )
             .with_envelope(VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap());
             if index == 0 {
@@ -87,6 +84,17 @@ fn state_tree_with_first_config(
         .collect();
     let mut state = AppState::new_with_effects(capabilities, effects, support::globals());
     state.apply(AppEvent::InstallPatches(patches)).unwrap();
+    state
+}
+
+fn state_tree_with_first_config(
+    first: InstrumentConfig,
+    second: InstrumentConfig,
+    context: TopLevelContext,
+    request_engine: bool,
+    request_preset: bool,
+) -> StateTree {
+    let mut state = configured_state(first, second);
     if context == TopLevelContext::Patch {
         state.apply(AppEvent::SelectContext(context)).unwrap();
     }
@@ -106,6 +114,31 @@ fn state_tree_with_first_config(
             .unwrap();
     }
     StateProjector::new().project_with_tree(&state).unwrap().4
+}
+
+fn state_tree_after(
+    first: InstrumentConfig,
+    second: InstrumentConfig,
+    mutate: impl FnOnce(&mut AppState),
+) -> StateTree {
+    let mut state = configured_state(first, second);
+    mutate(&mut state);
+    StateProjector::new().project_with_tree(&state).unwrap().4
+}
+
+fn navigate_down_until(
+    state: &mut AppState,
+    predicate: impl Fn(&crest_synth::control::FocusPath) -> bool,
+) {
+    for _ in 0..64 {
+        if predicate(state.interaction().focus_path()) {
+            return;
+        }
+        state
+            .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
+            .unwrap();
+    }
+    panic!("semantic schema fixture could not reach its requested stable path");
 }
 
 fn discover_leaves(value: &Value, prefix: &str, output: &mut BTreeSet<String>) {
@@ -140,7 +173,7 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
     )
     .unwrap();
     let braids_config = BraidsCapability::new().unwrap().default_config().unwrap();
-    let trees = [
+    let mut trees = vec![
         state_tree_with_first_config(
             soundfont_config.clone(),
             braids_config.clone(),
@@ -170,13 +203,110 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             true,
         ),
         state_tree_with_first_config(
-            braids_config,
-            soundfont_config,
+            braids_config.clone(),
+            soundfont_config.clone(),
             TopLevelContext::Patch,
             false,
             false,
         ),
     ];
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::Navigate(crest_synth::control::Direction::Right))
+                .unwrap();
+            state
+                .apply(AppEvent::Navigate(crest_synth::control::Direction::Right))
+                .unwrap();
+        },
+    ));
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                .unwrap();
+            state
+                .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+                .unwrap();
+        },
+    ));
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                .unwrap();
+            navigate_down_until(state, |path| path.capability_id().is_some());
+            state
+                .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+                .unwrap();
+        },
+    ));
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::Navigate(crest_synth::control::Direction::Right))
+                .unwrap();
+            state
+                .apply(AppEvent::Navigate(crest_synth::control::Direction::Right))
+                .unwrap();
+            state
+                .apply(AppEvent::EnterSurface(SurfaceId::MixerInspector))
+                .unwrap();
+        },
+    ));
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::EnterSurface(SurfaceId::MixerInspector))
+                .unwrap();
+            state
+                .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
+                .unwrap();
+            state
+                .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
+                .unwrap();
+        },
+    ));
+    trees.push(state_tree_after(soundfont_config, braids_config, |state| {
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+            .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
+            .unwrap();
+        let correlation = state.engine_selection().correlation().unwrap().clone();
+        state
+            .apply(AppEvent::EnginePreparationFailed {
+                request_id: correlation.request_id(),
+                patch_id: correlation.patch_id(),
+                intent: correlation.intent().clone(),
+                source_capability_id: correlation.source_capability_id().clone(),
+                target_capability_id: correlation.target_capability_id().clone(),
+                source_graph_revision: correlation.source_graph_revision(),
+                target_graph_revision: GraphRevision::new(2).unwrap(),
+                failure: EngineSelectionFailure::AssetUnavailable,
+            })
+            .unwrap();
+    }));
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&AppState::new(
+                production_capability_registry().unwrap(),
+                support::globals(),
+            ))
+            .unwrap()
+            .4,
+    );
     let mut discovered = BTreeSet::new();
     for tree in trees {
         discover_leaves(
@@ -192,20 +322,39 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(descriptor.len(), described.len(), "duplicate typed leaf");
-    assert_eq!(described, discovered);
+    assert_eq!(
+        described,
+        discovered,
+        "described-only={:?}\ndiscovered-only={:?}",
+        described.difference(&discovered).collect::<Vec<_>>(),
+        discovered.difference(&described).collect::<Vec<_>>()
+    );
     discovered
 }
 
 #[test]
 fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact() {
     let discovered = assert_state_tree_leaf_surface_exact();
-    assert_eq!(StateTree::SCHEMA_VERSION, 9);
+    assert_eq!(StateTree::SCHEMA_VERSION, 11);
+    for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
+        let tree_leaf = format!("graphicalShell.{leaf}");
+        assert!(
+            StateTree::serialized_leaf_descriptor().contains(&tree_leaf.as_str()),
+            "StateTree is missing {tree_leaf}"
+        );
+    }
     assert!(StateTree::serialized_leaf_descriptor().contains(&"patchPage.focusedControlId"));
     assert!(StateTree::serialized_leaf_descriptor().contains(&"patchPage.envelope[].controlId"));
+    assert!(StateTree::serialized_leaf_descriptor().contains(&"graphicalShell.generation"));
+    assert!(StateTree::serialized_leaf_descriptor()
+        .contains(&"graphicalShell.workspace.diagnostic.stateHash"));
     assert!(PatchPageProjection::serialized_leaf_descriptor().contains(&"focusedControlId"));
     assert!(PatchPageProjection::serialized_leaf_descriptor().contains(&"envelope[].controlId"));
 
-    for control in PatchControlId::surface_descriptor() {
+    for control in PatchControlId::surface_descriptor()
+        .iter()
+        .chain(PatchControlId::utility_surface_descriptor())
+    {
         let serialized = serde_json::to_string(control).unwrap();
         assert_eq!(serialized, format!("\"{}\"", control.as_str()));
         assert_eq!(
@@ -240,7 +389,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
             create_soundfont_config(&soundfont, SoundFontInstrument::new(0, 11, false).unwrap())
                 .unwrap(),
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
         )]))
         .unwrap();
     state
@@ -250,7 +399,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
         let tree = StateProjector::new().project_with_tree(&state).unwrap().4;
         let value: Value = serde_json::from_str(tree.json()).unwrap();
         assert_eq!(
-            value["interaction"]["patchControlFocus"],
+            value["interaction"]["activeFocus"]["controlId"]["id"],
             control.as_str().as_ref()
         );
         assert_eq!(

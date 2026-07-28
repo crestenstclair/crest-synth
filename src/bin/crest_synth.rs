@@ -1,11 +1,12 @@
 use anyhow::{bail, Context, Result};
+use core::alloc::{GlobalAlloc, Layout};
 use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::braids_capability::BraidsCapability;
 use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
 use crest_synth::adapter::braids_preparer::BraidsPreparer;
 use crest_synth::adapter::corridors_midi_event_source::CorridorsMidiEventSource;
 use crest_synth::adapter::cpal_audio_output::CpalAudioOutput;
-use crest_synth::adapter::eframe_text_window::EframeTextWindow;
+use crest_synth::adapter::eframe_graphical_window::EframeGraphicalWindow;
 use crest_synth::adapter::hidef_soundfont_asset::HiDefSoundFontAsset;
 use crest_synth::adapter::hidef_soundfont_capability::{
     HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
@@ -20,8 +21,11 @@ use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_state::EventRejection;
 use crest_synth::control::event_record::{EmittedEvent, EventInput, EventOutcome, EventSource};
 use crest_synth::kernel::midi_message::MidiMessageKind;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::mixer_track_parameters::MixerTrackParameters;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::real_time::{GraphHandoffStatus, GraphRevision};
 use crest_synth::shell::standalone_application::{
@@ -36,9 +40,38 @@ use crest_synth::testing::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::alloc::System;
 use std::env;
 
 const AUDIO_COMMAND_CAPACITY: usize = 1_024;
+
+struct CallbackMeasuringAllocator;
+
+#[global_allocator]
+static CALLBACK_MEASURING_ALLOCATOR: CallbackMeasuringAllocator = CallbackMeasuringAllocator;
+
+unsafe impl GlobalAlloc for CallbackMeasuringAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        crest_synth::real_time::callback_safety::record_callback_allocation_from_allocator();
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        crest_synth::real_time::callback_safety::record_callback_allocation_from_allocator();
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        crest_synth::real_time::callback_safety::record_callback_deallocation_from_allocator();
+        unsafe { System.dealloc(pointer, layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        crest_synth::real_time::callback_safety::record_callback_allocation_from_allocator();
+        crest_synth::real_time::callback_safety::record_callback_deallocation_from_allocator();
+        unsafe { System.realloc(pointer, layout, new_size) }
+    }
+}
 
 fn main() -> Result<()> {
     let options = parse_options(env::args().skip(1))?;
@@ -48,8 +81,9 @@ fn main() -> Result<()> {
 fn run(options: Options) -> Result<()> {
     let make_application = || -> Result<_> {
         let config = ApplicationConfig::default();
-        let initial_parameters = ParameterSnapshot::new(0, config.global_parameters(), &[])
-            .context("failed to construct the initial audio parameter snapshot")?;
+        let initial_parameters =
+            ParameterSnapshot::new(0, config.global_parameters(), MixerState::default(), &[])
+                .context("failed to construct the initial audio parameter snapshot")?;
         let boundary = LockFreeAudioBoundary::new(AUDIO_COMMAND_CAPACITY, initial_parameters);
         let soundfont_asset = HiDefSoundFontAsset::load()
             .context("failed to load the fixed HiDef SoundFont asset")?;
@@ -83,9 +117,9 @@ fn run(options: Options) -> Result<()> {
         )
         .context("failed to prepare the structural graph boundary")?;
         let window = if options.demo_live {
-            EframeTextWindow::new("crest-synth — autonomous live demo")
+            EframeGraphicalWindow::new("crest-synth — autonomous live demo")
         } else {
-            EframeTextWindow::default()
+            EframeGraphicalWindow::default()
         };
         StandaloneApplication::new_with_effects(
             boundary,
@@ -109,7 +143,7 @@ fn run(options: Options) -> Result<()> {
             LIVE_DEMO_NO_PROGRESS_TIMEOUT.as_secs(),
             LIVE_DEMO_TOTAL_TIMEOUT.as_secs(),
         );
-        make_application()?
+        let observation = make_application()?
             .run_live_demo(
                 |checkpoint| {
                     let json = serde_json::to_string(checkpoint)
@@ -119,6 +153,20 @@ fn run(options: Options) -> Result<()> {
                 emit_live_report,
             )
             .context("live observable demo execution failed")?;
+        if options.demo_live_sixteen_track {
+            let routing = observation.sixteen_track_mixer_routing();
+            let routing = serde_json::to_string(&routing)
+                .context("failed to serialize sixteen-track routing teardown evidence")?;
+            println!("CREST_SIXTEEN_TRACK_MIXER_ROUTING_LIVE_OBSERVATION {routing}");
+        } else if options.demo_live_semantic {
+            let observation = serde_json::to_string(&observation)
+                .context("failed to serialize graphical-shell teardown evidence")?;
+            println!("CREST_SEMANTIC_VIEW_MODEL_LIVE_OBSERVATION {observation}");
+        } else {
+            let observation = serde_json::to_string(&observation)
+                .context("failed to serialize graphical-shell teardown evidence")?;
+            println!("CREST_GRAPHICAL_SHELL_LIVE_OBSERVATION {observation}");
+        }
     } else if options.smoke {
         if options.demo_scene {
             let report = make_application()?
@@ -194,6 +242,8 @@ struct Options {
     observe: bool,
     demo_scene: bool,
     demo_live: bool,
+    demo_live_semantic: bool,
+    demo_live_sixteen_track: bool,
     degenerate: Option<DegenerateMode>,
 }
 
@@ -209,14 +259,30 @@ where
             "--smoke" if !options.smoke => options.smoke = true,
             "--observe" if !options.observe => options.observe = true,
             "--demo-scene" if !options.demo_scene => options.demo_scene = true,
-            "--demo-live" if !options.demo_live => options.demo_live = true,
+            "--demo-live" | "--demo-live-sixteen-track-mixer-routing" if !options.demo_live => {
+                options.demo_live = true;
+                options.demo_live_sixteen_track = true;
+            }
+            "--demo-live-semantic-view-model" if !options.demo_live => {
+                options.demo_live = true;
+                options.demo_live_semantic = true;
+            }
+            "--demo-live-graphical-shell" if !options.demo_live => {
+                options.demo_live = true;
+            }
             "--degenerate-audio" if options.degenerate.is_none() => {
                 options.degenerate = Some(DegenerateMode::Audio);
             }
             "--degenerate-control" if options.degenerate.is_none() => {
                 options.degenerate = Some(DegenerateMode::Control);
             }
-            "--smoke" | "--observe" | "--demo-scene" | "--demo-live" => {
+            "--smoke"
+            | "--observe"
+            | "--demo-scene"
+            | "--demo-live"
+            | "--demo-live-sixteen-track-mixer-routing"
+            | "--demo-live-semantic-view-model"
+            | "--demo-live-graphical-shell" => {
                 bail!("duplicate option {}", argument.as_ref());
             }
             "--degenerate-audio" | "--degenerate-control" => {
@@ -238,7 +304,7 @@ where
     if options.demo_live
         && (options.smoke || options.observe || options.demo_scene || options.degenerate.is_some())
     {
-        bail!("--demo-live must be used by itself");
+        bail!("the live demo option must be used by itself");
     }
 
     Ok(options)
@@ -308,7 +374,7 @@ struct DemoSceneObservation {
 impl DemoSceneObservation {
     fn from_report(report: &DemoSceneReport, two_run_trace_equal: bool) -> Self {
         let records = report.event_log().records();
-        let mut event_variants = [false; 8];
+        let mut event_variants = [false; 11];
         let mut top_level_contexts = Vec::new();
         let mut navigate_directions = Vec::new();
         let mut adjust_directions = Vec::new();
@@ -331,13 +397,16 @@ impl DemoSceneObservation {
                     event_variants[3] = true;
                     push_unique(&mut adjust_directions, *direction);
                 }
+                EventInput::SetInteractionMode { .. } => event_variants[4] = true,
+                EventInput::EnterSurface { .. } => event_variants[5] = true,
+                EventInput::Return => event_variants[6] = true,
                 EventInput::Midi { message, .. } => {
-                    event_variants[4] = true;
+                    event_variants[7] = true;
                     push_unique(&mut midi_kinds, message.kind());
                 }
-                EventInput::EnginePrepared { .. } => event_variants[5] = true,
-                EventInput::EnginePreparationFailed { .. } => event_variants[6] = true,
-                EventInput::EngineActivationAcknowledged { .. } => event_variants[7] = true,
+                EventInput::EnginePrepared { .. } => event_variants[8] = true,
+                EventInput::EnginePreparationFailed { .. } => event_variants[9] = true,
+                EventInput::EngineActivationAcknowledged { .. } => event_variants[10] = true,
             }
         }
 
@@ -521,7 +590,8 @@ impl DemoSceneObservation {
             .filter(|record| record.rejection() == Some(EventRejection::ParameterAtBoundary))
             .count();
         let all_parameter_boundaries_exercised = boundary_rejections
-            >= 2 * (ChannelParameters::surface_descriptor().len()
+            >= 2 * (PatchOutput::surface_descriptor().len()
+                + MixerTrackId::COUNT * MixerTrackParameters::surface_descriptor().len()
                 + GlobalParameters::surface_descriptor().len());
 
         let harness = BehavioralMutationHarness::new();
@@ -532,12 +602,12 @@ impl DemoSceneObservation {
             unreachable!("the selected dry-to-wet case retains its typed schema")
         };
         let cross_observation = harness
-            .run(BehavioralMutationCase::CrossPatchParameterLeak, false)
+            .run(BehavioralMutationCase::CrossTrackParameterLeak, false)
             .into_observation();
-        let BehavioralMutationObservation::CrossPatchParameterLeak(cross_observation) =
+        let BehavioralMutationObservation::CrossTrackParameterLeak(cross_observation) =
             cross_observation
         else {
-            unreachable!("the selected cross-Patch case retains its typed schema")
+            unreachable!("the selected cross-track case retains its typed schema")
         };
         let reverb_input_nonzero = dry_observation.nonzero_send_reverb_input_energy > 0.0;
         let delay_input_nonzero = dry_observation.nonzero_send_delay_input_energy > 0.0;
@@ -547,34 +617,44 @@ impl DemoSceneObservation {
             && dry_observation.dry_bypass_absent
             && dry_observation.finite_audio
             && dry_observation.baseline_restored;
-        let causal_audio_comparisons = cross_observation.edited_patch_audio_changed
-            && cross_observation.unedited_patch_audio_unchanged
-            && cross_observation.all_channel_parameters_isolated;
+        let causal_audio_comparisons = cross_observation.edited_track_audio_changed
+            && cross_observation.unedited_track_audio_unchanged
+            && cross_observation.all_track_parameters_isolated;
         let baseline_restored = tree_json
             .as_ref()
             .is_some_and(fixed_fixture_baseline_restored)
             && dry_observation.baseline_restored
             && cross_observation.baseline_restored;
         let selection_clamps_exact = tree_json.as_ref().is_some_and(|tree| {
-            tree.pointer("/interaction/mixerSelection/section")
+            tree.pointer("/interaction/activeFocus/context")
                 .and_then(Value::as_str)
-                == Some("Patch")
+                == Some("mixer")
                 && tree
-                    .pointer("/interaction/mixerSelection/patchIndex")
+                    .pointer("/interaction/activeFocus/patchId")
+                    .and_then(Value::as_u64)
+                    == tree.pointer("/patches/0/id").and_then(Value::as_u64)
+                && tree
+                    .pointer("/interaction/activeFocus/controlId/id/kind")
+                    .and_then(Value::as_str)
+                    == Some("track")
+                && tree
+                    .pointer("/interaction/activeFocus/controlId/id/track_id")
                     .and_then(Value::as_u64)
                     == Some(0)
                 && tree
-                    .pointer("/interaction/mixerSelection/parameterIndex")
-                    .and_then(Value::as_u64)
-                    == Some(0)
+                    .pointer("/interaction/activeFocus/controlId/id/parameter")
+                    .and_then(Value::as_str)
+                    == Some("level")
         });
         let exact_state_values = parameter_projection_matches_state
             && tree_json.as_ref().is_some_and(final_tree_values_are_exact);
         let exact_projection_values =
             gui_projection_matches_state && parameter_projection_matches_state;
         let event_record_payloads_exact = event_records_are_exact(records);
+        let expected_midi = report.coverage().group(DemoCoverageGroup::MidiKinds);
         let tick_events_exact = event_sources.contains(&EventSource::AutomaticMidi)
-            && midi_kinds.len() == MidiMessageKind::surface_descriptor().len();
+            && expected_midi.is_complete()
+            && midi_kinds.len() == expected_midi.expected().len();
 
         Self {
             accepted_events,
@@ -660,7 +740,8 @@ fn descriptors_are_unique() -> bool {
     unique(WindowInput::surface_descriptor())
         && unique(AppEvent::surface_descriptor())
         && unique(MidiMessageKind::surface_descriptor())
-        && unique(ChannelParameters::surface_descriptor())
+        && unique(PatchOutput::surface_descriptor())
+        && unique(MixerTrackParameters::surface_descriptor())
         && unique(GlobalParameters::surface_descriptor())
         && unique(EventRejection::surface_descriptor())
 }
@@ -682,14 +763,25 @@ fn fixed_fixture_baseline_restored(tree: &Value) -> bool {
         .is_some_and(|patches| {
             !patches.is_empty()
                 && patches.iter().all(|patch| {
-                    ChannelParameters::surface_descriptor()
-                        .iter()
-                        .all(|descriptor| {
-                            patch
-                                .pointer(&format!("/parameters/{}", descriptor.name()))
-                                .and_then(Value::as_f64)
-                                == Some(0.0)
-                        })
+                    patch.pointer("/output/trimGainDb").and_then(Value::as_f64) == Some(0.0)
+                        && patch
+                            .pointer("/output/trackId")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|track_id| track_id < MixerTrackId::COUNT as u64)
+                })
+        });
+    let mixer_restored = tree
+        .pointer("/mixer/tracks")
+        .and_then(Value::as_array)
+        .is_some_and(|tracks| {
+            tracks.len() == MixerTrackId::COUNT
+                && tracks.iter().all(|track| {
+                    track.pointer("/levelDb").and_then(Value::as_f64) == Some(0.0)
+                        && track.pointer("/pan").and_then(Value::as_f64) == Some(0.0)
+                        && track.pointer("/mute").and_then(Value::as_bool) == Some(false)
+                        && track.pointer("/solo").and_then(Value::as_bool) == Some(false)
+                        && track.pointer("/reverbSend").and_then(Value::as_f64) == Some(0.0)
+                        && track.pointer("/delaySend").and_then(Value::as_f64) == Some(0.0)
                 })
         });
     let defaults = ApplicationConfig::default().global_parameters();
@@ -701,7 +793,7 @@ fn fixed_fixture_baseline_restored(tree: &Value) -> bool {
                 .is_some_and(|value| value as f32 == defaults.value(descriptor.parameter()))
         });
 
-    patches_restored && globals_restored
+    patches_restored && mixer_restored && globals_restored
 }
 
 fn final_tree_values_are_exact(tree: &Value) -> bool {
@@ -723,14 +815,32 @@ fn final_tree_values_are_exact(tree: &Value) -> bool {
                             .get("channel")
                             .and_then(Value::as_u64)
                             .is_some_and(|channel| channel < 16)
-                        && ChannelParameters::surface_descriptor()
-                            .iter()
-                            .all(|descriptor| {
-                                patch
-                                    .pointer(&format!("/parameters/{}", descriptor.name()))
-                                    .and_then(Value::as_f64)
-                                    .is_some_and(f64::is_finite)
-                            })
+                        && patch
+                            .pointer("/output/trackId")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|track_id| track_id < MixerTrackId::COUNT as u64)
+                        && patch
+                            .pointer("/output/trimGainDb")
+                            .and_then(Value::as_f64)
+                            .is_some_and(f64::is_finite)
+                })
+        });
+    let mixer_exact = tree
+        .pointer("/mixer/tracks")
+        .and_then(Value::as_array)
+        .is_some_and(|tracks| {
+            tracks.len() == MixerTrackId::COUNT
+                && tracks.iter().all(|track| {
+                    ["levelDb", "pan", "reverbSend", "delaySend"]
+                        .iter()
+                        .all(|field| {
+                            track
+                                .pointer(&format!("/{field}"))
+                                .and_then(Value::as_f64)
+                                .is_some_and(f64::is_finite)
+                        })
+                        && track.pointer("/mute").and_then(Value::as_bool).is_some()
+                        && track.pointer("/solo").and_then(Value::as_bool).is_some()
                 })
         });
     let globals_exact = GlobalParameters::surface_descriptor()
@@ -741,7 +851,7 @@ fn final_tree_values_are_exact(tree: &Value) -> bool {
                 .is_some_and(f64::is_finite)
         });
 
-    patches_exact && globals_exact
+    patches_exact && mixer_exact && globals_exact
 }
 
 fn event_records_are_exact(records: &[crest_synth::control::event_record::EventRecord]) -> bool {
@@ -773,7 +883,7 @@ fn event_records_are_exact(records: &[crest_synth::control::event_record::EventR
                     })
                     .count()
                     == 1;
-                let parameters_published = record
+                let parameter_publications = record
                     .emitted_events()
                     .iter()
                     .filter(|effect| {
@@ -786,8 +896,12 @@ fn event_records_are_exact(records: &[crest_synth::control::event_record::EventR
                                 && *graph_revision == expected_graph_revision
                         )
                     })
-                    .count()
-                    == 1;
+                    .count();
+                let parameters_published = if record.input().publishes_parameters_on_acceptance() {
+                    parameter_publications == 1
+                } else {
+                    parameter_publications == 0
+                };
                 record.rejection().is_none()
                     && state_accepted
                     && parameters_published
@@ -898,6 +1012,8 @@ mod tests {
                 observe: false,
                 demo_scene: false,
                 demo_live: false,
+                demo_live_semantic: false,
+                demo_live_sixteen_track: false,
                 degenerate: None,
             }
         );
@@ -908,6 +1024,8 @@ mod tests {
                 observe: true,
                 demo_scene: false,
                 demo_live: false,
+                demo_live_semantic: false,
+                demo_live_sixteen_track: false,
                 degenerate: None,
             }
         );
@@ -918,6 +1036,8 @@ mod tests {
                 observe: true,
                 demo_scene: true,
                 demo_live: false,
+                demo_live_semantic: false,
+                demo_live_sixteen_track: false,
                 degenerate: None,
             }
         );
@@ -928,6 +1048,8 @@ mod tests {
                 observe: true,
                 demo_scene: false,
                 demo_live: false,
+                demo_live_semantic: false,
+                demo_live_sixteen_track: false,
                 degenerate: Some(DegenerateMode::Audio),
             }
         );
@@ -944,11 +1066,37 @@ mod tests {
                 observe: true,
                 demo_scene: true,
                 demo_live: false,
+                demo_live_semantic: false,
+                demo_live_sixteen_track: false,
                 degenerate: Some(DegenerateMode::Control),
             }
         );
         assert_eq!(
             parse_options(["--demo-live"]).unwrap(),
+            Options {
+                demo_live: true,
+                demo_live_sixteen_track: true,
+                ..Options::default()
+            }
+        );
+        assert_eq!(
+            parse_options(["--demo-live-sixteen-track-mixer-routing"]).unwrap(),
+            Options {
+                demo_live: true,
+                demo_live_sixteen_track: true,
+                ..Options::default()
+            }
+        );
+        assert_eq!(
+            parse_options(["--demo-live-semantic-view-model"]).unwrap(),
+            Options {
+                demo_live: true,
+                demo_live_semantic: true,
+                ..Options::default()
+            }
+        );
+        assert_eq!(
+            parse_options(["--demo-live-graphical-shell"]).unwrap(),
             Options {
                 demo_live: true,
                 ..Options::default()
@@ -966,6 +1114,12 @@ mod tests {
         assert!(parse_options(["--smoke", "--observe", "--demo-scene", "--demo-scene",]).is_err());
         assert!(parse_options(["--smoke", "--degenerate-audio"]).is_err());
         assert!(parse_options(["--demo-live", "--demo-live"]).is_err());
+        assert!(
+            parse_options(["--demo-live", "--demo-live-sixteen-track-mixer-routing",]).is_err()
+        );
+        assert!(parse_options(["--demo-live", "--demo-live-semantic-view-model"]).is_err());
+        assert!(parse_options(["--demo-live", "--demo-live-graphical-shell"]).is_err());
+        assert!(parse_options(["--demo-live-graphical-shell", "--smoke"]).is_err());
         assert!(parse_options(["--demo-live", "--smoke"]).is_err());
         assert!(parse_options(["--demo-live", "--observe", "--smoke"]).is_err());
         assert!(parse_options(["--demo-live", "--smoke", "--observe", "--demo-scene",]).is_err());

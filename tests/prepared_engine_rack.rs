@@ -10,8 +10,10 @@ use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructura
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{AudioBoundary, ControlAudioBoundary};
 use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::audio_observation::{AudioObservation, ControlAudioObservation};
@@ -256,18 +258,23 @@ fn patch(provider: &HiDefSoundFontCapability, id: u32, channel: u8, program: u8)
         )
         .expect("acceptance config matches the production descriptor"),
         MidiChannel::new(channel).expect("acceptance MIDI channel is valid"),
-        ChannelParameters::new(0.0, 0.0, 0.0, 0.0)
-            .expect("acceptance channel parameters are valid"),
+        PatchOutput::to_track(MixerTrackId::new(channel).expect("acceptance mixer track is valid")),
     )
 }
 
 fn parameters(patches: &[Patch], revision: GraphRevision, generation: u64) -> ParameterSnapshot {
     let values: Vec<_> = patches
         .iter()
-        .map(|patch| RtPatchParameters::new(patch.id(), *patch.parameters()))
+        .map(|patch| RtPatchParameters::new(patch.id(), patch.output()))
         .collect();
-    ParameterSnapshot::for_graph(generation, revision, globals(), &values)
-        .expect("acceptance parameters fit fixed storage")
+    ParameterSnapshot::for_graph(
+        generation,
+        revision,
+        globals(),
+        MixerState::default(),
+        &values,
+    )
+    .expect("acceptance parameters fit fixed storage")
 }
 
 fn graph(
@@ -521,7 +528,7 @@ fn prove_hidef_preparation(patch: &Patch) {
         .prepare(patch, SAMPLE_RATE, 512)
         .expect("the production SoundFont Patch prepares");
     let mut output = [0.0_f32; 1_024];
-    let parameters = RtPatchParameters::new(patch.id(), *patch.parameters());
+    let parameters = RtPatchParameters::new(patch.id(), patch.output());
 
     begin_memory_count();
     instrument

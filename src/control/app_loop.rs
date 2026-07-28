@@ -7,10 +7,11 @@ use crate::control::engine_selection::{
 use crate::control::event_log::EventLog;
 use crate::control::event_record::{EventRecord, EventSource};
 use crate::control::patch_page_projection::PatchPageProjection;
-use crate::control::state_projector::{StateProjectionError, StateProjector};
+use crate::control::state_projector::{MidiProjectionSeed, StateProjectionError, StateProjector};
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
+use crate::control::{GraphicalShellProjection, SemanticAction};
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crate::real_time::{
     ControlStructuralGraphBoundary, GraphPreparationCorrelation, GraphPreparationRequest,
@@ -160,6 +161,7 @@ where
     current_snapshot: StateSnapshot,
     current_patch_page: Option<PatchPageProjection>,
     current_text: TextProjection,
+    current_graphical_shell: GraphicalShellProjection,
     current_parameters: crate::real_time::parameter_snapshot::ParameterSnapshot,
     current_state_tree: StateTree,
     event_log: EventLog,
@@ -194,8 +196,14 @@ where
         mut boundary: Boundary,
         event_log: EventLog,
     ) -> Result<Self, StateProjectionError> {
-        let (current_snapshot, current_patch_page, current_text, parameters, current_state_tree) =
-            projector.project_with_tree(&state)?;
+        let (
+            current_snapshot,
+            current_patch_page,
+            current_text,
+            current_graphical_shell,
+            parameters,
+            current_state_tree,
+        ) = projector.project_with_shell_tree(&state)?;
         if parameters.graph_revision() != projector.graph_revision() {
             return Err(StateProjectionError::StateTree(
                 crate::control::StateTreeError::GraphRevisionMismatch,
@@ -210,6 +218,7 @@ where
             current_snapshot,
             current_patch_page,
             current_text,
+            current_graphical_shell,
             current_parameters: parameters,
             current_state_tree,
             event_log,
@@ -254,17 +263,49 @@ where
         self.dispatch_from(event, EventSource::System)
     }
 
+    /// Maps one normalized user intent to exactly one AppEvent before the
+    /// canonical reducer and existing commit-before-project pipeline.
+    pub fn dispatch_action(
+        &mut self,
+        action: SemanticAction,
+    ) -> Result<DispatchResult, EventRejection> {
+        self.dispatch_action_from(action, EventSource::Keyboard)
+    }
+
+    pub fn dispatch_action_from(
+        &mut self,
+        action: SemanticAction,
+        source: EventSource,
+    ) -> Result<DispatchResult, EventRejection> {
+        let event = AppEvent::from_semantic_action(action.clone());
+        self.dispatch_internal(event, source, Some(action))
+    }
+
     /// Applies one sourced event and publishes effects only after complete acceptance.
     pub fn dispatch_from(
         &mut self,
         event: AppEvent,
         source: EventSource,
     ) -> Result<DispatchResult, EventRejection> {
+        self.dispatch_internal(event, source, None)
+    }
+
+    fn dispatch_internal(
+        &mut self,
+        event: AppEvent,
+        source: EventSource,
+        semantic_action: Option<SemanticAction>,
+    ) -> Result<DispatchResult, EventRejection> {
         let generation_before = self.state.generation();
         let state_hash_before = self.current_state_tree.state_hash().to_owned();
         let midi_generation_only = matches!(event, AppEvent::Midi { .. });
+        let parameters_published = event.publishes_parameters_on_acceptance();
 
-        let outcome = match self.state.apply(event.clone()) {
+        let reduction = match semantic_action {
+            Some(action) => self.state.apply_semantic_action(action),
+            None => self.state.apply(event.clone()),
+        };
+        let outcome = match reduction {
             Ok(outcome) => outcome,
             Err(rejection) => {
                 let record = EventRecord::rejected(
@@ -285,22 +326,26 @@ where
             }
         };
 
-        let (snapshot, patch_page, text, parameters, state_tree) = if midi_generation_only {
-            self.projector
-                .project_midi_generation(
-                    &self.state,
-                    &self.current_snapshot,
-                    self.current_patch_page.as_ref(),
-                    &self.current_text,
-                    self.current_parameters,
-                    &self.current_state_tree,
-                )
-                .expect("accepted MIDI must advance coherent generation-only projections")
-        } else {
-            self.projector
-                .project_with_tree(&self.state)
-                .expect("an accepted AppState must produce coherent projections")
-        };
+        let (snapshot, patch_page, text, graphical_shell, parameters, state_tree) =
+            if midi_generation_only {
+                self.projector
+                    .project_midi_generation(
+                        &self.state,
+                        MidiProjectionSeed::new(
+                            &self.current_snapshot,
+                            self.current_patch_page.as_ref(),
+                            &self.current_text,
+                            &self.current_graphical_shell,
+                            self.current_parameters,
+                            &self.current_state_tree,
+                        ),
+                    )
+                    .expect("accepted MIDI must advance coherent generation-only projections")
+            } else {
+                self.projector
+                    .project_with_shell_tree(&self.state)
+                    .expect("an accepted AppState must produce coherent projections")
+            };
         let accepted = outcome.accepted();
         let audio_command = outcome.audio_command().copied();
         let engine_selection_effect = outcome.engine_selection_effect().cloned();
@@ -315,18 +360,22 @@ where
             &snapshot,
             parameters.generation(),
             parameters.graph_revision(),
+            parameters_published,
             &text,
             audio_command,
             engine_selection_effect.clone(),
         )
         .expect("accepted reducer output and projections must form one coherent record");
 
-        self.boundary.publish_parameters(parameters);
+        if parameters_published {
+            self.boundary.publish_parameters(parameters);
+        }
         let boundary_full =
             audio_command.and_then(|command| self.boundary.push_command(command).err());
         self.current_snapshot = snapshot.clone();
         self.current_patch_page = patch_page;
         self.current_text = text;
+        self.current_graphical_shell = graphical_shell;
         self.current_parameters = parameters;
         self.current_state_tree = state_tree;
         self.event_log
@@ -420,6 +469,7 @@ where
             candidate_config,
             self.state.generation(),
             *self.state.global(),
+            *self.state.mixer(),
             runtime.audio_config,
             runtime.factory.registry(),
             self.state.effects(),
@@ -628,6 +678,15 @@ where
         Ok(())
     }
 
+    /// Counts structural graph obligations still retained by control-side
+    /// orchestration. A completed teardown must report zero.
+    pub fn owned_structural_graphs_on_control(&self) -> usize {
+        self.engine_selection_runtime.as_ref().map_or(0, |runtime| {
+            usize::from(runtime.coordinator.staged_revision().is_some())
+                + usize::from(runtime.coordinator.in_flight_revision().is_some())
+        })
+    }
+
     pub const fn engine_selection_configured(&self) -> bool {
         self.engine_selection_runtime.is_some()
     }
@@ -635,6 +694,17 @@ where
     /// Returns the newest complete immutable text projection.
     pub fn current_text(&self) -> TextProjection {
         self.current_text.clone()
+    }
+
+    /// Returns the newest immutable graphical projection consumed by the
+    /// production window.
+    pub fn current_graphical_shell(&self) -> GraphicalShellProjection {
+        self.current_graphical_shell.clone()
+    }
+
+    /// Returns the canonical semantic model embedded in the newest shell.
+    pub fn current_semantic_model(&self) -> crate::control::SemanticGraphicalViewModel {
+        self.current_graphical_shell.semantic_model().clone()
     }
 
     /// Returns the newest host-neutral PATCH page exactly when PATCH is active.
@@ -819,8 +889,11 @@ mod tests {
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::mixer_track_parameters::{MixerTrackParameter, MixerTrackParameters};
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
     use crate::real_time::audio_command::AudioCommand;
     use crate::real_time::audio_renderer::AudioRenderer;
@@ -914,7 +987,7 @@ mod tests {
         GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap()
     }
 
-    fn patch(id: u32, gain_db: f32) -> Patch {
+    fn patch(id: u32, _gain_db: f32) -> Patch {
         let provider =
             crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         Patch::new(
@@ -926,14 +999,24 @@ mod tests {
             )
             .unwrap(),
             MidiChannel::new(((id - 1) % 16) as u8).unwrap(),
-            ChannelParameters::new(gain_db, 0.0, 0.0, 0.0).unwrap(),
+            PatchOutput::to_track(MixerTrackId::new(((id - 1) % 16) as u8).unwrap()),
         )
     }
 
     fn installed_state_with_gains(gains: &[f32]) -> AppState {
         let provider =
             crate::adapter::production_instruments::production_soundfont_capability().unwrap();
-        let mut state = AppState::new(provider.registry().unwrap(), global_parameters());
+        let mut mixer = MixerState::default();
+        for (index, gain_db) in gains.iter().copied().enumerate() {
+            mixer.set_track(
+                MixerTrackId::new(index as u8).unwrap(),
+                MixerTrackParameters::default()
+                    .with_scalar_value(MixerTrackParameter::Level, gain_db)
+                    .unwrap(),
+            );
+        }
+        let mut state = AppState::new(provider.registry().unwrap(), global_parameters())
+            .with_initial_mixer(mixer);
         let patches = gains
             .iter()
             .enumerate()
@@ -968,21 +1051,30 @@ mod tests {
     fn one_way_control_loop_publishes_one_coherent_edit() {
         let (mut app_loop, observations) = loop_with_observations();
         let initial_text = app_loop.current_text();
+        let initial_shell = app_loop.current_graphical_shell();
 
         let result = app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
         let current_text = app_loop.current_text();
+        let current_shell = app_loop.current_graphical_shell();
         let observations = observations.lock().unwrap();
         let published = observations.parameters.last().unwrap();
 
         assert_eq!(result.accepted().generation(), 2);
         assert_eq!(published.generation(), result.accepted().generation());
-        assert_eq!(published.patches()[0].parameters().gain_db(), 1.0);
-        assert!(result.snapshot().json().contains("\"gainDb\":1.0"));
+        assert_eq!(
+            published.mixer_track(MixerTrackId::default()).level_db(),
+            1.0
+        );
+        assert!(result.snapshot().json().contains("\"levelDb\":1.0"));
         assert_eq!(current_text.state_hash(), result.snapshot().hash());
         assert_ne!(current_text, initial_text);
-        assert!(current_text.body().contains("> gainDb=1"));
+        assert_ne!(current_shell, initial_shell);
+        assert_eq!(current_shell.generation(), result.accepted().generation());
+        assert_eq!(current_shell.state_hash(), result.snapshot().hash());
+        assert_eq!(current_shell.workspace().diagnostic(), &current_text);
+        assert!(current_text.body().contains("> levelDb=1"));
         assert!(observations.commands.is_empty());
         assert!(result.audio_effects_published());
     }
@@ -1007,6 +1099,7 @@ mod tests {
             .unwrap();
         let page = app_loop.current_patch_page().unwrap();
         let text = app_loop.current_text();
+        let shell = app_loop.current_graphical_shell();
         let tree: serde_json::Value =
             serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
         let after_parameters = *app_loop.current_parameters();
@@ -1015,8 +1108,16 @@ mod tests {
         assert_eq!(page.state_hash(), result.snapshot().hash());
         assert_eq!(text.context(), crate::control::TopLevelContext::Patch);
         assert_eq!(text.state_hash(), result.snapshot().hash());
-        assert_eq!(tree["interaction"]["context"], "patch");
+        assert_eq!(shell.context(), crate::control::TopLevelContext::Patch);
+        assert_eq!(shell.generation(), result.accepted().generation());
+        assert_eq!(shell.state_hash(), result.snapshot().hash());
+        assert_eq!(shell.workspace().diagnostic(), &text);
+        assert_eq!(tree["interaction"]["activeFocus"]["context"], "patch");
         assert_eq!(tree["patchPage"]["stateHash"], result.snapshot().hash());
+        assert_eq!(
+            tree["graphicalShell"],
+            serde_json::to_value(&shell).unwrap()
+        );
         assert_eq!(before_patches, app_loop.patches());
         assert_eq!(before_global, *app_loop.state().global());
         assert_eq!(retained_selection, app_loop.state().selection());
@@ -1029,11 +1130,13 @@ mod tests {
         assert_eq!(observations.lock().unwrap().commands.len(), command_count);
 
         let rejected_tree = app_loop.current_state_tree();
+        let rejected_shell = app_loop.current_graphical_shell();
         assert_eq!(
             app_loop.dispatch(AppEvent::Adjust(Direction::Up)),
             Err(EventRejection::ActionUnavailableInContext)
         );
         assert_eq!(app_loop.current_state_tree(), rejected_tree);
+        assert_eq!(app_loop.current_graphical_shell(), rejected_shell);
         app_loop
             .dispatch(AppEvent::SelectContext(
                 crate::control::TopLevelContext::Mixer,
@@ -1059,7 +1162,7 @@ mod tests {
             create_soundfont_config(&provider, SoundFontInstrument::new(0, 8, false).unwrap())
                 .unwrap(),
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         )
         .with_envelope(VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap());
         let mut state = AppState::for_graph(
@@ -1069,7 +1172,8 @@ mod tests {
         );
         state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
 
-        let initial_transport = ParameterSnapshot::new(0, global_parameters(), &[]).unwrap();
+        let initial_transport =
+            ParameterSnapshot::new(0, global_parameters(), MixerState::default(), &[]).unwrap();
         let boundary = LockFreeAudioBoundary::new(64, initial_transport);
         let (audio_control, audio_handle) = boundary.into_handles();
         let mut app_loop = AppLoop::new(
@@ -1244,10 +1348,17 @@ mod tests {
         let observations = observations.lock().unwrap();
         let published = observations.parameters.last().unwrap();
 
-        assert_eq!(published.patches()[0].parameters().gain_db(), 0.0);
-        assert_eq!(published.patches()[1].parameters().gain_db(), -11.0);
-        assert!(result.snapshot().json().contains("\"gainDb\":0.0"));
-        assert!(result.snapshot().json().contains("\"gainDb\":-11.0"));
+        assert_eq!(
+            published.mixer_track(MixerTrackId::default()).level_db(),
+            0.0
+        );
+        assert_eq!(
+            published
+                .mixer_track(MixerTrackId::new(1).unwrap())
+                .level_db(),
+            -11.0
+        );
+        assert!(result.snapshot().json().contains("\"levelDb\":-11.0"));
     }
 
     #[test]
@@ -1282,21 +1393,24 @@ mod tests {
     fn one_way_control_loop_rejection_has_no_effects_or_view_change() {
         let (mut app_loop, observations) = loop_with_observations();
         let initial_text = app_loop.current_text();
+        let initial_shell = app_loop.current_graphical_shell();
         let initial_observations = observations.lock().unwrap().clone();
 
         let result = app_loop.dispatch(AppEvent::InstallPatches(Vec::new()));
 
         assert_eq!(result, Err(EventRejection::InstallationClosed));
         assert_eq!(app_loop.current_text(), initial_text);
+        assert_eq!(app_loop.current_graphical_shell(), initial_shell);
         assert_eq!(*observations.lock().unwrap(), initial_observations);
         assert_eq!(app_loop.event_log().len(), 1);
     }
 
     #[test]
     fn one_way_control_loop_boundary_rejection_is_nonfatal() {
-        let (mut app_loop, observations) = loop_with_state(installed_state_with_gains(&[
-            ChannelParameters::MAX_GAIN_DB,
-        ]));
+        let (mut app_loop, observations) =
+            loop_with_state(installed_state_with_gains(&[MixerTrackParameter::Level
+                .descriptor()
+                .maximum()]));
         let initial_observations = observations.lock().unwrap().clone();
 
         assert_eq!(
@@ -1318,9 +1432,8 @@ mod tests {
                 .parameters
                 .last()
                 .unwrap()
-                .patches()[0]
-                .parameters()
-                .gain_db(),
+                .mixer_track(MixerTrackId::default())
+                .level_db(),
             5.0
         );
         assert_eq!(log.len(), 2);
@@ -1453,14 +1566,15 @@ mod tests {
                 "Lifecycle envelope".to_owned(),
                 soundfont_config,
                 MidiChannel::new(0).unwrap(),
-                ChannelParameters::default(),
+                PatchOutput::default(),
             )
             .with_envelope(
                 VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap(),
             )]))
             .unwrap();
 
-        let initial_transport = ParameterSnapshot::new(0, global_parameters(), &[]).unwrap();
+        let initial_transport =
+            ParameterSnapshot::new(0, global_parameters(), MixerState::default(), &[]).unwrap();
         let audio_boundary = LockFreeAudioBoundary::new(64, initial_transport);
         let (audio_control, audio_handle) = audio_boundary.into_handles();
         let mut app_loop = AppLoop::new(
@@ -1750,11 +1864,12 @@ mod tests {
                 "Orchestrated Patch".to_owned(),
                 soundfont_config.clone(),
                 MidiChannel::new(0).unwrap(),
-                ChannelParameters::default(),
+                PatchOutput::default(),
             )]))
             .unwrap();
 
-        let initial_transport = ParameterSnapshot::new(0, global_parameters(), &[]).unwrap();
+        let initial_transport =
+            ParameterSnapshot::new(0, global_parameters(), MixerState::default(), &[]).unwrap();
         let audio_boundary = LockFreeAudioBoundary::new(64, initial_transport);
         let (audio_control, audio_handle) = audio_boundary.into_handles();
         let mut app_loop = AppLoop::new(
@@ -1828,7 +1943,11 @@ mod tests {
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
-        let edited_gain = app_loop.patches()[0].parameters().gain_db();
+        let edited_gain = app_loop
+            .state()
+            .mixer()
+            .track(MixerTrackId::default())
+            .level_db();
         let note = MidiMessage::try_new(
             MidiChannel::new(0).unwrap(),
             MidiMessageKind::NoteOn,
@@ -1859,10 +1978,8 @@ mod tests {
         assert_eq!(
             app_loop
                 .current_parameters()
-                .patch(patch_id)
-                .unwrap()
-                .parameters()
-                .gain_db(),
+                .mixer_track(MixerTrackId::default())
+                .level_db(),
             edited_gain
         );
         renderer.render(&mut output);

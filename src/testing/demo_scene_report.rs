@@ -1029,8 +1029,9 @@ mod tests {
     use crate::control::text_projection::TextProjection;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::GraphRevision;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
@@ -1049,7 +1050,7 @@ mod tests {
                 create_soundfont_config(&provider, SoundFontInstrument::new(0, 80, false).unwrap())
                     .unwrap(),
                 MidiChannel::new(2).unwrap(),
-                ChannelParameters::new(-6.0, -0.25, 0.2, 0.1).unwrap(),
+                PatchOutput::new(MixerTrackId::new(2).unwrap(), -6.0).unwrap(),
             ),
             Patch::new(
                 PatchId::new(9).unwrap(),
@@ -1057,7 +1058,7 @@ mod tests {
                 create_soundfont_config(&provider, SoundFontInstrument::new(128, 0, true).unwrap())
                     .unwrap(),
                 MidiChannel::new(9).unwrap(),
-                ChannelParameters::new(-12.0, 0.5, 0.4, 0.3).unwrap(),
+                PatchOutput::new(MixerTrackId::new(9).unwrap(), -12.0).unwrap(),
             ),
         ];
         state.apply(AppEvent::InstallPatches(patches)).unwrap();

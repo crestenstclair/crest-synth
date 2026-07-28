@@ -15,8 +15,10 @@ use crest_synth::control::{
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::{
     AudioBoundary, AudioObservation, AudioRenderer, ControlAudioObservation, GraphHandoffStatus,
     GraphRevision, GraphStageOutcome, ParameterSnapshot, PreparedGraphBuilder,
@@ -197,7 +199,7 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         "Untargeted Braids".to_owned(),
         second_config,
         MidiChannel::new(1).unwrap(),
-        ChannelParameters::new(-3.0, 0.2, 0.0, 0.0).unwrap(),
+        PatchOutput::new(MixerTrackId::new(1).unwrap(), -3.0).unwrap(),
     );
     let untargeted_before = untargeted_patch.clone();
     let mut state = AppState::for_graph(registry.clone(), globals(), GraphRevision::INITIAL);
@@ -208,13 +210,14 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
                 "Selected SoundFont".to_owned(),
                 initial_soundfont.clone(),
                 selected_channel,
-                ChannelParameters::new(0.0, -0.2, 0.0, 0.0).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
             ),
             untargeted_patch,
         ]))
         .unwrap();
 
-    let initial_transport = ParameterSnapshot::new(0, globals(), &[]).unwrap();
+    let initial_transport =
+        ParameterSnapshot::new(0, globals(), MixerState::default(), &[]).unwrap();
     let boundary = LockFreeAudioBoundary::new(128, initial_transport);
     let (audio_control, audio_callback) = boundary.into_handles();
     let mut app_loop = AppLoop::new(

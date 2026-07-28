@@ -10,6 +10,7 @@ pub mod audio_observation_snapshot;
 pub use audio_observation_snapshot::AudioObservationSnapshot;
 pub mod audio_renderer;
 pub use audio_renderer::AudioRenderer;
+pub mod callback_safety;
 pub mod graph_revision;
 pub use graph_revision::{GraphRevision, GraphRevisionError};
 pub mod graph_preparation_worker;

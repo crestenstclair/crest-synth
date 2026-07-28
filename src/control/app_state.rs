@@ -6,8 +6,15 @@ use crate::control::engine_selection::{
 };
 use crate::control::interaction_state::{InteractionState, Selection, SelectionSection};
 use crate::control::top_level_context::TopLevelContext;
-use crate::mixer::channel_parameters::{ChannelParameter, ChannelParameters};
-use crate::mixer::global_parameters::GlobalParameters;
+use crate::control::{
+    FocusPath, MixerControlId, SemanticAction, SemanticControlId, SemanticResolver, SurfaceId,
+};
+use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
+use crate::mixer::mixer_state::MixerState;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::mixer_track_parameters::{MixerTrackParameter, MixerTrackParameterKind};
+use crate::mixer::patch_output::PatchOutput;
+use crate::mixer::patch_output::PatchOutputParameter;
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
@@ -18,7 +25,6 @@ use crate::synth::patch::{Patch, PatchEditableTarget};
 use crate::synth::{EffectCapabilityRegistry, EffectSlotId, ParameterId, VoiceEnvelopeParameter};
 use core::fmt;
 
-const GLOBAL_PARAMETER_COUNT: usize = GlobalParameters::surface_descriptor().len();
 const MAX_PATCH_COUNT: usize = 16;
 
 /// The domain event emitted after an AppEvent has been accepted.
@@ -306,7 +312,7 @@ pub(crate) fn exercise_reducer_table_rejections(
             format!("Reducer probe {id}"),
             instrument_config.clone(),
             crate::kernel::midi_channel::MidiChannel::new(channel).expect("probe channel is valid"),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(channel).expect("probe route is valid")),
         )
     }
 
@@ -363,27 +369,28 @@ pub(crate) fn exercise_reducer_table_rejections(
         .expect_err("unknown effect config violates registry installation");
 
     let mut no_patches = AppState::new(capabilities.clone(), global);
-    no_patches
-        .interaction
-        .set_mixer_selection(Selection::patch(0));
     let no_patch = no_patches
-        .apply(AppEvent::Adjust(Direction::Right))
-        .expect_err("an invalid Patch selection has no installed Patch");
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .expect_err("PATCH has no focus before installation");
 
     let mut invalid_selection = AppState {
         capabilities: capabilities.clone(),
         effects: EffectCapabilityRegistry::default(),
         patches: vec![probe_patch(1, 0, instrument_config)],
+        mixer: MixerState::default(),
         global,
-        interaction: InteractionState {
-            context: TopLevelContext::Mixer,
-            mixer_selection: Selection {
-                section: SelectionSection::Patch,
-                patch_index: 0,
-                parameter_index: usize::MAX,
-            },
-            patch_focus: Some(crate::kernel::patch_id::PatchId::new(1).unwrap()),
-            patch_control_focus: Some(crate::control::PatchControlId::Engine),
+        interaction: {
+            let mut interaction = InteractionState::new();
+            interaction
+                .set_active_main(FocusPath::patch_main(
+                    crate::kernel::patch_id::PatchId::new(1).unwrap(),
+                    None,
+                    crate::control::PatchControlId::Capability(
+                        ParameterId::new("missing").unwrap(),
+                    ),
+                ))
+                .expect("probe path shape is valid");
+            interaction
         },
         engine_selection: EngineSelectionStatus::ready(GraphRevision::INITIAL),
         last_engine_selection_request_id: EngineSelectionRequestId::NONE,
@@ -393,8 +400,8 @@ pub(crate) fn exercise_reducer_table_rejections(
         .apply(AppEvent::Adjust(Direction::Right))
         .expect_err("an out-of-range parameter index is rejected");
 
-    let invalid_parameter = ChannelParameters::default()
-        .with_value(ChannelParameter::GainDb, f32::NAN)
+    let invalid_parameter = PatchOutput::default()
+        .with_trim_gain_db(f32::NAN)
         .map_err(|_| EventRejection::InvalidParameterValue)
         .expect_err("a non-finite typed value is rejected");
 
@@ -444,6 +451,7 @@ pub struct AppState {
     capabilities: CapabilityRegistry,
     effects: EffectCapabilityRegistry,
     patches: Vec<Patch>,
+    mixer: MixerState,
     global: GlobalParameters,
     interaction: InteractionState,
     engine_selection: EngineSelectionStatus,
@@ -491,12 +499,20 @@ impl AppState {
             capabilities,
             effects,
             patches: Vec::new(),
+            mixer: MixerState::default(),
             global,
             interaction: InteractionState::new(),
             engine_selection: EngineSelectionStatus::ready(active_graph_revision),
             last_engine_selection_request_id: EngineSelectionRequestId::NONE,
             generation: 0,
         }
+    }
+
+    /// Supplies the complete fixed mixer bank when constructing restored or
+    /// deterministic state. The bank's type guarantees exactly sixteen tracks.
+    pub fn with_initial_mixer(mut self, mixer: MixerState) -> Self {
+        self.mixer = mixer;
+        self
     }
 
     pub fn patches(&self) -> &[Patch] {
@@ -515,8 +531,30 @@ impl AppState {
         &self.global
     }
 
-    pub const fn selection(&self) -> Selection {
-        self.interaction.mixer_selection()
+    pub const fn mixer(&self) -> &MixerState {
+        &self.mixer
+    }
+
+    pub fn selection(&self) -> Selection {
+        let path = self.interaction.remembered_mixer_main();
+        let (section, patch_index) = match path.control_id() {
+            SemanticControlId::Mixer(MixerControlId::Track { track_id, .. }) => {
+                (SelectionSection::Patch, track_id.index())
+            }
+            SemanticControlId::Mixer(MixerControlId::Global { .. }) => {
+                (SelectionSection::Global, 0)
+            }
+            _ => (SelectionSection::Global, usize::MAX),
+        };
+        let parameter_index = SemanticResolver::new(self)
+            .mixer_coordinates(path)
+            .map(|(_, parameter)| parameter)
+            .unwrap_or(usize::MAX);
+        Selection {
+            section,
+            patch_index,
+            parameter_index,
+        }
     }
 
     /// Returns the complete reducer-owned interaction state.
@@ -535,6 +573,37 @@ impl AppState {
 
     pub const fn engine_selection(&self) -> &EngineSelectionStatus {
         &self.engine_selection
+    }
+
+    /// Tests one normalized user action against a clone of the exact accepted
+    /// reducer state. Availability is therefore pure and cannot drift from
+    /// reducer bounds, dependencies, lifecycle, or surface rules.
+    pub fn accepts_semantic_action(&self, action: &SemanticAction) -> bool {
+        let mut candidate = self.clone();
+        candidate.apply_semantic_action(action.clone()).is_ok()
+    }
+
+    /// Applies a normalized user intent through the same transactional reducer
+    /// while enforcing the currently projected interaction mode.
+    pub fn apply_semantic_action(
+        &mut self,
+        action: SemanticAction,
+    ) -> Result<ApplyOutcome, EventRejection> {
+        if !action.is_phase_two_admitted()
+            || matches!(
+                action,
+                SemanticAction::Navigate(_)
+                    if self.interaction.mode() != crate::control::InteractionMode::Navigate
+            )
+            || matches!(
+                action,
+                SemanticAction::Adjust(_)
+                    if self.interaction.mode() != crate::control::InteractionMode::Adjust
+            )
+        {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        self.apply(AppEvent::from_semantic_action(action))
     }
 
     /// Resolves one installed Patch's complete editable surface from its active schema.
@@ -635,6 +704,24 @@ impl AppState {
                 }
                 TopLevelContext::Patch => self.adjust_patch_control(direction),
             },
+            AppEvent::SetInteractionMode(mode) => {
+                self.interaction
+                    .set_mode(mode)
+                    .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+                Ok(ReducerEffects::default())
+            }
+            AppEvent::EnterSurface(surface) => {
+                self.interaction
+                    .enter_surface(surface)
+                    .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+                Ok(ReducerEffects::default())
+            }
+            AppEvent::Return => {
+                self.interaction
+                    .return_to_origin()
+                    .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+                Ok(ReducerEffects::default())
+            }
             AppEvent::InstallPatches(patches) => {
                 self.install_patches(patches)?;
                 Ok(ReducerEffects::default())
@@ -740,14 +827,20 @@ impl AppState {
         }
 
         self.patches = patches;
-        let mixer_selection = if self.patches.is_empty() {
-            Selection::global()
-        } else {
-            Selection::patch(0)
+        let resolver = SemanticResolver::new(self);
+        let mixer_focus = resolver
+            .mixer_main_paths()?
+            .into_iter()
+            .next()
+            .expect("the global MIXER section is never empty");
+        let patch_focus = match self.patches.first() {
+            Some(patch) => resolver.patch_main_paths(patch.id())?.into_iter().next(),
+            None => None,
         };
-        self.interaction.set_mixer_selection(mixer_selection);
+        self.interaction.initialize_patch_focus(patch_focus);
         self.interaction
-            .initialize_patch_focus(self.patches.first().map(Patch::id));
+            .set_active_main(mixer_focus)
+            .map_err(|_| EventRejection::InvalidSelection)?;
         Ok(())
     }
 
@@ -761,7 +854,9 @@ impl AppState {
                 return Err(EventRejection::NoPatchesInstalled);
             }
         }
-        self.interaction.select_context(context);
+        self.interaction
+            .select_context(context)
+            .map_err(|_| EventRejection::InvalidSelection)?;
         Ok(())
     }
 
@@ -846,6 +941,8 @@ impl AppState {
         target_graph_revision: GraphRevision,
         candidate_config: crate::synth::InstrumentConfig,
     ) -> Result<EngineSelectionEffect, EventRejection> {
+        let old_patch_order = SemanticResolver::new(self).patch_main_paths(patch_id)?;
+        let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
         let correlation = self.pending_correlation(request_id)?.clone();
         if correlation.patch_id() != patch_id
             || correlation.intent() != &intent
@@ -884,8 +981,7 @@ impl AppState {
         .expect("Activating correlation owns a target revision");
         patch.set_instrument_config(candidate_config);
         self.engine_selection = status;
-        let controls = self.focused_patch_controls()?;
-        self.interaction.clamp_patch_control_focus(&controls);
+        self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
         Ok(effect)
     }
 
@@ -983,23 +1079,103 @@ impl AppState {
     }
 
     fn navigate(&mut self, direction: Direction) -> Result<(), EventRejection> {
-        match direction {
-            Direction::Left => self.navigate_section(-1),
-            Direction::Right => self.navigate_section(1),
-            Direction::Up => self.navigate_parameter(-1),
-            Direction::Down => self.navigate_parameter(1),
+        match self.interaction.active_surface() {
+            SurfaceId::MixerMain => match direction {
+                Direction::Left | Direction::Right => {
+                    let MixerControlId::Track {
+                        track_id,
+                        parameter,
+                    } = self.interaction.mixer_control_focus().clone()
+                    else {
+                        return Err(EventRejection::InvalidSelection);
+                    };
+                    let track_id = track_id
+                        .adjacent(direction == Direction::Right)
+                        .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+                    self.interaction
+                        .set_active_main(FocusPath::mixer_track(track_id, parameter))
+                        .map_err(|_| EventRejection::InvalidSelection)
+                }
+                Direction::Up | Direction::Down => self.navigate_parameter_nonwrapping(
+                    &SemanticResolver::new(self).mixer_main_paths()?,
+                    direction == Direction::Down,
+                ),
+            },
+            SurfaceId::MixerInspector => match direction {
+                Direction::Up | Direction::Down => {
+                    let track_id = self
+                        .interaction
+                        .remembered_mixer_main()
+                        .control_id()
+                        .as_mixer_track_id()
+                        .ok_or(EventRejection::InvalidSelection)?;
+                    self.navigate_side_nonwrapping(
+                        &SemanticResolver::new(self).mixer_inspector_paths(track_id)?,
+                        direction == Direction::Down,
+                    )
+                }
+                Direction::Left | Direction::Right => {
+                    Err(EventRejection::ActionUnavailableInContext)
+                }
+            },
+            SurfaceId::PatchMain | SurfaceId::PatchUtility => {
+                Err(EventRejection::ActionUnavailableInContext)
+            }
         }
     }
 
     fn navigate_patch_control(&mut self, direction: Direction) -> Result<(), EventRejection> {
-        let controls = self.focused_patch_controls()?;
-        if self
-            .interaction
-            .move_patch_control_focus_with(direction, &controls)
-        {
-            Ok(())
-        } else {
-            Err(EventRejection::ActionUnavailableInContext)
+        match self.interaction.active_surface() {
+            SurfaceId::PatchUtility => {
+                if direction == Direction::Left {
+                    self.interaction
+                        .return_to_origin()
+                        .map_err(|_| EventRejection::ActionUnavailableInContext)
+                } else if matches!(direction, Direction::Up | Direction::Down) {
+                    let patch_id = self
+                        .interaction
+                        .patch_focus()
+                        .ok_or(EventRejection::NoPatchesInstalled)?;
+                    self.navigate_side_nonwrapping(
+                        &SemanticResolver::new(self).patch_utility_paths(patch_id)?,
+                        direction == Direction::Down,
+                    )
+                } else {
+                    Err(EventRejection::ActionUnavailableInContext)
+                }
+            }
+            SurfaceId::PatchMain => match direction {
+                Direction::Right => self
+                    .interaction
+                    .enter_surface(SurfaceId::PatchUtility)
+                    .map_err(|_| EventRejection::ActionUnavailableInContext),
+                Direction::Left => Err(EventRejection::ActionUnavailableInContext),
+                Direction::Up | Direction::Down => {
+                    let patch_id = self
+                        .interaction
+                        .patch_focus()
+                        .ok_or(EventRejection::NoPatchesInstalled)?;
+                    let paths = SemanticResolver::new(self).patch_main_paths(patch_id)?;
+                    let current = paths
+                        .iter()
+                        .position(|path| path == self.interaction.focus_path())
+                        .ok_or(EventRejection::InvalidSelection)?;
+                    let next = match direction {
+                        Direction::Up => current.checked_sub(1),
+                        Direction::Down => {
+                            current.checked_add(1).filter(|index| *index < paths.len())
+                        }
+                        Direction::Left | Direction::Right => unreachable!(),
+                    }
+                    .ok_or(EventRejection::ActionUnavailableInContext)?;
+                    self.interaction
+                        .set_active_main(paths[next].clone())
+                        .map_err(|_| EventRejection::InvalidSelection)
+                }
+            },
+            SurfaceId::MixerMain | SurfaceId::MixerInspector => {
+                Err(EventRejection::ActionUnavailableInContext)
+            }
         }
     }
 
@@ -1007,6 +1183,18 @@ impl AppState {
         &mut self,
         direction: Direction,
     ) -> Result<ReducerEffects, EventRejection> {
+        if self.interaction.active_surface() == SurfaceId::PatchUtility {
+            let SemanticControlId::Patch(crate::control::PatchControlId::Output(parameter)) =
+                self.interaction.focus_path().control_id()
+            else {
+                return Err(EventRejection::InvalidSelection);
+            };
+            self.adjust_patch_output(*parameter, direction)?;
+            return Ok(ReducerEffects::default());
+        }
+        if self.interaction.active_surface() != SurfaceId::PatchMain {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
         match self.interaction.patch_control_focus() {
             Some(crate::control::PatchControlId::Engine) => {
                 let engine_selection_effect = self.request_engine_selection(direction)?;
@@ -1039,8 +1227,62 @@ impl AppState {
                 self.adjust_patch_effect(slot_id, &parameter_id, direction)?;
                 Ok(ReducerEffects::default())
             }
+            Some(crate::control::PatchControlId::Output(_)) => {
+                Err(EventRejection::InvalidSelection)
+            }
             None => Err(EventRejection::NoPatchesInstalled),
         }
+    }
+
+    fn adjust_patch_output(
+        &mut self,
+        parameter: PatchOutputParameter,
+        direction: Direction,
+    ) -> Result<(), EventRejection> {
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch = self
+            .patches
+            .iter_mut()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let output = patch.output();
+        let updated = match parameter {
+            PatchOutputParameter::TrimGain => {
+                let descriptor = parameter.descriptor();
+                let value = adjusted_value(
+                    output.trim_gain_db(),
+                    descriptor
+                        .minimum()
+                        .ok_or(EventRejection::InvalidSelection)?,
+                    descriptor
+                        .maximum()
+                        .ok_or(EventRejection::InvalidSelection)?,
+                    direction,
+                    descriptor
+                        .fine_step()
+                        .ok_or(EventRejection::InvalidSelection)?,
+                    descriptor
+                        .coarse_step()
+                        .ok_or(EventRejection::InvalidSelection)?,
+                )?;
+                output
+                    .with_trim_gain_db(value)
+                    .map_err(|_| EventRejection::InvalidParameterValue)?
+            }
+            PatchOutputParameter::OutputTrack => {
+                if matches!(direction, Direction::Up | Direction::Down) {
+                    return Err(EventRejection::ActionUnavailableInContext);
+                }
+                output
+                    .with_adjacent_track(direction == Direction::Right)
+                    .map_err(|_| EventRejection::ParameterAtBoundary)?
+            }
+        };
+        patch.set_output(updated);
+        Ok(())
     }
 
     fn adjust_patch_effect(
@@ -1174,124 +1416,105 @@ impl AppState {
         Ok(effect)
     }
 
-    fn navigate_section(&mut self, amount: isize) -> Result<(), EventRejection> {
-        let section_count = self.patches.len() + 1;
-        let selection = self.interaction.mixer_selection();
-        let current = match selection.section {
-            SelectionSection::Patch => {
-                if selection.patch_index >= self.patches.len() {
-                    return Err(EventRejection::InvalidSelection);
-                }
-                selection.patch_index
-            }
-            SelectionSection::Global => self.patches.len(),
+    fn navigate_parameter_nonwrapping(
+        &mut self,
+        all_paths: &[FocusPath],
+        forward: bool,
+    ) -> Result<(), EventRejection> {
+        let MixerControlId::Track {
+            track_id,
+            parameter,
+        } = self.interaction.mixer_control_focus().clone()
+        else {
+            return Err(EventRejection::InvalidSelection);
         };
-        let next = wrapped_index(current, section_count, amount);
-
-        if next == self.patches.len() {
-            let selection = self.interaction.mixer_selection_mut();
-            selection.section = SelectionSection::Global;
-            selection.parameter_index = selection.parameter_index.min(GLOBAL_PARAMETER_COUNT - 1);
+        let row = MixerTrackParameter::MAIN
+            .iter()
+            .position(|candidate| *candidate == parameter)
+            .ok_or(EventRejection::InvalidSelection)?;
+        let next = if forward {
+            row.checked_add(1)
+                .filter(|index| *index < MixerTrackParameter::MAIN.len())
         } else {
-            let parameter_count = self.patch_editable_targets(next)?.len();
-            let selection = self.interaction.mixer_selection_mut();
-            selection.section = SelectionSection::Patch;
-            selection.patch_index = next;
-            selection.parameter_index = selection.parameter_index.min(parameter_count - 1);
+            row.checked_sub(1)
         }
-        Ok(())
+        .ok_or(EventRejection::ActionUnavailableInContext)?;
+        let path = FocusPath::mixer_track(track_id, MixerTrackParameter::MAIN[next]);
+        if !all_paths.contains(&path) {
+            return Err(EventRejection::InvalidSelection);
+        }
+        self.interaction
+            .set_active_main(path)
+            .map_err(|_| EventRejection::InvalidSelection)
     }
 
-    fn navigate_parameter(&mut self, amount: isize) -> Result<(), EventRejection> {
-        let selection = self.interaction.mixer_selection();
-        let count = match selection.section {
-            SelectionSection::Patch => {
-                if selection.patch_index >= self.patches.len() {
-                    return Err(EventRejection::NoPatchesInstalled);
-                }
-                self.patch_editable_targets(selection.patch_index)?.len()
-            }
-            SelectionSection::Global => GLOBAL_PARAMETER_COUNT,
-        };
-        self.interaction.mixer_selection_mut().parameter_index =
-            wrapped_index(selection.parameter_index, count, amount);
+    fn navigate_side_nonwrapping(
+        &mut self,
+        paths: &[FocusPath],
+        forward: bool,
+    ) -> Result<(), EventRejection> {
+        let current = paths
+            .iter()
+            .position(|path| path == self.interaction.focus_path())
+            .ok_or(EventRejection::InvalidSelection)?;
+        let next = if forward {
+            current.checked_add(1).filter(|index| *index < paths.len())
+        } else {
+            current.checked_sub(1)
+        }
+        .ok_or(EventRejection::ActionUnavailableInContext)?;
+        self.interaction.active_focus = paths[next].clone();
         Ok(())
     }
 
     fn adjust(&mut self, direction: Direction) -> Result<(), EventRejection> {
-        match self.interaction.mixer_selection().section {
-            SelectionSection::Patch => self.adjust_patch(direction),
-            SelectionSection::Global => self.adjust_global(direction),
+        if !matches!(
+            self.interaction.active_surface(),
+            SurfaceId::MixerMain | SurfaceId::MixerInspector
+        ) {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        let SemanticControlId::Mixer(control) = self.interaction.focus_path().control_id() else {
+            return Err(EventRejection::InvalidSelection);
+        };
+        match control.clone() {
+            MixerControlId::Track {
+                track_id,
+                parameter,
+            } => self.adjust_track(track_id, parameter, direction),
+            MixerControlId::Global { parameter } => self.adjust_global(parameter, direction),
         }
     }
 
-    fn adjust_patch(&mut self, direction: Direction) -> Result<(), EventRejection> {
-        let patch_index = self.interaction.mixer_selection().patch_index;
-        let parameter_index = self.interaction.mixer_selection().parameter_index;
-        let target = self
-            .patch_editable_targets(patch_index)?
-            .get(parameter_index)
-            .cloned()
-            .ok_or(EventRejection::InvalidSelection)?;
-
-        match target {
-            PatchEditableTarget::Mixer(parameter) => {
-                let descriptor = parameter.descriptor();
-                let patch = self
-                    .patches
-                    .get_mut(patch_index)
-                    .ok_or(EventRejection::NoPatchesInstalled)?;
-                let parameters = patch.parameters();
-                let value = adjusted_value(
-                    parameters.value(parameter),
-                    descriptor.minimum(),
-                    descriptor.maximum(),
-                    direction,
-                    descriptor.fine_step(),
-                    descriptor.coarse_step(),
-                )?;
-                let updated = parameters
-                    .with_value(parameter, value)
-                    .map_err(|_| EventRejection::InvalidParameterValue)?;
-                patch.set_parameters(updated);
-                Ok(())
-            }
-            PatchEditableTarget::Envelope(parameter) => {
-                self.adjust_patch_envelope(patch_index, parameter, direction)
-            }
-            PatchEditableTarget::Instrument(parameter_id) => {
-                let updated = {
-                    let patch = self
-                        .patches
-                        .get(patch_index)
-                        .ok_or(EventRejection::NoPatchesInstalled)?;
-                    let descriptor = self
-                        .capabilities
-                        .descriptor(patch.instrument_config().capability_id())
-                        .ok_or(EventRejection::InvalidInstrumentConfig)?;
-                    let spec = descriptor
-                        .parameter(&parameter_id)
-                        .ok_or(EventRejection::InvalidSelection)?;
-                    let current = patch
-                        .instrument_config()
-                        .value(&parameter_id)
-                        .ok_or(EventRejection::InvalidInstrumentConfig)?;
-                    let adjustment = parameter_adjustment(direction);
-                    let value = spec
-                        .adjusted_scalar_value(current, adjustment)
-                        .map_err(map_scalar_adjustment_error)?;
-                    patch
-                        .instrument_config()
-                        .with_scalar_value(descriptor, &parameter_id, value)
-                        .map_err(map_scalar_adjustment_error)?
-                };
-                self.patches
-                    .get_mut(patch_index)
-                    .ok_or(EventRejection::NoPatchesInstalled)?
-                    .set_instrument_config(updated);
-                Ok(())
-            }
-        }
+    fn adjust_track(
+        &mut self,
+        track_id: crate::mixer::mixer_track_id::MixerTrackId,
+        parameter: MixerTrackParameter,
+        direction: Direction,
+    ) -> Result<(), EventRejection> {
+        let current = *self.mixer.track(track_id);
+        let updated = if parameter.descriptor().kind() == MixerTrackParameterKind::Toggle {
+            current
+                .toggled(parameter)
+                .map_err(|_| EventRejection::InvalidParameterValue)?
+        } else {
+            let descriptor = parameter.descriptor();
+            let value = adjusted_value(
+                current
+                    .scalar_value(parameter)
+                    .ok_or(EventRejection::InvalidSelection)?,
+                descriptor.minimum(),
+                descriptor.maximum(),
+                direction,
+                descriptor.fine_step(),
+                descriptor.coarse_step(),
+            )?;
+            current
+                .with_scalar_value(parameter, value)
+                .map_err(|_| EventRejection::InvalidParameterValue)?
+        };
+        self.mixer.set_track(track_id, updated);
+        Ok(())
     }
 
     fn adjust_patch_envelope(
@@ -1321,12 +1544,12 @@ impl AppState {
         Ok(())
     }
 
-    fn adjust_global(&mut self, direction: Direction) -> Result<(), EventRejection> {
-        let parameter_index = self.interaction.mixer_selection().parameter_index;
-        let descriptor = GlobalParameters::surface_descriptor()
-            .get(parameter_index)
-            .ok_or(EventRejection::InvalidSelection)?;
-        let parameter = descriptor.parameter();
+    fn adjust_global(
+        &mut self,
+        parameter: GlobalParameter,
+        direction: Direction,
+    ) -> Result<(), EventRejection> {
+        let descriptor = parameter.descriptor();
         let value = adjusted_value(
             self.global.value(parameter),
             descriptor.minimum(),
@@ -1339,6 +1562,57 @@ impl AppState {
             .global
             .with_value(parameter, value)
             .map_err(|_| EventRejection::InvalidParameterValue)?;
+        Ok(())
+    }
+
+    fn repair_semantic_paths(
+        &mut self,
+        old_patch_order: &[FocusPath],
+        old_mixer_order: &[FocusPath],
+    ) -> Result<(), EventRejection> {
+        let patch_id = old_patch_order
+            .first()
+            .and_then(FocusPath::patch_id)
+            .ok_or(EventRejection::InvalidSelection)?;
+        let resolver = SemanticResolver::new(self);
+        let new_patch_order = resolver.patch_main_paths(patch_id)?;
+        let new_mixer_order = resolver.mixer_main_paths()?;
+
+        let repair = |path: &FocusPath| -> Result<FocusPath, EventRejection> {
+            if resolver.resolves(path) {
+                return Ok(path.clone());
+            }
+            let (old_order, new_order) = match path.surface() {
+                SurfaceId::PatchMain => (old_patch_order, new_patch_order.as_slice()),
+                SurfaceId::MixerMain => (old_mixer_order, new_mixer_order.as_slice()),
+                SurfaceId::PatchUtility | SurfaceId::MixerInspector => {
+                    return Err(EventRejection::InvalidSelection)
+                }
+            };
+            SemanticResolver::recover(path, old_order, new_order)
+                .ok_or(EventRejection::InvalidSelection)
+        };
+
+        let repaired_patch = self
+            .interaction
+            .remembered_patch_main()
+            .map(&repair)
+            .transpose()?;
+        let repaired_mixer = repair(self.interaction.remembered_mixer_main())?;
+        let repaired_return_origin = self
+            .interaction
+            .return_path()
+            .map(|path| repair(path.origin()))
+            .transpose()?;
+
+        if let Some(path) = repaired_patch {
+            self.interaction.replace_remembered_patch_main(path);
+        }
+        self.interaction
+            .replace_remembered_mixer_main(repaired_mixer);
+        if let Some(origin) = repaired_return_origin {
+            self.interaction.replace_return_origin(origin);
+        }
         Ok(())
     }
 }
@@ -1356,15 +1630,6 @@ fn map_scalar_adjustment_error(error: CapabilityError) -> EventRejection {
     match error {
         CapabilityError::ScalarValueAtBoundary(_) => EventRejection::ParameterAtBoundary,
         _ => EventRejection::InvalidParameterValue,
-    }
-}
-
-fn wrapped_index(current: usize, count: usize, amount: isize) -> usize {
-    debug_assert!(count > 0);
-    if amount < 0 {
-        (current + count - 1) % count
-    } else {
-        (current + 1) % count
     }
 }
 
@@ -1468,9 +1733,7 @@ fn decimal_scale(step: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::braids_capability::{
-        BraidsCapability, BRAIDS_CAPABILITY_ID, BRAIDS_MODEL_PARAMETER_ID,
-    };
+    use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
     use crate::adapter::hidef_soundfont_capability::{
         HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_PRESET_PARAMETER_ID,
     };
@@ -1507,7 +1770,7 @@ mod tests {
             )
             .unwrap(),
             MidiChannel::new(channel).unwrap(),
-            ChannelParameters::new(gain_db, 0.0, 0.0, 0.0).unwrap(),
+            PatchOutput::new(MixerTrackId::new(channel).unwrap(), gain_db).unwrap(),
         )
     }
 
@@ -1554,7 +1817,7 @@ mod tests {
             "Patch 2".to_owned(),
             descriptor_default_config(BRAIDS_CAPABILITY_ID),
             MidiChannel::new(1).unwrap(),
-            ChannelParameters::new(-3.0, 0.0, 0.0, 0.0).unwrap(),
+            PatchOutput::new(MixerTrackId::new(1).unwrap(), -3.0).unwrap(),
         );
         state
             .apply(AppEvent::InstallPatches(vec![patch(1, -1.0), braids_patch]))
@@ -1599,13 +1862,6 @@ mod tests {
             target_graph_revision,
             failure,
         }
-    }
-
-    #[test]
-    fn app_state_section_navigation_wraps_across_global() {
-        assert_eq!(wrapped_index(0, 3, -1), 2);
-        assert_eq!(wrapped_index(2, 3, 1), 0);
-        assert_eq!(wrapped_index(1, 3, 1), 2);
     }
 
     #[test]
@@ -1711,7 +1967,7 @@ mod tests {
         let mut state = AppState::new(registry(), global_parameters());
         assert_eq!(state.context(), TopLevelContext::Mixer);
         assert_eq!(state.interaction().patch_focus(), None);
-        assert_eq!(state.selection(), Selection::global());
+        assert_eq!(state.selection(), Selection::patch(0));
 
         state
             .apply(AppEvent::InstallPatches(vec![
@@ -1864,15 +2120,27 @@ mod tests {
             }
             assert_eq!(focused.interaction().patch_control_focus(), Some(expected));
 
-            for direction in [Direction::Left, Direction::Right] {
-                let mut state = focused.clone();
-                let before = state.clone();
-                assert_eq!(
-                    state.apply(AppEvent::Navigate(direction)),
-                    Err(EventRejection::ActionUnavailableInContext)
-                );
-                assert_eq!(state, before);
-            }
+            let mut left = focused.clone();
+            let before = left.clone();
+            assert_eq!(
+                left.apply(AppEvent::Navigate(Direction::Left)),
+                Err(EventRejection::ActionUnavailableInContext)
+            );
+            assert_eq!(left, before);
+
+            let origin = focused.interaction().focus_path().clone();
+            let mut right = focused.clone();
+            right.apply(AppEvent::Navigate(Direction::Right)).unwrap();
+            assert_eq!(
+                right.interaction().active_surface(),
+                SurfaceId::PatchUtility
+            );
+            assert_eq!(
+                right.interaction().return_path().map(|path| path.origin()),
+                Some(&origin)
+            );
+            right.apply(AppEvent::Return).unwrap();
+            assert_eq!(right.interaction().focus_path(), &origin);
 
             let mut up = focused.clone();
             if index == 0 {
@@ -1996,48 +2264,41 @@ mod tests {
     }
 
     #[test]
-    fn mixer_and_patch_envelope_routes_produce_identical_canonical_mutation() {
+    fn mixer_tracks_and_patch_envelopes_have_disjoint_ownership() {
         let middle = crate::synth::VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap();
 
         for (parameter_index, descriptor) in crate::synth::VoiceEnvelope::surface_descriptor()
             .iter()
             .enumerate()
         {
-            for direction in [
-                Direction::Left,
-                Direction::Right,
-                Direction::Down,
-                Direction::Up,
-            ] {
-                let mut mixer = installed_state();
-                mixer.patches[0].set_envelope(middle);
-                let mixer_target_index = mixer
-                    .patch_editable_targets(0)
-                    .unwrap()
-                    .iter()
-                    .position(|target| {
-                        *target == PatchEditableTarget::Envelope(descriptor.parameter())
-                    })
-                    .unwrap();
-                mixer.interaction.mixer_selection_mut().parameter_index = mixer_target_index;
+            let mut mixer = installed_state();
+            mixer.patches[0].set_envelope(middle);
+            let patches_before = mixer.patches().to_vec();
+            mixer.apply(AppEvent::Adjust(Direction::Left)).unwrap();
+            assert_eq!(mixer.patches(), patches_before);
+            assert_eq!(
+                mixer.mixer().track(MixerTrackId::default()).level_db(),
+                -1.0
+            );
 
-                let mut patch = installed_state();
-                patch.patches[0].set_envelope(middle);
-                patch.interaction.select_context(TopLevelContext::Patch);
-                for _ in 0..=parameter_index {
-                    assert!(patch.interaction.move_patch_control_focus(Direction::Down));
-                }
-
-                let mixer_outcome = mixer.apply(AppEvent::Adjust(direction)).unwrap();
-                let patch_outcome = patch.apply(AppEvent::Adjust(direction)).unwrap();
-
-                assert_eq!(mixer.patches(), patch.patches());
-                assert_eq!(mixer_outcome.audio_command(), patch_outcome.audio_command());
-                assert_eq!(
-                    mixer_outcome.engine_selection_effect(),
-                    patch_outcome.engine_selection_effect()
-                );
+            let mut patch = installed_state();
+            patch.patches[0].set_envelope(middle);
+            let mixer_before = *patch.mixer();
+            let unrelated_before = patch.patches()[1].clone();
+            patch
+                .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                .unwrap();
+            for _ in 0..=parameter_index {
+                patch.apply(AppEvent::Navigate(Direction::Down)).unwrap();
             }
+            patch.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+
+            assert_eq!(*patch.mixer(), mixer_before);
+            assert_eq!(patch.patches()[1], unrelated_before);
+            assert_eq!(
+                patch.patches()[0].envelope().value(descriptor.parameter()),
+                middle.value(descriptor.parameter()) + descriptor.fine_step()
+            );
         }
     }
 
@@ -2092,15 +2353,24 @@ mod tests {
         assert_eq!(adjusted.engine_selection_effect(), None);
         assert_eq!(state.engine_selection(), &engine_status);
 
-        for direction in [Direction::Left, Direction::Right] {
-            let before = state.clone();
-            assert_eq!(
-                state.apply(AppEvent::Navigate(direction)),
-                Err(EventRejection::ActionUnavailableInContext)
-            );
-            assert_eq!(state.generation(), start_generation + 2);
-            assert_eq!(state, before);
-        }
+        let before = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Navigate(Direction::Left)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state.generation(), start_generation + 2);
+        assert_eq!(state, before);
+
+        let origin = state.interaction().focus_path().clone();
+        let entered = state.apply(AppEvent::Navigate(Direction::Right)).unwrap();
+        assert_eq!(entered.accepted().generation(), start_generation + 3);
+        assert_eq!(
+            state.interaction().active_surface(),
+            SurfaceId::PatchUtility
+        );
+        state.apply(AppEvent::Return).unwrap();
+        assert_eq!(state.generation(), start_generation + 4);
+        assert_eq!(state.interaction().focus_path(), &origin);
 
         let mut endpoint = mixed_state();
         let before = endpoint.clone();
@@ -2174,7 +2444,7 @@ mod tests {
             "Invalid".to_owned(),
             invalid_config,
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
 
         assert_eq!(
@@ -2209,11 +2479,13 @@ mod tests {
     fn app_state_navigation_changes_selection_without_parameters() {
         let mut state = installed_state();
         let patches = state.patches().to_vec();
+        let mixer = *state.mixer();
         let global = *state.global();
 
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         assert_eq!(state.selection().parameter_index(), 1);
         assert_eq!(state.patches(), patches.as_slice());
+        assert_eq!(*state.mixer(), mixer);
         assert_eq!(*state.global(), global);
 
         state.apply(AppEvent::Navigate(Direction::Right)).unwrap();
@@ -2221,24 +2493,30 @@ mod tests {
         assert_eq!(state.selection().patch_index(), 1);
 
         state.apply(AppEvent::Navigate(Direction::Right)).unwrap();
-        assert_eq!(state.selection().section(), SelectionSection::Global);
+        assert_eq!(state.selection().section(), SelectionSection::Patch);
+        assert_eq!(state.selection().patch_index(), 2);
         assert_eq!(state.selection().parameter_index(), 1);
     }
 
     #[test]
     fn app_state_adjusts_exactly_one_value_and_rejects_at_the_bound() {
         let mut state = installed_state();
-        let second_patch = state.patches()[1].clone();
+        let patches = state.patches().to_vec();
+        let second_track = *state.mixer().track(MixerTrackId::new(1).unwrap());
         let global = *state.global();
 
         state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
-        assert_eq!(state.patches()[0].parameters().gain_db(), 1.0);
-        assert_eq!(state.patches()[0].parameters().pan(), 0.0);
-        assert_eq!(state.patches()[1], second_patch);
+        assert_eq!(state.mixer().track(MixerTrackId::default()).level_db(), 1.0);
+        assert_eq!(state.mixer().track(MixerTrackId::default()).pan(), 0.0);
+        assert_eq!(
+            state.mixer().track(MixerTrackId::new(1).unwrap()),
+            &second_track
+        );
+        assert_eq!(state.patches(), patches.as_slice());
         assert_eq!(*state.global(), global);
 
         state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
-        assert_eq!(state.patches()[0].parameters().gain_db(), 6.0);
+        assert_eq!(state.mixer().track(MixerTrackId::default()).level_db(), 6.0);
 
         let accepted = state.clone();
         assert_eq!(
@@ -2249,35 +2527,33 @@ mod tests {
 
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         state.apply(AppEvent::Adjust(Direction::Left)).unwrap();
-        assert_eq!(state.patches()[0].parameters().gain_db(), 6.0);
-        assert_eq!(state.patches()[0].parameters().pan(), -0.01);
+        assert_eq!(state.mixer().track(MixerTrackId::default()).level_db(), 6.0);
+        assert_eq!(state.mixer().track(MixerTrackId::default()).pan(), -0.01);
     }
 
     #[test]
-    fn patch_editable_surface_orders_mixer_then_envelope_and_reduces_transactionally() {
+    fn patch_editable_surface_is_patch_owned_and_reduces_transactionally() {
         let mut state = installed_state();
         let targets = state.patch_editable_targets(0).unwrap();
-        assert_eq!(targets.len(), 8);
+        assert!(targets.len() >= 4);
         assert!(matches!(
             targets[0],
-            PatchEditableTarget::Mixer(crate::mixer::channel_parameters::ChannelParameter::GainDb)
-        ));
-        assert!(matches!(
-            targets[4],
             PatchEditableTarget::Envelope(crate::synth::VoiceEnvelopeParameter::AttackMilliseconds)
         ));
 
-        let original_mixer = *state.patches()[0].parameters();
+        let original_output = state.patches()[0].output();
+        let original_mixer = *state.mixer();
         let original_config = state.patches()[0].instrument_config().clone();
         let other_patch = state.patches()[1].clone();
-        for _ in 0..4 {
-            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
-        }
-        assert_eq!(state.selection().parameter_index(), 4);
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
 
         assert_eq!(state.patches()[0].envelope().attack_milliseconds(), 100.0);
-        assert_eq!(*state.patches()[0].parameters(), original_mixer);
+        assert_eq!(state.patches()[0].output(), original_output);
+        assert_eq!(*state.mixer(), original_mixer);
         assert_eq!(state.patches()[0].instrument_config(), &original_config);
         assert_eq!(state.patches()[1], other_patch);
     }
@@ -2471,7 +2747,8 @@ mod tests {
         let patch_id = state.patches()[0].id();
         let channel = state.patches()[0].channel();
         let envelope = *state.patches()[0].envelope();
-        let mixer = *state.patches()[0].parameters();
+        let output = state.patches()[0].output();
+        let mixer = *state.mixer();
         let unrelated = state.patches()[1].clone();
         let original_soundfont = state.patches()[0].instrument_config().clone();
         assert_eq!(
@@ -2590,7 +2867,8 @@ mod tests {
         assert_eq!(state.patches()[0].id(), patch_id);
         assert_eq!(state.patches()[0].channel(), channel);
         assert_eq!(*state.patches()[0].envelope(), envelope);
-        assert_eq!(*state.patches()[0].parameters(), mixer);
+        assert_eq!(state.patches()[0].output(), output);
+        assert_eq!(*state.mixer(), mixer);
         assert_eq!(state.patches()[1], unrelated);
     }
 
@@ -2624,18 +2902,15 @@ mod tests {
             .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
             .unwrap();
         state.apply(AppEvent::Navigate(Direction::Right)).unwrap();
-        for _ in 0..8 {
-            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
-        }
-        let model_id = ParameterId::new(BRAIDS_MODEL_PARAMETER_ID).unwrap();
-        let model = state.patches()[1]
-            .instrument_config()
-            .value(&model_id)
-            .cloned();
-        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
-        assert_ne!(
-            state.patches()[1].instrument_config().value(&model_id),
-            model.as_ref()
+        let patches_before = state.patches().to_vec();
+        state.apply(AppEvent::Adjust(Direction::Left)).unwrap();
+        assert_eq!(state.patches(), patches_before);
+        assert_eq!(
+            state
+                .mixer()
+                .track(MixerTrackId::new(1).unwrap())
+                .level_db(),
+            -1.0
         );
         assert_eq!(state.engine_selection().correlation(), Some(&correlation));
         assert_eq!(

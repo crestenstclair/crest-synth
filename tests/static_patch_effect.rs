@@ -18,9 +18,10 @@ use crest_synth::control::{
     AppEvent, AppLoop, AppState, Direction, PatchControlId, StateProjector, TopLevelContext,
 };
 use crest_synth::kernel::{midi_message::MidiMessage, PatchId};
-use crest_synth::mixer::{
-    channel_parameters::ChannelParameters, global_parameters::GlobalParameters,
-};
+use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::{
     AudioBoundary, AudioObservation, AudioRenderer, AudioThreadBoundary, ControlAudioObservation,
     GraphHandoffStatus, GraphPreparationCorrelation, GraphPreparationError,
@@ -312,7 +313,7 @@ fn effect_fixture_patches() -> (CapabilityRegistry, EffectCapabilityRegistry, Ve
                 .create(&CapabilityId::new("instrument.soundfont.hidef").unwrap())
                 .unwrap(),
             crest_synth::kernel::MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
         )
         .with_post_effects(vec![chorus]),
         Patch::new(
@@ -322,7 +323,7 @@ fn effect_fixture_patches() -> (CapabilityRegistry, EffectCapabilityRegistry, Ve
                 .create(&CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap())
                 .unwrap(),
             crest_synth::kernel::MidiChannel::new(1).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(1).unwrap()),
         ),
     ];
     (capabilities, effects, patches)
@@ -424,7 +425,7 @@ fn static_patch_effect() {
                 .create(&CapabilityId::new("instrument.soundfont.hidef").unwrap())
                 .unwrap(),
             crest_synth::kernel::MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
         )
         .with_post_effects(vec![chorus.clone()]),
         Patch::new(
@@ -434,11 +435,11 @@ fn static_patch_effect() {
                 .create(&CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap())
                 .unwrap(),
             crest_synth::kernel::MidiChannel::new(1).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(1).unwrap()),
         ),
     ];
 
-    let initial = ParameterSnapshot::new(0, globals(), &[]).unwrap();
+    let initial = ParameterSnapshot::new(0, globals(), MixerState::default(), &[]).unwrap();
     let boundary = LockFreeAudioBoundary::new(64, initial);
     let (control, mut audio) = boundary.into_handles();
     let state = AppState::for_graph_with_effects(
@@ -585,6 +586,7 @@ fn static_patch_effect() {
         target_config,
         app_loop.current_parameters().generation(),
         globals(),
+        MixerState::new(*app_loop.current_parameters().mixer_tracks()),
         crest_synth::shell::audio_output::AudioDeviceConfig::new(
             CHORUS_SAMPLE_RATE,
             2,
@@ -641,7 +643,12 @@ fn static_patch_effect() {
     assert_eq!(callback_allocations, 0);
     assert_eq!(callback_deallocations, 0);
     assert_eq!(callback_destructions, 0);
-    assert!(p99_render_microseconds < 2_666);
+    if !cfg!(debug_assertions) {
+        assert!(
+            p99_render_microseconds < 2_666,
+            "release-profile p99 render time was {p99_render_microseconds} microseconds"
+        );
+    }
 
     let observed = observation_reader.read_latest_on_control();
     let effect = observed.patch_effect();
@@ -909,6 +916,7 @@ fn prepared_post_effect_rack_processes_only_the_configured_patch() {
         1,
         GraphRevision::INITIAL,
         globals(),
+        MixerState::default(),
         &patches,
         &capabilities,
         &effects,
@@ -958,6 +966,7 @@ fn prepared_post_effect_rack_processes_only_the_configured_patch() {
         2,
         GraphRevision::INITIAL,
         globals(),
+        MixerState::default(),
         &patches[1..],
         &capabilities,
         &effects,

@@ -1,6 +1,9 @@
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
+use crate::mixer::mixer_state::MixerState;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::mixer_track_parameters::MixerTrackParameters;
+use crate::mixer::patch_output::PatchOutput;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::synth::instrument_capability::{CapabilityRegistry, MAX_INSTRUMENT_SCALAR_PARAMETERS};
 use crate::synth::patch::Patch;
@@ -188,7 +191,7 @@ impl Serialize for RtPostEffectParameters {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RtPatchParameters {
     patch_id: Option<PatchId>,
-    parameters: ChannelParameters,
+    output: PatchOutput,
     envelope: VoiceEnvelope,
     instrument: RtInstrumentParameters,
     effect: RtPostEffectParameters,
@@ -197,10 +200,10 @@ pub struct RtPatchParameters {
 impl RtPatchParameters {
     /// Copies one active Patch's identity and validated mixer parameters into a
     /// real-time-safe value.
-    pub const fn new(patch_id: PatchId, parameters: ChannelParameters) -> Self {
+    pub const fn new(patch_id: PatchId, output: PatchOutput) -> Self {
         Self {
             patch_id: Some(patch_id),
-            parameters,
+            output,
             envelope: VoiceEnvelope::DEFAULT,
             instrument: RtInstrumentParameters::EMPTY,
             effect: RtPostEffectParameters::EMPTY,
@@ -210,13 +213,13 @@ impl RtPatchParameters {
     /// Copies the full live projection for one active Patch.
     pub const fn projected(
         patch_id: PatchId,
-        parameters: ChannelParameters,
+        output: PatchOutput,
         envelope: VoiceEnvelope,
         instrument: RtInstrumentParameters,
     ) -> Self {
         Self {
             patch_id: Some(patch_id),
-            parameters,
+            output,
             envelope,
             instrument,
             effect: RtPostEffectParameters::EMPTY,
@@ -226,14 +229,14 @@ impl RtPatchParameters {
     /// Copies the full live projection including one optional post-effect slot.
     pub const fn projected_with_effect(
         patch_id: PatchId,
-        parameters: ChannelParameters,
+        output: PatchOutput,
         envelope: VoiceEnvelope,
         instrument: RtInstrumentParameters,
         effect: RtPostEffectParameters,
     ) -> Self {
         Self {
             patch_id: Some(patch_id),
-            parameters,
+            output,
             envelope,
             instrument,
             effect,
@@ -250,9 +253,9 @@ impl RtPatchParameters {
         self.patch_id
     }
 
-    /// Returns the Patch's copied, validated channel parameters.
-    pub const fn parameters(&self) -> &ChannelParameters {
-        &self.parameters
+    /// Returns the Patch's copied, validated output route and trim.
+    pub const fn output(&self) -> PatchOutput {
+        self.output
     }
 
     pub const fn envelope(&self) -> &VoiceEnvelope {
@@ -270,30 +273,10 @@ impl RtPatchParameters {
     fn inactive() -> Self {
         Self {
             patch_id: None,
-            parameters: ChannelParameters::default(),
+            output: PatchOutput::default(),
             envelope: VoiceEnvelope::DEFAULT,
             instrument: RtInstrumentParameters::EMPTY,
             effect: RtPostEffectParameters::EMPTY,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SerializableChannelParameters {
-    gain_db: f32,
-    pan: f32,
-    reverb_send: f32,
-    delay_send: f32,
-}
-
-impl From<&ChannelParameters> for SerializableChannelParameters {
-    fn from(parameters: &ChannelParameters) -> Self {
-        Self {
-            gain_db: parameters.gain_db(),
-            pan: parameters.pan(),
-            reverb_send: parameters.reverb_send(),
-            delay_send: parameters.delay_send(),
         }
     }
 }
@@ -310,7 +293,7 @@ impl Serialize for RtPatchParameters {
             envelope: &'a VoiceEnvelope,
             instrument: &'a RtInstrumentParameters,
             effect: &'a RtPostEffectParameters,
-            parameters: SerializableChannelParameters,
+            output: PatchOutput,
         }
 
         SerializablePatchParameters {
@@ -318,7 +301,7 @@ impl Serialize for RtPatchParameters {
             envelope: self.envelope(),
             instrument: self.instrument(),
             effect: self.effect(),
-            parameters: SerializableChannelParameters::from(self.parameters()),
+            output: self.output(),
         }
         .serialize(serializer)
     }
@@ -391,6 +374,7 @@ pub struct ParameterSnapshot {
     generation: u64,
     graph_revision: GraphRevision,
     global: GlobalParameters,
+    mixer_tracks: [MixerTrackParameters; MixerTrackId::COUNT],
     patch_count: usize,
     patches: [RtPatchParameters; MAX_PATCHES],
 }
@@ -411,10 +395,14 @@ impl ParameterSnapshot {
         "patches[].effect.slotId",
         "patches[].effect.scalarCount",
         "patches[].effect.scalars[]",
-        "patches[].parameters.gainDb",
-        "patches[].parameters.pan",
-        "patches[].parameters.reverbSend",
-        "patches[].parameters.delaySend",
+        "patches[].output.trackId",
+        "patches[].output.trimGainDb",
+        "mixerTracks[].levelDb",
+        "mixerTracks[].pan",
+        "mixerTracks[].mute",
+        "mixerTracks[].solo",
+        "mixerTracks[].reverbSend",
+        "mixerTracks[].delaySend",
         "global.masterGainDb",
         "global.reverbRoomSize",
         "global.reverbDamping",
@@ -436,9 +424,10 @@ impl ParameterSnapshot {
     pub fn new(
         generation: u64,
         global: GlobalParameters,
+        mixer: MixerState,
         patches: &[RtPatchParameters],
     ) -> Result<Self, ParameterSnapshotError> {
-        Self::for_graph(generation, GraphRevision::INITIAL, global, patches)
+        Self::for_graph(generation, GraphRevision::INITIAL, global, mixer, patches)
     }
 
     /// Copies one complete projection for a specific prepared graph revision.
@@ -446,6 +435,7 @@ impl ParameterSnapshot {
         generation: u64,
         graph_revision: GraphRevision,
         global: GlobalParameters,
+        mixer: MixerState,
         patches: &[RtPatchParameters],
     ) -> Result<Self, ParameterSnapshotError> {
         if patches.len() > MAX_PATCHES {
@@ -465,6 +455,7 @@ impl ParameterSnapshot {
             generation,
             graph_revision,
             global,
+            mixer_tracks: *mixer.tracks(),
             patch_count: patches.len(),
             patches: storage,
         })
@@ -478,6 +469,7 @@ impl ParameterSnapshot {
         generation: u64,
         graph_revision: GraphRevision,
         global: GlobalParameters,
+        mixer: MixerState,
         patches: &[Patch],
         registry: &CapabilityRegistry,
     ) -> Result<Self, ParameterSnapshotError> {
@@ -512,14 +504,14 @@ impl ParameterSnapshot {
                 let instrument = RtInstrumentParameters::new(&values)?;
                 Ok(RtPatchParameters::projected(
                     patch.id(),
-                    *patch.parameters(),
+                    patch.output(),
                     *patch.envelope(),
                     instrument,
                 ))
             })
             .collect::<Result<Vec<_>, ParameterSnapshotError>>()?;
 
-        Self::for_graph(generation, graph_revision, global, &projected)
+        Self::for_graph(generation, graph_revision, global, mixer, &projected)
     }
 
     /// Projects instrument and post-effect values into their separate fixed layouts.
@@ -527,6 +519,7 @@ impl ParameterSnapshot {
         generation: u64,
         graph_revision: GraphRevision,
         global: GlobalParameters,
+        mixer: MixerState,
         patches: &[Patch],
         registry: &CapabilityRegistry,
         effect_registry: &EffectCapabilityRegistry,
@@ -584,14 +577,14 @@ impl ParameterSnapshot {
                 };
                 Ok(RtPatchParameters::projected_with_effect(
                     patch.id(),
-                    *patch.parameters(),
+                    patch.output(),
                     *patch.envelope(),
                     instrument,
                     effect,
                 ))
             })
             .collect::<Result<Vec<_>, ParameterSnapshotError>>()?;
-        Self::for_graph(generation, graph_revision, global, &projected)
+        Self::for_graph(generation, graph_revision, global, mixer, &projected)
     }
 
     /// Returns the AppState generation from which this snapshot was projected.
@@ -609,6 +602,15 @@ impl ParameterSnapshot {
         &self.global
     }
 
+    /// Returns all fixed track values in `MixerTrackId` order.
+    pub const fn mixer_tracks(&self) -> &[MixerTrackParameters; MixerTrackId::COUNT] {
+        &self.mixer_tracks
+    }
+
+    pub const fn mixer_track(&self, id: MixerTrackId) -> &MixerTrackParameters {
+        &self.mixer_tracks[id.index()]
+    }
+
     /// Returns the number of active entries in the fixed Patch array.
     pub const fn patch_count(&self) -> usize {
         self.patch_count
@@ -622,6 +624,16 @@ impl ParameterSnapshot {
     /// Returns the complete fixed storage, including inactive entries.
     pub const fn storage(&self) -> &[RtPatchParameters; MAX_PATCHES] {
         &self.patches
+    }
+
+    /// Compares only data observed by the audio thread, excluding the
+    /// control-generation correlation carried by this immutable projection.
+    pub fn audio_values_equal(&self, other: &Self) -> bool {
+        self.graph_revision == other.graph_revision
+            && self.global == other.global
+            && self.mixer_tracks == other.mixer_tracks
+            && self.patch_count == other.patch_count
+            && self.patches == other.patches
     }
 
     /// Finds one active Patch without allocation.
@@ -692,6 +704,7 @@ impl Serialize for ParameterSnapshot {
             graph_revision: GraphRevision,
             patch_count: usize,
             patches: &'a [RtPatchParameters],
+            mixer_tracks: &'a [MixerTrackParameters; MixerTrackId::COUNT],
             global: SerializableGlobalParameters,
         }
 
@@ -700,6 +713,7 @@ impl Serialize for ParameterSnapshot {
             graph_revision: self.graph_revision(),
             patch_count: self.patch_count(),
             patches: self.patches(),
+            mixer_tracks: self.mixer_tracks(),
             global: SerializableGlobalParameters::from(self.global()),
         }
         .serialize(serializer)
@@ -713,8 +727,10 @@ mod tests {
         RtPostEffectParameters, MAX_PATCHES,
     };
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::graph_revision::GraphRevision;
     use crate::synth::voice_envelope::VoiceEnvelope;
     use crate::synth::EffectSlotId;
@@ -728,7 +744,7 @@ mod tests {
     fn patch(id: u32, gain_db: f32) -> RtPatchParameters {
         RtPatchParameters::new(
             PatchId::new(id).unwrap(),
-            ChannelParameters::new(gain_db, 0.0, 0.2, 0.1).unwrap(),
+            PatchOutput::new(MixerTrackId::new(((id - 1) % 16) as u8).unwrap(), gain_db).unwrap(),
         )
     }
 
@@ -736,7 +752,9 @@ mod tests {
     fn copies_one_complete_accepted_control_projection() {
         let patches = [patch(1, -6.0), patch(2, -12.0)];
         let revision = GraphRevision::new(7).unwrap();
-        let snapshot = ParameterSnapshot::for_graph(42, revision, global(), &patches).unwrap();
+        let snapshot =
+            ParameterSnapshot::for_graph(42, revision, global(), MixerState::default(), &patches)
+                .unwrap();
 
         assert_eq!(snapshot.generation(), 42);
         assert_eq!(snapshot.graph_revision(), revision);
@@ -752,7 +770,7 @@ mod tests {
         let instrument = RtInstrumentParameters::new(&[3.0, 0.25, 0.75]).unwrap();
         let projected = RtPatchParameters::projected(
             PatchId::new(7).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
             envelope,
             instrument,
         );
@@ -783,6 +801,7 @@ mod tests {
             42,
             revision,
             global(),
+            MixerState::default(),
             &[patch(1, -6.0), patch(2, -12.0)],
         )
         .unwrap();
@@ -829,14 +848,19 @@ mod tests {
 
         let projected = RtPatchParameters::projected_with_effect(
             PatchId::new(7).unwrap(),
-            ChannelParameters::new(-3.0, 0.25, 0.4, 0.2).unwrap(),
+            PatchOutput::new(MixerTrackId::new(7).unwrap(), -3.0).unwrap(),
             VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap(),
             RtInstrumentParameters::new(&[2.0, 0.35, 0.65]).unwrap(),
             RtPostEffectParameters::new(EffectSlotId::new(1).unwrap(), &[0.5, 0.75]).unwrap(),
         );
-        let snapshot =
-            ParameterSnapshot::for_graph(9, GraphRevision::new(4).unwrap(), global(), &[projected])
-                .unwrap();
+        let snapshot = ParameterSnapshot::for_graph(
+            9,
+            GraphRevision::new(4).unwrap(),
+            global(),
+            MixerState::default(),
+            &[projected],
+        )
+        .unwrap();
         let mut discovered = BTreeSet::new();
         leaves(
             &serde_json::to_value(snapshot).unwrap(),
@@ -855,7 +879,8 @@ mod tests {
 
     #[test]
     fn unused_fixed_entries_are_inactive() {
-        let snapshot = ParameterSnapshot::new(1, global(), &[patch(1, 0.0)]).unwrap();
+        let snapshot =
+            ParameterSnapshot::new(1, global(), MixerState::default(), &[patch(1, 0.0)]).unwrap();
 
         assert!(snapshot.storage()[0].is_active());
         assert!(snapshot.storage()[1..]
@@ -866,7 +891,8 @@ mod tests {
     #[test]
     fn rejects_state_larger_than_the_compile_time_bound() {
         let patches = [patch(1, 0.0); MAX_PATCHES + 1];
-        let error = ParameterSnapshot::new(1, global(), &patches).unwrap_err();
+        let error =
+            ParameterSnapshot::new(1, global(), MixerState::default(), &patches).unwrap_err();
 
         assert_eq!(
             error,
@@ -889,7 +915,9 @@ mod tests {
         assert!(!core::mem::needs_drop::<RtInstrumentParameters>());
         assert_eq!(
             core::mem::size_of::<ParameterSnapshot>(),
-            core::mem::size_of_val(&ParameterSnapshot::new(0, global(), &[]).unwrap())
+            core::mem::size_of_val(
+                &ParameterSnapshot::new(0, global(), MixerState::default(), &[]).unwrap(),
+            )
         );
     }
 }

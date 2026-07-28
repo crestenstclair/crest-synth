@@ -1,5 +1,7 @@
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::mix_observation::MixObservation;
+use crate::mixer::mixer_track_id::{MixerTrackId, MixerTrackId as TrackId};
+use crate::mixer::track_meter::TrackMeter;
 use crate::real_time::{GraphRevision, PatchEffectObservation};
 use serde::Serialize;
 
@@ -20,6 +22,7 @@ pub struct AudioObservationSnapshot {
     primary_patch_rms: f32,
     primary_active_notes: u32,
     patch_effect: PatchEffectObservation,
+    tracks: [TrackMeter; MixerTrackId::COUNT],
     left_peak: f32,
     right_peak: f32,
     output_rms: f32,
@@ -174,6 +177,7 @@ impl AudioObservationSnapshot {
             primary_patch_rms,
             primary_active_notes,
             patch_effect,
+            tracks: mix.tracks(),
             left_peak: mix.left_peak(),
             right_peak: mix.right_peak(),
             output_rms: mix.output_rms(),
@@ -380,6 +384,57 @@ impl AudioObservationSnapshot {
         non_finite_samples: u64,
         clipped_samples: u64,
     ) -> Self {
+        Self::from_parts_with_graph_routing_primary_effect_and_tracks(
+            sequence,
+            rendered_blocks,
+            rendered_frames,
+            parameter_generation,
+            active_graph_revision,
+            commands_consumed,
+            active_notes,
+            routing_failures,
+            last_unknown_patch_id,
+            primary_patch_id,
+            primary_patch_rms,
+            primary_active_notes,
+            patch_effect,
+            [TrackMeter::ZERO; MixerTrackId::COUNT],
+            left_peak,
+            right_peak,
+            output_rms,
+            reverb_input_rms,
+            delay_input_rms,
+            wet_output_rms,
+            non_finite_samples,
+            clipped_samples,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) const fn from_parts_with_graph_routing_primary_effect_and_tracks(
+        sequence: u64,
+        rendered_blocks: u64,
+        rendered_frames: u64,
+        parameter_generation: u64,
+        active_graph_revision: GraphRevision,
+        commands_consumed: u64,
+        active_notes: u32,
+        routing_failures: u64,
+        last_unknown_patch_id: Option<PatchId>,
+        primary_patch_id: Option<PatchId>,
+        primary_patch_rms: f32,
+        primary_active_notes: u32,
+        patch_effect: PatchEffectObservation,
+        tracks: [TrackMeter; MixerTrackId::COUNT],
+        left_peak: f32,
+        right_peak: f32,
+        output_rms: f32,
+        reverb_input_rms: f32,
+        delay_input_rms: f32,
+        wet_output_rms: f32,
+        non_finite_samples: u64,
+        clipped_samples: u64,
+    ) -> Self {
         Self {
             sequence,
             rendered_blocks,
@@ -394,6 +449,7 @@ impl AudioObservationSnapshot {
             primary_patch_rms,
             primary_active_notes,
             patch_effect,
+            tracks,
             left_peak,
             right_peak,
             output_rms,
@@ -443,6 +499,12 @@ impl AudioObservationSnapshot {
     }
     pub const fn patch_effect(self) -> PatchEffectObservation {
         self.patch_effect
+    }
+    pub const fn tracks(self) -> [TrackMeter; MixerTrackId::COUNT] {
+        self.tracks
+    }
+    pub const fn track(self, id: TrackId) -> TrackMeter {
+        self.tracks[id.index()]
     }
     pub const fn left_peak(self) -> f32 {
         self.left_peak

@@ -25,11 +25,11 @@ fn expected_schema(case: BehavioralMutationCase) -> BTreeSet<String> {
             "projection_values_exact",
             "baseline_restored",
         ],
-        BehavioralMutationCase::CrossPatchParameterLeak => &[
+        BehavioralMutationCase::CrossTrackParameterLeak => &[
             "case",
-            "edited_patch_id",
-            "comparison_patch_id",
-            "patch_ids_distinct",
+            "edited_track_id",
+            "comparison_track_id",
+            "track_ids_distinct",
             "parameter",
             "parameter_cases_exercised",
             "edited_value_before",
@@ -38,17 +38,17 @@ fn expected_schema(case: BehavioralMutationCase) -> BTreeSet<String> {
             "comparison_value_after",
             "published_edited_value",
             "published_comparison_value",
-            "edited_stem_energy_before",
-            "edited_stem_energy_after",
-            "comparison_stem_energy_before",
-            "comparison_stem_energy_after",
+            "edited_track_energy_before",
+            "edited_track_energy_after",
+            "comparison_track_energy_before",
+            "comparison_track_energy_after",
             "edited_value_changed",
             "comparison_value_unchanged",
             "state_values_exact",
             "published_values_exact",
-            "edited_patch_audio_changed",
-            "unedited_patch_audio_unchanged",
-            "all_channel_parameters_isolated",
+            "edited_track_audio_changed",
+            "unedited_track_audio_unchanged",
+            "all_track_parameters_isolated",
             "dry_path_isolated",
             "reverb_path_isolated",
             "delay_path_isolated",
@@ -135,31 +135,31 @@ fn every_named_mutant_falsifies_its_measured_healthy_predicate() {
                 assert!(!mutant.baseline_restored);
             }
             (
-                BehavioralMutationObservation::CrossPatchParameterLeak(healthy),
-                BehavioralMutationObservation::CrossPatchParameterLeak(mutant),
+                BehavioralMutationObservation::CrossTrackParameterLeak(healthy),
+                BehavioralMutationObservation::CrossTrackParameterLeak(mutant),
             ) => {
-                assert_eq!(healthy.parameter_cases_exercised, 4);
+                assert_eq!(healthy.parameter_cases_exercised, 6);
                 assert!(healthy.state_values_exact);
                 assert!(healthy.published_values_exact);
-                assert!(healthy.edited_patch_audio_changed);
-                assert!(healthy.unedited_patch_audio_unchanged);
-                assert!(healthy.all_channel_parameters_isolated);
+                assert!(healthy.edited_track_audio_changed);
+                assert!(healthy.unedited_track_audio_unchanged);
+                assert!(healthy.all_track_parameters_isolated);
                 assert!(!measurements_differ(
-                    healthy.comparison_stem_energy_before,
-                    healthy.comparison_stem_energy_after,
+                    healthy.comparison_track_energy_before,
+                    healthy.comparison_track_energy_after,
                 ));
 
                 assert!(mutant.state_values_exact);
                 assert!(mutant.published_values_exact);
-                assert!(mutant.edited_patch_audio_changed);
-                assert!(!mutant.unedited_patch_audio_unchanged);
-                assert!(!mutant.all_channel_parameters_isolated);
+                assert!(mutant.edited_track_audio_changed);
+                assert!(!mutant.unedited_track_audio_unchanged);
+                assert!(!mutant.all_track_parameters_isolated);
                 assert!(!mutant.dry_path_isolated);
                 assert!(!mutant.reverb_path_isolated);
                 assert!(!mutant.delay_path_isolated);
                 assert!(measurements_differ(
-                    mutant.comparison_stem_energy_before,
-                    mutant.comparison_stem_energy_after,
+                    mutant.comparison_track_energy_before,
+                    mutant.comparison_track_energy_after,
                 ));
             }
             (

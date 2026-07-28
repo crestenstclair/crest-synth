@@ -5,6 +5,7 @@ use crate::control::{
     StructuralEditIntent,
 };
 use crate::kernel::{MidiChannel, PatchId};
+use crate::mixer::patch_output::{PatchOutputParameter, PatchOutputParameterKind};
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
     AssetReference, ParameterChoice, ParameterDefault, ParameterKind, ParameterRange,
@@ -136,6 +137,81 @@ pub struct PatchPageEnvelopeRow {
     coarse_step: f32,
     unit: Option<String>,
     editable: bool,
+}
+
+/// One canonical PATCH Utility output row.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchPageOutputRow {
+    control_id: PatchControlId,
+    id: String,
+    label: String,
+    kind: String,
+    scalar_value: Option<f32>,
+    choice_value: Option<String>,
+    minimum: Option<f32>,
+    maximum: Option<f32>,
+    fine_step: Option<f32>,
+    coarse_step: Option<f32>,
+    unit: Option<String>,
+    editable: bool,
+}
+
+impl PatchPageOutputRow {
+    fn for_parameter(
+        parameter: PatchOutputParameter,
+        output: crate::mixer::patch_output::PatchOutput,
+    ) -> Self {
+        let descriptor = parameter.descriptor();
+        Self {
+            control_id: PatchControlId::Output(parameter),
+            id: descriptor.name().to_owned(),
+            label: descriptor.label().to_owned(),
+            kind: match descriptor.kind() {
+                PatchOutputParameterKind::Continuous => "continuous",
+                PatchOutputParameterKind::TrackChoice => "choice",
+            }
+            .to_owned(),
+            scalar_value: (parameter == PatchOutputParameter::TrimGain)
+                .then_some(output.trim_gain_db()),
+            choice_value: (parameter == PatchOutputParameter::OutputTrack)
+                .then(|| output.track_id().to_string()),
+            minimum: descriptor.minimum(),
+            maximum: descriptor.maximum(),
+            fine_step: descriptor.fine_step(),
+            coarse_step: descriptor.coarse_step(),
+            unit: descriptor.unit().map(str::to_owned),
+            editable: true,
+        }
+    }
+
+    pub(crate) fn selected_text(
+        parameter: PatchOutputParameter,
+        output: crate::mixer::patch_output::PatchOutput,
+    ) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&Self::for_parameter(parameter, output))
+            .map(|row| format!("> OUTPUT {row}"))
+    }
+
+    pub fn control_id(&self) -> PatchControlId {
+        self.control_id.clone()
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub const fn scalar_value(&self) -> Option<f32> {
+        self.scalar_value
+    }
+
+    pub fn choice_value(&self) -> Option<&str> {
+        self.choice_value.as_deref()
+    }
 }
 
 impl PatchPageEnvelopeRow {
@@ -508,6 +584,7 @@ struct PatchPageContent {
     context: TopLevelContext,
     focused_control_id: PatchControlId,
     patch: PatchPageIdentity,
+    output: Vec<PatchPageOutputRow>,
     engine: PatchPageEngine,
     envelope: Vec<PatchPageEnvelopeRow>,
     sections: Vec<PatchPageSection>,
@@ -583,6 +660,18 @@ impl PatchPageProjection {
         "patch.id",
         "patch.midiChannel",
         "patch.name",
+        "output[].coarseStep",
+        "output[].controlId",
+        "output[].editable",
+        "output[].fineStep",
+        "output[].id",
+        "output[].kind",
+        "output[].label",
+        "output[].maximum",
+        "output[].minimum",
+        "output[].scalarValue",
+        "output[].choiceValue",
+        "output[].unit",
         "sections[].id",
         "sections[].label",
         "sections[].parameters[].activeGraphRevision",
@@ -634,6 +723,10 @@ impl PatchPageProjection {
 
     pub fn patch(&self) -> &PatchPageIdentity {
         &self.content.patch
+    }
+
+    pub fn output(&self) -> &[PatchPageOutputRow] {
+        &self.content.output
     }
 
     pub fn engine(&self) -> &PatchPageEngine {
@@ -697,9 +790,13 @@ impl PatchPageProjection {
             .effects()
             .validate_patch_effects(patch.post_effects())
             .map_err(|_| PatchPageProjectionError::InvalidEffectConfig)?;
-        let resolved_controls = state
-            .focused_patch_controls()
-            .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
+        let resolved_controls = if matches!(focused_control_id, PatchControlId::Output(_)) {
+            PatchControlId::utility_surface_descriptor().to_vec()
+        } else {
+            state
+                .focused_patch_controls()
+                .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?
+        };
         if !resolved_controls.contains(&focused_control_id) {
             return Err(PatchPageProjectionError::InvalidInstrumentConfig);
         }
@@ -712,6 +809,10 @@ impl PatchPageProjection {
                 capability_id: descriptor.id().clone(),
                 label: descriptor.label().to_owned(),
             })
+            .collect();
+        let output = PatchOutputParameter::ALL
+            .into_iter()
+            .map(|parameter| PatchPageOutputRow::for_parameter(parameter, patch.output()))
             .collect();
         let engine_selection = state.engine_selection();
         let correlation = engine_selection.correlation();
@@ -901,6 +1002,7 @@ impl PatchPageProjection {
                     name: patch.name().to_owned(),
                     midi_channel: patch.channel(),
                 },
+                output,
                 engine: PatchPageEngine {
                     control_id: PatchControlId::Engine,
                     active_capability_id: descriptor.id().clone(),
@@ -952,6 +1054,7 @@ impl Serialize for PatchPageProjection {
             context: TopLevelContext,
             focused_control_id: PatchControlId,
             patch: &'a PatchPageIdentity,
+            output: &'a [PatchPageOutputRow],
             engine: &'a PatchPageEngine,
             envelope: &'a [PatchPageEnvelopeRow],
             sections: &'a [PatchPageSection],
@@ -963,6 +1066,7 @@ impl Serialize for PatchPageProjection {
             context: self.context(),
             focused_control_id: self.focused_control_id(),
             patch: self.patch(),
+            output: self.output(),
             engine: self.engine(),
             envelope: self.envelope(),
             sections: self.sections(),
@@ -1011,8 +1115,9 @@ mod tests {
     use crate::adapter::production_instruments::production_capability_registry;
     use crate::control::{AppEvent, AppState, StateProjector, TopLevelContext};
     use crate::kernel::{MidiChannel, PatchId};
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::Patch;
     use crate::testing::automatic_midi_test::create_soundfont_config;
@@ -1029,7 +1134,7 @@ mod tests {
             "Focused".to_owned(),
             config,
             MidiChannel::new(3).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(3).unwrap()),
         )
         .with_envelope(crate::synth::VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap());
         state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
@@ -1050,7 +1155,7 @@ mod tests {
             "Focused".to_owned(),
             config,
             MidiChannel::new(3).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(3).unwrap()),
         )
         .with_envelope(crate::synth::VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap())
         .with_post_effects(vec![production_chorus_config(

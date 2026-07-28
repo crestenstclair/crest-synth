@@ -6,6 +6,7 @@ use crate::control::engine_selection::{
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
 use crate::control::top_level_context::TopLevelContext;
+use crate::control::{InteractionMode, SurfaceId};
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::GraphRevision;
@@ -159,10 +160,7 @@ pub struct PatchInput {
     instrument: InstrumentConfig,
     post_effects: Vec<PostEffectConfig>,
     envelope: VoiceEnvelope,
-    gain_db: f32,
-    pan: f32,
-    reverb_send: f32,
-    delay_send: f32,
+    output: crate::mixer::patch_output::PatchOutput,
 }
 
 impl PatchInput {
@@ -190,20 +188,8 @@ impl PatchInput {
         &self.envelope
     }
 
-    pub const fn gain_db(&self) -> f32 {
-        self.gain_db
-    }
-
-    pub const fn pan(&self) -> f32 {
-        self.pan
-    }
-
-    pub const fn reverb_send(&self) -> f32 {
-        self.reverb_send
-    }
-
-    pub const fn delay_send(&self) -> f32 {
-        self.delay_send
+    pub const fn output(&self) -> crate::mixer::patch_output::PatchOutput {
+        self.output
     }
 }
 
@@ -216,10 +202,7 @@ impl From<&Patch> for PatchInput {
             instrument: patch.instrument_config().clone(),
             post_effects: patch.post_effects().to_vec(),
             envelope: *patch.envelope(),
-            gain_db: patch.parameters().gain_db(),
-            pan: patch.parameters().pan(),
-            reverb_send: patch.parameters().reverb_send(),
-            delay_send: patch.parameters().delay_send(),
+            output: patch.output(),
         }
     }
 }
@@ -237,6 +220,13 @@ pub enum EventInput {
     Adjust {
         direction: EventDirection,
     },
+    SetInteractionMode {
+        mode: InteractionMode,
+    },
+    EnterSurface {
+        surface: SurfaceId,
+    },
+    Return,
     InstallPatches {
         patches: Vec<PatchInput>,
     },
@@ -300,6 +290,9 @@ impl From<&AppEvent> for EventInput {
             AppEvent::Adjust(direction) => Self::Adjust {
                 direction: (*direction).into(),
             },
+            AppEvent::SetInteractionMode(mode) => Self::SetInteractionMode { mode: *mode },
+            AppEvent::EnterSurface(surface) => Self::EnterSurface { surface: *surface },
+            AppEvent::Return => Self::Return,
             AppEvent::InstallPatches(patches) => Self::InstallPatches {
                 patches: patches.iter().map(PatchInput::from).collect(),
             },
@@ -359,6 +352,21 @@ impl From<&AppEvent> for EventInput {
                 collected: *collected,
             },
         }
+    }
+}
+
+impl EventInput {
+    /// Mirrors the production event publication contract in serialized
+    /// behavioral evidence.
+    pub const fn publishes_parameters_on_acceptance(&self) -> bool {
+        !matches!(
+            self,
+            Self::SelectContext { .. }
+                | Self::Navigate { .. }
+                | Self::SetInteractionMode { .. }
+                | Self::EnterSurface { .. }
+                | Self::Return
+        )
     }
 }
 
@@ -534,14 +542,13 @@ impl EventRecord {
         "input.message.data1",
         "input.message.data2",
         "input.message.kind",
+        "input.mode",
         "input.patchId",
         "input.patches[].channel",
-        "input.patches[].delaySend",
         "input.patches[].envelope.attackMilliseconds",
         "input.patches[].envelope.decayMilliseconds",
         "input.patches[].envelope.releaseMilliseconds",
         "input.patches[].envelope.sustain",
-        "input.patches[].gainDb",
         "input.patches[].id",
         "input.patches[].instrument.assetReferences[].parameterId",
         "input.patches[].instrument.assetReferences[].reference.kind",
@@ -551,7 +558,8 @@ impl EventRecord {
         "input.patches[].instrument.values[].value.kind",
         "input.patches[].instrument.values[].value.value",
         "input.patches[].name",
-        "input.patches[].pan",
+        "input.patches[].output.trackId",
+        "input.patches[].output.trimGainDb",
         "input.patches[].postEffects[].assetReferences[].parameterId",
         "input.patches[].postEffects[].assetReferences[].reference.kind",
         "input.patches[].postEffects[].assetReferences[].reference.locator",
@@ -560,11 +568,11 @@ impl EventRecord {
         "input.patches[].postEffects[].values[].parameterId",
         "input.patches[].postEffects[].values[].value.kind",
         "input.patches[].postEffects[].values[].value.value",
-        "input.patches[].reverbSend",
         "input.requestId",
         "input.retiredGraphRevision",
         "input.sourceCapabilityId",
         "input.sourceGraphRevision",
+        "input.surface",
         "input.targetCapabilityId",
         "input.targetGraphRevision",
         "outcome",
@@ -596,6 +604,7 @@ impl EventRecord {
         snapshot: &StateSnapshot,
         parameter_generation: u64,
         parameter_graph_revision: GraphRevision,
+        parameters_published: bool,
         projection: &TextProjection,
         audio_command: Option<AudioCommand>,
         engine_selection_effect: Option<EngineSelectionEffect>,
@@ -617,15 +626,15 @@ impl EventRecord {
         validate_parameter_generation(generation_after, parameter_generation)?;
         validate_projection_hash(snapshot.hash(), projection.state_hash())?;
 
-        let mut emitted_events = vec![
-            EmittedEvent::StateAccepted {
-                generation: accepted.generation(),
-            },
-            EmittedEvent::ParameterSnapshotPublished {
+        let mut emitted_events = vec![EmittedEvent::StateAccepted {
+            generation: accepted.generation(),
+        }];
+        if parameters_published {
+            emitted_events.push(EmittedEvent::ParameterSnapshotPublished {
                 generation: parameter_generation,
                 graph_revision: parameter_graph_revision,
-            },
-        ];
+            });
+        }
         if let Some(command) = audio_command {
             emitted_events.push(EmittedEvent::AudioCommand {
                 effect: command.into(),
@@ -827,12 +836,12 @@ mod tests {
     use crate::control::text_projection::TextProjection;
     use crate::control::{
         EngineSelectionEffect, EngineSelectionEffectKind, EngineSelectionFailure,
-        EngineSelectionRequestId, EngineSelectionStatus, StructuralEditIntent, TopLevelContext,
+        EngineSelectionRequestId, EngineSelectionStatus, InteractionMode, StructuralEditIntent,
+        SurfaceId, TopLevelContext,
     };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::real_time::GraphRevision;
     use crate::synth::patch::Patch;
@@ -855,7 +864,11 @@ mod tests {
             )
             .unwrap(),
             MidiChannel::new((id - 1) as u8).unwrap(),
-            ChannelParameters::new(-6.0, 0.25, 0.5, 0.75).unwrap(),
+            crate::mixer::patch_output::PatchOutput::new(
+                crate::mixer::mixer_track_id::MixerTrackId::new((id - 1) as u8).unwrap(),
+                -6.0,
+            )
+            .unwrap(),
         )
     }
 
@@ -938,10 +951,11 @@ mod tests {
                 )
             }],
             envelope: VoiceEnvelope::default(),
-            gain_db: -4.0,
-            pan: 0.25,
-            reverb_send: 0.5,
-            delay_send: 0.75,
+            output: crate::mixer::patch_output::PatchOutput::new(
+                crate::mixer::mixer_track_id::MixerTrackId::new(3).unwrap(),
+                -4.0,
+            )
+            .unwrap(),
         };
         let message = MidiInput {
             channel: 3,
@@ -1056,6 +1070,31 @@ mod tests {
                 EventInput::Navigate {
                     direction: EventDirection::Down,
                 },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ),
+            schema_record(
+                EventSource::Keyboard,
+                EventInput::SetInteractionMode {
+                    mode: InteractionMode::Adjust,
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ),
+            schema_record(
+                EventSource::Keyboard,
+                EventInput::EnterSurface {
+                    surface: SurfaceId::MixerInspector,
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ),
+            schema_record(
+                EventSource::Keyboard,
+                EventInput::Return,
                 EventOutcome::Accepted,
                 Vec::new(),
                 None,
@@ -1216,6 +1255,7 @@ mod tests {
             &snapshot,
             state.generation(),
             GraphRevision::INITIAL,
+            true,
             &projection,
             outcome.audio_command().copied(),
             outcome.engine_selection_effect().cloned(),
@@ -1323,10 +1363,8 @@ mod tests {
                     .choice_id()
             ))
         );
-        assert_eq!(installed.gain_db(), -6.0);
-        assert_eq!(installed.pan(), 0.25);
-        assert_eq!(installed.reverb_send(), 0.5);
-        assert_eq!(installed.delay_send(), 0.75);
+        assert_eq!(installed.output().trim_gain_db(), -6.0);
+        assert_eq!(installed.output().track_id().value(), 2);
         assert!(installed.post_effects().is_empty());
     }
 
@@ -1348,6 +1386,7 @@ mod tests {
             &snapshot,
             state.generation() + 1,
             GraphRevision::INITIAL,
+            false,
             &projection,
             None,
             None,

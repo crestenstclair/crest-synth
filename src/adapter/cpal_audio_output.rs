@@ -1,3 +1,4 @@
+use crate::real_time::callback_safety::CallbackSafetyScope;
 use crate::shell::audio_output::{
     AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
     AudioOutputError, AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
@@ -250,8 +251,14 @@ fn build_native_stereo_stream(
     device
         .build_output_stream(
             config,
-            move |device_buffer: &mut [f32], _| render(device_buffer),
-            move |error| on_runtime_error(map_runtime_error(error.kind())),
+            move |device_buffer: &mut [f32], _| {
+                let _callback_scope = CallbackSafetyScope::enter();
+                render(device_buffer);
+            },
+            move |error| {
+                let _callback_scope = CallbackSafetyScope::enter();
+                on_runtime_error(map_runtime_error(error.kind()));
+            },
             None,
         )
         .map_err(|error| {
@@ -279,6 +286,7 @@ where
         .build_output_stream(
             config,
             move |device_buffer: &mut [Sample], _| {
+                let _callback_scope = CallbackSafetyScope::enter();
                 for device_chunk in device_buffer.chunks_mut(device_chunk_samples) {
                     let frame_count = device_chunk.len() / channels;
                     let stereo_sample_count = frame_count * 2;
@@ -287,7 +295,10 @@ where
                     map_stereo_samples(render_buffer, device_chunk, channels, silence);
                 }
             },
-            move |error| on_runtime_error(map_runtime_error(error.kind())),
+            move |error| {
+                let _callback_scope = CallbackSafetyScope::enter();
+                on_runtime_error(map_runtime_error(error.kind()));
+            },
             None,
         )
         .map_err(|error| {

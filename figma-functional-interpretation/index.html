@@ -939,7 +939,7 @@
               <ul class="finding-list">
                 <li><span class="tag seen">Seen</span><span>All tracks remain visible; hairlines, not cards, preserve density.</span></li>
                 <li><span class="tag stated">Stated</span><span>Edit adjusts or toggles; Select enters multi-select; Shift+Up returns to PATCH.</span></li>
-                <li><span class="tag inferred">Inferred</span><span>The focused channel is simultaneously highlighted in the field, named in the header/footer, and expanded in the inspector.</span></li>
+                <li><span class="tag inferred">Inferred</span><span>The focused track is simultaneously highlighted in the field, named in the header/footer, and expanded in the inspector.</span></li>
               </ul>
               <a class="source-link" href="https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=42-3">Open source node</a>
             </div>
@@ -981,7 +981,7 @@
             <tr><td>CLI Hint</td><td>Tone</td><td>4</td><td>Neutral, focus, adjust, and back make commands semantically scannable.</td></tr>
             <tr><td>CLI Browser Line</td><td>Type × state</td><td>8</td><td>Parent, folder, file, and cancel share one list grammar with a focused form.</td></tr>
             <tr><td>Compact Parameter Slider</td><td>Tone × state</td><td>12</td><td>Engine, sample, and effect color roles cross default, focused, editing, and disabled states.</td></tr>
-            <tr><td>Compact Mixer Fader</td><td>State</td><td>4</td><td>Focus, mute, and solo remain legible in a very narrow channel.</td></tr>
+            <tr><td>Compact Mixer Fader</td><td>State</td><td>4</td><td>Focus, mute, and solo remain legible in a very narrow track.</td></tr>
           </tbody>
         </table>
       </div>
@@ -1024,14 +1024,13 @@
             <p class="section-kicker">06 / Figma gaps</p>
             <h2>What the file does not settle</h2>
           </div>
-          <p class="section-summary">These are ambiguities inside the Figma evidence itself. They should be resolved in the design before anyone treats the interaction model as implementation-ready.</p>
+          <p class="section-summary">These are the ambiguities that remain inside the Figma evidence. Product authority resolved sample preview to holding Start while the sample row is focused; Start remains reserved elsewhere.</p>
         </div>
 
         <div class="questions">
           <article class="question"><span class="q-num">Q01 / SELECTOR CHANGE</span><h3>Is unmodified Left/Right navigation or mutation?</h3><p>Patch rows say “L/R:change,” while the interaction map says the unmodified D-pad moves focus and Edit+Left/Right performs fine adjustment. The selector’s direct-change rule needs one unambiguous binding.</p></article>
-          <article class="question"><span class="q-num">Q02 / SAMPLE PREVIEW</span><h3>What physical control is “X”?</h3><p>The Sample Browser note says “X previews only while held,” but the hardware legend defines only Select, Start, Edit, Shift, and D-pad. The visible footer also omits preview. This action is not grounded to the declared controller vocabulary.</p></article>
-          <article class="question"><span class="q-num">Q03 / MULTI-SELECT</span><h3>What can a multi-selection do?</h3><p>Select enters multi-select mode, but the map and Mixer frame do not show selection accumulation, range rules, batch operations, cancellation, or visual examples.</p></article>
-          <article class="question"><span class="q-num">Q04 / PROTOTYPE COVERAGE</span><h3>Which transitions are executable in Figma?</h3><p>The inspected screen and state nodes contain no prototype reactions. Flow is communicated through annotations, labels, and the interaction map, so click-through behavior cannot confirm edge cases.</p></article>
+          <article class="question"><span class="q-num">Q02 / MULTI-SELECT</span><h3>What can a multi-selection do?</h3><p>Select enters multi-select mode, but the map and Mixer frame do not show selection accumulation, range rules, batch operations, cancellation, or visual examples.</p></article>
+          <article class="question"><span class="q-num">Q03 / PROTOTYPE COVERAGE</span><h3>Which transitions are executable in Figma?</h3><p>The inspected screen and state nodes contain no prototype reactions. Flow is communicated through annotations, labels, and the interaction map, so click-through behavior cannot confirm edge cases.</p></article>
         </div>
       </div>
     </section>

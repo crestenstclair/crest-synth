@@ -178,8 +178,9 @@ mod tests {
     };
     use crate::control::{EngineSelectionFailure, EngineSelectionRequestId};
     use crate::kernel::{MidiChannel, PatchId};
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::{
         GraphPreparationCorrelation, GraphPreparationRequest, GraphPreparationResult,
         GraphPreparationWorker, GraphRevision, WorkerBusyReason,
@@ -209,7 +210,7 @@ mod tests {
             "Deterministic worker".to_owned(),
             source,
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         )];
         GraphPreparationRequest::replacement(
             GraphPreparationCorrelation::new(
@@ -225,6 +226,7 @@ mod tests {
             target,
             2,
             GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap(),
+            MixerState::default(),
             audio_config(),
             &registry,
         )

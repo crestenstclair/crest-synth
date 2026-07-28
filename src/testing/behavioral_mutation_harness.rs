@@ -10,10 +10,13 @@ use crate::control::state_projector::StateProjector;
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mix_engine::MixEngine;
+use crate::mixer::mixer_state::MixerState;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::mixer_track_parameters::{MixerTrackParameter, MixerTrackParameters};
+use crate::mixer::patch_output::PatchOutput;
 use crate::real_time::audio_boundary::{AudioBoundary, AudioThreadBoundary};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_renderer::AudioRenderer;
@@ -47,7 +50,7 @@ const ENERGY_EPSILON: f64 = 1.0e-12;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BehavioralMutationCase {
     DroppedAdjustment,
-    CrossPatchParameterLeak,
+    CrossTrackParameterLeak,
     PatchMisroute,
     OmittedStateTreeLeaf,
     DryToWetBypass,
@@ -57,7 +60,7 @@ pub enum BehavioralMutationCase {
 impl BehavioralMutationCase {
     pub const ALL: [Self; 6] = [
         Self::DroppedAdjustment,
-        Self::CrossPatchParameterLeak,
+        Self::CrossTrackParameterLeak,
         Self::PatchMisroute,
         Self::OmittedStateTreeLeaf,
         Self::DryToWetBypass,
@@ -67,7 +70,7 @@ impl BehavioralMutationCase {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DroppedAdjustment => "dropped-adjustment",
-            Self::CrossPatchParameterLeak => "cross-patch-parameter-leak",
+            Self::CrossTrackParameterLeak => "cross-track-parameter-leak",
             Self::PatchMisroute => "patch-misroute",
             Self::OmittedStateTreeLeaf => "omitted-state-tree-leaf",
             Self::DryToWetBypass => "dry-to-wet-bypass",
@@ -98,11 +101,11 @@ pub struct DroppedAdjustmentObservation {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct CrossPatchParameterLeakObservation {
+pub struct CrossTrackParameterLeakObservation {
     pub case: String,
-    pub edited_patch_id: u32,
-    pub comparison_patch_id: u32,
-    pub patch_ids_distinct: bool,
+    pub edited_track_id: u32,
+    pub comparison_track_id: u32,
+    pub track_ids_distinct: bool,
     pub parameter: String,
     pub parameter_cases_exercised: usize,
     pub edited_value_before: f64,
@@ -111,17 +114,17 @@ pub struct CrossPatchParameterLeakObservation {
     pub comparison_value_after: f64,
     pub published_edited_value: f64,
     pub published_comparison_value: f64,
-    pub edited_stem_energy_before: f64,
-    pub edited_stem_energy_after: f64,
-    pub comparison_stem_energy_before: f64,
-    pub comparison_stem_energy_after: f64,
+    pub edited_track_energy_before: f64,
+    pub edited_track_energy_after: f64,
+    pub comparison_track_energy_before: f64,
+    pub comparison_track_energy_after: f64,
     pub edited_value_changed: bool,
     pub comparison_value_unchanged: bool,
     pub state_values_exact: bool,
     pub published_values_exact: bool,
-    pub edited_patch_audio_changed: bool,
-    pub unedited_patch_audio_unchanged: bool,
-    pub all_channel_parameters_isolated: bool,
+    pub edited_track_audio_changed: bool,
+    pub unedited_track_audio_unchanged: bool,
+    pub all_track_parameters_isolated: bool,
     pub dry_path_isolated: bool,
     pub reverb_path_isolated: bool,
     pub delay_path_isolated: bool,
@@ -180,7 +183,7 @@ pub struct ZeroRendererObservation {
 #[serde(untagged)]
 pub enum BehavioralMutationObservation {
     DroppedAdjustment(DroppedAdjustmentObservation),
-    CrossPatchParameterLeak(CrossPatchParameterLeakObservation),
+    CrossTrackParameterLeak(CrossTrackParameterLeakObservation),
     PatchMisroute(PatchMisrouteObservation),
     OmittedStateTreeLeaf(OmittedStateTreeLeafObservation),
     DryToWetBypass(DryToWetBypassObservation),
@@ -191,7 +194,7 @@ impl BehavioralMutationObservation {
     pub fn case(&self) -> BehavioralMutationCase {
         match self {
             Self::DroppedAdjustment(_) => BehavioralMutationCase::DroppedAdjustment,
-            Self::CrossPatchParameterLeak(_) => BehavioralMutationCase::CrossPatchParameterLeak,
+            Self::CrossTrackParameterLeak(_) => BehavioralMutationCase::CrossTrackParameterLeak,
             Self::PatchMisroute(_) => BehavioralMutationCase::PatchMisroute,
             Self::OmittedStateTreeLeaf(_) => BehavioralMutationCase::OmittedStateTreeLeaf,
             Self::DryToWetBypass(_) => BehavioralMutationCase::DryToWetBypass,
@@ -214,20 +217,20 @@ impl BehavioralMutationObservation {
                     && value.projection_values_exact
                     && value.baseline_restored
             }
-            Self::CrossPatchParameterLeak(value) => {
-                value.edited_patch_id > 0
-                    && value.comparison_patch_id > 0
-                    && value.patch_ids_distinct
-                    && value.parameter_cases_exercised == 4
-                    && value.edited_stem_energy_before > 0.0
-                    && value.comparison_stem_energy_before > 0.0
+            Self::CrossTrackParameterLeak(value) => {
+                value.edited_track_id < MixerTrackId::COUNT as u32
+                    && value.comparison_track_id < MixerTrackId::COUNT as u32
+                    && value.track_ids_distinct
+                    && value.parameter_cases_exercised == 6
+                    && value.edited_track_energy_before > 0.0
+                    && value.comparison_track_energy_before > 0.0
                     && value.edited_value_changed
                     && value.comparison_value_unchanged
                     && value.state_values_exact
                     && value.published_values_exact
-                    && value.edited_patch_audio_changed
-                    && value.unedited_patch_audio_unchanged
-                    && value.all_channel_parameters_isolated
+                    && value.edited_track_audio_changed
+                    && value.unedited_track_audio_unchanged
+                    && value.all_track_parameters_isolated
                     && value.dry_path_isolated
                     && value.reverb_path_isolated
                     && value.delay_path_isolated
@@ -317,9 +320,9 @@ impl BehavioralMutationHarness {
                     mutant_enabled,
                 ))
             }
-            BehavioralMutationCase::CrossPatchParameterLeak => {
-                BehavioralMutationObservation::CrossPatchParameterLeak(
-                    run_cross_patch_parameter_leak(mutant_enabled),
+            BehavioralMutationCase::CrossTrackParameterLeak => {
+                BehavioralMutationObservation::CrossTrackParameterLeak(
+                    run_cross_track_parameter_leak(mutant_enabled),
                 )
             }
             BehavioralMutationCase::PatchMisroute => {
@@ -357,11 +360,7 @@ fn fixture_globals() -> GlobalParameters {
         .expect("fixture global parameters are valid")
 }
 
-fn fixture_patch(
-    provider: &HiDefSoundFontCapability,
-    id: u32,
-    parameters: ChannelParameters,
-) -> Patch {
+fn fixture_patch(provider: &HiDefSoundFontCapability, id: u32) -> Patch {
     Patch::new(
         PatchId::new(id).expect("fixture PatchId is nonzero"),
         format!("Fixture {id}"),
@@ -372,38 +371,47 @@ fn fixture_patch(
         )
         .expect("fixture config matches the production descriptor"),
         MidiChannel::new((id - 1) as u8).expect("fixture MIDI channel is valid"),
-        parameters,
+        PatchOutput::to_track(
+            MixerTrackId::new((id - 1) as u8).expect("fixture route is a fixed track"),
+        ),
     )
 }
 
 fn fixture_state() -> AppState {
-    state_with_parameters(
-        ChannelParameters::new(-12.0, -0.35, 0.2, 0.1)
-            .expect("fixture channel parameters are valid"),
-        ChannelParameters::new(-6.0, 0.35, 0.4, 0.3).expect("fixture channel parameters are valid"),
+    state_with_tracks(
+        MixerTrackParameters::new(-12.0, -0.35, false, false, 0.2, 0.1)
+            .expect("fixture track parameters are valid"),
+        MixerTrackParameters::new(-6.0, 0.35, false, false, 0.4, 0.3)
+            .expect("fixture track parameters are valid"),
     )
 }
 
 fn route_state() -> AppState {
-    state_with_parameters(
-        ChannelParameters::new(0.0, -1.0, 0.0, 0.0).expect("route channel parameters are valid"),
-        ChannelParameters::new(0.0, 1.0, 0.0, 0.0).expect("route channel parameters are valid"),
+    state_with_tracks(
+        MixerTrackParameters::new(0.0, -1.0, false, false, 0.0, 0.0)
+            .expect("route track parameters are valid"),
+        MixerTrackParameters::new(0.0, 1.0, false, false, 0.0, 0.0)
+            .expect("route track parameters are valid"),
     )
 }
 
-fn state_with_parameters(first: ChannelParameters, second: ChannelParameters) -> AppState {
+fn state_with_tracks(first: MixerTrackParameters, second: MixerTrackParameters) -> AppState {
     let asset = crate::adapter::hidef_soundfont_asset::HiDefSoundFontAsset::load()
         .expect("fixture SoundFont asset is valid");
     let provider =
         HiDefSoundFontCapability::new(asset.catalog()).expect("fixture capability is valid");
+    let mixer = MixerState::default()
+        .with_track(MixerTrackId::new(0).unwrap(), first)
+        .with_track(MixerTrackId::new(1).unwrap(), second);
     let mut state = AppState::new(
         provider.registry().expect("fixture registry is valid"),
         fixture_globals(),
-    );
+    )
+    .with_initial_mixer(mixer);
     state
         .apply(AppEvent::InstallPatches(vec![
-            fixture_patch(&provider, 1, first),
-            fixture_patch(&provider, 2, second),
+            fixture_patch(&provider, 1),
+            fixture_patch(&provider, 2),
         ]))
         .expect("fixture installation is accepted");
     state
@@ -433,7 +441,7 @@ fn value_at(tree: &Value, pointer: &str) -> f64 {
 }
 
 fn stable_control_values_equal(left: &Value, right: &Value) -> bool {
-    ["/patches", "/global", "/selection"]
+    ["/patches", "/mixer", "/global", "/interaction"]
         .into_iter()
         .all(|pointer| left.pointer(pointer) == right.pointer(pointer))
 }
@@ -457,10 +465,11 @@ fn tree_parameter_projection_exact(tree: &Value) -> bool {
         .zip(projected)
         .all(|(state_patch, parameter_patch)| {
             state_patch.pointer("/id") == parameter_patch.pointer("/patchId")
-                && state_patch.pointer("/parameters") == parameter_patch.pointer("/parameters")
+                && state_patch.pointer("/output") == parameter_patch.pointer("/output")
         });
 
     patch_values_match
+        && tree.pointer("/mixer/tracks") == tree.pointer("/parameters/mixerTracks")
         && tree.pointer("/global") == tree.pointer("/parameters/global")
         && tree.pointer("/generation") == tree.pointer("/parameters/generation")
 }
@@ -501,27 +510,28 @@ fn published_matches_tree(snapshot: &ParameterSnapshot, tree: &Value) -> bool {
                 .pointer(&format!("{prefix}/patchId"))
                 .and_then(Value::as_u64)
                 .map(|value| value as u32);
-        let parameters = patch.parameters();
+        let output = patch.output();
         id_matches
             && numeric_leaf_matches(
                 tree,
-                &format!("{prefix}/parameters/gainDb"),
-                parameters.gain_db(),
+                &format!("{prefix}/output/trimGainDb"),
+                output.trim_gain_db(),
             )
-            && numeric_leaf_matches(tree, &format!("{prefix}/parameters/pan"), parameters.pan())
-            && numeric_leaf_matches(
-                tree,
-                &format!("{prefix}/parameters/reverbSend"),
-                parameters.reverb_send(),
-            )
-            && numeric_leaf_matches(
-                tree,
-                &format!("{prefix}/parameters/delaySend"),
-                parameters.delay_send(),
-            )
+            && tree.pointer(&format!("{prefix}/output/trackId"))
+                == Some(&serde_json::json!(output.track_id().index()))
     });
 
     patches_match
+        && MixerTrackId::ALL.into_iter().all(|track_id| {
+            let prefix = format!("/parameters/mixerTracks/{}", track_id.index());
+            let track = snapshot.mixer_track(track_id);
+            numeric_leaf_matches(tree, &format!("{prefix}/levelDb"), track.level_db())
+                && numeric_leaf_matches(tree, &format!("{prefix}/pan"), track.pan())
+                && tree.pointer(&format!("{prefix}/mute")) == Some(&Value::Bool(track.mute()))
+                && tree.pointer(&format!("{prefix}/solo")) == Some(&Value::Bool(track.solo()))
+                && numeric_leaf_matches(tree, &format!("{prefix}/reverbSend"), track.reverb_send())
+                && numeric_leaf_matches(tree, &format!("{prefix}/delaySend"), track.delay_send())
+        })
         && numeric_leaf_matches(
             tree,
             "/parameters/global/masterGainDb",
@@ -568,14 +578,16 @@ fn numeric_leaf_matches(tree: &Value, pointer: &str, expected: f32) -> bool {
 fn run_dropped_adjustment(mutant_enabled: bool) -> DroppedAdjustmentObservation {
     let (mut app_loop, _audio) = installed_loop(fixture_state());
     let baseline = tree_value(&app_loop);
-    let before_gain = value_at(&baseline, "/patches/0/parameters/gainDb");
-    let expected_gain = before_gain + 1.0;
+    let before_level = value_at(&baseline, "/mixer/tracks/0/levelDb");
+    let expected_level = before_level + 1.0;
     let mut translator = KeyboardInputTranslator::new();
 
-    assert_eq!(
-        translator.translate(WindowInput::key_down(WindowKey::K)),
-        None
-    );
+    let enter_adjust = translator
+        .translate(WindowInput::key_down(WindowKey::K))
+        .expect("K down emits Adjust mode");
+    app_loop
+        .dispatch_action_from(enter_adjust, EventSource::Keyboard)
+        .expect("Adjust mode is accepted");
     let translated = translator
         .translate(WindowInput::key_down(WindowKey::D))
         .expect("K+D translates to an adjustment");
@@ -584,7 +596,7 @@ fn run_dropped_adjustment(mutant_enabled: bool) -> DroppedAdjustmentObservation 
         false
     } else {
         app_loop
-            .dispatch_from(translated, EventSource::Keyboard)
+            .dispatch_action_from(translated, EventSource::Keyboard)
             .expect("fixture adjustment is accepted");
         true
     };
@@ -596,14 +608,17 @@ fn run_dropped_adjustment(mutant_enabled: bool) -> DroppedAdjustmentObservation 
         .iter()
         .any(|record| matches!(record.input(), EventInput::Adjust { .. }));
     let selected_value_exact = approximately_equal(
-        value_at(&after_forward, "/patches/0/parameters/gainDb"),
-        expected_gain,
+        value_at(&after_forward, "/mixer/tracks/0/levelDb"),
+        expected_level,
     );
     let unrelated_values_unchanged = [
-        "/patches/0/parameters/pan",
-        "/patches/0/parameters/reverbSend",
-        "/patches/0/parameters/delaySend",
-        "/patches/1",
+        "/mixer/tracks/0/pan",
+        "/mixer/tracks/0/mute",
+        "/mixer/tracks/0/solo",
+        "/mixer/tracks/0/reverbSend",
+        "/mixer/tracks/0/delaySend",
+        "/mixer/tracks/1",
+        "/patches",
         "/global",
     ]
     .into_iter()
@@ -612,14 +627,20 @@ fn run_dropped_adjustment(mutant_enabled: bool) -> DroppedAdjustmentObservation 
         && app_loop
             .current_text()
             .body()
-            .contains(&format!("> gainDb={expected_gain}"));
+            .contains(&format!("> levelDb={expected_level}"));
 
     let reverse = translator
         .translate(WindowInput::key_down(WindowKey::A))
         .expect("K+A translates to an inverse adjustment");
     app_loop
-        .dispatch_from(reverse, EventSource::Keyboard)
+        .dispatch_action_from(reverse, EventSource::Keyboard)
         .expect("fixture inverse adjustment is accepted");
+    let leave_adjust = translator
+        .translate(WindowInput::key_up(WindowKey::K))
+        .expect("K release restores Navigate mode");
+    app_loop
+        .dispatch_action_from(leave_adjust, EventSource::Keyboard)
+        .expect("Navigate mode restoration is accepted");
     let restored = tree_value(&app_loop);
 
     DroppedAdjustmentObservation {
@@ -636,41 +657,57 @@ fn run_dropped_adjustment(mutant_enabled: bool) -> DroppedAdjustmentObservation 
 }
 
 #[derive(Clone, Copy)]
-enum ChannelField {
-    GainDb,
+enum TrackField {
+    Level,
     Pan,
+    Mute,
+    Solo,
     ReverbSend,
     DelaySend,
 }
 
-impl ChannelField {
-    const ALL: [Self; 4] = [Self::GainDb, Self::Pan, Self::ReverbSend, Self::DelaySend];
+impl TrackField {
+    const ALL: [Self; 6] = [
+        Self::Level,
+        Self::Pan,
+        Self::Mute,
+        Self::Solo,
+        Self::ReverbSend,
+        Self::DelaySend,
+    ];
 
     const fn name(self) -> &'static str {
         match self {
-            Self::GainDb => "gainDb",
+            Self::Level => "levelDb",
             Self::Pan => "pan",
+            Self::Mute => "mute",
+            Self::Solo => "solo",
             Self::ReverbSend => "reverbSend",
             Self::DelaySend => "delaySend",
         }
     }
 
-    const fn selection_index(self) -> usize {
+    const fn parameter(self) -> MixerTrackParameter {
         match self {
-            Self::GainDb => 0,
-            Self::Pan => 1,
-            Self::ReverbSend => 2,
-            Self::DelaySend => 3,
+            Self::Level => MixerTrackParameter::Level,
+            Self::Pan => MixerTrackParameter::Pan,
+            Self::Mute => MixerTrackParameter::Mute,
+            Self::Solo => MixerTrackParameter::Solo,
+            Self::ReverbSend => MixerTrackParameter::ReverbSend,
+            Self::DelaySend => MixerTrackParameter::DelaySend,
         }
     }
 
-    fn value(self, parameters: &ChannelParameters) -> f64 {
-        f64::from(match self {
-            Self::GainDb => parameters.gain_db(),
-            Self::Pan => parameters.pan(),
-            Self::ReverbSend => parameters.reverb_send(),
-            Self::DelaySend => parameters.delay_send(),
-        })
+    fn value(self, parameters: &MixerTrackParameters) -> f64 {
+        parameters
+            .scalar_value(self.parameter())
+            .map(f64::from)
+            .or_else(|| {
+                parameters
+                    .toggle_value(self.parameter())
+                    .map(|value| if value { 1.0 } else { 0.0 })
+            })
+            .expect("every mutation field has one typed track value")
     }
 }
 
@@ -767,15 +804,17 @@ fn measure_patch(snapshot: &ParameterSnapshot, patch_index: usize) -> MixMeasure
     }
 }
 
-fn relevant_energy(field: ChannelField, measurement: MixMeasurement) -> f64 {
+fn relevant_energy(field: TrackField, measurement: MixMeasurement) -> f64 {
     match field {
-        ChannelField::GainDb | ChannelField::Pan => measurement.dry,
-        ChannelField::ReverbSend => measurement.reverb,
-        ChannelField::DelaySend => measurement.delay,
+        TrackField::Level | TrackField::Pan | TrackField::Mute | TrackField::Solo => {
+            measurement.dry
+        }
+        TrackField::ReverbSend => measurement.reverb,
+        TrackField::DelaySend => measurement.delay,
     }
 }
 
-fn snapshot_with_cross_patch_leak(
+fn snapshot_with_cross_track_leak(
     published: ParameterSnapshot,
     mutant_enabled: bool,
 ) -> ParameterSnapshot {
@@ -783,43 +822,81 @@ fn snapshot_with_cross_patch_leak(
         return published;
     }
 
-    let mut patches: Vec<RtPatchParameters> = published.patches().to_vec();
-    let edited_parameters = *patches[1].parameters();
-    let comparison_id = patches[0]
-        .patch_id()
-        .expect("comparison parameters are active");
-    patches[0] = RtPatchParameters::new(comparison_id, edited_parameters);
-    ParameterSnapshot::new(published.generation(), *published.global(), &patches)
-        .expect("mutated ownership seam preserves bounded identities")
+    let mut tracks = *published.mixer_tracks();
+    tracks[0] = tracks[1];
+    ParameterSnapshot::new(
+        published.generation(),
+        *published.global(),
+        MixerState::new(tracks),
+        published.patches(),
+    )
+    .expect("mutated ownership seam preserves bounded identities")
 }
 
-fn run_cross_patch_parameter_leak(mutant_enabled: bool) -> CrossPatchParameterLeakObservation {
+fn run_cross_track_parameter_leak(mutant_enabled: bool) -> CrossTrackParameterLeakObservation {
     let mut representative = None;
     let mut parameter_cases_exercised = 0;
     let mut state_values_exact = true;
     let mut published_values_exact = true;
-    let mut edited_patch_audio_changed = true;
-    let mut unedited_patch_audio_unchanged = true;
+    let mut edited_track_audio_changed = true;
+    let mut unedited_track_audio_unchanged = true;
     let mut dry_path_isolated = true;
     let mut reverb_path_isolated = true;
     let mut delay_path_isolated = true;
     let mut baseline_restored = true;
 
-    for field in ChannelField::ALL {
-        let (mut app_loop, mut audio) = installed_loop(fixture_state());
+    for field in TrackField::ALL {
+        let state = if matches!(field, TrackField::Solo) {
+            state_with_tracks(
+                MixerTrackParameters::new(-12.0, -0.35, false, true, 0.2, 0.1)
+                    .expect("solo comparison track parameters are valid"),
+                MixerTrackParameters::new(-6.0, 0.35, false, false, 0.4, 0.3)
+                    .expect("solo edited track parameters are valid"),
+            )
+        } else {
+            fixture_state()
+        };
+        let (mut app_loop, mut audio) = installed_loop(state);
         app_loop
             .dispatch(AppEvent::Navigate(Direction::Right))
-            .expect("fixture selects the edited Patch");
-        for _ in 0..field.selection_index() {
-            app_loop
-                .dispatch(AppEvent::Navigate(Direction::Down))
-                .expect("fixture selects the requested parameter");
+            .expect("fixture selects the edited track");
+        match field {
+            TrackField::Level => {}
+            TrackField::Pan => {
+                app_loop
+                    .dispatch(AppEvent::Navigate(Direction::Down))
+                    .expect("fixture selects track Pan");
+            }
+            TrackField::Mute | TrackField::Solo => {
+                let navigation_count = if matches!(field, TrackField::Mute) {
+                    2
+                } else {
+                    3
+                };
+                for _ in 0..navigation_count {
+                    app_loop
+                        .dispatch(AppEvent::Navigate(Direction::Down))
+                        .expect("fixture selects the track toggle");
+                }
+            }
+            TrackField::ReverbSend | TrackField::DelaySend => {
+                app_loop
+                    .dispatch(AppEvent::EnterSurface(
+                        crate::control::SurfaceId::MixerInspector,
+                    ))
+                    .expect("fixture enters the selected track Inspector");
+                if matches!(field, TrackField::DelaySend) {
+                    app_loop
+                        .dispatch(AppEvent::Navigate(Direction::Down))
+                        .expect("fixture selects track Delay Send");
+                }
+            }
         }
 
         let baseline = tree_value(&app_loop);
         let before_snapshot = audio.read_latest_parameters();
-        let before_edited = field.value(before_snapshot.patches()[1].parameters());
-        let before_comparison = field.value(before_snapshot.patches()[0].parameters());
+        let before_edited = field.value(before_snapshot.mixer_track(MixerTrackId::ALL[1]));
+        let before_comparison = field.value(before_snapshot.mixer_track(MixerTrackId::ALL[0]));
         let edited_before_mix = measure_patch(&before_snapshot, 1);
         let comparison_before_mix = measure_patch(&before_snapshot, 0);
 
@@ -828,9 +905,9 @@ fn run_cross_patch_parameter_leak(mutant_enabled: bool) -> CrossPatchParameterLe
             .expect("fixture edit is accepted");
         let after_tree = tree_value(&app_loop);
         let published = audio.read_latest_parameters();
-        let after_edited = field.value(published.patches()[1].parameters());
-        let after_comparison = field.value(published.patches()[0].parameters());
-        let mix_snapshot = snapshot_with_cross_patch_leak(published, mutant_enabled);
+        let after_edited = field.value(published.mixer_track(MixerTrackId::ALL[1]));
+        let after_comparison = field.value(published.mixer_track(MixerTrackId::ALL[0]));
+        let mix_snapshot = snapshot_with_cross_track_leak(published, mutant_enabled);
         let edited_after_mix = measure_patch(&mix_snapshot, 1);
         let comparison_after_mix = measure_patch(&mix_snapshot, 0);
 
@@ -848,29 +925,29 @@ fn run_cross_patch_parameter_leak(mutant_enabled: bool) -> CrossPatchParameterLe
         parameter_cases_exercised += 1;
         state_values_exact &= tree_parameter_projection_exact(&after_tree);
         published_values_exact &= published_matches_tree(&published, &after_tree);
-        edited_patch_audio_changed &= edited_changed && edited_audio_changed;
-        unedited_patch_audio_unchanged &= comparison_unchanged && comparison_audio_unchanged;
+        edited_track_audio_changed &= edited_changed && edited_audio_changed;
+        unedited_track_audio_unchanged &= comparison_unchanged && comparison_audio_unchanged;
 
         match field {
-            ChannelField::GainDb | ChannelField::Pan => {
+            TrackField::Level | TrackField::Pan | TrackField::Mute | TrackField::Solo => {
                 dry_path_isolated &= edited_audio_changed && comparison_audio_unchanged;
             }
-            ChannelField::ReverbSend => {
+            TrackField::ReverbSend => {
                 reverb_path_isolated &= edited_audio_changed && comparison_audio_unchanged;
             }
-            ChannelField::DelaySend => {
+            TrackField::DelaySend => {
                 delay_path_isolated &= edited_audio_changed && comparison_audio_unchanged;
             }
         }
 
-        if matches!(field, ChannelField::GainDb) {
+        if matches!(field, TrackField::Level) {
             representative = Some((
                 before_edited,
                 after_edited,
                 before_comparison,
                 after_comparison,
-                field.value(published.patches()[1].parameters()),
-                field.value(published.patches()[0].parameters()),
+                field.value(published.mixer_track(MixerTrackId::ALL[1])),
+                field.value(published.mixer_track(MixerTrackId::ALL[0])),
                 edited_before_mix.output,
                 edited_after_mix.output,
                 comparison_before_mix.output,
@@ -901,20 +978,20 @@ fn run_cross_patch_parameter_leak(mutant_enabled: bool) -> CrossPatchParameterLe
         comparison_value_unchanged,
     ) = representative.expect("gain case is always exercised");
 
-    let all_channel_parameters_isolated = edited_patch_audio_changed
-        && unedited_patch_audio_unchanged
+    let all_track_parameters_isolated = edited_track_audio_changed
+        && unedited_track_audio_unchanged
         && dry_path_isolated
         && reverb_path_isolated
         && delay_path_isolated;
 
-    CrossPatchParameterLeakObservation {
-        case: BehavioralMutationCase::CrossPatchParameterLeak
+    CrossTrackParameterLeakObservation {
+        case: BehavioralMutationCase::CrossTrackParameterLeak
             .as_str()
             .to_owned(),
-        edited_patch_id: 2,
-        comparison_patch_id: 1,
-        patch_ids_distinct: true,
-        parameter: ChannelField::GainDb.name().to_owned(),
+        edited_track_id: 1,
+        comparison_track_id: 0,
+        track_ids_distinct: true,
+        parameter: TrackField::Level.name().to_owned(),
         parameter_cases_exercised,
         edited_value_before,
         edited_value_after,
@@ -922,17 +999,17 @@ fn run_cross_patch_parameter_leak(mutant_enabled: bool) -> CrossPatchParameterLe
         comparison_value_after,
         published_edited_value,
         published_comparison_value,
-        edited_stem_energy_before,
-        edited_stem_energy_after,
-        comparison_stem_energy_before,
-        comparison_stem_energy_after,
+        edited_track_energy_before: edited_stem_energy_before,
+        edited_track_energy_after: edited_stem_energy_after,
+        comparison_track_energy_before: comparison_stem_energy_before,
+        comparison_track_energy_after: comparison_stem_energy_after,
         edited_value_changed,
         comparison_value_unchanged,
         state_values_exact,
         published_values_exact,
-        edited_patch_audio_changed,
-        unedited_patch_audio_unchanged,
-        all_channel_parameters_isolated,
+        edited_track_audio_changed,
+        unedited_track_audio_unchanged,
+        all_track_parameters_isolated,
         dry_path_isolated,
         reverb_path_isolated,
         delay_path_isolated,
@@ -1153,10 +1230,10 @@ fn run_omitted_state_tree_leaf(mutant_enabled: bool) -> OmittedStateTreeLeafObse
 
     if mutant_enabled {
         observed_tree
-            .pointer_mut("/patches/0/parameters")
+            .pointer_mut("/mixer/tracks/0")
             .and_then(Value::as_object_mut)
-            .expect("typed Patch parameter object exists")
-            .remove("gainDb")
+            .expect("typed mixer-track parameter object exists")
+            .remove("levelDb")
             .expect("the one omitted typed leaf exists");
     }
 
@@ -1308,23 +1385,83 @@ fn render_dry_wet(parameters: ParameterSnapshot, mutant_enabled: bool) -> DryWet
 }
 
 fn parameter_snapshot_with_sends(reverb_send: f32, delay_send: f32) -> ParameterSnapshot {
-    let channels = [
-        ChannelParameters::new(0.0, -0.25, reverb_send, delay_send)
-            .expect("verification sends are valid"),
-        ChannelParameters::new(-3.0, 0.25, reverb_send, delay_send)
-            .expect("verification sends are valid"),
-    ];
+    let tracks = MixerState::default()
+        .with_track(
+            MixerTrackId::ALL[0],
+            MixerTrackParameters::new(0.0, -0.25, false, false, reverb_send, delay_send)
+                .expect("verification sends are valid"),
+        )
+        .with_track(
+            MixerTrackId::ALL[1],
+            MixerTrackParameters::new(-3.0, 0.25, false, false, reverb_send, delay_send)
+                .expect("verification sends are valid"),
+        );
     let patches = [
         RtPatchParameters::new(
             PatchId::new(1).expect("fixture PatchId is valid"),
-            channels[0],
+            PatchOutput::to_track(MixerTrackId::ALL[0]),
         ),
         RtPatchParameters::new(
             PatchId::new(2).expect("fixture PatchId is valid"),
-            channels[1],
+            PatchOutput::to_track(MixerTrackId::ALL[1]),
         ),
     ];
-    ParameterSnapshot::new(1, fixture_globals(), &patches).expect("verification snapshot is valid")
+    ParameterSnapshot::new(1, fixture_globals(), tracks, &patches)
+        .expect("verification snapshot is valid")
+}
+
+fn faithful_effects_control_baseline_restored() -> bool {
+    let (mut app_loop, mut audio) = installed_loop(fixture_state());
+    app_loop
+        .dispatch(AppEvent::EnterSurface(
+            crate::control::SurfaceId::MixerInspector,
+        ))
+        .expect("faithful-effects fixture enters Mixer Inspector");
+    let baseline_tree = tree_value(&app_loop);
+    let baseline_parameters = audio.read_latest_parameters();
+
+    app_loop
+        .dispatch(AppEvent::Adjust(Direction::Right))
+        .expect("Reverb Send increase is accepted");
+    app_loop
+        .dispatch(AppEvent::Adjust(Direction::Left))
+        .expect("Reverb Send restoration is accepted");
+    app_loop
+        .dispatch(AppEvent::Navigate(Direction::Down))
+        .expect("Delay Send focus is accepted");
+    app_loop
+        .dispatch(AppEvent::Adjust(Direction::Right))
+        .expect("Delay Send increase is accepted");
+    app_loop
+        .dispatch(AppEvent::Adjust(Direction::Left))
+        .expect("Delay Send restoration is accepted");
+    app_loop
+        .dispatch(AppEvent::Navigate(Direction::Up))
+        .expect("Reverb Send focus restoration is accepted");
+
+    let restored_tree = tree_value(&app_loop);
+    let restored_parameters = audio.read_latest_parameters();
+    let projected_values_restored = [
+        "/patches",
+        "/mixer",
+        "/global",
+        "/interaction",
+        "/patchPage",
+        "/projection/context",
+        "/projection/body",
+        "/projection/selectedLine",
+        "/parameters/patches",
+        "/parameters/mixerTracks",
+        "/parameters/global",
+        "/parameters/graphRevision",
+    ]
+    .into_iter()
+    .all(|pointer| baseline_tree.pointer(pointer) == restored_tree.pointer(pointer));
+
+    projected_values_restored
+        && baseline_parameters.audio_values_equal(&restored_parameters)
+        && tree_parameter_projection_exact(&restored_tree)
+        && published_matches_tree(&restored_parameters, &restored_tree)
 }
 
 fn run_dry_to_wet_bypass(mutant_enabled: bool) -> DryToWetBypassObservation {
@@ -1334,7 +1471,8 @@ fn run_dry_to_wet_bypass(mutant_enabled: bool) -> DryToWetBypassObservation {
     let nonzero_measurement = render_dry_wet(nonzero_send, mutant_enabled);
     let finite_audio = zero_measurement.finite && nonzero_measurement.finite;
     let baseline_restored = zero_send == parameter_snapshot_with_sends(0.0, 0.0)
-        && nonzero_send == parameter_snapshot_with_sends(0.4, 0.3);
+        && nonzero_send == parameter_snapshot_with_sends(0.4, 0.3)
+        && faithful_effects_control_baseline_restored();
 
     DryToWetBypassObservation {
         case: BehavioralMutationCase::DryToWetBypass.as_str().to_owned(),
@@ -1489,12 +1627,12 @@ mod tests {
                 ]),
             ),
             (
-                BehavioralMutationCase::CrossPatchParameterLeak,
+                BehavioralMutationCase::CrossTrackParameterLeak,
                 expected(&[
                     "case",
-                    "edited_patch_id",
-                    "comparison_patch_id",
-                    "patch_ids_distinct",
+                    "edited_track_id",
+                    "comparison_track_id",
+                    "track_ids_distinct",
                     "parameter",
                     "parameter_cases_exercised",
                     "edited_value_before",
@@ -1503,17 +1641,17 @@ mod tests {
                     "comparison_value_after",
                     "published_edited_value",
                     "published_comparison_value",
-                    "edited_stem_energy_before",
-                    "edited_stem_energy_after",
-                    "comparison_stem_energy_before",
-                    "comparison_stem_energy_after",
+                    "edited_track_energy_before",
+                    "edited_track_energy_after",
+                    "comparison_track_energy_before",
+                    "comparison_track_energy_after",
                     "edited_value_changed",
                     "comparison_value_unchanged",
                     "state_values_exact",
                     "published_values_exact",
-                    "edited_patch_audio_changed",
-                    "unedited_patch_audio_unchanged",
-                    "all_channel_parameters_isolated",
+                    "edited_track_audio_changed",
+                    "unedited_track_audio_unchanged",
+                    "all_track_parameters_isolated",
                     "dry_path_isolated",
                     "reverb_path_isolated",
                     "delay_path_isolated",

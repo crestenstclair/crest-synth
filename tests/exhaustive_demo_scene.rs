@@ -24,12 +24,14 @@ const COVERAGE_GROUPS: [DemoCoverageGroup; 11] = [
 
 fn stable_control_surface(tree: &Value) -> Vec<Value> {
     [
+        "/mixer",
         "/global",
         "/interaction",
         "/patchPage",
         "/projection/context",
         "/projection/selectedLine",
         "/parameters/patches",
+        "/parameters/mixerTracks",
         "/parameters/global",
     ]
     .into_iter()
@@ -95,19 +97,31 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .group(DemoCoverageGroup::Events)
             .exercised()
             .len(),
-        8
+        11
     );
     assert_eq!(
         report
             .coverage()
             .group(DemoCoverageGroup::Contexts)
             .exercised(),
-        &["context.mixer".to_owned(), "context.patch".to_owned()]
+        &[
+            "context.mixer".to_owned(),
+            "context.patch".to_owned(),
+            "interactionMode.adjust".to_owned(),
+            "interactionMode.navigate".to_owned(),
+            "surface.inspector".to_owned(),
+            "surface.utility".to_owned(),
+        ]
     );
     let mut expected_patch_controls = PatchControlId::surface_descriptor()
         .iter()
         .map(|control| format!("patchControl.{control}"))
         .collect::<Vec<_>>();
+    expected_patch_controls.extend(
+        PatchControlId::utility_surface_descriptor()
+            .iter()
+            .map(|control| format!("patchControl.{control}")),
+    );
     expected_patch_controls.push(format!(
         "patchControl.{}",
         PatchControlId::Capability(
@@ -198,17 +212,18 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
     );
 
     for parameter in [
-        "gainDb",
+        "trimGainDb",
+        "outputTrack",
+        "levelDb",
         "pan",
+        "mute",
+        "solo",
         "reverbSend",
         "delaySend",
         "attackMilliseconds",
         "decayMilliseconds",
         "sustain",
         "releaseMilliseconds",
-        "braids.model",
-        "braids.timbre",
-        "braids.color",
         "chorus.amount",
         "chorus.depth",
         "masterGainDb",
@@ -244,6 +259,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         .group(DemoCoverageGroup::EditableParameters)
         .expected()
         .iter()
+        .filter(|identifier| !identifier.ends_with(".mute") && !identifier.ends_with(".solo"))
         .map(|identifier| {
             if let Some(patch) = identifier.strip_prefix("parameter.patch.") {
                 let (_, target) = patch
@@ -252,6 +268,11 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
                 format!("patch.{target}")
             } else if let Some(target) = identifier.strip_prefix("parameter.global.") {
                 format!("global.{target}")
+            } else if let Some(track) = identifier.strip_prefix("parameter.track.") {
+                let (_, target) = track
+                    .split_once('.')
+                    .expect("track parameter identity contains its target");
+                format!("track.{target}")
             } else {
                 panic!("unexpected editable parameter identity {identifier}");
             }
@@ -307,7 +328,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
     let baseline_patches = first.baseline["patches"].as_array().unwrap();
     let final_patches = final_tree["patches"].as_array().unwrap();
     assert_eq!(baseline_patches.len(), final_patches.len());
-    for property in ["id", "name", "channel", "envelope", "parameters"] {
+    for property in ["id", "name", "channel", "envelope", "output", "postEffects"] {
         assert_eq!(baseline_patches[0][property], final_patches[0][property]);
     }
     assert_eq!(baseline_patches[1], final_patches[1]);

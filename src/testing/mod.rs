@@ -46,8 +46,12 @@ pub use live_demo_checkpoint::{
 
 pub mod live_demo_report;
 pub use live_demo_report::{
-    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveEventLogSummary, RuntimeAudioWitness,
+    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveEventLogSummary,
+    LiveMixerRoutingEvidence, LiveShellCoverage, RuntimeAudioWitness,
+    SixteenTrackMixerRoutingObservation,
 };
+
+mod live_mixer_routing_measurement;
 
 pub mod live_demo_runner;
 pub use live_demo_runner::{

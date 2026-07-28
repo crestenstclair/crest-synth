@@ -4,16 +4,21 @@ use crate::control::event_log::EventLog;
 use crate::control::event_record::EventRecord;
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
-use crate::control::{EngineSelectionFailure, EngineSelectionStatusKind, PatchControlId};
+use crate::control::{
+    EngineSelectionFailure, EngineSelectionStatusKind, PatchControlId, SemanticAction, SurfaceId,
+};
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::global_parameters::GlobalParameters;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::mixer_track_parameters::{
+    MixerTrackParameter, MixerTrackParameterKind, MixerTrackParameters,
+};
+use crate::mixer::patch_output::{PatchOutputParameter, PatchOutputParameterKind};
 use crate::real_time::audio_command::AudioCommand;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
-use crate::synth::instrument_capability::{
-    CapabilityDescriptor, CapabilityRegistry, ParameterKind, ParameterValue,
-};
+use crate::synth::instrument_capability::{CapabilityRegistry, ParameterValue};
 use crate::synth::patch::{Patch, PatchEditableTarget};
 use crate::synth::{
     EffectCapabilityRegistry, ParameterId, PatchInteraction, VoiceEnvelopeParameter,
@@ -338,6 +343,7 @@ impl MidiProbe {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DemoSceneStep {
     WindowInput(WindowInput),
+    PassiveAction(SemanticAction),
     MidiProbe(MidiProbe),
     AudioCommandProbe(AudioCommand),
     Tick(Duration),
@@ -561,9 +567,6 @@ fn build_steps(
         WindowKey::K,
     )));
     push_key_press(&mut steps, WindowKey::W);
-    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
-        WindowKey::K,
-    )));
     push_checkpoint(
         &mut steps,
         DemoCheckpoint::after_rejection(
@@ -571,6 +574,9 @@ fn build_steps(
             EventRejection::ActionUnavailableInContext,
         ),
     );
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
     push_key_press(&mut steps, WindowKey::Digit1);
     push_checkpoint(&mut steps, DemoCheckpoint::new("context.mixer.recovered"));
 
@@ -578,16 +584,48 @@ fn build_steps(
         steps.push(DemoSceneStep::WindowInput(*input));
     }
 
-    // Prove that focus loss clears modifier state. The following W/S pair is
-    // navigation and returns the selection to its original parameter.
+    // Prove that focus loss clears modifier state, then restore the canonical
+    // T00/Level startup focus after the exhaustive vocabulary's T01/Pan end.
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
         WindowKey::K,
     )));
     steps.push(DemoSceneStep::WindowInput(WindowInput::focus_lost()));
     push_key_press(&mut steps, WindowKey::W);
-    push_key_press(&mut steps, WindowKey::S);
+    push_key_press(&mut steps, WindowKey::A);
     push_checkpoint(&mut steps, DemoCheckpoint::new("input.vocabulary"));
 
+    // The vocabulary's accepted Right and Down actions leave T01/Pan focused.
+    // Return explicitly to the canonical startup focus before the surface and
+    // parameter sweeps so every following path has a stable origin.
+    push_key_press(&mut steps, WindowKey::W);
+    push_key_press(&mut steps, WindowKey::A);
+    push_checkpoint(
+        &mut steps,
+        DemoCheckpoint::new("input.startupFocusRestored"),
+    );
+
+    // Exercise both persistent side surfaces through the passive semantic
+    // action boundary, including exact reducer-owned return origins.
+    push_key_press(&mut steps, WindowKey::Digit1);
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::MixerInspector,
+    )));
+    push_checkpoint(&mut steps, DemoCheckpoint::new("surface.inspector.entered"));
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+    push_checkpoint(
+        &mut steps,
+        DemoCheckpoint::new("surface.inspector.returned"),
+    );
+    push_key_press(&mut steps, WindowKey::Digit2);
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::PatchUtility,
+    )));
+    push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.entered"));
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+    push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.returned"));
+    push_key_press(&mut steps, WindowKey::Digit1);
+
+    push_patch_output_control_steps(&mut steps, &patches[0], &mut boundary_probed);
     push_patch_adsr_control_steps(&mut steps, &patches[0], &mut boundary_probed);
     push_patch_effect_control_steps(
         &mut steps,
@@ -597,79 +635,7 @@ fn build_steps(
         &mut boundary_probed,
     );
 
-    for (patch_index, patch) in patches.iter().enumerate() {
-        let descriptor = capabilities
-            .descriptor(patch.instrument_config().capability_id())
-            .expect("validated scene Patch capability is installed");
-        let targets = patch
-            .editable_targets(descriptor)
-            .expect("validated scene Patch has a canonical editable surface");
-        for target in targets {
-            let metadata = patch_target_metadata(patch, descriptor, &target)
-                .expect("every editable target has bounded adjustment metadata");
-            let focused_patch_envelope =
-                patch_index == 0 && matches!(target, PatchEditableTarget::Envelope(_));
-            if !focused_patch_envelope && boundary_probed.insert(target.name().to_owned()) {
-                push_parameter_boundary_probe(
-                    &mut steps,
-                    &format!("patch.{}.{}", patch.id().value(), target.name()),
-                    metadata.0,
-                    metadata.1,
-                    metadata.2,
-                    metadata.3,
-                    metadata.4,
-                );
-            }
-            if !focused_patch_envelope {
-                push_reversible_adjustments(
-                    &mut steps, metadata.0, metadata.1, metadata.2, metadata.4,
-                );
-                push_checkpoint(
-                    &mut steps,
-                    DemoCheckpoint::new(format!(
-                        "patch.{}.parameter.{}",
-                        patch.id().value(),
-                        target.name()
-                    )),
-                );
-            }
-            push_key_press(&mut steps, WindowKey::S);
-        }
-        push_key_press(&mut steps, WindowKey::D);
-    }
-
-    for descriptor in GlobalParameters::surface_descriptor() {
-        let parameter = descriptor.parameter();
-        push_parameter_boundary_probe(
-            &mut steps,
-            &format!("global.{}", descriptor.name()),
-            global_parameters.value(parameter),
-            descriptor.minimum(),
-            descriptor.maximum(),
-            descriptor.fine_step(),
-            descriptor.coarse_step(),
-        );
-        push_reversible_adjustments(
-            &mut steps,
-            global_parameters.value(parameter),
-            descriptor.minimum(),
-            descriptor.maximum(),
-            descriptor.coarse_step(),
-        );
-        push_checkpoint(
-            &mut steps,
-            DemoCheckpoint::new(format!("global.parameter.{}", descriptor.name())),
-        );
-        push_key_press(&mut steps, WindowKey::S);
-    }
-
-    // Exercise both directions at both Patch/GLOBAL section wraps, then restore
-    // the initial Patch-zero, parameter-zero selection.
-    push_key_press(&mut steps, WindowKey::A);
-    push_key_press(&mut steps, WindowKey::D);
-    push_key_press(&mut steps, WindowKey::D);
-    push_key_press(&mut steps, WindowKey::A);
-    push_key_press(&mut steps, WindowKey::D);
+    push_mixer_control_steps(&mut steps, global_parameters, &mut boundary_probed);
     push_checkpoint(&mut steps, DemoCheckpoint::new("selection.restored"));
 
     push_preset_selection_steps(&mut steps, &patches[0], preset_fixture);
@@ -1046,6 +1012,265 @@ fn push_patch_adsr_control_steps(
     }
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("patch.control.contextRestored"));
+}
+
+fn push_patch_output_control_steps(
+    steps: &mut Vec<DemoSceneStep>,
+    patch: &Patch,
+    boundary_probed: &mut BTreeSet<String>,
+) {
+    push_key_press(steps, WindowKey::Digit2);
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::PatchUtility,
+    )));
+
+    let trim = PatchOutputParameter::TrimGain.descriptor();
+    debug_assert_eq!(trim.kind(), PatchOutputParameterKind::Continuous);
+    let trim_identifier = format!("patch.{}.output.{}", patch.id().value(), trim.name());
+    if boundary_probed.insert(trim.name().to_owned()) {
+        push_parameter_boundary_probe(
+            steps,
+            &trim_identifier,
+            patch.output().trim_gain_db(),
+            trim.minimum()
+                .expect("the trim descriptor declares its lower bound"),
+            trim.maximum()
+                .expect("the trim descriptor declares its upper bound"),
+            trim.fine_step()
+                .expect("the trim descriptor declares its fine step"),
+            trim.coarse_step()
+                .expect("the trim descriptor declares its coarse step"),
+        );
+    }
+    push_reversible_adjustments(
+        steps,
+        patch.output().trim_gain_db(),
+        trim.minimum()
+            .expect("the trim descriptor declares its lower bound"),
+        trim.maximum()
+            .expect("the trim descriptor declares its upper bound"),
+        trim.coarse_step()
+            .expect("the trim descriptor declares its coarse step"),
+    );
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!("{trim_identifier}.restored")),
+    );
+
+    push_key_press(steps, WindowKey::S);
+    let route = PatchOutputParameter::OutputTrack.descriptor();
+    debug_assert_eq!(route.kind(), PatchOutputParameterKind::TrackChoice);
+    let route_identifier = format!("patch.{}.output.{}", patch.id().value(), route.name());
+    if boundary_probed.insert(route.name().to_owned()) {
+        push_route_boundary_probe(steps, &route_identifier, patch.output().track_id());
+    }
+    push_reversible_route_adjustments(steps, patch.output().track_id());
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!("{route_identifier}.restored")),
+    );
+
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+    push_key_press(steps, WindowKey::Digit1);
+    push_checkpoint(steps, DemoCheckpoint::new("patch.output.contextRestored"));
+}
+
+fn push_route_boundary_probe(
+    steps: &mut Vec<DemoSceneStep>,
+    identifier: &str,
+    initial: MixerTrackId,
+) {
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!("boundary.{identifier}.start")),
+    );
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+        WindowKey::K,
+    )));
+
+    for _ in initial.value()..MixerTrackId::MAX {
+        push_key_press(steps, WindowKey::D);
+    }
+    push_key_press(steps, WindowKey::D);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            format!("boundary.{identifier}.upper"),
+            EventRejection::ParameterAtBoundary,
+        ),
+    );
+
+    for _ in MixerTrackId::MIN..MixerTrackId::MAX {
+        push_key_press(steps, WindowKey::A);
+    }
+    push_key_press(steps, WindowKey::A);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            format!("boundary.{identifier}.lower"),
+            EventRejection::ParameterAtBoundary,
+        ),
+    );
+
+    for _ in MixerTrackId::MIN..initial.value() {
+        push_key_press(steps, WindowKey::D);
+    }
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!("boundary.{identifier}.restored")),
+    );
+}
+
+fn push_reversible_route_adjustments(steps: &mut Vec<DemoSceneStep>, initial: MixerTrackId) {
+    let (first, restore) = if initial.value() < MixerTrackId::MAX {
+        (WindowKey::D, WindowKey::A)
+    } else {
+        (WindowKey::A, WindowKey::D)
+    };
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+        WindowKey::K,
+    )));
+    push_key_press(steps, first);
+    push_key_press(steps, restore);
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
+}
+
+fn push_mixer_control_steps(
+    steps: &mut Vec<DemoSceneStep>,
+    global_parameters: &GlobalParameters,
+    boundary_probed: &mut BTreeSet<String>,
+) {
+    let default_track = MixerTrackParameters::default();
+    push_key_press(steps, WindowKey::Digit1);
+
+    for (track_index, track_id) in MixerTrackId::ALL.into_iter().enumerate() {
+        for (parameter_index, parameter) in MixerTrackParameter::MAIN.into_iter().enumerate() {
+            push_mixer_track_parameter_steps(
+                steps,
+                track_id,
+                parameter,
+                default_track,
+                boundary_probed,
+            );
+            if parameter_index + 1 < MixerTrackParameter::MAIN.len() {
+                push_key_press(steps, WindowKey::S);
+            }
+        }
+
+        steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+            SurfaceId::MixerInspector,
+        )));
+        for (parameter_index, parameter) in MixerTrackParameter::INSPECTOR.into_iter().enumerate() {
+            push_mixer_track_parameter_steps(
+                steps,
+                track_id,
+                parameter,
+                default_track,
+                boundary_probed,
+            );
+            if parameter_index + 1 < MixerTrackParameter::INSPECTOR.len() {
+                push_key_press(steps, WindowKey::S);
+            }
+        }
+        steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+
+        for _ in 1..MixerTrackParameter::MAIN.len() {
+            push_key_press(steps, WindowKey::W);
+        }
+        if track_index + 1 < MixerTrackId::COUNT {
+            push_key_press(steps, WindowKey::D);
+        }
+    }
+
+    for _ in MixerTrackId::MIN..MixerTrackId::MAX {
+        push_key_press(steps, WindowKey::A);
+    }
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::MixerInspector,
+    )));
+    for _ in MixerTrackParameter::INSPECTOR {
+        push_key_press(steps, WindowKey::S);
+    }
+    for (parameter_index, descriptor) in GlobalParameters::surface_descriptor().iter().enumerate() {
+        let parameter = descriptor.parameter();
+        let identifier = format!("global.{}", descriptor.name());
+        if boundary_probed.insert(descriptor.name().to_owned()) {
+            push_parameter_boundary_probe(
+                steps,
+                &identifier,
+                global_parameters.value(parameter),
+                descriptor.minimum(),
+                descriptor.maximum(),
+                descriptor.fine_step(),
+                descriptor.coarse_step(),
+            );
+        }
+        push_reversible_adjustments(
+            steps,
+            global_parameters.value(parameter),
+            descriptor.minimum(),
+            descriptor.maximum(),
+            descriptor.coarse_step(),
+        );
+        push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
+        if parameter_index + 1 < GlobalParameters::surface_descriptor().len() {
+            push_key_press(steps, WindowKey::S);
+        }
+    }
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+    push_checkpoint(steps, DemoCheckpoint::new("mixer.controls.restored"));
+}
+
+fn push_mixer_track_parameter_steps(
+    steps: &mut Vec<DemoSceneStep>,
+    track_id: MixerTrackId,
+    parameter: MixerTrackParameter,
+    initial_parameters: MixerTrackParameters,
+    boundary_probed: &mut BTreeSet<String>,
+) {
+    let descriptor = parameter.descriptor();
+    let identifier = format!("track.{track_id}.{}", descriptor.name());
+    match descriptor.kind() {
+        MixerTrackParameterKind::Continuous => {
+            let initial = initial_parameters
+                .scalar_value(parameter)
+                .expect("continuous track descriptors own scalar values");
+            if boundary_probed.insert(descriptor.name().to_owned()) {
+                push_parameter_boundary_probe(
+                    steps,
+                    &identifier,
+                    initial,
+                    descriptor.minimum(),
+                    descriptor.maximum(),
+                    descriptor.fine_step(),
+                    descriptor.coarse_step(),
+                );
+            }
+            push_reversible_adjustments(
+                steps,
+                initial,
+                descriptor.minimum(),
+                descriptor.maximum(),
+                descriptor.coarse_step(),
+            );
+        }
+        MixerTrackParameterKind::Toggle => {
+            steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+                WindowKey::K,
+            )));
+            push_key_press(steps, WindowKey::D);
+            push_key_press(steps, WindowKey::A);
+            steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+                WindowKey::K,
+            )));
+        }
+    }
+    push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
 }
 
 fn push_patch_effect_control_steps(
@@ -1474,61 +1699,6 @@ fn push_reversible_adjustments(
     )));
 }
 
-fn patch_target_metadata(
-    patch: &Patch,
-    descriptor: &CapabilityDescriptor,
-    target: &PatchEditableTarget,
-) -> Option<(f32, f32, f32, f32, f32)> {
-    match target {
-        PatchEditableTarget::Mixer(parameter) => {
-            let metadata = parameter.descriptor();
-            Some((
-                patch.parameters().value(*parameter),
-                metadata.minimum(),
-                metadata.maximum(),
-                metadata.fine_step(),
-                metadata.coarse_step(),
-            ))
-        }
-        PatchEditableTarget::Envelope(parameter) => {
-            let metadata = parameter.descriptor();
-            Some((
-                patch.envelope().value(*parameter),
-                metadata.minimum(),
-                metadata.maximum(),
-                metadata.fine_step(),
-                metadata.coarse_step(),
-            ))
-        }
-        PatchEditableTarget::Instrument(parameter_id) => {
-            let spec = descriptor.parameter(parameter_id)?;
-            let value = patch.instrument_config().value(parameter_id)?;
-            let initial = spec.scalar_value(value).ok()?;
-            match spec.kind() {
-                ParameterKind::Continuous | ParameterKind::Stepped => {
-                    let range = spec.range()?;
-                    Some((
-                        initial,
-                        range.minimum() as f32,
-                        range.maximum() as f32,
-                        spec.fine_step()? as f32,
-                        spec.coarse_step()? as f32,
-                    ))
-                }
-                ParameterKind::Choice => Some((
-                    initial,
-                    0.0,
-                    spec.choices().len().saturating_sub(1) as f32,
-                    1.0,
-                    1.0,
-                )),
-                ParameterKind::Toggle => Some((initial, 0.0, 1.0, 1.0, 1.0)),
-                ParameterKind::Asset => None,
-            }
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn push_parameter_boundary_probe(
     steps: &mut Vec<DemoSceneStep>,
@@ -1650,6 +1820,17 @@ fn build_expected_coverage(
                 expected.push("event.adjust".to_owned());
                 expected.push(format!("direction.{}", direction_identifier(*direction)));
             }
+            crate::control::app_event::AppEventSurfaceDescriptor::SetInteractionMode { mode } => {
+                expected.push("event.setInteractionMode".to_owned());
+                expected.push(format!("interactionMode.{}", mode.label().to_ascii_lowercase()));
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::EnterSurface { surface } => {
+                expected.push("event.enterSurface".to_owned());
+                expected.push(format!("surface.{}", surface.label().to_ascii_lowercase()));
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::Return => {
+                expected.push("event.return".to_owned());
+            }
             crate::control::app_event::AppEventSurfaceDescriptor::InstallPatches { .. } => {
                 expected.push("event.installPatches".to_owned());
             }
@@ -1699,7 +1880,7 @@ fn build_expected_coverage(
             .map(|direction| format!("direction.{}", direction_identifier(direction))),
     );
 
-    for patch in patches {
+    if let Some(patch) = patches.first() {
         let descriptor = capabilities
             .descriptor(patch.instrument_config().capability_id())
             .expect("validated coverage Patch capability is installed");
@@ -1713,9 +1894,14 @@ fn build_expected_coverage(
             .into_iter()
             .map(|control| format!("patchControl.{control}")),
         );
+        expected.extend(
+            PatchControlId::utility_surface_descriptor()
+                .iter()
+                .map(|control| format!("patchControl.{control}")),
+        );
     }
 
-    for patch in patches {
+    if let Some(patch) = patches.first() {
         let descriptor = capabilities
             .descriptor(patch.instrument_config().capability_id())
             .expect("validated MIDI coverage capability is installed");
@@ -1726,7 +1912,7 @@ fn build_expected_coverage(
         );
     }
 
-    for patch in patches {
+    if let Some(patch) = patches.first() {
         let descriptor = capabilities
             .descriptor(patch.instrument_config().capability_id())
             .expect("validated coverage Patch capability is installed");
@@ -1744,16 +1930,6 @@ fn build_expected_coverage(
                 patch.id().value()
             ));
             match target {
-                PatchEditableTarget::Mixer(_) => {
-                    expected.push(format!(
-                        "property.stateTree.patch.{}.parameters.{parameter}",
-                        patch.id().value()
-                    ));
-                    expected.push(format!(
-                        "property.stateTree.parameters.patch.{}.{parameter}",
-                        patch.id().value()
-                    ));
-                }
                 PatchEditableTarget::Envelope(_) => {
                     expected.push(format!(
                         "property.stateTree.patch.{}.envelope.{parameter}",
@@ -1776,6 +1952,43 @@ fn build_expected_coverage(
                 }
             }
         }
+        for parameter in PatchOutputParameter::ALL {
+            let name = parameter.name();
+            expected.push(format!(
+                "parameter.patch.{}.output.{name}",
+                patch.id().value()
+            ));
+            expected.push(format!(
+                "effect.parameterSnapshot.patch.{}.output.{name}",
+                patch.id().value()
+            ));
+            expected.push(format!(
+                "property.stateTree.patch.{}.output.{}",
+                patch.id().value(),
+                match parameter {
+                    PatchOutputParameter::TrimGain => "trimGainDb",
+                    PatchOutputParameter::OutputTrack => "trackId",
+                }
+            ));
+            expected.push(format!(
+                "property.stateTree.parameters.patch.{}.output.{}",
+                patch.id().value(),
+                match parameter {
+                    PatchOutputParameter::TrimGain => "trimGainDb",
+                    PatchOutputParameter::OutputTrack => "trackId",
+                }
+            ));
+        }
+    }
+    for track_id in MixerTrackId::ALL {
+        for parameter in MixerTrackParameter::ALL {
+            expected.push(format!("parameter.track.{track_id}.{parameter}"));
+            expected.push(format!(
+                "effect.parameterSnapshot.track.{track_id}.{parameter}"
+            ));
+        }
+    }
+    for patch in patches {
         for property in ["id", "name", "channel", "instrument.capabilityId"] {
             expected.push(format!(
                 "property.stateTree.patch.{}.{property}",
@@ -2074,8 +2287,10 @@ mod tests {
     use crate::control::app_state::EventRejection;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::mixer_track_parameters::{MixerTrackParameter, MixerTrackParameters};
+    use crate::mixer::patch_output::PatchOutput;
     use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
@@ -2094,7 +2309,7 @@ mod tests {
             )
             .unwrap(),
             MidiChannel::new(channel).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(channel).unwrap()),
         )
     }
 
@@ -2127,14 +2342,20 @@ mod tests {
         let patches = patches();
         let scene = DemoScene::exhaustive(&registry(), &patches, &globals()).unwrap();
 
-        for patch in &patches {
-            for descriptor in ChannelParameters::surface_descriptor() {
-                let identifier = format!(
-                    "parameter.patch.{}.{}",
-                    patch.id().value(),
-                    descriptor.name()
-                );
-                assert!(scene.expected_coverage().contains(&identifier));
+        let focused_patch = &patches[0];
+        for descriptor in PatchOutput::surface_descriptor() {
+            let identifier = format!(
+                "parameter.patch.{}.output.{}",
+                focused_patch.id().value(),
+                descriptor.name()
+            );
+            assert!(scene.expected_coverage().contains(&identifier));
+        }
+        for track_id in MixerTrackId::ALL {
+            for parameter in MixerTrackParameter::ALL {
+                assert!(scene
+                    .expected_coverage()
+                    .contains(&format!("parameter.track.{track_id}.{parameter}")));
             }
         }
         for descriptor in GlobalParameters::surface_descriptor() {
@@ -2187,22 +2408,28 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 17);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            15
+            20
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),
             7
         );
-        assert_eq!(ChannelParameters::surface_descriptor().len(), 4);
+        assert_eq!(PatchOutput::surface_descriptor().len(), 2);
+        assert_eq!(MixerTrackParameters::surface_descriptor().len(), 6);
         assert_eq!(GlobalParameters::surface_descriptor().len(), 7);
         assert_eq!(EventRejection::surface_descriptor().len(), 17);
-        for patch in &patches {
-            for descriptor in ChannelParameters::surface_descriptor() {
-                assert!(scene.expected_coverage().contains(&format!(
-                    "parameter.patch.{}.{}",
-                    patch.id().value(),
-                    descriptor.name()
-                )));
+        for descriptor in PatchOutput::surface_descriptor() {
+            assert!(scene.expected_coverage().contains(&format!(
+                "parameter.patch.{}.output.{}",
+                patches[0].id().value(),
+                descriptor.name()
+            )));
+        }
+        for track_id in MixerTrackId::ALL {
+            for parameter in MixerTrackParameter::ALL {
+                assert!(scene
+                    .expected_coverage()
+                    .contains(&format!("parameter.track.{track_id}.{parameter}")));
             }
         }
     }
@@ -2254,8 +2481,15 @@ mod tests {
                 checkpoint.expected_last_rejection() == Some(EventRejection::ParameterAtBoundary)
             })
             .count();
-        let bounded_parameter_count = ChannelParameters::surface_descriptor().len()
+        let bounded_parameter_count = PatchOutput::surface_descriptor().len()
             + VoiceEnvelope::surface_descriptor().len()
+            + MixerTrackParameter::ALL
+                .into_iter()
+                .filter(|parameter| {
+                    parameter.descriptor().kind()
+                        == crate::mixer::mixer_track_parameters::MixerTrackParameterKind::Continuous
+                })
+                .count()
             + GlobalParameters::surface_descriptor().len();
         assert_eq!(boundary_rejections, bounded_parameter_count * 2);
         assert_eq!(

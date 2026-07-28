@@ -16,11 +16,15 @@ use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
 use crest_synth::control::event_log::EventLog;
-use crest_synth::control::event_record::{EmittedEvent, EventOutcome, EventSource};
+use crest_synth::control::event_record::{EmittedEvent, EventInput, EventOutcome, EventSource};
 use crest_synth::control::state_projector::StateProjector;
-use crest_synth::control::{PatchControlId, StructuralEditIntent};
+use crest_synth::control::{GraphicalShellProjection, PatchControlId, StructuralEditIntent};
 use crest_synth::kernel::midi_message::MidiMessageKind;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::mixer_track_parameters::MixerTrackParameter;
+use crest_synth::mixer::patch_output::PatchOutputParameter;
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::real_time::audio_observation::AudioObservation;
 use crest_synth::real_time::audio_renderer::AudioRenderer;
@@ -30,20 +34,60 @@ use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
 use crest_synth::real_time::structural_graph_boundary::NoStructuralGraphChanges;
 use crest_synth::real_time::{GraphHandoffStatus, StructuralGraphBoundary};
 use crest_synth::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
+use crest_synth::shell::{
+    ShellFrameObservation, ShellRegionId, ShellRegionObservation, ShellRegionRect,
+};
 use crest_synth::synth::{
     DescriptorDefaultConfigFactory, InstrumentPreparer, PatchEditableTarget, VoiceEnvelope,
 };
 use crest_synth::testing::automatic_midi_test::AutomaticMidiTest;
 use crest_synth::testing::live_demo_runner::LiveDemoRunner;
 use crest_synth::testing::live_demo_scene::LiveDemoScene;
-use crest_synth::testing::RuntimeAudioWitness;
+use crest_synth::testing::{LiveDemoError, RuntimeAudioWitness};
 use std::time::Duration;
 use support::{globals, FixtureMidiSource, FixturePreparer, FRAME_COUNT, SAMPLE_RATE};
+
+fn shell_frame(projection: &GraphicalShellProjection) -> ShellFrameObservation {
+    ShellFrameObservation::try_new_semantic(
+        1_920.0,
+        1_080.0,
+        projection.semantic_model(),
+        [
+            ShellRegionObservation::new(
+                ShellRegionId::ContextLine,
+                ShellRegionRect::new(0.0, 0.0, 1_920.0, 48.0),
+                projection.context_line().context_label(),
+            ),
+            ShellRegionObservation::new(
+                ShellRegionId::IdentityHeader,
+                ShellRegionRect::new(0.0, 48.0, 1_920.0, 120.0),
+                projection.identity_header().primary_label(),
+            ),
+            ShellRegionObservation::new(
+                ShellRegionId::MainWorkspace,
+                ShellRegionRect::new(0.0, 120.0, 1_500.0, 1_016.0),
+                projection.workspace().main_label(),
+            ),
+            ShellRegionObservation::new(
+                ShellRegionId::PersistentSideRegion,
+                ShellRegionRect::new(1_500.0, 120.0, 1_920.0, 1_016.0),
+                projection.workspace().side_label(),
+            ),
+            ShellRegionObservation::new(
+                ShellRegionId::Footer,
+                ShellRegionRect::new(0.0, 1_016.0, 1_920.0, 1_080.0),
+                projection.footer().path_label(),
+            ),
+        ],
+    )
+    .unwrap()
+}
 
 #[test]
 fn live_demo_scene_uses_production_state_projection_render_and_observation_paths() {
     let global = globals();
-    let initial = ParameterSnapshot::new(0, global, &[]).expect("initial parameters are valid");
+    let initial = ParameterSnapshot::new(0, global, MixerState::default(), &[])
+        .expect("initial parameters are valid");
     let boundary = LockFreeAudioBoundary::new(512, initial);
     let (control, audio) = boundary.into_handles();
     let event_log = EventLog::new(4096).expect("live test journal capacity is valid");
@@ -69,7 +113,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
 
     let expected_count = app_loop
         .patches()
-        .iter()
+        .first()
         .map(|patch| {
             let descriptor = app_loop
                 .capabilities()
@@ -77,10 +121,12 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
                 .unwrap();
             patch.editable_targets(descriptor).unwrap().len()
         })
-        .sum::<usize>()
+        .unwrap()
+        + PatchOutputParameter::ALL.len()
         + app_loop
             .patches()
-            .iter()
+            .first()
+            .into_iter()
             .flat_map(|patch| patch.post_effects())
             .map(|config| {
                 app_loop
@@ -90,6 +136,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
                     .scalar_parameter_count()
             })
             .sum::<usize>()
+        + MixerTrackId::COUNT * MixerTrackParameter::ALL.len()
         + GlobalParameters::surface_descriptor().len();
     assert_eq!(scene.expected_editable_parameters().len(), expected_count);
     assert_eq!(scene.minimum_parameter_dwell(), Duration::from_millis(500));
@@ -130,6 +177,13 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
                 patch_id,
                 ..
             } => *patch_id,
+            crest_synth::testing::live_demo_scene::LiveEditableParameter::PatchOutput {
+                patch_id,
+                ..
+            } => *patch_id,
+            crest_synth::testing::live_demo_scene::LiveEditableParameter::Track { .. } => {
+                focused_patch_id
+            }
             crest_synth::testing::live_demo_scene::LiveEditableParameter::Global { .. } => {
                 focused_patch_id
             }
@@ -154,6 +208,37 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         assert!(note_on.data2() > 0);
         assert_eq!(note_off.data2(), 0);
     }
+    let shared_track = MixerTrackId::new(1).unwrap();
+    let shared_level_index = scene
+        .steps()
+        .iter()
+        .position(|step| {
+            matches!(
+                step.editable_parameter(),
+                Some(
+                    crest_synth::testing::live_demo_scene::LiveEditableParameter::Track {
+                        track_id,
+                        parameter: MixerTrackParameter::Level,
+                    }
+                ) if *track_id == shared_track
+            )
+        })
+        .expect("the shared-track Level checkpoint exists");
+    let shared_patch_id = app_loop.patches()[1].id();
+    assert!(matches!(
+        scene.steps()[shared_level_index - 2].event(),
+        AppEvent::Midi { patch_id, message }
+            if *patch_id == shared_patch_id
+                && message.kind() == MidiMessageKind::NoteOn
+                && message.data2() > 0
+    ));
+    assert!(matches!(
+        scene.steps()[shared_level_index + 3].event(),
+        AppEvent::Midi { patch_id, message }
+            if *patch_id == shared_patch_id
+                && message.kind() == MidiMessageKind::NoteOff
+                && message.data2() == 0
+    ));
     let mut patch_adsr_step_indices = Vec::new();
     for descriptor in VoiceEnvelope::surface_descriptor() {
         let control = PatchControlId::Envelope(descriptor.parameter());
@@ -184,20 +269,12 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         .iter()
         .position(|step| step.expected_outcome() == EventOutcome::Rejected)
         .expect("scene includes a boundary rejection probe");
-    let rejected_parameter = scene.steps()[rejection_index]
-        .editable_parameter()
-        .expect("boundary rejection identifies its parameter");
     let recovery = scene
         .steps()
-        .iter()
-        .skip(rejection_index + 1)
-        .find(|step| {
-            step.expected_outcome() == EventOutcome::Accepted
-                && step.requires_checkpoint()
-                && step.editable_parameter() == Some(rejected_parameter)
-        })
-        .expect("a probed accepted adjustment follows the boundary rejection");
-    assert!(recovery.requires_checkpoint());
+        .get(rejection_index + 1)
+        .expect("an accepted recovery follows the boundary rejection");
+    assert_eq!(recovery.expected_outcome(), EventOutcome::Accepted);
+    assert!(matches!(recovery.event(), AppEvent::Return));
 
     let observation = AtomicAudioObservation::default();
     let (writer, reader) = observation.into_handles();
@@ -265,7 +342,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         .expect("scene contains a scalar checkpoint");
     for _ in 0..=first_checkpoint_step {
         assert!(runner
-            .advance(Duration::from_millis(100), &mut app_loop)
+            .advance(Duration::from_millis(50), &mut app_loop)
             .expect("first PATCH route dispatches")
             .is_none());
     }
@@ -279,10 +356,13 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         records_after_dispatch
     );
     renderer.render(&mut output);
+    runner
+        .observe_shell_frame(shell_frame(&app_loop.current_graphical_shell()))
+        .expect("the production-rendered first shell frame correlates");
 
-    let mut deterministic_elapsed = Duration::from_millis(100 * (first_checkpoint_step as u64 + 1));
+    let mut deterministic_elapsed = Duration::from_millis(50 * (first_checkpoint_step as u64 + 1));
     let mut first_checkpoint_elapsed = None;
-    for _ in 0..4_000 {
+    for _ in 0..4_096 {
         app_loop
             .advance_structural()
             .expect("live structural control tick advances");
@@ -292,28 +372,42 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
             .iter()
             .filter(|record| record.source() == EventSource::DemoScene)
             .count();
-        let tick_elapsed = Duration::from_millis(100);
+        let tick_elapsed = Duration::from_millis(50);
         deterministic_elapsed += tick_elapsed;
-        if let Some(checkpoint) = runner
-            .advance(tick_elapsed, &mut app_loop)
-            .expect("live runner advances coherently")
-        {
+        let advance = runner.advance(tick_elapsed, &mut app_loop);
+        if let Err(error) = &advance {
+            panic!(
+                "live runner advances coherently: {error:?}; shell={:?}",
+                runner.shell_coverage()
+            );
+        }
+        if let Some(checkpoint) = advance.unwrap() {
             assert!(checkpoint.agrees());
             first_checkpoint_elapsed.get_or_insert(deterministic_elapsed);
             checkpoints.push(checkpoint);
         }
-        let demo_records_after = app_loop
+        let demo_records = app_loop
             .event_log()
             .records()
             .iter()
             .filter(|record| record.source() == EventSource::DemoScene)
-            .count();
-        assert!(
-            demo_records_after.saturating_sub(demo_records_before) <= 1,
-            "one window tick dispatched more than one autonomous scene event"
-        );
+            .cloned()
+            .collect::<Vec<_>>();
+        let new_records = &demo_records[demo_records_before..];
+        assert!(new_records.len() <= 8, "recovery batch remained bounded");
+        if new_records.len() > 1 {
+            assert!(new_records.iter().enumerate().all(|(index, record)| {
+                matches!(record.input(), EventInput::Navigate { .. })
+                    || (index == 0 && matches!(record.input(), EventInput::Adjust { .. }))
+            }));
+        }
 
         renderer.render(&mut output);
+        if runner.completed_report().is_none() {
+            runner
+                .observe_shell_frame(shell_frame(&app_loop.current_graphical_shell()))
+                .expect("the production-rendered shell frame correlates");
+        }
         std::thread::yield_now();
         if runner.completed_report().is_some() {
             break;
@@ -323,14 +417,67 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     let report = runner
         .completed_report()
         .expect("bounded live scene completes");
-    assert!(first_checkpoint_elapsed.unwrap() >= Duration::from_millis(600));
-    assert!(report.complete(), "{}", report.summary());
+    assert!(first_checkpoint_elapsed.unwrap() >= Duration::from_millis(500));
+    let routing = report.mixer_routing();
+    assert!(
+        report.complete(),
+        "{}; routing={routing:?}",
+        report.summary()
+    );
+    assert!(routing.is_complete());
+    assert_eq!(routing.track_count(), 16);
+    assert!(routing.track_ids_exact());
+    assert!(routing.all_tracks_projected());
+    assert!(routing.empty_tracks_addressable());
+    assert!(routing.shared_track_patch_count() > 1);
+    assert!(routing.shared_track_sum_exact());
+    assert!(routing.track_level_controls_shared_sum());
+    assert!(routing.patch_trim_isolated());
+    assert!(routing.patch_reroute_isolated());
+    assert!(routing.invalid_route_rejected());
+    assert_eq!(routing.track_parameter_classes_exercised(), 6);
+    assert!(routing.mute_wins());
+    assert!(routing.any_solo_exact());
+    assert!(routing.post_gate_sends_exact());
+    assert!(routing.pre_gate_meters_exact());
+    assert!(routing.fixed_snapshot_exact());
+    assert!(routing.stable_focus_exact());
+    assert_eq!(routing.callback_allocations(), 0);
+    assert_eq!(routing.callback_destructions(), 0);
+    assert!(report
+        .checkpoints()
+        .iter()
+        .filter_map(|checkpoint| checkpoint.as_parameter())
+        .any(|checkpoint| {
+            matches!(
+                checkpoint.expected_transition().editable_parameter(),
+                Some(
+                    crest_synth::testing::live_demo_scene::LiveEditableParameter::Track {
+                        track_id,
+                        parameter: MixerTrackParameter::Level,
+                    }
+                ) if *track_id == shared_track
+            ) && checkpoint.audio_observation().active_notes() >= 2
+                && checkpoint.audio_observation().track(shared_track).rms() > 0.0
+        }));
     assert_eq!(report.checkpoints(), checkpoints);
     assert_eq!(report.coverage().expected().len(), expected_count);
     assert_eq!(report.coverage().exercised().len(), expected_count);
     assert!(report.coverage().missing().is_empty());
     assert!(report.coverage().unexpected().is_empty());
     assert!(report.coverage().duplicate_expected().is_empty());
+    assert!(report.shell_coverage().is_complete());
+    assert!(report.shell_coverage().patch_context_observed());
+    assert!(report.shell_coverage().mixer_context_observed());
+    assert!(report.shell_coverage().all_semantic_surfaces_observed());
+    assert!(report.shell_coverage().both_reachable_modes_observed());
+    assert!(report.shell_coverage().both_return_round_trips_observed());
+    assert!(report.shell_coverage().healthy_empty_errors_observed());
+    assert!(report.shell_coverage().focus_recovery_observed());
+    assert_eq!(
+        report.graphical_shell().state_hash(),
+        report.state_tree().state_hash()
+    );
     let patch_adsr_checkpoints = report
         .checkpoints()
         .iter()
@@ -461,7 +608,10 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
             .unwrap()
             .generation_after()
     );
-    assert!(report.to_json().unwrap().contains("\"complete\":true"));
+    let report_json = report.to_json().unwrap();
+    assert!(report_json.contains("\"complete\":true"));
+    assert!(report_json.contains("\"mixerRouting\":{"));
+    assert!(report_json.contains("\"shared_track_sum_exact\":true"));
     assert_eq!(report.runtime_audio().parsed_soundfont_banks(), 1);
     assert_eq!(report.runtime_audio().prepared_instruments(), 2);
     assert_eq!(report.runtime_audio().soundfont_patches(), 1);
@@ -487,8 +637,8 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     let final_tree_value: serde_json::Value =
         serde_json::from_str(report.state_tree().json()).unwrap();
     assert_eq!(
-        final_tree_value["interaction"]["patchControlFocus"],
-        "patch.engine"
+        final_tree_value["interaction"]["activeFocus"]["controlId"]["id"],
+        serde_json::json!({"kind": "track", "track_id": 15, "parameter": "solo"})
     );
 
     let final_log = app_loop.event_log().to_json().unwrap();
@@ -503,6 +653,10 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     assert_eq!(app_loop.event_log().to_json().unwrap(), final_log);
     assert_eq!(app_loop.current_state_tree().json(), final_tree);
     assert_eq!(app_loop.current_text(), final_projection);
+    assert!(matches!(
+        runner.observe_shell_frame(shell_frame(&app_loop.current_graphical_shell())),
+        Err(LiveDemoError::UnexpectedShellFrame)
+    ));
 
     drop(renderer);
     app_loop
@@ -515,7 +669,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
 #[test]
 fn live_demo_early_close_uses_semantic_cleanup_without_success_report() {
     let global = globals();
-    let initial = ParameterSnapshot::new(0, global, &[]).unwrap();
+    let initial = ParameterSnapshot::new(0, global, MixerState::default(), &[]).unwrap();
     let boundary = LockFreeAudioBoundary::new(64, initial);
     let (control, audio) = boundary.into_handles();
     let registry = production_capability_registry().unwrap();

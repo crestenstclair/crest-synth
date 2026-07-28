@@ -1,3 +1,5 @@
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::track_meter::TrackMeter;
 use crate::real_time::audio_observation::{
     AudioObservation, CallbackAudioObservation, ControlAudioObservation,
 };
@@ -83,6 +85,9 @@ struct AtomicObservationFields {
     effect_output_rms: AtomicU32,
     effect_difference_rms: AtomicU32,
     effect_side_rms: AtomicU32,
+    track_left_peaks: [AtomicU32; MixerTrackId::COUNT],
+    track_right_peaks: [AtomicU32; MixerTrackId::COUNT],
+    track_rms: [AtomicU32; MixerTrackId::COUNT],
     left_peak: AtomicU32,
     right_peak: AtomicU32,
     output_rms: AtomicU32,
@@ -129,6 +134,15 @@ impl AtomicObservationFields {
                 initial.patch_effect().difference_rms().to_bits(),
             ),
             effect_side_rms: AtomicU32::new(initial.patch_effect().side_rms().to_bits()),
+            track_left_peaks: std::array::from_fn(|index| {
+                AtomicU32::new(initial.tracks()[index].left_peak().to_bits())
+            }),
+            track_right_peaks: std::array::from_fn(|index| {
+                AtomicU32::new(initial.tracks()[index].right_peak().to_bits())
+            }),
+            track_rms: std::array::from_fn(|index| {
+                AtomicU32::new(initial.tracks()[index].rms().to_bits())
+            }),
             left_peak: AtomicU32::new(initial.left_peak().to_bits()),
             right_peak: AtomicU32::new(initial.right_peak().to_bits()),
             output_rms: AtomicU32::new(initial.output_rms().to_bits()),
@@ -196,6 +210,12 @@ impl AtomicObservationFields {
             snapshot.patch_effect().side_rms().to_bits(),
             Ordering::Relaxed,
         );
+        for index in 0..MixerTrackId::COUNT {
+            let meter = snapshot.tracks()[index];
+            self.track_left_peaks[index].store(meter.left_peak().to_bits(), Ordering::Relaxed);
+            self.track_right_peaks[index].store(meter.right_peak().to_bits(), Ordering::Relaxed);
+            self.track_rms[index].store(meter.rms().to_bits(), Ordering::Relaxed);
+        }
         self.left_peak
             .store(snapshot.left_peak().to_bits(), Ordering::Relaxed);
         self.right_peak
@@ -223,8 +243,16 @@ impl AtomicObservationFields {
                 continue;
             }
 
+            let tracks = std::array::from_fn(|index| {
+                TrackMeter::new(
+                    f32::from_bits(self.track_left_peaks[index].load(Ordering::Relaxed)),
+                    f32::from_bits(self.track_right_peaks[index].load(Ordering::Relaxed)),
+                    f32::from_bits(self.track_rms[index].load(Ordering::Relaxed)),
+                )
+                .unwrap_or_default()
+            });
             let snapshot =
-                AudioObservationSnapshot::from_parts_with_graph_routing_primary_and_effect(
+                AudioObservationSnapshot::from_parts_with_graph_routing_primary_effect_and_tracks(
                     self.sequence.load(Ordering::Relaxed),
                     self.rendered_blocks.load(Ordering::Relaxed),
                     self.rendered_frames.load(Ordering::Relaxed),
@@ -256,6 +284,7 @@ impl AtomicObservationFields {
                         f32::from_bits(self.effect_difference_rms.load(Ordering::Relaxed)),
                         f32::from_bits(self.effect_side_rms.load(Ordering::Relaxed)),
                     ),
+                    tracks,
                     f32::from_bits(self.left_peak.load(Ordering::Relaxed)),
                     f32::from_bits(self.right_peak.load(Ordering::Relaxed)),
                     f32::from_bits(self.output_rms.load(Ordering::Relaxed)),
@@ -278,6 +307,8 @@ impl AtomicObservationFields {
 mod tests {
     use super::AtomicAudioObservation;
     use crate::mixer::mix_observation::MixObservation;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::track_meter::TrackMeter;
     use crate::real_time::audio_observation::{
         AudioObservation, CallbackAudioObservation, ControlAudioObservation,
     };
@@ -294,7 +325,17 @@ mod tests {
             sequence as u32,
             sequence,
             crate::kernel::patch_id::PatchId::new(sequence as u32).ok(),
-            MixObservation::new(value, value, value, value, value, value, sequence, sequence),
+            MixObservation::new(
+                [TrackMeter::new(value, value, value).unwrap(); MixerTrackId::COUNT],
+                value,
+                value,
+                value,
+                value,
+                value,
+                value,
+                sequence,
+                sequence,
+            ),
         )
     }
 

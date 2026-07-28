@@ -16,8 +16,10 @@ use crest_synth::control::{
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::{
     AudioBoundary, AudioObservation, AudioRenderer, GraphHandoffStatus, GraphRevision,
     ParameterSnapshot, PreparedGraphBuilder, StructuralGraphBoundary,
@@ -346,7 +348,7 @@ fn soundfont_preset_selection() {
         "Untargeted Braids".to_owned(),
         braids_capability.default_config().unwrap(),
         MidiChannel::new(1).unwrap(),
-        ChannelParameters::new(-4.0, 0.2, 0.0, 0.0).unwrap(),
+        PatchOutput::new(MixerTrackId::new(1).unwrap(), -4.0).unwrap(),
     );
     let untargeted_before = untargeted.clone();
     let mut state = AppState::for_graph(registry.clone(), globals(), GraphRevision::INITIAL);
@@ -357,14 +359,16 @@ fn soundfont_preset_selection() {
                 "Preset target".to_owned(),
                 default_config.clone(),
                 channel,
-                ChannelParameters::default(),
+                PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
             ),
             untargeted,
         ]))
         .unwrap();
 
-    let boundary =
-        LockFreeAudioBoundary::new(128, ParameterSnapshot::new(0, globals(), &[]).unwrap());
+    let boundary = LockFreeAudioBoundary::new(
+        128,
+        ParameterSnapshot::new(0, globals(), MixerState::default(), &[]).unwrap(),
+    );
     let (audio_control, audio_callback) = boundary.into_handles();
     let mut app_loop = AppLoop::new(
         state,
@@ -610,7 +614,7 @@ fn soundfont_preset_selection() {
             "Upper boundary".to_owned(),
             last_config,
             MidiChannel::new(7).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new(7).unwrap()),
         )]))
         .unwrap();
     upper_state

@@ -10,7 +10,7 @@ Crest Synth is designed as a hardware instrument rendered through a sparse, text
 - Edit modifies, adjusts, chooses, or toggles;
 - Shift changes context or opens a related surface;
 - Select enters multi-select;
-- Start is reserved.
+- Start is reserved in the general command grammar; the product resolution below defines one Sample Browser exception.
 
 The design depends on spatial memory. PATCH and MIXER are peer contexts. Detail views, option lists, Utility, and the Sample Browser are subordinate surfaces that preserve where the user came from.
 
@@ -21,6 +21,10 @@ The design depends on spatial memory. PATCH and MIXER are peer contexts. Detail 
 - Five component sets containing 31 variants inspected.
 - No prototype reactions were present on the inspected screen or state nodes.
 - Interaction evidence therefore comes from rendered screens, layer structure, on-canvas annotations, visible control hints, and the authored interaction map.
+
+## Product resolution added after Figma inspection
+
+Product authority resolves the Sample Browser's undefined “X” preview annotation as follows: while a sample row is focused, holding Start previews that sample and releasing Start stops preview. Start remains reserved outside the Sample Browser. This resolution comes from the master product design rather than the Figma evidence.
 
 ## Product model inferred from Figma
 
@@ -115,12 +119,11 @@ The component library favors behavioral variants over decorative ones. Hairlines
 - A compact spacing rhythm and large focusable rows make a visually dense interface controller-readable.
 - Repeated location cues in the header, section title, inspector, and footer reduce disorientation.
 
-## Unresolved Figma questions
+## Remaining unresolved Figma questions
 
 1. **Selector change conflict.** Patch rows say `L/R:change`, while the interaction map says the unmodified D-pad moves focus and `Edit + Left/Right` makes fine adjustments. The exact direct-change binding is ambiguous.
-2. **Undefined preview button.** The Sample Browser note says “X previews only while held,” but the hardware legend defines no X control and the visible footer omits preview.
-3. **Incomplete multi-select behavior.** Select enters multi-select, but selection accumulation, batch actions, cancellation, and visual treatment are not demonstrated.
-4. **No executable prototype path.** The interaction model is well annotated, but zero prototype reactions were present on the inspected screen and state frames.
+2. **Incomplete multi-select behavior.** Select enters multi-select, but selection accumulation, batch actions, cancellation, and visual treatment are not demonstrated.
+3. **No executable prototype path.** The interaction model is well annotated, but zero prototype reactions were present on the inspected screen and state frames.
 
 ## Primary interaction source
 

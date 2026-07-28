@@ -1,8 +1,9 @@
-use crate::control::app_event::{AppEvent, Direction};
+use crate::control::app_event::Direction;
 use crate::control::top_level_context::TopLevelContext;
+use crate::control::{InteractionMode, SemanticAction};
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 
-/// Translates normalized window input into the closed application-event vocabulary.
+/// Translates normalized window input into the closed semantic-action vocabulary.
 ///
 /// The translator owns only the transient state of the K modifier. It never
 /// owns or mutates application selection, Patch parameters, projections, or
@@ -18,32 +19,42 @@ impl KeyboardInputTranslator {
         Self { k_held: false }
     }
 
-    /// Translates one normalized window input into at most one semantic event.
-    pub fn translate(&mut self, event: WindowInput) -> Option<AppEvent> {
+    /// Translates one normalized window input into at most one semantic action.
+    pub fn translate(&mut self, event: WindowInput) -> Option<SemanticAction> {
         match event.kind() {
             WindowInputKind::FocusLost => {
                 self.k_held = false;
-                None
+                Some(SemanticAction::SetInteractionMode(
+                    InteractionMode::Navigate,
+                ))
             }
             WindowInputKind::KeyUp => {
                 if event.key() == WindowKey::K {
                     self.k_held = false;
+                    Some(SemanticAction::SetInteractionMode(
+                        InteractionMode::Navigate,
+                    ))
+                } else {
+                    None
                 }
-                None
             }
             WindowInputKind::KeyDown => self.translate_key_down(event.key()),
         }
     }
 
-    fn translate_key_down(&mut self, key: WindowKey) -> Option<AppEvent> {
+    fn translate_key_down(&mut self, key: WindowKey) -> Option<SemanticAction> {
         match key {
-            WindowKey::Digit1 => return Some(AppEvent::SelectContext(TopLevelContext::Mixer)),
-            WindowKey::Digit2 => return Some(AppEvent::SelectContext(TopLevelContext::Patch)),
+            WindowKey::Digit1 => {
+                return Some(SemanticAction::SelectContext(TopLevelContext::Mixer))
+            }
+            WindowKey::Digit2 => {
+                return Some(SemanticAction::SelectContext(TopLevelContext::Patch))
+            }
             _ => {}
         }
         if key == WindowKey::K {
             self.k_held = true;
-            return None;
+            return Some(SemanticAction::SetInteractionMode(InteractionMode::Adjust));
         }
 
         let direction = match key {
@@ -55,9 +66,9 @@ impl KeyboardInputTranslator {
         };
 
         Some(if self.k_held {
-            AppEvent::Adjust(direction)
+            SemanticAction::Adjust(direction)
         } else {
-            AppEvent::Navigate(direction)
+            SemanticAction::Navigate(direction)
         })
     }
 }
@@ -65,8 +76,9 @@ impl KeyboardInputTranslator {
 #[cfg(test)]
 mod tests {
     use super::KeyboardInputTranslator;
-    use crate::control::app_event::{AppEvent, Direction};
+    use crate::control::app_event::Direction;
     use crate::control::top_level_context::TopLevelContext;
+    use crate::control::{InteractionMode, SemanticAction};
     use crate::shell::window_input::{WindowInput, WindowKey};
 
     const DIRECTION_CASES: [(WindowKey, Direction); 4] = [
@@ -81,15 +93,15 @@ mod tests {
         let mut translator = KeyboardInputTranslator::new();
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::Digit1)),
-            Some(AppEvent::SelectContext(TopLevelContext::Mixer))
+            Some(SemanticAction::SelectContext(TopLevelContext::Mixer))
         );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::K)),
-            None
+            Some(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
         );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::Digit2)),
-            Some(AppEvent::SelectContext(TopLevelContext::Patch))
+            Some(SemanticAction::SelectContext(TopLevelContext::Patch))
         );
         assert_eq!(
             translator.translate(WindowInput::key_up(WindowKey::Digit1)),
@@ -108,7 +120,7 @@ mod tests {
         for (key, direction) in DIRECTION_CASES {
             assert_eq!(
                 translator.translate(WindowInput::key_down(key)),
-                Some(AppEvent::Navigate(direction))
+                Some(SemanticAction::Navigate(direction))
             );
         }
     }
@@ -118,13 +130,13 @@ mod tests {
         let mut translator = KeyboardInputTranslator::new();
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::K)),
-            None
+            Some(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
         );
 
         for (key, direction) in DIRECTION_CASES {
             assert_eq!(
                 translator.translate(WindowInput::key_down(key)),
-                Some(AppEvent::Adjust(direction))
+                Some(SemanticAction::Adjust(direction))
             );
         }
     }
@@ -135,15 +147,17 @@ mod tests {
 
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::K)),
-            None
+            Some(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
         );
         assert_eq!(
             translator.translate(WindowInput::key_up(WindowKey::K)),
-            None
+            Some(SemanticAction::SetInteractionMode(
+                InteractionMode::Navigate
+            ))
         );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::W)),
-            Some(AppEvent::Navigate(Direction::Up))
+            Some(SemanticAction::Navigate(Direction::Up))
         );
     }
 
@@ -153,12 +167,17 @@ mod tests {
 
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::K)),
-            None
+            Some(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
         );
-        assert_eq!(translator.translate(WindowInput::focus_lost()), None);
+        assert_eq!(
+            translator.translate(WindowInput::focus_lost()),
+            Some(SemanticAction::SetInteractionMode(
+                InteractionMode::Navigate
+            ))
+        );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::S)),
-            Some(AppEvent::Navigate(Direction::Down))
+            Some(SemanticAction::Navigate(Direction::Down))
         );
     }
 
@@ -172,7 +191,7 @@ mod tests {
 
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::D)),
-            Some(AppEvent::Navigate(Direction::Right))
+            Some(SemanticAction::Navigate(Direction::Right))
         );
     }
 

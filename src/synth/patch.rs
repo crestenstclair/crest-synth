@@ -1,19 +1,18 @@
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::channel_parameters::ChannelParameters;
+use crate::mixer::patch_output::PatchOutput;
 use crate::synth::instrument_capability::{
     CapabilityDescriptor, CapabilityError, InstrumentConfig, ParameterUpdate,
 };
 use crate::synth::parameter_id::ParameterId;
 use crate::synth::voice_envelope::{VoiceEnvelope, VoiceEnvelopeParameter};
 use crate::synth::PostEffectConfig;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One entry in the canonical schema-derived editable Patch surface.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "parameter", rename_all = "camelCase")]
 pub enum PatchEditableTarget {
-    Mixer(crate::mixer::channel_parameters::ChannelParameter),
     Envelope(VoiceEnvelopeParameter),
     Instrument(ParameterId),
 }
@@ -22,7 +21,6 @@ impl PatchEditableTarget {
     /// Returns the stable semantic identifier used by projection and coverage.
     pub fn name(&self) -> &str {
         match self {
-            Self::Mixer(parameter) => parameter.name(),
             Self::Envelope(parameter) => parameter.name(),
             Self::Instrument(parameter) => parameter.as_str(),
         }
@@ -47,14 +45,7 @@ pub fn resolve_patch_editable_targets(
     }
 
     let mut targets = Vec::with_capacity(
-        ChannelParameters::surface_descriptor().len()
-            + VoiceEnvelope::surface_descriptor().len()
-            + descriptor.scalar_parameter_count(),
-    );
-    targets.extend(
-        ChannelParameters::surface_descriptor()
-            .iter()
-            .map(|descriptor| PatchEditableTarget::Mixer(descriptor.parameter())),
+        VoiceEnvelope::surface_descriptor().len() + descriptor.scalar_parameter_count(),
     );
     targets.extend(
         VoiceEnvelope::surface_descriptor()
@@ -73,8 +64,8 @@ pub fn resolve_patch_editable_targets(
 /// One installed, playable instrument capability configuration.
 ///
 /// A patch's identity, display name, instrument, and assigned MIDI channel are
-/// fixed at construction time. Mixer, envelope, and descriptor-classified
-/// Scalar values can change only through the canonical reducer.
+/// fixed at construction time. Output, envelope, and descriptor-classified
+/// values can change only through the canonical reducer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Patch {
     id: PatchId,
@@ -82,7 +73,7 @@ pub struct Patch {
     instrument: InstrumentConfig,
     channel: MidiChannel,
     envelope: VoiceEnvelope,
-    parameters: ChannelParameters,
+    output: PatchOutput,
     post_effects: Vec<PostEffectConfig>,
 }
 
@@ -93,7 +84,7 @@ impl Patch {
         name: String,
         instrument: InstrumentConfig,
         channel: MidiChannel,
-        parameters: ChannelParameters,
+        output: PatchOutput,
     ) -> Self {
         Self {
             id,
@@ -101,7 +92,7 @@ impl Patch {
             instrument,
             channel,
             envelope: VoiceEnvelope::default(),
-            parameters,
+            output,
             post_effects: Vec::new(),
         }
     }
@@ -131,9 +122,9 @@ impl Patch {
         &self.envelope
     }
 
-    /// Returns the current editable channel parameters.
-    pub const fn parameters(&self) -> &ChannelParameters {
-        &self.parameters
+    /// Returns this Patch's validated pre-track trim and destination.
+    pub const fn output(&self) -> PatchOutput {
+        self.output
     }
 
     /// Returns the canonical ordered Patch-local post-effect configurations.
@@ -141,14 +132,9 @@ impl Patch {
         &self.post_effects
     }
 
-    /// Provides the aggregate's only mutable state surface.
-    pub fn parameters_mut(&mut self) -> &mut ChannelParameters {
-        &mut self.parameters
-    }
-
-    /// Replaces the complete bounded channel-parameter value.
-    pub fn set_parameters(&mut self, parameters: ChannelParameters) {
-        self.parameters = parameters;
+    /// Replaces the complete bounded Patch output value through the reducer.
+    pub(crate) fn set_output(&mut self, output: PatchOutput) {
+        self.output = output;
     }
 
     /// Supplies a non-default envelope while constructing a Patch fixture.
@@ -164,7 +150,7 @@ impl Patch {
         self
     }
 
-    /// Resolves this Patch's mixer, common ADSR, and live instrument targets.
+    /// Resolves this Patch's common ADSR and live instrument targets.
     pub fn editable_targets(
         &self,
         descriptor: &CapabilityDescriptor,
@@ -192,16 +178,14 @@ mod tests {
 
     #[test]
     fn public_api_keeps_configuration_read_only() {
-        let _: fn(PatchId, String, InstrumentConfig, MidiChannel, ChannelParameters) -> Patch =
+        let _: fn(PatchId, String, InstrumentConfig, MidiChannel, PatchOutput) -> Patch =
             Patch::new;
         let _: fn(&Patch) -> PatchId = Patch::id;
         let _: for<'a> fn(&'a Patch) -> &'a str = Patch::name;
         let _: for<'a> fn(&'a Patch) -> &'a InstrumentConfig = Patch::instrument_config;
         let _: fn(&Patch) -> MidiChannel = Patch::channel;
         let _: for<'a> fn(&'a Patch) -> &'a VoiceEnvelope = Patch::envelope;
-        let _: for<'a> fn(&'a Patch) -> &'a ChannelParameters = Patch::parameters;
-        let _: for<'a> fn(&'a mut Patch) -> &'a mut ChannelParameters = Patch::parameters_mut;
-        let _: fn(&mut Patch, ChannelParameters) = Patch::set_parameters;
+        let _: fn(&Patch) -> PatchOutput = Patch::output;
 
         let config = InstrumentConfig::from_parts(
             CapabilityId::new("instrument.test").unwrap(),
@@ -213,7 +197,7 @@ mod tests {
             "Test".to_owned(),
             config.clone(),
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         assert_eq!(patch.instrument_config(), &config);
         assert_eq!(patch.envelope(), &VoiceEnvelope::default());

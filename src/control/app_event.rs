@@ -1,15 +1,20 @@
 use crate::control::top_level_context::TopLevelContext;
-use crate::control::{EngineSelectionFailure, EngineSelectionRequestId, StructuralEditIntent};
+use crate::control::{
+    EngineSelectionFailure, EngineSelectionRequestId, InteractionMode, SemanticAction,
+    StructuralEditIntent, SurfaceId,
+};
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::GraphRevision;
 use crate::synth::{CapabilityId, InstrumentConfig, Patch};
+use serde::{Deserialize, Serialize};
 
 /// A semantic direction emitted by an input adapter.
 ///
 /// The meaning of a direction depends on the event variant: navigation moves
 /// selection, while adjustment changes the currently selected bounded value.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Direction {
     Up,
     Down,
@@ -37,6 +42,8 @@ pub enum AppEventPayloadShape {
     EngineSelectionFailure,
     Boolean,
     StructuralEditIntent,
+    InteractionMode,
+    SurfaceId,
 }
 
 /// One typed entry in the exhaustive application-event surface.
@@ -54,6 +61,13 @@ pub enum AppEventSurfaceDescriptor {
     Adjust {
         direction: Direction,
     },
+    SetInteractionMode {
+        mode: InteractionMode,
+    },
+    EnterSurface {
+        surface: SurfaceId,
+    },
+    Return,
     InstallPatches {
         patches: AppEventPayloadShape,
     },
@@ -90,7 +104,7 @@ pub enum AppEventSurfaceDescriptor {
     },
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 15] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 20] = [
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
@@ -121,6 +135,19 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 15] = [
     AppEventSurfaceDescriptor::Adjust {
         direction: Direction::Right,
     },
+    AppEventSurfaceDescriptor::SetInteractionMode {
+        mode: InteractionMode::Navigate,
+    },
+    AppEventSurfaceDescriptor::SetInteractionMode {
+        mode: InteractionMode::Adjust,
+    },
+    AppEventSurfaceDescriptor::EnterSurface {
+        surface: SurfaceId::PatchUtility,
+    },
+    AppEventSurfaceDescriptor::EnterSurface {
+        surface: SurfaceId::MixerInspector,
+    },
+    AppEventSurfaceDescriptor::Return,
     AppEventSurfaceDescriptor::InstallPatches {
         patches: AppEventPayloadShape::PatchList,
     },
@@ -169,6 +196,12 @@ pub enum AppEvent {
     Navigate(Direction),
     /// Adjust exactly the currently selected bounded parameter.
     Adjust(Direction),
+    /// Select the reducer-owned interpretation of subsequent directions.
+    SetInteractionMode(InteractionMode),
+    /// Enter one context-compatible persistent side surface.
+    EnterSurface(SurfaceId),
+    /// Restore the exact main-surface origin of the current side surface.
+    Return,
     /// Install the startup patch set in fixture discovery order.
     ///
     /// Whether installation is still permitted is enforced by AppState::apply
@@ -212,6 +245,35 @@ pub enum AppEvent {
 }
 
 impl AppEvent {
+    /// Performs the single typed user-intent to reducer-event translation.
+    pub fn from_semantic_action(action: SemanticAction) -> Self {
+        match action {
+            SemanticAction::SelectContext(context) => Self::SelectContext(context),
+            SemanticAction::Navigate(direction) => Self::Navigate(direction),
+            SemanticAction::Adjust(direction) => Self::Adjust(direction),
+            SemanticAction::SetInteractionMode(mode) => Self::SetInteractionMode(mode),
+            SemanticAction::EnterSurface(surface) => Self::EnterSurface(surface),
+            SemanticAction::Return => Self::Return,
+        }
+    }
+
+    /// Reports whether accepting this event publishes a new scalar snapshot
+    /// to the real-time boundary.
+    ///
+    /// Semantic navigation still advances the canonical control generation,
+    /// but it cannot alter audio values and therefore must not publish across
+    /// any audio transport.
+    pub const fn publishes_parameters_on_acceptance(&self) -> bool {
+        !matches!(
+            self,
+            Self::SelectContext(_)
+                | Self::Navigate(_)
+                | Self::SetInteractionMode(_)
+                | Self::EnterSurface(_)
+                | Self::Return
+        )
+    }
+
     /// Returns the unique exhaustive descriptor entries for the closed event union.
     pub const fn surface_descriptor() -> &'static [AppEventSurfaceDescriptor] {
         &APP_EVENT_SURFACE_DESCRIPTOR
@@ -232,6 +294,13 @@ impl AppEvent {
             Self::Adjust(direction) => AppEventSurfaceDescriptor::Adjust {
                 direction: *direction,
             },
+            Self::SetInteractionMode(mode) => {
+                AppEventSurfaceDescriptor::SetInteractionMode { mode: *mode }
+            }
+            Self::EnterSurface(surface) => {
+                AppEventSurfaceDescriptor::EnterSurface { surface: *surface }
+            }
+            Self::Return => AppEventSurfaceDescriptor::Return,
             Self::InstallPatches(_) => AppEventSurfaceDescriptor::InstallPatches {
                 patches: AppEventPayloadShape::PatchList,
             },
@@ -277,7 +346,7 @@ impl AppEvent {
 #[cfg(test)]
 mod tests {
     use super::{AppEvent, AppEventPayloadShape, AppEventSurfaceDescriptor, Direction};
-    use crate::control::TopLevelContext;
+    use crate::control::{InteractionMode, SurfaceId, TopLevelContext};
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
@@ -319,7 +388,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 15);
+        assert_eq!(descriptor.len(), 20);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
@@ -341,6 +410,13 @@ mod tests {
             assert!(descriptor.contains(&AppEventSurfaceDescriptor::Navigate { direction }));
             assert!(descriptor.contains(&AppEventSurfaceDescriptor::Adjust { direction }));
         }
+        for mode in InteractionMode::PHASE_TWO {
+            assert!(descriptor.contains(&AppEventSurfaceDescriptor::SetInteractionMode { mode }));
+        }
+        for surface in [SurfaceId::PatchUtility, SurfaceId::MixerInspector] {
+            assert!(descriptor.contains(&AppEventSurfaceDescriptor::EnterSurface { surface }));
+        }
+        assert!(descriptor.contains(&AppEventSurfaceDescriptor::Return));
         assert!(
             descriptor.contains(&AppEventSurfaceDescriptor::InstallPatches {
                 patches: AppEventPayloadShape::PatchList,

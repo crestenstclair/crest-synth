@@ -1,5 +1,5 @@
 use crest_synth::adapter::braids_capability::BraidsCapability;
-use crest_synth::adapter::eframe_text_window::EframeApplication;
+use crest_synth::adapter::eframe_graphical_window::EframeGraphicalApplication;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::adapter::production_instruments::{
@@ -17,8 +17,9 @@ use crest_synth::control::{
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{AudioBoundary, BoundaryFull, ControlAudioBoundary};
 use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::audio_renderer::AudioRenderer;
@@ -178,7 +179,7 @@ fn production_patches() -> Vec<Patch> {
             "Schema Lead".to_owned(),
             soundfont_config(),
             MidiChannel::new(3).unwrap(),
-            ChannelParameters::new(-4.0, -0.31, 0.0, 0.0).unwrap(),
+            PatchOutput::new(MixerTrackId::new(3).unwrap(), -4.0).unwrap(),
         )
         .with_envelope(VoiceEnvelope::new(0.0, 37.0, 1.0, 91.0).unwrap()),
         Patch::new(
@@ -186,7 +187,7 @@ fn production_patches() -> Vec<Patch> {
             "Schema Braids".to_owned(),
             BraidsCapability::new().unwrap().default_config().unwrap(),
             MidiChannel::new(9).unwrap(),
-            ChannelParameters::new(-7.0, 0.28, 0.0, 0.0).unwrap(),
+            PatchOutput::new(MixerTrackId::new(9).unwrap(), -7.0).unwrap(),
         )
         .with_envelope(VoiceEnvelope::new(0.0, 23.0, 0.64, 73.0).unwrap()),
     ]
@@ -231,7 +232,7 @@ fn raw_input(events: Vec<egui::Event>, time_seconds: f64) -> egui::RawInput {
 }
 
 fn run_frame(
-    application: &mut EframeApplication,
+    application: &mut EframeGraphicalApplication,
     context: &egui::Context,
     frame: &mut eframe::Frame,
     events: Vec<egui::Event>,
@@ -380,7 +381,7 @@ fn prove_both_production_pages() {
             format!("Projected {index}"),
             config,
             MidiChannel::new(index as u8).unwrap(),
-            ChannelParameters::new(-3.0, 0.17, 0.23, 0.31).unwrap(),
+            PatchOutput::new(MixerTrackId::new(index as u8).unwrap(), -3.0).unwrap(),
         )
         .with_envelope(VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap());
         let mut state = installed_state(vec![patch]);
@@ -398,9 +399,9 @@ fn prove_both_production_pages() {
         assert_eq!(tree.state_hash(), snapshot.hash());
         assert_eq!(parameters.generation(), state.generation());
         let value: Value = serde_json::from_str(tree.json()).unwrap();
-        assert_eq!(value["interaction"]["context"], "patch");
+        assert_eq!(value["interaction"]["activeFocus"]["context"], "patch");
         assert_eq!(
-            value["interaction"]["patchFocus"],
+            value["interaction"]["activeFocus"]["patchId"],
             state.patches()[0].id().value()
         );
         let serialized_page: Value =
@@ -432,7 +433,7 @@ fn prove_patch_lifecycle_visibility() {
         page.focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
     );
-    assert_eq!(text.selected_line(), 3);
+    assert_eq!(text.selected_line(), 5);
 
     state
         .apply(AppEvent::EnginePreparationFailed {
@@ -454,7 +455,7 @@ fn prove_patch_lifecycle_visibility() {
         page.focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
     );
-    assert_eq!(text.selected_line(), 3);
+    assert_eq!(text.selected_line(), 5);
 
     state
         .apply(AppEvent::Navigate(crest_synth::control::Direction::Up))
@@ -492,7 +493,7 @@ fn prove_patch_lifecycle_visibility() {
         page.focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::DecayMilliseconds)
     );
-    assert_eq!(text.selected_line(), 4);
+    assert_eq!(text.selected_line(), 6);
     assert_eq!(parameters.graph_revision(), target_revision);
 
     state
@@ -512,13 +513,14 @@ fn prove_patch_lifecycle_visibility() {
         page.focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::DecayMilliseconds)
     );
-    assert_eq!(text.selected_line(), 4);
+    assert_eq!(text.selected_line(), 6);
     assert_eq!(parameters.graph_revision(), target_revision);
 }
 
 fn same_parameter_values(before: ParameterSnapshot, after: ParameterSnapshot) -> bool {
     before.graph_revision() == after.graph_revision()
         && before.global() == after.global()
+        && before.mixer_tracks() == after.mixer_tracks()
         && before.patch_count() == after.patch_count()
         && before.storage() == after.storage()
 }
@@ -582,14 +584,16 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     let input_loop = Rc::clone(&shared);
     let input_rejections = Rc::clone(&rejections);
     let on_input: AppInputCallback = Box::new(move |event| {
-        if let Err(rejection) = input_loop.borrow_mut().dispatch(event) {
+        if let Err(rejection) = input_loop.borrow_mut().dispatch_action(event) {
             input_rejections.borrow_mut().push(rejection);
         }
     });
     let projection_loop = Rc::clone(&shared);
-    let projection: ProjectionCallback = Box::new(move || projection_loop.borrow().current_text());
+    let projection: ProjectionCallback =
+        Box::new(move || projection_loop.borrow().current_graphical_shell());
     let on_tick: TickCallback = Box::new(|_| true);
-    let mut application = EframeApplication::new(on_input, projection, on_tick);
+    let mut application =
+        EframeGraphicalApplication::new(on_input, projection, on_tick, Box::new(|_| {}));
     let context = egui::Context::default();
     let mut frame = eframe::Frame::_new_kittest();
 
@@ -623,14 +627,15 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     assert!(same_parameter_values(before_parameters, after_parameters));
     assert_eq!(patch_tree["capabilities"], before_tree["capabilities"]);
     assert_eq!(patch_tree["patches"], before_tree["patches"]);
+    assert_eq!(patch_tree["mixer"], before_tree["mixer"]);
     assert_eq!(patch_tree["global"], before_tree["global"]);
     assert_eq!(
-        patch_tree["interaction"]["mixerSelection"],
-        before_tree["interaction"]["mixerSelection"]
+        patch_tree["interaction"]["rememberedMixerMain"],
+        before_tree["interaction"]["rememberedMixerMain"]
     );
     assert_eq!(
-        patch_tree["interaction"]["patchFocus"],
-        before_tree["interaction"]["patchFocus"]
+        patch_tree["interaction"]["rememberedPatchMain"],
+        before_tree["interaction"]["rememberedPatchMain"]
     );
     assert_eq!(
         patch_tree["parameters"]["graphRevision"],
@@ -641,10 +646,14 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         before_tree["parameters"]["patches"]
     );
     assert_eq!(
+        patch_tree["parameters"]["mixerTracks"],
+        before_tree["parameters"]["mixerTracks"]
+    );
+    assert_eq!(
         patch_tree["parameters"]["global"],
         before_tree["parameters"]["global"]
     );
-    assert_eq!(patch_tree["interaction"]["context"], "patch");
+    assert_eq!(patch_tree["interaction"]["activeFocus"]["context"], "patch");
     let serialized_patch_page: Value =
         serde_json::from_str(&serde_json::to_string(&patch_page).unwrap()).unwrap();
     assert_eq!(patch_tree["patchPage"], serialized_patch_page);
@@ -654,8 +663,8 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
 
     {
         let observations = observations.lock().unwrap();
-        assert_eq!(observations.parameters.len(), 2);
-        assert_eq!(observations.parameters[1], after_parameters);
+        assert_eq!(observations.parameters.len(), 1);
+        assert!(observations.parameters[0].audio_values_equal(&after_parameters));
         assert!(observations.commands.is_empty());
     }
     {
@@ -674,15 +683,9 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         assert_eq!(record.projection_state_hash(), patch_text.state_hash());
         assert_eq!(
             record.emitted_events(),
-            &[
-                EmittedEvent::StateAccepted {
-                    generation: patch_generation
-                },
-                EmittedEvent::ParameterSnapshotPublished {
-                    generation: patch_generation,
-                    graph_revision: GraphRevision::INITIAL
-                }
-            ]
+            &[EmittedEvent::StateAccepted {
+                generation: patch_generation
+            }]
         );
     }
 
@@ -727,7 +730,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
                 page.focused_control_id(),
                 PatchControlId::Envelope(parameter)
             );
-            assert_eq!(text.selected_line(), index + 3);
+            assert_eq!(text.selected_line(), index + 5);
             assert!(text
                 .body()
                 .lines()
@@ -765,7 +768,16 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
             | VoiceEnvelopeParameter::ReleaseMilliseconds => None,
         };
         if let Some(key) = boundary_key {
-            let before = shared.borrow().current_state_tree();
+            let (before_parameters, before_commands, before_focus) = {
+                let app_loop = shared.borrow();
+                let tree: Value =
+                    serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
+                (
+                    *app_loop.current_parameters(),
+                    observations.lock().unwrap().commands.len(),
+                    tree["interaction"]["activeFocus"].clone(),
+                )
+            };
             run_frame(
                 &mut application,
                 &context,
@@ -779,7 +791,16 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
                 frame_time,
             );
             frame_time += 0.25;
-            assert_eq!(shared.borrow().current_state_tree(), before);
+            let app_loop = shared.borrow();
+            let after_tree: Value =
+                serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
+            assert!(same_parameter_values(
+                before_parameters,
+                *app_loop.current_parameters()
+            ));
+            assert_eq!(observations.lock().unwrap().commands.len(), before_commands);
+            assert_eq!(after_tree["interaction"]["activeFocus"], before_focus);
+            assert_eq!(after_tree["interaction"]["mode"], "navigate");
         }
 
         let descriptor = parameter.descriptor();
@@ -923,7 +944,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         let pending_page = app_loop.current_patch_page().unwrap();
         assert_eq!(
             app_loop.current_state_tree().generation(),
-            generation_before_request + 1
+            generation_before_request + 3
         );
         assert_eq!(
             pending_page.engine().status(),
@@ -945,13 +966,12 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         ));
         assert_eq!(
             app_loop.event_log_ref().records().len(),
-            records_before_request + 1
+            records_before_request + 3
         );
     }
-    assert_eq!(
-        observations.lock().unwrap().parameters.last(),
-        Some(shared.borrow().current_parameters())
-    );
+    assert!(observations.lock().unwrap().parameters.last().is_some_and(
+        |published| published.audio_values_equal(shared.borrow().current_parameters())
+    ));
 
     run_frame(
         &mut application,
@@ -968,10 +988,11 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         assert_eq!(app_loop.current_text().selected_line(), before_line);
         assert!(app_loop.current_patch_page().is_none());
         assert_eq!(
-            recovered["interaction"]["mixerSelection"],
-            before_tree["interaction"]["mixerSelection"]
+            recovered["interaction"]["activeFocus"],
+            before_tree["interaction"]["activeFocus"]
         );
         assert_eq!(recovered["patches"], before_tree["patches"]);
+        assert_eq!(recovered["mixer"], before_tree["mixer"]);
         assert_eq!(recovered["global"], before_tree["global"]);
         assert!(same_parameter_values(
             before_parameters,
@@ -986,10 +1007,9 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     }
     {
         let observations = observations.lock().unwrap();
-        assert_eq!(
-            observations.parameters.last(),
-            Some(shared.borrow().current_parameters())
-        );
+        assert!(observations.parameters.last().is_some_and(|published| {
+            published.audio_values_equal(shared.borrow().current_parameters())
+        }));
         assert!(observations.commands.is_empty());
     }
     assert_eq!(preparations.load(Ordering::SeqCst), 0);

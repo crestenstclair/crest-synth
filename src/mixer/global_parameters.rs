@@ -1,8 +1,8 @@
 use core::fmt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Identifies one editable value in the shared global mix surface.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GlobalParameter {
     MasterGainDb,

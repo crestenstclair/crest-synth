@@ -8,12 +8,14 @@ use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
 use crate::control::{
     Direction, EngineSelectionEffectKind, EngineSelectionRequestId, EngineSelectionStatusKind,
-    StructuralEditIntent, TopLevelContext,
+    FocusPath, GraphicalShellProjection, PatchControlId, SemanticResolver, StructuralEditIntent,
+    TopLevelContext,
 };
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::real_time::audio_boundary::ControlAudioBoundary;
 use crate::real_time::audio_observation::ControlAudioObservation;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
+use crate::shell::{ShellFrameObservation, ShellRegionId};
 use crate::synth::{
     InstrumentConfig, ParameterDefault, ParameterKind, ParameterValue, PostEffectConfig,
     VoiceEnvelope,
@@ -24,7 +26,7 @@ use crate::testing::live_demo_checkpoint::{
     LivePresetProjection,
 };
 use crate::testing::live_demo_report::{
-    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, RuntimeAudioWitness,
+    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveShellCoverage, RuntimeAudioWitness,
 };
 use crate::testing::live_demo_scene::{
     selected_parameter_value, LiveDemoScene, LiveDemoSceneError, LiveDemoStep,
@@ -52,12 +54,15 @@ pub struct LiveDemoRunner<Source, Observation> {
     pending_checkpoint: Option<PendingCheckpoint>,
     checkpoints: Vec<LiveCheckpoint>,
     coverage: LiveDemoCoverage,
+    shell_coverage: LiveShellCoverage,
+    latest_shell: Option<GraphicalShellProjection>,
     engine_transition_index: usize,
     engine_phase: LiveEnginePhase,
     last_ready_graph_revision: crate::real_time::GraphRevision,
     engine_envelope_baseline: Option<VoiceEnvelope>,
     structural_config_baseline: Option<InstrumentConfig>,
     structural_effect_baseline: Option<Vec<PostEffectConfig>>,
+    pending_focus_recovery: Option<(FocusPath, Vec<FocusPath>)>,
     cleanup_sequence_before: Option<u64>,
     completed_report: Option<LiveDemoReport>,
     runtime_audio: RuntimeAudioWitness,
@@ -94,12 +99,15 @@ where
             pending_checkpoint: None,
             checkpoints: Vec::new(),
             coverage,
+            shell_coverage: LiveShellCoverage::default(),
+            latest_shell: None,
             engine_transition_index: 0,
             engine_phase: LiveEnginePhase::SelectPatch,
             last_ready_graph_revision,
             engine_envelope_baseline: None,
             structural_config_baseline: None,
             structural_effect_baseline: None,
+            pending_focus_recovery: None,
             cleanup_sequence_before: None,
             completed_report: None,
             runtime_audio,
@@ -127,10 +135,13 @@ where
         if self.elapsed >= LIVE_DEMO_TOTAL_TIMEOUT {
             return Err(LiveDemoError::TotalTimeout {
                 elapsed: self.elapsed,
+                stage: self.progress_stage(),
+                step: self.step_index,
             });
         }
 
         let result = self.advance_current(app_loop);
+        self.latest_shell = Some(app_loop.current_graphical_shell());
         if result.is_ok()
             && self.completed_report.is_none()
             && !self.aborted
@@ -139,9 +150,34 @@ where
             return Err(LiveDemoError::ProgressTimedOut {
                 stage: self.progress_stage(),
                 stalled_for: self.elapsed.saturating_sub(self.last_progress_at),
+                step: self.pending_checkpoint.as_ref().map(|pending| pending.step),
+                predicate: self
+                    .pending_checkpoint
+                    .as_ref()
+                    .map(|pending| pending.predicate),
             });
         }
         result
+    }
+
+    /// Correlates one production-painted shell frame with canonical state and
+    /// the latest bounded production-path audio observation.
+    pub fn observe_shell_frame(
+        &mut self,
+        frame: ShellFrameObservation,
+    ) -> Result<(), LiveDemoError> {
+        if self.completed_report.is_some() || self.aborted {
+            return Err(LiveDemoError::UnexpectedShellFrame);
+        }
+        let shell = self
+            .latest_shell
+            .as_ref()
+            .ok_or(LiveDemoError::MissingShellProjection)?;
+        let audio = self.observation.read_latest_on_control();
+        if shell_frame_qualifies(&frame, shell, audio)? {
+            self.shell_coverage.mark_qualifying_frame(&frame);
+        }
+        Ok(())
     }
 
     fn advance_current<Boundary>(
@@ -554,6 +590,34 @@ where
                     source_audio,
                     None,
                 )?;
+                if transition.target_capability_id().as_str()
+                    == crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID
+                    && matches!(
+                        transition.intent(),
+                        StructuralEditIntent::ReplaceCapability { .. }
+                    )
+                {
+                    let old_order = SemanticResolver::new(app_loop.state())
+                        .patch_main_paths(transition.patch_id())?;
+                    let mut navigated = 0usize;
+                    while app_loop
+                        .state()
+                        .interaction()
+                        .focus_path()
+                        .capability_id()
+                        .is_none()
+                    {
+                        dispatch_engine_event(app_loop, AppEvent::Navigate(Direction::Down))?;
+                        navigated = navigated.saturating_add(1);
+                        if navigated >= old_order.len() {
+                            return Err(LiveDemoError::EngineProjectionMismatch);
+                        }
+                    }
+                    self.pending_focus_recovery = Some((
+                        app_loop.state().interaction().focus_path().clone(),
+                        old_order,
+                    ));
+                }
                 self.engine_phase = LiveEnginePhase::AwaitActivating {
                     request_id,
                     source_revision,
@@ -578,6 +642,35 @@ where
                             || target_revision <= self.last_ready_graph_revision
                         {
                             return Err(LiveDemoError::EngineLifecycleMismatch);
+                        }
+                        if let Some((removed, old_order)) = self.pending_focus_recovery.take() {
+                            let new_order = SemanticResolver::new(app_loop.state())
+                                .patch_main_paths(transition.patch_id())?;
+                            let expected =
+                                SemanticResolver::recover(&removed, &old_order, &new_order)
+                                    .ok_or(LiveDemoError::EngineProjectionMismatch)?;
+                            let projected = app_loop.current_graphical_shell();
+                            if expected == removed
+                                || app_loop.state().interaction().focus_path() != &expected
+                                || projected.semantic_model().focus_path() != &expected
+                                || projected.generation()
+                                    != app_loop.current_state_tree().generation()
+                                || projected.state_hash()
+                                    != app_loop.current_state_tree().state_hash()
+                            {
+                                return Err(LiveDemoError::EngineProjectionMismatch);
+                            }
+                            self.shell_coverage.mark_focus_recovery();
+                            let mut restored = 0usize;
+                            while app_loop.current_patch_page().is_some_and(|page| {
+                                page.focused_control_id() != PatchControlId::Engine
+                            }) {
+                                dispatch_engine_event(app_loop, AppEvent::Navigate(Direction::Up))?;
+                                restored = restored.saturating_add(1);
+                                if restored >= new_order.len() {
+                                    return Err(LiveDemoError::EngineProjectionMismatch);
+                                }
+                            }
                         }
                         let event_sequence = verify_engine_effects(
                             app_loop,
@@ -1037,18 +1130,25 @@ where
         }
 
         let installed: Vec<_> = self.scene.patch_ids().collect();
+        if !self.shell_coverage.is_complete() {
+            return Err(LiveDemoError::MissingShellCoverage);
+        }
         let active_graph_revision = tree.graph_revision();
+        let graphical_shell = app_loop.current_graphical_shell();
         self.completed_report = Some(LiveDemoReport::new(
             self.scene.name(),
             self.checkpoints.clone(),
             app_loop.event_log(),
             tree,
+            graphical_shell,
             self.coverage.clone(),
+            self.shell_coverage.clone(),
             &installed,
             cleanup_sequence_before,
             observation,
             self.runtime_audio
-                .with_active_graph_revision(active_graph_revision),
+                .with_active_graph_revision(active_graph_revision)
+                .measured(),
         )?);
         self.mark_progress();
         Ok(())
@@ -1081,6 +1181,14 @@ where
         self.completed_report.as_ref()
     }
 
+    pub(crate) fn latest_audio_observation(&self) -> AudioObservationSnapshot {
+        self.observation.read_latest_on_control()
+    }
+
+    pub const fn shell_coverage(&self) -> &LiveShellCoverage {
+        &self.shell_coverage
+    }
+
     pub const fn is_aborted(&self) -> bool {
         self.aborted
     }
@@ -1104,6 +1212,9 @@ struct PendingCheckpoint {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+// The inline snapshot keeps this bounded control-side state free of a second
+// heap ownership protocol; it is never stored or manipulated by the callback.
+#[allow(clippy::large_enum_variant)]
 enum LiveEnginePhase {
     SelectPatch,
     FocusControl,
@@ -1399,6 +1510,77 @@ fn audio_is_finite(observation: AudioObservationSnapshot) -> bool {
         && observation.non_finite_samples() == 0
 }
 
+fn shell_frame_qualifies(
+    frame: &ShellFrameObservation,
+    shell: &GraphicalShellProjection,
+    audio: AudioObservationSnapshot,
+) -> Result<bool, LiveDemoError> {
+    if frame.generation() != shell.generation()
+        || frame.state_hash() != shell.state_hash()
+        || frame.context() != shell.context()
+        || frame.active_surface() != shell.semantic_model().active_surface()
+        || frame.focus_path() != shell.semantic_model().focus_path()
+        || frame.interaction_mode() != shell.semantic_model().interaction_mode()
+        || frame.return_path() != shell.semantic_model().return_path()
+        || frame.valid_actions()
+            != shell
+                .semantic_model()
+                .valid_actions()
+                .iter()
+                .map(|valid| valid.action().clone())
+                .collect::<Vec<_>>()
+        || frame.status() != shell.semantic_model().status()
+        || frame.errors() != shell.semantic_model().errors()
+    {
+        return Err(LiveDemoError::ShellFrameMismatch);
+    }
+    if !frame.regions_are_non_overlapping() {
+        return Err(LiveDemoError::OverlappingShellRegions);
+    }
+
+    let expected = [
+        (
+            ShellRegionId::ContextLine,
+            shell.context_line().context_label(),
+        ),
+        (
+            ShellRegionId::IdentityHeader,
+            shell.identity_header().primary_label(),
+        ),
+        (ShellRegionId::MainWorkspace, shell.workspace().main_label()),
+        (
+            ShellRegionId::PersistentSideRegion,
+            shell.workspace().side_label(),
+        ),
+        (ShellRegionId::Footer, shell.footer().path_label()),
+    ];
+    if frame
+        .regions()
+        .iter()
+        .zip(expected)
+        .any(|(actual, (id, label))| actual.id() != id || actual.visible_label() != label)
+    {
+        return Err(LiveDemoError::ShellFrameMismatch);
+    }
+
+    if audio.sequence() == 0 {
+        return Ok(false);
+    }
+    if audio.parameter_generation() > frame.generation() {
+        return Err(LiveDemoError::ShellAudioGenerationMismatch {
+            frame: frame.generation(),
+            audio: audio.parameter_generation(),
+        });
+    }
+    if !audio_is_finite(audio) {
+        return Err(LiveDemoError::NonFiniteAudioObservation);
+    }
+    if audio.active_graph_revision() != frame.status().graph_revision() {
+        return Ok(false);
+    }
+    Ok(audio.output_rms() > 0.0 || audio.left_peak() > 0.0 || audio.right_peak() > 0.0)
+}
+
 fn effect_stage_matches(
     observation: AudioObservationSnapshot,
     patch_id: crate::kernel::PatchId,
@@ -1432,6 +1614,15 @@ pub enum LiveDemoError {
         actual: u64,
     },
     NonFiniteAudioObservation,
+    MissingShellProjection,
+    ShellFrameMismatch,
+    OverlappingShellRegions,
+    ShellAudioGenerationMismatch {
+        frame: u64,
+        audio: u64,
+    },
+    MissingShellCoverage,
+    UnexpectedShellFrame,
     MissingCleanupObservation,
     MissingPatchProjection,
     EngineRuntimeUnavailable,
@@ -1443,9 +1634,13 @@ pub enum LiveDemoError {
     ProgressTimedOut {
         stage: &'static str,
         stalled_for: Duration,
+        step: Option<usize>,
+        predicate: Option<crate::testing::live_demo_scene::LiveAudioPredicate>,
     },
     TotalTimeout {
         elapsed: Duration,
+        stage: &'static str,
+        step: usize,
     },
 }
 
@@ -1514,6 +1709,25 @@ impl fmt::Display for LiveDemoError {
             Self::NonFiniteAudioObservation => {
                 formatter.write_str("live audio observation contains non-finite output")
             }
+            Self::MissingShellProjection => {
+                formatter.write_str("live shell frame arrived before a canonical shell projection")
+            }
+            Self::ShellFrameMismatch => formatter.write_str(
+                "live shell frame identity or visible labels differ from the canonical projection",
+            ),
+            Self::OverlappingShellRegions => {
+                formatter.write_str("live shell frame contains overlapping required regions")
+            }
+            Self::ShellAudioGenerationMismatch { frame, audio } => write!(
+                formatter,
+                "live shell frame generation {frame} trails audio generation {audio}"
+            ),
+            Self::MissingShellCoverage => formatter.write_str(
+                "live demo completed its control scene without qualifying PATCH and MIXER frames",
+            ),
+            Self::UnexpectedShellFrame => {
+                formatter.write_str("live shell frame arrived after completion or cancellation")
+            }
             Self::MissingCleanupObservation => {
                 formatter.write_str("live cleanup did not establish an observation sequence")
             }
@@ -1536,16 +1750,25 @@ impl fmt::Display for LiveDemoError {
             Self::EngineTargetAudioMismatch => formatter.write_str(
                 "live engine target did not produce finite nonzero generation-tagged output",
             ),
-            Self::ProgressTimedOut { stage, stalled_for } => write!(
+            Self::ProgressTimedOut {
+                stage,
+                stalled_for,
+                step,
+                predicate,
+            } => write!(
                 formatter,
-                "live demo made no progress while awaiting {stage} for {:.1} seconds",
-                stalled_for.as_secs_f32()
+                "live demo made no progress while awaiting {stage} at step {step:?} with predicate {predicate:?} for {:.1} seconds",
+                stalled_for.as_secs_f32(),
             ),
-            Self::TotalTimeout { elapsed } => write!(
+            Self::TotalTimeout {
+                elapsed,
+                stage,
+                step,
+            } => write!(
                 formatter,
-                "live demo exceeded its {}-second total bound after {:.1} seconds",
+                "live demo exceeded its {}-second total bound after {:.1} seconds at step {step} while awaiting {stage}",
                 LIVE_DEMO_TOTAL_TIMEOUT.as_secs(),
-                elapsed.as_secs_f32()
+                elapsed.as_secs_f32(),
             ),
         }
     }
@@ -1555,8 +1778,88 @@ impl std::error::Error for LiveDemoError {}
 
 #[cfg(test)]
 mod tests {
-    use super::audio_is_finite;
+    use super::{audio_is_finite, shell_frame_qualifies, LiveDemoError};
+    use crate::control::{
+        GraphicalShellProjection, ShellContextLine, ShellFooter, ShellIdentityHeader,
+        TextProjection, TopLevelContext,
+    };
     use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
+    use crate::shell::{
+        ShellFrameObservation, ShellFrameObservationError, ShellRegionId, ShellRegionObservation,
+        ShellRegionRect,
+    };
+
+    fn shell() -> GraphicalShellProjection {
+        let diagnostic = TextProjection::for_context(
+            TopLevelContext::Patch,
+            "PATCH diagnostic".to_owned(),
+            0,
+            "state-7".to_owned(),
+        );
+        GraphicalShellProjection::new(
+            7,
+            "state-7",
+            crate::control::SemanticGraphicalViewModel::fixture(
+                7,
+                "state-7",
+                TopLevelContext::Patch,
+            ),
+            ShellContextLine::new("CREST SYNTH", "PATCH", "READY"),
+            ShellIdentityHeader::new("PATCH 01 · Test", "MIDI CH 01"),
+            "PATCH WORKSPACE · Test",
+            "UTILITY",
+            diagnostic,
+            ShellFooter::new("PATCH / patch.engine", vec!["1 MIXER".to_owned()]),
+        )
+        .unwrap()
+    }
+
+    fn regions(shell: &GraphicalShellProjection) -> [ShellRegionObservation; 5] {
+        [
+            ShellRegionObservation::new(
+                ShellRegionId::ContextLine,
+                ShellRegionRect::new(0.0, 0.0, 1_920.0, 48.0),
+                shell.context_line().context_label(),
+            ),
+            ShellRegionObservation::new(
+                ShellRegionId::IdentityHeader,
+                ShellRegionRect::new(0.0, 48.0, 1_920.0, 120.0),
+                shell.identity_header().primary_label(),
+            ),
+            ShellRegionObservation::new(
+                ShellRegionId::MainWorkspace,
+                ShellRegionRect::new(0.0, 120.0, 1_500.0, 1_016.0),
+                shell.workspace().main_label(),
+            ),
+            ShellRegionObservation::new(
+                ShellRegionId::PersistentSideRegion,
+                ShellRegionRect::new(1_500.0, 120.0, 1_920.0, 1_016.0),
+                shell.workspace().side_label(),
+            ),
+            ShellRegionObservation::new(
+                ShellRegionId::Footer,
+                ShellRegionRect::new(0.0, 1_016.0, 1_920.0, 1_080.0),
+                shell.footer().path_label(),
+            ),
+        ]
+    }
+
+    fn frame(
+        shell: &GraphicalShellProjection,
+        generation: u64,
+        regions: [ShellRegionObservation; 5],
+    ) -> ShellFrameObservation {
+        let semantic = shell
+            .semantic_model()
+            .with_generation(generation, shell.state_hash().to_owned());
+        ShellFrameObservation::try_new_semantic(1_920.0, 1_080.0, &semantic, regions).unwrap()
+    }
+
+    fn audio(generation: u64, level: f32) -> AudioObservationSnapshot {
+        AudioObservationSnapshot::from_parts(
+            1, 1, 64, generation, 0, 1, level, level, level, 0.0, 0.0, 0.0, 0, 0,
+        )
+    }
 
     #[test]
     fn non_finite_callback_measurements_are_rejected_before_checkpointing() {
@@ -1578,5 +1881,60 @@ mod tests {
         );
 
         assert!(!audio_is_finite(observation));
+    }
+
+    #[test]
+    fn shell_frame_credit_rejects_stale_overlap_and_future_audio() {
+        let shell = shell();
+        let stale = frame(&shell, 6, regions(&shell));
+        assert!(matches!(
+            shell_frame_qualifies(&stale, &shell, audio(7, 0.2)),
+            Err(LiveDemoError::ShellFrameMismatch)
+        ));
+
+        let mut overlapping = regions(&shell);
+        overlapping[3] = ShellRegionObservation::new(
+            ShellRegionId::PersistentSideRegion,
+            ShellRegionRect::new(1_400.0, 120.0, 1_920.0, 1_016.0),
+            shell.workspace().side_label(),
+        );
+        let overlapping = frame(&shell, 7, overlapping);
+        assert!(matches!(
+            shell_frame_qualifies(&overlapping, &shell, audio(7, 0.2)),
+            Err(LiveDemoError::OverlappingShellRegions)
+        ));
+
+        let current = frame(&shell, 7, regions(&shell));
+        assert!(matches!(
+            shell_frame_qualifies(&current, &shell, audio(8, 0.2)),
+            Err(LiveDemoError::ShellAudioGenerationMismatch { frame: 7, audio: 8 })
+        ));
+    }
+
+    #[test]
+    fn shell_frame_credit_requires_complete_named_regions_and_nonzero_audio() {
+        let shell = shell();
+        let mut missing = regions(&shell);
+        missing[3] = ShellRegionObservation::new(
+            ShellRegionId::MainWorkspace,
+            ShellRegionRect::new(1_500.0, 120.0, 1_920.0, 1_016.0),
+            shell.workspace().side_label(),
+        );
+        assert_eq!(
+            ShellFrameObservation::try_new(
+                1_920.0,
+                1_080.0,
+                7,
+                shell.state_hash(),
+                shell.context(),
+                missing,
+            )
+            .unwrap_err(),
+            ShellFrameObservationError::RegionOrder
+        );
+
+        let current = frame(&shell, 7, regions(&shell));
+        assert!(!shell_frame_qualifies(&current, &shell, audio(7, 0.0)).unwrap());
+        assert!(shell_frame_qualifies(&current, &shell, audio(7, 0.2)).unwrap());
     }
 }

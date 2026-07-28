@@ -1,5 +1,7 @@
 use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
 use crate::mixer::mix_observation::MixObservation;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::track_meter::TrackMeter;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::patch_audio_block::PatchAudioBlock;
 
@@ -8,6 +10,7 @@ const MAX_DELAY_MILLISECONDS: f32 = 2000.0;
 /// Combines identity-preserving Patch stems and the two shared global effect returns.
 pub struct MixEngine<E> {
     effects: E,
+    track_scratch: [Vec<f32>; MixerTrackId::COUNT],
     reverb_input: Vec<f32>,
     delay_input: Vec<f32>,
     dry_output: Vec<f32>,
@@ -24,6 +27,7 @@ where
     pub fn new(effects: E) -> Self {
         Self {
             effects,
+            track_scratch: std::array::from_fn(|_| Vec::new()),
             reverb_input: Vec::new(),
             delay_input: Vec::new(),
             dry_output: Vec::new(),
@@ -42,6 +46,10 @@ where
         let reverb_input = allocate_zeros(sample_capacity)?;
         let delay_input = allocate_zeros(sample_capacity)?;
         let dry_output = allocate_zeros(sample_capacity)?;
+        let mut track_scratch = std::array::from_fn(|_| Vec::new());
+        for track in &mut track_scratch {
+            *track = allocate_zeros(sample_capacity)?;
+        }
 
         self.effects
             .prepare(sample_rate, max_frames, MAX_DELAY_MILLISECONDS)?;
@@ -49,6 +57,7 @@ where
         self.reverb_input = reverb_input;
         self.delay_input = delay_input;
         self.dry_output = dry_output;
+        self.track_scratch = track_scratch;
         self.max_frames = max_frames;
         self.prepared = true;
         Ok(())
@@ -92,7 +101,11 @@ where
 
         self.reverb_input[..sample_count].fill(0.0);
         self.delay_input[..sample_count].fill(0.0);
+        for track in &mut self.track_scratch {
+            track[..sample_count].fill(0.0);
+        }
 
+        // Patch trim and many-to-one destination accumulation.
         for (index, patch) in parameters.patches().iter().enumerate() {
             let Some(patch_id) = patch.patch_id() else {
                 output.fill(0.0);
@@ -103,28 +116,60 @@ where
                 return MixObservation::default();
             };
             let audio = stem.samples();
-            let channel = patch.parameters();
-            let gain = db_to_linear(channel.gain_db());
-            let (left_pan, right_pan) = pan_gains(channel.pan());
+            let patch_output = patch.output();
+            let trim = db_to_linear(patch_output.trim_gain_db());
+            let track = &mut self.track_scratch[patch_output.track_id().index()];
+            for sample_index in 0..sample_count {
+                track[sample_index] += audio[sample_index] * trim;
+            }
+        }
+
+        let any_solo = parameters.mixer_tracks().iter().any(|track| track.solo());
+        let mut track_meters = [TrackMeter::default(); MixerTrackId::COUNT];
+        let mut non_finite_samples = 0_u64;
+
+        // Track level/pan, pre-gate meters, gates, dry sum, and post-gate sends.
+        for track_id in MixerTrackId::ALL {
+            let track_parameters = *parameters.mixer_track(track_id);
+            let gain = db_to_linear(track_parameters.level_db());
+            let (left_pan, right_pan) = pan_gains(track_parameters.pan());
             let left_gain = gain * left_pan;
             let right_gain = gain * right_pan;
-            let mut frame = 0;
+            let audible = !track_parameters.mute() && (!any_solo || track_parameters.solo());
+            let track = &mut self.track_scratch[track_id.index()];
+            let mut left_peak = 0.0_f32;
+            let mut right_peak = 0.0_f32;
+            let mut energy = 0.0_f64;
 
-            while frame < frame_count {
+            for frame in 0..frame_count {
                 let left = frame * 2;
                 let right = left + 1;
-                let mixed_left = audio[left] * left_gain;
-                let mixed_right = audio[right] * right_gain;
+                let raw_left = track[left] * left_gain;
+                let raw_right = track[right] * right_gain;
+                non_finite_samples = non_finite_samples
+                    .saturating_add(u64::from(!raw_left.is_finite()))
+                    .saturating_add(u64::from(!raw_right.is_finite()));
+                let mixed_left = finite_or_zero(raw_left);
+                let mixed_right = finite_or_zero(raw_right);
+                track[left] = mixed_left;
+                track[right] = mixed_right;
+                left_peak = left_peak.max(mixed_left.abs());
+                right_peak = right_peak.max(mixed_right.abs());
+                energy += f64::from(mixed_left) * f64::from(mixed_left)
+                    + f64::from(mixed_right) * f64::from(mixed_right);
 
-                output[left] += mixed_left;
-                output[right] += mixed_right;
-                self.reverb_input[left] += mixed_left * channel.reverb_send();
-                self.reverb_input[right] += mixed_right * channel.reverb_send();
-                self.delay_input[left] += mixed_left * channel.delay_send();
-                self.delay_input[right] += mixed_right * channel.delay_send();
-
-                frame += 1;
+                if audible {
+                    output[left] += mixed_left;
+                    output[right] += mixed_right;
+                    self.reverb_input[left] += mixed_left * track_parameters.reverb_send();
+                    self.reverb_input[right] += mixed_right * track_parameters.reverb_send();
+                    self.delay_input[left] += mixed_left * track_parameters.delay_send();
+                    self.delay_input[right] += mixed_right * track_parameters.delay_send();
+                }
             }
+            track_meters[track_id.index()] =
+                TrackMeter::new(left_peak, right_peak, rms(energy, sample_count))
+                    .unwrap_or_default();
         }
 
         self.dry_output[..sample_count].copy_from_slice(&output[..sample_count]);
@@ -142,6 +187,8 @@ where
         }
 
         observe_mix(
+            track_meters,
+            non_finite_samples,
             &self.reverb_input[..sample_count],
             &self.delay_input[..sample_count],
             &self.dry_output[..sample_count],
@@ -152,6 +199,8 @@ where
 }
 
 fn observe_mix(
+    tracks: [TrackMeter; MixerTrackId::COUNT],
+    prior_non_finite_samples: u64,
     reverb_input: &[f32],
     delay_input: &[f32],
     dry_output: &[f32],
@@ -164,7 +213,7 @@ fn observe_mix(
     let mut reverb_energy = 0.0_f64;
     let mut delay_energy = 0.0_f64;
     let mut wet_energy = 0.0_f64;
-    let mut non_finite_samples = 0_u64;
+    let mut non_finite_samples = prior_non_finite_samples;
     let mut clipped_samples = 0_u64;
 
     for (index, (((output_sample, dry_sample), reverb_sample), delay_sample)) in output
@@ -204,6 +253,7 @@ fn observe_mix(
     }
 
     MixObservation::new(
+        tracks,
         left_peak,
         right_peak,
         rms(output_energy, output.len()),
@@ -256,9 +306,12 @@ fn allocate_zeros(length: usize) -> Result<Vec<f32>, EffectError> {
 mod tests {
     use super::MixEngine;
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::mixer_track_parameters::MixerTrackParameters;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
     use crate::real_time::patch_audio_block::PatchAudioBlock;
 
@@ -295,9 +348,9 @@ mod tests {
         }
     }
 
-    fn channel(gain_db: f32, pan: f32, reverb_send: f32, delay_send: f32) -> ChannelParameters {
-        ChannelParameters::new(gain_db, pan, reverb_send, delay_send)
-            .expect("test channel values satisfy their bounds")
+    fn track(level_db: f32, pan: f32, reverb_send: f32, delay_send: f32) -> MixerTrackParameters {
+        MixerTrackParameters::new(level_db, pan, false, false, reverb_send, delay_send)
+            .expect("test track values satisfy their bounds")
     }
 
     fn globals(master_gain_db: f32, reverb_return: f32, delay_return: f32) -> GlobalParameters {
@@ -314,15 +367,19 @@ mod tests {
     }
 
     fn snapshot(
-        ids_and_channels: &[(u32, ChannelParameters)],
+        ids_and_tracks: &[(u32, MixerTrackParameters)],
         global: GlobalParameters,
     ) -> ParameterSnapshot {
         let mut patches =
-            [RtPatchParameters::new(PatchId::new(1).unwrap(), ChannelParameters::default()); 16];
-        for (slot, (id, channel)) in patches.iter_mut().zip(ids_and_channels) {
-            *slot = RtPatchParameters::new(PatchId::new(*id).unwrap(), *channel);
+            [RtPatchParameters::new(PatchId::new(1).unwrap(), PatchOutput::default()); 16];
+        let mut mixer = MixerState::default();
+        for (index, (slot, (id, track))) in patches.iter_mut().zip(ids_and_tracks).enumerate() {
+            let track_id = MixerTrackId::new(index as u8).unwrap();
+            *slot =
+                RtPatchParameters::new(PatchId::new(*id).unwrap(), PatchOutput::to_track(track_id));
+            mixer.set_track(track_id, *track);
         }
-        ParameterSnapshot::new(1, global, &patches[..ids_and_channels.len()]).unwrap()
+        ParameterSnapshot::new(1, global, mixer, &patches[..ids_and_tracks.len()]).unwrap()
     }
 
     fn audio_block(parameters: &ParameterSnapshot, stems: &[&[f32]]) -> PatchAudioBlock {
@@ -346,8 +403,8 @@ mod tests {
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
         let parameters = snapshot(
             &[
-                (11, channel(-6.020_600_3, -1.0, 0.0, 0.0)),
-                (22, channel(-6.020_600_3, 1.0, 0.0, 0.0)),
+                (11, track(-6.020_600_3, -1.0, 0.0, 0.0)),
+                (22, track(-6.020_600_3, 1.0, 0.0, 0.0)),
             ],
             globals(0.0, 0.0, 0.0),
         );
@@ -366,7 +423,7 @@ mod tests {
     fn global_mix_routes_both_sends_through_both_returns() {
         let mut mixer = MixEngine::new(TestEffects::default());
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
-        let parameters = snapshot(&[(7, channel(0.0, 0.0, 0.25, 0.5))], globals(0.0, 0.4, 0.6));
+        let parameters = snapshot(&[(7, track(0.0, 0.0, 0.25, 0.5))], globals(0.0, 0.4, 0.6));
         let patch = [1.0, 1.0];
         let block = audio_block(&parameters, &[&patch]);
         let mut output = [0.0; 2];
@@ -382,7 +439,7 @@ mod tests {
         let mut mixer = MixEngine::new(TestEffects::default());
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
         let parameters = snapshot(
-            &[(3, channel(0.0, 0.0, 1.0, 0.0))],
+            &[(3, track(0.0, 0.0, 1.0, 0.0))],
             globals(-6.020_600_3, 1.0, 0.0),
         );
         let patch = [1.0, 1.0];
@@ -401,15 +458,15 @@ mod tests {
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
         let rendered_parameters = snapshot(
             &[
-                (1, channel(0.0, 0.0, 0.0, 0.0)),
-                (2, channel(0.0, 0.0, 0.0, 0.0)),
+                (1, track(0.0, 0.0, 0.0, 0.0)),
+                (2, track(0.0, 0.0, 0.0, 0.0)),
             ],
             globals(0.0, 0.0, 0.0),
         );
         let current_parameters = snapshot(
             &[
-                (1, channel(0.0, 0.0, 0.0, 0.0)),
-                (3, channel(0.0, 0.0, 0.0, 0.0)),
+                (1, track(0.0, 0.0, 0.0, 0.0)),
+                (3, track(0.0, 0.0, 0.0, 0.0)),
             ],
             globals(0.0, 0.0, 0.0),
         );
@@ -430,7 +487,7 @@ mod tests {
         let reverb_capacity = mixer.reverb_input.capacity();
         let delay_capacity = mixer.delay_input.capacity();
         let dry_capacity = mixer.dry_output.capacity();
-        let parameters = snapshot(&[(9, channel(0.0, 0.0, 0.5, 0.5))], globals(0.0, 1.0, 1.0));
+        let parameters = snapshot(&[(9, track(0.0, 0.0, 0.5, 0.5))], globals(0.0, 1.0, 1.0));
         let patch = [1.0; 4];
         let block = audio_block(&parameters, &[&patch]);
         let mut output = [1.0; 8];
@@ -447,7 +504,7 @@ mod tests {
     fn mix_observation_measures_owned_stages_without_changing_output() {
         let mut mixer = MixEngine::new(TestEffects::default());
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
-        let parameters = snapshot(&[(7, channel(0.0, 0.0, 0.5, 0.25))], globals(0.0, 0.4, 0.8));
+        let parameters = snapshot(&[(7, track(0.0, 0.0, 0.5, 0.25))], globals(0.0, 0.4, 0.8));
         let patch = [1.0, 1.0];
         let block = audio_block(&parameters, &[&patch]);
         let mut output = [0.0; 2];
@@ -471,7 +528,7 @@ mod tests {
     fn mix_observation_counts_non_finite_output_without_non_finite_metrics() {
         let mut mixer = MixEngine::new(TestEffects::default());
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
-        let parameters = snapshot(&[(7, channel(0.0, 0.0, 0.0, 0.0))], globals(0.0, 0.0, 0.0));
+        let parameters = snapshot(&[(7, track(0.0, 0.0, 0.0, 0.0))], globals(0.0, 0.0, 0.0));
         let patch = [f32::NAN, f32::INFINITY];
         let block = audio_block(&parameters, &[&patch]);
         let mut output = [0.0; 2];

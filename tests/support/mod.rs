@@ -16,6 +16,9 @@ use crest_synth::control::event_log::EventLog;
 use crest_synth::control::state_projector::StateProjector;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::real_time::audio_observation::AudioObservation;
 use crest_synth::real_time::audio_renderer::AudioRenderer;
@@ -94,7 +97,9 @@ fn scene_patches() -> Vec<Patch> {
                         .expect("fixture config matches the Braids descriptor")
                 },
                 part.assigned_channel(),
-                crest_synth::mixer::channel_parameters::ChannelParameters::default(),
+                PatchOutput::to_track(
+                    MixerTrackId::new(index as u8).expect("fixture mixer track is valid"),
+                ),
             );
             if index == 0 {
                 patch = patch.with_post_effects(vec![production_chorus_config(
@@ -273,7 +278,8 @@ pub fn run_demo() -> DemoRun {
             .expect("the fixture contains two discriminating Patches");
     let expected_coverage = scene.expected_coverage().to_vec();
     let initial_parameters =
-        ParameterSnapshot::new(0, global_parameters, &[]).expect("initial parameters are valid");
+        ParameterSnapshot::new(0, global_parameters, MixerState::default(), &[])
+            .expect("initial parameters are valid");
     let boundary = LockFreeAudioBoundary::new(16, initial_parameters);
     let (control, audio) = boundary.into_handles();
     let event_log = EventLog::new(scene.event_log_capacity().saturating_add(16))

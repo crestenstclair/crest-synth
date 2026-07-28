@@ -105,7 +105,7 @@ mod tests {
     use super::TextProjection;
     use crate::control::TopLevelContext;
 
-    const HEADER: &str = "KEYS: W/S parameters | A/D channels | K+direction edit";
+    const HEADER: &str = "KEYS: W/S parameters | A/D tracks | K+direction edit";
     const SEPARATOR: &str = "------------------------------------------------------------";
 
     #[test]

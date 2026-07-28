@@ -340,8 +340,9 @@ mod tests {
     };
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::{MidiChannel, PatchId};
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::graph_handoff_status::GraphHandoffStatus;
     use crate::real_time::graph_revision::GraphRevision;
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
@@ -408,7 +409,9 @@ mod tests {
         let registry = provider.registry().unwrap();
         let preparers: Vec<Box<dyn InstrumentPreparer>> = Vec::new();
         let revision = GraphRevision::new(value).unwrap();
-        let parameters = ParameterSnapshot::for_graph(value, revision, globals(), &[]).unwrap();
+        let parameters =
+            ParameterSnapshot::for_graph(value, revision, globals(), MixerState::default(), &[])
+                .unwrap();
         PreparedGraphBuilder::new(&registry, &preparers)
             .build(revision, &[], parameters, 16_000.0, max_frames)
             .unwrap()
@@ -498,13 +501,19 @@ mod tests {
                 .create(&CapabilityId::new(capability_id).unwrap())
                 .unwrap(),
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         let patches = [patch];
         let revision = GraphRevision::new(value).unwrap();
-        let parameters =
-            ParameterSnapshot::project_patches(value, revision, globals(), &patches, &registry)
-                .unwrap();
+        let parameters = ParameterSnapshot::project_patches(
+            value,
+            revision,
+            globals(),
+            MixerState::default(),
+            &patches,
+            &registry,
+        )
+        .unwrap();
         let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
             Box::new(CapabilityPreparer {
                 capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),

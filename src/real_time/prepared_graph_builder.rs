@@ -188,9 +188,11 @@ mod tests {
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_effects_processor::EffectError;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::graph_revision::{GraphRevision, GraphRevisionError};
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
     use crate::real_time::PreparedGraphRefreshError;
@@ -214,7 +216,7 @@ mod tests {
             )
             .unwrap(),
             MidiChannel::new((id - 1) as u8).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new((id - 1) as u8).unwrap()),
         )
     }
 
@@ -225,9 +227,10 @@ mod tests {
     fn parameters(revision: GraphRevision, patches: &[Patch]) -> ParameterSnapshot {
         let patches: Vec<_> = patches
             .iter()
-            .map(|patch| RtPatchParameters::new(patch.id(), *patch.parameters()))
+            .map(|patch| RtPatchParameters::new(patch.id(), patch.output()))
             .collect();
-        ParameterSnapshot::for_graph(1, revision, globals(), &patches).unwrap()
+        ParameterSnapshot::for_graph(1, revision, globals(), MixerState::default(), &patches)
+            .unwrap()
     }
 
     struct FixturePreparer {
@@ -348,7 +351,8 @@ mod tests {
             .unwrap();
 
         let mut edited_patches = patches.clone();
-        edited_patches[0].set_parameters(ChannelParameters::new(-9.0, 0.75, 0.25, 0.5).unwrap());
+        edited_patches[0]
+            .set_output(PatchOutput::new(MixerTrackId::new(3).unwrap(), -9.0).unwrap());
         let refreshed = parameters(revision, &edited_patches).with_generation(99);
         graph.refresh_initial_parameters(refreshed).unwrap();
         assert_eq!(graph.initial_parameters(), &refreshed);
@@ -357,8 +361,8 @@ mod tests {
                 .initial_parameters()
                 .patch(edited_patches[0].id())
                 .unwrap()
-                .parameters(),
-            edited_patches[0].parameters()
+                .output(),
+            edited_patches[0].output()
         );
 
         let retained = *graph.initial_parameters();
@@ -461,7 +465,14 @@ mod tests {
                 .build(
                     first_revision,
                     &[],
-                    ParameterSnapshot::for_graph(1, first_revision, globals(), &[]).unwrap(),
+                    ParameterSnapshot::for_graph(
+                        1,
+                        first_revision,
+                        globals(),
+                        MixerState::default(),
+                        &[],
+                    )
+                    .unwrap(),
                     f32::MAX,
                     1,
                 )

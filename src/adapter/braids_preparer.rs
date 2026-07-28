@@ -438,7 +438,7 @@ mod tests {
     use crate::adapter::braids_capability::BraidsCapability;
     use crate::adapter::braids_native::{braids_lifecycle_counts, BRAIDS_INTERNAL_CHUNK_FRAMES};
     use crate::kernel::midi_channel::MidiChannel;
-    use crate::mixer::channel_parameters::ChannelParameters;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::parameter_snapshot::RtInstrumentParameters;
     use crate::synth::voice_envelope::VoiceEnvelope;
 
@@ -448,7 +448,7 @@ mod tests {
             format!("Braids {id}"),
             BraidsCapability::new().unwrap().default_config().unwrap(),
             MidiChannel::new((id % 16) as u8).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         )
     }
 
@@ -459,7 +459,7 @@ mod tests {
     ) -> RtPatchParameters {
         RtPatchParameters::projected(
             patch_id,
-            ChannelParameters::default(),
+            PatchOutput::default(),
             envelope,
             RtInstrumentParameters::new(&scalars).unwrap(),
         )
@@ -491,7 +491,7 @@ mod tests {
                 Vec::new(),
             ),
             MidiChannel::new(2).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         assert!(matches!(
             preparer.prepare(&wrong, BRAIDS_HOST_SAMPLE_RATE, 64),

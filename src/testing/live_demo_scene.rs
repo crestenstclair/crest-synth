@@ -1,21 +1,30 @@
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::EventRejection;
 use crate::control::event_record::{EmittedEvent, EventDirection, EventInput, EventOutcome};
-use crate::control::patch_page_projection::{PatchPageEnvelopeRow, PatchPageParameterRow};
+use crate::control::patch_page_projection::{
+    PatchPageEnvelopeRow, PatchPageOutputRow, PatchPageParameterRow,
+};
 use crate::control::state_projector::format_instrument_value;
 use crate::control::state_tree::StateTree;
-use crate::control::{PatchControlId, StructuralEditIntent, TopLevelContext};
+use crate::control::{
+    FocusPath, InteractionMode, MixerControlId, PatchControlId, SemanticControlId,
+    StructuralEditIntent, SurfaceId, TopLevelContext,
+};
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::channel_parameters::ChannelParameter;
 use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
+use crate::mixer::mixer_state::MixerState;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::mixer_track_parameters::{
+    MixerTrackParameter, MixerTrackParameterKind, MixerTrackParameters,
+};
+use crate::mixer::patch_output::{PatchOutput, PatchOutputParameter};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
-    CapabilityDescriptor, CapabilityRegistry, InstrumentConfig, ParameterAdjustment, ParameterKind,
-    ParameterValue,
+    CapabilityDescriptor, CapabilityRegistry, InstrumentConfig, ParameterAdjustment, ParameterValue,
 };
 use crate::synth::patch::{resolve_patch_editable_targets, PatchEditableTarget};
 use crate::synth::voice_envelope::VoiceEnvelope;
@@ -39,6 +48,16 @@ pub enum LiveEditableParameter {
         patch_id: PatchId,
         target: PatchEditableTarget,
     },
+    PatchOutput {
+        #[serde(rename = "patchId")]
+        patch_id: PatchId,
+        parameter: PatchOutputParameter,
+    },
+    Track {
+        #[serde(rename = "trackId")]
+        track_id: MixerTrackId,
+        parameter: MixerTrackParameter,
+    },
     Global {
         parameter: GlobalParameter,
     },
@@ -53,10 +72,17 @@ pub enum LiveEditableParameter {
 }
 
 impl LiveEditableParameter {
-    pub const fn patch(patch_id: PatchId, parameter: ChannelParameter) -> Self {
-        Self::Patch {
+    pub const fn patch_output(patch_id: PatchId, parameter: PatchOutputParameter) -> Self {
+        Self::PatchOutput {
             patch_id,
-            target: PatchEditableTarget::Mixer(parameter),
+            parameter,
+        }
+    }
+
+    pub const fn track(track_id: MixerTrackId, parameter: MixerTrackParameter) -> Self {
+        Self::Track {
+            track_id,
+            parameter,
         }
     }
 
@@ -82,6 +108,14 @@ impl LiveEditableParameter {
             Self::Patch { patch_id, target } => {
                 format!("patch.{}.{}", patch_id.value(), target.name())
             }
+            Self::PatchOutput {
+                patch_id,
+                parameter,
+            } => format!("patch.{}.output.{parameter}", patch_id.value()),
+            Self::Track {
+                track_id,
+                parameter,
+            } => format!("track.{track_id}.{parameter}"),
             Self::Global { parameter } => format!("global.{parameter}"),
             Self::Effect {
                 patch_id,
@@ -98,25 +132,40 @@ impl LiveEditableParameter {
 
     pub const fn audio_predicate(&self) -> LiveAudioPredicate {
         match self {
-            Self::Patch {
-                target: PatchEditableTarget::Mixer(ChannelParameter::GainDb),
-                ..
-            }
+            Self::PatchOutput { .. }
             | Self::Global {
                 parameter: GlobalParameter::MasterGainDb,
             } => LiveAudioPredicate::OutputLevel,
-            Self::Patch {
-                target: PatchEditableTarget::Mixer(ChannelParameter::Pan),
-                ..
-            } => LiveAudioPredicate::StereoBalance,
-            Self::Patch {
-                target: PatchEditableTarget::Mixer(ChannelParameter::ReverbSend),
-                ..
-            } => LiveAudioPredicate::ReverbInput,
-            Self::Patch {
-                target: PatchEditableTarget::Mixer(ChannelParameter::DelaySend),
-                ..
-            } => LiveAudioPredicate::DelayInput,
+            Self::Track {
+                track_id,
+                parameter: MixerTrackParameter::Level | MixerTrackParameter::Solo,
+            } => LiveAudioPredicate::TrackOutput {
+                track_id: *track_id,
+            },
+            Self::Track {
+                track_id,
+                parameter: MixerTrackParameter::Pan,
+            } => LiveAudioPredicate::TrackStereoBalance {
+                track_id: *track_id,
+            },
+            Self::Track {
+                track_id,
+                parameter: MixerTrackParameter::Mute,
+            } => LiveAudioPredicate::TrackPreGateMeter {
+                track_id: *track_id,
+            },
+            Self::Track {
+                track_id,
+                parameter: MixerTrackParameter::ReverbSend,
+            } => LiveAudioPredicate::TrackReverbInput {
+                track_id: *track_id,
+            },
+            Self::Track {
+                track_id,
+                parameter: MixerTrackParameter::DelaySend,
+            } => LiveAudioPredicate::TrackDelayInput {
+                track_id: *track_id,
+            },
             Self::Patch { .. } => LiveAudioPredicate::OutputLevel,
             Self::Global { .. } => LiveAudioPredicate::WetOutput,
             Self::Effect { patch_id, .. } => LiveAudioPredicate::PatchEffect {
@@ -128,6 +177,8 @@ impl LiveEditableParameter {
     pub fn field_name(&self) -> &str {
         match self {
             Self::Patch { target, .. } => target.name(),
+            Self::PatchOutput { parameter, .. } => parameter.name(),
+            Self::Track { parameter, .. } => parameter.name(),
             Self::Global { parameter } => parameter.name(),
             Self::Effect { parameter_id, .. } => parameter_id.as_str(),
         }
@@ -143,6 +194,26 @@ pub enum LiveAudioPredicate {
     ReverbInput,
     DelayInput,
     WetOutput,
+    TrackOutput {
+        #[serde(rename = "trackId")]
+        track_id: MixerTrackId,
+    },
+    TrackStereoBalance {
+        #[serde(rename = "trackId")]
+        track_id: MixerTrackId,
+    },
+    TrackPreGateMeter {
+        #[serde(rename = "trackId")]
+        track_id: MixerTrackId,
+    },
+    TrackReverbInput {
+        #[serde(rename = "trackId")]
+        track_id: MixerTrackId,
+    },
+    TrackDelayInput {
+        #[serde(rename = "trackId")]
+        track_id: MixerTrackId,
+    },
     PatchEffect {
         #[serde(rename = "patchId")]
         patch_id: PatchId,
@@ -172,6 +243,22 @@ impl LiveAudioPredicate {
             Self::ReverbInput => observation.reverb_input_rms() > 0.0,
             Self::DelayInput => observation.delay_input_rms() > 0.0,
             Self::WetOutput => observation.wet_output_rms() > 0.0,
+            Self::TrackOutput { track_id } => {
+                track_meter_is_nonzero(observation, track_id) && observation.output_rms() > 0.0
+            }
+            Self::TrackStereoBalance { track_id } => {
+                track_meter_is_nonzero(observation, track_id)
+                    && observation.output_rms() > 0.0
+                    && (observation.left_peak() - observation.right_peak()).abs() > f32::EPSILON
+            }
+            Self::TrackPreGateMeter { track_id } => track_meter_is_nonzero(observation, track_id),
+            Self::TrackReverbInput { track_id } => {
+                track_meter_is_nonzero(observation, track_id)
+                    && observation.reverb_input_rms() > 0.0
+            }
+            Self::TrackDelayInput { track_id } => {
+                track_meter_is_nonzero(observation, track_id) && observation.delay_input_rms() > 0.0
+            }
             Self::PatchEffect { patch_id } => {
                 let effect = observation.patch_effect();
                 effect.patch_id() == Some(patch_id)
@@ -186,6 +273,14 @@ impl LiveAudioPredicate {
     pub const fn is_patch_effect(self) -> bool {
         matches!(self, Self::PatchEffect { .. })
     }
+}
+
+fn track_meter_is_nonzero(observation: AudioObservationSnapshot, track_id: MixerTrackId) -> bool {
+    let meter = observation.track(track_id);
+    meter.left_peak().is_finite()
+        && meter.right_peak().is_finite()
+        && meter.rms().is_finite()
+        && meter.rms() > 0.0
 }
 
 /// A transition oracle fixed before its semantic event is dispatched.
@@ -240,10 +335,19 @@ impl LiveExpectedTransition {
             emitted_effects.push(EmittedEvent::StateAccepted {
                 generation: generation_after,
             });
-            emitted_effects.push(EmittedEvent::ParameterSnapshotPublished {
-                generation: generation_after,
-                graph_revision,
-            });
+            if !matches!(
+                &step.event,
+                AppEvent::SelectContext(_)
+                    | AppEvent::Navigate(_)
+                    | AppEvent::SetInteractionMode(_)
+                    | AppEvent::EnterSurface(_)
+                    | AppEvent::Return
+            ) {
+                emitted_effects.push(EmittedEvent::ParameterSnapshotPublished {
+                    generation: generation_after,
+                    graph_revision,
+                });
+            }
             if let AppEvent::Midi { patch_id, message } = &step.event {
                 emitted_effects.push(EmittedEvent::AudioCommand {
                     effect: AudioCommand::patch_midi(*patch_id, *message).into(),
@@ -395,22 +499,23 @@ impl LiveDemoStep {
         }
     }
 
-    fn rejected_adjustment(
-        event: AppEvent,
+    fn rejected_patch_adjustment(
         parameter: LiveEditableParameter,
+        patch_control_id: PatchControlId,
+        direction: Direction,
         value: f32,
+        selected_text_after: String,
         rejection: EventRejection,
     ) -> Self {
-        let selected_text_after = Some(format!("> {}={value}", parameter.field_name()));
         Self {
-            event,
+            event: AppEvent::Adjust(direction),
             expected_outcome: EventOutcome::Rejected,
             expected_rejection: Some(rejection),
             editable_parameter: Some(parameter),
-            patch_control_id: None,
+            patch_control_id: Some(patch_control_id),
             value_before: Some(value),
             value_after: Some(value),
-            selected_text_after,
+            selected_text_after: Some(selected_text_after),
             checkpoint: false,
             cleanup: false,
         }
@@ -472,7 +577,7 @@ pub struct LiveDemoScene {
 }
 
 impl LiveDemoScene {
-    pub const SCHEMA_VERSION: u32 = 5;
+    pub const SCHEMA_VERSION: u32 = 6;
     pub const MINIMUM_PARAMETER_DWELL: Duration = Duration::from_millis(500);
 
     /// Freezes the installed patch and current typed descriptor surface.
@@ -512,16 +617,19 @@ impl LiveDemoScene {
         {
             return Err(LiveDemoSceneError::InvalidEffectConfig);
         }
-        if state.interaction.mixer_selection.section != "Patch"
-            || state.interaction.mixer_selection.patch_index != 0
-            || state.interaction.mixer_selection.parameter_index != 0
+        if state.interaction.active_focus.context() != TopLevelContext::Mixer
+            || state.interaction.active_focus.control_id()
+                != &SemanticControlId::Mixer(MixerControlId::Track {
+                    track_id: MixerTrackId::default(),
+                    parameter: MixerTrackParameter::Level,
+                })
         {
             return Err(LiveDemoSceneError::UnexpectedInitialSelection);
         }
 
         let mut patches = Vec::with_capacity(state.patches.len());
         let mut expected = Vec::new();
-        for patch in &state.patches {
+        for (patch_index, patch) in state.patches.iter().enumerate() {
             let patch_id =
                 PatchId::new(patch.id).map_err(|_| LiveDemoSceneError::InvalidPatchId)?;
             if patches
@@ -532,18 +640,29 @@ impl LiveDemoScene {
             }
             let channel = MidiChannel::new(patch.channel)
                 .map_err(|_| LiveDemoSceneError::InvalidMidiChannel(patch.channel))?;
-            patches.push(LivePatch { patch_id, channel });
+            patches.push(LivePatch {
+                patch_id,
+                channel,
+                output: patch.output,
+            });
             let descriptor = state
                 .capabilities
                 .descriptor(patch.instrument.capability_id())
                 .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
             let targets = resolve_patch_editable_targets(descriptor, &patch.instrument)
                 .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-            expected.extend(
-                targets
-                    .into_iter()
-                    .map(|target| LiveEditableParameter::patch_target(patch_id, target)),
-            );
+            if patch_index == 0 {
+                expected.extend(
+                    targets
+                        .into_iter()
+                        .map(|target| LiveEditableParameter::patch_target(patch_id, target)),
+                );
+                expected.extend(
+                    PatchOutputParameter::ALL
+                        .into_iter()
+                        .map(|parameter| LiveEditableParameter::patch_output(patch_id, parameter)),
+                );
+            }
             for effect in &patch.post_effects {
                 let effect_descriptor = state
                     .effects
@@ -565,6 +684,11 @@ impl LiveDemoScene {
                 }));
             }
         }
+        expected.extend(MixerTrackId::ALL.into_iter().flat_map(|track_id| {
+            MixerTrackParameter::ALL
+                .into_iter()
+                .map(move |parameter| LiveEditableParameter::track(track_id, parameter))
+        }));
         expected.extend(
             GlobalParameters::surface_descriptor()
                 .iter()
@@ -602,8 +726,21 @@ impl LiveDemoScene {
 
         let mut steps = Vec::new();
         build_focused_patch_envelope_steps(&state, patches[0], &mut steps)?;
+        build_focused_patch_instrument_steps(&state, patches[0], &mut steps)?;
         build_focused_patch_effect_steps(&state, patches[0], &mut steps)?;
-        build_patch_steps(&state, &patches, &mut steps)?;
+        build_patch_output_steps(&state, patches[0], &mut steps)?;
+        let shared_route = patches[0]
+            .output
+            .track_id()
+            .adjacent(true)
+            .map_err(|_| LiveDemoSceneError::InvalidPlannedAdjustment)?;
+        let shared_patch = patches
+            .iter()
+            .copied()
+            .skip(1)
+            .find(|patch| patch.output.track_id() == shared_route)
+            .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
+        build_mixer_track_steps(&state, patches[0], shared_patch, &mut steps)?;
         build_global_steps(&state, patches[0], &mut steps)?;
         let scalar_step_count = steps.len();
         let first = patches[0];
@@ -636,6 +773,25 @@ impl LiveDemoScene {
                 soundfont,
             ),
         ];
+        steps.extend([
+            LiveDemoStep::accepted_event(AppEvent::Midi {
+                patch_id: first.patch_id,
+                message: MidiMessage::try_new(first.channel, MidiMessageKind::NoteOn, 67, 112)
+                    .expect("semantic live probe MIDI is valid"),
+            }),
+            LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Patch)),
+            LiveDemoStep::accepted_event(AppEvent::EnterSurface(SurfaceId::PatchUtility)),
+            LiveDemoStep::accepted_event(AppEvent::Return),
+            LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Mixer)),
+            LiveDemoStep::accepted_event(AppEvent::EnterSurface(SurfaceId::MixerInspector)),
+            LiveDemoStep::accepted_event(AppEvent::Return),
+            LiveDemoStep::accepted_event(AppEvent::SetInteractionMode(InteractionMode::Adjust)),
+            LiveDemoStep::accepted_event(AppEvent::SetInteractionMode(InteractionMode::Navigate)),
+            LiveDemoStep::accepted_event(AppEvent::Midi {
+                patch_id: first.patch_id,
+                message: MidiMessage::all_notes_off(first.channel),
+            }),
+        ]);
         for patch in &patches {
             steps.push(LiveDemoStep::cleanup(AppEvent::Midi {
                 patch_id: patch.patch_id,
@@ -644,7 +800,7 @@ impl LiveDemoScene {
         }
 
         Ok(Self {
-            name: "phase-4-first-static-patch-effect-live-demo".to_owned(),
+            name: "sixteen-track-mixer-routing-live-demo".to_owned(),
             minimum_parameter_dwell: Self::MINIMUM_PARAMETER_DWELL,
             steps,
             scalar_step_count,
@@ -838,124 +994,238 @@ impl LiveEngineTransition {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct LivePatch {
     patch_id: PatchId,
     channel: MidiChannel,
+    output: PatchOutput,
 }
 
-fn build_patch_steps(
+fn build_patch_output_steps(
     state: &DecodedStateTree,
-    patches: &[LivePatch],
+    patch: LivePatch,
     steps: &mut Vec<LiveDemoStep>,
 ) -> Result<(), LiveDemoSceneError> {
-    for (patch_index, (patch, identity)) in state.patches.iter().zip(patches).enumerate() {
-        let descriptor = state
-            .capabilities
-            .descriptor(patch.instrument.capability_id())
-            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
-        let targets = resolve_patch_editable_targets(descriptor, &patch.instrument)
-            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-        let target_count = targets.len();
-        for (parameter_index, target) in targets.into_iter().enumerate() {
-            let editable = LiveEditableParameter::patch_target(identity.patch_id, target.clone());
-            let metadata = patch_target_metadata(patch, descriptor, &target)?;
+    let decoded = state
+        .patches
+        .iter()
+        .find(|candidate| candidate.id == patch.patch_id.value())
+        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+    steps.push(LiveDemoStep::accepted_event(AppEvent::SelectContext(
+        TopLevelContext::Patch,
+    )));
+    steps.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+        SurfaceId::PatchUtility,
+    )));
 
-            let focused_patch_envelope =
-                patch_index == 0 && matches!(target, PatchEditableTarget::Envelope(_));
+    let trim = PatchOutputParameter::TrimGain;
+    let descriptor = trim.descriptor();
+    let before = decoded.output.trim_gain_db();
+    let direction = if before < descriptor.maximum().unwrap_or(before) {
+        Direction::Right
+    } else {
+        Direction::Left
+    };
+    let after = adjusted_value(
+        before,
+        descriptor.minimum().unwrap_or(before),
+        descriptor.maximum().unwrap_or(before),
+        direction,
+        descriptor.fine_step().unwrap_or(1.0),
+        descriptor.coarse_step().unwrap_or(1.0),
+    )?;
+    push_probed_checkpoint(
+        steps,
+        patch,
+        LiveDemoStep::patch_adjustment(
+            LiveEditableParameter::patch_output(patch.patch_id, trim),
+            PatchControlId::Output(trim),
+            direction,
+            before,
+            after,
+            PatchPageOutputRow::selected_text(
+                trim,
+                decoded
+                    .output
+                    .with_trim_gain_db(after)
+                    .map_err(|_| LiveDemoSceneError::InvalidPlannedAdjustment)?,
+            )
+            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?,
+        ),
+    );
 
-            if focused_patch_envelope {
-                // This frozen identifier was already edited and checkpointed through
-                // PATCH. MIXER navigation still crosses the canonical resolver slot,
-                // but it cannot receive duplicate coverage credit.
-            } else if patch_index == 0 && parameter_index == 0 {
-                if !matches!(target, PatchEditableTarget::Mixer(ChannelParameter::GainDb)) {
-                    return Err(LiveDemoSceneError::InvalidInstrumentConfig);
-                }
-                let mut value = metadata.initial;
-                while value < metadata.maximum {
-                    let next = adjusted_value(
-                        value,
-                        metadata.minimum,
-                        metadata.maximum,
-                        Direction::Up,
-                        metadata.fine_step,
-                        metadata.coarse_step,
+    steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+        Direction::Down,
+    )));
+    let route = decoded.output.track_id();
+    let (direction, next) = if let Ok(next) = route.adjacent(true) {
+        (Direction::Right, next)
+    } else {
+        (
+            Direction::Left,
+            route
+                .adjacent(false)
+                .map_err(|_| LiveDemoSceneError::InvalidPlannedAdjustment)?,
+        )
+    };
+    push_probed_checkpoint(
+        steps,
+        patch,
+        LiveDemoStep::patch_adjustment(
+            LiveEditableParameter::patch_output(patch.patch_id, PatchOutputParameter::OutputTrack),
+            PatchControlId::Output(PatchOutputParameter::OutputTrack),
+            direction,
+            route.index() as f32,
+            next.index() as f32,
+            PatchPageOutputRow::selected_text(
+                PatchOutputParameter::OutputTrack,
+                decoded.output.with_track_id(next),
+            )
+            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?,
+        ),
+    );
+    if route != MixerTrackId::default() {
+        return Err(LiveDemoSceneError::InvalidPlannedAdjustment);
+    }
+    steps.push(LiveDemoStep::rejected_patch_adjustment(
+        LiveEditableParameter::patch_output(patch.patch_id, PatchOutputParameter::OutputTrack),
+        PatchControlId::Output(PatchOutputParameter::OutputTrack),
+        Direction::Left,
+        route.index() as f32,
+        PatchPageOutputRow::selected_text(PatchOutputParameter::OutputTrack, decoded.output)
+            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?,
+        EventRejection::ParameterAtBoundary,
+    ));
+    steps.push(LiveDemoStep::accepted_event(AppEvent::Return));
+    Ok(())
+}
+
+fn build_mixer_track_steps(
+    state: &DecodedStateTree,
+    probe_patch: LivePatch,
+    shared_patch: LivePatch,
+    steps: &mut Vec<LiveDemoStep>,
+) -> Result<(), LiveDemoSceneError> {
+    steps.push(LiveDemoStep::accepted_event(AppEvent::SelectContext(
+        TopLevelContext::Mixer,
+    )));
+    for track_id in MixerTrackId::ALL {
+        let values = *state.mixer.track(track_id);
+        for parameter in MixerTrackParameter::MAIN {
+            let descriptor = parameter.descriptor();
+            let (before, after, direction) = match descriptor.kind() {
+                MixerTrackParameterKind::Continuous => {
+                    let before = values
+                        .scalar_value(parameter)
+                        .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
+                    let direction = if before < descriptor.maximum() {
+                        Direction::Right
+                    } else {
+                        Direction::Left
+                    };
+                    let after = adjusted_value(
+                        before,
+                        descriptor.minimum(),
+                        descriptor.maximum(),
+                        direction,
+                        descriptor.fine_step(),
+                        descriptor.coarse_step(),
                     )?;
-                    push_probed_checkpoint(
-                        steps,
-                        *identity,
-                        LiveDemoStep::adjustment(
-                            AppEvent::Adjust(Direction::Up),
-                            editable.clone(),
-                            value,
-                            next,
-                            scalar_selected_text(target.name(), next),
-                        ),
-                    );
-                    value = next;
+                    (before, after, direction)
                 }
-                steps.push(LiveDemoStep::rejected_adjustment(
-                    AppEvent::Adjust(Direction::Up),
-                    editable.clone(),
-                    value,
-                    EventRejection::ParameterAtBoundary,
-                ));
-                let next = adjusted_value(
-                    value,
-                    metadata.minimum,
-                    metadata.maximum,
-                    Direction::Down,
-                    metadata.fine_step,
-                    metadata.coarse_step,
-                )?;
-                push_probed_checkpoint(
-                    steps,
-                    *identity,
-                    LiveDemoStep::adjustment(
-                        AppEvent::Adjust(Direction::Down),
-                        editable,
-                        value,
-                        next,
-                        scalar_selected_text(target.name(), next),
-                    ),
-                );
+                MixerTrackParameterKind::Toggle => {
+                    let before = values
+                        .toggle_value(parameter)
+                        .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
+                    (
+                        if before { 1.0 } else { 0.0 },
+                        if before { 0.0 } else { 1.0 },
+                        Direction::Right,
+                    )
+                }
+            };
+            let checkpoint = LiveDemoStep::adjustment(
+                AppEvent::Adjust(direction),
+                LiveEditableParameter::track(track_id, parameter),
+                before,
+                after,
+                track_selected_text(parameter, after),
+            );
+            if parameter == MixerTrackParameter::Level && track_id == shared_patch.output.track_id()
+            {
+                push_shared_probed_checkpoint(steps, probe_patch, shared_patch, checkpoint);
             } else {
-                let direction = if metadata.initial < metadata.maximum {
-                    Direction::Right
-                } else {
-                    Direction::Left
-                };
-                let planned = plan_patch_adjustment(patch, descriptor, &target, direction)?;
-                push_probed_checkpoint(
-                    steps,
-                    *identity,
-                    LiveDemoStep::adjustment(
-                        AppEvent::Adjust(direction),
-                        editable,
-                        planned.before,
-                        planned.after,
-                        planned.selected_text,
-                    ),
-                );
+                push_probed_checkpoint(steps, probe_patch, checkpoint);
             }
-
-            if parameter_index + 1 < target_count {
+            if parameter != MixerTrackParameter::Solo {
                 steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
                     Direction::Down,
                 )));
             }
         }
 
-        // Wrap the schema-derived surface back to its first target before moving
-        // to the next Patch/GLOBAL section, preserving index zero across schemas.
-        steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
-            Direction::Down,
+        steps.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+            SurfaceId::MixerInspector,
         )));
-        steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
-            Direction::Right,
-        )));
+        for parameter in MixerTrackParameter::INSPECTOR {
+            let descriptor = parameter.descriptor();
+            let before = values
+                .scalar_value(parameter)
+                .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
+            let direction = if before < descriptor.maximum() {
+                Direction::Right
+            } else {
+                Direction::Left
+            };
+            let after = adjusted_value(
+                before,
+                descriptor.minimum(),
+                descriptor.maximum(),
+                direction,
+                descriptor.fine_step(),
+                descriptor.coarse_step(),
+            )?;
+            push_probed_checkpoint(
+                steps,
+                probe_patch,
+                LiveDemoStep::adjustment(
+                    AppEvent::Adjust(direction),
+                    LiveEditableParameter::track(track_id, parameter),
+                    before,
+                    after,
+                    track_selected_text(parameter, after),
+                ),
+            );
+            if parameter != MixerTrackParameter::DelaySend {
+                steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+                    Direction::Down,
+                )));
+            }
+        }
+        steps.push(LiveDemoStep::accepted_event(AppEvent::Return));
+        if track_id != MixerTrackId::ALL[MixerTrackId::COUNT - 1] {
+            for _ in 1..MixerTrackParameter::MAIN.len() {
+                steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+                    Direction::Up,
+                )));
+            }
+            steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+                Direction::Right,
+            )));
+            move_probe_patch_to_next_track(steps);
+        }
     }
+
+    restore_probe_patch_to_first_track(steps);
+    steps.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+        SurfaceId::MixerInspector,
+    )));
+    steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+        Direction::Down,
+    )));
+    steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+        Direction::Down,
+    )));
     Ok(())
 }
 
@@ -1014,6 +1284,82 @@ fn build_focused_patch_envelope_steps(
     Ok(())
 }
 
+fn build_focused_patch_instrument_steps(
+    state: &DecodedStateTree,
+    patch: LivePatch,
+    steps: &mut Vec<LiveDemoStep>,
+) -> Result<(), LiveDemoSceneError> {
+    let decoded = state
+        .patches
+        .iter()
+        .find(|candidate| candidate.id == patch.patch_id.value())
+        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+    let descriptor = state
+        .capabilities
+        .descriptor(decoded.instrument.capability_id())
+        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+    let targets = resolve_patch_editable_targets(descriptor, &decoded.instrument)
+        .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+    let config = decoded.instrument.clone();
+    for target in targets {
+        let PatchEditableTarget::Instrument(parameter_id) = target else {
+            continue;
+        };
+        steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+            Direction::Down,
+        )));
+        let spec = descriptor
+            .parameter(&parameter_id)
+            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let before_value = config
+            .value(&parameter_id)
+            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let before = spec
+            .scalar_value(before_value)
+            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let range = spec
+            .range()
+            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let direction = if f64::from(before) < range.maximum() {
+            Direction::Right
+        } else {
+            Direction::Left
+        };
+        let next = spec
+            .adjusted_scalar_value(before_value, parameter_adjustment(direction))
+            .map_err(|_| LiveDemoSceneError::InvalidPlannedAdjustment)?;
+        let after = spec
+            .scalar_value(&next)
+            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let updated = config
+            .with_scalar_value(descriptor, &parameter_id, next)
+            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let selected_text = format!(
+            "> {} ({})={}",
+            spec.label(),
+            spec.id(),
+            format_instrument_value(spec, &updated)
+                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?
+        );
+        push_probed_checkpoint(
+            steps,
+            patch,
+            LiveDemoStep::patch_adjustment(
+                LiveEditableParameter::patch_target(
+                    patch.patch_id,
+                    PatchEditableTarget::Instrument(parameter_id.clone()),
+                ),
+                PatchControlId::Capability(parameter_id),
+                direction,
+                before,
+                after,
+                selected_text,
+            ),
+        );
+    }
+    Ok(())
+}
+
 fn build_focused_patch_effect_steps(
     state: &DecodedStateTree,
     patch: LivePatch,
@@ -1040,18 +1386,26 @@ fn build_focused_patch_effect_steps(
         &state.effects,
         &decoded.post_effects,
     );
-    let mut configs = decoded.post_effects.clone();
+    let configs = decoded.post_effects.clone();
 
+    let focused_control =
+        resolve_patch_editable_targets(instrument_descriptor, &decoded.instrument)
+            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?
+            .into_iter()
+            .rev()
+            .map(|target| match target {
+                PatchEditableTarget::Instrument(parameter_id) => {
+                    PatchControlId::Capability(parameter_id)
+                }
+                PatchEditableTarget::Envelope(parameter) => PatchControlId::Envelope(parameter),
+            })
+            .next()
+            .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
     let mut focused_index = controls
         .iter()
-        .position(|control| {
-            control
-                == &PatchControlId::Envelope(
-                    crate::synth::VoiceEnvelopeParameter::ReleaseMilliseconds,
-                )
-        })
+        .position(|control| control == &focused_control)
         .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
-    for config in &mut configs {
+    for config in &configs {
         let descriptor = state
             .effects
             .descriptor(config.capability_id())
@@ -1131,7 +1485,6 @@ fn build_focused_patch_effect_steps(
                     selected_text,
                 ),
             );
-            *config = updated;
         }
     }
     steps.push(LiveDemoStep::accepted_event(AppEvent::SelectContext(
@@ -1187,6 +1540,10 @@ fn push_probed_checkpoint(
     checkpoint: LiveDemoStep,
 ) {
     debug_assert!(checkpoint.requires_checkpoint());
+    let reverse = match checkpoint.event() {
+        AppEvent::Adjust(direction) => Some(opposite_direction(*direction)),
+        _ => None,
+    };
     steps.push(parameter_probe_step(
         patch,
         MidiMessageKind::NoteOn,
@@ -1194,6 +1551,65 @@ fn push_probed_checkpoint(
     ));
     steps.push(checkpoint);
     steps.push(parameter_probe_step(patch, MidiMessageKind::NoteOff, 0));
+    if let Some(direction) = reverse {
+        steps.push(LiveDemoStep::accepted_event(AppEvent::Adjust(direction)));
+    }
+}
+
+fn push_shared_probed_checkpoint(
+    steps: &mut Vec<LiveDemoStep>,
+    probe_patch: LivePatch,
+    shared_patch: LivePatch,
+    checkpoint: LiveDemoStep,
+) {
+    steps.push(parameter_probe_step(
+        shared_patch,
+        MidiMessageKind::NoteOn,
+        PARAMETER_PROBE_VELOCITY,
+    ));
+    push_probed_checkpoint(steps, probe_patch, checkpoint);
+    steps.push(parameter_probe_step(
+        shared_patch,
+        MidiMessageKind::NoteOff,
+        0,
+    ));
+}
+
+fn move_probe_patch_to_next_track(steps: &mut Vec<LiveDemoStep>) {
+    steps.extend([
+        LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Patch)),
+        LiveDemoStep::accepted_event(AppEvent::EnterSurface(SurfaceId::PatchUtility)),
+        LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
+        LiveDemoStep::accepted_event(AppEvent::Adjust(Direction::Right)),
+        LiveDemoStep::accepted_event(AppEvent::Return),
+        LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Mixer)),
+    ]);
+}
+
+fn restore_probe_patch_to_first_track(steps: &mut Vec<LiveDemoStep>) {
+    steps.extend([
+        LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Patch)),
+        LiveDemoStep::accepted_event(AppEvent::EnterSurface(SurfaceId::PatchUtility)),
+        LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
+    ]);
+    for _ in MixerTrackId::MIN..MixerTrackId::MAX {
+        steps.push(LiveDemoStep::accepted_event(AppEvent::Adjust(
+            Direction::Left,
+        )));
+    }
+    steps.extend([
+        LiveDemoStep::accepted_event(AppEvent::Return),
+        LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Mixer)),
+    ]);
+}
+
+const fn opposite_direction(direction: Direction) -> Direction {
+    match direction {
+        Direction::Up => Direction::Down,
+        Direction::Down => Direction::Up,
+        Direction::Left => Direction::Right,
+        Direction::Right => Direction::Left,
+    }
 }
 
 fn parameter_probe_step(patch: LivePatch, kind: MidiMessageKind, velocity: u8) -> LiveDemoStep {
@@ -1205,47 +1621,13 @@ fn parameter_probe_step(patch: LivePatch, kind: MidiMessageKind, velocity: u8) -
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PatchTargetMetadata {
-    initial: f32,
-    minimum: f32,
-    maximum: f32,
-    fine_step: f32,
-    coarse_step: f32,
-}
-
-struct PlannedPatchAdjustment {
-    before: f32,
-    after: f32,
-    selected_text: String,
-}
-
-fn patch_target_metadata(
+fn patch_target_value(
     patch: &DecodedPatch,
     descriptor: &CapabilityDescriptor,
     target: &PatchEditableTarget,
-) -> Result<PatchTargetMetadata, LiveDemoSceneError> {
-    let (initial, minimum, maximum, fine_step, coarse_step) = match target {
-        PatchEditableTarget::Mixer(parameter) => {
-            let metadata = parameter.descriptor();
-            (
-                patch.parameters.value(*parameter),
-                metadata.minimum(),
-                metadata.maximum(),
-                metadata.fine_step(),
-                metadata.coarse_step(),
-            )
-        }
-        PatchEditableTarget::Envelope(parameter) => {
-            let metadata = parameter.descriptor();
-            (
-                patch.envelope.value(*parameter),
-                metadata.minimum(),
-                metadata.maximum(),
-                metadata.fine_step(),
-                metadata.coarse_step(),
-            )
-        }
+) -> Result<f32, LiveDemoSceneError> {
+    match target {
+        PatchEditableTarget::Envelope(parameter) => Ok(patch.envelope.value(*parameter)),
         PatchEditableTarget::Instrument(parameter_id) => {
             let spec = descriptor
                 .parameter(parameter_id)
@@ -1254,95 +1636,8 @@ fn patch_target_metadata(
                 .instrument
                 .value(parameter_id)
                 .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
-            let initial = spec
-                .scalar_value(value)
-                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-            match spec.kind() {
-                ParameterKind::Continuous | ParameterKind::Stepped => {
-                    let range = spec
-                        .range()
-                        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
-                    (
-                        initial,
-                        range.minimum() as f32,
-                        range.maximum() as f32,
-                        spec.fine_step()
-                            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?
-                            as f32,
-                        spec.coarse_step()
-                            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?
-                            as f32,
-                    )
-                }
-                ParameterKind::Choice => (
-                    initial,
-                    0.0,
-                    spec.choices().len().saturating_sub(1) as f32,
-                    1.0,
-                    1.0,
-                ),
-                ParameterKind::Toggle => (initial, 0.0, 1.0, 1.0, 1.0),
-                ParameterKind::Asset => return Err(LiveDemoSceneError::InvalidInstrumentConfig),
-            }
-        }
-    };
-    Ok(PatchTargetMetadata {
-        initial,
-        minimum,
-        maximum,
-        fine_step,
-        coarse_step,
-    })
-}
-
-fn plan_patch_adjustment(
-    patch: &DecodedPatch,
-    descriptor: &CapabilityDescriptor,
-    target: &PatchEditableTarget,
-    direction: Direction,
-) -> Result<PlannedPatchAdjustment, LiveDemoSceneError> {
-    let metadata = patch_target_metadata(patch, descriptor, target)?;
-    match target {
-        PatchEditableTarget::Mixer(_) | PatchEditableTarget::Envelope(_) => {
-            let after = adjusted_value(
-                metadata.initial,
-                metadata.minimum,
-                metadata.maximum,
-                direction,
-                metadata.fine_step,
-                metadata.coarse_step,
-            )?;
-            Ok(PlannedPatchAdjustment {
-                before: metadata.initial,
-                after,
-                selected_text: scalar_selected_text(target.name(), after),
-            })
-        }
-        PatchEditableTarget::Instrument(parameter_id) => {
-            let spec = descriptor
-                .parameter(parameter_id)
-                .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
-            let current = patch
-                .instrument
-                .value(parameter_id)
-                .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
-            let next = spec
-                .adjusted_scalar_value(current, parameter_adjustment(direction))
-                .map_err(|_| LiveDemoSceneError::InvalidPlannedAdjustment)?;
-            let after = spec
-                .scalar_value(&next)
-                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-            let updated = patch
-                .instrument
-                .with_scalar_value(descriptor, parameter_id, next)
-                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-            let formatted = format_instrument_value(spec, &updated)
-                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-            Ok(PlannedPatchAdjustment {
-                before: metadata.initial,
-                after,
-                selected_text: format!("> {} ({})={formatted}", spec.label(), spec.id()),
-            })
+            spec.scalar_value(value)
+                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)
         }
     }
 }
@@ -1358,6 +1653,15 @@ const fn parameter_adjustment(direction: Direction) -> ParameterAdjustment {
 
 fn scalar_selected_text(name: &str, value: f32) -> String {
     format!("> {name}={value}")
+}
+
+fn track_selected_text(parameter: MixerTrackParameter, value: f32) -> String {
+    match parameter.descriptor().kind() {
+        MixerTrackParameterKind::Continuous => scalar_selected_text(parameter.name(), value),
+        MixerTrackParameterKind::Toggle => {
+            format!("> {}={}", parameter.name(), value != 0.0)
+        }
+    }
 }
 
 fn adjusted_value(
@@ -1402,52 +1706,88 @@ pub(crate) fn selected_parameter_value(
     let state = decode_state_tree(tree)?;
     match parameter {
         LiveEditableParameter::Patch { patch_id, target } => {
-            let patch = if let Some(control) = patch_control_id.as_ref() {
-                let PatchEditableTarget::Envelope(envelope_parameter) = target else {
-                    return Err(LiveDemoSceneError::SelectedParameterMismatch);
-                };
-                if state.interaction.context != TopLevelContext::Patch
-                    || state.interaction.patch_focus != Some(patch_id.value())
-                    || state.interaction.patch_control_focus.as_ref() != Some(control)
-                    || control != &PatchControlId::Envelope(*envelope_parameter)
-                {
-                    return Err(LiveDemoSceneError::SelectedParameterMismatch);
+            let control = patch_control_id
+                .as_ref()
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            let expected_control = match target {
+                PatchEditableTarget::Envelope(parameter) => PatchControlId::Envelope(*parameter),
+                PatchEditableTarget::Instrument(parameter_id) => {
+                    PatchControlId::Capability(parameter_id.clone())
                 }
-                state
-                    .patches
-                    .iter()
-                    .find(|patch| patch.id == patch_id.value())
-                    .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?
-            } else {
-                state
-                    .patches
-                    .get(state.interaction.mixer_selection.patch_index)
-                    .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?
             };
+            if state.interaction.active_focus.context() != TopLevelContext::Patch
+                || state.interaction.active_focus.patch_id() != Some(*patch_id)
+                || state.interaction.active_focus.control_id()
+                    != &SemanticControlId::Patch(control.clone())
+                || control != &expected_control
+            {
+                return Err(LiveDemoSceneError::SelectedParameterMismatch);
+            }
+            let patch = state
+                .patches
+                .iter()
+                .find(|patch| patch.id == patch_id.value())
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
             let descriptor = state
                 .capabilities
                 .descriptor(patch.instrument.capability_id())
                 .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
-            let targets = resolve_patch_editable_targets(descriptor, &patch.instrument)
-                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-            let mixer_route_mismatch = patch_control_id.is_none()
-                && (state.interaction.context != TopLevelContext::Mixer
-                    || state.interaction.mixer_selection.section != "Patch"
-                    || targets
-                        .get(state.interaction.mixer_selection.parameter_index)
-                        .is_none_or(|selected| selected != target));
-            if patch.id != patch_id.value() || mixer_route_mismatch {
+            patch_target_value(patch, descriptor, target)
+        }
+        LiveEditableParameter::PatchOutput {
+            patch_id,
+            parameter,
+        } => {
+            let expected_control = PatchControlId::Output(*parameter);
+            if patch_control_id.as_ref() != Some(&expected_control)
+                || state.interaction.active_focus.context() != TopLevelContext::Patch
+                || state.interaction.active_focus.patch_id() != Some(*patch_id)
+                || state.interaction.active_focus.control_id()
+                    != &SemanticControlId::Patch(expected_control)
+            {
                 return Err(LiveDemoSceneError::SelectedParameterMismatch);
             }
-            Ok(patch_target_metadata(patch, descriptor, target)?.initial)
+            let patch = state
+                .patches
+                .iter()
+                .find(|patch| patch.id == patch_id.value())
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            Ok(match parameter {
+                PatchOutputParameter::TrimGain => patch.output.trim_gain_db(),
+                PatchOutputParameter::OutputTrack => patch.output.track_id().index() as f32,
+            })
+        }
+        LiveEditableParameter::Track {
+            track_id,
+            parameter,
+        } => {
+            if patch_control_id.is_some()
+                || state.interaction.active_focus.context() != TopLevelContext::Mixer
+                || state.interaction.active_focus.control_id()
+                    != &SemanticControlId::Mixer(MixerControlId::Track {
+                        track_id: *track_id,
+                        parameter: *parameter,
+                    })
+            {
+                return Err(LiveDemoSceneError::SelectedParameterMismatch);
+            }
+            let values = *state.mixer.track(*track_id);
+            values
+                .scalar_value(*parameter)
+                .or_else(|| {
+                    values
+                        .toggle_value(*parameter)
+                        .map(|value| if value { 1.0 } else { 0.0 })
+                })
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)
         }
         LiveEditableParameter::Global { parameter } => {
             if patch_control_id.is_some()
-                || state.interaction.context != TopLevelContext::Mixer
-                || state.interaction.mixer_selection.section != "Global"
-                || GlobalParameters::surface_descriptor()
-                    .get(state.interaction.mixer_selection.parameter_index)
-                    .is_none_or(|descriptor| descriptor.parameter() != *parameter)
+                || state.interaction.active_focus.context() != TopLevelContext::Mixer
+                || state.interaction.active_focus.control_id()
+                    != &SemanticControlId::Mixer(MixerControlId::Global {
+                        parameter: *parameter,
+                    })
             {
                 return Err(LiveDemoSceneError::SelectedParameterMismatch);
             }
@@ -1461,9 +1801,10 @@ pub(crate) fn selected_parameter_value(
             let control = patch_control_id
                 .as_ref()
                 .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
-            if state.interaction.context != TopLevelContext::Patch
-                || state.interaction.patch_focus != Some(patch_id.value())
-                || state.interaction.patch_control_focus.as_ref() != Some(control)
+            if state.interaction.active_focus.context() != TopLevelContext::Patch
+                || state.interaction.active_focus.patch_id() != Some(*patch_id)
+                || state.interaction.active_focus.control_id()
+                    != &SemanticControlId::Patch(control.clone())
                 || control != &PatchControlId::Effect(*slot_id, parameter_id.clone())
             {
                 return Err(LiveDemoSceneError::SelectedParameterMismatch);
@@ -1517,9 +1858,8 @@ pub(crate) fn projected_parameter_values(
                 .capabilities
                 .descriptor(patch.instrument.capability_id())
                 .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
-            let state_value = patch_target_metadata(patch, descriptor, target)?.initial;
+            let state_value = patch_target_value(patch, descriptor, target)?;
             let projected_value = match target {
-                PatchEditableTarget::Mixer(parameter) => projected.parameters.value(*parameter),
                 PatchEditableTarget::Envelope(parameter) => projected.envelope.value(*parameter),
                 PatchEditableTarget::Instrument(parameter_id) => {
                     let scalar_index = descriptor
@@ -1538,6 +1878,44 @@ pub(crate) fn projected_parameter_values(
                         .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?
                 }
             };
+            Ok((state_value, projected_value))
+        }
+        LiveEditableParameter::PatchOutput {
+            patch_id,
+            parameter,
+        } => {
+            let patch = state
+                .patches
+                .iter()
+                .find(|patch| patch.id == patch_id.value())
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            let projected = state
+                .parameters
+                .patches
+                .iter()
+                .find(|patch| patch.patch_id == patch_id.value())
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            let value = |output: PatchOutput| match parameter {
+                PatchOutputParameter::TrimGain => output.trim_gain_db(),
+                PatchOutputParameter::OutputTrack => output.track_id().index() as f32,
+            };
+            Ok((value(patch.output), value(projected.output)))
+        }
+        LiveEditableParameter::Track {
+            track_id,
+            parameter,
+        } => {
+            let value = |track: MixerTrackParameters| {
+                track.scalar_value(*parameter).or_else(|| {
+                    track
+                        .toggle_value(*parameter)
+                        .map(|value| if value { 1.0 } else { 0.0 })
+                })
+            };
+            let state_value = value(*state.mixer.track(*track_id))
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
+            let projected_value = value(state.parameters.mixer_tracks[track_id.index()])
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
             Ok((state_value, projected_value))
         }
         LiveEditableParameter::Global { parameter } => Ok((
@@ -1606,6 +1984,7 @@ struct DecodedStateTree {
     #[serde(default)]
     effects: EffectCapabilityRegistry,
     patches: Vec<DecodedPatch>,
+    mixer: MixerState,
     global: DecodedGlobal,
     interaction: DecodedInteraction,
     parameters: DecodedParameterSnapshot,
@@ -1614,10 +1993,7 @@ struct DecodedStateTree {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecodedInteraction {
-    context: TopLevelContext,
-    mixer_selection: DecodedSelection,
-    patch_focus: Option<u32>,
-    patch_control_focus: Option<PatchControlId>,
+    active_focus: FocusPath,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1629,27 +2005,7 @@ struct DecodedPatch {
     #[serde(default)]
     post_effects: Vec<PostEffectConfig>,
     envelope: VoiceEnvelope,
-    parameters: DecodedChannel,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DecodedChannel {
-    gain_db: f32,
-    pan: f32,
-    reverb_send: f32,
-    delay_send: f32,
-}
-
-impl DecodedChannel {
-    const fn value(self, parameter: ChannelParameter) -> f32 {
-        match parameter {
-            ChannelParameter::GainDb => self.gain_db,
-            ChannelParameter::Pan => self.pan,
-            ChannelParameter::ReverbSend => self.reverb_send,
-            ChannelParameter::DelaySend => self.delay_send,
-        }
-    }
+    output: PatchOutput,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -1680,17 +2036,10 @@ impl DecodedGlobal {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DecodedSelection {
-    section: String,
-    patch_index: usize,
-    parameter_index: usize,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct DecodedParameterSnapshot {
     graph_revision: GraphRevision,
     patches: Vec<DecodedParameterPatch>,
+    mixer_tracks: [MixerTrackParameters; MixerTrackId::COUNT],
     global: DecodedGlobal,
 }
 
@@ -1701,7 +2050,7 @@ struct DecodedParameterPatch {
     envelope: VoiceEnvelope,
     instrument: DecodedInstrumentParameters,
     effect: DecodedEffectParameters,
-    parameters: DecodedChannel,
+    output: PatchOutput,
 }
 
 #[derive(Clone, Debug, Deserialize)]

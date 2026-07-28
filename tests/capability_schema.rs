@@ -13,11 +13,14 @@ use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::{AppState, EventRejection};
 use crest_synth::control::event_record::EventSource;
 use crest_synth::control::state_projector::StateProjector;
+use crest_synth::control::TopLevelContext;
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::MidiMessageKind;
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
@@ -44,7 +47,7 @@ fn patch(id: u32, channel: u8, name: &str, config: InstrumentConfig) -> Patch {
         name.to_owned(),
         config,
         MidiChannel::new(channel).unwrap(),
-        ChannelParameters::default(),
+        PatchOutput::to_track(MixerTrackId::new(channel).unwrap()),
     )
 }
 
@@ -54,7 +57,7 @@ fn app_loop(
     AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle>,
     crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioHandle,
 ) {
-    let initial = ParameterSnapshot::new(0, globals(), &[]).unwrap();
+    let initial = ParameterSnapshot::new(0, globals(), MixerState::default(), &[]).unwrap();
     let boundary = LockFreeAudioBoundary::new(16, initial);
     let (control, audio) = boundary.into_handles();
     (
@@ -200,7 +203,7 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         )
         .unwrap();
     let tree: Value = serde_json::from_str(installed.current_state_tree().json()).unwrap();
-    assert_eq!(tree["schemaVersion"], 9);
+    assert_eq!(tree["schemaVersion"], 11);
     assert_eq!(tree["parameters"]["graphRevision"], 1);
     assert_eq!(
         tree["capabilities"]["descriptors"]
@@ -224,14 +227,14 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
             .editable_targets(&descriptor)
             .unwrap()
             .len(),
-        8
+        4
     );
     assert_eq!(
         installed.patches()[1]
             .editable_targets(&braids_descriptor)
             .unwrap()
             .len(),
-        11
+        7
     );
     assert!(installed
         .current_parameters()
@@ -249,16 +252,22 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
             .values(),
         &[0.0, 0.5, 0.5]
     );
+    installed
+        .dispatch_from(
+            AppEvent::SelectContext(TopLevelContext::Patch),
+            EventSource::Keyboard,
+        )
+        .unwrap();
     let text = installed.current_text().body().to_owned();
-    let preset = text.find("Preset (soundfont.preset)=").unwrap();
-    let file = text.find("SoundFont File (soundfont.file)=").unwrap();
+    let preset = text.find(SOUNDFONT_PRESET_PARAMETER_ID).unwrap();
+    let file = text.find(SOUNDFONT_FILE_PARAMETER_ID).unwrap();
     assert!(preset < file);
-    let model = text.find("Model (braids.model)=").unwrap();
-    let timbre = text.find("Timbre (braids.timbre)=0.5").unwrap();
-    let color = text.find("Color (braids.color)=0.5").unwrap();
-    assert!(file < model && model < timbre && timbre < color);
+    assert!(!text.contains(BRAIDS_MODEL_PARAMETER_ID));
+    assert!(!text.contains(BRAIDS_TIMBRE_PARAMETER_ID));
+    assert!(!text.contains(BRAIDS_COLOR_PARAMETER_ID));
     assert!(!text.lines().any(|line| {
-        line.starts_with('>') && (line.contains("soundfont.") || line.contains("SoundFont File"))
+        line.starts_with('>')
+            && (line.contains(SOUNDFONT_FILE_PARAMETER_ID) || line.contains("SoundFont File"))
     }));
 
     let valid_values = lead.values().to_vec();

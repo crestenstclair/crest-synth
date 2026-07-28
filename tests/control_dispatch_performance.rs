@@ -8,8 +8,9 @@ use crest_synth::control::{EngineSelectionStatusKind, TopLevelContext};
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
@@ -60,7 +61,7 @@ fn installed_state() -> AppState {
                 )
                 .unwrap(),
                 channel,
-                ChannelParameters::default(),
+                PatchOutput::to_track(MixerTrackId::new(index as u8).unwrap()),
             )
         })
         .collect();

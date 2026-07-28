@@ -221,10 +221,13 @@ fn allocate_zeros(length: usize) -> Result<Vec<f32>, EffectError> {
 mod tests {
     use super::GlobalReverbDelay;
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mix_engine::MixEngine;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::mixer_track_parameters::MixerTrackParameters;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
     use crate::real_time::patch_audio_block::PatchAudioBlock;
 
@@ -338,10 +341,11 @@ mod tests {
         let snapshot = ParameterSnapshot::new(
             1,
             parameters,
-            &[RtPatchParameters::new(
-                patch_id,
-                ChannelParameters::new(-12.0, 0.0, 0.7, 0.6).unwrap(),
-            )],
+            MixerState::default().with_track(
+                MixerTrackId::default(),
+                MixerTrackParameters::new(-12.0, 0.0, false, false, 0.7, 0.6).unwrap(),
+            ),
+            &[RtPatchParameters::new(patch_id, PatchOutput::default())],
         )
         .unwrap();
         let mut block = PatchAudioBlock::prepare(FRAME_COUNT).unwrap();

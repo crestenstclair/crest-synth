@@ -412,8 +412,10 @@ mod tests {
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::audio_boundary::AudioThreadBoundary;
     use crate::real_time::audio_command::AudioCommand;
     use crate::real_time::audio_observation::CallbackAudioObservation;
@@ -733,7 +735,7 @@ mod tests {
                     )
                     .unwrap(),
                     MidiChannel::new((id - 1) as u8).unwrap(),
-                    ChannelParameters::new(0.0, 0.0, 0.0, 0.0).unwrap(),
+                    PatchOutput::to_track(MixerTrackId::new((id - 1) as u8).unwrap()),
                 )
             };
             Self {
@@ -750,10 +752,11 @@ mod tests {
                 generation,
                 GraphRevision::new(revision).unwrap(),
                 GlobalParameters::new(0.0, 0.5, 0.5, 0.0, 250.0, 0.5, 0.0).unwrap(),
+                MixerState::default(),
                 &self
                     .patches
                     .each_ref()
-                    .map(|patch| RtPatchParameters::new(patch.id(), *patch.parameters())),
+                    .map(|patch| RtPatchParameters::new(patch.id(), patch.output())),
             )
             .unwrap()
         }
@@ -933,7 +936,7 @@ mod tests {
             "Layout-changing Patch".to_owned(),
             soundfont,
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::new(0.0, 0.0, 0.0, 0.0).unwrap(),
+            PatchOutput::default(),
         );
         let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.0, 250.0, 0.5, 0.0).unwrap();
         let preparers = production_instrument_preparers().unwrap();
@@ -942,6 +945,7 @@ mod tests {
             1,
             GraphRevision::INITIAL,
             global,
+            MixerState::default(),
             std::slice::from_ref(&patch),
             &registry,
         )
@@ -967,6 +971,7 @@ mod tests {
             2,
             target_revision,
             global,
+            MixerState::default(),
             std::slice::from_ref(&patch),
             &registry,
         )
@@ -1046,7 +1051,7 @@ mod tests {
             create_soundfont_config(&provider, SoundFontInstrument::new(0, 0, false).unwrap())
                 .unwrap(),
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         let preparer = HiDefSoundFontPreparer::new(
             crate::adapter::production_instruments::production_soundfont_asset().unwrap(),
@@ -1056,7 +1061,7 @@ mod tests {
         let message =
             MidiMessage::try_new(patch.channel(), MidiMessageKind::NoteOn, 60, 100).unwrap();
         let mut output = [0.0; 1_024];
-        let parameters = RtPatchParameters::new(patch.id(), *patch.parameters());
+        let parameters = RtPatchParameters::new(patch.id(), patch.output());
 
         begin_memory_count();
         let dispatch = instrument.dispatch(message, &parameters);

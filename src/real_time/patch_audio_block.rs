@@ -244,12 +244,13 @@ impl PatchAudioBlock {
 mod tests {
     use super::{PatchAudioBlock, PatchAudioBlockError};
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters, MAX_PATCHES};
 
     fn patch(id: u32) -> RtPatchParameters {
-        RtPatchParameters::new(PatchId::new(id).unwrap(), ChannelParameters::default())
+        RtPatchParameters::new(PatchId::new(id).unwrap(), PatchOutput::default())
     }
 
     fn snapshot(ids: &[u32]) -> ParameterSnapshot {
@@ -258,7 +259,7 @@ mod tests {
             *slot = patch(*id);
         }
         let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap();
-        ParameterSnapshot::new(1, global, &patches[..ids.len()]).unwrap()
+        ParameterSnapshot::new(1, global, MixerState::default(), &patches[..ids.len()]).unwrap()
     }
 
     #[test]

@@ -3,9 +3,13 @@ use crate::control::serialized_state::{
 };
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
-use crate::control::{EngineSelectionStatus, PatchPageProjection, TopLevelContext};
-use crate::mixer::channel_parameters::ChannelParameters;
+use crate::control::GraphicalShellProjection;
+use crate::control::{
+    EngineSelectionStatus, PatchPageProjection, SemanticControlId, TopLevelContext,
+};
 use crate::mixer::global_parameters::GlobalParameters;
+use crate::mixer::mixer_state::MixerState;
+use crate::mixer::patch_output::PatchOutput;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{CapabilityRegistry, InstrumentConfig};
@@ -29,9 +33,17 @@ pub enum StateTreeError {
     /// The state and real-time projections contained different Patch counts.
     PatchCountMismatch,
     /// A real-time Patch identity did not match the state at the same position.
-    PatchIdentityMismatch { index: usize },
+    PatchIdentityMismatch {
+        index: usize,
+    },
     /// A real-time Patch parameter set did not match the serialized state.
-    PatchParametersMismatch { index: usize },
+    PatchParametersMismatch {
+        index: usize,
+    },
+    /// One fixed mixer track differed from the accepted state.
+    MixerParametersMismatch {
+        index: usize,
+    },
     /// The global real-time parameters did not match the serialized state.
     GlobalParametersMismatch,
     /// The complete tree could not be serialized.
@@ -42,6 +54,16 @@ pub enum StateTreeError {
     ContextMismatch,
     /// PATCH page presence, identity, or snapshot hash was incoherent.
     PatchPageMismatch,
+    /// The shell did not originate from the supplied accepted generation.
+    GraphicalShellGenerationMismatch,
+    /// The shell did not originate from the supplied accepted snapshot.
+    GraphicalShellHashMismatch,
+    /// State, shell, and retained diagnostic did not name the same context.
+    GraphicalShellContextMismatch,
+    /// The shell did not contain the exact supplied retained diagnostic.
+    GraphicalShellDiagnosticMismatch,
+    SemanticModelMismatch,
+    InvalidInteractionPath,
 }
 
 impl fmt::Display for StateTreeError {
@@ -71,6 +93,9 @@ impl fmt::Display for StateTreeError {
             Self::PatchParametersMismatch { index } => {
                 write!(formatter, "parameter Patch values differ at index {index}")
             }
+            Self::MixerParametersMismatch { index } => {
+                write!(formatter, "mixer-track values differ at index {index}")
+            }
             Self::GlobalParametersMismatch => {
                 formatter.write_str("global parameter values do not match accepted state")
             }
@@ -83,6 +108,23 @@ impl fmt::Display for StateTreeError {
             }
             Self::PatchPageMismatch => {
                 formatter.write_str("PATCH page does not match canonical context, focus, or hash")
+            }
+            Self::GraphicalShellGenerationMismatch => {
+                formatter.write_str("graphical shell generation does not match accepted state")
+            }
+            Self::GraphicalShellHashMismatch => {
+                formatter.write_str("graphical shell does not match the accepted state snapshot")
+            }
+            Self::GraphicalShellContextMismatch => {
+                formatter.write_str("state and graphical shell contexts do not match")
+            }
+            Self::GraphicalShellDiagnosticMismatch => {
+                formatter.write_str("graphical shell does not contain the retained diagnostic")
+            }
+            Self::SemanticModelMismatch => formatter
+                .write_str("graphical shell semantic model does not match canonical interaction"),
+            Self::InvalidInteractionPath => {
+                formatter.write_str("serialized interaction contains an invalid semantic path")
             }
         }
     }
@@ -121,26 +163,29 @@ enum TreeJson {
 #[derive(Debug)]
 struct MidiTreeTemplate {
     before_root_generation: Arc<str>,
-    between_root_and_parameter_hashes: Vec<Arc<str>>,
+    between_root_and_shell_generation: Arc<str>,
+    between_shell_and_semantic_generation: Arc<str>,
+    between_semantic_and_parameter_generation: Arc<str>,
     after_parameter_generation: Arc<str>,
+    source_state_hash: Arc<str>,
 }
 
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
-    pub const SCHEMA_VERSION: u32 = 9;
+    pub const SCHEMA_VERSION: u32 = 11;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
         "capabilities",
         "effects",
         "patches",
+        "mixer",
         "global",
-        "interaction.context",
-        "interaction.mixerSelection.section",
-        "interaction.mixerSelection.patchIndex",
-        "interaction.mixerSelection.parameterIndex",
-        "interaction.patchFocus",
-        "interaction.patchControlFocus",
+        "interaction.activeFocus",
+        "interaction.rememberedPatchMain",
+        "interaction.rememberedMixerMain",
+        "interaction.mode",
+        "interaction.returnPath",
         "engineSelection.kind",
         "engineSelection.activeGraphRevision",
         "engineSelection.correlation",
@@ -153,6 +198,7 @@ impl StateTree {
         "engineSelection.correlation.targetGraphRevision",
         "engineSelection.failure",
         "patchPage",
+        "graphicalShell",
         "projection.context",
         "projection.body",
         "projection.selectedLine",
@@ -161,10 +207,11 @@ impl StateTree {
         "parameters.graphRevision",
         "parameters.patchCount",
         "parameters.patches",
+        "parameters.mixerTracks",
         "parameters.global",
     ];
     /// The complete normalized nested schema, including tagged capability values.
-    pub const SERIALIZED_LEAF_DESCRIPTOR: &'static [&'static str] = &[
+    const BASE_SERIALIZED_LEAF_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
         "capabilities.descriptors[].id",
@@ -246,10 +293,14 @@ impl StateTree {
         "patches[].envelope.decayMilliseconds",
         "patches[].envelope.releaseMilliseconds",
         "patches[].envelope.sustain",
-        "patches[].parameters.gainDb",
-        "patches[].parameters.pan",
-        "patches[].parameters.reverbSend",
-        "patches[].parameters.delaySend",
+        "patches[].output.trackId",
+        "patches[].output.trimGainDb",
+        "mixer.tracks[].levelDb",
+        "mixer.tracks[].pan",
+        "mixer.tracks[].mute",
+        "mixer.tracks[].solo",
+        "mixer.tracks[].reverbSend",
+        "mixer.tracks[].delaySend",
         "global.masterGainDb",
         "global.reverbRoomSize",
         "global.reverbDamping",
@@ -257,12 +308,33 @@ impl StateTree {
         "global.delayMilliseconds",
         "global.delayFeedback",
         "global.delayReturn",
-        "interaction.context",
-        "interaction.mixerSelection.section",
-        "interaction.mixerSelection.patchIndex",
-        "interaction.mixerSelection.parameterIndex",
-        "interaction.patchFocus",
-        "interaction.patchControlFocus",
+        "interaction.activeFocus.context",
+        "interaction.activeFocus.surface",
+        "interaction.activeFocus.patchId",
+        "interaction.activeFocus.capabilityId",
+        "interaction.activeFocus.controlId",
+        "interaction.activeFocus.modalId",
+        "interaction.rememberedPatchMain.context",
+        "interaction.rememberedPatchMain.surface",
+        "interaction.rememberedPatchMain.patchId",
+        "interaction.rememberedPatchMain.capabilityId",
+        "interaction.rememberedPatchMain.controlId",
+        "interaction.rememberedPatchMain.modalId",
+        "interaction.rememberedMixerMain.context",
+        "interaction.rememberedMixerMain.surface",
+        "interaction.rememberedMixerMain.patchId",
+        "interaction.rememberedMixerMain.capabilityId",
+        "interaction.rememberedMixerMain.controlId",
+        "interaction.rememberedMixerMain.modalId",
+        "interaction.mode",
+        "interaction.returnPath.origin.context",
+        "interaction.returnPath.origin.surface",
+        "interaction.returnPath.origin.patchId",
+        "interaction.returnPath.origin.capabilityId",
+        "interaction.returnPath.origin.controlId",
+        "interaction.returnPath.origin.modalId",
+        "interaction.returnPath.enteredSurface",
+        "interaction.returnPath",
         "engineSelection.kind",
         "engineSelection.activeGraphRevision",
         "engineSelection.correlation",
@@ -374,6 +446,24 @@ impl StateTree {
         "patchPage.sections[].parameters[].value.value.value",
         "patchPage.sections[].parameters[].visible",
         "patchPage.stateHash",
+        "graphicalShell.generation",
+        "graphicalShell.stateHash",
+        "graphicalShell.context",
+        "graphicalShell.contextLine.productLabel",
+        "graphicalShell.contextLine.contextLabel",
+        "graphicalShell.contextLine.statusLabel",
+        "graphicalShell.identityHeader.primaryLabel",
+        "graphicalShell.identityHeader.secondaryLabel",
+        "graphicalShell.workspace.mainRegion",
+        "graphicalShell.workspace.mainLabel",
+        "graphicalShell.workspace.sideRegion",
+        "graphicalShell.workspace.sideLabel",
+        "graphicalShell.workspace.diagnostic.context",
+        "graphicalShell.workspace.diagnostic.body",
+        "graphicalShell.workspace.diagnostic.selectedLine",
+        "graphicalShell.workspace.diagnostic.stateHash",
+        "graphicalShell.footer.pathLabel",
+        "graphicalShell.footer.actionHints[]",
         "projection.context",
         "projection.body",
         "projection.selectedLine",
@@ -392,10 +482,14 @@ impl StateTree {
         "parameters.patches[].effect.slotId",
         "parameters.patches[].effect.scalarCount",
         "parameters.patches[].effect.scalars[]",
-        "parameters.patches[].parameters.gainDb",
-        "parameters.patches[].parameters.pan",
-        "parameters.patches[].parameters.reverbSend",
-        "parameters.patches[].parameters.delaySend",
+        "parameters.patches[].output.trackId",
+        "parameters.patches[].output.trimGainDb",
+        "parameters.mixerTracks[].levelDb",
+        "parameters.mixerTracks[].pan",
+        "parameters.mixerTracks[].mute",
+        "parameters.mixerTracks[].solo",
+        "parameters.mixerTracks[].reverbSend",
+        "parameters.mixerTracks[].delaySend",
         "parameters.global.masterGainDb",
         "parameters.global.reverbRoomSize",
         "parameters.global.reverbDamping",
@@ -411,31 +505,117 @@ impl StateTree {
     }
 
     /// Returns the complete production-owned normalized nested schema.
-    pub const fn serialized_leaf_descriptor() -> &'static [&'static str] {
-        Self::SERIALIZED_LEAF_DESCRIPTOR
+    pub fn serialized_leaf_descriptor() -> &'static [&'static str] {
+        static DESCRIPTOR: OnceLock<Vec<&'static str>> = OnceLock::new();
+        DESCRIPTOR.get_or_init(|| {
+            let mut descriptor = Self::BASE_SERIALIZED_LEAF_DESCRIPTOR
+                .iter()
+                .copied()
+                .filter(|path| {
+                    !path.starts_with("interaction.")
+                        && !path.starts_with("graphicalShell.")
+                        && !path.starts_with("patchPage.")
+                })
+                .collect::<Vec<_>>();
+            descriptor.extend([
+                "interaction.activeFocus.capabilityId",
+                "interaction.activeFocus.capabilityId.id",
+                "interaction.activeFocus.capabilityId.kind",
+                "interaction.activeFocus.context",
+                "interaction.activeFocus.controlId.id",
+                "interaction.activeFocus.controlId.id.kind",
+                "interaction.activeFocus.controlId.id.parameter",
+                "interaction.activeFocus.controlId.id.track_id",
+                "interaction.activeFocus.controlId.kind",
+                "interaction.activeFocus.modalId",
+                "interaction.activeFocus.patchId",
+                "interaction.activeFocus.surface",
+                "interaction.mode",
+                "interaction.rememberedMixerMain.capabilityId",
+                "interaction.rememberedMixerMain.context",
+                "interaction.rememberedMixerMain.controlId.id.kind",
+                "interaction.rememberedMixerMain.controlId.id.parameter",
+                "interaction.rememberedMixerMain.controlId.id.track_id",
+                "interaction.rememberedMixerMain.controlId.kind",
+                "interaction.rememberedMixerMain.modalId",
+                "interaction.rememberedMixerMain.patchId",
+                "interaction.rememberedMixerMain.surface",
+                "interaction.rememberedPatchMain",
+                "interaction.rememberedPatchMain.capabilityId",
+                "interaction.rememberedPatchMain.capabilityId.id",
+                "interaction.rememberedPatchMain.capabilityId.kind",
+                "interaction.rememberedPatchMain.context",
+                "interaction.rememberedPatchMain.controlId.id",
+                "interaction.rememberedPatchMain.controlId.kind",
+                "interaction.rememberedPatchMain.modalId",
+                "interaction.rememberedPatchMain.patchId",
+                "interaction.rememberedPatchMain.surface",
+                "interaction.returnPath",
+                "interaction.returnPath.enteredSurface",
+                "interaction.returnPath.origin.capabilityId",
+                "interaction.returnPath.origin.capabilityId.id",
+                "interaction.returnPath.origin.capabilityId.kind",
+                "interaction.returnPath.origin.context",
+                "interaction.returnPath.origin.controlId.id",
+                "interaction.returnPath.origin.controlId.id.kind",
+                "interaction.returnPath.origin.controlId.id.parameter",
+                "interaction.returnPath.origin.controlId.id.track_id",
+                "interaction.returnPath.origin.controlId.kind",
+                "interaction.returnPath.origin.modalId",
+                "interaction.returnPath.origin.patchId",
+                "interaction.returnPath.origin.surface",
+            ]);
+            descriptor.extend(
+                PatchPageProjection::serialized_leaf_descriptor()
+                    .iter()
+                    .map(|path| {
+                        Box::leak(format!("patchPage.{path}").into_boxed_str()) as &'static str
+                    }),
+            );
+            descriptor.extend(
+                GraphicalShellProjection::serialized_leaf_descriptor()
+                    .iter()
+                    .map(|path| {
+                        Box::leak(format!("graphicalShell.{path}").into_boxed_str()) as &'static str
+                    }),
+            );
+            descriptor.sort_unstable();
+            descriptor.dedup();
+            descriptor
+        })
     }
 
     /// Builds one observation tree from a state snapshot and its GUI/audio
     /// projections.
     pub fn new(
         snapshot: &StateSnapshot,
+        graphical_shell: &GraphicalShellProjection,
         projection: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<Self, StateTreeError> {
-        Self::with_patch_page(snapshot, None, projection, parameters)
+        Self::with_patch_page_and_shell(snapshot, None, graphical_shell, projection, parameters)
     }
 
-    /// Builds one observation tree with an explicit optional PATCH page.
-    pub fn with_patch_page(
+    /// Builds one observation tree with an explicit optional PATCH page and
+    /// the canonical production-window shell.
+    pub fn with_patch_page_and_shell(
         snapshot: &StateSnapshot,
         patch_page: Option<&PatchPageProjection>,
+        graphical_shell: &GraphicalShellProjection,
         projection: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<Self, StateTreeError> {
         let state: SerializedState<'_> = serde_json::from_str(snapshot.json())
             .map_err(|_| StateTreeError::StateDeserialization)?;
 
-        Self::from_serialized_state(&state, snapshot, patch_page, projection, parameters)
+        Self::from_serialized_state(
+            &state,
+            snapshot,
+            patch_page,
+            graphical_shell,
+            projection,
+            parameters,
+        )
     }
 
     /// Builds the production tree from the canonical typed state that produced
@@ -445,14 +625,51 @@ impl StateTree {
         state: &SerializedState<'_>,
         snapshot: &StateSnapshot,
         patch_page: Option<&PatchPageProjection>,
+        graphical_shell: &GraphicalShellProjection,
         projection: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<Self, StateTreeError> {
         if projection.state_hash() != snapshot.hash() {
             return Err(StateTreeError::ProjectionHashMismatch);
         }
-        if projection.context() != state.interaction.context {
+        let interaction_context = state.interaction.active_focus.context();
+        if state.interaction.active_focus.validate().is_err()
+            || state
+                .interaction
+                .remembered_patch_main
+                .as_ref()
+                .is_some_and(|path| path.validate().is_err())
+            || state.interaction.remembered_mixer_main.validate().is_err()
+            || state.interaction.return_path.as_ref().is_some_and(|path| {
+                path.origin().validate().is_err()
+                    || path.entered_surface() != state.interaction.active_focus.surface()
+            })
+        {
+            return Err(StateTreeError::InvalidInteractionPath);
+        }
+        if projection.context() != interaction_context {
             return Err(StateTreeError::ContextMismatch);
+        }
+        if graphical_shell.generation() != state.generation {
+            return Err(StateTreeError::GraphicalShellGenerationMismatch);
+        }
+        if graphical_shell.state_hash() != snapshot.hash() {
+            return Err(StateTreeError::GraphicalShellHashMismatch);
+        }
+        if graphical_shell.context() != interaction_context {
+            return Err(StateTreeError::GraphicalShellContextMismatch);
+        }
+        if graphical_shell.workspace().diagnostic() != projection {
+            return Err(StateTreeError::GraphicalShellDiagnosticMismatch);
+        }
+        let semantic = graphical_shell.semantic_model();
+        if semantic.context() != interaction_context
+            || semantic.active_surface() != state.interaction.active_focus.surface()
+            || semantic.focus_path() != &state.interaction.active_focus
+            || semantic.interaction_mode() != state.interaction.mode
+            || semantic.return_path() != state.interaction.return_path.as_ref()
+        {
+            return Err(StateTreeError::SemanticModelMismatch);
         }
         let engine_targeted = state
             .engine_selection
@@ -472,18 +689,17 @@ impl StateTree {
             .engine_selection
             .correlation()
             .filter(|_| engine_targeted);
-        match (state.interaction.context, patch_page) {
+        match (interaction_context, patch_page) {
             (TopLevelContext::Mixer, None) => {}
             (TopLevelContext::Patch, Some(page))
                 if page.context() == TopLevelContext::Patch
                     && page.state_hash() == snapshot.hash()
-                    && Some(page.patch().id().value()) == state.interaction.patch_focus
-                    && page.focused_control_id()
-                        == state
-                            .interaction
-                            .patch_control_focus
-                            .clone()
-                            .ok_or(StateTreeError::PatchPageMismatch)?
+                    && Some(page.patch().id()) == state.interaction.active_focus.patch_id()
+                    && Some(page.focused_control_id())
+                        == match state.interaction.active_focus.control_id() {
+                            SemanticControlId::Patch(control) => Some(control.clone()),
+                            _ => None,
+                        }
                     && page.engine().status() == projected_engine_status
                     && page.engine().active_graph_revision()
                         == state.engine_selection.active_graph_revision()
@@ -504,7 +720,8 @@ impl StateTree {
         }
         validate_parameter_projection(state, parameters)?;
 
-        let serializable = SerializableStateTree::new(state, patch_page, projection, parameters);
+        let serializable =
+            SerializableStateTree::new(state, patch_page, graphical_shell, projection, parameters);
         let json =
             serde_json::to_string(&serializable).map_err(|_| StateTreeError::Serialization)?;
 
@@ -514,7 +731,7 @@ impl StateTree {
             graph_revision: parameters.graph_revision(),
             patch_count: state.patches.len(),
             selected_line: projection.selected_line(),
-            context: state.interaction.context,
+            context: interaction_context,
             patch_page_id: patch_page.map(|page| page.patch().id()),
             state_hash: Arc::from(snapshot.hash()),
         })
@@ -525,6 +742,7 @@ impl StateTree {
         &self,
         snapshot: &StateSnapshot,
         patch_page: Option<&PatchPageProjection>,
+        graphical_shell: &GraphicalShellProjection,
         projection: &TextProjection,
         parameters: &ParameterSnapshot,
     ) -> Result<Self, StateTreeError> {
@@ -545,6 +763,18 @@ impl StateTree {
         }
         if projection.context() != self.context {
             return Err(StateTreeError::ContextMismatch);
+        }
+        if graphical_shell.generation() != parameters.generation() {
+            return Err(StateTreeError::GraphicalShellGenerationMismatch);
+        }
+        if graphical_shell.state_hash() != snapshot.hash() {
+            return Err(StateTreeError::GraphicalShellHashMismatch);
+        }
+        if graphical_shell.context() != self.context {
+            return Err(StateTreeError::GraphicalShellContextMismatch);
+        }
+        if graphical_shell.workspace().diagnostic() != projection {
+            return Err(StateTreeError::GraphicalShellDiagnosticMismatch);
         }
         match (self.context, self.patch_page_id, patch_page) {
             (TopLevelContext::Mixer, None, None) => {}
@@ -647,7 +877,9 @@ impl PartialEq for StateTree {
 
 impl MidiTreeTemplate {
     fn from_json(json: &str, generation: u64, state_hash: &str) -> Option<Self> {
-        const ROOT_MARKER: &str = "{\"schemaVersion\":9,\"generation\":";
+        const ROOT_MARKER: &str = "{\"schemaVersion\":11,\"generation\":";
+        const SHELL_MARKER: &str = "\"graphicalShell\":{\"generation\":";
+        const SEMANTIC_MARKER: &str = "\"semanticModel\":{\"generation\":";
         const PARAMETER_MARKER: &str = "\"parameters\":{\"generation\":";
 
         let root_start = ROOT_MARKER.len();
@@ -656,7 +888,27 @@ impl MidiTreeTemplate {
             return None;
         }
 
-        let parameter_marker_start = json.get(root_end..)?.find(PARAMETER_MARKER)? + root_end;
+        let shell_marker_start = json.get(root_end..)?.find(SHELL_MARKER)? + root_end;
+        let shell_start = shell_marker_start + SHELL_MARKER.len();
+        let shell_end = json.get(shell_start..)?.find(',')? + shell_start;
+        if json.get(shell_start..shell_end)?.parse::<u64>().ok()? != generation {
+            return None;
+        }
+
+        let semantic_marker_start = json.get(shell_end..)?.find(SEMANTIC_MARKER)? + shell_end;
+        let semantic_start = semantic_marker_start + SEMANTIC_MARKER.len();
+        let semantic_end = json.get(semantic_start..)?.find(',')? + semantic_start;
+        if json
+            .get(semantic_start..semantic_end)?
+            .parse::<u64>()
+            .ok()?
+            != generation
+        {
+            return None;
+        }
+
+        let parameter_marker_start =
+            json.get(semantic_end..)?.find(PARAMETER_MARKER)? + semantic_end;
         let parameter_start = parameter_marker_start + PARAMETER_MARKER.len();
         let parameter_end = json.get(parameter_start..)?.find(',')? + parameter_start;
         if json
@@ -668,17 +920,27 @@ impl MidiTreeTemplate {
             return None;
         }
 
-        let between = json.get(root_end..parameter_start)?;
-        let between_root_and_parameter_hashes =
-            between.split(state_hash).map(Arc::from).collect::<Vec<_>>();
-        if between_root_and_parameter_hashes.len() < 2 {
+        let between_root_and_shell_generation = json.get(root_end..shell_start)?;
+        let between_shell_and_semantic_generation = json.get(shell_end..semantic_start)?;
+        let between_semantic_and_parameter_generation = json.get(semantic_end..parameter_start)?;
+        let after_parameter_generation = json.get(parameter_end..)?;
+        if !between_root_and_shell_generation.contains(state_hash)
+            && !between_shell_and_semantic_generation.contains(state_hash)
+            && !between_semantic_and_parameter_generation.contains(state_hash)
+            && !after_parameter_generation.contains(state_hash)
+        {
             return None;
         }
 
         Some(Self {
             before_root_generation: Arc::from(json.get(..root_start)?),
-            between_root_and_parameter_hashes,
-            after_parameter_generation: Arc::from(json.get(parameter_end..)?),
+            between_root_and_shell_generation: Arc::from(between_root_and_shell_generation),
+            between_shell_and_semantic_generation: Arc::from(between_shell_and_semantic_generation),
+            between_semantic_and_parameter_generation: Arc::from(
+                between_semantic_and_parameter_generation,
+            ),
+            after_parameter_generation: Arc::from(after_parameter_generation),
+            source_state_hash: Arc::from(state_hash),
         })
     }
 
@@ -686,30 +948,58 @@ impl MidiTreeTemplate {
         let generation = generation.to_string();
         let mut json = String::with_capacity(
             self.before_root_generation.len()
-                + self
-                    .between_root_and_parameter_hashes
-                    .iter()
-                    .map(|segment| segment.len())
-                    .sum::<usize>()
+                + self.between_root_and_shell_generation.len()
+                + self.between_shell_and_semantic_generation.len()
+                + self.between_semantic_and_parameter_generation.len()
                 + self.after_parameter_generation.len()
-                + generation.len() * 2
-                + state_hash.len()
-                    * self
-                        .between_root_and_parameter_hashes
-                        .len()
-                        .saturating_sub(1),
+                + generation.len() * 4,
         );
         json.push_str(&self.before_root_generation);
         json.push_str(&generation);
-        for (index, segment) in self.between_root_and_parameter_hashes.iter().enumerate() {
-            if index > 0 {
-                json.push_str(state_hash);
-            }
-            json.push_str(segment);
-        }
+        push_with_state_hash(
+            &mut json,
+            &self.between_root_and_shell_generation,
+            &self.source_state_hash,
+            state_hash,
+        );
         json.push_str(&generation);
-        json.push_str(&self.after_parameter_generation);
+        push_with_state_hash(
+            &mut json,
+            &self.between_shell_and_semantic_generation,
+            &self.source_state_hash,
+            state_hash,
+        );
+        json.push_str(&generation);
+        push_with_state_hash(
+            &mut json,
+            &self.between_semantic_and_parameter_generation,
+            &self.source_state_hash,
+            state_hash,
+        );
+        json.push_str(&generation);
+        push_with_state_hash(
+            &mut json,
+            &self.after_parameter_generation,
+            &self.source_state_hash,
+            state_hash,
+        );
         json
+    }
+}
+
+fn push_with_state_hash(
+    output: &mut String,
+    template: &str,
+    source_state_hash: &str,
+    state_hash: &str,
+) {
+    let mut segments = template.split(source_state_hash);
+    if let Some(first) = segments.next() {
+        output.push_str(first);
+    }
+    for segment in segments {
+        output.push_str(state_hash);
+        output.push_str(segment);
     }
 }
 
@@ -733,9 +1023,7 @@ fn validate_parameter_projection(
         if parameter_patch.patch_id().map(|patch_id| patch_id.value()) != Some(state_patch.id) {
             return Err(StateTreeError::PatchIdentityMismatch { index });
         }
-        if TreeChannelParameters::from(state_patch)
-            != TreeChannelParameters::from(parameter_patch.parameters())
-        {
+        if state_patch.output != parameter_patch.output() {
             return Err(StateTreeError::PatchParametersMismatch { index });
         }
         if state_patch.envelope != *parameter_patch.envelope() {
@@ -790,6 +1078,16 @@ fn validate_parameter_projection(
         }
     }
 
+    if let Some(index) = state
+        .mixer
+        .tracks()
+        .iter()
+        .zip(parameters.mixer_tracks())
+        .position(|(state_track, parameter_track)| state_track != parameter_track)
+    {
+        return Err(StateTreeError::MixerParametersMismatch { index });
+    }
+
     if TreeGlobalParameters::from(&state.global) != TreeGlobalParameters::from(parameters.global())
     {
         return Err(StateTreeError::GlobalParametersMismatch);
@@ -806,10 +1104,12 @@ struct SerializableStateTree<'a> {
     capabilities: &'a CapabilityRegistry,
     effects: &'a EffectCapabilityRegistry,
     patches: Vec<TreePatch<'a>>,
+    mixer: MixerState,
     global: TreeGlobalParameters,
     interaction: &'a SerializedInteractionState,
     engine_selection: &'a EngineSelectionStatus,
     patch_page: Option<&'a PatchPageProjection>,
+    graphical_shell: &'a GraphicalShellProjection,
     projection: &'a TextProjection,
     parameters: &'a ParameterSnapshot,
 }
@@ -818,6 +1118,7 @@ impl<'a> SerializableStateTree<'a> {
     fn new(
         state: &'a SerializedState<'_>,
         patch_page: Option<&'a PatchPageProjection>,
+        graphical_shell: &'a GraphicalShellProjection,
         projection: &'a TextProjection,
         parameters: &'a ParameterSnapshot,
     ) -> Self {
@@ -827,10 +1128,12 @@ impl<'a> SerializableStateTree<'a> {
             capabilities: state.capabilities.as_ref(),
             effects: state.effects.as_ref(),
             patches: state.patches.iter().map(TreePatch::from).collect(),
+            mixer: state.mixer,
             global: TreeGlobalParameters::from(&state.global),
             interaction: &state.interaction,
             engine_selection: &state.engine_selection,
             patch_page,
+            graphical_shell,
             projection,
             parameters,
         }
@@ -846,7 +1149,7 @@ struct TreePatch<'a> {
     instrument: &'a InstrumentConfig,
     post_effects: &'a [PostEffectConfig],
     envelope: VoiceEnvelope,
-    parameters: TreeChannelParameters,
+    output: PatchOutput,
 }
 
 impl<'a> From<&'a SerializedPatch<'_>> for TreePatch<'a> {
@@ -858,38 +1161,7 @@ impl<'a> From<&'a SerializedPatch<'_>> for TreePatch<'a> {
             instrument: patch.instrument.as_ref(),
             post_effects: patch.post_effects.as_ref(),
             envelope: patch.envelope,
-            parameters: TreeChannelParameters::from(patch),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TreeChannelParameters {
-    gain_db: f32,
-    pan: f32,
-    reverb_send: f32,
-    delay_send: f32,
-}
-
-impl From<&SerializedPatch<'_>> for TreeChannelParameters {
-    fn from(patch: &SerializedPatch<'_>) -> Self {
-        Self {
-            gain_db: patch.gain_db,
-            pan: patch.pan,
-            reverb_send: patch.reverb_send,
-            delay_send: patch.delay_send,
-        }
-    }
-}
-
-impl From<&ChannelParameters> for TreeChannelParameters {
-    fn from(parameters: &ChannelParameters) -> Self {
-        Self {
-            gain_db: parameters.gain_db(),
-            pan: parameters.pan(),
-            reverb_send: parameters.reverb_send(),
-            delay_send: parameters.delay_send(),
+            output: patch.output,
         }
     }
 }
@@ -940,9 +1212,14 @@ mod tests {
     use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::control::state_snapshot::StateSnapshot;
     use crate::control::text_projection::TextProjection;
+    use crate::control::{
+        GraphicalShellProjection, ShellContextLine, ShellFooter, ShellIdentityHeader,
+    };
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::testing::automatic_midi_test::create_soundfont_config;
@@ -964,10 +1241,10 @@ mod tests {
                             &provider,
                             SoundFontInstrument::new(0, 80, false).unwrap()
                         ).unwrap(),
-                        "gainDb": -6.0,
-                        "pan": -0.25,
-                        "reverbSend": 0.2,
-                        "delaySend": 0.1
+                        "output": {
+                            "trackId": 2,
+                            "trimGainDb": -6.0
+                        }
                     },
                     {
                         "id": 9,
@@ -977,12 +1254,13 @@ mod tests {
                             &provider,
                             SoundFontInstrument::new(128, 0, true).unwrap()
                         ).unwrap(),
-                        "gainDb": -12.0,
-                        "pan": 0.5,
-                        "reverbSend": 0.4,
-                        "delaySend": 0.3
+                        "output": {
+                            "trackId": 9,
+                            "trimGainDb": -12.0
+                        }
                     }
                 ],
+                "mixer": MixerState::default(),
                 "global": {
                     "masterGainDb": -3.0,
                     "reverbRoomSize": 0.7,
@@ -992,16 +1270,7 @@ mod tests {
                     "delayFeedback": 0.35,
                     "delayReturn": 0.2
                 },
-                "interaction": {
-                    "context": "mixer",
-                    "mixerSelection": {
-                        "section": "Patch",
-                        "patchIndex": 1,
-                        "parameterIndex": 2
-                    },
-                    "patchFocus": 7,
-                    "patchControlFocus": null
-                },
+                "interaction": crate::control::serialized_state::SerializedInteractionState::default(),
                 "engineSelection": {
                     "kind": "ready",
                     "activeGraphRevision": 7,
@@ -1022,14 +1291,15 @@ mod tests {
             42,
             crate::real_time::GraphRevision::new(7).unwrap(),
             global(),
+            MixerState::default(),
             &[
                 RtPatchParameters::new(
                     PatchId::new(7).unwrap(),
-                    ChannelParameters::new(-6.0, -0.25, 0.2, 0.1).unwrap(),
+                    PatchOutput::new(MixerTrackId::new(2).unwrap(), -6.0).unwrap(),
                 ),
                 RtPatchParameters::new(
                     PatchId::new(9).unwrap(),
-                    ChannelParameters::new(-12.0, 0.5, 0.4, 0.3).unwrap(),
+                    PatchOutput::new(MixerTrackId::new(9).unwrap(), -12.0).unwrap(),
                 ),
             ],
         )
@@ -1044,10 +1314,61 @@ mod tests {
         )
     }
 
+    fn graphical_shell(
+        _snapshot: &StateSnapshot,
+        projection: &TextProjection,
+    ) -> GraphicalShellProjection {
+        graphical_shell_with(
+            42,
+            projection.context(),
+            projection.state_hash(),
+            projection,
+        )
+    }
+
+    fn graphical_shell_with(
+        generation: u64,
+        context: crate::control::TopLevelContext,
+        state_hash: &str,
+        projection: &TextProjection,
+    ) -> GraphicalShellProjection {
+        GraphicalShellProjection::new(
+            generation,
+            state_hash,
+            crate::control::SemanticGraphicalViewModel::fixture(generation, state_hash, context),
+            ShellContextLine::new("CREST SYNTH", context.label(), "READY"),
+            ShellIdentityHeader::new("MIXER · PATCH 09", "Drums · MIDI CH 10"),
+            format!("{} WORKSPACE", context.label()),
+            match context {
+                crate::control::TopLevelContext::Patch => "UTILITY",
+                crate::control::TopLevelContext::Mixer => "INSPECTOR",
+            },
+            projection.clone(),
+            ShellFooter::new(
+                "MIXER / PATCH 09 / PARAMETER 03",
+                vec!["1 MIXER".to_owned(), "2 PATCH".to_owned()],
+            ),
+        )
+        .unwrap()
+    }
+
+    fn state_tree(
+        snapshot: &StateSnapshot,
+        projection: &TextProjection,
+        parameters: &ParameterSnapshot,
+    ) -> Result<StateTree, StateTreeError> {
+        StateTree::new(
+            snapshot,
+            &graphical_shell(snapshot, projection),
+            projection,
+            parameters,
+        )
+    }
+
     #[test]
     fn serializes_every_state_text_and_audio_property_with_stable_names() {
         let snapshot = snapshot();
-        let tree = StateTree::new(&snapshot, &projection(&snapshot), &parameters()).unwrap();
+        let tree = state_tree(&snapshot, &projection(&snapshot), &parameters()).unwrap();
         let value: Value = serde_json::from_str(tree.json()).unwrap();
 
         assert_eq!(tree.schema_version(), StateTree::SCHEMA_VERSION);
@@ -1058,17 +1379,19 @@ mod tests {
         assert_eq!(tree.state_hash(), snapshot.hash());
 
         let root = value.as_object().unwrap();
-        assert_eq!(root.len(), 11);
+        assert_eq!(root.len(), 13);
         for property in [
             "schemaVersion",
             "generation",
             "capabilities",
             "effects",
             "patches",
+            "mixer",
             "global",
             "interaction",
             "engineSelection",
             "patchPage",
+            "graphicalShell",
             "projection",
             "parameters",
         ] {
@@ -1089,11 +1412,9 @@ mod tests {
                     "sustain": 1.0,
                     "releaseMilliseconds": 0.0
                 },
-                "parameters": {
-                    "gainDb": -6.0,
-                    "pan": -0.25,
-                    "reverbSend": 0.2,
-                    "delaySend": 0.1
+                "output": {
+                    "trackId": 2,
+                    "trimGainDb": -6.0
                 }
             })
         );
@@ -1135,14 +1456,39 @@ mod tests {
         assert_eq!(
             value["interaction"],
             json!({
-                "context": "mixer",
-                "mixerSelection": {
-                    "section": "Patch",
-                    "patchIndex": 1,
-                    "parameterIndex": 2
+                "activeFocus": {
+                    "context": "mixer",
+                    "surface": "mixerMain",
+                    "patchId": null,
+                    "capabilityId": null,
+                    "controlId": {
+                        "kind": "mixer",
+                        "id": {
+                            "kind": "track",
+                            "track_id": 0,
+                            "parameter": "level"
+                        }
+                    },
+                    "modalId": null
                 },
-                "patchFocus": 7,
-                "patchControlFocus": null
+                "rememberedPatchMain": null,
+                "rememberedMixerMain": {
+                    "context": "mixer",
+                    "surface": "mixerMain",
+                    "patchId": null,
+                    "capabilityId": null,
+                    "controlId": {
+                        "kind": "mixer",
+                        "id": {
+                            "kind": "track",
+                            "track_id": 0,
+                            "parameter": "level"
+                        }
+                    },
+                    "modalId": null
+                },
+                "mode": "navigate",
+                "returnPath": null
             })
         );
         assert_eq!(
@@ -1155,6 +1501,12 @@ mod tests {
             })
         );
         assert!(value["patchPage"].is_null());
+        assert_eq!(value["graphicalShell"]["generation"], 42);
+        assert_eq!(value["graphicalShell"]["context"], "mixer");
+        assert_eq!(
+            value["graphicalShell"]["workspace"]["diagnostic"],
+            value["projection"]
+        );
         assert_eq!(value["projection"]["context"], "mixer");
         assert_eq!(
             value["projection"]["body"],
@@ -1182,28 +1534,27 @@ mod tests {
                     "scalarCount": 0,
                     "scalars": []
                 },
-                "parameters": {
-                    "gainDb": -12.0,
-                    "pan": 0.5,
-                    "reverbSend": 0.4,
-                    "delaySend": 0.3
+                "output": {
+                    "trackId": 9,
+                    "trimGainDb": -12.0
                 }
             })
         );
+        assert_eq!(value["parameters"]["mixerTracks"], value["mixer"]["tracks"]);
         assert_eq!(value["parameters"]["global"], value["global"]);
     }
 
     #[test]
     fn serialization_is_deterministic_and_consumable_as_an_owned_value() {
         let snapshot = snapshot();
-        let first = StateTree::new(&snapshot, &projection(&snapshot), &parameters()).unwrap();
-        let second = StateTree::new(&snapshot, &projection(&snapshot), &parameters()).unwrap();
+        let first = state_tree(&snapshot, &projection(&snapshot), &parameters()).unwrap();
+        let second = state_tree(&snapshot, &projection(&snapshot), &parameters()).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(first.json(), second.json());
         assert!(first
             .json()
-            .starts_with("{\"schemaVersion\":9,\"generation\":42,\"capabilities\":"));
+            .starts_with("{\"schemaVersion\":11,\"generation\":42,\"capabilities\":"));
         assert_eq!(first.clone().into_json(), first.json());
     }
 
@@ -1220,7 +1571,8 @@ mod tests {
             "patches[].instrument.values[].value.kind",
             "patches[].instrument.assetReferences[].reference.locator",
             "parameters.graphRevision",
-            "parameters.patches[].parameters.gainDb",
+            "parameters.patches[].output.trimGainDb",
+            "parameters.mixerTracks[].levelDb",
         ] {
             assert!(unique.contains(required), "missing {required}");
         }
@@ -1243,8 +1595,41 @@ mod tests {
             TextProjection::new("unrelated".to_owned(), 0, "other-hash".to_owned());
 
         assert_eq!(
-            StateTree::new(&snapshot, &other_projection, &parameters()),
+            state_tree(&snapshot, &other_projection, &parameters()),
             Err(StateTreeError::ProjectionHashMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_stale_generation_and_mismatched_context_graphical_shells() {
+        let snapshot = snapshot();
+        let projection = projection(&snapshot);
+        let stale = graphical_shell_with(
+            41,
+            crate::control::TopLevelContext::Mixer,
+            snapshot.hash(),
+            &projection,
+        );
+        assert_eq!(
+            StateTree::new(&snapshot, &stale, &projection, &parameters()),
+            Err(StateTreeError::GraphicalShellGenerationMismatch)
+        );
+
+        let patch_diagnostic = TextProjection::for_context(
+            crate::control::TopLevelContext::Patch,
+            "PATCH diagnostic".to_owned(),
+            0,
+            snapshot.hash().to_owned(),
+        );
+        let mismatched_context = graphical_shell_with(
+            42,
+            crate::control::TopLevelContext::Patch,
+            snapshot.hash(),
+            &patch_diagnostic,
+        );
+        assert_eq!(
+            StateTree::new(&snapshot, &mismatched_context, &projection, &parameters()),
+            Err(StateTreeError::GraphicalShellContextMismatch)
         );
     }
 
@@ -1253,17 +1638,30 @@ mod tests {
         let snapshot = snapshot();
         let projection = projection(&snapshot);
         let revision = crate::real_time::GraphRevision::new(7).unwrap();
-        let wrong_generation =
-            ParameterSnapshot::for_graph(43, revision, global(), parameters().patches()).unwrap();
+        let wrong_generation = ParameterSnapshot::for_graph(
+            43,
+            revision,
+            global(),
+            MixerState::new(*parameters().mixer_tracks()),
+            parameters().patches(),
+        )
+        .unwrap();
         assert_eq!(
-            StateTree::new(&snapshot, &projection, &wrong_generation),
+            state_tree(&snapshot, &projection, &wrong_generation),
             Err(StateTreeError::GenerationMismatch)
         );
 
         let reversed = [parameters().patches()[1], parameters().patches()[0]];
-        let wrong_order = ParameterSnapshot::for_graph(42, revision, global(), &reversed).unwrap();
+        let wrong_order = ParameterSnapshot::for_graph(
+            42,
+            revision,
+            global(),
+            MixerState::new(*parameters().mixer_tracks()),
+            &reversed,
+        )
+        .unwrap();
         assert_eq!(
-            StateTree::new(&snapshot, &projection, &wrong_order),
+            state_tree(&snapshot, &projection, &wrong_order),
             Err(StateTreeError::PatchIdentityMismatch { index: 0 })
         );
 
@@ -1271,13 +1669,19 @@ mod tests {
             parameters().patches()[0],
             RtPatchParameters::new(
                 PatchId::new(9).unwrap(),
-                ChannelParameters::new(-10.0, 0.5, 0.4, 0.3).unwrap(),
+                PatchOutput::new(MixerTrackId::new(9).unwrap(), -10.0).unwrap(),
             ),
         ];
-        let wrong_parameters =
-            ParameterSnapshot::for_graph(42, revision, global(), &wrong_values).unwrap();
+        let wrong_parameters = ParameterSnapshot::for_graph(
+            42,
+            revision,
+            global(),
+            MixerState::new(*parameters().mixer_tracks()),
+            &wrong_values,
+        )
+        .unwrap();
         assert_eq!(
-            StateTree::new(&snapshot, &projection, &wrong_parameters),
+            state_tree(&snapshot, &projection, &wrong_parameters),
             Err(StateTreeError::PatchParametersMismatch { index: 1 })
         );
     }
@@ -1287,7 +1691,7 @@ mod tests {
         let malformed = StateSnapshot::new("not-json");
         let malformed_projection = projection(&malformed);
         assert_eq!(
-            StateTree::new(&malformed, &malformed_projection, &parameters()),
+            state_tree(&malformed, &malformed_projection, &parameters()),
             Err(StateTreeError::StateDeserialization)
         );
 
@@ -1299,11 +1703,12 @@ mod tests {
             42,
             crate::real_time::GraphRevision::new(7).unwrap(),
             different_global,
+            MixerState::new(*parameters().mixer_tracks()),
             parameters().patches(),
         )
         .unwrap();
         assert_eq!(
-            StateTree::new(&snapshot, &projection, &wrong_global),
+            state_tree(&snapshot, &projection, &wrong_global),
             Err(StateTreeError::GlobalParametersMismatch)
         );
     }

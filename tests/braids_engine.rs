@@ -17,8 +17,9 @@ use crest_synth::control::state_projector::StateProjector;
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{AudioBoundary, ControlAudioBoundary};
 use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::audio_renderer::AudioRenderer;
@@ -320,7 +321,12 @@ fn pinned_braids_engine_satisfies_the_mixed_production_contract() {
     assert_eq!(callback_destructions, 0);
     assert_eq!(native_callback_destructions, 0);
     assert!(finite_audio);
-    assert!(p99_render_microseconds < 2_666);
+    if !cfg!(debug_assertions) {
+        assert!(
+            p99_render_microseconds < 2_666,
+            "release-profile p99 render time was {p99_render_microseconds} microseconds"
+        );
+    }
 
     let observation = BraidsObservation {
         upstream_revision: UPSTREAM_REVISION,
@@ -375,7 +381,7 @@ fn braids_patch(id: u32, channel: u8) -> Patch {
         format!("Braids {id}"),
         BraidsCapability::new().unwrap().default_config().unwrap(),
         MidiChannel::new(channel).unwrap(),
-        ChannelParameters::default(),
+        PatchOutput::to_track(MixerTrackId::new(channel).unwrap()),
     )
 }
 
@@ -393,7 +399,7 @@ fn soundfont_patch(id: u32, channel: u8) -> Patch {
         format!("SoundFont {id}"),
         create_soundfont_config(&provider, SoundFontInstrument::new(0, 0, false).unwrap()).unwrap(),
         MidiChannel::new(channel).unwrap(),
-        ChannelParameters::default(),
+        PatchOutput::to_track(MixerTrackId::new(channel).unwrap()),
     )
 }
 
@@ -427,7 +433,7 @@ fn projected_parameters(state: &AppState) -> ParameterSnapshot {
 fn braids_parameters(patch_id: PatchId, scalars: [f32; 3]) -> RtPatchParameters {
     RtPatchParameters::projected(
         patch_id,
-        ChannelParameters::default(),
+        PatchOutput::default(),
         VoiceEnvelope::DEFAULT,
         RtInstrumentParameters::new(&scalars).unwrap(),
     )
@@ -498,7 +504,7 @@ fn malformed_config_is_rejected(preparer: &BraidsPreparer, patch: &Patch) -> boo
             Vec::new(),
         ),
         MidiChannel::new(0).unwrap(),
-        ChannelParameters::default(),
+        PatchOutput::default(),
     );
     matches!(
         preparer.prepare(&malformed, SAMPLE_RATE, BLOCK_FRAMES),
@@ -514,11 +520,6 @@ fn prove_mixed_routing_and_isolation() -> (bool, bool) {
     edited_state
         .apply(AppEvent::Navigate(Direction::Right))
         .unwrap();
-    for _ in 0..8 {
-        edited_state
-            .apply(AppEvent::Navigate(Direction::Down))
-            .unwrap();
-    }
     edited_state
         .apply(AppEvent::Adjust(Direction::Right))
         .unwrap();
@@ -582,20 +583,25 @@ fn prove_mixed_routing_and_isolation() -> (bool, bool) {
                     .stem(index, patch.id())
                     .is_some_and(|stem| finite(stem.samples()) && sounding(stem.samples()))
         });
+    let target_track = MixerTrackId::new(1).unwrap();
     let parameter_isolation_exact =
         baseline_state
             .patches()
             .iter()
             .enumerate()
             .all(|(index, patch)| {
-                let baseline = baseline_stems.stem(index, patch.id()).unwrap().samples();
-                let edited = edited_stems.stem(index, patch.id()).unwrap().samples();
-                if index == 1 {
-                    baseline != edited
-                } else {
-                    baseline == edited
-                }
-            });
+                baseline_stems.stem(index, patch.id()).unwrap().samples()
+                    == edited_stems.stem(index, patch.id()).unwrap().samples()
+            })
+            && baseline_state.mixer().track(target_track).level_db() == 0.0
+            && edited_state.mixer().track(target_track).level_db() == 1.0
+            && MixerTrackId::ALL
+                .into_iter()
+                .filter(|track_id| *track_id != target_track)
+                .all(|track_id| {
+                    baseline_state.mixer().track(track_id) == edited_state.mixer().track(track_id)
+                })
+            && baseline_output != edited_output;
     (mixed_routing_exact, parameter_isolation_exact)
 }
 

@@ -10,14 +10,18 @@ use crate::control::state_projector::{StateProjectionError, StateProjector};
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::channel_parameters::ChannelParameters;
 use crate::mixer::global_parameters::GlobalParameters;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::mixer_track_parameters::MixerTrackParameters;
 use crate::real_time::audio_boundary::{
     AudioBoundary, AudioThreadBoundary, BoundaryFull, ControlAudioBoundary,
 };
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation::{AudioObservation, ControlAudioObservation};
 use crate::real_time::audio_renderer::AudioRenderer;
+use crate::real_time::callback_safety::{
+    callback_safety_snapshot, reset_callback_safety_counts, CallbackSafetySnapshot,
+};
 use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
 use crate::real_time::prepared_graph::PreparedGraph;
@@ -26,7 +30,8 @@ use crate::real_time::structural_graph_boundary::{
     AudioStructuralGraphBoundary, StructuralGraphBoundary,
 };
 use crate::shell::app_window::{
-    AppInputCallback, AppWindow, ProjectionCallback, TickCallback, WindowError,
+    AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
+    ProjectionCallback, TickCallback, WindowError,
 };
 use crate::shell::audio_device_status::{AudioDeviceStatusBoundary, AudioDeviceStatusReader};
 use crate::shell::audio_output::{
@@ -52,7 +57,7 @@ use crate::testing::midi_event_source::MidiEventSource;
 use crate::testing::{
     DeterministicGraphPreparationHandle, DeterministicGraphPreparationWorker, LiveCheckpoint,
     LiveDemoError, LiveDemoReport, LiveDemoRunner, LiveDemoScene, LiveDemoSceneError,
-    RuntimeAudioWitness,
+    LiveMixerRoutingEvidence, RuntimeAudioWitness, SixteenTrackMixerRoutingObservation,
 };
 use core::fmt;
 use serde::Serialize;
@@ -158,6 +163,77 @@ pub struct SmokeObservation {
     pub post_boundary_edit_accepted: bool,
 }
 
+/// Measured Phase One shell and teardown evidence emitted after live ownership ends.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GraphicalShellLiveObservation {
+    context_line_visible: bool,
+    identity_header_visible: bool,
+    main_workspace_visible: bool,
+    persistent_side_region_visible: bool,
+    footer_visible: bool,
+    patch_context_observed: bool,
+    mixer_context_observed: bool,
+    #[serde(flatten)]
+    mixer_routing: LiveMixerRoutingEvidence,
+    physical_audio_nonzero: bool,
+    active_notes_after_cleanup: u32,
+    window_closed: bool,
+    stream_released: bool,
+    owned_graphs_remaining: usize,
+}
+
+impl GraphicalShellLiveObservation {
+    fn from_completed_report(
+        report: &LiveDemoReport,
+        owned_graphs_remaining: usize,
+        callback_safety: CallbackSafetySnapshot,
+    ) -> Self {
+        let shell = report.shell_coverage();
+        Self {
+            context_line_visible: shell.context_line_visible(),
+            identity_header_visible: shell.identity_header_visible(),
+            main_workspace_visible: shell.main_workspace_visible(),
+            persistent_side_region_visible: shell.persistent_side_region_visible(),
+            footer_visible: shell.footer_visible(),
+            patch_context_observed: shell.patch_context_observed(),
+            mixer_context_observed: shell.mixer_context_observed(),
+            mixer_routing: report.mixer_routing().with_callback_safety(callback_safety),
+            physical_audio_nonzero: shell.physical_audio_nonzero(),
+            active_notes_after_cleanup: report.final_audio_observation().active_notes(),
+            window_closed: true,
+            stream_released: true,
+            owned_graphs_remaining,
+        }
+    }
+
+    pub const fn complete(&self) -> bool {
+        self.context_line_visible
+            && self.identity_header_visible
+            && self.main_workspace_visible
+            && self.persistent_side_region_visible
+            && self.footer_visible
+            && self.patch_context_observed
+            && self.mixer_context_observed
+            && self.mixer_routing.is_complete()
+            && self.physical_audio_nonzero
+            && self.active_notes_after_cleanup == 0
+            && self.window_closed
+            && self.stream_released
+            && self.owned_graphs_remaining == 0
+    }
+
+    pub const fn sixteen_track_mixer_routing(&self) -> SixteenTrackMixerRoutingObservation {
+        SixteenTrackMixerRoutingObservation::new(
+            self.mixer_routing,
+            self.physical_audio_nonzero,
+            self.active_notes_after_cleanup,
+            self.window_closed,
+            self.stream_released,
+            self.owned_graphs_remaining,
+        )
+    }
+}
+
 /// A startup, control, fixture, device, or window failure.
 #[derive(Debug)]
 pub enum ApplicationError {
@@ -176,6 +252,7 @@ pub enum ApplicationError {
     LiveDemoScene(LiveDemoSceneError),
     LiveDemo(LiveDemoError),
     LiveDemoIncomplete,
+    LiveGraphOwnershipIncomplete(usize),
     LiveEventLogCapacity,
     AudioOutput(AudioOutputError),
     AudioDeviceRuntime(AudioDeviceRuntimeError),
@@ -215,6 +292,10 @@ impl fmt::Display for ApplicationError {
             Self::LiveDemoIncomplete => {
                 formatter.write_str("live demo window closed before successful completion")
             }
+            Self::LiveGraphOwnershipIncomplete(remaining) => write!(
+                formatter,
+                "live teardown retained {remaining} structural graph obligations"
+            ),
             Self::LiveEventLogCapacity => formatter.write_str(
                 "declared live EventLog capacity is insufficient for the frozen scene and fixture allowance",
             ),
@@ -261,6 +342,7 @@ impl std::error::Error for ApplicationError {
             Self::Control(error) => Some(error),
             Self::AudioBoundaryFull(error) => Some(error),
             Self::LiveDemoIncomplete
+            | Self::LiveGraphOwnershipIncomplete(_)
             | Self::LiveEventLogCapacity
             | Self::ObservationOverflow
             | Self::ObservationUnavailable
@@ -682,7 +764,7 @@ where
     Output: AudioOutput,
 {
     /// Starts the fixed SoundFont, automatic fixture, renderer, device, and
-    /// single text window.
+    /// single graphical window.
     pub fn run(self) -> Result<(), ApplicationError> {
         let Self {
             boundary,
@@ -716,7 +798,7 @@ where
                 worker: StartupWorker::Threaded,
             },
         )?;
-        let (observation_writer, _observation_reader) = observation.into_handles();
+        let (observation_writer, observation_reader) = observation.into_handles();
         let mut renderer = AudioRenderer::with_observation(
             audio_boundary,
             structural_audio,
@@ -739,9 +821,12 @@ where
         }));
         let on_input = input_callback(Rc::clone(&runtime));
         let projection = projection_callback(Rc::clone(&runtime));
+        let audio_observation: AudioObservationCallback =
+            Box::new(move || observation_reader.read_latest_on_control());
         let on_tick = tick_callback(Rc::clone(&runtime));
+        let on_frame: FrameObservationCallback = Box::new(|_observation| {});
 
-        let window_result = window.run(on_input, projection, on_tick);
+        let window_result = window.run(on_input, projection, audio_observation, on_tick, on_frame);
         let runtime_error = runtime.borrow_mut().error.take();
         drop(audio_stream);
         let shutdown_result = runtime
@@ -763,7 +848,7 @@ where
         self,
         on_checkpoint: OnCheckpoint,
         on_complete: OnComplete,
-    ) -> Result<(), ApplicationError>
+    ) -> Result<GraphicalShellLiveObservation, ApplicationError>
     where
         OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
         OnComplete: FnOnce(&LiveDemoReport) + 'static,
@@ -821,7 +906,8 @@ where
             initial_graph.revision(),
             0,
             0,
-        );
+        )
+        .with_process_callback_safety();
         let mut renderer = AudioRenderer::with_observation(
             audio_boundary,
             structural_audio,
@@ -833,6 +919,7 @@ where
         let render: AudioRenderCallback = Box::new(move |buffer| renderer.render(buffer));
         let on_runtime_error: AudioDeviceStatusCallback =
             Box::new(move |error| device_status_writer.publish_from_callback(error));
+        reset_callback_safety_counts();
         let audio_stream: AudioStream = negotiated_audio.start(render, on_runtime_error)?;
         automatic.start()?;
 
@@ -848,9 +935,11 @@ where
         }));
         let on_input = live_input_sink();
         let projection = live_projection_callback(Rc::clone(&runtime));
+        let audio_observation = live_audio_observation_callback(Rc::clone(&runtime));
         let on_tick = live_tick_callback(Rc::clone(&runtime));
+        let on_frame = live_frame_callback(Rc::clone(&runtime));
 
-        let window_result = window.run(on_input, projection, on_tick);
+        let window_result = window.run(on_input, projection, audio_observation, on_tick, on_frame);
         let runtime_error = {
             let mut runtime = runtime.borrow_mut();
             if runtime.runner.completed_report().is_none() {
@@ -871,18 +960,39 @@ where
             }
             runtime.error.take()
         };
+        let completed_report = runtime.borrow().runner.completed_report().cloned();
         drop(audio_stream);
+        let callback_safety = callback_safety_snapshot();
         let shutdown_result = runtime
             .borrow_mut()
             .app_loop
             .shutdown_engine_selection_on_control();
+        let owned_graphs_remaining = runtime
+            .borrow()
+            .app_loop
+            .owned_structural_graphs_on_control();
+        drop(runtime);
         window_result?;
         shutdown_result?;
 
         if let Some(error) = runtime_error {
             return Err(error);
         }
-        Ok(())
+        if owned_graphs_remaining != 0 {
+            return Err(ApplicationError::LiveGraphOwnershipIncomplete(
+                owned_graphs_remaining,
+            ));
+        }
+        let report = completed_report.ok_or(ApplicationError::LiveDemoIncomplete)?;
+        let observation = GraphicalShellLiveObservation::from_completed_report(
+            &report,
+            owned_graphs_remaining,
+            callback_safety,
+        );
+        if !observation.complete() {
+            return Err(ApplicationError::LiveDemoIncomplete);
+        }
+        Ok(observation)
     }
 
     /// Runs the real initialized fixture through the deterministic normalized
@@ -1047,6 +1157,7 @@ where
             .find_map(|(index, patch)| {
                 let patch_id = patch.patch_id()?;
                 (patch_id.value() > 1
+                    && patch.output().track_id().index() > 0
                     && patch_audio
                         .stem(index, patch_id)
                         .is_some_and(|stem| stem_is_sounding(stem.samples())))
@@ -1056,6 +1167,7 @@ where
         let target_id = raw_parameters.patches()[target_index]
             .patch_id()
             .ok_or(ApplicationError::ObservationUnavailable)?;
+        let target_track = raw_parameters.patches()[target_index].output().track_id();
         let unedited_index = raw_parameters
             .patches()
             .iter()
@@ -1063,6 +1175,7 @@ where
             .find_map(|(index, patch)| {
                 let patch_id = patch.patch_id()?;
                 (index != target_index
+                    && patch.output().track_id() != target_track
                     && patch_audio
                         .stem(index, patch_id)
                         .is_some_and(|stem| stem_is_sounding(stem.samples())))
@@ -1086,7 +1199,7 @@ where
             && stem_is_sounding(&raw_target_stem)
             && stem_is_sounding(&raw_unedited_stem);
 
-        for _ in 0..target_index {
+        for _ in 0..target_track.index() {
             let result = app_loop.dispatch(AppEvent::Navigate(Direction::Right))?;
             if let Some(error) = result.boundary_full() {
                 return Err(error.into());
@@ -1108,12 +1221,12 @@ where
         let current_text = app_loop.current_text();
 
         let one_value_changed = main_result.is_some()
-            && exactly_target_gain_changed(&before_parameters, &after_parameters, target_id);
+            && exactly_target_level_changed(&before_parameters, &after_parameters, target_track);
         let state_roundtrip = main_result.as_ref().is_some_and(|result| {
             snapshot_matches_parameters(
                 result.snapshot().json(),
                 &after_parameters,
-                target_id,
+                target_track,
                 result.accepted().generation(),
             )
         });
@@ -1121,17 +1234,16 @@ where
             current_text.state_hash() == result.snapshot().hash()
                 && current_text
                     .body()
-                    .contains(&format!("PATCH id={}", target_id.value()))
-                && after_parameters.patch(target_id).is_some_and(|patch| {
-                    current_text
-                        .body()
-                        .contains(&format!("> gainDb={}", patch.parameters().gain_db()))
-                })
+                    .contains(&format!("TRACK {target_track}"))
+                && current_text.body().contains(&format!(
+                    "> levelDb={}",
+                    after_parameters.mixer_track(target_track).level_db()
+                ))
         });
         let parameter_published = main_result.as_ref().is_some_and(|result| {
             result.audio_effects_published()
                 && after_parameters.generation() == result.accepted().generation()
-                && exactly_target_gain_changed(&before_parameters, &after_parameters, target_id)
+                && exactly_target_level_changed(&before_parameters, &after_parameters, target_track)
         });
 
         let target_before = processed_patch_stem(
@@ -1139,6 +1251,7 @@ where
             before_parameters
                 .patch(target_id)
                 .ok_or(ApplicationError::ObservationUnavailable)?,
+            before_parameters.mixer_track(target_track),
             before_parameters.global(),
         );
         let target_after = processed_patch_stem(
@@ -1146,6 +1259,7 @@ where
             after_parameters
                 .patch(target_id)
                 .ok_or(ApplicationError::ObservationUnavailable)?,
+            after_parameters.mixer_track(target_track),
             after_parameters.global(),
         );
         let unedited_before = processed_patch_stem(
@@ -1153,6 +1267,13 @@ where
             before_parameters
                 .patch(unedited_id)
                 .ok_or(ApplicationError::ObservationUnavailable)?,
+            before_parameters.mixer_track(
+                before_parameters
+                    .patch(unedited_id)
+                    .ok_or(ApplicationError::ObservationUnavailable)?
+                    .output()
+                    .track_id(),
+            ),
             before_parameters.global(),
         );
         let unedited_after = processed_patch_stem(
@@ -1160,6 +1281,13 @@ where
             after_parameters
                 .patch(unedited_id)
                 .ok_or(ApplicationError::ObservationUnavailable)?,
+            after_parameters.mixer_track(
+                after_parameters
+                    .patch(unedited_id)
+                    .ok_or(ApplicationError::ObservationUnavailable)?
+                    .output()
+                    .track_id(),
+            ),
             after_parameters.global(),
         );
         let edited_patch_audio_changed =
@@ -1261,13 +1389,7 @@ fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, Applic
                 patch.instrument_config().clone(),
                 MidiChannel::new(patch.channel())
                     .expect("an accepted fixture record contains a valid MIDI channel"),
-                ChannelParameters::new(
-                    patch.gain_db(),
-                    patch.pan(),
-                    patch.reverb_send(),
-                    patch.delay_send(),
-                )
-                .expect("an accepted fixture record contains valid channel parameters"),
+                patch.output(),
             )
             .with_envelope(*patch.envelope())
             .with_post_effects(patch.post_effects().to_vec())
@@ -1365,33 +1487,31 @@ fn stem_is_sounding(samples: &[f32]) -> bool {
     samples.iter().any(|sample| sample.abs() > 0.000_001)
 }
 
-fn exactly_target_gain_changed(
+fn exactly_target_level_changed(
     before: &ParameterSnapshot,
     after: &ParameterSnapshot,
-    target_id: PatchId,
+    target_track: MixerTrackId,
 ) -> bool {
-    if before.patch_count() != after.patch_count() || before.global() != after.global() {
+    if before.patch_count() != after.patch_count()
+        || before.global() != after.global()
+        || before.patches() != after.patches()
+    {
         return false;
     }
 
     let mut changed_values = 0_usize;
-    for (before_patch, after_patch) in before.patches().iter().zip(after.patches()) {
-        if before_patch.patch_id() != after_patch.patch_id() {
-            return false;
-        }
-        let Some(patch_id) = before_patch.patch_id() else {
-            return false;
-        };
-        let before_values = before_patch.parameters();
-        let after_values = after_patch.parameters();
-
-        if before_values.gain_db() != after_values.gain_db() {
-            if patch_id != target_id {
+    for track_id in MixerTrackId::ALL {
+        let before_values = before.mixer_track(track_id);
+        let after_values = after.mixer_track(track_id);
+        if before_values.level_db() != after_values.level_db() {
+            if track_id != target_track {
                 return false;
             }
             changed_values += 1;
         }
         if before_values.pan() != after_values.pan()
+            || before_values.mute() != after_values.mute()
+            || before_values.solo() != after_values.solo()
             || before_values.reverb_send() != after_values.reverb_send()
             || before_values.delay_send() != after_values.delay_send()
         {
@@ -1405,7 +1525,7 @@ fn exactly_target_gain_changed(
 fn snapshot_matches_parameters(
     json: &str,
     parameters: &ParameterSnapshot,
-    target_id: PatchId,
+    target_track: MixerTrackId,
     accepted_generation: u64,
 ) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
@@ -1417,37 +1537,28 @@ fn snapshot_matches_parameters(
         return false;
     }
 
-    let Some(expected_gain) = parameters
-        .patch(target_id)
-        .map(|patch| f64::from(patch.parameters().gain_db()))
-    else {
-        return false;
-    };
+    let expected_level = f64::from(parameters.mixer_track(target_track).level_db());
     value
-        .get("patches")
+        .get("mixer")
+        .and_then(|mixer| mixer.get("tracks"))
         .and_then(serde_json::Value::as_array)
-        .and_then(|patches| {
-            patches.iter().find(|patch| {
-                patch.get("id").and_then(serde_json::Value::as_u64)
-                    == Some(u64::from(target_id.value()))
-            })
-        })
-        .and_then(|patch| patch.get("gainDb"))
+        .and_then(|tracks| tracks.get(target_track.index()))
+        .and_then(|track| track.get("levelDb"))
         .and_then(serde_json::Value::as_f64)
-        .is_some_and(|gain| (gain - expected_gain).abs() < f64::EPSILON)
+        .is_some_and(|level| (level - expected_level).abs() < f64::EPSILON)
 }
 
 fn processed_patch_stem(
     raw: &[f32],
     patch: &RtPatchParameters,
+    track: &MixerTrackParameters,
     global: &GlobalParameters,
 ) -> Vec<f32> {
-    let channel: &ChannelParameters = patch.parameters();
-    let gain = 10.0_f32.powf(channel.gain_db() / 20.0);
-    let (left_pan, right_pan) = if channel.pan() < 0.0 {
-        (1.0, 1.0 + channel.pan())
+    let gain = 10.0_f32.powf((patch.output().trim_gain_db() + track.level_db()) / 20.0);
+    let (left_pan, right_pan) = if track.pan() < 0.0 {
+        (1.0, 1.0 + track.pan())
     } else {
-        (1.0 - channel.pan(), 1.0)
+        (1.0 - track.pan(), 1.0)
     };
     let master_gain = 10.0_f32.powf(global.master_gain_db() / 20.0);
     let mut observed = raw.to_vec();
@@ -1540,7 +1651,10 @@ where
             return;
         }
 
-        match runtime.app_loop.dispatch_from(event, EventSource::Keyboard) {
+        match runtime
+            .app_loop
+            .dispatch_action_from(event, EventSource::Keyboard)
+        {
             Ok(result) => {
                 if let Some(error) = result.boundary_full() {
                     runtime.record_error(error.into());
@@ -1558,7 +1672,7 @@ where
     Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
 {
-    Box::new(move || runtime.borrow().app_loop.current_text())
+    Box::new(move || runtime.borrow().app_loop.current_graphical_shell())
 }
 
 fn tick_callback<Source, Boundary>(
@@ -1629,7 +1743,20 @@ where
     OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
     OnComplete: FnOnce(&LiveDemoReport) + 'static,
 {
-    Box::new(move || runtime.borrow().app_loop.current_text())
+    Box::new(move || runtime.borrow().app_loop.current_graphical_shell())
+}
+
+fn live_audio_observation_callback<Source, Boundary, Observation, OnCheckpoint, OnComplete>(
+    runtime: SharedLiveRuntime<Source, Boundary, Observation, OnCheckpoint, OnComplete>,
+) -> AudioObservationCallback
+where
+    Source: MidiEventSource + 'static,
+    Boundary: ControlAudioBoundary + 'static,
+    Observation: ControlAudioObservation + 'static,
+    OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
+    OnComplete: FnOnce(&LiveDemoReport) + 'static,
+{
+    Box::new(move || runtime.borrow().runner.latest_audio_observation())
 }
 
 fn live_tick_callback<Source, Boundary, Observation, OnCheckpoint, OnComplete>(
@@ -1690,28 +1817,63 @@ where
     })
 }
 
+fn live_frame_callback<Source, Boundary, Observation, OnCheckpoint, OnComplete>(
+    runtime: SharedLiveRuntime<Source, Boundary, Observation, OnCheckpoint, OnComplete>,
+) -> FrameObservationCallback
+where
+    Source: MidiEventSource + 'static,
+    Boundary: ControlAudioBoundary + 'static,
+    Observation: ControlAudioObservation + 'static,
+    OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
+    OnComplete: FnOnce(&LiveDemoReport) + 'static,
+{
+    Box::new(move |observation| {
+        let mut runtime = runtime.borrow_mut();
+        if runtime.error.is_some() || runtime.completion_emitted {
+            return;
+        }
+        if let Err(failure) = runtime.runner.observe_shell_frame(observation) {
+            runtime.error = Some(failure.into());
+        }
+    })
+}
+
 fn count_patch_rows(text: &str) -> usize {
     text.lines()
-        .filter(|line| line.starts_with("PATCH "))
-        .count()
+        .filter_map(|line| line.strip_prefix("TRACK "))
+        .filter_map(|line| line.split_once("routedPatches=[").map(|(_, routes)| routes))
+        .filter_map(|routes| routes.strip_suffix(']'))
+        .map(|routes| {
+            if routes.is_empty() {
+                0
+            } else {
+                routes.split(',').count()
+            }
+        })
+        .sum()
 }
 
 fn channels_are_round_robin(text: &str) -> bool {
-    let mut patch_count = 0_usize;
-    for line in text.lines().filter(|line| line.starts_with("PATCH ")) {
-        let Some(channel) = line
-            .split_whitespace()
-            .find_map(|field| field.strip_prefix("channel="))
-            .and_then(|value| value.parse::<usize>().ok())
+    let mut routed_patch_count = 0_usize;
+    for (track_index, line) in text
+        .lines()
+        .filter(|line| line.starts_with("TRACK T"))
+        .enumerate()
+    {
+        let Some(routes) = line
+            .split_once("routedPatches=[")
+            .and_then(|(_, routes)| routes.strip_suffix(']'))
         else {
             return false;
         };
-        if channel != patch_count % 16 {
-            return false;
+        if !routes.is_empty() {
+            if track_index != routed_patch_count || routes.split(',').count() != 1 {
+                return false;
+            }
+            routed_patch_count += 1;
         }
-        patch_count += 1;
     }
-    patch_count > 0
+    routed_patch_count > 0
 }
 
 #[cfg(test)]
@@ -1720,10 +1882,11 @@ mod tests {
     use crate::adapter::atomic_audio_observation::AtomicAudioObservation;
     use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
     use crate::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
-    use crate::control::app_event::{AppEvent, Direction};
+    use crate::control::app_event::Direction;
     use crate::control::event_record::EventSource;
-    use crate::control::text_projection::TextProjection;
-    use crate::control::PatchControlId;
+    use crate::control::{
+        GraphicalShellProjection, InteractionMode, PatchControlId, SemanticAction,
+    };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -1734,11 +1897,15 @@ mod tests {
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
     use crate::real_time::{GraphHandoffStatus, GraphRevision};
     use crate::shell::app_window::{
-        AppInputCallback, AppWindow, ProjectionCallback, TickCallback, WindowError,
+        AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
+        ProjectionCallback, TickCallback, WindowError,
     };
     use crate::shell::audio_output::{
         AudioDeviceConfig, AudioDeviceStatusCallback, AudioOutput, AudioOutputError,
         AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
+    };
+    use crate::shell::{
+        ShellFrameObservation, ShellRegionId, ShellRegionObservation, ShellRegionRect,
     };
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::{
@@ -1927,7 +2094,7 @@ mod tests {
     }
 
     struct TestWindow {
-        projection: Arc<Mutex<Option<TextProjection>>>,
+        projection: Arc<Mutex<Option<GraphicalShellProjection>>>,
     }
 
     struct EarlyCloseWindow;
@@ -1937,7 +2104,9 @@ mod tests {
             &self,
             _on_input: AppInputCallback,
             projection: ProjectionCallback,
+            _audio_observation: AudioObservationCallback,
             _on_tick: TickCallback,
+            _on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
             let _visible_initial_state = projection();
             Ok(())
@@ -1949,15 +2118,24 @@ mod tests {
             &self,
             mut on_input: AppInputCallback,
             projection: ProjectionCallback,
+            _audio_observation: AudioObservationCallback,
             mut on_tick: TickCallback,
+            _on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
-            on_input(AppEvent::Navigate(
+            on_input(SemanticAction::Navigate(
                 crate::control::app_event::Direction::Right,
             ));
-            on_input(AppEvent::Adjust(crate::control::app_event::Direction::Up));
-            on_input(AppEvent::Adjust(crate::control::app_event::Direction::Up));
-            on_input(AppEvent::Adjust(crate::control::app_event::Direction::Down));
-            on_input(AppEvent::Adjust(
+            on_input(SemanticAction::SetInteractionMode(InteractionMode::Adjust));
+            on_input(SemanticAction::Adjust(
+                crate::control::app_event::Direction::Up,
+            ));
+            on_input(SemanticAction::Adjust(
+                crate::control::app_event::Direction::Up,
+            ));
+            on_input(SemanticAction::Adjust(
+                crate::control::app_event::Direction::Down,
+            ));
+            on_input(SemanticAction::Adjust(
                 crate::control::app_event::Direction::Right,
             ));
             *self.projection.lock().unwrap() = Some(projection());
@@ -2076,7 +2254,9 @@ mod tests {
             &self,
             _on_input: AppInputCallback,
             _projection: ProjectionCallback,
+            _audio_observation: AudioObservationCallback,
             mut on_tick: TickCallback,
+            _on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
             for _ in 0..64 {
                 if !on_tick(self.tick_duration) {
@@ -2093,7 +2273,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct LiveWindowWitness {
         reports: Arc<Mutex<Vec<crate::testing::LiveDemoReport>>>,
-        final_projection: Arc<Mutex<Option<TextProjection>>>,
+        final_projection: Arc<Mutex<Option<GraphicalShellProjection>>>,
         input_injected: Arc<Mutex<bool>>,
         close_requests: Arc<Mutex<usize>>,
         post_completion_ticks: Arc<Mutex<usize>>,
@@ -2110,13 +2290,19 @@ mod tests {
             &self,
             mut on_input: AppInputCallback,
             projection: ProjectionCallback,
+            audio_observation: AudioObservationCallback,
             mut on_tick: TickCallback,
+            mut on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
             let mut last_rendered_projection = projection();
             let mut input_injected = false;
-            for _ in 0..800 {
+            // The cumulative live scene dwells on every Patch output, all 96
+            // fixed track controls, and every global before its structural
+            // sequence. Keep this deterministic harness comfortably above the
+            // descriptor-derived paced bound while still failing finitely.
+            for _ in 0..4_096 {
                 let reports_before = self.witness.reports.lock().unwrap().len();
-                let keep_open = on_tick(Duration::from_millis(100));
+                let keep_open = on_tick(Duration::from_millis(50));
                 let reports_after = self.witness.reports.lock().unwrap().len();
                 if !keep_open {
                     if reports_after > 0 {
@@ -2143,7 +2329,7 @@ mod tests {
                         let bus = self.bus.lock().unwrap();
                         (bus.parameters, bus.parameter_publications)
                     };
-                    on_input(AppEvent::Adjust(Direction::Down));
+                    on_input(SemanticAction::Adjust(Direction::Down));
                     let (parameters_after, publications_after) = {
                         let bus = self.bus.lock().unwrap();
                         (bus.parameters, bus.parameter_publications)
@@ -2167,9 +2353,11 @@ mod tests {
                     let mut buffer = [0.0_f32; 512];
                     render(&mut buffer);
                 }
+                let _latest_audio_observation = audio_observation();
                 std::thread::yield_now();
                 std::thread::sleep(Duration::from_millis(1));
                 last_rendered_projection = projection();
+                on_frame(shell_frame_observation(&last_rendered_projection));
             }
             Err(WindowError::new(
                 "live deterministic window did not observe completion",
@@ -2177,8 +2365,50 @@ mod tests {
         }
     }
 
+    fn shell_frame_observation(projection: &GraphicalShellProjection) -> ShellFrameObservation {
+        ShellFrameObservation::try_new_semantic(
+            1_920.0,
+            1_080.0,
+            projection.semantic_model(),
+            [
+                ShellRegionObservation::new(
+                    ShellRegionId::ContextLine,
+                    ShellRegionRect::new(0.0, 0.0, 1_920.0, 48.0),
+                    projection.context_line().context_label(),
+                ),
+                ShellRegionObservation::new(
+                    ShellRegionId::IdentityHeader,
+                    ShellRegionRect::new(0.0, 48.0, 1_920.0, 120.0),
+                    projection.identity_header().primary_label(),
+                ),
+                ShellRegionObservation::new(
+                    ShellRegionId::MainWorkspace,
+                    ShellRegionRect::new(0.0, 120.0, 1_500.0, 1_016.0),
+                    projection.workspace().main_label(),
+                ),
+                ShellRegionObservation::new(
+                    ShellRegionId::PersistentSideRegion,
+                    ShellRegionRect::new(1_500.0, 120.0, 1_920.0, 1_016.0),
+                    projection.workspace().side_label(),
+                ),
+                ShellRegionObservation::new(
+                    ShellRegionId::Footer,
+                    ShellRegionRect::new(0.0, 1_016.0, 1_920.0, 1_080.0),
+                    projection.footer().path_label(),
+                ),
+            ],
+        )
+        .unwrap()
+    }
+
     fn parameters() -> ParameterSnapshot {
-        ParameterSnapshot::new(0, ApplicationConfig::default().global_parameters(), &[]).unwrap()
+        ParameterSnapshot::new(
+            0,
+            ApplicationConfig::default().global_parameters(),
+            crate::mixer::mixer_state::MixerState::default(),
+            &[],
+        )
+        .unwrap()
     }
 
     fn parts() -> Vec<InstrumentPart> {
@@ -2254,7 +2484,7 @@ mod tests {
     fn application(
         due: Vec<TargetedMidiEvent>,
         engine_state: Arc<Mutex<EngineState>>,
-        projection: Arc<Mutex<Option<TextProjection>>>,
+        projection: Arc<Mutex<Option<GraphicalShellProjection>>>,
     ) -> TestApplication<TestWindow, TestOutput> {
         StandaloneApplication::new_with_effects(
             TestBoundary {
@@ -2415,9 +2645,9 @@ mod tests {
         assert_eq!(engine_state.preparer_instances, 2);
         assert_eq!(engine_state.prepared, 2);
         let projection = projection.lock().unwrap();
-        let body = projection.as_ref().unwrap().body();
-        assert!(body.contains("PATCH id=2"));
-        assert!(body.contains("> gainDb=1"));
+        let body = projection.as_ref().unwrap().workspace().diagnostic().body();
+        assert!(body.contains("TRACK T01 routedPatches=[02:"));
+        assert!(body.contains("> levelDb=1"));
     }
 
     #[test]
@@ -2455,7 +2685,7 @@ mod tests {
         let checkpoints_for_callback = Arc::clone(&checkpoints);
         let reports_for_callback = Arc::clone(&witness.reports);
 
-        live_application(
+        let teardown = live_application(
             vec![TargetedMidiEvent::new(0, message())],
             Arc::clone(&engine_state),
             witness.clone(),
@@ -2468,8 +2698,35 @@ mod tests {
                     .push(checkpoint.clone())
             },
             move |report| reports_for_callback.lock().unwrap().push(report.clone()),
-        )
-        .unwrap();
+        );
+        if let Err(error) = &teardown {
+            let reports = witness.reports.lock().unwrap();
+            panic!(
+                "live composition failed: {error:?}; report={}",
+                reports
+                    .first()
+                    .map(crate::testing::LiveDemoReport::summary)
+                    .unwrap_or("<none>")
+            );
+        }
+        let teardown = teardown.unwrap();
+        assert!(teardown.complete());
+        let teardown_json = serde_json::to_value(&teardown).unwrap();
+        assert_eq!(teardown_json["window_closed"], true);
+        assert_eq!(teardown_json["stream_released"], true);
+        assert_eq!(teardown_json["owned_graphs_remaining"], 0);
+        assert_eq!(teardown_json["active_notes_after_cleanup"], 0);
+        let routing = teardown.sixteen_track_mixer_routing();
+        assert!(routing.is_complete());
+        let routing_json = serde_json::to_value(routing).unwrap();
+        assert_eq!(routing_json.as_object().unwrap().len(), 24);
+        assert_eq!(
+            routing_json["track_count"],
+            crate::mixer::mixer_track_id::MixerTrackId::COUNT
+        );
+        assert_eq!(routing_json["shared_track_patch_count"], 2);
+        assert_eq!(routing_json["physical_audio_nonzero"], true);
+        assert!(routing_json.get("context_line_visible").is_none());
 
         let reports = witness.reports.lock().unwrap();
         assert_eq!(reports.len(), 1);
@@ -2575,6 +2832,7 @@ mod tests {
             ApplicationError::LiveDemo(LiveDemoError::ProgressTimedOut {
                 stage: "parameter audio observation",
                 stalled_for,
+                ..
             }) if stalled_for >= LIVE_DEMO_NO_PROGRESS_TIMEOUT
         ));
         assert_eq!(*witness.reports.lock().unwrap(), 0);
@@ -2593,7 +2851,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            ApplicationError::LiveDemo(LiveDemoError::TotalTimeout { elapsed })
+            ApplicationError::LiveDemo(LiveDemoError::TotalTimeout { elapsed, .. })
                 if elapsed >= LIVE_DEMO_TOTAL_TIMEOUT
         ));
         assert_eq!(*witness.reports.lock().unwrap(), 0);
@@ -2633,7 +2891,7 @@ mod tests {
         assert_eq!(observation.callback_allocations, 0);
         assert_eq!(observation.callback_destructions, 0);
         assert_eq!(observation.patch_rows, 2);
-        assert_eq!(observation.channel_separators, 2);
+        assert_eq!(observation.channel_separators, 16);
         assert!(observation.round_robin_channels);
         assert!(observation.distinct_patch_channels);
         assert!(observation.distinct_patch_stems);

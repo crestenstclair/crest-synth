@@ -7,7 +7,8 @@ use crate::control::app_loop::AppLoop;
 use crate::control::app_state::EventRejection;
 use crate::control::event_record::EventSource;
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::channel_parameters::ChannelParameters;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::patch_output::PatchOutput;
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crate::synth::instrument_capability::{
     AssetAssignment, AssetKind, AssetReference, CapabilityDescriptor, CapabilityError,
@@ -289,7 +290,10 @@ where
                 part.name().to_owned(),
                 instrument_config,
                 part.assigned_channel(),
-                ChannelParameters::default(),
+                PatchOutput::to_track(
+                    MixerTrackId::new((position % MixerTrackId::COUNT) as u8)
+                        .expect("fixture position maps to a fixed mixer track"),
+                ),
             );
             if position == 0 {
                 if let (Some(provider), Some(descriptor)) =
@@ -688,8 +692,8 @@ mod tests {
         let parameters = observations.parameters.as_ref().unwrap();
         assert_eq!(parameters.generation(), 1);
         assert_eq!(parameters.patches().len(), 2);
-        assert!(app_loop.current_text().body().contains("name=Piano"));
-        assert!(app_loop.current_text().body().contains("name=Strings"));
+        assert!(app_loop.current_text().body().contains(":Piano"));
+        assert!(app_loop.current_text().body().contains(":Strings"));
     }
 
     #[test]

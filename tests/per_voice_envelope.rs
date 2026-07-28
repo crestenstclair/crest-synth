@@ -19,8 +19,11 @@ use crest_synth::control::{PatchControlId, TopLevelContext};
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::mixer_track_parameters::MixerTrackParameter;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{
     AudioBoundary, AudioThreadBoundary, ControlAudioBoundary,
 };
@@ -110,7 +113,7 @@ struct EnvelopeObservation {
     patch_control_cases_exercised: usize,
     patch_focus_order_exact: bool,
     fine_coarse_adjustment_exact: bool,
-    mixer_patch_mutation_shared: bool,
+    mixer_excludes_patch_envelope: bool,
     scalar_only_publication: bool,
     target_patch_isolated: bool,
     soundfont_synthesizers_per_patch: usize,
@@ -147,14 +150,14 @@ fn common_adsr_is_per_voice_in_both_production_engines() {
         patch_control_cases_exercised,
         patch_focus_order_exact,
         fine_coarse_adjustment_exact,
-        mixer_patch_mutation_shared,
+        mixer_excludes_patch_envelope,
         scalar_only_publication,
         target_patch_isolated,
     ) = prove_patch_control_contract();
     assert_eq!(patch_control_cases_exercised, 4);
     assert!(patch_focus_order_exact);
     assert!(fine_coarse_adjustment_exact);
-    assert!(mixer_patch_mutation_shared);
+    assert!(mixer_excludes_patch_envelope);
     assert!(scalar_only_publication);
     assert!(target_patch_isolated);
 
@@ -197,7 +200,7 @@ fn common_adsr_is_per_voice_in_both_production_engines() {
         patch_control_cases_exercised,
         patch_focus_order_exact,
         fine_coarse_adjustment_exact,
-        mixer_patch_mutation_shared,
+        mixer_excludes_patch_envelope,
         scalar_only_publication,
         target_patch_isolated,
         soundfont_synthesizers_per_patch,
@@ -230,7 +233,7 @@ fn soundfont_patch(id: u32, channel: u8) -> Patch {
         format!("SoundFont {id}"),
         create_soundfont_config(&provider, SoundFontInstrument::new(0, 0, false).unwrap()).unwrap(),
         MidiChannel::new(channel).unwrap(),
-        ChannelParameters::default(),
+        PatchOutput::to_track(MixerTrackId::new(channel).unwrap()),
     )
 }
 
@@ -240,7 +243,7 @@ fn braids_patch(id: u32, channel: u8) -> Patch {
         format!("Braids {id}"),
         BraidsCapability::new().unwrap().default_config().unwrap(),
         MidiChannel::new(channel).unwrap(),
-        ChannelParameters::default(),
+        PatchOutput::to_track(MixerTrackId::new(channel).unwrap()),
     )
 }
 
@@ -250,7 +253,7 @@ fn parameters(patch: &Patch, envelope: VoiceEnvelope) -> RtPatchParameters {
         BRAIDS_CAPABILITY_ID => RtInstrumentParameters::new(&[0.0, 0.5, 0.5]).unwrap(),
         capability => panic!("unexpected production capability {capability}"),
     };
-    RtPatchParameters::projected(patch.id(), *patch.parameters(), envelope, instrument)
+    RtPatchParameters::projected(patch.id(), patch.output(), envelope, instrument)
 }
 
 fn note(patch: &Patch, kind: MidiMessageKind, key: u8, velocity: u8) -> MidiMessage {
@@ -437,7 +440,14 @@ fn prove_one_soundfont_synthesizer_per_patch(
 
 fn prove_state_text_snapshot_projection() -> bool {
     let registry = production_capability_registry().unwrap();
-    let initial = ParameterSnapshot::for_graph(0, GraphRevision::INITIAL, globals(), &[]).unwrap();
+    let initial = ParameterSnapshot::for_graph(
+        0,
+        GraphRevision::INITIAL,
+        globals(),
+        MixerState::default(),
+        &[],
+    )
+    .unwrap();
     let boundary = LockFreeAudioBoundary::new(16, initial);
     let (control, _audio) = boundary.into_handles();
     let mut app_loop = AppLoop::new(
@@ -451,11 +461,12 @@ fn prove_state_text_snapshot_projection() -> bool {
     app_loop
         .dispatch(AppEvent::InstallPatches(vec![soundfont.clone(), braids]))
         .unwrap();
-    for _ in 0..4 {
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Down))
-            .unwrap();
-    }
+    app_loop
+        .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    app_loop
+        .dispatch(AppEvent::Navigate(Direction::Down))
+        .unwrap();
     app_loop.dispatch(AppEvent::Adjust(Direction::Up)).unwrap();
 
     let expected = VoiceEnvelope::new(100.0, 0.0, 1.0, 0.0).unwrap();
@@ -475,13 +486,19 @@ fn prove_state_text_snapshot_projection() -> bool {
             .current_parameters()
             .patch(soundfont.id())
             .is_some_and(|parameters| parameters.envelope() == &expected)
-        && tree_json["generation"] == 6
-        && tree_json["parameters"]["generation"] == 6
-        && tree_json["interaction"]["mixerSelection"]["patchIndex"] == 0
-        && tree_json["interaction"]["mixerSelection"]["parameterIndex"] == 4
+        && tree_json["generation"] == 4
+        && tree_json["parameters"]["generation"] == 4
+        && tree_json["interaction"]["activeFocus"]["patchId"] == soundfont.id().value()
+        && tree_json["interaction"]["activeFocus"]["controlId"]["kind"] == "patch"
+        && tree_json["interaction"]["activeFocus"]["controlId"]["id"]
+            == "patch.envelope.attackMilliseconds"
         && tree_json["patches"][0]["envelope"] == expected_json
         && tree_json["parameters"]["patches"][0]["envelope"] == expected_json
-        && selected == Some("> attackMilliseconds=100")
+        && selected.is_some_and(|line| {
+            line.starts_with("> ENVELOPE ")
+                && line.contains("patch.envelope.attackMilliseconds")
+                && line.contains("\"value\":100.0")
+        })
         && tree_json["projection"]["body"].as_str() == Some(text.body())
         && tree_json["projection"]["selectedLine"].as_u64() == Some(text.selected_line() as u64)
         && tree_json["projection"]["stateHash"].as_str() == Some(text.state_hash())
@@ -501,7 +518,14 @@ fn prove_patch_control_contract() -> (usize, bool, bool, bool, bool, bool) {
         GraphRevision::INITIAL,
     );
     state.apply(AppEvent::InstallPatches(patches)).unwrap();
-    let initial = ParameterSnapshot::for_graph(0, GraphRevision::INITIAL, globals(), &[]).unwrap();
+    let initial = ParameterSnapshot::for_graph(
+        0,
+        GraphRevision::INITIAL,
+        globals(),
+        MixerState::default(),
+        &[],
+    )
+    .unwrap();
     let boundary = LockFreeAudioBoundary::new(64, initial);
     let (control, mut audio) = boundary.into_handles();
     let mut app_loop = AppLoop::new(
@@ -582,8 +606,8 @@ fn prove_patch_control_contract() -> (usize, bool, bool, bool, bool, bool) {
     let patch_focus_order_exact = focus_order == PatchControlId::surface_descriptor();
     let target_patch_isolated = app_loop.patches()[1] == comparison;
 
-    let mut mixer_patch_mutation_shared = true;
-    for (parameter_index, descriptor) in VoiceEnvelope::surface_descriptor().iter().enumerate() {
+    let mut mixer_excludes_patch_envelope = true;
+    for (parameter_index, parameter) in MixerTrackParameter::MAIN.iter().enumerate() {
         let make_state = || {
             let mut state = AppState::new(production_capability_registry().unwrap(), globals());
             state
@@ -596,32 +620,39 @@ fn prove_patch_control_contract() -> (usize, bool, bool, bool, bool, bool) {
         };
 
         let mut mixer = make_state();
-        for _ in 0..(ChannelParameters::surface_descriptor().len() + parameter_index) {
+        let baseline_patches = mixer.patches().to_vec();
+        let baseline_mixer = *mixer.mixer();
+        for _ in 0..parameter_index {
             mixer.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         }
         mixer.apply(AppEvent::Adjust(Direction::Right)).unwrap();
 
-        let mut patch = make_state();
-        patch
-            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
-            .unwrap();
-        for _ in 0..=parameter_index {
-            patch.apply(AppEvent::Navigate(Direction::Down)).unwrap();
-        }
-        patch.apply(AppEvent::Adjust(Direction::Right)).unwrap();
-
-        mixer_patch_mutation_shared &= mixer.patches()[0].envelope()
-            == patch.patches()[0].envelope()
-            && mixer.patches()[0].envelope().value(descriptor.parameter())
-                == envelope.value(descriptor.parameter()) + descriptor.fine_step()
-            && mixer.patches()[1] == patch.patches()[1];
+        mixer_excludes_patch_envelope &= mixer.patches() == baseline_patches
+            && mixer.mixer().track(MixerTrackId::default())
+                != baseline_mixer.track(MixerTrackId::default())
+            && MixerTrackId::ALL
+                .into_iter()
+                .skip(1)
+                .all(|track_id| mixer.mixer().track(track_id) == baseline_mixer.track(track_id))
+            && mixer
+                .mixer()
+                .track(MixerTrackId::default())
+                .scalar_value(*parameter)
+                .or_else(|| {
+                    mixer
+                        .mixer()
+                        .track(MixerTrackId::default())
+                        .toggle_value(*parameter)
+                        .map(|value| if value { 1.0 } else { 0.0 })
+                })
+                .is_some();
     }
 
     (
         patch_control_cases_exercised,
         patch_focus_order_exact,
         fine_coarse_adjustment_exact,
-        mixer_patch_mutation_shared,
+        mixer_excludes_patch_envelope,
         scalar_only_publication,
         target_patch_isolated,
     )

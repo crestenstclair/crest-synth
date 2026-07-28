@@ -92,6 +92,7 @@ mod tests {
         ParameterSnapshot::new(
             generation,
             GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap(),
+            crate::mixer::mixer_state::MixerState::default(),
             &[],
         )
         .unwrap()

@@ -1,3 +1,4 @@
+use crate::mixer::patch_output::PatchOutputParameter;
 use crate::synth::{
     CapabilityDescriptor, EffectCapabilityRegistry, EffectSlotId, InstrumentConfig, ParameterId,
     PatchInteraction, PostEffectConfig, VoiceEnvelope, VoiceEnvelopeParameter,
@@ -13,6 +14,7 @@ use std::cmp::Ordering;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum PatchControlId {
     Engine,
+    Output(PatchOutputParameter),
     Envelope(VoiceEnvelopeParameter),
     Capability(ParameterId),
     Effect(EffectSlotId, ParameterId),
@@ -31,9 +33,24 @@ impl PatchControlId {
         &Self::ALL
     }
 
+    pub const UTILITY: [Self; 2] = [
+        Self::Output(PatchOutputParameter::TrimGain),
+        Self::Output(PatchOutputParameter::OutputTrack),
+    ];
+
+    pub const fn utility_surface_descriptor() -> &'static [Self] {
+        &Self::UTILITY
+    }
+
     pub fn as_str(&self) -> Cow<'_, str> {
         match self {
             Self::Engine => Cow::Borrowed("patch.engine"),
+            Self::Output(PatchOutputParameter::TrimGain) => {
+                Cow::Borrowed("patch.output.trimGainDb")
+            }
+            Self::Output(PatchOutputParameter::OutputTrack) => {
+                Cow::Borrowed("patch.output.outputTrack")
+            }
             Self::Envelope(VoiceEnvelopeParameter::AttackMilliseconds) => {
                 Cow::Borrowed("patch.envelope.attackMilliseconds")
             }
@@ -124,6 +141,8 @@ impl FromStr for PatchControlId {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "patch.engine" => Ok(Self::Engine),
+            "patch.output.trimGainDb" => Ok(Self::Output(PatchOutputParameter::TrimGain)),
+            "patch.output.outputTrack" => Ok(Self::Output(PatchOutputParameter::OutputTrack)),
             "patch.envelope.attackMilliseconds" => {
                 Ok(Self::Envelope(VoiceEnvelopeParameter::AttackMilliseconds))
             }

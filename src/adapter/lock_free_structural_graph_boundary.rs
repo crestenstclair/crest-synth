@@ -211,8 +211,9 @@ mod tests {
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::graph_handoff_status::GraphHandoffStatus;
     use crate::real_time::graph_revision::GraphRevision;
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
@@ -299,7 +300,7 @@ mod tests {
             create_soundfont_config(&provider, SoundFontInstrument::new(0, 0, false).unwrap())
                 .unwrap(),
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(DropPreparer {
             capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
@@ -310,10 +311,8 @@ mod tests {
             revision.value(),
             revision,
             GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap(),
-            &[RtPatchParameters::new(
-                patch.id(),
-                ChannelParameters::default(),
-            )],
+            MixerState::default(),
+            &[RtPatchParameters::new(patch.id(), PatchOutput::default())],
         )
         .unwrap();
         PreparedGraphBuilder::new(&registry, &preparers)

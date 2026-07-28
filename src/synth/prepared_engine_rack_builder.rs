@@ -197,8 +197,10 @@ mod tests {
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters, MAX_PATCHES};
     use crate::real_time::patch_audio_block::PatchAudioBlock;
     use crate::real_time::prepared_engine_rack::{RackDispatchError, RackRenderError};
@@ -224,7 +226,7 @@ mod tests {
             )
             .unwrap(),
             MidiChannel::new((id % 16) as u8).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::to_track(MixerTrackId::new((id % 16) as u8).unwrap()),
         )
     }
 
@@ -404,15 +406,17 @@ mod tests {
                 .unwrap();
 
         let projected = [
-            RtPatchParameters::new(patches[0].id(), ChannelParameters::default()),
-            RtPatchParameters::new(patches[1].id(), ChannelParameters::default()),
+            RtPatchParameters::new(patches[0].id(), patches[0].output()),
+            RtPatchParameters::new(patches[1].id(), patches[1].output()),
         ];
         rack.dispatch(patches[1].id(), message(), &projected[1])
             .unwrap();
         assert_eq!(alpha_dispatches.load(Ordering::Relaxed), 0);
         assert_eq!(beta_dispatches.load(Ordering::Relaxed), 1);
 
-        let parameters = ParameterSnapshot::new(1, global_parameters(), &projected).unwrap();
+        let parameters =
+            ParameterSnapshot::new(1, global_parameters(), MixerState::default(), &projected)
+                .unwrap();
         let mut block = PatchAudioBlock::prepare(8).unwrap();
         block.begin_render(&parameters, 4).unwrap();
         rack.render(&mut block, &parameters).unwrap();
@@ -454,9 +458,10 @@ mod tests {
         let reversed = ParameterSnapshot::new(
             1,
             global_parameters(),
+            MixerState::default(),
             &[
-                RtPatchParameters::new(patches[1].id(), ChannelParameters::default()),
-                RtPatchParameters::new(patches[0].id(), ChannelParameters::default()),
+                RtPatchParameters::new(patches[1].id(), patches[1].output()),
+                RtPatchParameters::new(patches[0].id(), patches[0].output()),
             ],
         )
         .unwrap();
@@ -543,7 +548,7 @@ mod tests {
                 Vec::new(),
             ),
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         assert!(matches!(
             PreparedEngineRackBuilder::build(

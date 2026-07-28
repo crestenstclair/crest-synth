@@ -150,7 +150,16 @@ impl LiveDemoCheckpoint {
         if expected_transition.selected_line() != Some(record.selected_line())
             || expected_transition.selected_text() != Some(selected_text.as_str())
         {
-            return Err(LiveDemoCheckpointError::ExpectedProjectionMismatch);
+            return Err(LiveDemoCheckpointError::ExpectedProjectionMismatch {
+                step,
+                expected_line: expected_transition.selected_line(),
+                actual_line: record.selected_line(),
+                expected_text: expected_transition
+                    .selected_text()
+                    .unwrap_or("<missing>")
+                    .to_owned(),
+                actual_text: selected_text,
+            });
         }
         let patch_control_id = expected_transition.patch_control_id();
         if let Some(control) = patch_control_id.as_ref() {
@@ -158,7 +167,7 @@ impl LiveDemoCheckpoint {
             let tree: serde_json::Value = serde_json::from_str(state_tree.json())
                 .map_err(|_| LiveDemoCheckpointError::CanonicalProjectionMismatch)?;
             if tree
-                .pointer("/interaction/patchControlFocus")
+                .pointer("/interaction/activeFocus/controlId/id")
                 .and_then(serde_json::Value::as_str)
                 != Some(control_id.as_ref())
                 || tree
@@ -166,6 +175,7 @@ impl LiveDemoCheckpoint {
                     .and_then(serde_json::Value::as_str)
                     != Some(control_id.as_ref())
                 || !(selected_text.starts_with("> ENVELOPE ")
+                    || selected_text.starts_with("> OUTPUT ")
                     || selected_text.starts_with("> EFFECT_PARAMETER "))
             {
                 return Err(LiveDemoCheckpointError::CanonicalProjectionMismatch);
@@ -671,12 +681,18 @@ fn audio_fields_are_finite(observation: AudioObservationSnapshot) -> bool {
 }
 
 /// A falsifiable mismatch while constructing one live checkpoint.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LiveDemoCheckpointError {
     WrongEventSource,
     TransitionMismatch,
     CanonicalProjectionMismatch,
-    ExpectedProjectionMismatch,
+    ExpectedProjectionMismatch {
+        step: usize,
+        expected_line: Option<usize>,
+        actual_line: usize,
+        expected_text: String,
+        actual_text: String,
+    },
     MissingEditableParameter,
     ProjectedValueMismatch {
         expected: f32,
@@ -702,11 +718,20 @@ impl From<LiveDemoSceneError> for LiveDemoCheckpointError {
 
 impl fmt::Display for LiveDemoCheckpointError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
+        match self {
             Self::WrongEventSource => formatter.write_str("checkpoint event did not come from DemoScene"),
             Self::TransitionMismatch => formatter.write_str("actual transition differs from its pre-dispatch expectation"),
             Self::CanonicalProjectionMismatch => formatter.write_str("event record, StateTree, and TextProjection are not one canonical generation"),
-            Self::ExpectedProjectionMismatch => formatter.write_str("selected TextProjection differs from its pre-dispatch expectation"),
+            Self::ExpectedProjectionMismatch {
+                step,
+                expected_line,
+                actual_line,
+                expected_text,
+                actual_text,
+            } => write!(
+                formatter,
+                "selected TextProjection at live step {step} differs from its pre-dispatch expectation: line {actual_line} (expected {expected_line:?}), text {actual_text:?} (expected {expected_text:?})"
+            ),
             Self::MissingEditableParameter => formatter.write_str("parameter checkpoint has no editable parameter expectation"),
             Self::ProjectedValueMismatch { expected, state, parameters } => write!(formatter, "expected value {expected}, StateTree has {state}, ParameterSnapshot has {parameters}"),
             Self::StaleAudioObservation => formatter.write_str("audio observation did not advance after dispatch"),

@@ -1,5 +1,9 @@
-pub mod channel_parameters;
 pub mod global_effects_processor;
 pub mod global_parameters;
 pub mod mix_engine;
 pub mod mix_observation;
+pub mod mixer_state;
+pub mod mixer_track_id;
+pub mod mixer_track_parameters;
+pub mod patch_output;
+pub mod track_meter;

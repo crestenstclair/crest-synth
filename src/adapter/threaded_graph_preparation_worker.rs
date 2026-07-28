@@ -225,8 +225,9 @@ mod tests {
     };
     use crate::control::EngineSelectionRequestId;
     use crate::kernel::{MidiChannel, PatchId};
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::{
         GraphPreparationCorrelation, GraphPreparationRequest, GraphPreparationResult,
         GraphPreparationWorker, GraphRevision, WorkerBusyReason,
@@ -264,7 +265,7 @@ mod tests {
             "Threaded worker".to_owned(),
             config(source_capability_id),
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         )];
         let correlation = GraphPreparationCorrelation::new(
             EngineSelectionRequestId::new(request_id).unwrap(),
@@ -281,6 +282,7 @@ mod tests {
             config(target_capability_id),
             request_id + 10,
             globals(),
+            MixerState::default(),
             audio_config(),
             &registry,
         )

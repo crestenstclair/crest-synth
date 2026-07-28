@@ -1,6 +1,7 @@
 use crate::adapter::global_reverb_delay::GlobalReverbDelay;
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::mix_engine::MixEngine;
+use crate::real_time::callback_safety::record_callback_owned_destruction;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::parameter_snapshot::MAX_PATCHES;
@@ -199,6 +200,12 @@ impl PreparedGraph {
             &mut self.inner.patch_audio,
             &mut self.inner.mixer,
         )
+    }
+}
+
+impl Drop for PreparedGraph {
+    fn drop(&mut self) {
+        record_callback_owned_destruction();
     }
 }
 

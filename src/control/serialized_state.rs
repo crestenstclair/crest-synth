@@ -1,8 +1,10 @@
 use crate::control::app_state::AppState;
-use crate::control::interaction_state::{Selection, SelectionSection};
-use crate::control::top_level_context::TopLevelContext;
-use crate::control::{EngineSelectionStatus, PatchControlId};
+use crate::control::{EngineSelectionStatus, FocusPath, InteractionMode, ReturnPath};
 use crate::mixer::global_parameters::GlobalParameters;
+use crate::mixer::mixer_state::MixerState;
+use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::mixer_track_parameters::MixerTrackParameter;
+use crate::mixer::patch_output::PatchOutput;
 use crate::synth::instrument_capability::{CapabilityRegistry, InstrumentConfig};
 use crate::synth::patch::Patch;
 use crate::synth::voice_envelope::VoiceEnvelope;
@@ -24,6 +26,7 @@ pub(crate) struct SerializedState<'a> {
     pub(crate) effects: Cow<'a, EffectCapabilityRegistry>,
     #[serde(borrow)]
     pub(crate) patches: Vec<SerializedPatch<'a>>,
+    pub(crate) mixer: MixerState,
     pub(crate) global: SerializedGlobalParameters,
     #[serde(default)]
     pub(crate) interaction: SerializedInteractionState,
@@ -37,8 +40,9 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
             capabilities: Cow::Borrowed(state.capabilities()),
             effects: Cow::Borrowed(state.effects()),
             patches: state.patches().iter().map(SerializedPatch::from).collect(),
+            mixer: *state.mixer(),
             global: SerializedGlobalParameters::from(state.global()),
-            interaction: SerializedInteractionState::from(state.interaction()),
+            interaction: SerializedInteractionState::from_state(state),
             engine_selection: state.engine_selection().clone(),
         }
     }
@@ -47,32 +51,45 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SerializedInteractionState {
-    pub(crate) context: TopLevelContext,
-    pub(crate) mixer_selection: SerializedSelection,
-    pub(crate) patch_focus: Option<u32>,
-    pub(crate) patch_control_focus: Option<PatchControlId>,
+    #[serde(default = "default_mixer_focus")]
+    pub(crate) active_focus: FocusPath,
+    #[serde(default)]
+    pub(crate) remembered_patch_main: Option<FocusPath>,
+    #[serde(default = "default_mixer_focus")]
+    pub(crate) remembered_mixer_main: FocusPath,
+    #[serde(default)]
+    pub(crate) mode: InteractionMode,
+    #[serde(default)]
+    pub(crate) return_path: Option<ReturnPath>,
 }
 
 impl Default for SerializedInteractionState {
     fn default() -> Self {
         Self {
-            context: TopLevelContext::Mixer,
-            mixer_selection: SerializedSelection::from(Selection::global()),
-            patch_focus: None,
-            patch_control_focus: None,
+            active_focus: default_mixer_focus(),
+            remembered_patch_main: None,
+            remembered_mixer_main: default_mixer_focus(),
+            mode: InteractionMode::Navigate,
+            return_path: None,
         }
     }
 }
 
-impl From<&crate::control::interaction_state::InteractionState> for SerializedInteractionState {
-    fn from(interaction: &crate::control::interaction_state::InteractionState) -> Self {
+impl SerializedInteractionState {
+    fn from_state(state: &AppState) -> Self {
+        let interaction = state.interaction();
         Self {
-            context: interaction.context(),
-            mixer_selection: SerializedSelection::from(interaction.mixer_selection()),
-            patch_focus: interaction.patch_focus().map(|patch_id| patch_id.value()),
-            patch_control_focus: interaction.patch_control_focus(),
+            active_focus: interaction.focus_path().clone(),
+            remembered_patch_main: interaction.remembered_patch_main().cloned(),
+            remembered_mixer_main: interaction.remembered_mixer_main().clone(),
+            mode: interaction.mode(),
+            return_path: interaction.return_path().cloned(),
         }
     }
+}
+
+fn default_mixer_focus() -> FocusPath {
+    FocusPath::mixer_track(MixerTrackId::default(), MixerTrackParameter::Level)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -88,10 +105,7 @@ pub(crate) struct SerializedPatch<'a> {
     pub(crate) post_effects: Cow<'a, [PostEffectConfig]>,
     #[serde(default)]
     pub(crate) envelope: VoiceEnvelope,
-    pub(crate) gain_db: f32,
-    pub(crate) pan: f32,
-    pub(crate) reverb_send: f32,
-    pub(crate) delay_send: f32,
+    pub(crate) output: PatchOutput,
 }
 
 impl<'a> From<&'a Patch> for SerializedPatch<'a> {
@@ -103,10 +117,7 @@ impl<'a> From<&'a Patch> for SerializedPatch<'a> {
             instrument: Cow::Borrowed(patch.instrument_config()),
             post_effects: Cow::Borrowed(patch.post_effects()),
             envelope: *patch.envelope(),
-            gain_db: patch.parameters().gain_db(),
-            pan: patch.parameters().pan(),
-            reverb_send: patch.parameters().reverb_send(),
-            delay_send: patch.parameters().delay_send(),
+            output: patch.output(),
         }
     }
 }
@@ -133,45 +144,6 @@ impl From<&GlobalParameters> for SerializedGlobalParameters {
             delay_milliseconds: parameters.delay_milliseconds(),
             delay_feedback: parameters.delay_feedback(),
             delay_return: parameters.delay_return(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SerializedSelection {
-    pub(crate) section: SerializedSelectionSection,
-    pub(crate) patch_index: usize,
-    pub(crate) parameter_index: usize,
-}
-
-impl SerializedSelection {
-    pub(crate) fn matches(self, selection: Selection) -> bool {
-        self == Self::from(selection)
-    }
-}
-
-impl From<Selection> for SerializedSelection {
-    fn from(selection: Selection) -> Self {
-        Self {
-            section: SerializedSelectionSection::from(selection.section()),
-            patch_index: selection.patch_index(),
-            parameter_index: selection.parameter_index(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) enum SerializedSelectionSection {
-    Patch,
-    Global,
-}
-
-impl From<SelectionSection> for SerializedSelectionSection {
-    fn from(section: SelectionSection) -> Self {
-        match section {
-            SelectionSection::Patch => Self::Patch,
-            SelectionSection::Global => Self::Global,
         }
     }
 }

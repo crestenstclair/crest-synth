@@ -224,7 +224,7 @@ mod tests {
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::parameter_snapshot::RtInstrumentParameters;
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::instrument_capability::{
@@ -251,7 +251,7 @@ mod tests {
             )
             .unwrap(),
             MidiChannel::new(channel).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         )
     }
 
@@ -276,10 +276,8 @@ mod tests {
         assert_eq!(percussion.prepared.preset_id.bank(), 128);
         assert!(!melodic.prepared.preset_id.is_percussion());
         assert!(percussion.prepared.preset_id.is_percussion());
-        let parameters = crate::real_time::RtPatchParameters::new(
-            melodic_patch.id(),
-            *melodic_patch.parameters(),
-        );
+        let parameters =
+            crate::real_time::RtPatchParameters::new(melodic_patch.id(), melodic_patch.output());
 
         melodic
             .dispatch(
@@ -321,7 +319,7 @@ mod tests {
                 Vec::new(),
             ),
             MidiChannel::new(0).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         assert!(matches!(
             preparer.prepare(&unsupported, 48_000.0, 512),
@@ -337,7 +335,7 @@ mod tests {
                 Vec::new(),
             ),
             MidiChannel::new(1).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         assert!(matches!(
             preparer.prepare(&malformed, 48_000.0, 512),
@@ -363,7 +361,7 @@ mod tests {
             "Wrong asset".to_owned(),
             wrong_asset,
             MidiChannel::new(2).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         assert!(matches!(
             preparer.prepare(&wrong_asset, 48_000.0, 512),
@@ -395,7 +393,7 @@ mod tests {
                 )],
             ),
             MidiChannel::new(3).unwrap(),
-            ChannelParameters::default(),
+            PatchOutput::default(),
         );
         assert!(matches!(
             preparer.prepare(&unavailable_preset, 48_000.0, 512),
@@ -445,7 +443,7 @@ mod tests {
     ) -> crate::real_time::RtPatchParameters {
         crate::real_time::RtPatchParameters::projected(
             patch.id(),
-            *patch.parameters(),
+            patch.output(),
             envelope,
             RtInstrumentParameters::EMPTY,
         )

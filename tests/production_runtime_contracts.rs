@@ -6,7 +6,9 @@ use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructura
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
-use crest_synth::mixer::channel_parameters::ChannelParameters;
+use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{AudioBoundary, ControlAudioBoundary};
 use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::audio_observation::{
@@ -25,7 +27,8 @@ use crest_synth::real_time::structural_graph_boundary::{
 };
 use crest_synth::real_time::structural_graph_coordinator::StructuralGraphCoordinator;
 use crest_synth::shell::app_window::{
-    AppInputCallback, AppWindow, ProjectionCallback, TickCallback, WindowError,
+    AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
+    ProjectionCallback, TickCallback, WindowError,
 };
 use crest_synth::shell::audio_output::{
     AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
@@ -352,7 +355,9 @@ impl AppWindow for OneTickWindow {
         &self,
         _on_input: AppInputCallback,
         projection: ProjectionCallback,
+        _audio_observation: AudioObservationCallback,
         mut on_tick: TickCallback,
+        _on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError> {
         let _visible_state = projection();
         self.close_requested
@@ -375,7 +380,7 @@ fn globals() -> crest_synth::mixer::global_parameters::GlobalParameters {
 }
 
 fn initial_audio_boundary() -> LockFreeAudioBoundary {
-    let initial = ParameterSnapshot::new(0, globals(), &[]).unwrap();
+    let initial = ParameterSnapshot::new(0, globals(), MixerState::default(), &[]).unwrap();
     LockFreeAudioBoundary::new(16, initial)
 }
 
@@ -639,14 +644,15 @@ fn graph_fixture(
         "Runtime contract".to_owned(),
         create_soundfont_config(&provider, SoundFontInstrument::new(0, 0, false).unwrap()).unwrap(),
         MidiChannel::new(0).unwrap(),
-        ChannelParameters::default(),
+        PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
     );
     let revision = GraphRevision::new(revision).unwrap();
     let parameters = ParameterSnapshot::for_graph(
         generation,
         revision,
         globals(),
-        &[RtPatchParameters::new(patch.id(), *patch.parameters())],
+        MixerState::default(),
+        &[RtPatchParameters::new(patch.id(), patch.output())],
     )
     .unwrap();
     let preparers = vec![TonePreparer::boxed(HIDEF_CAPABILITY_ID, probe)];

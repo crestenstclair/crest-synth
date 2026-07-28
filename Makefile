@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live clean
+.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell semantic-graphical-view-model-acceptance clean
 
 help: ## Show the available project commands
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -29,7 +29,7 @@ run: ## Launch crest-synth with its fixed SoundFont and MIDI fixture
 play: ## Launch the automatically playing synth
 	cargo run --bin crest-synth
 
-ui: ## Launch the synth text window
+ui: ## Launch the synth graphical window
 	cargo run --bin crest-synth
 
 smoke: ## Run the complete headless synth path
@@ -41,8 +41,19 @@ observe: ## Print the structured headless behavioral observation
 demo: ## Run the exhaustive GUI demo and structured trace
 	cargo run --bin crest-synth -- --smoke --observe --demo-scene
 
-demo-live: ## Run the optimized paced demo with a real window and physical audio
-	cargo run --release --bin crest-synth -- --demo-live
+demo-live: demo-live-sixteen-track-mixer-routing ## Run the newest optimized graphical live demo
+
+demo-live-sixteen-track-mixer-routing: ## Run the cumulative sixteen-track mixer-routing demo with a real window and physical audio
+	cargo run --release --bin crest-synth -- --demo-live-sixteen-track-mixer-routing
+
+demo-live-semantic-view-model: ## Run the Phase Two semantic view model with a real window and physical audio
+	cargo run --release --bin crest-synth -- --demo-live-semantic-view-model
+
+demo-live-graphical-shell: ## Run the Phase One shell with a real window and physical audio
+	cargo run --release --bin crest-synth -- --demo-live-graphical-shell
+
+semantic-graphical-view-model-acceptance: ## Prove the deterministic Phase Two semantic view model
+	cargo test --test semantic_graphical_view_model -- --nocapture
 
 clean: ## Remove Cargo build output
 	cargo clean

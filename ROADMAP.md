@@ -39,12 +39,30 @@ Project canonical application state into host-neutral graphical view models that
 - Prove deterministic focus recovery when responsive composition or schema changes alter visible placement.
 - Add `make demo-live-semantic-view-model`: play the real MIDI fixture while the scene traverses semantic focus, interaction modes, valid actions, return paths, status, and error projections across both contexts, proving that visible focus and canonical state remain correlated.
 
+## Current corrective gate — Canonical sixteen-track mixer routing
+
+The active OpenSpec change corrects the Patch-shaped transitional MIXER model
+before Phase 3 builds any additional routing topology. It is the current gate
+for all later phases.
+
+- Introduce one canonical mixer bank with exactly sixteen persistent tracks, independent of Patch count and instrument schema.
+- Give each Patch one validated output-track identity and Patch-local trim; allow multiple Patches to share a track without losing Patch identity.
+- Move level, pan, mute, solo, current reverb/delay sends, and metering to mixer-track ownership. A track fader controls the combined output of every Patch routed to that track.
+- Replace Patch-keyed MIXER focus and projection with stable track/control identities while keeping PATCH and MIXER as the only top-level contexts.
+- Carry Patch routes, trims, sixteen track parameter sets, and sixteen meters through fixed bounded real-time snapshots and preallocated track accumulation.
+- Add `make demo-live-sixteen-track-mixer-routing`: play real multi-Patch MIDI, display all sixteen tracks, route two Patches to one track, exercise track level/pan/mute/solo/sends and Patch rerouting through semantic actions, prove measured isolation and meter behavior, then complete the full live teardown contract.
+
+This correction establishes the canonical domain, reducer, projection, and
+rendering behavior. Phase 6 still owns assembly from the shared component
+library, responsive density refinement, multi-select where specified, and final
+functional Mixer composition.
+
 ## Phase 3 — Expandable effects and bus topology
 
 Grow the fixed first-effect foundation into the bounded effect and routing model required by the product interface.
 
-- Support descriptor-driven ordered Patch-effect slots without processor-specific UI structure.
-- Introduce explicit buses, sends, returns, and routing identities while preserving Patch ownership and hard real-time preparation boundaries.
+- Support up to three descriptor-driven ordered effect slots per Patch without processor-specific UI structure.
+- Introduce explicit buses, sends, returns, and routing identities, with at most eight bus returns in the prepared topology, while preserving Patch ownership and hard real-time preparation boundaries.
 - Prepare and exchange complete structural graphs off the callback; never allocate, block, destroy, or silently bypass in real-time work.
 - Keep topology changes semantic, validated, observable, and recoverable without replacing the active graph on failure.
 - Add `make demo-live-effects-and-buses`: play real multi-Patch MIDI while the scene changes ordered Patch effects, sends, buses, and returns through production structural/scalar paths, audibly proves routing and isolation, exercises one controlled rejection, and verifies graph retirement and teardown.
@@ -92,9 +110,11 @@ Complete the subordinate PATCH surfaces using the same shell and component vocab
 
 - Instrument detail and effect detail.
 - Engine, effect, route, and other choice modals with trapped focus and exact return paths.
-- Sample detail, waveform landmarks, and the controller-native Sample Browser.
+- Sample detail, waveform landmarks, and the controller-native Sample Browser, where holding Start on the focused sample row previews that sample and releasing Start stops preview.
 - Typed loading, unavailable, validation, and cancellation states without UI-owned domain copies.
 - Add `make demo-live-detail-and-assets`: play real MIDI while the scene opens instrument/effect details and choice surfaces, navigates the Sample Browser, previews and commits a valid asset through production preparation, exercises cancel/error paths, and returns focus to each exact origin.
+
+The detailed Sample capability contract—including admitted formats, playback and loop semantics, polyphony, root-pitch behavior, and preparation limits—is intentionally deferred until Phase 7 planning. It is not an unresolved prerequisite for Phases 1–6 and must not be inferred from Figma fixtures.
 
 ## Phase 8 — Controller and resolution hardening
 

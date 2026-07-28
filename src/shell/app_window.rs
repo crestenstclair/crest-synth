@@ -1,19 +1,26 @@
-use crate::control::app_event::AppEvent;
-use crate::control::text_projection::TextProjection;
+use crate::control::{GraphicalShellProjection, SemanticAction};
+use crate::real_time::AudioObservationSnapshot;
+use crate::shell::ShellFrameObservation;
 use core::fmt;
 use std::time::Duration;
 
 /// Semantic input emitted by a window adapter.
-pub type AppInputCallback = Box<dyn FnMut(AppEvent) + 'static>;
+pub type AppInputCallback = Box<dyn FnMut(SemanticAction) + 'static>;
 
 /// Immutable view projection requested by a window adapter.
-pub type ProjectionCallback = Box<dyn Fn() -> TextProjection + 'static>;
+pub type ProjectionCallback = Box<dyn Fn() -> GraphicalShellProjection + 'static>;
+
+/// Latest immutable numeric audio observation requested by a window adapter.
+pub type AudioObservationCallback = Box<dyn Fn() -> AudioObservationSnapshot + 'static>;
 
 /// Periodic control-side work requested by a window adapter.
 ///
 /// Returning `false` asks the disposable window to close after application
 /// control ownership has retained a typed runtime failure.
 pub type TickCallback = Box<dyn FnMut(Duration) -> bool + 'static>;
+
+/// Post-paint evidence emitted by a graphical window adapter.
+pub type FrameObservationCallback = Box<dyn FnMut(ShellFrameObservation) + 'static>;
 
 /// A failure while creating or running the application window.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,11 +50,12 @@ impl fmt::Display for WindowError {
 
 impl std::error::Error for WindowError {}
 
-/// Outbound port for the disposable single-text application view.
+/// Outbound port for the disposable graphical application shell.
 ///
 /// Implementations own raw key and modifier state. They emit only semantic
-/// `AppEvent` values, request complete immutable `TextProjection` values, and
-/// report elapsed control-side time through `on_tick`. They never own synth
+/// `SemanticAction` values, request complete immutable `GraphicalShellProjection`
+/// values, report elapsed control-side time through `on_tick`, and emit only
+/// post-paint `ShellFrameObservation` evidence. They never own synth
 /// parameters, application selection, or accepted application state.
 pub trait AppWindow {
     /// Runs the window event loop until the player closes it.
@@ -55,15 +63,26 @@ pub trait AppWindow {
         &self,
         on_input: AppInputCallback,
         projection: ProjectionCallback,
+        audio_observation: AudioObservationCallback,
         on_tick: TickCallback,
+        on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError>;
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AppInputCallback, AppWindow, ProjectionCallback, TickCallback, WindowError};
-    use crate::control::app_event::{AppEvent, Direction};
-    use crate::control::text_projection::TextProjection;
+    use super::{
+        AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
+        ProjectionCallback, TickCallback, WindowError,
+    };
+    use crate::control::app_event::Direction;
+    use crate::control::{
+        GraphicalShellProjection, SemanticAction, SemanticGraphicalViewModel, ShellContextLine,
+        ShellFooter, ShellIdentityHeader, TextProjection, TopLevelContext,
+    };
+    use crate::shell::{
+        ShellFrameObservation, ShellRegionId, ShellRegionObservation, ShellRegionRect,
+    };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Duration;
@@ -75,14 +94,76 @@ mod tests {
             &self,
             mut on_input: AppInputCallback,
             projection: ProjectionCallback,
+            audio_observation: AudioObservationCallback,
             mut on_tick: TickCallback,
+            mut on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
-            on_input(AppEvent::Navigate(Direction::Down));
-            let projection = projection();
-            assert_eq!(projection.body(), "KEYS: test");
+            on_input(SemanticAction::Navigate(Direction::Down));
             assert!(on_tick(Duration::from_millis(16)));
+            let projection = projection();
+            assert_eq!(projection.workspace().diagnostic().body(), "KEYS: test");
+            assert_eq!(audio_observation().sequence(), 0);
+            on_frame(frame_observation(&projection));
             Ok(())
         }
+    }
+
+    fn graphical_projection() -> GraphicalShellProjection {
+        GraphicalShellProjection::new(
+            1,
+            "state-hash",
+            SemanticGraphicalViewModel::fixture(1, "state-hash", TopLevelContext::Mixer),
+            ShellContextLine::new("CREST SYNTH", "MIXER", "READY"),
+            ShellIdentityHeader::new("MIXER · GLOBAL", "1 PATCH · MASTER OUTPUT"),
+            "MIXER WORKSPACE",
+            "INSPECTOR",
+            TextProjection::for_context(
+                TopLevelContext::Mixer,
+                "KEYS: test".to_owned(),
+                0,
+                "state-hash".to_owned(),
+            ),
+            ShellFooter::new("MIXER / GLOBAL", vec!["1 MIXER".to_owned()]),
+        )
+        .unwrap()
+    }
+
+    fn frame_observation(projection: &GraphicalShellProjection) -> ShellFrameObservation {
+        ShellFrameObservation::try_new(
+            1280.0,
+            800.0,
+            projection.generation(),
+            projection.state_hash(),
+            projection.context(),
+            [
+                ShellRegionObservation::new(
+                    ShellRegionId::ContextLine,
+                    ShellRegionRect::new(0.0, 0.0, 1280.0, 48.0),
+                    projection.context_line().context_label(),
+                ),
+                ShellRegionObservation::new(
+                    ShellRegionId::IdentityHeader,
+                    ShellRegionRect::new(0.0, 48.0, 1280.0, 120.0),
+                    projection.identity_header().primary_label(),
+                ),
+                ShellRegionObservation::new(
+                    ShellRegionId::MainWorkspace,
+                    ShellRegionRect::new(0.0, 120.0, 960.0, 736.0),
+                    projection.workspace().main_label(),
+                ),
+                ShellRegionObservation::new(
+                    ShellRegionId::PersistentSideRegion,
+                    ShellRegionRect::new(960.0, 120.0, 1280.0, 736.0),
+                    projection.workspace().side_label(),
+                ),
+                ShellRegionObservation::new(
+                    ShellRegionId::Footer,
+                    ShellRegionRect::new(0.0, 736.0, 1280.0, 800.0),
+                    projection.footer().path_label(),
+                ),
+            ],
+        )
+        .unwrap()
     }
 
     #[test]
@@ -90,6 +171,7 @@ mod tests {
         let events = Rc::new(RefCell::new(Vec::new()));
         let projection_requests = Rc::new(Cell::new(0));
         let ticks = Rc::new(RefCell::new(Vec::new()));
+        let frames = Rc::new(RefCell::new(Vec::new()));
 
         let events_for_callback = Rc::clone(&events);
         let on_input: AppInputCallback = Box::new(move |event| {
@@ -99,26 +181,34 @@ mod tests {
         let requests_for_callback = Rc::clone(&projection_requests);
         let projection: ProjectionCallback = Box::new(move || {
             requests_for_callback.set(requests_for_callback.get() + 1);
-            TextProjection::new("KEYS: test".to_owned(), 0, "state-hash".to_owned())
+            graphical_projection()
         });
+        let audio_observation: AudioObservationCallback =
+            Box::new(crate::real_time::AudioObservationSnapshot::default);
 
         let ticks_for_callback = Rc::clone(&ticks);
         let on_tick: TickCallback = Box::new(move |duration| {
             ticks_for_callback.borrow_mut().push(duration);
             true
         });
+        let frames_for_callback = Rc::clone(&frames);
+        let on_frame: FrameObservationCallback = Box::new(move |observation| {
+            frames_for_callback.borrow_mut().push(observation);
+        });
 
         let window: &dyn AppWindow = &TestWindow;
         window
-            .run(on_input, projection, on_tick)
+            .run(on_input, projection, audio_observation, on_tick, on_frame)
             .expect("test window should run");
 
         assert_eq!(
             events.borrow().as_slice(),
-            &[AppEvent::Navigate(Direction::Down)]
+            &[SemanticAction::Navigate(Direction::Down)]
         );
         assert_eq!(projection_requests.get(), 1);
         assert_eq!(ticks.borrow().as_slice(), &[Duration::from_millis(16)]);
+        assert_eq!(frames.borrow().len(), 1);
+        assert_eq!(frames.borrow()[0].context(), TopLevelContext::Mixer);
     }
 
     #[test]

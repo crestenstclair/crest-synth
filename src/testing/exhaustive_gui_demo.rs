@@ -10,11 +10,12 @@ use crate::control::event_record::{
 };
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
-use crate::control::TopLevelContext;
 use crate::control::{
     EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, PatchControlId,
     StructuralEditIntent,
 };
+use crate::control::{InteractionMode, SemanticAction, TopLevelContext};
+use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::real_time::audio_boundary::{AudioThreadBoundary, BoundaryFull, ControlAudioBoundary};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation::{CallbackAudioObservation, ControlAudioObservation};
@@ -50,6 +51,23 @@ const COVERAGE_GROUPS: [DemoCoverageGroup; 11] = [
     DemoCoverageGroup::Projections,
     DemoCoverageGroup::AudioEffects,
 ];
+
+enum DemoDispatchInput {
+    Event(Box<AppEvent>),
+    Action(SemanticAction),
+}
+
+impl From<AppEvent> for DemoDispatchInput {
+    fn from(event: AppEvent) -> Self {
+        Self::Event(Box::new(event))
+    }
+}
+
+impl From<SemanticAction> for DemoDispatchInput {
+    fn from(action: SemanticAction) -> Self {
+        Self::Action(action)
+    }
+}
 
 /// A structural or production-seam failure while running an exhaustive scene.
 #[derive(Clone, Debug, PartialEq)]
@@ -303,6 +321,9 @@ where
                         self.dispatch_semantic(event, EventSource::Keyboard, None, &mut run)?;
                     }
                 }
+                DemoSceneStep::PassiveAction(action) => {
+                    self.dispatch_semantic(action.clone(), EventSource::DemoScene, None, &mut run)?;
+                }
                 DemoSceneStep::MidiProbe(probe) => {
                     self.dispatch_semantic(
                         AppEvent::Midi {
@@ -367,6 +388,7 @@ where
                             });
                         }
                     }
+                    run.last_rejection = None;
 
                     run.audio_measurement = self.render_audio(checkpoint.name())?;
                     run.mixed_engine_stems_nonzero |= self.mixed_engine_stems_are_nonzero();
@@ -945,7 +967,7 @@ where
             && selected_text.starts_with("> PARAMETER ")
             && selected_text.contains(expected.selected_label())
             && tree_json
-                .pointer("/interaction/patchControlFocus")
+                .pointer("/interaction/activeFocus/controlId/id")
                 .and_then(Value::as_str)
                 == Some(control_id.as_ref())
             && tree_json
@@ -1044,19 +1066,24 @@ where
             && selected_text.starts_with("> ENVELOPE ")
             && selected_text.contains(control_id.as_ref())
             && tree_json
-                .pointer("/interaction/patchControlFocus")
+                .pointer("/interaction/activeFocus/controlId/id")
                 .and_then(Value::as_str)
                 == Some(control_id.as_ref())
             && tree_json
                 .pointer("/patchPage/focusedControlId")
                 .and_then(Value::as_str)
                 == Some(control_id.as_ref());
-        let last_record = self.app_loop.event_log_ref().records().last();
-        let scalar_only = last_record.is_some_and(|record| {
+        let records = self.app_loop.event_log_ref().records();
+        let adjustment_index = records
+            .iter()
+            .rposition(|record| matches!(record.input(), EventInput::Adjust { .. }));
+        let scalar_only = adjustment_index.is_some_and(|index| {
+            let record = &records[index];
             record.outcome() == EventOutcome::Accepted
-                && matches!(record.input(), EventInput::Adjust { .. })
-                && record.generation_after() == tree.generation()
-                && record.parameter_generation() == tree.generation()
+                && record.parameter_generation()
+                    == tree
+                        .generation()
+                        .saturating_sub((records.len() - index - 1) as u64)
                 && record.emitted_events().len() == 2
                 && matches!(
                     record.emitted_events()[0],
@@ -1066,6 +1093,17 @@ where
                     record.emitted_events()[1],
                     EmittedEvent::ParameterSnapshotPublished { .. }
                 )
+                && records[index + 1..].iter().all(|record| {
+                    record.outcome() == EventOutcome::Accepted
+                        && matches!(record.input(), EventInput::SetInteractionMode { .. })
+                        && record.emitted_events().iter().all(|effect| {
+                            matches!(
+                                effect,
+                                EmittedEvent::StateAccepted { .. }
+                                    | EmittedEvent::ParameterSnapshotPublished { .. }
+                            )
+                        })
+                })
         });
         let all_envelope_values_exact = patch.envelope() == snapshot.envelope()
             && snapshot.envelope() == renderer_snapshot.envelope();
@@ -1113,22 +1151,38 @@ where
         .map_err(ExhaustiveGuiDemoError::from)
     }
 
-    fn dispatch_semantic(
+    fn dispatch_semantic<Input>(
         &mut self,
-        event: AppEvent,
+        input: Input,
         source: EventSource,
         expected_rejection: Option<EventRejection>,
         run: &mut RunObservations,
-    ) -> Result<(), ExhaustiveGuiDemoError> {
+    ) -> Result<(), ExhaustiveGuiDemoError>
+    where
+        Input: Into<DemoDispatchInput>,
+    {
+        let input = input.into();
+        let event = match &input {
+            DemoDispatchInput::Event(event) => event.as_ref().clone(),
+            DemoDispatchInput::Action(action) => AppEvent::from_semantic_action(action.clone()),
+        };
         let before_tree = self.app_loop.current_state_tree();
         let adjustment = matches!(event, AppEvent::Adjust(_))
             && (self.app_loop.state().context() == TopLevelContext::Mixer
                 || matches!(
                     self.app_loop.state().interaction().patch_control_focus(),
-                    Some(PatchControlId::Envelope(_) | PatchControlId::Effect(_, _))
+                    Some(
+                        PatchControlId::Output(_)
+                            | PatchControlId::Envelope(_)
+                            | PatchControlId::Effect(_, _)
+                    )
                 ));
 
-        match self.app_loop.dispatch_from(event, source) {
+        let dispatched = match input {
+            DemoDispatchInput::Event(event) => self.app_loop.dispatch_from(*event, source),
+            DemoDispatchInput::Action(action) => self.app_loop.dispatch_action_from(action, source),
+        };
+        match dispatched {
             Ok(result) => {
                 if let Some(expected) = expected_rejection {
                     return Err(ExhaustiveGuiDemoError::ExpectedRejectionAccepted { expected });
@@ -1137,7 +1191,12 @@ where
                     return Err(ExhaustiveGuiDemoError::AudioBoundaryFull(error));
                 }
 
-                run.last_rejection = None;
+                if !matches!(
+                    event,
+                    AppEvent::SetInteractionMode(InteractionMode::Navigate)
+                ) {
+                    run.last_rejection = None;
+                }
                 let after_tree = self.app_loop.current_state_tree();
                 let measurement = self.render_audio("accepted event")?;
                 run.mixed_engine_stems_nonzero |= self.mixed_engine_stems_are_nonzero();
@@ -1254,8 +1313,11 @@ where
         let configured_patch = configured.first().expect("configured effects are nonempty");
         run.effect_target_exact &= configured.len() == 1
             && effect.patch_id() == Some(configured_patch.id())
-            && observation.parameter_generation()
-                == self.app_loop.current_parameters().generation()
+            && observation.parameter_generation() == self.renderer.parameters().generation()
+            && self
+                .renderer
+                .parameters()
+                .audio_values_equal(self.app_loop.current_parameters())
             && observation.active_graph_revision() == self.renderer.active_revision()
             && observation.routing_failures() == 0;
         run.effect_difference_nonzero |= effect.difference_rms() > 1.0e-7;
@@ -1437,6 +1499,8 @@ fn coverage_group(identifier: &str) -> Option<DemoCoverageGroup> {
         Some(DemoCoverageGroup::Contexts)
     } else if identifier.starts_with("direction.") {
         Some(DemoCoverageGroup::Directions)
+    } else if identifier.starts_with("interactionMode.") || identifier.starts_with("surface.") {
+        Some(DemoCoverageGroup::Contexts)
     } else if identifier.starts_with("midi.") {
         Some(DemoCoverageGroup::MidiKinds)
     } else if identifier.starts_with("parameter.") {
@@ -1473,6 +1537,20 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
             EventInput::Adjust { direction } => {
                 observed.insert("event.adjust".to_owned());
                 observed.insert(format!("direction.{}", direction_identifier(*direction)));
+            }
+            EventInput::SetInteractionMode { mode } => {
+                observed.insert("event.setInteractionMode".to_owned());
+                observed.insert(format!(
+                    "interactionMode.{}",
+                    mode.label().to_ascii_lowercase()
+                ));
+            }
+            EventInput::EnterSurface { surface } => {
+                observed.insert("event.enterSurface".to_owned());
+                observed.insert(format!("surface.{}", surface.label().to_ascii_lowercase()));
+            }
+            EventInput::Return => {
+                observed.insert("event.return".to_owned());
             }
             EventInput::InstallPatches { .. } => {
                 observed.insert("event.installPatches".to_owned());
@@ -1629,6 +1707,7 @@ fn dynamic_patch_property(tree: &Value, rest: &str, parameter_projection: bool) 
         if path.starts_with("envelope.")
             || path.starts_with("instrument.")
             || path.starts_with("effect.")
+            || path.starts_with("output.")
         {
             json_path_exists(patch, path)
         } else {
@@ -1791,8 +1870,7 @@ fn changed_parameter_identifier(before: &StateTree, after: &StateTree) -> Option
     let before: Value = serde_json::from_str(before.json()).ok()?;
     let after: Value = serde_json::from_str(after.json()).ok()?;
 
-    if before.pointer("/interaction/mixerSelection") != after.pointer("/interaction/mixerSelection")
-    {
+    if before.pointer("/interaction/activeFocus") != after.pointer("/interaction/activeFocus") {
         return None;
     }
 
@@ -1810,15 +1888,15 @@ fn changed_parameter_identifier(before: &StateTree, after: &StateTree) -> Option
             }
         }
         let patch_id = after_patch.get("id")?.as_u64()?;
-        for parameter in ["gainDb", "pan", "reverbSend", "delaySend"] {
+        for (field, parameter) in [("trimGainDb", "trimGainDb"), ("trackId", "outputTrack")] {
             let before_value = before_patch
-                .get("parameters")
-                .and_then(|parameters| parameters.get(parameter))?;
+                .get("output")
+                .and_then(|output| output.get(field))?;
             let after_value = after_patch
-                .get("parameters")
-                .and_then(|parameters| parameters.get(parameter))?;
+                .get("output")
+                .and_then(|output| output.get(field))?;
             if before_value != after_value {
-                changes.push(format!("parameter.patch.{patch_id}.{parameter}"));
+                changes.push(format!("parameter.patch.{patch_id}.output.{parameter}"));
             }
         }
         for parameter in [
@@ -1887,6 +1965,22 @@ fn changed_parameter_identifier(before: &StateTree, after: &StateTree) -> Option
                         "parameter.patch.{patch_id}.effect.{slot_id}.{parameter_id}"
                     ));
                 }
+            }
+        }
+    }
+
+    let before_tracks = before.pointer("/mixer/tracks")?.as_array()?;
+    let after_tracks = after.pointer("/mixer/tracks")?.as_array()?;
+    if before_tracks.len() != MixerTrackId::COUNT || after_tracks.len() != MixerTrackId::COUNT {
+        return None;
+    }
+    for (track_id, (before_track, after_track)) in MixerTrackId::ALL
+        .into_iter()
+        .zip(before_tracks.iter().zip(after_tracks))
+    {
+        for parameter in ["levelDb", "pan", "mute", "solo", "reverbSend", "delaySend"] {
+            if before_track.get(parameter)? != after_track.get(parameter)? {
+                changes.push(format!("parameter.track.{track_id}.{parameter}"));
             }
         }
     }
@@ -2002,8 +2096,10 @@ mod tests {
     use crate::control::state_projector::StateProjector;
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::channel_parameters::ChannelParameters;
     use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::audio_boundary::AudioBoundary;
     use crate::real_time::audio_renderer::AudioRenderer;
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
@@ -2034,7 +2130,7 @@ mod tests {
                     .create(&CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap())
                     .unwrap(),
                 MidiChannel::new(1).unwrap(),
-                ChannelParameters::new(0.0, 0.0, 0.3, 0.2).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new(1).unwrap()),
             ),
             Patch::new(
                 PatchId::new(11).unwrap(),
@@ -2043,11 +2139,12 @@ mod tests {
                     .create(&CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap())
                     .unwrap(),
                 MidiChannel::new(9).unwrap(),
-                ChannelParameters::new(0.0, 0.0, 0.3, 0.2).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new(9).unwrap()),
             ),
         ];
         let scene = DemoScene::exhaustive(&registry, &patches, &globals()).unwrap();
-        let initial_parameters = ParameterSnapshot::new(0, globals(), &[]).unwrap();
+        let initial_parameters =
+            ParameterSnapshot::new(0, globals(), MixerState::default(), &[]).unwrap();
         let boundary = LockFreeAudioBoundary::new(64, initial_parameters);
         let (control, audio) = boundary.into_handles();
 
