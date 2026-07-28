@@ -1,0 +1,15 @@
+{
+  "coordination_branch": "kitty/mission-expandable-effects-and-bus-topology-01KYNGX8",
+  "created_at": "2026-07-28T23:28:10.989750+00:00",
+  "flattened": false,
+  "friendly_name": "Expandable Effects and Bus Topology",
+  "mission_id": "01KYNGX8QA8V49BX2WQ1Q6G2BP",
+  "mission_number": null,
+  "mission_slug": "expandable-effects-and-bus-topology-01KYNGX8",
+  "mission_type": "software-dev",
+  "purpose_context": "Crest Synth currently allows at most one fixed effect on a Patch and sends wet signal to two hardcoded global processors. This mission establishes the bounded effect and routing model the product interface requires: up to three ordered descriptor-driven effect slots per Patch, and explicit buses, sends, and returns with eight bus returns, where the existing global reverb and delay become ordinary bus returns drawn from the same effect registry as Patch slots. It delivers the architecture rather than a catalogue of effects, so the planned roster of additional effects can later be added as registry entries without further architectural change.",
+  "purpose_tldr": "Grow the single fixed Patch effect into three ordered effect slots and eight explicit bus returns so routing is configurable without rebuilding the audio graph.",
+  "slug": "expandable-effects-and-bus-topology-01KYNGX8",
+  "target_branch": "feat/expandable-effects-and-bus-topology",
+  "topology": "coord"
+}
