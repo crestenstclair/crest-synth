@@ -3,18 +3,28 @@
 # DO NOT EDIT MANUALLY
 
 spec_kitty:
-  schema_version: 3
   version: 3.2.6
   initialized_at: '2026-07-28T14:58:31.518963'
-  last_upgraded_at:
-  schema_capabilities:
-    canonical_context: true
-    event_log_authority: true
-    ownership_manifest: true
-    thin_shims: true
+  last_upgraded_at: null
+  schema_version: 3
 environment:
   python_version: 3.11.15
   platform: darwin
   platform_version: macOS-26.5.2-arm64-arm-64bit
 migrations:
-  applied: []
+  applied:
+  - id: 3.2.6_decisions_event_log_merge_driver
+    applied_at: '2026-07-28T15:02:09.094381'
+    result: success
+    notes: Configured git merge.spec-kitty-event-log.name; Configured git merge.spec-kitty-event-log.driver
+  - id: 3.2.6_gate_artifact_merge_drivers
+    applied_at: '2026-07-28T15:02:09.224806'
+    result: success
+    notes: Configured git merge.spec-kitty-acceptance-matrix.name; Configured git
+      merge.spec-kitty-acceptance-matrix.driver; Configured git merge.spec-kitty-issue-matrix.name;
+      Configured git merge.spec-kitty-issue-matrix.driver
+  - id: 3.2.6_meta_traces_merge_drivers
+    applied_at: '2026-07-28T15:02:09.350659'
+    result: success
+    notes: Configured git merge.spec-kitty-meta.name; Configured git merge.spec-kitty-meta.driver;
+      Configured git merge.spec-kitty-traces.name; Configured git merge.spec-kitty-traces.driver
