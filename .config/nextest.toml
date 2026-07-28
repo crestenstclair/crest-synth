@@ -1,0 +1,12 @@
+# cargo-nextest configuration.
+#
+# The `ci` profile exists for spec-kitty's pre-review test gate
+# (`review.test_command` in .kittify/config.yaml): nextest writes JUnit XML to
+# target/nextest/ci/junit.xml, which the configured command copies to the
+# gate's requested {output_file}.
+[profile.ci]
+# Match `cargo test` semantics: run everything, don't stop at first failure.
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"
