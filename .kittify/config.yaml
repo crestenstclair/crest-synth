@@ -1,0 +1,13 @@
+project:
+  uuid: 6e0c305b-555b-4c71-860a-5598a2a763ea
+  slug: crest-synth
+  node_id: b3135355c488
+  build_id: 2e6d3140-3e0b-5443-a429-b4e67a67a503
+vcs:
+  type: git
+agents:
+  available:
+  - claude
+  - codex
+  auto_commit: true
+  lint_on_edit: false

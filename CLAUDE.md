@@ -2,7 +2,7 @@
 
 Read `DESIGN.md` before changing product behavior or architecture. It is the master design; its linked Figma file is the visual and interaction reference.
 
-The CUE files in `spec/` are executable implementation declarations. Reconcile them to `DESIGN.md` before generation. A deliberately narrow implementation slice must not redefine the product. Generate governed Rust through crest-spec instead of hand-writing competing implementation paths.
+The architecture spec in `.kittify/architecture/` (terse YAML: intent, bounded contexts, proof model) is the executable implementation declaration. Read it via `spec-kitty context architecture` and reconcile it to `DESIGN.md` before planning; plans must record an `## Architecture Reconciliation` section. A deliberately narrow implementation slice must not redefine the product. Use Spec Kitty missions (`/spec-kitty.specify` → plan → tasks → implement → review → accept) for all changes; `spec-kitty accept` runs the declared deterministic validations and both acceptance layers must pass. Do not invoke legacy crest-spec, CUE, or OpenSpec tooling (retired to `archive/`).
 
 Preserve these boundaries:
 
