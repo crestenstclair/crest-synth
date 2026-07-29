@@ -12,7 +12,7 @@ requirement_refs:
 - NFR-003
 planning_base_branch: feat/expandable-effects-and-bus-topology
 merge_target_branch: feat/expandable-effects-and-bus-topology
-branch_strategy: worktree-per-lane
+branch_strategy: Planning artifacts for this mission were generated on feat/expandable-effects-and-bus-topology. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/expandable-effects-and-bus-topology unless the human explicitly redirects the landing branch.
 subtasks:
 - T026
 - T027

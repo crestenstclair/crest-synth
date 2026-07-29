@@ -1,0 +1,229 @@
+{
+  "version": 1,
+  "mission_slug": "expandable-effects-and-bus-topology-01KYNGX8",
+  "mission_id": "01KYNGX8QA8V49BX2WQ1Q6G2BP",
+  "mission_branch": "kitty/mission-expandable-effects-and-bus-topology-01KYNGX8",
+  "target_branch": "feat/expandable-effects-and-bus-topology",
+  "lanes": [
+    {
+      "lane_id": "lane-planning",
+      "wp_ids": [
+        "WP01"
+      ],
+      "write_scope": [
+        ".kittify/architecture/**",
+        "DESIGN.md"
+      ],
+      "predicted_surfaces": [
+        "planning"
+      ],
+      "depends_on_lanes": [],
+      "parallel_group": 0
+    },
+    {
+      "lane_id": "lane-a",
+      "wp_ids": [
+        "WP02"
+      ],
+      "write_scope": [
+        "src/adapter/delay_capability.rs",
+        "src/adapter/delay_preparer.rs",
+        "src/adapter/global_reverb_delay.rs",
+        "src/adapter/mod.rs",
+        "src/adapter/production_effects.rs",
+        "src/adapter/reverb_capability.rs",
+        "src/adapter/reverb_preparer.rs",
+        "src/synth/effect_capability.rs",
+        "src/synth/effect_capability_id.rs",
+        "src/synth/effect_capability_provider.rs",
+        "src/synth/effect_preparer.rs",
+        "src/synth/prepared_post_effect.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "legacy-cleanup",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-planning"
+      ],
+      "parallel_group": 1
+    },
+    {
+      "lane_id": "lane-b",
+      "wp_ids": [
+        "WP03"
+      ],
+      "write_scope": [
+        "src/real_time/patch_effect_observation.rs",
+        "src/real_time/prepared_post_effect_rack.rs",
+        "src/synth/effect_composition.rs",
+        "src/synth/effect_slot_id.rs",
+        "src/synth/patch.rs",
+        "src/synth/prepared_post_effect_rack_builder.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-a"
+      ],
+      "parallel_group": 2
+    },
+    {
+      "lane_id": "lane-c",
+      "wp_ids": [
+        "WP04"
+      ],
+      "write_scope": [
+        "src/mixer/**",
+        "src/real_time/prepared_bus_return_rack.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "legacy-cleanup",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-a"
+      ],
+      "parallel_group": 2
+    },
+    {
+      "lane_id": "lane-d",
+      "wp_ids": [
+        "WP05"
+      ],
+      "write_scope": [
+        "src/real_time/audio_renderer.rs",
+        "src/real_time/callback_safety.rs",
+        "src/real_time/parameter_snapshot.rs",
+        "src/real_time/patch_audio_block.rs",
+        "src/real_time/prepared_graph.rs",
+        "src/real_time/prepared_graph_builder.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "legacy-cleanup",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-b",
+        "lane-c"
+      ],
+      "parallel_group": 3
+    },
+    {
+      "lane_id": "lane-e",
+      "wp_ids": [
+        "WP06"
+      ],
+      "write_scope": [
+        "src/control/app_event.rs",
+        "src/control/engine_selection.rs",
+        "src/control/semantic_action.rs",
+        "src/control/serialized_state.rs",
+        "src/control/state_projector.rs",
+        "src/control/state_tree.rs",
+        "src/real_time/graph_handoff_status.rs",
+        "src/real_time/graph_preparation_worker.rs",
+        "src/real_time/graph_revision.rs",
+        "src/real_time/structural_graph_coordinator.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "artifact-rendering",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-d"
+      ],
+      "parallel_group": 4
+    },
+    {
+      "lane_id": "lane-f",
+      "wp_ids": [
+        "WP07"
+      ],
+      "write_scope": [
+        "src/adapter/eframe_graphical_window.rs",
+        "src/control/graphical_shell_projection.rs",
+        "src/control/interaction_state.rs",
+        "src/control/patch_control_id.rs",
+        "src/control/patch_page_projection.rs",
+        "src/control/semantic_focus.rs",
+        "src/control/semantic_graphical_view_model.rs",
+        "src/control/semantic_resolver.rs",
+        "src/control/text_projection.rs",
+        "src/shell/**"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-e"
+      ],
+      "parallel_group": 5
+    },
+    {
+      "lane_id": "lane-g",
+      "wp_ids": [
+        "WP08"
+      ],
+      "write_scope": [
+        "Makefile",
+        "src/bin/crest_synth.rs",
+        "src/testing/**",
+        "tests/behavioral_mutation_harness.rs",
+        "tests/effects_and_buses.rs",
+        "tests/exhaustive_demo_scene.rs",
+        "tests/live_demo_scene.rs",
+        "tests/production_runtime_contracts.rs",
+        "tests/sixteen_track_mixer_routing.rs",
+        "tests/static_patch_effect.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "artifact-rendering",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-f"
+      ],
+      "parallel_group": 6
+    },
+    {
+      "lane_id": "lane-h",
+      "wp_ids": [
+        "WP09"
+      ],
+      "write_scope": [
+        "tests/no_name_enumeration_guard.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "artifact-rendering",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-f"
+      ],
+      "parallel_group": 6
+    }
+  ],
+  "computed_at": "2026-07-29T02:21:35.975804+00:00",
+  "computed_from": "dependency_graph+ownership",
+  "planning_artifact_wps": [
+    "WP01"
+  ]
+}
