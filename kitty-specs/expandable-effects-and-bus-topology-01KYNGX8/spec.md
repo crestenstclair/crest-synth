@@ -168,6 +168,21 @@ Canonical terms for this mission; avoid the listed alternatives so later work do
 
 "Global reverb" and "global delay" are retired as concepts once they become bus returns; refer to them as the reverb return and the delay return.
 
+### Cross-cutting rename
+
+This mission renames name-enumerated routing and effect concepts into generic,
+index-addressed ones across roughly 25 files. The per-category rules are captured
+in `occurrence_map.yaml` and must be satisfied by the implementation:
+
+- `GlobalEffectsProcessor` (a two-input port) is retired in favour of a bounded bus return rack.
+- `MixerTrackParameter::ReverbSend` and `::DelaySend` become one indexed send array addressed by bus.
+- `GlobalParameter`'s six reverb and delay fields become descriptor scalars of registry effects; only master gain remains global.
+- `GlobalReverbDelay` splits into ordinary registry effect capability and preparer adapters.
+
+The renames are structural, not cosmetic: in each case a hardcoded per-effect
+name is replaced by an index into a descriptor-driven array. An implementation
+that preserves the old names has not satisfied FR-006 or FR-009.
+
 ## Architecture Reconciliation
 
 The architecture spec currently declares this mission's subject matter a **non-goal**. Per the spec's own rule — "Never silently plan around a conflict with the architecture spec" — these declarations must be edited during planning and the sources reloaded. This section names what planning must reconcile; the plan carries the authoritative, expanded version.

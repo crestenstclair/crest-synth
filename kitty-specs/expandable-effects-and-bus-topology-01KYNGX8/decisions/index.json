@@ -1,0 +1,104 @@
+{
+  "entries": [
+    {
+      "created_at": "2026-07-29T01:07:09.723607Z",
+      "decision_id": "01KYNPJG8V4WVGJTRS393EPF4P",
+      "final_answer": "grow-monolithic: keep one fixed latest-value ParameterSnapshot and widen it to patches[16] x effects[3] x scalars[8], tracks[16] with sends[8], and returns[8]. One transport, one revision, fixed layout preserved.",
+      "input_key": "snapshot_growth",
+      "mission_id": "01KYNGX8QA8V49BX2WQ1Q6G2BP",
+      "mission_slug": "expandable-effects-and-bus-topology-01KYNGX8",
+      "opened_by": "cli",
+      "options": [
+        "grow-monolithic",
+        "split-transports",
+        "indexed-sparse",
+        "Other"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "How should the fixed real-time parameter snapshot absorb 3 effect slots per Patch, 8 bus returns, and 16x8 track sends?",
+      "rationale": null,
+      "resolved_at": "2026-07-29T01:14:43.921159Z",
+      "resolved_by": null,
+      "slot_key": "plan.realtime.snapshot-growth",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-07-29T01:07:10.446754Z",
+      "decision_id": "01KYNPJGZE4SHHASMVDCY2ET42",
+      "final_answer": "retire-port: delete port.Mixer.GlobalEffectsProcessor entirely. Reverb and delay become ordinary registry effect capabilities and preparers using the same generic prepared-effect boundary as Chorus. Rationale from user: the port was closed against extension that was always declared, violating open-closed; one effect model must exist, not two.",
+      "input_key": "global_effects_port_fate",
+      "mission_id": "01KYNGX8QA8V49BX2WQ1Q6G2BP",
+      "mission_slug": "expandable-effects-and-bus-topology-01KYNGX8",
+      "opened_by": "cli",
+      "options": [
+        "retire-port",
+        "widen-port",
+        "Other"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "What happens to port.Mixer.GlobalEffectsProcessor when reverb and delay become registry effects on bus returns?",
+      "rationale": null,
+      "resolved_at": "2026-07-29T01:14:44.605916Z",
+      "resolved_by": null,
+      "slot_key": "plan.mixer.global-effects-port-fate",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-07-29T01:07:11.344038Z",
+      "decision_id": "01KYNPJHVFZ0Y9EDEHCQ7CHHYK",
+      "final_answer": "Polymorphic generic addressing, not enumeration. Nothing in the mixer track is hardcoded per effect: a track owns sends as a fixed array of one generic send value type addressed by BusId. Parameter identity is descriptor-driven and index-addressed rather than a named enum variant per destination. Same rule applies to Patch effect slots and bus returns.",
+      "input_key": "send_addressing",
+      "mission_id": "01KYNGX8QA8V49BX2WQ1Q6G2BP",
+      "mission_slug": "expandable-effects-and-bus-topology-01KYNGX8",
+      "opened_by": "cli",
+      "options": [
+        "parameterized-send-variant",
+        "flat-send-variants",
+        "separate-send-address",
+        "Other"
+      ],
+      "origin_flow": "plan",
+      "other_answer": true,
+      "question": "How should the 8 per-track sends be addressed now that MixerTrackParameter has hardcoded ReverbSend and DelaySend variants?",
+      "rationale": null,
+      "resolved_at": "2026-07-29T01:14:45.303488Z",
+      "resolved_by": null,
+      "slot_key": "plan.mixer.send-addressing",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-07-29T01:07:12.147448Z",
+      "decision_id": "01KYNPJJMKR8PY4H9N4FTZ5K2V",
+      "final_answer": "dissolve-into-return-scalars: GlobalParameter retains only MasterGainDb. Reverb/delay tuning values become descriptor scalars of their registry entries; return level is owned per bus return.",
+      "input_key": "global_parameters_fate",
+      "mission_id": "01KYNGX8QA8V49BX2WQ1Q6G2BP",
+      "mission_slug": "expandable-effects-and-bus-topology-01KYNGX8",
+      "opened_by": "cli",
+      "options": [
+        "dissolve-into-return-scalars",
+        "keep-globals-add-returns",
+        "Other"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "What happens to the reverb and delay fields inside GlobalParameters once those effects live on bus returns?",
+      "rationale": null,
+      "resolved_at": "2026-07-29T01:14:46.000387Z",
+      "resolved_by": null,
+      "slot_key": "plan.mixer.global-parameters-fate",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    }
+  ],
+  "mission_id": "01KYNGX8QA8V49BX2WQ1Q6G2BP",
+  "version": 1
+}

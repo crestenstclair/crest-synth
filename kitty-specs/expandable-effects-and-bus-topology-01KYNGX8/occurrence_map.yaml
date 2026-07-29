@@ -1,0 +1,127 @@
+# Occurrence map for expandable-effects-and-bus-topology (DIRECTIVE_035).
+#
+# This mission is a bulk edit because it replaces name-enumerated routing and
+# effect concepts with descriptor-driven, index-addressed generic ones. The same
+# strings recur across roughly 25 files:
+#
+#   ReverbSend / DelaySend / reverb_send / delay_send      ~93 occurrences, 14 files
+#   ReverbRoomSize / ReverbDamping / ReverbReturn /
+#   DelayMilliseconds / DelayFeedback / DelayReturn        ~215 occurrences, 13 files
+#   GlobalEffectsProcessor                                  ~18 occurrences,  6 files
+#   GlobalReverbDelay / global_reverb_delay                 ~22 occurrences,  5 files
+#
+# The `target` block names the representative rename. The full set is enumerated
+# in plan.md under "Bulk Edit Classification"; every one of them is the same
+# structural change: a hardcoded per-effect name becomes an index into a
+# descriptor-driven array.
+
+target:
+  term: GlobalEffectsProcessor
+  replacement: PreparedBusReturnRack
+  operation: rename
+
+categories:
+  code_symbols:
+    action: rename
+    reason: >-
+      Internal Rust types with no external consumers. The enumerated variants
+      (MixerTrackParameter::ReverbSend/DelaySend, GlobalParameter reverb and
+      delay fields) are replaced by index-addressed arrays over a generic send
+      and return type; the GlobalEffectsProcessor port is retired in favour of
+      the existing generic prepared-effect boundary.
+
+  import_paths:
+    action: rename
+    reason: >-
+      Rust `use crate::mixer::global_effects_processor::...` paths must track the
+      retired module. No published crate API exists, so no downstream breakage.
+
+  filesystem_paths:
+    action: manual_review
+    reason: >-
+      Two source files change role rather than merely moving; see the `moves`
+      block. Asset paths (HiDef.sf2) and demo report paths must not be disturbed.
+
+  serialized_keys:
+    action: rename
+    reason: >-
+      Deliberate departure from the do_not_change default. DESIGN.md excludes
+      preset and session persistence, so these camelCase keys ("reverbSend",
+      "delaySend", "reverbRoomSize", "delayFeedback", ...) have no persisted
+      documents and no external API consumers. They exist only in the diagnostic
+      state projection and in ParameterSnapshot::SERIALIZED_LEAF_DESCRIPTOR, both
+      internal. Leaving effect-specific key names on a generic descriptor-driven
+      model would reintroduce exactly the closed-against-extension coupling this
+      mission removes.
+
+  cli_commands:
+    action: do_not_change
+    reason: >-
+      The roadmap requires every completed phase scene to stay runnable under its
+      stable `make demo-live-<scene>` target and its matching binary flag. This
+      mission ADDS --demo-live-effects-and-buses; it renames no existing flag or
+      target.
+
+  user_facing_strings:
+    action: rename_if_user_visible
+    reason: >-
+      Control labels such as "Reverb Send" and "Delay Send" become descriptor
+      supplied per-bus labels. Rename where shown on PATCH or MIXER; leave
+      internal identifiers alone.
+
+  tests_fixtures:
+    action: rename
+    reason: >-
+      Tests and the behavioral mutation harness assert the old enumerated shape
+      and must move to the generic one, or they will silently stop proving the
+      contract they name.
+
+  logs_telemetry:
+    action: do_not_change
+    reason: >-
+      Live-demo checkpoint names and structured report fields are retained
+      evidence. Earlier phase scenes must remain comparable, so existing
+      checkpoint and observation labels keep their exact strings. This mission
+      adds new checkpoints rather than renaming old ones.
+
+exceptions:
+  - path: "archive/**"
+    action: do_not_change
+    reason: "Retired crest-spec, CUE, and OpenSpec material is historical."
+
+  - path: "kitty-specs/**"
+    action: do_not_change
+    reason: "Mission artifacts of earlier missions are historical records."
+
+  - path: "src/testing/live_demo_checkpoint.rs"
+    action: manual_review
+    reason: >-
+      Adds new phase checkpoints while every existing checkpoint identity must
+      survive byte-identical for earlier retained scenes.
+
+  - path: "DESIGN.md"
+    action: manual_review
+    reason: >-
+      Durable design decisions. Lines 309, 418, 689, and 691 are superseded by
+      this mission and must be rewritten deliberately, not mechanically.
+
+  - path: ".kittify/architecture/**"
+    action: manual_review
+    reason: >-
+      The architecture spec declares this mission a non-goal. Each declaration is
+      narrowed by hand during planning per C-009, never by mechanical replace.
+
+moves:
+  - from:
+      - src/mixer/global_effects_processor.rs
+    to: src/mixer/bus_return.rs
+    reason: >-
+      The two-input global effects port is retired; the bus return concept and
+      its bounded return rack take over the role.
+
+  - from:
+      - src/adapter/global_reverb_delay.rs
+    to: src/adapter
+    reason: >-
+      The single fixed reverb+delay adapter splits into ordinary registry effect
+      capability and preparer adapters, peers of the existing Chorus pair.
