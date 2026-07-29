@@ -15,10 +15,14 @@ subtasks:
 - T004
 - T005
 - T006
+- T056
 history:
 - timestamp: '2026-07-29T02:11:28Z'
   actor: planner
   action: created
+- timestamp: '2026-07-29T02:11:28Z'
+  actor: planner
+  action: added T056 to close pre-existing DESIGN.md reconciliation drift
 agent_profile: architect-alphonso
 authoritative_surface: .kittify/architecture/
 create_intent: []
@@ -153,6 +157,18 @@ as a mission constraint. Nothing else in this mission may merge ahead of it.
   5. Update the signal-flow diagram at lines 396-415 so the two named aux paths become eight indexed ones. Meter position, gate order, and send position do not move.
 
 - **Validation**: Lines 690 (three slots / eight returns product maximum) and 692 (sixteen-track ownership) must remain **true and unchanged** — they already authorize the target state.
+
+### T056 – Close pre-existing DESIGN.md reconciliation drift
+
+- **Purpose**: The architecture spec was authored in one commit and never revised, while `DESIGN.md` moved afterwards. An audit found three durable design decisions with no executable declaration. Keeping the spec reconciled to `DESIGN.md` is the point of this system, so these are closed here rather than logged for later.
+
+- **Steps**:
+  1. **Product maxima as a declared bound.** `DESIGN.md:204` and `:690` state three ordered post-FX slots per Patch and eight bus returns as *product-level maxima*. In the spec these numbers appear only at `project.yaml:33`, inside a `nonGoals.later_roadmap_phases` clause — expressed as "not yet," never as a ceiling. Declare them as real bounds in `contexts/realtime.yaml` alongside the existing `MAX_PATCHES` invariant, so the ceiling survives T002 removing the non-goal clause. Without this, deleting the non-goal deletes the only mention of the numbers.
+  2. **Master stage.** `DESIGN.md:413` ends the signal flow with `master gain / safety limiter`. `mixer.yaml:113` declares `masterGainDb`, but no limiter appears anywhere in the spec. Model the master stage so the declared render path matches the designed one.
+  3. **Start reservation.** `DESIGN.md:694` states that holding Start previews a focused sample and that **Start remains reserved elsewhere**. The spec has no coverage; `nonGoals` excludes sample browsers but never captures the reservation. This constrains the input vocabulary *now*, in Phases 1-6 — not in Phase 7. Declare it as an invariant in `contexts/control.yaml` or `contexts/shell.yaml` so no work package binds Start.
+  4. Re-run the audit after editing: every durable `DESIGN.md` decision should have an executable declaration, or an explicit non-goal saying why not.
+
+- **Validation**: All three have declarations; the maxima survive T002; a grep for "Start" and for the limiter now returns spec coverage.
 
 ## Test Strategy
 

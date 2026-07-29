@@ -90,6 +90,7 @@ functional requirement passes. WP09 makes this mechanically enforceable.
 | T053 | Implement the no-name-enumeration static check | WP09 | |
 | T054 | Seed it with the retired identifiers and contexts | WP09 | |
 | T055 | Register it as a project check | WP09 | |
+| T056 | Close pre-existing DESIGN.md reconciliation drift | WP01 | |
 
 *Reference table only. `[P]` marks parallel-safe work; it is not a status column.*
 
@@ -108,7 +109,8 @@ functional requirement passes. WP09 makes this mechanically enforceable.
   T004 Add capability, goal, requirements, evidence, validation, witness
   T005 Declare the no-name-enumeration invariant in proof/invariants.yaml
   T006 Restate DESIGN.md lines 309, 418, 689, 691
-- **Risks / Notes**: C-009 makes this non-deferrable. Narrowing too far would silently pull the deferred twelve-effect roster into scope — C-011 must survive the edit. Estimated prompt: ~330 lines.
+  T056 Close pre-existing DESIGN.md reconciliation drift
+- **Risks / Notes**: C-009 makes this non-deferrable. Narrowing too far would silently pull the deferred twelve-effect roster into scope — C-011 must survive the edit. T056 closes three decisions in `DESIGN.md` that have never had an executable declaration — product maxima, the master safety limiter, and Start reservation. T001 and T002 must not land without it: removing the non-goal clause deletes the only place the three-slot/eight-return numbers appear. Estimated prompt: ~360 lines.
 
 ## Phase 2: Foundational generalization
 
