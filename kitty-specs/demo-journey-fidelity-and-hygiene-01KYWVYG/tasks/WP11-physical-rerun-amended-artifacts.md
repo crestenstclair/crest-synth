@@ -24,15 +24,14 @@ history:
   actor: planner
   action: created from IC-10 (evidence refresh and record amendment)
 agent_profile: implementer-ivan
-authoritative_surface: kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/
+authoritative_surface: ROADMAP.md
 create_intent: []
 execution_mode: code_change
 mission_id: 01KYWVYGQMTRFY314AP78KZJPY
 mission_slug: demo-journey-fidelity-and-hygiene-01KYWVYG
 model: ''
 owned_files:
-- kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/acceptance-matrix.json
-- kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/mission-review.md
+- ROADMAP.md
 priority: P1
 role: implementer
 status: pending
@@ -64,6 +63,14 @@ journey is demonstrated ON HARDWARE and the record says so.
 
 - This WP runs LAST (depends on every code WP). Its lane must contain the
   full merged mission state per `lanes.json`.
+- **Ownership note**: WP `owned_files` cannot declare `kitty-specs/` paths
+  (runtime rule `INVALID_WP_OWNED_FILES_KITTY_SPECS`). This WP therefore
+  formally owns `ROADMAP.md` (the gate-closure update), and the two
+  parent-mission artifact amendments (T046, T047) are executed as recorded
+  out-of-map edits — permitted with a one-line rationale in the WP notes:
+  "FR-006 amendment of parent acceptance record; kitty-specs paths are
+  non-declarable by rule". The `occurrence_map.yaml` exception for the
+  parent mission dir (manual_review) already sanctions touching them.
 - The parent evidence baseline: two 2026-07-31 physical runs, 131/131
   checkpoints, `droppedRecords=0`, zero false observation keys, clean
   teardown (recorded in the parent acceptance matrix and review). Locate the
@@ -149,9 +156,13 @@ required container syntax); parent recorded history intact.
    decision, record deferred-with-rationale instead (SC-007 allows this only
    for the two optional items).
 3. Append-only: no rewriting of the original review text.
+4. Update `ROADMAP.md`'s "Current corrective gate" section (this WP's owned
+   file) to record the gate as healed: the journey rework is demonstrated on
+   hardware, the open items are dispositioned, and Phase 4 is unblocked.
+   Keep the section (history), amend its status — do not delete it.
 
-**Validation**: all 7 items dispositioned; SC-007 satisfied; diff is
-append-only.
+**Validation**: all 7 items dispositioned; SC-007 satisfied; diffs on the
+two parent artifacts are append-only; ROADMAP records gate closure.
 
 ## Branch Strategy
 
