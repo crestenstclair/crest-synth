@@ -380,6 +380,7 @@ impl DemoScene {
             &EffectCapabilityRegistry::default(),
             installed_patches,
             global_parameters,
+            &crate::mixer::bus_return::BusReturnBank::default(),
         )
     }
 
@@ -389,6 +390,7 @@ impl DemoScene {
         effects: &EffectCapabilityRegistry,
         installed_patches: &[Patch],
         global_parameters: &GlobalParameters,
+        returns: &crate::mixer::bus_return::BusReturnBank,
     ) -> Result<Self, DemoSceneError> {
         if installed_patches.len() < 2 {
             return Err(DemoSceneError::InsufficientPatches {
@@ -437,9 +439,15 @@ impl DemoScene {
                 effects,
                 installed_patches,
                 global_parameters,
+                returns,
                 &preset_fixture,
             ),
-            expected_coverage: build_expected_coverage(capabilities, effects, installed_patches),
+            expected_coverage: build_expected_coverage(
+                capabilities,
+                effects,
+                installed_patches,
+                returns,
+            ),
         })
     }
 
@@ -545,6 +553,7 @@ fn build_steps(
     effects: &EffectCapabilityRegistry,
     patches: &[Patch],
     global_parameters: &GlobalParameters,
+    returns: &crate::mixer::bus_return::BusReturnBank,
     preset_fixture: &DemoPresetFixture,
 ) -> Vec<DemoSceneStep> {
     let mut steps = Vec::new();
@@ -635,11 +644,18 @@ fn build_steps(
         &mut boundary_probed,
     );
 
-    push_mixer_control_steps(&mut steps, global_parameters, &mut boundary_probed);
+    push_mixer_control_steps(
+        &mut steps,
+        effects,
+        global_parameters,
+        returns,
+        &mut boundary_probed,
+    );
     push_checkpoint(&mut steps, DemoCheckpoint::new("selection.restored"));
 
     push_preset_selection_steps(&mut steps, &patches[0], preset_fixture);
     push_engine_selection_steps(&mut steps, &patches[0]);
+    push_topology_occupancy_steps(&mut steps, effects, &patches[0]);
 
     for patch in patches {
         let descriptor = capabilities
@@ -1142,7 +1158,9 @@ fn push_reversible_route_adjustments(steps: &mut Vec<DemoSceneStep>, initial: Mi
 
 fn push_mixer_control_steps(
     steps: &mut Vec<DemoSceneStep>,
+    effects: &EffectCapabilityRegistry,
     global_parameters: &GlobalParameters,
+    returns: &crate::mixer::bus_return::BusReturnBank,
     boundary_probed: &mut BTreeSet<String>,
 ) {
     let default_track = MixerTrackParameters::default();
@@ -1162,18 +1180,20 @@ fn push_mixer_control_steps(
             }
         }
 
+        // The Inspector's first region is the selected track's eight indexed
+        // sends in ascending BusId order; entry focuses Send(trackId, B0).
         steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
             SurfaceId::MixerInspector,
         )));
-        for (parameter_index, parameter) in MixerTrackParameter::INSPECTOR.into_iter().enumerate() {
-            push_mixer_track_parameter_steps(
+        for (bus_index, bus) in crate::mixer::bus_id::BusId::ALL.into_iter().enumerate() {
+            push_mixer_send_steps(
                 steps,
                 track_id,
-                parameter,
-                default_track,
+                bus,
+                default_track.send(bus),
                 boundary_probed,
             );
-            if parameter_index + 1 < MixerTrackParameter::INSPECTOR.len() {
+            if bus_index + 1 < crate::mixer::bus_id::BusId::COUNT {
                 push_key_press(steps, WindowKey::S);
             }
         }
@@ -1193,17 +1213,101 @@ fn push_mixer_control_steps(
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
         SurfaceId::MixerInspector,
     )));
-    for _ in MixerTrackParameter::INSPECTOR {
+    // Skip the eight sends; focus lands on the first return's occupancy row.
+    for _ in crate::mixer::bus_id::BusId::ALL {
         push_key_press(steps, WindowKey::S);
     }
-    for (parameter_index, descriptor) in GlobalParameters::surface_descriptor().iter().enumerate() {
-        let parameter = descriptor.parameter();
+    // Each return contributes its occupancy row (traversed, not edited in the
+    // frozen scalar scene), its return-owned level, and the occupying registry
+    // entry's visible ScalarEdit rows.
+    for bus in crate::mixer::bus_id::BusId::ALL {
+        push_key_press(steps, WindowKey::S);
+        let bus_return = returns.bus_return(bus);
+        let level_identifier = format!("return.{bus}.returnLevel");
+        if boundary_probed.insert("returnLevel".to_owned()) {
+            push_parameter_boundary_probe(
+                steps,
+                &level_identifier,
+                bus_return.return_level(),
+                crate::mixer::bus_return::RETURN_LEVEL_DESCRIPTOR.minimum(),
+                crate::mixer::bus_return::RETURN_LEVEL_DESCRIPTOR.maximum(),
+                crate::mixer::bus_return::RETURN_LEVEL_DESCRIPTOR.fine_step(),
+                crate::mixer::bus_return::RETURN_LEVEL_DESCRIPTOR.coarse_step(),
+            );
+        }
+        push_reversible_adjustments(
+            steps,
+            bus_return.return_level(),
+            crate::mixer::bus_return::RETURN_LEVEL_DESCRIPTOR.minimum(),
+            crate::mixer::bus_return::RETURN_LEVEL_DESCRIPTOR.maximum(),
+            crate::mixer::bus_return::RETURN_LEVEL_DESCRIPTOR.coarse_step(),
+        );
+        push_checkpoint(
+            steps,
+            DemoCheckpoint::new(format!("{level_identifier}.restored")),
+        );
+        let Some(config) = bus_return.effect() else {
+            push_key_press(steps, WindowKey::S);
+            continue;
+        };
+        let descriptor = effects
+            .descriptor(config.capability_id())
+            .expect("validated return occupancy capability is installed");
+        for spec in descriptor.parameters().filter(|spec| {
+            spec.patch_interaction() == PatchInteraction::ScalarEdit
+                && spec.visible_when().is_none_or(|predicate| {
+                    config.value(predicate.parameter_id()) == Some(predicate.equals())
+                })
+                && spec.enabled_when().is_none_or(|predicate| {
+                    config.value(predicate.parameter_id()) == Some(predicate.equals())
+                })
+        }) {
+            push_key_press(steps, WindowKey::S);
+            let value = config
+                .value(spec.id())
+                .and_then(|value| spec.scalar_value(value).ok())
+                .expect("validated return scalar has a finite value");
+            let range = spec
+                .range()
+                .expect("the current effect scalar admission is explicitly bounded");
+            let fine =
+                spec.fine_step()
+                    .expect("editable effect scalar declares a fine step") as f32;
+            let coarse =
+                spec.coarse_step()
+                    .expect("editable effect scalar declares a coarse step") as f32;
+            let identifier = format!("return.{bus}.{}", spec.id());
+            if boundary_probed.insert(identifier.clone()) {
+                push_parameter_boundary_probe(
+                    steps,
+                    &identifier,
+                    value,
+                    range.minimum() as f32,
+                    range.maximum() as f32,
+                    fine,
+                    coarse,
+                );
+            }
+            push_reversible_adjustments(
+                steps,
+                value,
+                range.minimum() as f32,
+                range.maximum() as f32,
+                coarse,
+            );
+            push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
+        }
+        push_key_press(steps, WindowKey::S);
+    }
+    // Focus is on the single distinct global row: master gain.
+    for descriptor in GlobalParameters::surface_descriptor() {
+        let row_value = global_parameters.master_gain_db();
         let identifier = format!("global.{}", descriptor.name());
         if boundary_probed.insert(descriptor.name().to_owned()) {
             push_parameter_boundary_probe(
                 steps,
                 &identifier,
-                global_parameters.value(parameter),
+                row_value,
                 descriptor.minimum(),
                 descriptor.maximum(),
                 descriptor.fine_step(),
@@ -1212,18 +1316,47 @@ fn push_mixer_control_steps(
         }
         push_reversible_adjustments(
             steps,
-            global_parameters.value(parameter),
+            row_value,
             descriptor.minimum(),
             descriptor.maximum(),
             descriptor.coarse_step(),
         );
         push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
-        if parameter_index + 1 < GlobalParameters::surface_descriptor().len() {
-            push_key_press(steps, WindowKey::S);
-        }
     }
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     push_checkpoint(steps, DemoCheckpoint::new("mixer.controls.restored"));
+}
+
+/// Exercises one indexed send row `(track, bus)` on the Inspector through the
+/// one shared send descriptor.
+fn push_mixer_send_steps(
+    steps: &mut Vec<DemoSceneStep>,
+    track_id: MixerTrackId,
+    bus: crate::mixer::bus_id::BusId,
+    initial: f32,
+    boundary_probed: &mut BTreeSet<String>,
+) {
+    let descriptor = crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
+    let identifier = format!("track.{track_id}.sends[{}]", bus.index());
+    if boundary_probed.insert("sends".to_owned()) {
+        push_parameter_boundary_probe(
+            steps,
+            &identifier,
+            initial,
+            descriptor.minimum(),
+            descriptor.maximum(),
+            descriptor.fine_step(),
+            descriptor.coarse_step(),
+        );
+    }
+    push_reversible_adjustments(
+        steps,
+        initial,
+        descriptor.minimum(),
+        descriptor.maximum(),
+        descriptor.coarse_step(),
+    );
+    push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
 }
 
 fn push_mixer_track_parameter_steps(
@@ -1280,9 +1413,8 @@ fn push_patch_effect_control_steps(
     patch: &Patch,
     boundary_probed: &mut BTreeSet<String>,
 ) {
-    if patch.post_effects().is_empty() {
-        return;
-    }
+    // Even a Patch with no configured effect visits its three occupancy rows:
+    // every slot position stays reachable whether occupied or empty (FR-002).
     let instrument = capabilities
         .descriptor(patch.instrument_config().capability_id())
         .expect("validated effect scene Patch instrument is installed");
@@ -1290,70 +1422,82 @@ fn push_patch_effect_control_steps(
         instrument,
         patch.instrument_config(),
         effects,
-        patch.post_effects(),
+        patch.effect_slots(),
     );
     push_key_press(steps, WindowKey::Digit2);
     let mut current_index = 0_usize;
-    for config in patch.post_effects() {
-        let descriptor = effects
-            .descriptor(config.capability_id())
-            .expect("validated effect scene capability is installed");
-        for spec in descriptor.parameters().filter(|spec| {
-            spec.patch_interaction() == PatchInteraction::ScalarEdit
-                && spec.visible_when().is_none_or(|predicate| {
-                    config.value(predicate.parameter_id()) == Some(predicate.equals())
-                })
-                && spec.enabled_when().is_none_or(|predicate| {
-                    config.value(predicate.parameter_id()) == Some(predicate.equals())
-                })
-        }) {
-            let control = PatchControlId::Effect(config.slot_id(), spec.id().clone());
-            let target_index = controls
-                .iter()
-                .position(|candidate| candidate == &control)
-                .expect("the canonical resolver contains each visible effect scalar");
-            for _ in current_index..target_index {
-                push_key_press(steps, WindowKey::S);
-            }
-            current_index = target_index;
-            let value = config
-                .value(spec.id())
-                .and_then(|value| spec.scalar_value(value).ok())
-                .expect("validated effect scalar has a finite value");
-            let range = spec
-                .range()
-                .expect("the current effect scalar admission is explicitly bounded");
-            let fine =
-                spec.fine_step()
-                    .expect("editable effect scalar declares a fine step") as f32;
-            let coarse =
-                spec.coarse_step()
-                    .expect("editable effect scalar declares a coarse step") as f32;
-            let identifier = format!(
-                "patch.{}.effect.{}.{}",
-                patch.id().value(),
-                config.slot_id().value(),
-                spec.id()
-            );
-            if boundary_probed.insert(identifier.clone()) {
-                push_parameter_boundary_probe(
+    for (target_index, control) in controls.iter().enumerate() {
+        match control {
+            PatchControlId::EffectSlot(slot_index) => {
+                // Every occupancy row is reachable whether occupied or empty;
+                // the checkpoint records its stable focus identity.
+                for _ in current_index..target_index {
+                    push_key_press(steps, WindowKey::S);
+                }
+                current_index = target_index;
+                push_checkpoint(
                     steps,
-                    &identifier,
+                    DemoCheckpoint::new(format!("patch.effectSlot.{slot_index}.focused")),
+                );
+            }
+            PatchControlId::Effect(slot_id, parameter_id) => {
+                let config = patch
+                    .post_effects()
+                    .iter()
+                    .find(|config| config.slot_id() == *slot_id)
+                    .expect("the canonical resolver only lists configured effect scalars");
+                let descriptor = effects
+                    .descriptor(config.capability_id())
+                    .expect("validated effect scene capability is installed");
+                let spec = descriptor
+                    .parameter(parameter_id)
+                    .expect("the canonical resolver only lists declared effect scalars");
+                for _ in current_index..target_index {
+                    push_key_press(steps, WindowKey::S);
+                }
+                current_index = target_index;
+                let value = config
+                    .value(spec.id())
+                    .and_then(|value| spec.scalar_value(value).ok())
+                    .expect("validated effect scalar has a finite value");
+                let range = spec
+                    .range()
+                    .expect("the current effect scalar admission is explicitly bounded");
+                let fine = spec
+                    .fine_step()
+                    .expect("editable effect scalar declares a fine step")
+                    as f32;
+                let coarse = spec
+                    .coarse_step()
+                    .expect("editable effect scalar declares a coarse step")
+                    as f32;
+                let identifier = format!(
+                    "patch.{}.effect.{}.{}",
+                    patch.id().value(),
+                    config.slot_id().value(),
+                    spec.id()
+                );
+                if boundary_probed.insert(identifier.clone()) {
+                    push_parameter_boundary_probe(
+                        steps,
+                        &identifier,
+                        value,
+                        range.minimum() as f32,
+                        range.maximum() as f32,
+                        fine,
+                        coarse,
+                    );
+                }
+                push_reversible_adjustments(
+                    steps,
                     value,
                     range.minimum() as f32,
                     range.maximum() as f32,
-                    fine,
                     coarse,
                 );
+                push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
             }
-            push_reversible_adjustments(
-                steps,
-                value,
-                range.minimum() as f32,
-                range.maximum() as f32,
-                coarse,
-            );
-            push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
+            _ => {}
         }
     }
     for _ in 0..current_index {
@@ -1563,6 +1707,99 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
     );
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("engine.context.restored"));
+}
+
+/// WP08: exercises the four WP06 occupancy lifecycle events through the
+/// canonical structural path — a refused request that mutates nothing, a
+/// worker-refused preparation, post-rejection recovery, and (when the effect
+/// registry has entries) a real slot occupancy change that is cleared again
+/// so the scene ends at its structural baseline.
+fn push_topology_occupancy_steps(
+    steps: &mut Vec<DemoSceneStep>,
+    effects: &EffectCapabilityRegistry,
+    patch: &Patch,
+) {
+    let empty_bus = crate::mixer::bus_id::BusId::ALL[7];
+    let open_slot = crate::synth::effect_slot_id::EffectSlotIndex::ALL[2];
+    let absent_entry = crate::synth::EffectCapabilityId::new("effect.absent")
+        .expect("the static absent id is namespaced");
+
+    // A refused occupancy request: an unknown registry entry is rejected
+    // atomically with a typed reason, and nothing enters the lifecycle.
+    steps.push(DemoSceneStep::PassiveAction(
+        SemanticAction::SetSlotOccupancy {
+            patch_id: patch.id(),
+            slot: open_slot,
+            entry: Some(absent_entry),
+        },
+    ));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::after_rejection(
+            "topology.slot.unknownEntryRejected",
+            EventRejection::InvalidEffectConfig,
+        ),
+    );
+
+    // A worker-refused preparation: the reducer records the failure with its
+    // reason and mutates nothing.
+    steps.push(DemoSceneStep::PassiveAction(
+        SemanticAction::SetReturnOccupancy {
+            bus: empty_bus,
+            entry: None,
+        },
+    ));
+    steps.push(DemoSceneStep::AdvanceWorker(DemoWorkerAdvance::Fail(
+        EngineSelectionFailure::PreparationFailed,
+    )));
+    steps.push(DemoSceneStep::AdvanceStructural);
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new("topology.return.preparationFailed"),
+    );
+
+    // Post-rejection recovery: the same change travels the canonical
+    // prepare/stage/activate/acknowledge path.
+    steps.push(DemoSceneStep::PassiveAction(
+        SemanticAction::SetReturnOccupancy {
+            bus: empty_bus,
+            entry: None,
+        },
+    ));
+    push_topology_completion(steps, "topology.return.cleared");
+
+    // A real occupancy change when the registry has entries: occupy one open
+    // Patch slot with the first registry entry, then clear it so the scene
+    // ends at its structural baseline. The entry is positional — nothing in
+    // the scene names an effect.
+    if let Some(descriptor) = effects.descriptors().first() {
+        steps.push(DemoSceneStep::PassiveAction(
+            SemanticAction::SetSlotOccupancy {
+                patch_id: patch.id(),
+                slot: open_slot,
+                entry: Some(descriptor.id().clone()),
+            },
+        ));
+        push_topology_completion(steps, "topology.slot.occupied");
+        steps.push(DemoSceneStep::PassiveAction(
+            SemanticAction::SetSlotOccupancy {
+                patch_id: patch.id(),
+                slot: open_slot,
+                entry: None,
+            },
+        ));
+        push_topology_completion(steps, "topology.slot.restored");
+    }
+}
+
+/// Drives one accepted occupancy request through prepare, stage, block-boundary
+/// activation, and acknowledgement.
+fn push_topology_completion(steps: &mut Vec<DemoSceneStep>, checkpoint: &str) {
+    steps.push(DemoSceneStep::AdvanceWorker(DemoWorkerAdvance::Healthy));
+    steps.push(DemoSceneStep::AdvanceStructural);
+    steps.push(DemoSceneStep::Tick(TICK_DURATION));
+    steps.push(DemoSceneStep::AdvanceStructural);
+    push_checkpoint(steps, DemoCheckpoint::new(checkpoint));
 }
 
 #[derive(Clone, Copy)]
@@ -1804,6 +2041,7 @@ fn build_expected_coverage(
     capabilities: &CapabilityRegistry,
     effects: &EffectCapabilityRegistry,
     patches: &[Patch],
+    returns: &crate::mixer::bus_return::BusReturnBank,
 ) -> Vec<String> {
     let mut expected = Vec::new();
     for descriptor in AppEvent::surface_descriptor() {
@@ -1850,6 +2088,20 @@ fn build_expected_coverage(
             } => {
                 expected.push("event.engineActivationAcknowledged".to_owned());
             }
+            crate::control::app_event::AppEventSurfaceDescriptor::SetSlotOccupancy { .. } => {
+                expected.push("event.setSlotOccupancy".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::SetReturnOccupancy { .. } => {
+                expected.push("event.setReturnOccupancy".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::TopologyPrepared { .. } => {
+                expected.push("event.topologyPrepared".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::TopologyPreparationFailed {
+                ..
+            } => {
+                expected.push("event.topologyPreparationFailed".to_owned());
+            }
         }
     }
 
@@ -1889,7 +2141,7 @@ fn build_expected_coverage(
                 descriptor,
                 patch.instrument_config(),
                 effects,
-                patch.post_effects(),
+                patch.effect_slots(),
             )
             .into_iter()
             .map(|control| format!("patchControl.{control}")),
@@ -1981,10 +2233,17 @@ fn build_expected_coverage(
         }
     }
     for track_id in MixerTrackId::ALL {
-        for parameter in MixerTrackParameter::ALL {
+        for parameter in MixerTrackParameter::MAIN {
             expected.push(format!("parameter.track.{track_id}.{parameter}"));
             expected.push(format!(
                 "effect.parameterSnapshot.track.{track_id}.{parameter}"
+            ));
+        }
+        for bus in crate::mixer::bus_id::BusId::ALL {
+            expected.push(format!("parameter.track.{track_id}.sends[{}]", bus.index()));
+            expected.push(format!(
+                "effect.parameterSnapshot.track.{track_id}.sends[{}]",
+                bus.index()
             ));
         }
     }
@@ -2186,9 +2445,44 @@ fn build_expected_coverage(
         let parameter = descriptor.name();
         expected.push(format!("parameter.global.{parameter}"));
         expected.push(format!("effect.parameterSnapshot.global.{parameter}"));
-        expected.push(format!("property.stateTree.global.{parameter}"));
-        expected.push(format!("property.stateTree.parameters.global.{parameter}"));
     }
+    // WP07: every return contributes its return-owned level plus the
+    // occupying registry entry's visible ScalarEdit rows, addressed by BusId.
+    for bus in crate::mixer::bus_id::BusId::ALL {
+        expected.push(format!("parameter.return.{bus}.returnLevel"));
+        expected.push(format!("effect.parameterSnapshot.return.{bus}.returnLevel"));
+        let Some(config) = returns.bus_return(bus).effect() else {
+            continue;
+        };
+        let descriptor = effects
+            .descriptor(config.capability_id())
+            .expect("validated return occupancy capability is installed");
+        for spec in descriptor.parameters().filter(|spec| {
+            spec.patch_interaction() == PatchInteraction::ScalarEdit
+                && spec.visible_when().is_none_or(|predicate| {
+                    config.value(predicate.parameter_id()) == Some(predicate.equals())
+                })
+                && spec.enabled_when().is_none_or(|predicate| {
+                    config.value(predicate.parameter_id()) == Some(predicate.equals())
+                })
+        }) {
+            expected.push(format!("parameter.return.{bus}.{}", spec.id()));
+            expected.push(format!(
+                "effect.parameterSnapshot.return.{bus}.{}",
+                spec.id()
+            ));
+        }
+    }
+    // WP06: the six retired reverb/delay `global` leaves are gone from the
+    // tree; return-owned state serializes as the indexed `returns` section.
+    expected.push("property.stateTree.global.masterGainDb".to_owned());
+    expected.push("property.stateTree.returns.effect".to_owned());
+    expected.push("property.stateTree.returns.returnLevel".to_owned());
+    // The snapshot's global object keeps only master gain (WP05): the six
+    // retired reverb/delay leaves no longer exist to be covered; their values
+    // are the indexed `parameters.returns` entries, whose array property is
+    // covered through the StateTree property descriptor below.
+    expected.push("property.stateTree.parameters.global.masterGainDb".to_owned());
 
     expected.extend(
         EventLog::serialized_property_descriptor()
@@ -2318,7 +2612,7 @@ mod tests {
     }
 
     fn globals() -> GlobalParameters {
-        GlobalParameters::new(0.0, 0.5, 0.4, 0.35, 250.0, 0.3, 0.25).unwrap()
+        GlobalParameters::new(0.0).unwrap()
     }
 
     fn registry() -> crate::synth::CapabilityRegistry {
@@ -2352,10 +2646,16 @@ mod tests {
             assert!(scene.expected_coverage().contains(&identifier));
         }
         for track_id in MixerTrackId::ALL {
-            for parameter in MixerTrackParameter::ALL {
+            for parameter in MixerTrackParameter::MAIN {
                 assert!(scene
                     .expected_coverage()
                     .contains(&format!("parameter.track.{track_id}.{parameter}")));
+            }
+            for bus in crate::mixer::bus_id::BusId::ALL {
+                assert!(scene.expected_coverage().contains(&format!(
+                    "parameter.track.{track_id}.sends[{}]",
+                    bus.index()
+                )));
             }
         }
         for descriptor in GlobalParameters::surface_descriptor() {
@@ -2408,15 +2708,15 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 17);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            20
+            24
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),
             7
         );
         assert_eq!(PatchOutput::surface_descriptor().len(), 2);
-        assert_eq!(MixerTrackParameters::surface_descriptor().len(), 6);
-        assert_eq!(GlobalParameters::surface_descriptor().len(), 7);
+        assert_eq!(MixerTrackParameters::surface_descriptor().len(), 4);
+        assert_eq!(GlobalParameters::surface_descriptor().len(), 1);
         assert_eq!(EventRejection::surface_descriptor().len(), 17);
         for descriptor in PatchOutput::surface_descriptor() {
             assert!(scene.expected_coverage().contains(&format!(
@@ -2426,10 +2726,16 @@ mod tests {
             )));
         }
         for track_id in MixerTrackId::ALL {
-            for parameter in MixerTrackParameter::ALL {
+            for parameter in MixerTrackParameter::MAIN {
                 assert!(scene
                     .expected_coverage()
                     .contains(&format!("parameter.track.{track_id}.{parameter}")));
+            }
+            for bus in crate::mixer::bus_id::BusId::ALL {
+                assert!(scene.expected_coverage().contains(&format!(
+                    "parameter.track.{track_id}.sends[{}]",
+                    bus.index()
+                )));
             }
         }
     }
@@ -2481,15 +2787,18 @@ mod tests {
                 checkpoint.expected_last_rejection() == Some(EventRejection::ParameterAtBoundary)
             })
             .count();
+        // Continuous track classes (level, pan) plus the one shared indexed
+        // send descriptor plus the one shared return-level descriptor.
         let bounded_parameter_count = PatchOutput::surface_descriptor().len()
             + VoiceEnvelope::surface_descriptor().len()
-            + MixerTrackParameter::ALL
+            + MixerTrackParameter::MAIN
                 .into_iter()
                 .filter(|parameter| {
                     parameter.descriptor().kind()
                         == crate::mixer::mixer_track_parameters::MixerTrackParameterKind::Continuous
                 })
                 .count()
+            + 2
             + GlobalParameters::surface_descriptor().len();
         assert_eq!(boundary_rejections, bounded_parameter_count * 2);
         assert_eq!(

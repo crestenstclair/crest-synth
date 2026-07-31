@@ -1040,7 +1040,7 @@ mod tests {
     fn tree_and_projection() -> (StateTree, TextProjection) {
         let provider =
             crate::adapter::production_instruments::production_soundfont_capability().unwrap();
-        let global = GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap();
+        let global = GlobalParameters::new(-3.0).unwrap();
         let mut state =
             AppState::for_graph(provider.registry().unwrap(), global, GraphRevision::INITIAL);
         let patches = vec![

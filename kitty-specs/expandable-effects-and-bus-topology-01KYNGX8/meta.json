@@ -2,10 +2,11 @@
   "change_mode": "bulk_edit",
   "coordination_branch": "kitty/mission-expandable-effects-and-bus-topology-01KYNGX8",
   "created_at": "2026-07-28T23:28:10.989750+00:00",
+  "crest_spec_impact": "structural",
   "flattened": false,
   "friendly_name": "Expandable Effects and Bus Topology",
   "mission_id": "01KYNGX8QA8V49BX2WQ1Q6G2BP",
-  "mission_number": null,
+  "mission_number": 1,
   "mission_slug": "expandable-effects-and-bus-topology-01KYNGX8",
   "mission_type": "software-dev",
   "pr_bound": true,
@@ -15,6 +16,5 @@
   "source_description": "Roadmap Phase 3 - Expandable effects and bus topology. Opened from ROADMAP.md after Phase 1, Phase 2, and the corrective sixteen-track mixer routing gate completed.",
   "target_branch": "feat/expandable-effects-and-bus-topology",
   "topology": "coord",
-  "vcs": "git",
-  "crest_spec_impact": "structural"
+  "vcs": "git"
 }

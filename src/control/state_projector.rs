@@ -407,7 +407,7 @@ impl StateProjector {
         &self,
         state: &AppState,
     ) -> Result<ParameterSnapshot, StateProjectionError> {
-        ParameterSnapshot::project_patches_with_effects(
+        ParameterSnapshot::project_patches_with_effects_and_returns(
             state.generation(),
             state.engine_selection().projection_graph_revision(),
             *state.global(),
@@ -415,6 +415,7 @@ impl StateProjector {
             state.patches(),
             state.capabilities(),
             state.effects(),
+            state.bus_returns(),
         )
         .map_err(|error| match error {
             ParameterSnapshotError::InvalidInstrumentConfig { .. } => {
@@ -577,23 +578,44 @@ impl StateProjector {
                 if page.is_some() {
                     return Err(StateProjectionError::InvalidSelection);
                 }
+                let routed_for = |track_id: &crate::mixer::mixer_track_id::MixerTrackId| {
+                    state
+                        .patches
+                        .iter()
+                        .filter(|patch| patch.output.track_id() == *track_id)
+                        .map(|patch| format!("{:02}", patch.id))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
                 let (primary, secondary, path) = match semantic.focus_path().control_id() {
                     SemanticControlId::Mixer(MixerControlId::Track {
                         track_id,
                         parameter,
-                    }) => {
-                        let routed = state
-                            .patches
-                            .iter()
-                            .filter(|patch| patch.output.track_id() == *track_id)
-                            .map(|patch| format!("{:02}", patch.id))
-                            .collect::<Vec<_>>();
-                        (
-                            format!("MIXER · {track_id}"),
-                            format!("ROUTED PATCHES · {}", routed.join(", ")),
-                            format!("MIXER / {track_id} / {}", parameter.name()),
-                        )
-                    }
+                    }) => (
+                        format!("MIXER · {track_id}"),
+                        format!("ROUTED PATCHES · {}", routed_for(track_id)),
+                        format!("MIXER / {track_id} / {}", parameter.name()),
+                    ),
+                    SemanticControlId::Mixer(MixerControlId::Send { track_id, bus }) => (
+                        format!("MIXER · {track_id}"),
+                        format!("ROUTED PATCHES · {}", routed_for(track_id)),
+                        format!("MIXER / {track_id} / send[{}]", bus.index()),
+                    ),
+                    SemanticControlId::Mixer(MixerControlId::ReturnOccupancy { bus }) => (
+                        "MIXER · RETURNS".to_owned(),
+                        format!("{} PATCHES · BUS RETURNS", state.patches.len()),
+                        format!("MIXER / RETURN {bus} / occupancy"),
+                    ),
+                    SemanticControlId::Mixer(MixerControlId::ReturnLevel { bus }) => (
+                        "MIXER · RETURNS".to_owned(),
+                        format!("{} PATCHES · BUS RETURNS", state.patches.len()),
+                        format!("MIXER / RETURN {bus} / returnLevel"),
+                    ),
+                    SemanticControlId::Mixer(MixerControlId::ReturnEffect { bus, parameter }) => (
+                        "MIXER · RETURNS".to_owned(),
+                        format!("{} PATCHES · BUS RETURNS", state.patches.len()),
+                        format!("MIXER / RETURN {bus} / {parameter}"),
+                    ),
                     SemanticControlId::Mixer(MixerControlId::Global { parameter }) => (
                         "MIXER · GLOBAL".to_owned(),
                         format!("{} PATCHES · MASTER OUTPUT", state.patches.len()),
@@ -650,12 +672,9 @@ fn selection_from_serialized(
                 parameter_index,
             })
         }
-        SemanticControlId::Mixer(MixerControlId::Global { .. }) => {
-            Err(StateProjectionError::InvalidSelection)
-        }
-        SemanticControlId::Patch(_) | SemanticControlId::SurfaceRoot => {
-            Err(StateProjectionError::InvalidSelection)
-        }
+        SemanticControlId::Mixer(_)
+        | SemanticControlId::Patch(_)
+        | SemanticControlId::SurfaceRoot => Err(StateProjectionError::InvalidSelection),
     }
 }
 
@@ -682,15 +701,9 @@ fn render_mixer_text(
             routed.join(",")
         ));
         let values = *state.mixer.track(track_id);
-        for parameter in crate::mixer::mixer_track_parameters::MixerTrackParameter::ALL {
+        for parameter in crate::mixer::mixer_track_parameters::MixerTrackParameter::MAIN {
             let descriptor = parameter.descriptor();
-            let path = if crate::mixer::mixer_track_parameters::MixerTrackParameter::MAIN
-                .contains(&parameter)
-            {
-                crate::control::FocusPath::mixer_track(track_id, parameter)
-            } else {
-                crate::control::FocusPath::mixer_inspector(track_id, parameter)
-            };
+            let path = crate::control::FocusPath::mixer_track(track_id, parameter);
             let selected = active == &path;
             let value = values
                 .scalar_value(parameter)
@@ -709,26 +722,95 @@ fn render_mixer_text(
                 &value,
             );
         }
+        // All eight indexed sends in ascending BusId order.
+        for bus in crate::mixer::bus_id::BusId::ALL {
+            let path = crate::control::FocusPath::mixer_send(track_id, bus);
+            push_parameter_line(
+                &mut lines,
+                &mut selected_line,
+                active == &path,
+                &format!("send[{}]", bus.index()),
+                values.send(bus),
+            );
+        }
+    }
+
+    lines.push(SEPARATOR.to_owned());
+    lines.push("RETURNS".to_owned());
+    for bus in crate::mixer::bus_id::BusId::ALL {
+        let entry = state
+            .returns
+            .entries()
+            .get(bus.index())
+            .ok_or(StateProjectionError::InvalidSelection)?;
+        lines.push(format!("RETURN {bus}"));
+        let occupancy = entry.effect.as_ref().map_or_else(
+            || "empty".to_owned(),
+            |config| config.capability_id().to_string(),
+        );
+        push_parameter_text_line(
+            &mut lines,
+            &mut selected_line,
+            active == &crate::control::FocusPath::mixer_return_occupancy(bus),
+            "occupancy",
+            &occupancy,
+        );
+        push_parameter_line(
+            &mut lines,
+            &mut selected_line,
+            active == &crate::control::FocusPath::mixer_return_level(bus),
+            "returnLevel",
+            entry.return_level,
+        );
+        let Some(config) = entry.effect.as_ref() else {
+            continue;
+        };
+        let descriptor = state
+            .effects
+            .descriptor(config.capability_id())
+            .ok_or(StateProjectionError::InvalidEffectConfig)?;
+        let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
+            predicate.is_none_or(|predicate| {
+                config.value(predicate.parameter_id()) == Some(predicate.equals())
+            })
+        };
+        for spec in descriptor.parameters().filter(|spec| {
+            spec.patch_interaction() == crate::synth::PatchInteraction::ScalarEdit
+                && predicate_satisfied(spec.visible_when())
+                && predicate_satisfied(spec.enabled_when())
+        }) {
+            let value = config
+                .value(spec.id())
+                .and_then(|value| spec.scalar_value(value).ok())
+                .ok_or(StateProjectionError::InvalidEffectConfig)?;
+            let path = crate::control::FocusPath::mixer_return_effect(
+                bus,
+                spec.id().clone(),
+                config.capability_id().clone(),
+            );
+            push_parameter_line(
+                &mut lines,
+                &mut selected_line,
+                active == &path,
+                spec.id().as_str(),
+                value,
+            );
+        }
     }
 
     lines.push(SEPARATOR.to_owned());
     lines.push("GLOBAL".to_owned());
 
-    let global_parameters = [
-        ("masterGainDb", state.global.master_gain_db),
-        ("reverbRoomSize", state.global.reverb_room_size),
-        ("reverbDamping", state.global.reverb_damping),
-        ("reverbReturn", state.global.reverb_return),
-        ("delayMilliseconds", state.global.delay_milliseconds),
-        ("delayFeedback", state.global.delay_feedback),
-        ("delayReturn", state.global.delay_return),
-    ];
-    for (parameter_index, (name, value)) in global_parameters.into_iter().enumerate() {
-        let parameter = crate::mixer::global_parameters::GlobalParameters::surface_descriptor()
-            [parameter_index]
-            .parameter();
+    for descriptor in crate::mixer::global_parameters::GlobalParameters::surface_descriptor() {
+        let parameter = descriptor.parameter();
         let selected = active == &crate::control::FocusPath::mixer_global(parameter);
-        push_parameter_line(&mut lines, &mut selected_line, selected, name, value);
+        push_parameter_line(
+            &mut lines,
+            &mut selected_line,
+            selected,
+            parameter.name(),
+            state.global.master_gain_db,
+        );
     }
 
     let selected_line = selected_line.ok_or(StateProjectionError::InvalidSelection)?;
@@ -801,14 +883,39 @@ fn render_patch_text(
             ));
         }
     }
-    for effect in page.effects() {
+    for slot in page.effects() {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SlotHeader<'a> {
+            slot_index: crate::synth::effect_slot_id::EffectSlotIndex,
+            occupancy_control_id: crate::control::PatchControlId,
+            occupancy: &'a crate::control::PatchPageSlotOccupancy,
+            choices: &'a [crate::control::PatchPageOccupancyChoice],
+            requested_choice_id: Option<&'a str>,
+            status: Option<crate::control::EngineSelectionStatusKind>,
+            failure: Option<crate::control::EngineSelectionFailure>,
+            editable: bool,
+        }
+        let selected = slot.occupancy_control_id() == page.focused_control_id();
+        if selected {
+            selected_line = Some(lines.len());
+        }
+        let marker = if selected { '>' } else { ' ' };
+        let header = SlotHeader {
+            slot_index: slot.slot_index(),
+            occupancy_control_id: slot.occupancy_control_id(),
+            occupancy: slot.occupancy(),
+            choices: slot.choices(),
+            requested_choice_id: slot.requested_choice_id(),
+            status: slot.status(),
+            failure: slot.failure(),
+            editable: slot.editable(),
+        };
         lines.push(format!(
-            " EFFECT slot={} capability={} label={}",
-            effect.slot_id(),
-            effect.capability_id(),
-            effect.label()
+            "{marker} EFFECT_SLOT {}",
+            serde_json::to_string(&header).map_err(|_| StateProjectionError::StateSerialization)?
         ));
-        for section in effect.sections() {
+        for section in slot.sections() {
             lines.push(format!(
                 " EFFECT_SECTION id={} label={}",
                 section.id(),
@@ -931,7 +1038,7 @@ mod tests {
     use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn global_parameters() -> GlobalParameters {
-        GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap()
+        GlobalParameters::new(-3.0).unwrap()
     }
 
     fn patch(id: u32, gain_db: f32) -> Patch {
@@ -1027,7 +1134,8 @@ mod tests {
             ))
         );
         assert_eq!(decoded.patches[0].output.trim_gain_db(), -6.0);
-        assert_eq!(decoded.global.delay_milliseconds, 375.0);
+        assert!(decoded.global.master_gain_db.is_finite());
+        assert!(decoded.returns.is_complete());
         assert_eq!(
             decoded.interaction.remembered_mixer_main.control_id(),
             &SemanticControlId::Mixer(MixerControlId::Track {
@@ -1300,7 +1408,7 @@ mod tests {
                 &descriptor,
                 state.patches()[0].instrument_config(),
                 state.effects(),
-                state.patches()[0].post_effects(),
+                state.patches()[0].effect_slots(),
             );
 
             for (index, control) in controls.iter().cloned().enumerate() {
@@ -1472,10 +1580,10 @@ mod tests {
         state
             .apply(AppEvent::EnginePreparationFailed {
                 request_id: failed_correlation.request_id(),
-                patch_id: failed_correlation.patch_id(),
+                patch_id: failed_correlation.patch_id().unwrap(),
                 intent: failed_correlation.intent().clone(),
-                source_capability_id: failed_correlation.source_capability_id().clone(),
-                target_capability_id: failed_correlation.target_capability_id().clone(),
+                source_capability_id: failed_correlation.source_capability_id().unwrap().clone(),
+                target_capability_id: failed_correlation.target_capability_id().unwrap().clone(),
                 source_graph_revision: failed_correlation.source_graph_revision(),
                 target_graph_revision: target_revision,
                 failure: EngineSelectionFailure::WorkerUnavailable,
@@ -1506,10 +1614,10 @@ mod tests {
         state
             .apply(AppEvent::EnginePrepared {
                 request_id: correlation.request_id(),
-                patch_id: correlation.patch_id(),
+                patch_id: correlation.patch_id().unwrap(),
                 intent: correlation.intent().clone(),
-                source_capability_id: correlation.source_capability_id().clone(),
-                target_capability_id: correlation.target_capability_id().clone(),
+                source_capability_id: correlation.source_capability_id().unwrap().clone(),
+                target_capability_id: correlation.target_capability_id().unwrap().clone(),
                 source_graph_revision: correlation.source_graph_revision(),
                 target_graph_revision: target_revision,
                 candidate_config,

@@ -408,36 +408,86 @@ where
             }
         };
         let failure_event =
-            |failure| engine_preparation_failed_event(effect, target_graph_revision, failure);
+            |failure| structural_preparation_failed_event(effect, target_graph_revision, failure);
         let Some(runtime) = self.engine_selection_runtime.as_mut() else {
             self.deferred_engine_failure =
                 Some(failure_event(EngineSelectionFailure::WorkerUnavailable));
             return;
         };
 
+        // Occupancy intents carry the complete topology delta themselves;
+        // the request applies it to the active Patch set and return bank.
+        if effect.intent().is_occupancy() {
+            let correlation = match GraphPreparationCorrelation::for_occupancy(
+                effect.request_id(),
+                effect.intent().clone(),
+                effect.source_graph_revision(),
+                target_graph_revision,
+            ) {
+                Ok(correlation) => correlation,
+                Err(error) => {
+                    self.deferred_engine_failure = Some(failure_event(map_request_failure(error)));
+                    return;
+                }
+            };
+            let request = match GraphPreparationRequest::occupancy(
+                correlation,
+                self.state.patches(),
+                self.state.bus_returns(),
+                self.state.generation(),
+                *self.state.global(),
+                *self.state.mixer(),
+                runtime.audio_config,
+                runtime.factory.registry(),
+                self.state.effects(),
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.deferred_engine_failure = Some(failure_event(map_request_failure(error)));
+                    return;
+                }
+            };
+            if runtime.worker.try_submit(request).is_err() {
+                self.deferred_engine_failure =
+                    Some(failure_event(EngineSelectionFailure::WorkerUnavailable));
+            }
+            return;
+        }
+
+        let (Some(patch_id), Some(source_capability_id), Some(target_capability_id)) = (
+            effect.patch_id(),
+            effect.source_capability_id(),
+            effect.target_capability_id(),
+        ) else {
+            self.deferred_engine_failure =
+                Some(failure_event(EngineSelectionFailure::GraphIncompatible));
+            return;
+        };
         let source_config = self
             .state
             .patches()
             .iter()
-            .find(|patch| patch.id() == effect.patch_id())
+            .find(|patch| patch.id() == patch_id)
             .map(|patch| patch.instrument_config());
         let candidate_result = match effect.intent() {
             StructuralEditIntent::ReplaceCapability { .. } => {
-                runtime.factory.create(effect.target_capability_id())
+                runtime.factory.create(target_capability_id)
             }
             StructuralEditIntent::ReplaceParameterChoice {
                 parameter_id,
                 choice_id,
                 ..
             } => source_config
-                .ok_or_else(|| {
-                    CapabilityError::UnknownCapability(effect.source_capability_id().clone())
-                })
+                .ok_or_else(|| CapabilityError::UnknownCapability(source_capability_id.clone()))
                 .and_then(|source| {
                     runtime
                         .factory
                         .replace_structural_choice(source, parameter_id, choice_id)
                 }),
+            StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetReturnOccupancy { .. } => {
+                unreachable!("occupancy intents were submitted above")
+            }
         };
         let candidate_config = match candidate_result {
             Ok(config) => config,
@@ -450,10 +500,10 @@ where
         };
         let correlation = match GraphPreparationCorrelation::new_with_intent(
             effect.request_id(),
-            effect.patch_id(),
+            patch_id,
             effect.intent().clone(),
-            effect.source_capability_id().clone(),
-            effect.target_capability_id().clone(),
+            source_capability_id.clone(),
+            target_capability_id.clone(),
             effect.source_graph_revision(),
             target_graph_revision,
         ) {
@@ -473,6 +523,7 @@ where
             runtime.audio_config,
             runtime.factory.registry(),
             self.state.effects(),
+            self.state.bus_returns(),
         ) {
             Ok(request) => request,
             Err(error) => {
@@ -578,15 +629,39 @@ where
                 correlation,
                 failure,
             } => {
-                let event = AppEvent::EnginePreparationFailed {
-                    request_id: correlation.request_id(),
-                    patch_id: correlation.patch_id(),
-                    intent: correlation.intent().clone(),
-                    source_capability_id: correlation.source_capability_id().clone(),
-                    target_capability_id: correlation.target_capability_id().clone(),
-                    source_graph_revision: correlation.source_graph_revision(),
-                    target_graph_revision: correlation.target_graph_revision(),
-                    failure,
+                let event = if correlation.intent().is_occupancy() {
+                    AppEvent::TopologyPreparationFailed {
+                        request_id: correlation.request_id(),
+                        intent: correlation.intent().clone(),
+                        source_graph_revision: correlation.source_graph_revision(),
+                        target_graph_revision: correlation.target_graph_revision(),
+                        failure,
+                    }
+                } else {
+                    AppEvent::EnginePreparationFailed {
+                        request_id: correlation.request_id(),
+                        patch_id: correlation
+                            .patch_id()
+                            .ok_or(StructuralAdvanceError::Status(
+                                EngineSelectionStatusError::MissingCorrelation,
+                            ))?,
+                        intent: correlation.intent().clone(),
+                        source_capability_id: correlation
+                            .source_capability_id()
+                            .ok_or(StructuralAdvanceError::Status(
+                                EngineSelectionStatusError::MissingCorrelation,
+                            ))?
+                            .clone(),
+                        target_capability_id: correlation
+                            .target_capability_id()
+                            .ok_or(StructuralAdvanceError::Status(
+                                EngineSelectionStatusError::MissingCorrelation,
+                            ))?
+                            .clone(),
+                        source_graph_revision: correlation.source_graph_revision(),
+                        target_graph_revision: correlation.target_graph_revision(),
+                        failure,
+                    }
                 };
                 match self.dispatch_from(event, EventSource::Worker) {
                     Ok(_) => progress.failure_dispatched = true,
@@ -598,15 +673,42 @@ where
                 candidate_config,
                 mut prepared_graph,
             } => {
-                let event = AppEvent::EnginePrepared {
-                    request_id: correlation.request_id(),
-                    patch_id: correlation.patch_id(),
-                    intent: correlation.intent().clone(),
-                    source_capability_id: correlation.source_capability_id().clone(),
-                    target_capability_id: correlation.target_capability_id().clone(),
-                    source_graph_revision: correlation.source_graph_revision(),
-                    target_graph_revision: correlation.target_graph_revision(),
-                    candidate_config,
+                let event = if correlation.intent().is_occupancy() {
+                    AppEvent::TopologyPrepared {
+                        request_id: correlation.request_id(),
+                        intent: correlation.intent().clone(),
+                        source_graph_revision: correlation.source_graph_revision(),
+                        target_graph_revision: correlation.target_graph_revision(),
+                    }
+                } else {
+                    AppEvent::EnginePrepared {
+                        request_id: correlation.request_id(),
+                        patch_id: correlation
+                            .patch_id()
+                            .ok_or(StructuralAdvanceError::Status(
+                                EngineSelectionStatusError::MissingCorrelation,
+                            ))?,
+                        intent: correlation.intent().clone(),
+                        source_capability_id: correlation
+                            .source_capability_id()
+                            .ok_or(StructuralAdvanceError::Status(
+                                EngineSelectionStatusError::MissingCorrelation,
+                            ))?
+                            .clone(),
+                        target_capability_id: correlation
+                            .target_capability_id()
+                            .ok_or(StructuralAdvanceError::Status(
+                                EngineSelectionStatusError::MissingCorrelation,
+                            ))?
+                            .clone(),
+                        source_graph_revision: correlation.source_graph_revision(),
+                        target_graph_revision: correlation.target_graph_revision(),
+                        candidate_config: candidate_config.ok_or(
+                            StructuralAdvanceError::Status(
+                                EngineSelectionStatusError::MissingCorrelation,
+                            ),
+                        )?,
+                    }
                 };
                 let record_sequence = self.event_log.next_sequence();
                 if let Err(rejection) = self.dispatch_from(event, EventSource::Worker) {
@@ -614,6 +716,9 @@ where
                     return Ok(());
                 }
 
+                let scope = replacement_scope(&correlation).ok_or(
+                    StructuralAdvanceError::Status(EngineSelectionStatusError::MissingCorrelation),
+                )?;
                 prepared_graph
                     .refresh_initial_parameters(self.current_parameters)
                     .map_err(StructuralAdvanceError::Refresh)?;
@@ -622,7 +727,7 @@ where
                     .as_mut()
                     .expect("a polled worker result retains its configured runtime")
                     .coordinator
-                    .stage_replacement(prepared_graph, correlation.patch_id())
+                    .stage_replacement(prepared_graph, scope)
                     .map_err(|error| {
                         let failure = error.reason();
                         drop(error.into_graph());
@@ -727,6 +832,11 @@ where
     }
 
     /// Returns the immutable accepted Patch set used to prepare audio graphs.
+    /// Returns the canonical eight-return bank owned by accepted state.
+    pub const fn bus_returns(&self) -> &crate::mixer::bus_return::BusReturnBank {
+        self.state.bus_returns()
+    }
+
     pub fn patches(&self) -> &[crate::synth::patch::Patch] {
         self.state.patches()
     }
@@ -795,17 +905,44 @@ where
     }
 }
 
-fn engine_preparation_failed_event(
+/// Derives the layout-admission scope for one correlated replacement.
+///
+/// WP10: delegated to the correlation's canonical derivation so publication
+/// admission and the renderer's voice carry-over share one scope vocabulary.
+fn replacement_scope(
+    correlation: &crate::real_time::GraphPreparationCorrelation,
+) -> Option<crate::real_time::GraphReplacementScope> {
+    correlation.replacement_scope()
+}
+
+fn structural_preparation_failed_event(
     effect: &EngineSelectionEffect,
     target_graph_revision: GraphRevision,
     failure: EngineSelectionFailure,
 ) -> AppEvent {
+    if effect.intent().is_occupancy() {
+        return AppEvent::TopologyPreparationFailed {
+            request_id: effect.request_id(),
+            intent: effect.intent().clone(),
+            source_graph_revision: effect.source_graph_revision(),
+            target_graph_revision,
+            failure,
+        };
+    }
     AppEvent::EnginePreparationFailed {
         request_id: effect.request_id(),
-        patch_id: effect.patch_id(),
+        patch_id: effect
+            .patch_id()
+            .expect("instrument intents carry their Patch identity"),
         intent: effect.intent().clone(),
-        source_capability_id: effect.source_capability_id().clone(),
-        target_capability_id: effect.target_capability_id().clone(),
+        source_capability_id: effect
+            .source_capability_id()
+            .expect("instrument intents carry their source capability")
+            .clone(),
+        target_capability_id: effect
+            .target_capability_id()
+            .expect("instrument intents carry their target capability")
+            .clone(),
         source_graph_revision: effect.source_graph_revision(),
         target_graph_revision,
         failure,
@@ -851,8 +988,12 @@ fn map_request_failure(error: GraphPreparationRequestError) -> EngineSelectionFa
         }
         GraphPreparationRequestError::InvalidActiveConfig
         | GraphPreparationRequestError::InvalidActiveEffectConfig
-        | GraphPreparationRequestError::InvalidCandidateConfig => {
+        | GraphPreparationRequestError::InvalidCandidateConfig
+        | GraphPreparationRequestError::InvalidOccupancy => {
             EngineSelectionFailure::InvalidDefaultConfig
+        }
+        GraphPreparationRequestError::UnknownEffectEntry => {
+            EngineSelectionFailure::UnknownCapability
         }
         GraphPreparationRequestError::MissingRequestIdentity
         | GraphPreparationRequestError::CapabilityUnchanged
@@ -984,7 +1125,7 @@ mod tests {
     }
 
     fn global_parameters() -> GlobalParameters {
-        GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap()
+        GlobalParameters::new(0.0).unwrap()
     }
 
     fn patch(id: u32, _gain_db: f32) -> Patch {
@@ -1271,10 +1412,10 @@ mod tests {
             .dispatch_from(
                 AppEvent::EnginePreparationFailed {
                     request_id: correlation.request_id(),
-                    patch_id: correlation.patch_id(),
+                    patch_id: correlation.patch_id().unwrap(),
                     intent: correlation.intent().clone(),
-                    source_capability_id: correlation.source_capability_id().clone(),
-                    target_capability_id: correlation.target_capability_id().clone(),
+                    source_capability_id: correlation.source_capability_id().unwrap().clone(),
+                    target_capability_id: correlation.target_capability_id().unwrap().clone(),
                     source_graph_revision: correlation.source_graph_revision(),
                     target_graph_revision: GraphRevision::new(2).unwrap(),
                     failure: EngineSelectionFailure::AssetUnavailable,

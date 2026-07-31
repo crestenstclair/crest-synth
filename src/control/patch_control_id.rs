@@ -1,4 +1,5 @@
 use crate::mixer::patch_output::PatchOutputParameter;
+use crate::synth::effect_slot_id::EffectSlotIndex;
 use crate::synth::{
     CapabilityDescriptor, EffectCapabilityRegistry, EffectSlotId, InstrumentConfig, ParameterId,
     PatchInteraction, PostEffectConfig, VoiceEnvelope, VoiceEnvelopeParameter,
@@ -11,12 +12,18 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 
 /// Stable semantic focus identity inside the PATCH context.
+///
+/// `EffectSlot` is one of the three ordered occupancy rows: its identity is
+/// the position alone, so the row survives every occupancy change and an
+/// empty slot stays reachable. `Effect` addresses one configured occupant's
+/// scalar row through the stable instance and parameter identities.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum PatchControlId {
     Engine,
     Output(PatchOutputParameter),
     Envelope(VoiceEnvelopeParameter),
     Capability(ParameterId),
+    EffectSlot(EffectSlotIndex),
     Effect(EffectSlotId, ParameterId),
 }
 
@@ -66,6 +73,7 @@ impl PatchControlId {
             Self::Capability(parameter_id) => {
                 Cow::Owned(format!("patch.capability.{parameter_id}"))
             }
+            Self::EffectSlot(index) => Cow::Owned(format!("patch.effectSlot.{index}")),
             Self::Effect(slot_id, parameter_id) => {
                 Cow::Owned(format!("patch.effect.{slot_id}.{parameter_id}"))
             }
@@ -75,11 +83,17 @@ impl PatchControlId {
     /// Resolves the complete PATCH focus surface from the active descriptor and
     /// canonical config. This is the sole ordering/filtering authority used by
     /// reducer navigation and projections.
+    ///
+    /// After the instrument's visible `StructuralChoice` rows, each of the
+    /// three effect slots contributes its occupancy row in ascending
+    /// `EffectSlotIndex` order — whether occupied or empty, so an empty
+    /// position stays reachable and fillable — followed by the occupant's
+    /// visible enabled `ScalarEdit` rows when occupied.
     pub fn resolve(
         descriptor: &CapabilityDescriptor,
         config: &InstrumentConfig,
         effect_registry: &EffectCapabilityRegistry,
-        post_effects: &[PostEffectConfig],
+        effect_slots: &[Option<PostEffectConfig>],
     ) -> Vec<Self> {
         let mut controls = Self::surface_descriptor().to_vec();
         for spec in descriptor.parameters() {
@@ -95,7 +109,14 @@ impl PatchControlId {
                 controls.push(Self::Capability(spec.id().clone()));
             }
         }
-        for effect in post_effects {
+        for (position, occupant) in effect_slots.iter().enumerate() {
+            let Ok(index) = EffectSlotIndex::new(position) else {
+                continue;
+            };
+            controls.push(Self::EffectSlot(index));
+            let Some(effect) = occupant else {
+                continue;
+            };
             let Some(effect_descriptor) = effect_registry.descriptor(effect.capability_id()) else {
                 continue;
             };
@@ -159,6 +180,17 @@ impl FromStr for PatchControlId {
                     .expect("the prefix was just matched");
                 ParameterId::new(parameter)
                     .map(Self::Capability)
+                    .map_err(|_| ParsePatchControlIdError)
+            }
+            value if value.starts_with("patch.effectSlot.") => {
+                let index = value
+                    .strip_prefix("patch.effectSlot.")
+                    .expect("the prefix was just matched");
+                let index = index
+                    .parse::<usize>()
+                    .map_err(|_| ParsePatchControlIdError)?;
+                EffectSlotIndex::new(index)
+                    .map(Self::EffectSlot)
                     .map_err(|_| ParsePatchControlIdError)
             }
             value if value.starts_with("patch.effect.") => {
@@ -282,5 +314,23 @@ mod tests {
     fn unknown_patch_control_identity_is_rejected() {
         assert!("patch.envelope.filter".parse::<PatchControlId>().is_err());
         assert!(serde_json::from_str::<PatchControlId>("\"patch.envelope.filter\"").is_err());
+    }
+
+    #[test]
+    fn effect_slot_occupancy_rows_round_trip_positional_identity() {
+        use crate::synth::effect_slot_id::EffectSlotIndex;
+        for index in EffectSlotIndex::ALL {
+            let control = PatchControlId::EffectSlot(index);
+            let name = format!("patch.effectSlot.{}", index.index());
+            assert_eq!(control.as_str(), name);
+            assert_eq!(name.parse::<PatchControlId>().unwrap(), control);
+            let json = serde_json::to_string(&control).unwrap();
+            assert_eq!(
+                serde_json::from_str::<PatchControlId>(&json).unwrap(),
+                control
+            );
+        }
+        assert!("patch.effectSlot.3".parse::<PatchControlId>().is_err());
+        assert!("patch.effectSlot.x".parse::<PatchControlId>().is_err());
     }
 }

@@ -2,7 +2,8 @@ use crest_synth::testing::{BehavioralMutationCase, BehavioralMutationHarness};
 use std::fmt::{Display, Formatter};
 
 const OBSERVATION_MARKER: &str = "CREST_MUTATION_OBSERVATION ";
-const USAGE: &str = "usage: crest-synth-witness --case <case> --mutant <none|matching-case>";
+const USAGE: &str =
+    "usage: crest-synth-witness --case <case> --mutant <none|matching-case|matching-counterexample>";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CliArguments {
@@ -76,16 +77,16 @@ where
 
     let mutant_enabled = if mutant == "none" {
         false
-    } else {
-        let mutant_case = BehavioralMutationCase::from_cli(&mutant)
-            .ok_or_else(|| CliError::new(format!("unsupported mutant {mutant:?}; {USAGE}")))?;
-        if mutant_case != case {
-            return Err(CliError::new(format!(
-                "mutant {mutant:?} does not match case {:?}; {USAGE}",
-                case.as_str()
-            )));
-        }
+    } else if mutant == case.as_str() || mutant == case.mutant_cli() {
+        // A case accepts its own name or its declared typed counterexample
+        // (the refused-topology case's counterexample is the refused change
+        // being published anyway).
         true
+    } else {
+        return Err(CliError::new(format!(
+            "mutant {mutant:?} does not match case {:?}; {USAGE}",
+            case.as_str()
+        )));
     };
 
     Ok(CliArguments {
@@ -140,7 +141,34 @@ mod tests {
                     mutant_enabled: true,
                 })
             );
+            assert_eq!(
+                parse_arguments(["--case", case.as_str(), "--mutant", case.mutant_cli()]),
+                Ok(CliArguments {
+                    case,
+                    mutant_enabled: true,
+                })
+            );
         }
+        // The declared negative goal-witness command parses exactly.
+        assert_eq!(
+            parse_arguments([
+                "--case",
+                "refused-topology",
+                "--mutant",
+                "refused-topology-published",
+            ]),
+            Ok(CliArguments {
+                case: BehavioralMutationCase::RefusedTopology,
+                mutant_enabled: true,
+            })
+        );
+        assert!(parse_arguments([
+            "--case",
+            "dropped-adjustment",
+            "--mutant",
+            "refused-topology-published",
+        ])
+        .is_err());
     }
 
     #[test]

@@ -184,6 +184,14 @@ pub struct LiveDemoCoverage {
     missing_engine_transitions: Vec<String>,
     unexpected_engine_transitions: Vec<String>,
     duplicate_expected_engine_transitions: Vec<String>,
+    #[serde(default)]
+    expected_topology_transitions: Vec<String>,
+    #[serde(default)]
+    exercised_topology_transitions: Vec<String>,
+    #[serde(default)]
+    missing_topology_transitions: Vec<String>,
+    #[serde(default)]
+    unexpected_topology_transitions: Vec<String>,
 }
 
 /// Measured sixteen-track routing evidence retained by the live report.
@@ -314,7 +322,7 @@ impl LiveMixerRoutingEvidence {
             && self.patch_trim_isolated
             && self.patch_reroute_isolated
             && self.invalid_route_rejected
-            && self.track_parameter_classes_exercised == MixerTrackParameter::ALL.len()
+            && self.track_parameter_classes_exercised == TRACK_PARAMETER_CLASSES
             && self.mute_wins
             && self.any_solo_exact
             && self.post_gate_sends_exact
@@ -380,6 +388,14 @@ impl LiveDemoCoverage {
         expected: &[LiveEditableParameter],
         engine_transitions: &[LiveEngineTransition],
     ) -> Self {
+        Self::with_engine_and_topology_transitions(expected, engine_transitions, &[])
+    }
+
+    pub fn with_engine_and_topology_transitions(
+        expected: &[LiveEditableParameter],
+        engine_transitions: &[LiveEngineTransition],
+        topology_transitions: &[crate::testing::live_effects_and_buses_scene::LiveTopologyTransition],
+    ) -> Self {
         let mut expected_ids = Vec::with_capacity(expected.len());
         let mut duplicate_expected = Vec::new();
         for parameter in expected {
@@ -402,6 +418,14 @@ impl LiveDemoCoverage {
             }
         }
 
+        let mut expected_topology = Vec::with_capacity(topology_transitions.len());
+        for transition in topology_transitions {
+            let identifier = transition.identifier().to_owned();
+            if !expected_topology.contains(&identifier) {
+                expected_topology.push(identifier);
+            }
+        }
+
         Self {
             missing_editable_parameters: expected_ids.clone(),
             expected_editable_parameters: expected_ids,
@@ -409,6 +433,8 @@ impl LiveDemoCoverage {
             missing_engine_transitions: expected_engines.clone(),
             expected_engine_transitions: expected_engines,
             duplicate_expected_engine_transitions: duplicate_expected_engines,
+            missing_topology_transitions: expected_topology.clone(),
+            expected_topology_transitions: expected_topology,
             ..Self::default()
         }
     }
@@ -471,6 +497,38 @@ impl LiveDemoCoverage {
         &self.duplicate_expected_parameters
     }
 
+    pub fn mark_topology_exercised(&mut self, identifier: &str) {
+        let identifier = identifier.to_owned();
+        if !insert_sorted_unique(&mut self.exercised_topology_transitions, identifier.clone()) {
+            return;
+        }
+        if let Some(index) = self
+            .missing_topology_transitions
+            .iter()
+            .position(|expected| expected == &identifier)
+        {
+            self.missing_topology_transitions.remove(index);
+        } else {
+            insert_sorted_unique(&mut self.unexpected_topology_transitions, identifier);
+        }
+    }
+
+    pub fn expected_topology_transitions(&self) -> &[String] {
+        &self.expected_topology_transitions
+    }
+
+    pub fn exercised_topology_transitions(&self) -> &[String] {
+        &self.exercised_topology_transitions
+    }
+
+    pub fn missing_topology_transitions(&self) -> &[String] {
+        &self.missing_topology_transitions
+    }
+
+    pub fn unexpected_topology_transitions(&self) -> &[String] {
+        &self.unexpected_topology_transitions
+    }
+
     pub fn expected_engine_transitions(&self) -> &[String] {
         &self.expected_engine_transitions
     }
@@ -496,6 +554,9 @@ impl LiveDemoCoverage {
             && self.unexpected_engine_transitions.is_empty()
             && self.duplicate_expected_engine_transitions.is_empty()
             && self.exercised_engine_transitions.len() == self.expected_engine_transitions.len()
+            && self.missing_topology_transitions.is_empty()
+            && self.unexpected_topology_transitions.is_empty()
+            && self.exercised_topology_transitions.len() == self.expected_topology_transitions.len()
     }
 }
 
@@ -682,7 +743,178 @@ pub struct LiveDemoReport {
     final_audio_observation: AudioObservationSnapshot,
     runtime_audio: RuntimeAudioWitness,
     mixer_routing: LiveMixerRoutingEvidence,
+    effects_and_buses: Option<LiveEffectsAndBusesEvidence>,
     summary: String,
+}
+
+/// Measured effects-and-buses evidence retained by the cumulative live
+/// report (WP08): per-transition topology lifecycle coverage, NFR-008 edit
+/// responsiveness, and the numeric eight-destination routing measurements
+/// (SC-004, SC-005, NFR-007).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LiveEffectsAndBusesEvidence {
+    topology_checkpoints: usize,
+    slot_fills_exercised: usize,
+    startup_occupant_cleared: bool,
+    slot_order_exchange_exercised: bool,
+    same_entry_twin_exercised: bool,
+    sends_raised_toward_destinations: bool,
+    return_content_changes: usize,
+    empty_return_occupied_and_restored: bool,
+    controlled_rejection_observed: bool,
+    rejection_reason: String,
+    post_rejection_recovery_observed: bool,
+    reroute_chain_followed: bool,
+    /// NFR-008: worst measured acceptance-to-projection window (frames).
+    frames_to_projection_max: u64,
+    /// NFR-008: worst observed activation-sequence gap (render blocks);
+    /// exactly 1 when the observer sees every block.
+    activation_sequence_gap_max: u64,
+    /// NFR-008: worst observed distance from the target-note dispatch on an
+    /// activated graph to its first audible block; exactly 1 when the
+    /// observer sees every block.
+    render_blocks_to_audible_max: u64,
+    all_audible_on_activated_graph: bool,
+    send_isolation_exact: bool,
+    max_off_target_bus_dbfs: f32,
+    accumulation_exact: bool,
+    gated_wet_contribution: f32,
+    unoccupied_return_silent: bool,
+}
+
+impl LiveEffectsAndBusesEvidence {
+    pub const fn topology_checkpoints(&self) -> usize {
+        self.topology_checkpoints
+    }
+
+    pub const fn frames_to_projection_max(&self) -> u64 {
+        self.frames_to_projection_max
+    }
+
+    pub const fn activation_sequence_gap_max(&self) -> u64 {
+        self.activation_sequence_gap_max
+    }
+
+    pub const fn render_blocks_to_audible_max(&self) -> u64 {
+        self.render_blocks_to_audible_max
+    }
+
+    pub const fn max_off_target_bus_dbfs(&self) -> f32 {
+        self.max_off_target_bus_dbfs
+    }
+
+    pub const fn gated_wet_contribution(&self) -> f32 {
+        self.gated_wet_contribution
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.topology_checkpoints > 0
+            && self.slot_fills_exercised >= 3
+            && self.startup_occupant_cleared
+            && self.slot_order_exchange_exercised
+            && self.same_entry_twin_exercised
+            && self.sends_raised_toward_destinations
+            && self.return_content_changes >= 2
+            && self.empty_return_occupied_and_restored
+            && self.controlled_rejection_observed
+            && !self.rejection_reason.is_empty()
+            && self.post_rejection_recovery_observed
+            && self.reroute_chain_followed
+            && self.frames_to_projection_max <= 1
+            && self.activation_sequence_gap_max >= 1
+            && self.render_blocks_to_audible_max >= 1
+            && self.all_audible_on_activated_graph
+            && self.send_isolation_exact
+            && self.max_off_target_bus_dbfs
+                < crate::testing::live_mixer_routing_measurement::ISOLATION_FLOOR_DBFS
+            && self.accumulation_exact
+            && self.gated_wet_contribution == 0.0
+            && self.unoccupied_return_silent
+    }
+}
+
+fn measure_effects_and_buses(
+    checkpoints: &[LiveCheckpoint],
+    dsp: &LiveMixerDspEvidence,
+) -> Option<LiveEffectsAndBusesEvidence> {
+    let topology: Vec<_> = checkpoints
+        .iter()
+        .filter_map(LiveCheckpoint::as_topology)
+        .collect();
+    if topology.is_empty() {
+        return None;
+    }
+    let by_id = |prefix: &str| {
+        topology
+            .iter()
+            .filter(|checkpoint| checkpoint.transition().starts_with(prefix))
+            .count()
+    };
+    let complete_by_id = |id: &str| {
+        topology
+            .iter()
+            .any(|checkpoint| checkpoint.transition() == id && checkpoint.agrees())
+    };
+    let rejection = topology
+        .iter()
+        .find(|checkpoint| checkpoint.outcome() == EventOutcome::Rejected);
+    let rejection_index = topology
+        .iter()
+        .position(|checkpoint| checkpoint.outcome() == EventOutcome::Rejected);
+    let post_rejection_recovery_observed = rejection_index.is_some_and(|index| {
+        topology.iter().skip(index + 1).any(|checkpoint| {
+            checkpoint.outcome() == EventOutcome::Accepted
+                && checkpoint.target_graph_revision().is_some()
+                && checkpoint.agrees()
+        })
+    });
+    let frames_to_projection_max = topology
+        .iter()
+        .filter_map(|checkpoint| checkpoint.frames_to_projection())
+        .max()
+        .unwrap_or(0);
+    let activation_sequence_gap_max = topology
+        .iter()
+        .filter_map(|checkpoint| checkpoint.observed_activation_sequence_gap())
+        .max()
+        .unwrap_or(0);
+    let render_blocks_to_audible_max = topology
+        .iter()
+        .filter_map(|checkpoint| checkpoint.render_blocks_to_audible())
+        .max()
+        .unwrap_or(0);
+    Some(LiveEffectsAndBusesEvidence {
+        topology_checkpoints: topology.len(),
+        slot_fills_exercised: by_id("SlotFill."),
+        startup_occupant_cleared: complete_by_id("Slot.startupOccupantCleared"),
+        slot_order_exchange_exercised: complete_by_id("SlotOrder.exchangeFirst")
+            && complete_by_id("SlotOrder.exchangeSecond"),
+        same_entry_twin_exercised: complete_by_id("SlotTwin.sameEntry"),
+        sends_raised_toward_destinations: complete_by_id("Send.towardDestinations"),
+        return_content_changes: by_id("Return.contentChanged")
+            + by_id("Topology.recoveredAfterRefusal"),
+        empty_return_occupied_and_restored: complete_by_id("Return.emptyOccupied")
+            && complete_by_id("Return.emptyRestored"),
+        controlled_rejection_observed: rejection.is_some_and(|checkpoint| checkpoint.agrees()),
+        rejection_reason: rejection
+            .and_then(|checkpoint| checkpoint.rejection())
+            .unwrap_or_default()
+            .to_owned(),
+        post_rejection_recovery_observed,
+        reroute_chain_followed: complete_by_id("Reroute.chainFollows"),
+        frames_to_projection_max,
+        activation_sequence_gap_max,
+        render_blocks_to_audible_max,
+        all_audible_on_activated_graph: topology
+            .iter()
+            .all(|checkpoint| checkpoint.audible_on_activated_graph()),
+        send_isolation_exact: dsp.send_isolation_exact,
+        max_off_target_bus_dbfs: dsp.max_off_target_bus_dbfs,
+        accumulation_exact: dsp.accumulation_exact,
+        gated_wet_contribution: dsp.gated_wet_contribution,
+        unoccupied_return_silent: dsp.unoccupied_return_silent,
+    })
 }
 
 /// Compact terminal evidence for a potentially large retained live journal.
@@ -734,7 +966,7 @@ impl LiveEventLogSummary {
 }
 
 impl LiveDemoReport {
-    pub const SCHEMA_VERSION: u32 = 9;
+    pub const SCHEMA_VERSION: u32 = 10;
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -828,6 +1060,8 @@ impl LiveDemoReport {
             &graphical_shell,
             runtime_audio,
         );
+        let effects_and_buses =
+            measure_effects_and_buses(&checkpoints, &LiveMixerDspEvidence::measure());
         let lossless = event_log.dropped_records() == 0
             && event_log.total_observed() == event_log.records().len() as u64;
         let complete = coverage.is_complete()
@@ -840,7 +1074,10 @@ impl LiveDemoReport {
             && final_audio_complete
             && runtime_complete
             && final_engine_complete
-            && mixer_routing.is_complete();
+            && mixer_routing.is_complete()
+            && effects_and_buses
+                .as_ref()
+                .is_none_or(LiveEffectsAndBusesEvidence::is_complete);
         let summary = format!(
             "live demo {}: {}/{} editable parameters, {}/{} engine transitions, {} qualifying shell frames, {} checkpoints, {} events, {} dropped, banks={}, instruments={}, soundfontPatches={}, braidsPatches={}, alternatingCapabilities={}, initialGraphRevision={}, graphRevision={}, engineSwitches={}, fallbacks={}, callbackAllocations={}, callbackDestructions={}, cleanup={}, activeNotes={}",
             if complete { "complete" } else { "incomplete" },
@@ -879,6 +1116,7 @@ impl LiveDemoReport {
             final_audio_observation: final_observation,
             runtime_audio,
             mixer_routing,
+            effects_and_buses,
             summary,
         })
     }
@@ -934,6 +1172,10 @@ impl LiveDemoReport {
         self.runtime_audio
     }
 
+    pub const fn effects_and_buses(&self) -> Option<&LiveEffectsAndBusesEvidence> {
+        self.effects_and_buses.as_ref()
+    }
+
     pub const fn mixer_routing(&self) -> LiveMixerRoutingEvidence {
         self.mixer_routing
     }
@@ -982,7 +1224,7 @@ fn measure_mixer_routing(
                         track_id,
                         parameter,
                     }) => Some((*track_id, *parameter)),
-                    SemanticControlId::Mixer(MixerControlId::Global { .. })
+                    SemanticControlId::Mixer(_)
                     | SemanticControlId::Patch(_)
                     | SemanticControlId::SurfaceRoot => None,
                 })
@@ -995,7 +1237,7 @@ fn measure_mixer_routing(
         .iter()
         .filter_map(LiveCheckpoint::as_parameter)
         .collect::<Vec<_>>();
-    let mut exercised = [[false; MixerTrackParameter::ALL.len()]; MixerTrackId::COUNT];
+    let mut exercised = [[false; TRACK_PARAMETER_CLASSES]; MixerTrackId::COUNT];
     let mut mute_observed = [false; MixerTrackId::COUNT];
     let mut solo_observed = [false; MixerTrackId::COUNT];
     let mut reverb_observed = [false; MixerTrackId::COUNT];
@@ -1012,6 +1254,44 @@ fn measure_mixer_routing(
                 && meter.right_peak() >= 0.0
                 && meter.rms() >= 0.0
         });
+        if let Some(LiveEditableParameter::Send { track_id, bus }) =
+            checkpoint.expected_transition().editable_parameter()
+        {
+            // The scene's two audible indexed sends carry the send-coverage
+            // evidence the retired per-name aliases carried before.
+            let send_observed = checkpoint.agrees()
+                && checkpoint
+                    .expected_transition()
+                    .value_after()
+                    .is_some_and(|value| value > 0.0)
+                && observation.track(*track_id).rms() > 0.0;
+            match bus.index() {
+                0 => {
+                    exercised[track_id.index()][4] = true;
+                    reverb_observed[track_id.index()] = send_observed
+                        && observation.reverb_input_rms() > 0.0
+                        && matches!(
+                            checkpoint.audio_predicate(),
+                            crate::testing::live_demo_scene::LiveAudioPredicate::TrackReverbInput {
+                                track_id: observed
+                            } if observed == *track_id
+                        );
+                }
+                1 => {
+                    exercised[track_id.index()][5] = true;
+                    delay_observed[track_id.index()] = send_observed
+                        && observation.delay_input_rms() > 0.0
+                        && matches!(
+                            checkpoint.audio_predicate(),
+                            crate::testing::live_demo_scene::LiveAudioPredicate::TrackDelayInput {
+                                track_id: observed
+                            } if observed == *track_id
+                        );
+                }
+                _ => {}
+            }
+            continue;
+        }
         let Some(LiveEditableParameter::Track {
             track_id,
             parameter,
@@ -1046,42 +1326,12 @@ fn measure_mixer_routing(
                         } if observed == *track_id
                     );
             }
-            MixerTrackParameter::ReverbSend => {
-                reverb_observed[track_id.index()] = checkpoint.agrees()
-                    && checkpoint
-                        .expected_transition()
-                        .value_after()
-                        .is_some_and(|value| value > 0.0)
-                    && meter_nonzero
-                    && observation.reverb_input_rms() > 0.0
-                    && matches!(
-                        checkpoint.audio_predicate(),
-                        crate::testing::live_demo_scene::LiveAudioPredicate::TrackReverbInput {
-                            track_id: observed
-                        } if observed == *track_id
-                    );
-            }
-            MixerTrackParameter::DelaySend => {
-                delay_observed[track_id.index()] = checkpoint.agrees()
-                    && checkpoint
-                        .expected_transition()
-                        .value_after()
-                        .is_some_and(|value| value > 0.0)
-                    && meter_nonzero
-                    && observation.delay_input_rms() > 0.0
-                    && matches!(
-                        checkpoint.audio_predicate(),
-                        crate::testing::live_demo_scene::LiveAudioPredicate::TrackDelayInput {
-                            track_id: observed
-                        } if observed == *track_id
-                    );
-            }
             MixerTrackParameter::Level | MixerTrackParameter::Pan => {}
         }
     }
 
     let all_track_parameters_exercised = exercised.iter().all(|track| track.iter().all(|set| *set));
-    let track_parameter_classes_exercised = (0..MixerTrackParameter::ALL.len())
+    let track_parameter_classes_exercised = (0..TRACK_PARAMETER_CLASSES)
         .filter(|parameter| exercised.iter().any(|track| track[*parameter]))
         .count();
     let all_tracks_projected =
@@ -1231,11 +1481,11 @@ fn measure_mixer_routing(
             .filter(|checkpoint| {
                 matches!(
                     checkpoint.expected_transition().editable_parameter(),
-                    Some(LiveEditableParameter::Track { .. })
+                    Some(LiveEditableParameter::Track { .. } | LiveEditableParameter::Send { .. })
                 )
             })
             .count()
-            == MixerTrackId::COUNT * MixerTrackParameter::ALL.len();
+            == MixerTrackId::COUNT * TRACK_PARAMETER_CLASSES;
 
     LiveMixerRoutingEvidence {
         track_count,
@@ -1268,14 +1518,19 @@ fn measure_mixer_routing(
     }
 }
 
+/// The retained sixteen-track evidence matrix width: the four `MAIN` fader
+/// classes plus the scene's two production-audible indexed sends (the buses
+/// whose returns are occupied by default). The retired per-name send aliases
+/// held positions 4 and 5; the indexed sends toward buses 0 and 1 keep those
+/// exact positions so the retained evidence stays comparable.
+const TRACK_PARAMETER_CLASSES: usize = MixerTrackParameter::MAIN.len() + 2;
+
 const fn track_parameter_index(parameter: MixerTrackParameter) -> usize {
     match parameter {
         MixerTrackParameter::Level => 0,
         MixerTrackParameter::Pan => 1,
         MixerTrackParameter::Mute => 2,
         MixerTrackParameter::Solo => 3,
-        MixerTrackParameter::ReverbSend => 4,
-        MixerTrackParameter::DelaySend => 5,
     }
 }
 
@@ -1605,7 +1860,7 @@ impl Serialize for LiveDemoReport {
     {
         let state_tree: serde_json::Value =
             serde_json::from_str(self.state_tree.json()).map_err(serde::ser::Error::custom)?;
-        let mut report = serializer.serialize_struct("LiveDemoReport", 13)?;
+        let mut report = serializer.serialize_struct("LiveDemoReport", 14)?;
         report.serialize_field("schemaVersion", &Self::SCHEMA_VERSION)?;
         report.serialize_field("scene", &self.scene)?;
         report.serialize_field("complete", &self.complete)?;
@@ -1618,6 +1873,7 @@ impl Serialize for LiveDemoReport {
         report.serialize_field("finalAudioObservation", &self.final_audio_observation)?;
         report.serialize_field("runtimeAudio", &self.runtime_audio)?;
         report.serialize_field("mixerRouting", &self.mixer_routing)?;
+        report.serialize_field("effectsAndBuses", &self.effects_and_buses)?;
         report.serialize_field("summary", &self.summary)?;
         report.end()
     }

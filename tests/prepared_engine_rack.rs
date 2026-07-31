@@ -239,8 +239,7 @@ impl Drop for SecondInstrument {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(0.0, 0.5, 0.5, 0.0, 250.0, 0.5, 0.0)
-        .expect("acceptance global parameters are valid")
+    GlobalParameters::new(0.0).expect("acceptance global parameters are valid")
 }
 
 fn patches(provider: &HiDefSoundFontCapability) -> [Patch; 2] {

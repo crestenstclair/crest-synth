@@ -278,6 +278,35 @@ pub enum EventInput {
         retired_graph_revision: GraphRevision,
         collected: bool,
     },
+    SetSlotOccupancy {
+        #[serde(rename = "patchId")]
+        patch_id: u32,
+        slot: crate::synth::effect_slot_id::EffectSlotIndex,
+        entry: Option<crate::synth::EffectCapabilityId>,
+    },
+    SetReturnOccupancy {
+        bus: crate::mixer::bus_id::BusId,
+        entry: Option<crate::synth::EffectCapabilityId>,
+    },
+    TopologyPrepared {
+        #[serde(rename = "requestId")]
+        request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
+        #[serde(rename = "sourceGraphRevision")]
+        source_graph_revision: GraphRevision,
+        #[serde(rename = "targetGraphRevision")]
+        target_graph_revision: GraphRevision,
+    },
+    TopologyPreparationFailed {
+        #[serde(rename = "requestId")]
+        request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
+        #[serde(rename = "sourceGraphRevision")]
+        source_graph_revision: GraphRevision,
+        #[serde(rename = "targetGraphRevision")]
+        target_graph_revision: GraphRevision,
+        failure: EngineSelectionFailure,
+    },
 }
 
 impl From<&AppEvent> for EventInput {
@@ -350,6 +379,43 @@ impl From<&AppEvent> for EventInput {
                 target_graph_revision: *target_graph_revision,
                 retired_graph_revision: *retired_graph_revision,
                 collected: *collected,
+            },
+            AppEvent::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            } => Self::SetSlotOccupancy {
+                patch_id: patch_id.value(),
+                slot: *slot,
+                entry: entry.clone(),
+            },
+            AppEvent::SetReturnOccupancy { bus, entry } => Self::SetReturnOccupancy {
+                bus: *bus,
+                entry: entry.clone(),
+            },
+            AppEvent::TopologyPrepared {
+                request_id,
+                intent,
+                source_graph_revision,
+                target_graph_revision,
+            } => Self::TopologyPrepared {
+                request_id: *request_id,
+                intent: intent.clone(),
+                source_graph_revision: *source_graph_revision,
+                target_graph_revision: *target_graph_revision,
+            },
+            AppEvent::TopologyPreparationFailed {
+                request_id,
+                intent,
+                source_graph_revision,
+                target_graph_revision,
+                failure,
+            } => Self::TopologyPreparationFailed {
+                request_id: *request_id,
+                intent: intent.clone(),
+                source_graph_revision: *source_graph_revision,
+                target_graph_revision: *target_graph_revision,
+                failure: *failure,
             },
         }
     }
@@ -877,7 +943,7 @@ mod tests {
             crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let mut state = AppState::new(
             provider.registry().unwrap(),
-            GlobalParameters::new(-3.0, 0.5, 0.4, 0.25, 250.0, 0.3, 0.2).unwrap(),
+            GlobalParameters::new(-3.0).unwrap(),
         );
         state
             .apply(AppEvent::InstallPatches(vec![patch(1)]))

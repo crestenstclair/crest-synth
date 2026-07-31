@@ -168,6 +168,45 @@ impl PreparedEngineRack {
             .flatten()
             .find(|slot| slot.patch_id == patch_id)
     }
+
+    /// Exchanges the still-live prepared instrument from the superseded rack
+    /// into this replacement at every slot the structural delta leaves
+    /// unchanged, so sounding voices survive block-boundary activation
+    /// (WP10 voice carry-over).
+    ///
+    /// Callback-safe: the work is bounded by `MAX_PATCHES` pointer-sized
+    /// `mem::swap`s with no allocation, deallocation, locking, blocking, or
+    /// destruction. The freshly prepared (never sounded) instruments ride
+    /// into the superseded rack, which retires off-callback as before.
+    ///
+    /// `exclude` names the one Patch whose engine identity the delta changed;
+    /// that slot keeps its fresh instrument (the permitted local restart).
+    /// Every exchange requires exact PatchId and scalar-layout agreement at
+    /// the same index — a non-matching position keeps its fresh instrument
+    /// rather than substituting anything.
+    pub(crate) fn carry_live_instruments_from(
+        &mut self,
+        superseded: &mut Self,
+        exclude: Option<PatchId>,
+    ) {
+        if self.patch_count != superseded.patch_count {
+            return;
+        }
+        for index in 0..self.patch_count {
+            let (Some(target), Some(source)) =
+                (self.slots[index].as_mut(), superseded.slots[index].as_mut())
+            else {
+                continue;
+            };
+            if target.patch_id != source.patch_id
+                || Some(target.patch_id) == exclude
+                || target.scalar_count != source.scalar_count
+            {
+                continue;
+            }
+            core::mem::swap(&mut target.instrument, &mut source.instrument);
+        }
+    }
 }
 
 impl fmt::Debug for PreparedEngineRack {

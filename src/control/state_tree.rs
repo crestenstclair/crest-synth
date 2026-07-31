@@ -46,6 +46,10 @@ pub enum StateTreeError {
     },
     /// The global real-time parameters did not match the serialized state.
     GlobalParametersMismatch,
+    /// One live bus-return entry did not attest the serialized return state.
+    ReturnParametersMismatch {
+        index: usize,
+    },
     /// The complete tree could not be serialized.
     Serialization,
     /// A generation-only projection could not reuse the canonical tree shape.
@@ -98,6 +102,9 @@ impl fmt::Display for StateTreeError {
             }
             Self::GlobalParametersMismatch => {
                 formatter.write_str("global parameter values do not match accepted state")
+            }
+            Self::ReturnParametersMismatch { index } => {
+                write!(formatter, "bus-return values differ at index {index}")
             }
             Self::Serialization => formatter.write_str("state tree could not be serialized"),
             Self::MidiTemplateMismatch => {
@@ -172,7 +179,10 @@ struct MidiTreeTemplate {
 
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
-    pub const SCHEMA_VERSION: u32 = 11;
+    ///
+    /// Version 12: the six retired reverb/delay `global` leaves are gone —
+    /// return-owned state travels as the indexed top-level `returns` section.
+    pub const SCHEMA_VERSION: u32 = 12;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -181,6 +191,7 @@ impl StateTree {
         "patches",
         "mixer",
         "global",
+        "returns",
         "interaction.activeFocus",
         "interaction.rememberedPatchMain",
         "interaction.rememberedMixerMain",
@@ -208,6 +219,7 @@ impl StateTree {
         "parameters.patchCount",
         "parameters.patches",
         "parameters.mixerTracks",
+        "parameters.returns",
         "parameters.global",
     ];
     /// The complete normalized nested schema, including tagged capability values.
@@ -299,15 +311,18 @@ impl StateTree {
         "mixer.tracks[].pan",
         "mixer.tracks[].mute",
         "mixer.tracks[].solo",
-        "mixer.tracks[].reverbSend",
-        "mixer.tracks[].delaySend",
+        "mixer.tracks[].sends[]",
         "global.masterGainDb",
-        "global.reverbRoomSize",
-        "global.reverbDamping",
-        "global.reverbReturn",
-        "global.delayMilliseconds",
-        "global.delayFeedback",
-        "global.delayReturn",
+        "returns[].effect",
+        "returns[].effect.slotId",
+        "returns[].effect.capabilityId",
+        "returns[].effect.values[].parameterId",
+        "returns[].effect.values[].value.kind",
+        "returns[].effect.values[].value.value",
+        "returns[].effect.assetReferences[].parameterId",
+        "returns[].effect.assetReferences[].reference.kind",
+        "returns[].effect.assetReferences[].reference.locator",
+        "returns[].returnLevel",
         "interaction.activeFocus.context",
         "interaction.activeFocus.surface",
         "interaction.activeFocus.patchId",
@@ -343,6 +358,10 @@ impl StateTree {
         "engineSelection.correlation.intent.kind",
         "engineSelection.correlation.intent.parameterId",
         "engineSelection.correlation.intent.targetCapabilityId",
+        "engineSelection.correlation.intent.patchId",
+        "engineSelection.correlation.intent.slot",
+        "engineSelection.correlation.intent.bus",
+        "engineSelection.correlation.intent.entry",
         "engineSelection.correlation.requestId",
         "engineSelection.correlation.patchId",
         "engineSelection.correlation.sourceCapabilityId",
@@ -478,25 +497,23 @@ impl StateTree {
         "parameters.patches[].envelope.releaseMilliseconds",
         "parameters.patches[].instrument.count",
         "parameters.patches[].instrument.values[]",
-        "parameters.patches[].effect.active",
-        "parameters.patches[].effect.slotId",
-        "parameters.patches[].effect.scalarCount",
-        "parameters.patches[].effect.scalars[]",
+        "parameters.patches[].effects[].active",
+        "parameters.patches[].effects[].slotId",
+        "parameters.patches[].effects[].scalarCount",
+        "parameters.patches[].effects[].scalars[]",
         "parameters.patches[].output.trackId",
         "parameters.patches[].output.trimGainDb",
         "parameters.mixerTracks[].levelDb",
         "parameters.mixerTracks[].pan",
         "parameters.mixerTracks[].mute",
         "parameters.mixerTracks[].solo",
-        "parameters.mixerTracks[].reverbSend",
-        "parameters.mixerTracks[].delaySend",
+        "parameters.mixerTracks[].sends[]",
+        "parameters.returns[].active",
+        "parameters.returns[].slotId",
+        "parameters.returns[].scalarCount",
+        "parameters.returns[].scalars[]",
+        "parameters.returns[].returnLevel",
         "parameters.global.masterGainDb",
-        "parameters.global.reverbRoomSize",
-        "parameters.global.reverbDamping",
-        "parameters.global.reverbReturn",
-        "parameters.global.delayMilliseconds",
-        "parameters.global.delayFeedback",
-        "parameters.global.delayReturn",
     ];
 
     /// Returns the production-owned stable StateTree property surface.
@@ -523,6 +540,7 @@ impl StateTree {
                 "interaction.activeFocus.capabilityId.kind",
                 "interaction.activeFocus.context",
                 "interaction.activeFocus.controlId.id",
+                "interaction.activeFocus.controlId.id.bus",
                 "interaction.activeFocus.controlId.id.kind",
                 "interaction.activeFocus.controlId.id.parameter",
                 "interaction.activeFocus.controlId.id.track_id",
@@ -705,7 +723,7 @@ impl StateTree {
                         == state.engine_selection.active_graph_revision()
                     && page.engine().requested_capability_id()
                         == projected_engine_correlation
-                            .map(|correlation| correlation.target_capability_id())
+                            .and_then(|correlation| correlation.target_capability_id())
                     && page.engine().request_id()
                         == projected_engine_correlation
                             .map(|correlation| correlation.request_id())
@@ -877,7 +895,7 @@ impl PartialEq for StateTree {
 
 impl MidiTreeTemplate {
     fn from_json(json: &str, generation: u64, state_hash: &str) -> Option<Self> {
-        const ROOT_MARKER: &str = "{\"schemaVersion\":11,\"generation\":";
+        const ROOT_MARKER: &str = "{\"schemaVersion\":12,\"generation\":";
         const SHELL_MARKER: &str = "\"graphicalShell\":{\"generation\":";
         const SEMANTIC_MARKER: &str = "\"semanticModel\":{\"generation\":";
         const PARAMETER_MARKER: &str = "\"parameters\":{\"generation\":";
@@ -1047,34 +1065,39 @@ fn validate_parameter_projection(
         {
             return Err(StateTreeError::PatchParametersMismatch { index });
         }
-        match state_patch.post_effects.as_ref() {
-            [] if parameter_patch.effect().is_active() => {
+        // The serialized state carries the occupied configs compacted in slot
+        // order; the snapshot carries one entry per ordered position. The
+        // active entries, in position order, must correspond one-to-one with
+        // the compacted configs — same instance identity, scalar layout, and
+        // scalar values — and every other position must be inactive.
+        let active_entries: Vec<_> = parameter_patch
+            .effects()
+            .iter()
+            .filter(|entry| entry.is_active())
+            .collect();
+        let configs = state_patch.post_effects.as_ref();
+        if active_entries.len() != configs.len() {
+            return Err(StateTreeError::PatchParametersMismatch { index });
+        }
+        for (entry, config) in active_entries.iter().zip(configs) {
+            let descriptor = state
+                .effects
+                .descriptor(config.capability_id())
+                .ok_or(StateTreeError::PatchParametersMismatch { index })?;
+            if entry.slot_id() != Some(config.slot_id())
+                || entry.scalar_count() != descriptor.scalar_parameter_count()
+                || descriptor
+                    .scalar_parameters()
+                    .enumerate()
+                    .any(|(scalar_index, spec)| {
+                        let Some(value) = config.value(spec.id()) else {
+                            return true;
+                        };
+                        spec.scalar_value(value).ok() != entry.scalar(scalar_index)
+                    })
+            {
                 return Err(StateTreeError::PatchParametersMismatch { index });
             }
-            [] => {}
-            [config] => {
-                let descriptor = state
-                    .effects
-                    .descriptor(config.capability_id())
-                    .ok_or(StateTreeError::PatchParametersMismatch { index })?;
-                if parameter_patch.effect().slot_id() != Some(config.slot_id())
-                    || parameter_patch.effect().scalar_count()
-                        != descriptor.scalar_parameter_count()
-                    || descriptor
-                        .scalar_parameters()
-                        .enumerate()
-                        .any(|(scalar_index, spec)| {
-                            let Some(value) = config.value(spec.id()) else {
-                                return true;
-                            };
-                            spec.scalar_value(value).ok()
-                                != parameter_patch.effect().scalar(scalar_index)
-                        })
-                {
-                    return Err(StateTreeError::PatchParametersMismatch { index });
-                }
-            }
-            _ => return Err(StateTreeError::PatchParametersMismatch { index }),
         }
     }
 
@@ -1093,6 +1116,49 @@ fn validate_parameter_projection(
         return Err(StateTreeError::GlobalParametersMismatch);
     }
 
+    // Every live return entry must attest exactly the serialized return-owned
+    // state at its bus: occupancy, instance identity, scalar layout and
+    // values, and the return-owned level.
+    if !state.returns.is_complete() {
+        return Err(StateTreeError::ReturnParametersMismatch { index: 0 });
+    }
+    for (index, (serialized, live)) in state
+        .returns
+        .entries()
+        .iter()
+        .zip(parameters.returns())
+        .enumerate()
+    {
+        match &serialized.effect {
+            None => {
+                if live.is_active() {
+                    return Err(StateTreeError::ReturnParametersMismatch { index });
+                }
+            }
+            Some(config) => {
+                let descriptor = state
+                    .effects
+                    .descriptor(config.capability_id())
+                    .ok_or(StateTreeError::ReturnParametersMismatch { index })?;
+                if live.slot_id() != Some(config.slot_id())
+                    || live.scalar_count() != descriptor.scalar_parameter_count()
+                    || live.return_level() != serialized.return_level
+                    || descriptor
+                        .scalar_parameters()
+                        .enumerate()
+                        .any(|(scalar_index, spec)| {
+                            let Some(value) = config.value(spec.id()) else {
+                                return true;
+                            };
+                            spec.scalar_value(value).ok() != live.scalar(scalar_index)
+                        })
+                {
+                    return Err(StateTreeError::ReturnParametersMismatch { index });
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1106,6 +1172,7 @@ struct SerializableStateTree<'a> {
     patches: Vec<TreePatch<'a>>,
     mixer: MixerState,
     global: TreeGlobalParameters,
+    returns: &'a crate::control::serialized_state::SerializedBusReturns,
     interaction: &'a SerializedInteractionState,
     engine_selection: &'a EngineSelectionStatus,
     patch_page: Option<&'a PatchPageProjection>,
@@ -1130,6 +1197,7 @@ impl<'a> SerializableStateTree<'a> {
             patches: state.patches.iter().map(TreePatch::from).collect(),
             mixer: state.mixer,
             global: TreeGlobalParameters::from(&state.global),
+            returns: &state.returns,
             interaction: &state.interaction,
             engine_selection: &state.engine_selection,
             patch_page,
@@ -1170,24 +1238,12 @@ impl<'a> From<&'a SerializedPatch<'_>> for TreePatch<'a> {
 #[serde(rename_all = "camelCase")]
 struct TreeGlobalParameters {
     master_gain_db: f32,
-    reverb_room_size: f32,
-    reverb_damping: f32,
-    reverb_return: f32,
-    delay_milliseconds: f32,
-    delay_feedback: f32,
-    delay_return: f32,
 }
 
 impl From<&SerializedGlobalParameters> for TreeGlobalParameters {
     fn from(parameters: &SerializedGlobalParameters) -> Self {
         Self {
             master_gain_db: parameters.master_gain_db,
-            reverb_room_size: parameters.reverb_room_size,
-            reverb_damping: parameters.reverb_damping,
-            reverb_return: parameters.reverb_return,
-            delay_milliseconds: parameters.delay_milliseconds,
-            delay_feedback: parameters.delay_feedback,
-            delay_return: parameters.delay_return,
         }
     }
 }
@@ -1196,12 +1252,6 @@ impl From<&GlobalParameters> for TreeGlobalParameters {
     fn from(parameters: &GlobalParameters) -> Self {
         Self {
             master_gain_db: parameters.master_gain_db(),
-            reverb_room_size: parameters.reverb_room_size(),
-            reverb_damping: parameters.reverb_damping(),
-            reverb_return: parameters.reverb_return(),
-            delay_milliseconds: parameters.delay_milliseconds(),
-            delay_feedback: parameters.delay_feedback(),
-            delay_return: parameters.delay_return(),
         }
     }
 }
@@ -1232,6 +1282,8 @@ mod tests {
             json!({
                 "generation": 42,
                 "capabilities": provider.registry().unwrap(),
+                "effects":
+                    crate::adapter::production_effects::production_effect_registry().unwrap(),
                 "patches": [
                     {
                         "id": 7,
@@ -1262,14 +1314,9 @@ mod tests {
                 ],
                 "mixer": MixerState::default(),
                 "global": {
-                    "masterGainDb": -3.0,
-                    "reverbRoomSize": 0.7,
-                    "reverbDamping": 0.4,
-                    "reverbReturn": 0.25,
-                    "delayMilliseconds": 375.0,
-                    "delayFeedback": 0.35,
-                    "delayReturn": 0.2
+                    "masterGainDb": -3.0
                 },
+                "returns": fixture_returns_json(),
                 "interaction": crate::control::serialized_state::SerializedInteractionState::default(),
                 "engineSelection": {
                     "kind": "ready",
@@ -1283,10 +1330,40 @@ mod tests {
     }
 
     fn global() -> GlobalParameters {
-        GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap()
+        GlobalParameters::new(-3.0).unwrap()
+    }
+
+    /// The fixture bank: production reverb defaults on bus 0 at level 0.25 and
+    /// production delay defaults on bus 1 at level 0.2, remaining buses empty.
+    fn fixture_bank() -> crate::mixer::bus_return::BusReturnBank {
+        let registry = crate::adapter::production_effects::production_effect_registry().unwrap();
+        let mut bank =
+            crate::adapter::production_effects::production_default_bus_returns(&registry).unwrap();
+        bank.set_return_level(crate::mixer::bus_id::BusId::new(0).unwrap(), 0.25)
+            .unwrap();
+        bank.set_return_level(crate::mixer::bus_id::BusId::new(1).unwrap(), 0.2)
+            .unwrap();
+        bank
+    }
+
+    fn fixture_returns_json() -> Value {
+        let bank = fixture_bank();
+        Value::Array(
+            bank.returns()
+                .iter()
+                .map(|entry| {
+                    json!({
+                        "effect": entry.effect(),
+                        "returnLevel": entry.return_level(),
+                    })
+                })
+                .collect(),
+        )
     }
 
     fn parameters() -> ParameterSnapshot {
+        let registry = crate::adapter::production_effects::production_effect_registry().unwrap();
+        let returns = ParameterSnapshot::project_returns(&registry, &fixture_bank()).unwrap();
         ParameterSnapshot::for_graph(
             42,
             crate::real_time::GraphRevision::new(7).unwrap(),
@@ -1304,6 +1381,7 @@ mod tests {
             ],
         )
         .unwrap()
+        .with_returns(returns)
     }
 
     fn projection(snapshot: &StateSnapshot) -> TextProjection {
@@ -1379,7 +1457,7 @@ mod tests {
         assert_eq!(tree.state_hash(), snapshot.hash());
 
         let root = value.as_object().unwrap();
-        assert_eq!(root.len(), 13);
+        assert_eq!(root.len(), 14);
         for property in [
             "schemaVersion",
             "generation",
@@ -1388,6 +1466,7 @@ mod tests {
             "patches",
             "mixer",
             "global",
+            "returns",
             "interaction",
             "engineSelection",
             "patchPage",
@@ -1444,15 +1523,16 @@ mod tests {
         assert_eq!(
             value["global"],
             json!({
-                "masterGainDb": -3.0,
-                "reverbRoomSize": 0.7,
-                "reverbDamping": 0.4,
-                "reverbReturn": 0.25,
-                "delayMilliseconds": 375.0,
-                "delayFeedback": 0.35,
-                "delayReturn": 0.2
+                "masterGainDb": -3.0
             })
         );
+        assert_eq!(value["returns"].as_array().unwrap().len(), 8);
+        assert_eq!(value["returns"][0]["returnLevel"], json!(0.25));
+        assert_eq!(
+            value["returns"][1]["effect"]["capabilityId"],
+            json!("effect.delay")
+        );
+        assert!(value["returns"][2]["effect"].is_null());
         assert_eq!(
             value["interaction"],
             json!({
@@ -1517,6 +1597,12 @@ mod tests {
         assert_eq!(value["parameters"]["generation"], 42);
         assert_eq!(value["parameters"]["graphRevision"], 7);
         assert_eq!(value["parameters"]["patchCount"], 2);
+        let inactive_effect = json!({
+            "active": false,
+            "slotId": null,
+            "scalarCount": 0,
+            "scalars": []
+        });
         assert_eq!(
             value["parameters"]["patches"][1],
             json!({
@@ -1528,12 +1614,7 @@ mod tests {
                     "releaseMilliseconds": 0.0
                 },
                 "instrument": {"count": 0, "values": []},
-                "effect": {
-                    "active": false,
-                    "slotId": null,
-                    "scalarCount": 0,
-                    "scalars": []
-                },
+                "effects": [inactive_effect.clone(), inactive_effect.clone(), inactive_effect],
                 "output": {
                     "trackId": 9,
                     "trimGainDb": -12.0
@@ -1541,7 +1622,21 @@ mod tests {
             })
         );
         assert_eq!(value["parameters"]["mixerTracks"], value["mixer"]["tracks"]);
-        assert_eq!(value["parameters"]["global"], value["global"]);
+        // The snapshot's global object keeps only master gain; the retired
+        // reverb/delay values travel as the indexed return entries.
+        assert_eq!(
+            value["parameters"]["global"],
+            json!({"masterGainDb": value["global"]["masterGainDb"]})
+        );
+        assert_eq!(value["parameters"]["returns"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            value["parameters"]["returns"][0]["scalars"][0],
+            value["returns"][0]["effect"]["values"][0]["value"]["value"]
+        );
+        assert_eq!(
+            value["parameters"]["returns"][1]["returnLevel"],
+            value["returns"][1]["returnLevel"]
+        );
     }
 
     #[test]
@@ -1554,7 +1649,7 @@ mod tests {
         assert_eq!(first.json(), second.json());
         assert!(first
             .json()
-            .starts_with("{\"schemaVersion\":11,\"generation\":42,\"capabilities\":"));
+            .starts_with("{\"schemaVersion\":12,\"generation\":42,\"capabilities\":"));
         assert_eq!(first.clone().into_json(), first.json());
     }
 
@@ -1697,8 +1792,7 @@ mod tests {
 
         let snapshot = snapshot();
         let projection = projection(&snapshot);
-        let different_global =
-            GlobalParameters::new(-2.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap();
+        let different_global = GlobalParameters::new(-2.0).unwrap();
         let wrong_global = ParameterSnapshot::for_graph(
             42,
             crate::real_time::GraphRevision::new(7).unwrap(),

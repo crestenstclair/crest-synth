@@ -73,15 +73,18 @@ where
         Ok(())
     }
 
-    /// Stages one selected capability-layout replacement for the next control poll.
+    /// Stages one scoped structural replacement for the next control poll.
     ///
-    /// The explicit staged step makes ownership observable before publication;
-    /// a full structural queue retains the exact graph in the same single slot
-    /// for nonblocking retry on later polls.
+    /// The scope names exactly the position the correlated request declared —
+    /// a selected engine, one Patch effect slot, or one bus return — and the
+    /// layout admission rejects any other delta. The explicit staged step
+    /// makes ownership observable before publication; a full structural queue
+    /// retains the exact graph in the same single slot for nonblocking retry
+    /// on later polls.
     pub fn stage_replacement(
         &mut self,
         graph: PreparedGraph,
-        selected_patch_id: crate::kernel::PatchId,
+        scope: crate::real_time::GraphReplacementScope,
     ) -> Result<GraphStageOutcome, GraphPublicationError> {
         if self.staged.is_some() || self.in_flight.is_some() {
             return Err(GraphPublicationError::new(
@@ -105,7 +108,7 @@ where
         let accepted_layout = graph.layout();
         if !self
             .required_layout
-            .permits_selected_replacement(accepted_layout, selected_patch_id)
+            .permits_replacement(accepted_layout, scope)
         {
             return Err(GraphPublicationError::new(
                 GraphPublicationFailure::IncompatibleLayout,
@@ -396,7 +399,7 @@ mod tests {
     }
 
     fn globals() -> GlobalParameters {
-        GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap()
+        GlobalParameters::new(0.0).unwrap()
     }
 
     fn graph(value: u64) -> PreparedGraph {
@@ -627,7 +630,10 @@ mod tests {
 
         assert_eq!(
             coordinator
-                .stage_replacement(capability_graph(2, BRAIDS_CAPABILITY_ID), selected_patch_id,)
+                .stage_replacement(
+                    capability_graph(2, BRAIDS_CAPABILITY_ID),
+                    crate::real_time::GraphReplacementScope::SelectedEngine(selected_patch_id),
+                )
                 .unwrap(),
             GraphStageOutcome::Staged
         );
@@ -663,7 +669,10 @@ mod tests {
 
         assert_eq!(
             coordinator
-                .stage_replacement(capability_graph(3, HIDEF_CAPABILITY_ID), selected_patch_id,)
+                .stage_replacement(
+                    capability_graph(3, HIDEF_CAPABILITY_ID),
+                    crate::real_time::GraphReplacementScope::SelectedEngine(selected_patch_id),
+                )
                 .unwrap(),
             GraphStageOutcome::Staged
         );

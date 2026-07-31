@@ -3,7 +3,10 @@ use crate::real_time::RtPostEffectParameters;
 use crate::synth::EffectSlotId;
 use core::fmt;
 
-/// One fully prepared Patch-local post-effect callback instance.
+/// One fully prepared post-effect callback instance.
+///
+/// An instance is bound to the identities it was prepared with; it carries no
+/// knowledge of whether a Patch effect slot or a bus return requested it.
 pub trait PreparedPostEffect: Send {
     fn patch_id(&self) -> PatchId;
     fn slot_id(&self) -> EffectSlotId;

@@ -34,7 +34,7 @@ use crest_synth::synth::{
     EffectCapabilityRegistry, EffectPreparer, EffectRackPreparationError, EffectSlotId,
     InstrumentPreparationError, InstrumentPreparer, ParameterDefault, ParameterId, ParameterValue,
     Patch, PostEffectConfig, PreparedEffectError, PreparedInstrument, PreparedInstrumentError,
-    PreparedPostEffectRackBuilder,
+    PreparedPostEffectRackBuilder, MAX_POST_EFFECTS_PER_PATCH,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -233,7 +233,7 @@ impl PreparedInstrument for FixtureInstrument {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(0.0, 0.5, 0.5, 0.0, 250.0, 0.5, 0.0).unwrap()
+    GlobalParameters::new(0.0).unwrap()
 }
 
 fn instrument_preparers() -> Vec<Box<dyn InstrumentPreparer>> {
@@ -391,7 +391,7 @@ fn static_patch_effect() {
     let effect_providers = production_effect_providers().unwrap();
     let effect_registry = production_effect_registry().unwrap();
     let effect_preparers = production_effect_preparers().unwrap();
-    assert_eq!(effect_registry.descriptors().len(), 1);
+    assert_eq!(effect_registry.descriptors().len(), 3);
     let descriptor = &effect_registry.descriptors()[0];
     assert_eq!(descriptor.id().as_str(), CHORUS_CAPABILITY_ID);
     assert_eq!(descriptor.label(), "Chorus");
@@ -469,7 +469,7 @@ fn static_patch_effect() {
         instrument_descriptor,
         first_patch.instrument_config(),
         &effect_registry,
-        first_patch.post_effects(),
+        first_patch.effect_slots(),
     );
     let amount_id = ParameterId::new(CHORUS_AMOUNT_PARAMETER_ID).unwrap();
     let depth_id = ParameterId::new(CHORUS_DEPTH_PARAMETER_ID).unwrap();
@@ -483,9 +483,28 @@ fn static_patch_effect() {
         .iter()
         .position(|control| control == &depth_control)
         .unwrap();
+    // The occupied slot's occupancy row precedes its scalars, and the two
+    // empty slots still contribute their occupancy rows at the end (WP07).
+    let page = app_loop.current_patch_page().unwrap();
     let patch_focus_order_exact = depth_index == amount_index + 1
-        && depth_index + 1 == focus_order.len()
-        && app_loop.current_patch_page().unwrap().effects().len() == 1;
+        && focus_order[amount_index - 1]
+            == PatchControlId::EffectSlot(
+                crest_synth::synth::effect_slot_id::EffectSlotIndex::new(0).unwrap(),
+            )
+        && depth_index + 3 == focus_order.len()
+        && focus_order[depth_index + 1..]
+            == [
+                PatchControlId::EffectSlot(
+                    crest_synth::synth::effect_slot_id::EffectSlotIndex::new(1).unwrap(),
+                ),
+                PatchControlId::EffectSlot(
+                    crest_synth::synth::effect_slot_id::EffectSlotIndex::new(2).unwrap(),
+                ),
+            ]
+        && page.effects().len() == 3
+        && page.effects()[0].occupancy().capability_id().is_some()
+        && page.effects()[1].occupancy().capability_id().is_none()
+        && page.effects()[2].occupancy().capability_id().is_none();
     assert!(patch_focus_order_exact);
 
     for _ in 0..amount_index {
@@ -520,7 +539,8 @@ fn static_patch_effect() {
             .current_parameters()
             .patch(first_id)
             .unwrap()
-            .effect()
+            .effect(0)
+            .unwrap()
             .scalars()
             == [0.5, 0.5]
         && app_loop.patches()[0].post_effects()[0].value(&amount_id)
@@ -565,8 +585,8 @@ fn static_patch_effect() {
             FRAME_COUNT,
         )
         .unwrap();
-    assert_eq!(graph.effect_rack().slot_id(0), Some(chorus.slot_id()));
-    assert_eq!(graph.effect_rack().slot_id(1), None);
+    assert_eq!(graph.effect_rack().slot_id_at(0, 0), Some(chorus.slot_id()));
+    assert_eq!(graph.effect_rack().slot_id_at(1, 0), None);
 
     let target_config =
         DescriptorDefaultConfigFactory::new(capabilities.clone(), instrument_providers)
@@ -596,6 +616,7 @@ fn static_patch_effect() {
         .unwrap(),
         &capabilities,
         &effect_registry,
+        app_loop.bus_returns(),
     )
     .unwrap();
     let structural_config_preserved = request.candidate_patches()[0].post_effects()
@@ -604,12 +625,12 @@ fn static_patch_effect() {
             .candidate_parameters()
             .patch(first_id)
             .unwrap()
-            .effect()
+            .effects()
             == app_loop
                 .current_parameters()
                 .patch(first_id)
                 .unwrap()
-                .effect();
+                .effects();
     assert!(structural_config_preserved);
 
     let structural = LockFreeStructuralGraphBoundary::new(
@@ -699,7 +720,7 @@ fn static_patch_effect() {
         .map(|patch| patch.post_effects().len() as u32)
         .sum::<u32>();
     assert_eq!(configured_effect_slots, 1);
-    assert_eq!(effect_providers.len(), 1);
+    assert_eq!(effect_providers.len(), 3);
     let fallback_count = observed.routing_failures();
     assert_eq!(fallback_count, 0);
 
@@ -754,7 +775,7 @@ fn chorus_source_provenance() {
 #[test]
 fn chorus_capability_schema_and_config_are_exact() {
     let registry = production_effect_registry().unwrap();
-    assert_eq!(registry.descriptors().len(), 1);
+    assert_eq!(registry.descriptors().len(), 3);
     let descriptor = &registry.descriptors()[0];
     assert_eq!(descriptor.id().as_str(), CHORUS_CAPABILITY_ID);
     assert_eq!(descriptor.label(), "Chorus");
@@ -788,8 +809,29 @@ fn chorus_capability_schema_and_config_are_exact() {
         registry.validate_config(&reversed),
         Err(EffectCapabilityError::ConfigOrderMismatch(_))
     ));
+    // WP05 lifted the per-Patch cap to the three ordered positions: the same
+    // instance twice is a duplicate, and a fourth distinct instance exceeds
+    // the widened capacity.
     assert!(matches!(
-        registry.validate_patch_effects(&[config.clone(), config]),
+        registry.validate_patch_effects(&[config.clone(), config.clone()]),
+        Err(EffectCapabilityError::DuplicateSlot(_))
+    ));
+    let distinct: Vec<_> = (1..=MAX_POST_EFFECTS_PER_PATCH as u16 + 1)
+        .map(|slot| {
+            registry
+                .descriptors()
+                .iter()
+                .find(|descriptor| descriptor.id() == config.capability_id())
+                .unwrap()
+                .default_config(EffectSlotId::new(slot).unwrap())
+                .unwrap()
+        })
+        .collect();
+    assert!(registry
+        .validate_patch_effects(&distinct[..MAX_POST_EFFECTS_PER_PATCH])
+        .is_ok());
+    assert!(matches!(
+        registry.validate_patch_effects(&distinct),
         Err(EffectCapabilityError::TooManyEffectSlots { .. })
     ));
 }
@@ -863,9 +905,9 @@ fn prepared_post_effect_rack_builder_prepares_exact_zero_or_one_slots() {
     .unwrap();
     assert_eq!(rack.patch_count(), 2);
     assert_eq!(rack.patch_id(0), Some(PatchId::new(1).unwrap()));
-    assert_eq!(rack.slot_id(0), Some(EffectSlotId::new(1).unwrap()));
-    assert_eq!(rack.scalar_count(0), Some(2));
-    assert_eq!(rack.slot_id(1), None);
+    assert_eq!(rack.slot_id_at(0, 0), Some(EffectSlotId::new(1).unwrap()));
+    assert_eq!(rack.scalar_count_at(0, 0), Some(2));
+    assert_eq!(rack.slot_id_at(1, 0), None);
 
     let dry_rack = PreparedPostEffectRackBuilder::build(
         &patches[1..],
@@ -876,7 +918,7 @@ fn prepared_post_effect_rack_builder_prepares_exact_zero_or_one_slots() {
     )
     .unwrap();
     assert_eq!(dry_rack.patch_count(), 1);
-    assert_eq!(dry_rack.slot_id(0), None);
+    assert_eq!(dry_rack.slot_id_at(0, 0), None);
     assert!(matches!(
         PreparedPostEffectRackBuilder::build(&patches, &effects, &[], CHORUS_SAMPLE_RATE, 256,),
         Err(EffectRackPreparationError::MissingPreparer { .. })

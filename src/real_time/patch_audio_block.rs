@@ -258,7 +258,7 @@ mod tests {
         for (slot, id) in patches.iter_mut().zip(ids) {
             *slot = patch(*id);
         }
-        let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap();
+        let global = GlobalParameters::new(0.0).unwrap();
         ParameterSnapshot::new(1, global, MixerState::default(), &patches[..ids.len()]).unwrap()
     }
 

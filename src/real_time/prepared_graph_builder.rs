@@ -1,5 +1,6 @@
-use crate::adapter::global_reverb_delay::GlobalReverbDelay;
-use crate::mixer::global_effects_processor::EffectError;
+use crate::mixer::bus_id::BusId;
+use crate::mixer::bus_return::BusReturnBank;
+use crate::mixer::bus_return::EffectError;
 use crate::mixer::mix_engine::MixEngine;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
@@ -9,6 +10,7 @@ use crate::synth::instrument_capability::CapabilityRegistry;
 use crate::synth::instrument_preparer::InstrumentPreparer;
 use crate::synth::patch::Patch;
 use crate::synth::prepared_engine_rack_builder::{PreparedEngineRackBuilder, RackPreparationError};
+use crate::synth::EffectPreparationError;
 use crate::synth::{
     EffectCapabilityRegistry, EffectPreparer, EffectRackPreparationError,
     PreparedPostEffectRackBuilder,
@@ -21,6 +23,7 @@ pub struct PreparedGraphBuilder<'a> {
     preparers: &'a [Box<dyn InstrumentPreparer>],
     effect_registry: Option<&'a EffectCapabilityRegistry>,
     effect_preparers: &'a [Box<dyn EffectPreparer>],
+    returns: Option<&'a BusReturnBank>,
 }
 
 impl<'a> PreparedGraphBuilder<'a> {
@@ -33,6 +36,7 @@ impl<'a> PreparedGraphBuilder<'a> {
             preparers,
             effect_registry: None,
             effect_preparers: &[],
+            returns: None,
         }
     }
 
@@ -44,6 +48,17 @@ impl<'a> PreparedGraphBuilder<'a> {
     ) -> Self {
         self.effect_registry = Some(registry);
         self.effect_preparers = preparers;
+        self
+    }
+
+    /// Injects the canonical bus-return occupancy this graph must prepare.
+    ///
+    /// Every occupied return is prepared through the injected effect registry
+    /// and preparers and installed at its exact bus. Without a bank the
+    /// prepared return rack stays empty — occupancy is never installed
+    /// implicitly.
+    pub const fn with_returns(mut self, returns: &'a BusReturnBank) -> Self {
+        self.returns = Some(returns);
         self
     }
 
@@ -108,10 +123,74 @@ impl<'a> PreparedGraphBuilder<'a> {
 
         let patch_audio =
             PatchAudioBlock::prepare(max_frames).map_err(GraphPreparationError::PatchAudio)?;
-        let mut mixer = MixEngine::new(GlobalReverbDelay::new());
+        let mut mixer = MixEngine::new();
         mixer
             .prepare(sample_rate, max_frames)
             .map_err(GraphPreparationError::Effects)?;
+        // Return occupancy comes exclusively from the injected canonical
+        // bank. `prepare` empties the rack, so occupancy is (re-)installed
+        // after every preparation; a bank the injected registry or preparers
+        // cannot satisfy refuses the complete graph with the failing bus.
+        if let Some(bank) = self.returns {
+            for bus_return in bank.returns() {
+                let Some(config) = bus_return.effect() else {
+                    continue;
+                };
+                let bus = bus_return.id();
+                let descriptor = effect_registry.descriptor(config.capability_id()).ok_or(
+                    GraphPreparationError::BusReturn {
+                        bus,
+                        source: BusReturnPreparationError::UnknownRegistryEntry,
+                    },
+                )?;
+                let invalid = |_| GraphPreparationError::BusReturn {
+                    bus,
+                    source: BusReturnPreparationError::InvalidConfiguration,
+                };
+                let scalars = descriptor
+                    .scalar_parameters()
+                    .map(|spec| {
+                        let value =
+                            config
+                                .value(spec.id())
+                                .ok_or(GraphPreparationError::BusReturn {
+                                    bus,
+                                    source: BusReturnPreparationError::InvalidConfiguration,
+                                })?;
+                        spec.scalar_value(value).map_err(invalid)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let live =
+                    crate::real_time::RtPostEffectParameters::new(config.slot_id(), &scalars)
+                        .map_err(|_| GraphPreparationError::BusReturn {
+                            bus,
+                            source: BusReturnPreparationError::InvalidConfiguration,
+                        })?;
+                let preparer = self
+                    .effect_preparers
+                    .iter()
+                    .find(|preparer| preparer.capability_id() == config.capability_id())
+                    .ok_or(GraphPreparationError::BusReturn {
+                        bus,
+                        source: BusReturnPreparationError::MissingPreparer,
+                    })?;
+                let prepared = preparer
+                    .prepare(RETURN_OCCUPANT_PATCH_ID, config, sample_rate, max_frames)
+                    .map_err(|source| GraphPreparationError::BusReturn {
+                        bus,
+                        source: BusReturnPreparationError::Preparation(source),
+                    })?;
+                mixer
+                    .install_bus_return(bus, prepared, live, bus_return.return_level())
+                    .map_err(|source| GraphPreparationError::BusReturn {
+                        bus,
+                        source: BusReturnPreparationError::Install(source),
+                    })?;
+            }
+        }
+        if !mixer.bus_returns().matches_parameters(&parameters) {
+            return Err(GraphPreparationError::ParameterLayoutMismatch);
+        }
 
         Ok(PreparedGraph::new(
             revision,
@@ -122,6 +201,17 @@ impl<'a> PreparedGraphBuilder<'a> {
         ))
     }
 }
+
+/// The stable synthetic Patch identity carried by prepared return occupants.
+///
+/// Bus returns are not owned by any Patch; the prepared-effect port requires
+/// a Patch identity, so returns use the reserved maximum, exactly as the
+/// retired production bridge did.
+const RETURN_OCCUPANT_PATCH_ID: crate::kernel::PatchId = match crate::kernel::PatchId::new(u32::MAX)
+{
+    Ok(patch_id) => patch_id,
+    Err(_) => panic!("the reserved bus-return Patch id is non-zero"),
+};
 
 /// A typed atomic complete-graph preparation failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,6 +227,43 @@ pub enum GraphPreparationError {
     EffectRack(EffectRackPreparationError),
     PatchAudio(PatchAudioBlockError),
     Effects(EffectError),
+    /// One bus-return occupant could not be prepared; the failure names its
+    /// exact bus so the refusal stays attributable to that position.
+    BusReturn {
+        bus: BusId,
+        source: BusReturnPreparationError,
+    },
+}
+
+/// Why one bus-return occupant refused preparation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BusReturnPreparationError {
+    /// The occupying entry is not installed in the injected effect registry.
+    UnknownRegistryEntry,
+    /// The occupant's configuration does not satisfy its descriptor.
+    InvalidConfiguration,
+    /// No injected preparer accepts the occupying registry entry.
+    MissingPreparer,
+    /// The preparer refused to build the instance.
+    Preparation(EffectPreparationError),
+    /// The prepared instance could not be installed into the return rack.
+    Install(EffectError),
+}
+
+impl fmt::Display for BusReturnPreparationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownRegistryEntry => {
+                formatter.write_str("occupying entry is not in the effect registry")
+            }
+            Self::InvalidConfiguration => {
+                formatter.write_str("occupant configuration does not satisfy its descriptor")
+            }
+            Self::MissingPreparer => formatter.write_str("no preparer accepts the occupying entry"),
+            Self::Preparation(source) => write!(formatter, "preparation refused: {source}"),
+            Self::Install(source) => write!(formatter, "installation refused: {source}"),
+        }
+    }
 }
 
 impl fmt::Display for GraphPreparationError {
@@ -165,6 +292,9 @@ impl fmt::Display for GraphPreparationError {
             Self::Effects(source) => {
                 write!(formatter, "global effect preparation failed: {source}")
             }
+            Self::BusReturn { bus, source } => {
+                write!(formatter, "bus return {bus} preparation failed: {source}")
+            }
         }
     }
 }
@@ -188,7 +318,6 @@ mod tests {
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::global_effects_processor::EffectError;
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mixer_state::MixerState;
     use crate::mixer::mixer_track_id::MixerTrackId;
@@ -221,7 +350,7 @@ mod tests {
     }
 
     fn globals() -> GlobalParameters {
-        GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap()
+        GlobalParameters::new(0.0).unwrap()
     }
 
     fn parameters(revision: GraphRevision, patches: &[Patch]) -> ParameterSnapshot {
@@ -458,27 +587,42 @@ mod tests {
             ))
         ));
 
+        // An occupied bank the builder cannot prepare refuses the complete
+        // graph and names the failing bus; nothing is silently substituted.
         let empty_preparers: Vec<Box<dyn InstrumentPreparer>> = Vec::new();
-        let effects_builder = PreparedGraphBuilder::new(&registry, &empty_preparers);
-        assert_eq!(
+        let effect_registry =
+            crate::adapter::production_effects::production_effect_registry().unwrap();
+        let effect_preparers =
+            crate::adapter::production_effects::production_effect_preparers().unwrap();
+        let bank =
+            crate::adapter::production_effects::production_default_bus_returns(&effect_registry)
+                .unwrap();
+        let return_parameters =
+            ParameterSnapshot::for_graph(1, first_revision, globals(), MixerState::default(), &[])
+                .unwrap()
+                .with_returns(ParameterSnapshot::project_returns(&effect_registry, &bank).unwrap());
+        let effects_builder = PreparedGraphBuilder::new(&registry, &empty_preparers)
+            .with_effects(&effect_registry, &effect_preparers)
+            .with_returns(&bank);
+        assert!(matches!(
             effects_builder
-                .build(
-                    first_revision,
-                    &[],
-                    ParameterSnapshot::for_graph(
-                        1,
-                        first_revision,
-                        globals(),
-                        MixerState::default(),
-                        &[],
-                    )
-                    .unwrap(),
-                    f32::MAX,
-                    1,
-                )
+                .build(first_revision, &[], return_parameters, f32::MAX, 1)
                 .unwrap_err(),
-            GraphPreparationError::Effects(EffectError::StorageAllocationFailed)
-        );
+            GraphPreparationError::BusReturn { bus, .. }
+                if bus == crate::mixer::bus_id::BusId::new(0).unwrap()
+        ));
+        // Without its registry the same occupied bank is refused up front.
+        let no_registry_builder =
+            PreparedGraphBuilder::new(&registry, &empty_preparers).with_returns(&bank);
+        assert!(matches!(
+            no_registry_builder
+                .build(first_revision, &[], return_parameters, 48_000.0, 1)
+                .unwrap_err(),
+            GraphPreparationError::BusReturn {
+                source: super::BusReturnPreparationError::UnknownRegistryEntry,
+                ..
+            }
+        ));
 
         assert_eq!(existing.revision(), first_revision);
         assert_eq!(existing.engine_rack().patch_count(), 2);

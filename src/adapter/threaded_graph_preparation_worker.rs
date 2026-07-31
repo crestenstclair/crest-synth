@@ -241,7 +241,7 @@ mod tests {
     }
 
     fn globals() -> GlobalParameters {
-        GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap()
+        GlobalParameters::new(0.0).unwrap()
     }
 
     fn config(capability_id: &str) -> crate::synth::InstrumentConfig {
@@ -325,7 +325,7 @@ mod tests {
             } => {
                 assert_eq!(correlation.request_id(), EngineSelectionRequestId::FIRST);
                 assert_eq!(
-                    candidate_config.capability_id().as_str(),
+                    candidate_config.unwrap().capability_id().as_str(),
                     BRAIDS_CAPABILITY_ID
                 );
                 assert_eq!(prepared_graph.revision(), GraphRevision::new(2).unwrap());
@@ -349,7 +349,7 @@ mod tests {
             } => {
                 assert_eq!(correlation.request_id().value(), 2);
                 assert_eq!(
-                    candidate_config.capability_id().as_str(),
+                    candidate_config.unwrap().capability_id().as_str(),
                     HIDEF_CAPABILITY_ID
                 );
                 assert_eq!(prepared_graph.revision(), GraphRevision::new(3).unwrap());

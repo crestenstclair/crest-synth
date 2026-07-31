@@ -531,32 +531,114 @@ pub struct PatchPageSection {
     parameters: Vec<PatchPageParameterRow>,
 }
 
-/// One configured Patch effect identity and its descriptor-derived sections.
+/// The stable choice id used by the empty occupancy choice. Registry entry
+/// ids are namespaced (`effect.*`), so the value cannot collide.
+pub const EMPTY_OCCUPANCY_CHOICE_ID: &str = "empty";
+
+/// What currently occupies one ordered effect slot.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PatchPageEffect {
-    slot_id: EffectSlotId,
-    capability_id: EffectCapabilityId,
-    label: String,
-    editable_identity: bool,
-    sections: Vec<PatchPageSection>,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PatchPageSlotOccupancy {
+    Empty,
+    Occupied {
+        slot_id: EffectSlotId,
+        capability_id: EffectCapabilityId,
+        label: String,
+    },
 }
 
-impl PatchPageEffect {
-    pub const fn slot_id(&self) -> EffectSlotId {
-        self.slot_id
+impl PatchPageSlotOccupancy {
+    pub const fn capability_id(&self) -> Option<&EffectCapabilityId> {
+        match self {
+            Self::Empty => None,
+            Self::Occupied { capability_id, .. } => Some(capability_id),
+        }
     }
+}
 
-    pub const fn capability_id(&self) -> &EffectCapabilityId {
-        &self.capability_id
+/// One adjacent occupancy choice: empty or one installed registry entry.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchPageOccupancyChoice {
+    id: String,
+    label: String,
+}
+
+impl PatchPageOccupancyChoice {
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     pub fn label(&self) -> &str {
         &self.label
     }
+}
 
-    pub const fn editable_identity(&self) -> bool {
-        self.editable_identity
+/// One of the three ordered effect slots, whether occupied or empty.
+///
+/// The occupancy row shares the structural lifecycle projection used by the
+/// engine row, and its adjacent nonwrapping choices are empty plus every
+/// installed registry entry. Any occupying entry is resolved generically
+/// through its descriptor; the projection never names a concrete effect.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchPageEffectSlot {
+    slot_index: crate::synth::effect_slot_id::EffectSlotIndex,
+    occupancy_control_id: PatchControlId,
+    occupancy: PatchPageSlotOccupancy,
+    choices: Vec<PatchPageOccupancyChoice>,
+    requested_choice_id: Option<String>,
+    status: Option<EngineSelectionStatusKind>,
+    request_id: Option<EngineSelectionRequestId>,
+    target_graph_revision: Option<GraphRevision>,
+    failure: Option<EngineSelectionFailure>,
+    editable: bool,
+    sections: Vec<PatchPageSection>,
+}
+
+impl PatchPageEffectSlot {
+    pub const fn slot_index(&self) -> crate::synth::effect_slot_id::EffectSlotIndex {
+        self.slot_index
+    }
+
+    pub fn occupancy_control_id(&self) -> PatchControlId {
+        self.occupancy_control_id.clone()
+    }
+
+    pub const fn occupancy(&self) -> &PatchPageSlotOccupancy {
+        &self.occupancy
+    }
+
+    pub fn choices(&self) -> &[PatchPageOccupancyChoice] {
+        &self.choices
+    }
+
+    pub fn requested_choice_id(&self) -> Option<&str> {
+        self.requested_choice_id.as_deref()
+    }
+
+    pub const fn status(&self) -> Option<EngineSelectionStatusKind> {
+        self.status
+    }
+
+    pub const fn request_id(&self) -> Option<EngineSelectionRequestId> {
+        self.request_id
+    }
+
+    pub const fn target_graph_revision(&self) -> Option<GraphRevision> {
+        self.target_graph_revision
+    }
+
+    pub const fn failure(&self) -> Option<EngineSelectionFailure> {
+        self.failure
+    }
+
+    pub const fn editable(&self) -> bool {
+        self.editable
     }
 
     pub fn sections(&self) -> &[PatchPageSection] {
@@ -588,7 +670,7 @@ struct PatchPageContent {
     engine: PatchPageEngine,
     envelope: Vec<PatchPageEnvelopeRow>,
     sections: Vec<PatchPageSection>,
-    effects: Vec<PatchPageEffect>,
+    effects: Vec<PatchPageEffectSlot>,
 }
 
 /// Immutable host-neutral PATCH view model derived by one generic schema walk.
@@ -624,10 +706,20 @@ impl PatchPageProjection {
         "envelope[].unit",
         "envelope[].value",
         "focusedControlId",
-        "effects[].capabilityId",
-        "effects[].editableIdentity",
-        "effects[].label",
-        "effects[].slotId",
+        "effects[].slotIndex",
+        "effects[].occupancyControlId",
+        "effects[].occupancy.kind",
+        "effects[].occupancy.slotId",
+        "effects[].occupancy.capabilityId",
+        "effects[].occupancy.label",
+        "effects[].choices[].id",
+        "effects[].choices[].label",
+        "effects[].requestedChoiceId",
+        "effects[].status",
+        "effects[].requestId",
+        "effects[].targetGraphRevision",
+        "effects[].failure",
+        "effects[].editable",
         "effects[].sections[].id",
         "effects[].sections[].label",
         "effects[].sections[].parameters[].coarseStep",
@@ -741,7 +833,7 @@ impl PatchPageProjection {
         &self.content.sections
     }
 
-    pub fn effects(&self) -> &[PatchPageEffect] {
+    pub fn effects(&self) -> &[PatchPageEffectSlot] {
         &self.content.effects
     }
 
@@ -820,7 +912,7 @@ impl PatchPageProjection {
             matches!(
                 correlation.intent(),
                 StructuralEditIntent::ReplaceCapability { .. }
-            ) && correlation.patch_id() == patch.id()
+            ) && correlation.patch_id() == Some(patch.id())
         });
         let editable = state.capabilities().descriptors().len() >= 2
             && matches!(
@@ -892,7 +984,7 @@ impl PatchPageProjection {
                                 .map(|choice| choice.label().to_owned())
                         });
                         let row_correlation = correlation.filter(|correlation| {
-                            correlation.patch_id() == patch.id()
+                            correlation.patch_id() == Some(patch.id())
                                 && matches!(
                                     correlation.intent(),
                                     StructuralEditIntent::ReplaceParameterChoice {
@@ -952,42 +1044,98 @@ impl PatchPageProjection {
                 })
             })
             .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
-        let effects = patch
-            .post_effects()
-            .iter()
-            .map(|config| {
-                let effect_descriptor = state
-                    .effects()
-                    .descriptor(config.capability_id())
-                    .ok_or(PatchPageProjectionError::InvalidEffectConfig)?;
-                let sections = effect_descriptor
-                    .sections()
-                    .iter()
-                    .map(|section| {
-                        let parameters = section
-                            .parameters()
+        let occupancy_choices =
+            core::iter::once(PatchPageOccupancyChoice {
+                id: EMPTY_OCCUPANCY_CHOICE_ID.to_owned(),
+                label: "Empty".to_owned(),
+            })
+            .chain(state.effects().descriptors().iter().map(|descriptor| {
+                PatchPageOccupancyChoice {
+                    id: descriptor.id().to_string(),
+                    label: descriptor.label().to_owned(),
+                }
+            }))
+            .collect::<Vec<_>>();
+        let occupancy_editable = !state.effects().descriptors().is_empty()
+            && matches!(
+                engine_selection.kind(),
+                EngineSelectionStatusKind::Ready | EngineSelectionStatusKind::Failed
+            );
+        let effects = crate::synth::effect_slot_id::EffectSlotIndex::ALL
+            .into_iter()
+            .map(|slot_index| {
+                let (occupancy, sections) = match patch.effect_slot(slot_index) {
+                    None => (PatchPageSlotOccupancy::Empty, Vec::new()),
+                    Some(config) => {
+                        let effect_descriptor = state
+                            .effects()
+                            .descriptor(config.capability_id())
+                            .ok_or(PatchPageProjectionError::InvalidEffectConfig)?;
+                        let sections = effect_descriptor
+                            .sections()
                             .iter()
-                            .map(|spec| {
-                                PatchPageParameterRow::for_effect_parameter(
-                                    effect_descriptor,
-                                    config,
-                                    spec,
-                                    engine_selection.active_graph_revision(),
-                                )
+                            .map(|section| {
+                                let parameters = section
+                                    .parameters()
+                                    .iter()
+                                    .map(|spec| {
+                                        PatchPageParameterRow::for_effect_parameter(
+                                            effect_descriptor,
+                                            config,
+                                            spec,
+                                            engine_selection.active_graph_revision(),
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
+                                Ok(PatchPageSection {
+                                    id: section.id().to_owned(),
+                                    label: section.label().to_owned(),
+                                    parameters,
+                                })
                             })
                             .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
-                        Ok(PatchPageSection {
-                            id: section.id().to_owned(),
-                            label: section.label().to_owned(),
-                            parameters,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
-                Ok(PatchPageEffect {
-                    slot_id: config.slot_id(),
-                    capability_id: config.capability_id().clone(),
-                    label: effect_descriptor.label().to_owned(),
-                    editable_identity: false,
+                        (
+                            PatchPageSlotOccupancy::Occupied {
+                                slot_id: config.slot_id(),
+                                capability_id: config.capability_id().clone(),
+                                label: effect_descriptor.label().to_owned(),
+                            },
+                            sections,
+                        )
+                    }
+                };
+                let slot_correlation = correlation.filter(|correlation| {
+                    matches!(
+                        correlation.intent(),
+                        StructuralEditIntent::SetSlotOccupancy {
+                            patch_id: target_patch,
+                            slot,
+                            ..
+                        } if *target_patch == patch.id() && *slot == slot_index
+                    )
+                });
+                let requested_choice_id =
+                    slot_correlation.and_then(|correlation| match correlation.intent() {
+                        StructuralEditIntent::SetSlotOccupancy { entry, .. } => {
+                            Some(entry.as_ref().map_or_else(
+                                || EMPTY_OCCUPANCY_CHOICE_ID.to_owned(),
+                                ToString::to_string,
+                            ))
+                        }
+                        _ => None,
+                    });
+                Ok(PatchPageEffectSlot {
+                    slot_index,
+                    occupancy_control_id: PatchControlId::EffectSlot(slot_index),
+                    occupancy,
+                    choices: occupancy_choices.clone(),
+                    requested_choice_id,
+                    status: slot_correlation.map(|_| engine_selection.kind()),
+                    request_id: slot_correlation.map(|correlation| correlation.request_id()),
+                    target_graph_revision: slot_correlation
+                        .and_then(|correlation| correlation.target_graph_revision()),
+                    failure: slot_correlation.and_then(|_| engine_selection.failure()),
+                    editable: occupancy_editable,
                     sections,
                 })
             })
@@ -1016,7 +1164,7 @@ impl PatchPageProjection {
                     active_graph_revision: engine_selection.active_graph_revision(),
                     requested_capability_id: correlation
                         .filter(|_| engine_targeted)
-                        .map(|correlation| correlation.target_capability_id().clone()),
+                        .and_then(|correlation| correlation.target_capability_id().cloned()),
                     request_id: correlation
                         .filter(|_| engine_targeted)
                         .map(|correlation| correlation.request_id()),
@@ -1058,7 +1206,7 @@ impl Serialize for PatchPageProjection {
             engine: &'a PatchPageEngine,
             envelope: &'a [PatchPageEnvelopeRow],
             sections: &'a [PatchPageSection],
-            effects: &'a [PatchPageEffect],
+            effects: &'a [PatchPageEffectSlot],
             state_hash: &'a str,
         }
 
@@ -1127,7 +1275,7 @@ mod tests {
     fn state_with_config(config: crate::synth::InstrumentConfig) -> AppState {
         let mut state = AppState::new(
             production_capability_registry().unwrap(),
-            GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap(),
+            GlobalParameters::new(0.0).unwrap(),
         );
         let patch = Patch::new(
             PatchId::new(7).unwrap(),
@@ -1148,7 +1296,7 @@ mod tests {
         let mut state = AppState::new_with_effects(
             production_capability_registry().unwrap(),
             production_effect_registry().unwrap(),
-            GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap(),
+            GlobalParameters::new(0.0).unwrap(),
         );
         let patch = Patch::new(
             PatchId::new(7).unwrap(),

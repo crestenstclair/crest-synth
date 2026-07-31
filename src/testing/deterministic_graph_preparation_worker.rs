@@ -225,7 +225,7 @@ mod tests {
             &active,
             target,
             2,
-            GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap(),
+            GlobalParameters::new(0.0).unwrap(),
             MixerState::default(),
             audio_config(),
             &registry,
@@ -258,7 +258,7 @@ mod tests {
             } => {
                 assert_eq!(correlation.request_id(), EngineSelectionRequestId::FIRST);
                 assert_eq!(
-                    candidate_config.capability_id().as_str(),
+                    candidate_config.unwrap().capability_id().as_str(),
                     BRAIDS_CAPABILITY_ID
                 );
                 assert_eq!(prepared_graph.revision(), GraphRevision::new(2).unwrap());

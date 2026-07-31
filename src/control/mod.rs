@@ -35,9 +35,10 @@ pub use graphical_shell_projection::{
 pub use interaction_state::{InteractionState, Selection, SelectionSection};
 pub use patch_control_id::PatchControlId;
 pub use patch_page_projection::{
-    PatchPageEffect, PatchPageEngine, PatchPageEngineChoice, PatchPageEnvelopeRow,
-    PatchPageIdentity, PatchPageParameterRow, PatchPageParameterValue, PatchPageProjection,
-    PatchPageProjectionError, PatchPageSection,
+    PatchPageEffectSlot, PatchPageEngine, PatchPageEngineChoice, PatchPageEnvelopeRow,
+    PatchPageIdentity, PatchPageOccupancyChoice, PatchPageParameterRow, PatchPageParameterValue,
+    PatchPageProjection, PatchPageProjectionError, PatchPageSection, PatchPageSlotOccupancy,
+    EMPTY_OCCUPANCY_CHOICE_ID,
 };
 pub use semantic_action::{InteractionMode, SemanticAction, SemanticActionKind, ValidAction};
 pub use semantic_focus::{

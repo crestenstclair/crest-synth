@@ -23,7 +23,7 @@ use crate::synth::{
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::live_demo_checkpoint::{
     LiveCheckpoint, LiveDemoCheckpoint, LiveDemoCheckpointError, LiveEngineCheckpoint,
-    LivePresetProjection,
+    LivePresetProjection, LiveTopologyCheckpoint,
 };
 use crate::testing::live_demo_report::{
     LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveShellCoverage, RuntimeAudioWitness,
@@ -58,6 +58,9 @@ pub struct LiveDemoRunner<Source, Observation> {
     latest_shell: Option<GraphicalShellProjection>,
     engine_transition_index: usize,
     engine_phase: LiveEnginePhase,
+    topology_transition_index: usize,
+    topology_phase: LiveTopologyPhase,
+    pending_projection_measure: Option<PendingProjectionMeasure>,
     last_ready_graph_revision: crate::real_time::GraphRevision,
     engine_envelope_baseline: Option<VoiceEnvelope>,
     structural_config_baseline: Option<InstrumentConfig>,
@@ -82,9 +85,10 @@ where
         observation: Observation,
         runtime_audio: RuntimeAudioWitness,
     ) -> Self {
-        let coverage = LiveDemoCoverage::with_engine_transitions(
+        let coverage = LiveDemoCoverage::with_engine_and_topology_transitions(
             scene.expected_editable_parameters(),
             scene.expected_engine_transitions(),
+            scene.expected_topology_transitions(),
         );
         let last_ready_graph_revision = runtime_audio.active_graph_revision();
         Self {
@@ -103,6 +107,9 @@ where
             latest_shell: None,
             engine_transition_index: 0,
             engine_phase: LiveEnginePhase::SelectPatch,
+            topology_transition_index: 0,
+            topology_phase: LiveTopologyPhase::Support { index: 0 },
+            pending_projection_measure: None,
             last_ready_graph_revision,
             engine_envelope_baseline: None,
             structural_config_baseline: None,
@@ -132,7 +139,7 @@ where
         self.deferred_fixture_elapsed = self.deferred_fixture_elapsed.saturating_add(elapsed);
         self.tick_index = self.tick_index.saturating_add(1);
 
-        if self.elapsed >= LIVE_DEMO_TOTAL_TIMEOUT {
+        if self.elapsed >= self.scene.total_timeout() {
             return Err(LiveDemoError::TotalTimeout {
                 elapsed: self.elapsed,
                 stage: self.progress_stage(),
@@ -169,6 +176,14 @@ where
         if self.completed_report.is_some() || self.aborted {
             return Err(LiveDemoError::UnexpectedShellFrame);
         }
+        if let Some(pending) = &mut self.pending_projection_measure {
+            if pending.resolved.is_none() {
+                pending.frames_seen = pending.frames_seen.saturating_add(1);
+                if frame.generation() >= pending.generation {
+                    pending.resolved = Some(pending.frames_seen);
+                }
+            }
+        }
         let shell = self
             .latest_shell
             .as_ref()
@@ -195,6 +210,12 @@ where
             && self.engine_phase != LiveEnginePhase::Complete
         {
             return self.advance_engine(app_loop);
+        }
+
+        if self.step_index == self.scene.scalar_step_count()
+            && self.topology_transition_index < self.scene.expected_topology_transitions().len()
+        {
+            return self.advance_topology(app_loop);
         }
 
         if self.step_index == self.scene.steps().len() {
@@ -242,6 +263,9 @@ where
                 };
             }
             return self.engine_phase.stage_name();
+        }
+        if self.topology_transition_index < self.scene.expected_topology_transitions().len() {
+            return self.topology_phase.stage_name();
         }
         if self.step_index < self.scene.steps().len() {
             return "semantic note cleanup dispatch";
@@ -875,6 +899,398 @@ where
         }
     }
 
+    /// Drives the retained scene's topology transitions (WP08): support
+    /// events, the occupancy dispatch, the correlated
+    /// Preparing/Activating/Ready lifecycle, and the NFR-008 responsiveness
+    /// measurement, capturing one topology checkpoint per transition.
+    #[allow(clippy::too_many_lines)]
+    fn advance_topology<Boundary>(
+        &mut self,
+        app_loop: &mut AppLoop<Boundary>,
+    ) -> Result<Option<LiveCheckpoint>, LiveDemoError>
+    where
+        Boundary: ControlAudioBoundary,
+    {
+        let transition = self
+            .scene
+            .expected_topology_transitions()
+            .get(self.topology_transition_index)
+            .ok_or(LiveDemoError::TopologyLifecycleMismatch)?
+            .clone();
+        match self.topology_phase.clone() {
+            LiveTopologyPhase::Support { index } => {
+                self.tick_fixture(app_loop)?;
+                if let Some(item) = transition.support_before().get(index) {
+                    if execute_topology_support(app_loop, item)? {
+                        self.topology_phase = LiveTopologyPhase::Support {
+                            index: index.saturating_add(1),
+                        };
+                    }
+                } else {
+                    // Freeze the fixture from here through capture so the
+                    // probe note is the correlated sounding cause.
+                    dispatch_engine_event(app_loop, transition.probe_note_on())?;
+                    self.topology_phase = LiveTopologyPhase::Dispatch;
+                }
+                self.mark_progress();
+                Ok(None)
+            }
+            LiveTopologyPhase::Dispatch => {
+                let audio_before = self.observation.read_latest_on_control();
+                let source_revision = app_loop.graph_revision();
+                let context = TopologyContext {
+                    audio_before,
+                    source_revision,
+                    request_id: None,
+                    target_revision: None,
+                    last_source_sequence: audio_before.sequence(),
+                    first_target_sequence: None,
+                    target_note_sequence: None,
+                    last_seen_sequence: audio_before.sequence(),
+                    rejection: None,
+                };
+                if let Some(action) = transition.action() {
+                    let event = AppEvent::from_semantic_action(action.clone());
+                    if let Some(expected) = transition.expected_rejection() {
+                        let rejection =
+                            dispatch_rejected_topology_event(app_loop, event, expected)?;
+                        self.topology_phase = LiveTopologyPhase::AwaitRejectionAudio {
+                            context: TopologyContext {
+                                rejection: Some(rejection),
+                                ..context
+                            },
+                        };
+                    } else {
+                        let record = dispatch_engine_event(app_loop, event)?;
+                        let status = app_loop.engine_selection_status();
+                        if status.kind() != EngineSelectionStatusKind::Preparing {
+                            return Err(LiveDemoError::TopologyLifecycleMismatch);
+                        }
+                        let request_id = status
+                            .correlation()
+                            .map(|correlation| correlation.request_id())
+                            .ok_or(LiveDemoError::TopologyLifecycleMismatch)?;
+                        self.pending_projection_measure = Some(PendingProjectionMeasure {
+                            generation: record.generation_after(),
+                            frames_seen: 0,
+                            resolved: None,
+                        });
+                        self.topology_phase = LiveTopologyPhase::AwaitActivating {
+                            context: TopologyContext {
+                                request_id: Some(request_id),
+                                ..context
+                            },
+                        };
+                    }
+                } else if let Some(direction) = transition.adjust() {
+                    dispatch_engine_event(app_loop, AppEvent::Adjust(direction))?;
+                    self.topology_phase = LiveTopologyPhase::AwaitScalarAudible { context };
+                } else {
+                    self.topology_phase = LiveTopologyPhase::AwaitScalarAudible { context };
+                }
+                self.mark_progress();
+                Ok(None)
+            }
+            LiveTopologyPhase::AwaitActivating { mut context } => {
+                self.observe_topology_revision(&mut context);
+                match app_loop.engine_selection_status().kind() {
+                    EngineSelectionStatusKind::Preparing => {
+                        self.topology_phase = LiveTopologyPhase::AwaitActivating { context };
+                        Ok(None)
+                    }
+                    EngineSelectionStatusKind::Activating => {
+                        let target = app_loop
+                            .engine_selection_status()
+                            .correlation()
+                            .and_then(|correlation| correlation.target_graph_revision())
+                            .ok_or(LiveDemoError::TopologyLifecycleMismatch)?;
+                        if target <= context.source_revision {
+                            return Err(LiveDemoError::TopologyLifecycleMismatch);
+                        }
+                        // The occupancy is committed exactly at Activating:
+                        // the canonical projection must reflect it now.
+                        if !topology_occupancy_committed(app_loop, &transition)? {
+                            return Err(LiveDemoError::TopologyProjectionMismatch);
+                        }
+                        context.target_revision = Some(target);
+                        self.topology_phase = LiveTopologyPhase::AwaitReady { context };
+                        self.mark_progress();
+                        Ok(None)
+                    }
+                    EngineSelectionStatusKind::Ready | EngineSelectionStatusKind::Failed => {
+                        Err(LiveDemoError::TopologyLifecycleMismatch)
+                    }
+                }
+            }
+            LiveTopologyPhase::AwaitReady { mut context } => {
+                self.observe_topology_revision(&mut context);
+                match app_loop.engine_selection_status().kind() {
+                    EngineSelectionStatusKind::Activating => {
+                        self.topology_phase = LiveTopologyPhase::AwaitReady { context };
+                        Ok(None)
+                    }
+                    EngineSelectionStatusKind::Ready => {
+                        // WP10: a held-note transition never re-sounds its
+                        // probe — the note sounded before the dispatch must
+                        // itself survive the block-boundary activation via
+                        // voice carry-over, so the audible capture measures
+                        // the carried voice. Every other transition keeps the
+                        // engine-transition model: sound the target note so
+                        // the activated topology is audible.
+                        if !transition.hold_note_through_activation() {
+                            dispatch_engine_event(app_loop, transition.probe_note_on())?;
+                        }
+                        context.target_note_sequence =
+                            Some(self.observation.read_latest_on_control().sequence());
+                        self.topology_phase = LiveTopologyPhase::AwaitAudible { context };
+                        self.mark_progress();
+                        Ok(None)
+                    }
+                    EngineSelectionStatusKind::Preparing | EngineSelectionStatusKind::Failed => {
+                        Err(LiveDemoError::TopologyLifecycleMismatch)
+                    }
+                }
+            }
+            LiveTopologyPhase::AwaitAudible { mut context } => {
+                self.observe_topology_revision(&mut context);
+                let observation = self.observation.read_latest_on_control();
+                let Some(note_sequence) = context.target_note_sequence else {
+                    return Err(LiveDemoError::TopologyLifecycleMismatch);
+                };
+                if observation.sequence() <= note_sequence {
+                    self.topology_phase = LiveTopologyPhase::AwaitAudible { context };
+                    return Ok(None);
+                }
+                // The change is structurally effective at the activation
+                // block boundary (the recorded activation gap); audibility
+                // develops as fast as the sounded note's attack and the
+                // occupying effect's own latency allow. Poll until the
+                // witness holds and record the measured block count.
+                let audible_on_activated_graph =
+                    topology_witness_holds(transition.audible(), &transition, observation);
+                if !audible_on_activated_graph {
+                    self.topology_phase = LiveTopologyPhase::AwaitAudible { context };
+                    return Ok(None);
+                }
+                let Some(frames) = self
+                    .pending_projection_measure
+                    .as_ref()
+                    .and_then(|pending| pending.resolved)
+                else {
+                    self.topology_phase = LiveTopologyPhase::AwaitAudible { context };
+                    return Ok(None);
+                };
+                let target = context
+                    .target_revision
+                    .ok_or(LiveDemoError::TopologyLifecycleMismatch)?;
+                let first_target_sequence = context
+                    .first_target_sequence
+                    .unwrap_or_else(|| observation.sequence());
+                let gap = first_target_sequence
+                    .saturating_sub(context.last_source_sequence)
+                    .max(1);
+                let blocks = observation.sequence().saturating_sub(note_sequence).max(1);
+                let tree = app_loop.current_state_tree();
+                let audio_uninterrupted = audio_is_finite(context.audio_before)
+                    && audio_is_finite(observation)
+                    && observation.sequence() > context.audio_before.sequence()
+                    && observation.active_notes() > 0
+                    && observation.routing_failures() == 0;
+                // WP10: for a held-note transition the runner dispatched no
+                // note after activation, so an active note observed on the
+                // target graph is the carried voice itself — measured, never
+                // assumed.
+                let held_note_carried = transition
+                    .hold_note_through_activation()
+                    .then(|| observation.active_notes() > 0);
+                let checkpoint = LiveTopologyCheckpoint::new(
+                    transition.identifier(),
+                    self.topology_transition_index,
+                    transition.action().cloned(),
+                    EventOutcome::Accepted,
+                    None,
+                    context.request_id,
+                    context.source_revision,
+                    Some(target),
+                    tree.generation(),
+                    tree.state_hash(),
+                    Some(frames),
+                    Some(gap),
+                    Some(blocks),
+                    audible_on_activated_graph,
+                    transition.audible(),
+                    context.audio_before,
+                    observation,
+                    audio_uninterrupted,
+                    self.runtime_audio.callback_allocations(),
+                    self.runtime_audio.callback_destructions(),
+                    held_note_carried,
+                )?;
+                self.pending_projection_measure = None;
+                dispatch_engine_event(app_loop, transition.probe_note_off())?;
+                self.coverage
+                    .mark_topology_exercised(transition.identifier());
+                self.topology_phase = LiveTopologyPhase::SupportAfter { index: 0 };
+                self.mark_progress();
+                self.push_topology_checkpoint(checkpoint)
+            }
+            LiveTopologyPhase::AwaitScalarAudible { mut context } => {
+                let observation = self.observation.read_latest_on_control();
+                if observation.sequence() > context.last_seen_sequence {
+                    context.last_seen_sequence = observation.sequence();
+                    self.mark_progress();
+                }
+                if observation.sequence() <= context.audio_before.sequence() {
+                    self.topology_phase = LiveTopologyPhase::AwaitScalarAudible { context };
+                    return Ok(None);
+                }
+                if observation.active_graph_revision() != context.source_revision {
+                    return Err(LiveDemoError::TopologyLifecycleMismatch);
+                }
+                if !topology_witness_holds(transition.audible(), &transition, observation) {
+                    self.topology_phase = LiveTopologyPhase::AwaitScalarAudible { context };
+                    return Ok(None);
+                }
+                let tree = app_loop.current_state_tree();
+                let audio_uninterrupted = audio_is_finite(context.audio_before)
+                    && audio_is_finite(observation)
+                    && observation.active_notes() > 0
+                    && observation.routing_failures() == 0;
+                let checkpoint = LiveTopologyCheckpoint::new(
+                    transition.identifier(),
+                    self.topology_transition_index,
+                    None,
+                    EventOutcome::Accepted,
+                    None,
+                    None,
+                    context.source_revision,
+                    None,
+                    tree.generation(),
+                    tree.state_hash(),
+                    None,
+                    None,
+                    None,
+                    true,
+                    transition.audible(),
+                    context.audio_before,
+                    observation,
+                    audio_uninterrupted,
+                    self.runtime_audio.callback_allocations(),
+                    self.runtime_audio.callback_destructions(),
+                    None,
+                )?;
+                dispatch_engine_event(app_loop, transition.probe_note_off())?;
+                self.coverage
+                    .mark_topology_exercised(transition.identifier());
+                self.topology_phase = LiveTopologyPhase::SupportAfter { index: 0 };
+                self.mark_progress();
+                self.push_topology_checkpoint(checkpoint)
+            }
+            LiveTopologyPhase::AwaitRejectionAudio { mut context } => {
+                let observation = self.observation.read_latest_on_control();
+                if observation.sequence() > context.last_seen_sequence {
+                    context.last_seen_sequence = observation.sequence();
+                    self.mark_progress();
+                }
+                if observation.sequence() <= context.audio_before.sequence() {
+                    self.topology_phase = LiveTopologyPhase::AwaitRejectionAudio { context };
+                    return Ok(None);
+                }
+                // FR-015/SC-006: the refused change left the active graph,
+                // the held notes, and the audio path untouched.
+                if observation.active_graph_revision() != context.source_revision {
+                    return Err(LiveDemoError::TopologyLifecycleMismatch);
+                }
+                if !topology_witness_holds(transition.audible(), &transition, observation) {
+                    self.topology_phase = LiveTopologyPhase::AwaitRejectionAudio { context };
+                    return Ok(None);
+                }
+                let tree = app_loop.current_state_tree();
+                let audio_uninterrupted = audio_is_finite(context.audio_before)
+                    && audio_is_finite(observation)
+                    && observation.active_notes() > 0
+                    && observation.routing_failures() == 0;
+                let checkpoint = LiveTopologyCheckpoint::new(
+                    transition.identifier(),
+                    self.topology_transition_index,
+                    transition.action().cloned(),
+                    EventOutcome::Rejected,
+                    context.rejection.clone(),
+                    None,
+                    context.source_revision,
+                    None,
+                    tree.generation(),
+                    tree.state_hash(),
+                    None,
+                    None,
+                    None,
+                    true,
+                    transition.audible(),
+                    context.audio_before,
+                    observation,
+                    audio_uninterrupted,
+                    self.runtime_audio.callback_allocations(),
+                    self.runtime_audio.callback_destructions(),
+                    None,
+                )?;
+                dispatch_engine_event(app_loop, transition.probe_note_off())?;
+                self.coverage
+                    .mark_topology_exercised(transition.identifier());
+                self.topology_phase = LiveTopologyPhase::SupportAfter { index: 0 };
+                self.mark_progress();
+                self.push_topology_checkpoint(checkpoint)
+            }
+            LiveTopologyPhase::SupportAfter { index } => {
+                self.tick_fixture(app_loop)?;
+                if let Some(item) = transition.support_after().get(index) {
+                    if execute_topology_support(app_loop, item)? {
+                        self.topology_phase = LiveTopologyPhase::SupportAfter {
+                            index: index.saturating_add(1),
+                        };
+                    }
+                } else {
+                    self.topology_transition_index =
+                        self.topology_transition_index.saturating_add(1);
+                    self.topology_phase = LiveTopologyPhase::Support { index: 0 };
+                }
+                self.mark_progress();
+                Ok(None)
+            }
+        }
+    }
+
+    /// Tracks the last block rendered on the source graph and the first
+    /// observed block on the target graph — the block-boundary activation
+    /// evidence (NFR-003, NFR-008).
+    fn observe_topology_revision(&mut self, context: &mut TopologyContext) {
+        let observation = self.observation.read_latest_on_control();
+        // A rendering pipeline is not a stalled one: audibility can lag the
+        // activation by the occupying effect's own latency (a delay return's
+        // wet arrives only after its delay time), so advancing blocks count
+        // as progress while the awaited witness develops. The scene's total
+        // timeout still bounds the run.
+        if observation.sequence() > context.last_seen_sequence {
+            context.last_seen_sequence = observation.sequence();
+            self.mark_progress();
+        }
+        if observation.active_graph_revision() == context.source_revision {
+            context.last_source_sequence = observation.sequence();
+        } else if context.first_target_sequence.is_none()
+            && context.target_revision == Some(observation.active_graph_revision())
+        {
+            context.first_target_sequence = Some(observation.sequence());
+        }
+    }
+
+    fn push_topology_checkpoint(
+        &mut self,
+        checkpoint: LiveTopologyCheckpoint,
+    ) -> Result<Option<LiveCheckpoint>, LiveDemoError> {
+        let checkpoint = LiveCheckpoint::topology(checkpoint);
+        self.checkpoints.push(checkpoint.clone());
+        Ok(Some(checkpoint))
+    }
+
     fn current_engine_transition(&self) -> Result<&LiveEngineTransition, LiveDemoError> {
         self.scene
             .expected_engine_transitions()
@@ -931,10 +1347,10 @@ where
             }
         } else if !lifecycle.correlation().is_some_and(|correlation| {
             correlation.request_id() == request_id
-                && correlation.patch_id() == transition.patch_id()
+                && correlation.patch_id() == Some(transition.patch_id())
                 && correlation.intent() == transition.intent()
-                && correlation.source_capability_id() == transition.source_capability_id()
-                && correlation.target_capability_id() == transition.target_capability_id()
+                && correlation.source_capability_id() == Some(transition.source_capability_id())
+                && correlation.target_capability_id() == Some(transition.target_capability_id())
         }) {
             return Err(LiveDemoError::EngineProjectionMismatch);
         }
@@ -954,6 +1370,10 @@ where
             .as_ref()
             .ok_or(LiveDemoError::EngineTargetConfigMismatch)?;
         let preset = match transition.intent() {
+            StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetReturnOccupancy { .. } => {
+                return Err(LiveDemoError::EngineProjectionMismatch)
+            }
             StructuralEditIntent::ReplaceCapability { .. } => {
                 let expected_request =
                     (status != EngineSelectionStatusKind::Ready).then_some(request_id);
@@ -1273,6 +1693,239 @@ impl LiveEnginePhase {
     }
 }
 
+/// The measured NFR-008 projection window: how many frames paint between an
+/// accepted edit and the first frame whose semantic generation covers it.
+#[derive(Clone, Debug, PartialEq)]
+struct PendingProjectionMeasure {
+    generation: u64,
+    frames_seen: u64,
+    resolved: Option<u64>,
+}
+
+/// Bounded per-transition correlation state for the topology phase.
+#[derive(Clone, Debug, PartialEq)]
+struct TopologyContext {
+    audio_before: AudioObservationSnapshot,
+    source_revision: crate::real_time::GraphRevision,
+    request_id: Option<EngineSelectionRequestId>,
+    target_revision: Option<crate::real_time::GraphRevision>,
+    last_source_sequence: u64,
+    first_target_sequence: Option<u64>,
+    target_note_sequence: Option<u64>,
+    last_seen_sequence: u64,
+    rejection: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+enum LiveTopologyPhase {
+    Support { index: usize },
+    Dispatch,
+    AwaitActivating { context: TopologyContext },
+    AwaitReady { context: TopologyContext },
+    AwaitAudible { context: TopologyContext },
+    AwaitScalarAudible { context: TopologyContext },
+    AwaitRejectionAudio { context: TopologyContext },
+    SupportAfter { index: usize },
+}
+
+impl LiveTopologyPhase {
+    const fn stage_name(&self) -> &'static str {
+        match self {
+            Self::Support { .. } => "topology support dispatch",
+            Self::Dispatch => "topology occupancy dispatch",
+            Self::AwaitActivating { .. } => "topology preparation",
+            Self::AwaitReady { .. } => "topology graph activation",
+            Self::AwaitAudible { .. } => "topology audible observation",
+            Self::AwaitScalarAudible { .. } => "topology scalar observation",
+            Self::AwaitRejectionAudio { .. } => "topology rejection continuity",
+            Self::SupportAfter { .. } => "topology support restoration",
+        }
+    }
+}
+
+/// Executes one support item; returns whether the queue may advance past it
+/// (machine-driven navigation repeats until its target focus is reached).
+fn execute_topology_support<Boundary>(
+    app_loop: &mut AppLoop<Boundary>,
+    item: &crate::testing::live_effects_and_buses_scene::LiveTopologySupport,
+) -> Result<bool, LiveDemoError>
+where
+    Boundary: ControlAudioBoundary,
+{
+    use crate::testing::live_effects_and_buses_scene::LiveTopologySupport;
+    match item {
+        LiveTopologySupport::Event { event } => {
+            dispatch_engine_event(app_loop, event.clone())?;
+            Ok(true)
+        }
+        LiveTopologySupport::FocusMixerTrack { track_id } => {
+            let focused = app_loop
+                .state()
+                .interaction()
+                .focus_path()
+                .control_id()
+                .clone();
+            let selected = match &focused {
+                crate::control::SemanticControlId::Mixer(control) => control.track_id(),
+                _ => None,
+            }
+            .ok_or(LiveDemoError::TopologySupportMismatch)?;
+            if selected == *track_id {
+                return Ok(true);
+            }
+            let direction = if selected.index() < track_id.index() {
+                Direction::Right
+            } else {
+                Direction::Left
+            };
+            dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+            Ok(false)
+        }
+        LiveTopologySupport::VerifyMixerFocus { control } => {
+            let focused = app_loop
+                .state()
+                .interaction()
+                .focus_path()
+                .control_id()
+                .clone();
+            let matches = match &focused {
+                crate::control::SemanticControlId::Mixer(actual) => {
+                    // The indexed addressing seam: the focused control must
+                    // address the exact expected bus, never a repositioned
+                    // one.
+                    actual == control && actual.bus() == control.bus()
+                }
+                _ => false,
+            };
+            if matches {
+                Ok(true)
+            } else {
+                Err(LiveDemoError::TopologySupportMismatch)
+            }
+        }
+        LiveTopologySupport::VerifyPatchFocus { control } => {
+            let page = app_loop
+                .current_patch_page()
+                .ok_or(LiveDemoError::MissingPatchProjection)?;
+            if page.focused_control_id() == *control {
+                Ok(true)
+            } else {
+                Err(LiveDemoError::TopologySupportMismatch)
+            }
+        }
+    }
+}
+
+/// Dispatches one topology event that must be rejected with exactly the
+/// expected typed reason, recording the rejection in the event log.
+fn dispatch_rejected_topology_event<Boundary>(
+    app_loop: &mut AppLoop<Boundary>,
+    event: AppEvent,
+    expected: &str,
+) -> Result<String, LiveDemoError>
+where
+    Boundary: ControlAudioBoundary,
+{
+    let records_before = app_loop.event_log_ref().total_observed();
+    match app_loop.dispatch_from(event.clone(), EventSource::DemoScene) {
+        Ok(_) => Err(LiveDemoError::ExpectedRejectionWasAccepted),
+        Err(actual) => {
+            if actual.name() != expected {
+                return Err(LiveDemoError::UnexpectedRejection(actual));
+            }
+            let log = app_loop.event_log_ref();
+            if log.total_observed() != records_before.saturating_add(1) {
+                return Err(LiveDemoError::MissingEventRecord);
+            }
+            let record = log
+                .records()
+                .last()
+                .ok_or(LiveDemoError::MissingEventRecord)?;
+            if record.source() != EventSource::DemoScene
+                || record.outcome() != EventOutcome::Rejected
+                || record.input() != &EventInput::from(&event)
+                || record.rejection().map(|value| value.name()) != Some(expected)
+            {
+                return Err(LiveDemoError::EventRecordMismatch);
+            }
+            Ok(expected.to_owned())
+        }
+    }
+}
+
+/// Verifies that the canonical projection reflects one committed occupancy
+/// change exactly at Activating: the named position holds the named entry
+/// (or is empty), nothing weaker.
+fn topology_occupancy_committed<Boundary>(
+    app_loop: &AppLoop<Boundary>,
+    transition: &crate::testing::live_effects_and_buses_scene::LiveTopologyTransition,
+) -> Result<bool, LiveDemoError>
+where
+    Boundary: ControlAudioBoundary,
+{
+    use crate::control::SemanticAction;
+    match transition.action() {
+        Some(SemanticAction::SetSlotOccupancy {
+            patch_id,
+            slot,
+            entry,
+        }) => {
+            let patch = app_loop
+                .patches()
+                .iter()
+                .find(|patch| patch.id() == *patch_id)
+                .ok_or(LiveDemoError::TopologyProjectionMismatch)?;
+            let occupant = patch.effect_slot(*slot);
+            Ok(match entry {
+                Some(entry) => occupant.is_some_and(|config| config.capability_id() == entry),
+                None => occupant.is_none(),
+            })
+        }
+        Some(SemanticAction::SetReturnOccupancy { bus, entry }) => {
+            let occupant = app_loop.bus_returns().bus_return(*bus).effect();
+            Ok(match entry {
+                Some(entry) => occupant.is_some_and(|config| config.capability_id() == entry),
+                None => occupant.is_none(),
+            })
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Evaluates one topology transition's audible witness against a bounded
+/// production-path observation.
+fn topology_witness_holds(
+    witness: crate::testing::live_effects_and_buses_scene::LiveTopologyAudibleWitness,
+    transition: &crate::testing::live_effects_and_buses_scene::LiveTopologyTransition,
+    observation: AudioObservationSnapshot,
+) -> bool {
+    use crate::testing::live_effects_and_buses_scene::LiveTopologyAudibleWitness;
+    if !audio_is_finite(observation) || observation.routing_failures() != 0 {
+        return false;
+    }
+    match witness {
+        LiveTopologyAudibleWitness::PatchChain => {
+            let effect = observation.patch_effect();
+            observation.primary_patch_id() == Some(transition.sounding_patch())
+                && observation.primary_active_notes() > 0
+                && observation.primary_patch_rms() > 0.0
+                && effect.patch_id() == Some(transition.sounding_patch())
+                && effect.input_rms() > 0.0
+                && effect.output_rms() > 0.0
+                && effect.difference_rms() > 0.0
+        }
+        LiveTopologyAudibleWitness::WetReturn => {
+            observation.active_notes() > 0
+                && observation.output_rms() > 0.0
+                && observation.wet_output_rms() > 0.0
+        }
+        LiveTopologyAudibleWitness::DryContinuity => {
+            observation.active_notes() > 0 && observation.output_rms() > 0.0
+        }
+    }
+}
+
 fn dispatch_engine_event<Boundary>(
     app_loop: &mut AppLoop<Boundary>,
     event: AppEvent,
@@ -1347,10 +2000,10 @@ where
             } else {
                 target_revision
             };
-            if effect.patch_id() != transition.patch_id()
+            if effect.patch_id() != Some(transition.patch_id())
                 || effect.intent() != transition.intent()
-                || effect.source_capability_id() != transition.source_capability_id()
-                || effect.target_capability_id() != transition.target_capability_id()
+                || effect.source_capability_id() != Some(transition.source_capability_id())
+                || effect.target_capability_id() != Some(transition.target_capability_id())
                 || effect.source_graph_revision() != source_revision
                 || effect.target_graph_revision() != expected_target
             {
@@ -1389,6 +2042,8 @@ where
             Some(ParameterValue::Choice(choice_id))
                 if Some(choice_id.as_str()) == transition.source_choice_id()
         )),
+        StructuralEditIntent::SetSlotOccupancy { .. }
+        | StructuralEditIntent::SetReturnOccupancy { .. } => Ok(false),
     }
 }
 
@@ -1631,6 +2286,9 @@ pub enum LiveDemoError {
     EngineEffectMismatch,
     EngineTargetConfigMismatch,
     EngineTargetAudioMismatch,
+    TopologyLifecycleMismatch,
+    TopologyProjectionMismatch,
+    TopologySupportMismatch,
     ProgressTimedOut {
         stage: &'static str,
         stalled_for: Duration,
@@ -1749,6 +2407,15 @@ impl fmt::Display for LiveDemoError {
                 .write_str("live engine target is not the exact descriptor-default configuration"),
             Self::EngineTargetAudioMismatch => formatter.write_str(
                 "live engine target did not produce finite nonzero generation-tagged output",
+            ),
+            Self::TopologyLifecycleMismatch => formatter.write_str(
+                "live topology transition skipped or contradicted its ordered lifecycle",
+            ),
+            Self::TopologyProjectionMismatch => formatter.write_str(
+                "live topology commit is not reflected by the canonical occupancy projection",
+            ),
+            Self::TopologySupportMismatch => formatter.write_str(
+                "live topology support navigation does not match the frozen focus expectation",
             ),
             Self::ProgressTimedOut {
                 stage,

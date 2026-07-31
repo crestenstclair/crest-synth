@@ -222,7 +222,7 @@ fn common_adsr_is_per_voice_in_both_production_engines() {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(-6.0, 0.5, 0.5, 0.0, 250.0, 0.0, 0.0).unwrap()
+    GlobalParameters::new(-6.0).unwrap()
 }
 
 fn soundfont_patch(id: u32, channel: u8) -> Patch {

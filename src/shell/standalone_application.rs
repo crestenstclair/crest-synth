@@ -113,7 +113,7 @@ impl Default for ApplicationConfig {
         Self::new(
             48_000.0,
             1_024,
-            GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5)
+            GlobalParameters::new(0.0)
                 .expect("the standalone defaults satisfy every global parameter bound"),
         )
     }
@@ -164,7 +164,7 @@ pub struct SmokeObservation {
 }
 
 /// Measured Phase One shell and teardown evidence emitted after live ownership ends.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GraphicalShellLiveObservation {
     context_line_visible: bool,
     identity_header_visible: bool,
@@ -175,6 +175,7 @@ pub struct GraphicalShellLiveObservation {
     mixer_context_observed: bool,
     #[serde(flatten)]
     mixer_routing: LiveMixerRoutingEvidence,
+    effects_and_buses: Option<crate::testing::LiveEffectsAndBusesEvidence>,
     physical_audio_nonzero: bool,
     active_notes_after_cleanup: u32,
     window_closed: bool,
@@ -198,6 +199,7 @@ impl GraphicalShellLiveObservation {
             patch_context_observed: shell.patch_context_observed(),
             mixer_context_observed: shell.mixer_context_observed(),
             mixer_routing: report.mixer_routing().with_callback_safety(callback_safety),
+            effects_and_buses: report.effects_and_buses().cloned(),
             physical_audio_nonzero: shell.physical_audio_nonzero(),
             active_notes_after_cleanup: report.final_audio_observation().active_notes(),
             window_closed: true,
@@ -206,7 +208,7 @@ impl GraphicalShellLiveObservation {
         }
     }
 
-    pub const fn complete(&self) -> bool {
+    pub fn complete(&self) -> bool {
         self.context_line_visible
             && self.identity_header_visible
             && self.main_workspace_visible
@@ -215,6 +217,10 @@ impl GraphicalShellLiveObservation {
             && self.patch_context_observed
             && self.mixer_context_observed
             && self.mixer_routing.is_complete()
+            && self
+                .effects_and_buses
+                .as_ref()
+                .is_none_or(crate::testing::LiveEffectsAndBusesEvidence::is_complete)
             && self.physical_audio_nonzero
             && self.active_notes_after_cleanup == 0
             && self.window_closed
@@ -232,6 +238,42 @@ impl GraphicalShellLiveObservation {
             self.owned_graphs_remaining,
         )
     }
+
+    /// The retained effects-and-buses teardown projection: the cumulative
+    /// sixteen-track evidence plus the topology, responsiveness, and
+    /// eight-destination measurements (WP08).
+    pub fn effects_and_buses(&self) -> Option<EffectsAndBusesLiveObservation> {
+        self.effects_and_buses
+            .as_ref()
+            .map(|evidence| EffectsAndBusesLiveObservation {
+                routing: self.sixteen_track_mixer_routing(),
+                effects_and_buses: evidence.clone(),
+            })
+    }
+}
+
+/// Final effects-and-buses witness emitted after physical teardown (WP08).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EffectsAndBusesLiveObservation {
+    #[serde(flatten)]
+    routing: SixteenTrackMixerRoutingObservation,
+    #[serde(flatten)]
+    effects_and_buses: crate::testing::LiveEffectsAndBusesEvidence,
+}
+
+impl EffectsAndBusesLiveObservation {
+    pub fn is_complete(&self) -> bool {
+        self.routing.is_complete() && self.effects_and_buses.is_complete()
+    }
+}
+
+/// The retained live scene selected by the binary's stable flags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LiveSceneKind {
+    /// The retained sixteen-track mixer-routing scene.
+    SixteenTrackMixerRouting,
+    /// The retained cumulative effects-and-buses scene (WP08).
+    EffectsAndBuses,
 }
 
 /// A startup, control, fixture, device, or window failure.
@@ -669,7 +711,10 @@ where
         effects.clone(),
         config.global_parameters(),
         revision,
-    );
+    )
+    .with_initial_returns(crate::adapter::production_effects::startup_bus_returns(
+        &effects,
+    ));
     let projector = StateProjector::for_graph(revision);
     let mut app_loop = match plan.event_log {
         Some(event_log) => AppLoop::with_event_log(state, projector, control_boundary, event_log)?,
@@ -684,6 +729,7 @@ where
         .sum();
     let initial_graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
         .with_effects(app_loop.effects(), &effect_preparers)
+        .with_returns(app_loop.bus_returns())
         .build(
             revision,
             app_loop.patches(),
@@ -853,6 +899,25 @@ where
         OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
         OnComplete: FnOnce(&LiveDemoReport) + 'static,
     {
+        self.run_live_demo_scene(
+            LiveSceneKind::SixteenTrackMixerRouting,
+            on_checkpoint,
+            on_complete,
+        )
+    }
+
+    /// Runs the selected retained scene through the normal physical audio and
+    /// native-window lifetime. The callbacks execute only on the control side.
+    pub fn run_live_demo_scene<OnCheckpoint, OnComplete>(
+        self,
+        scene_kind: LiveSceneKind,
+        on_checkpoint: OnCheckpoint,
+        on_complete: OnComplete,
+    ) -> Result<GraphicalShellLiveObservation, ApplicationError>
+    where
+        OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
+        OnComplete: FnOnce(&LiveDemoReport) + 'static,
+    {
         let Self {
             boundary,
             instruments,
@@ -889,7 +954,16 @@ where
                 worker: StartupWorker::Threaded,
             },
         )?;
-        let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())?;
+        let scene = match scene_kind {
+            LiveSceneKind::SixteenTrackMixerRouting => {
+                LiveDemoScene::from_installed_state(&app_loop.current_state_tree())?
+            }
+            LiveSceneKind::EffectsAndBuses => {
+                crate::testing::live_effects_and_buses_scene::from_installed_state(
+                    &app_loop.current_state_tree(),
+                )?
+            }
+        };
         if app_loop.event_log().capacity()
             < scene.required_event_log_capacity(LIVE_FIXTURE_EVENT_ALLOWANCE)
         {
@@ -1053,6 +1127,7 @@ where
             app_loop.effects(),
             &installed_patches,
             &global_parameters,
+            app_loop.bus_returns(),
         )?;
         if degenerate != Some(DegenerateMode::Audio) {
             queue_demo_notes(&installed_patches, &mut app_loop)?;
@@ -1512,8 +1587,7 @@ fn exactly_target_level_changed(
         if before_values.pan() != after_values.pan()
             || before_values.mute() != after_values.mute()
             || before_values.solo() != after_values.solo()
-            || before_values.reverb_send() != after_values.reverb_send()
-            || before_values.delay_send() != after_values.delay_send()
+            || before_values.sends() != after_values.sends()
         {
             return false;
         }
@@ -2891,7 +2965,9 @@ mod tests {
         assert_eq!(observation.callback_allocations, 0);
         assert_eq!(observation.callback_destructions, 0);
         assert_eq!(observation.patch_rows, 2);
-        assert_eq!(observation.channel_separators, 16);
+        // Fifteen separators between the sixteen tracks plus one before the
+        // RETURNS section and one before the GLOBAL section.
+        assert_eq!(observation.channel_separators, 17);
         assert!(observation.round_robin_channels);
         assert!(observation.distinct_patch_channels);
         assert!(observation.distinct_patch_stems);

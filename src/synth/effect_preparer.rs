@@ -2,7 +2,11 @@ use crate::kernel::PatchId;
 use crate::synth::{EffectCapabilityId, PostEffectConfig, PreparedPostEffect};
 use core::fmt;
 
-/// Worker/control-side factory for one installed post-effect capability.
+/// Worker/control-side factory for one installed effect capability.
+///
+/// The same preparer serves Patch effect slots and bus returns. Each
+/// preparation yields an independent instance with independent internal
+/// state, and no preparer branches on which role requested it.
 pub trait EffectPreparer: Send + Sync {
     fn capability_id(&self) -> &EffectCapabilityId;
 

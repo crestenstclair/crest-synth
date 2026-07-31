@@ -165,7 +165,7 @@ impl EngineSelectionObservation {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(0.0, 0.5, 0.4, 0.0, 250.0, 0.3, 0.0).unwrap()
+    GlobalParameters::new(0.0).unwrap()
 }
 
 fn note(patch_id: PatchId, channel: MidiChannel) -> AppEvent {

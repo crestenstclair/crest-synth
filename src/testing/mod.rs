@@ -38,16 +38,22 @@ pub use live_demo_scene::{
     LiveEngineTransition, LiveExpectedTransition,
 };
 
+pub mod live_effects_and_buses_scene;
+pub use live_effects_and_buses_scene::{
+    LiveTopologyAudibleWitness, LiveTopologySupport, LiveTopologyTransition,
+    EFFECTS_AND_BUSES_SCENE_NAME,
+};
+
 pub mod live_demo_checkpoint;
 pub use live_demo_checkpoint::{
     LiveCheckpoint, LiveDemoCheckpoint, LiveDemoCheckpointError, LiveEngineCheckpoint,
-    LivePresetProjection, LiveProjectedValue,
+    LivePresetProjection, LiveProjectedValue, LiveTopologyCheckpoint,
 };
 
 pub mod live_demo_report;
 pub use live_demo_report::{
-    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveEventLogSummary,
-    LiveMixerRoutingEvidence, LiveShellCoverage, RuntimeAudioWitness,
+    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveEffectsAndBusesEvidence,
+    LiveEventLogSummary, LiveMixerRoutingEvidence, LiveShellCoverage, RuntimeAudioWitness,
     SixteenTrackMixerRoutingObservation,
 };
 

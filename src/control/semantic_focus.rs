@@ -1,9 +1,10 @@
 use crate::control::{PatchControlId, TopLevelContext};
 use crate::kernel::PatchId;
+use crate::mixer::bus_id::BusId;
 use crate::mixer::global_parameters::GlobalParameter;
 use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::mixer::mixer_track_parameters::MixerTrackParameter;
-use crate::synth::{CapabilityId, EffectCapabilityId};
+use crate::synth::{CapabilityId, EffectCapabilityId, ParameterId};
 use core::fmt;
 use serde::{Deserialize, Serialize};
 
@@ -69,12 +70,32 @@ impl SurfaceId {
 }
 
 /// Stable identity of one MIXER control, independent of section coordinates.
+///
+/// Sends and returns are index-addressed: a send is the pair of one
+/// `MixerTrackId` and one `BusId`; return rows are addressed by `BusId` and,
+/// for the occupying entry's scalar rows, a descriptor `ParameterId`. No
+/// variant names a concrete effect, and a return's contents changing never
+/// changes its identity.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MixerControlId {
     Track {
         track_id: MixerTrackId,
         parameter: MixerTrackParameter,
+    },
+    Send {
+        track_id: MixerTrackId,
+        bus: BusId,
+    },
+    ReturnOccupancy {
+        bus: BusId,
+    },
+    ReturnLevel {
+        bus: BusId,
+    },
+    ReturnEffect {
+        bus: BusId,
+        parameter: ParameterId,
     },
     Global {
         parameter: GlobalParameter,
@@ -84,22 +105,44 @@ pub enum MixerControlId {
 impl MixerControlId {
     pub const fn track_id(&self) -> Option<MixerTrackId> {
         match self {
-            Self::Track { track_id, .. } => Some(*track_id),
-            Self::Global { .. } => None,
+            Self::Track { track_id, .. } | Self::Send { track_id, .. } => Some(*track_id),
+            Self::ReturnOccupancy { .. }
+            | Self::ReturnLevel { .. }
+            | Self::ReturnEffect { .. }
+            | Self::Global { .. } => None,
         }
     }
 
     pub const fn track_parameter(&self) -> Option<MixerTrackParameter> {
         match self {
             Self::Track { parameter, .. } => Some(*parameter),
-            Self::Global { .. } => None,
+            Self::Send { .. }
+            | Self::ReturnOccupancy { .. }
+            | Self::ReturnLevel { .. }
+            | Self::ReturnEffect { .. }
+            | Self::Global { .. } => None,
+        }
+    }
+
+    /// Returns the addressed bus for send and return identities.
+    pub const fn bus(&self) -> Option<BusId> {
+        match self {
+            Self::Send { bus, .. }
+            | Self::ReturnOccupancy { bus }
+            | Self::ReturnLevel { bus }
+            | Self::ReturnEffect { bus, .. } => Some(*bus),
+            Self::Track { .. } | Self::Global { .. } => None,
         }
     }
 
     pub const fn global_parameter(&self) -> Option<GlobalParameter> {
         match self {
             Self::Global { parameter } => Some(*parameter),
-            Self::Track { .. } => None,
+            Self::Track { .. }
+            | Self::Send { .. }
+            | Self::ReturnOccupancy { .. }
+            | Self::ReturnLevel { .. }
+            | Self::ReturnEffect { .. } => None,
         }
     }
 }
@@ -125,7 +168,7 @@ impl SemanticControlId {
     pub const fn as_mixer_track_id(&self) -> Option<MixerTrackId> {
         match self {
             Self::Mixer(MixerControlId::Track { track_id, .. }) => Some(*track_id),
-            Self::Mixer(MixerControlId::Global { .. }) | Self::Patch(_) | Self::SurfaceRoot => None,
+            Self::Mixer(_) | Self::Patch(_) | Self::SurfaceRoot => None,
         }
     }
 }
@@ -196,21 +239,9 @@ impl FocusPath {
     }
 
     pub const fn mixer_track(track_id: MixerTrackId, parameter: MixerTrackParameter) -> Self {
-        Self::mixer_track_on_surface(SurfaceId::MixerMain, track_id, parameter)
-    }
-
-    pub const fn mixer_inspector(track_id: MixerTrackId, parameter: MixerTrackParameter) -> Self {
-        Self::mixer_track_on_surface(SurfaceId::MixerInspector, track_id, parameter)
-    }
-
-    const fn mixer_track_on_surface(
-        surface: SurfaceId,
-        track_id: MixerTrackId,
-        parameter: MixerTrackParameter,
-    ) -> Self {
         Self {
             context: TopLevelContext::Mixer,
-            surface,
+            surface: SurfaceId::MixerMain,
             patch_id: None,
             capability_id: None,
             control_id: SemanticControlId::Mixer(MixerControlId::Track {
@@ -221,15 +252,51 @@ impl FocusPath {
         }
     }
 
-    pub const fn mixer_global(parameter: GlobalParameter) -> Self {
+    /// One indexed send row on the MIXER Inspector: `(track, bus)`.
+    pub const fn mixer_send(track_id: MixerTrackId, bus: BusId) -> Self {
+        Self::mixer_inspector_control(MixerControlId::Send { track_id, bus }, None)
+    }
+
+    /// One bus return's occupancy row on the MIXER Inspector.
+    pub const fn mixer_return_occupancy(bus: BusId) -> Self {
+        Self::mixer_inspector_control(MixerControlId::ReturnOccupancy { bus }, None)
+    }
+
+    /// One bus return's return-owned level row on the MIXER Inspector.
+    pub const fn mixer_return_level(bus: BusId) -> Self {
+        Self::mixer_inspector_control(MixerControlId::ReturnLevel { bus }, None)
+    }
+
+    /// One occupying registry entry's scalar row on the MIXER Inspector. The
+    /// path carries the occupant's registry identity so a different occupant's
+    /// row is a different focus target.
+    pub const fn mixer_return_effect(
+        bus: BusId,
+        parameter: ParameterId,
+        capability_id: EffectCapabilityId,
+    ) -> Self {
+        Self::mixer_inspector_control(
+            MixerControlId::ReturnEffect { bus, parameter },
+            Some(FocusCapabilityId::Effect(capability_id)),
+        )
+    }
+
+    const fn mixer_inspector_control(
+        control: MixerControlId,
+        capability_id: Option<FocusCapabilityId>,
+    ) -> Self {
         Self {
             context: TopLevelContext::Mixer,
             surface: SurfaceId::MixerInspector,
             patch_id: None,
-            capability_id: None,
-            control_id: SemanticControlId::Mixer(MixerControlId::Global { parameter }),
+            capability_id,
+            control_id: SemanticControlId::Mixer(control),
             modal_id: None,
         }
+    }
+
+    pub const fn mixer_global(parameter: GlobalParameter) -> Self {
+        Self::mixer_inspector_control(MixerControlId::Global { parameter }, None)
     }
 
     pub fn side_root(surface: SurfaceId) -> Result<Self, FocusPathError> {
@@ -269,16 +336,36 @@ impl FocusPath {
                 }
             }
             (
-                SurfaceId::MixerMain | SurfaceId::MixerInspector,
+                SurfaceId::MixerMain,
                 SemanticControlId::Mixer(MixerControlId::Track { parameter, .. }),
             ) => {
-                let surface_matches = match self.surface {
-                    SurfaceId::MixerMain => MixerTrackParameter::MAIN.contains(parameter),
-                    SurfaceId::MixerInspector => MixerTrackParameter::INSPECTOR.contains(parameter),
-                    SurfaceId::PatchMain | SurfaceId::PatchUtility => false,
-                };
-                if !surface_matches || self.patch_id.is_some() || self.capability_id.is_some() {
+                if !MixerTrackParameter::MAIN.contains(parameter)
+                    || self.patch_id.is_some()
+                    || self.capability_id.is_some()
+                {
                     return Err(FocusPathError::ControlSurfaceMismatch);
+                }
+            }
+            (
+                SurfaceId::MixerInspector,
+                SemanticControlId::Mixer(
+                    MixerControlId::Send { .. }
+                    | MixerControlId::ReturnOccupancy { .. }
+                    | MixerControlId::ReturnLevel { .. },
+                ),
+            ) => {
+                if self.patch_id.is_some() || self.capability_id.is_some() {
+                    return Err(FocusPathError::ControlSurfaceMismatch);
+                }
+            }
+            (
+                SurfaceId::MixerInspector,
+                SemanticControlId::Mixer(MixerControlId::ReturnEffect { .. }),
+            ) => {
+                if self.patch_id.is_some()
+                    || !matches!(self.capability_id, Some(FocusCapabilityId::Effect(_)))
+                {
+                    return Err(FocusPathError::CapabilityIdentityMismatch);
                 }
             }
             (
@@ -384,7 +471,7 @@ mod tests {
     fn focus_paths_round_trip_stable_semantic_ids() {
         let patch_id = PatchId::new(7).unwrap();
         let patch = FocusPath::patch_main(patch_id, None, PatchControlId::Engine);
-        let global = FocusPath::mixer_global(GlobalParameter::DelayReturn);
+        let global = FocusPath::mixer_global(GlobalParameter::MasterGainDb);
         let patch_json = serde_json::to_string(&patch).unwrap();
         let global_json = serde_json::to_string(&global).unwrap();
         assert_eq!(
@@ -399,9 +486,35 @@ mod tests {
         assert_eq!(
             global.control_id(),
             &SemanticControlId::Mixer(MixerControlId::Global {
-                parameter: GlobalParameter::DelayReturn
+                parameter: GlobalParameter::MasterGainDb
             })
         );
+    }
+
+    #[test]
+    fn send_and_return_paths_are_index_addressed_inspector_targets() {
+        use crate::mixer::bus_id::BusId;
+        let send = FocusPath::mixer_send(
+            crate::mixer::mixer_track_id::MixerTrackId::default(),
+            BusId::new(5).unwrap(),
+        );
+        assert!(send.validate().is_ok());
+        assert_eq!(send.surface(), SurfaceId::MixerInspector);
+
+        let occupancy = FocusPath::mixer_return_occupancy(BusId::new(7).unwrap());
+        let level = FocusPath::mixer_return_level(BusId::new(7).unwrap());
+        assert!(occupancy.validate().is_ok());
+        assert!(level.validate().is_ok());
+        assert_ne!(occupancy, level);
+
+        let scalar = FocusPath::mixer_return_effect(
+            BusId::new(0).unwrap(),
+            crate::synth::ParameterId::new("amount").unwrap(),
+            crate::synth::EffectCapabilityId::new("effect.fixture").unwrap(),
+        );
+        assert!(scalar.validate().is_ok());
+        let json = serde_json::to_string(&scalar).unwrap();
+        assert_eq!(serde_json::from_str::<FocusPath>(&json).unwrap(), scalar);
     }
 
     #[test]

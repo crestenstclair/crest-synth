@@ -10,18 +10,20 @@ use crate::control::state_projector::StateProjector;
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
+use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mix_engine::MixEngine;
 use crate::mixer::mixer_state::MixerState;
 use crate::mixer::mixer_track_id::MixerTrackId;
-use crate::mixer::mixer_track_parameters::{MixerTrackParameter, MixerTrackParameters};
+use crate::mixer::mixer_track_parameters::MixerTrackParameters;
 use crate::mixer::patch_output::PatchOutput;
 use crate::real_time::audio_boundary::{AudioBoundary, AudioThreadBoundary};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_renderer::AudioRenderer;
 use crate::real_time::graph_revision::GraphRevision;
-use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
+use crate::real_time::parameter_snapshot::{
+    ParameterSnapshot, RtBusReturnParameters, RtPatchParameters, RtPostEffectParameters,
+};
 use crate::real_time::patch_audio_block::PatchAudioBlock;
 use crate::real_time::prepared_graph_builder::PreparedGraphBuilder;
 use crate::real_time::structural_graph_boundary::NoStructuralGraphChanges;
@@ -30,17 +32,15 @@ use crate::shell::window_input::{WindowInput, WindowKey};
 use crate::synth::patch::Patch;
 use crate::synth::sound_font_instrument::SoundFontInstrument;
 use crate::synth::{
-    CapabilityId, InstrumentPreparationError, InstrumentPreparer, PreparedInstrument,
-    PreparedInstrumentError,
+    CapabilityId, EffectSlotId, InstrumentPreparationError, InstrumentPreparer,
+    PreparedEffectError, PreparedInstrument, PreparedInstrumentError, PreparedPostEffect,
 };
 use crate::testing::automatic_midi_test::create_soundfont_config;
 use serde::Serialize;
 use serde_json::Value;
-use std::cell::Cell;
 use std::collections::BTreeSet;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const FRAME_COUNT: usize = 16;
 const SAMPLE_RATE: f32 = 48_000.0;
@@ -55,16 +55,28 @@ pub enum BehavioralMutationCase {
     OmittedStateTreeLeaf,
     DryToWetBypass,
     ZeroRenderer,
+    SlotOrderSwap,
+    EmptyReturnPassthrough,
+    PreGateSend,
+    MutedSendLeak,
+    PermissiveStructuralMatch,
+    RefusedTopology,
 }
 
 impl BehavioralMutationCase {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 12] = [
         Self::DroppedAdjustment,
         Self::CrossTrackParameterLeak,
         Self::PatchMisroute,
         Self::OmittedStateTreeLeaf,
         Self::DryToWetBypass,
         Self::ZeroRenderer,
+        Self::SlotOrderSwap,
+        Self::EmptyReturnPassthrough,
+        Self::PreGateSend,
+        Self::MutedSendLeak,
+        Self::PermissiveStructuralMatch,
+        Self::RefusedTopology,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -75,6 +87,22 @@ impl BehavioralMutationCase {
             Self::OmittedStateTreeLeaf => "omitted-state-tree-leaf",
             Self::DryToWetBypass => "dry-to-wet-bypass",
             Self::ZeroRenderer => "zero-renderer",
+            Self::SlotOrderSwap => "slot-order-swap",
+            Self::EmptyReturnPassthrough => "empty-return-passthrough",
+            Self::PreGateSend => "pre-gate-send",
+            Self::MutedSendLeak => "muted-send-leak",
+            Self::PermissiveStructuralMatch => "permissive-structural-match",
+            Self::RefusedTopology => "refused-topology",
+        }
+    }
+
+    /// The CLI name of this case's typed counterexample. Most mutants share
+    /// their case's name; the refused-topology mutant names the exact fault
+    /// it injects — the refused change being published anyway.
+    pub const fn mutant_cli(self) -> &'static str {
+        match self {
+            Self::RefusedTopology => "refused-topology-published",
+            _ => self.as_str(),
         }
     }
 
@@ -178,6 +206,68 @@ pub struct ZeroRendererObservation {
     pub finite_audio: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SlotOrderSwapObservation {
+    pub case: String,
+    pub forward_energy: f64,
+    pub reversed_energy: f64,
+    pub order_difference_energy: f64,
+    pub order_sensitive: bool,
+    pub finite_audio: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EmptyReturnPassthroughObservation {
+    pub case: String,
+    pub accumulated_send_energy: f64,
+    pub unoccupied_wet_energy: f64,
+    pub output_matches_dry_exactly: bool,
+    pub unoccupied_return_silent: bool,
+    pub finite_audio: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PreGateSendObservation {
+    pub case: String,
+    pub post_fader_reference_energy: f64,
+    pub measured_send_energy: f64,
+    pub pre_fader_reference_energy: f64,
+    pub send_taken_post_fader: bool,
+    pub finite_audio: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MutedSendLeakObservation {
+    pub case: String,
+    pub sounding_send_energy: f64,
+    pub muted_send_energy: f64,
+    pub muted_wet_energy: f64,
+    pub mute_gates_sends: bool,
+    pub finite_audio: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PermissiveStructuralMatchObservation {
+    pub case: String,
+    pub attested_wet_energy: f64,
+    pub mismatched_wet_energy: f64,
+    pub strict_matching_enforced: bool,
+    pub finite_audio: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RefusedTopologyObservation {
+    pub case: String,
+    pub refusal_recorded: bool,
+    pub rejection_reason: String,
+    pub rejection_reason_attributable: bool,
+    pub active_graph_preserved: bool,
+    pub canonical_state_preserved: bool,
+    pub render_preserved_exactly: bool,
+    pub post_rejection_valid_change_accepted: bool,
+    pub finite_audio: bool,
+}
+
 /// The exact schema selected by one mutation case.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -188,6 +278,12 @@ pub enum BehavioralMutationObservation {
     OmittedStateTreeLeaf(OmittedStateTreeLeafObservation),
     DryToWetBypass(DryToWetBypassObservation),
     ZeroRenderer(ZeroRendererObservation),
+    SlotOrderSwap(SlotOrderSwapObservation),
+    EmptyReturnPassthrough(EmptyReturnPassthroughObservation),
+    PreGateSend(PreGateSendObservation),
+    MutedSendLeak(MutedSendLeakObservation),
+    PermissiveStructuralMatch(PermissiveStructuralMatchObservation),
+    RefusedTopology(RefusedTopologyObservation),
 }
 
 impl BehavioralMutationObservation {
@@ -199,6 +295,12 @@ impl BehavioralMutationObservation {
             Self::OmittedStateTreeLeaf(_) => BehavioralMutationCase::OmittedStateTreeLeaf,
             Self::DryToWetBypass(_) => BehavioralMutationCase::DryToWetBypass,
             Self::ZeroRenderer(_) => BehavioralMutationCase::ZeroRenderer,
+            Self::SlotOrderSwap(_) => BehavioralMutationCase::SlotOrderSwap,
+            Self::EmptyReturnPassthrough(_) => BehavioralMutationCase::EmptyReturnPassthrough,
+            Self::PreGateSend(_) => BehavioralMutationCase::PreGateSend,
+            Self::MutedSendLeak(_) => BehavioralMutationCase::MutedSendLeak,
+            Self::PermissiveStructuralMatch(_) => BehavioralMutationCase::PermissiveStructuralMatch,
+            Self::RefusedTopology(_) => BehavioralMutationCase::RefusedTopology,
         }
     }
 
@@ -271,6 +373,53 @@ impl BehavioralMutationObservation {
                     && value.render_peak > 0.001
                     && value.finite_audio
             }
+            Self::SlotOrderSwap(value) => {
+                value.forward_energy > 0.0
+                    && value.reversed_energy > 0.0
+                    && value.order_difference_energy > ENERGY_EPSILON
+                    && value.order_sensitive
+                    && value.finite_audio
+            }
+            Self::EmptyReturnPassthrough(value) => {
+                value.accumulated_send_energy > 0.0
+                    && approximately_zero(value.unoccupied_wet_energy)
+                    && value.output_matches_dry_exactly
+                    && value.unoccupied_return_silent
+                    && value.finite_audio
+            }
+            Self::PreGateSend(value) => {
+                value.post_fader_reference_energy > 0.0
+                    && value.pre_fader_reference_energy > value.post_fader_reference_energy
+                    && approximately_equal(
+                        value.measured_send_energy,
+                        value.post_fader_reference_energy,
+                    )
+                    && value.send_taken_post_fader
+                    && value.finite_audio
+            }
+            Self::MutedSendLeak(value) => {
+                value.sounding_send_energy > 0.0
+                    && approximately_zero(value.muted_send_energy)
+                    && approximately_zero(value.muted_wet_energy)
+                    && value.mute_gates_sends
+                    && value.finite_audio
+            }
+            Self::PermissiveStructuralMatch(value) => {
+                value.attested_wet_energy > 0.0
+                    && approximately_zero(value.mismatched_wet_energy)
+                    && value.strict_matching_enforced
+                    && value.finite_audio
+            }
+            Self::RefusedTopology(value) => {
+                value.refusal_recorded
+                    && !value.rejection_reason.is_empty()
+                    && value.rejection_reason_attributable
+                    && value.active_graph_preserved
+                    && value.canonical_state_preserved
+                    && value.render_preserved_exactly
+                    && value.post_rejection_valid_change_accepted
+                    && value.finite_audio
+            }
         }
     }
 
@@ -339,6 +488,28 @@ impl BehavioralMutationHarness {
             BehavioralMutationCase::ZeroRenderer => {
                 BehavioralMutationObservation::ZeroRenderer(run_zero_renderer(mutant_enabled))
             }
+            BehavioralMutationCase::SlotOrderSwap => {
+                BehavioralMutationObservation::SlotOrderSwap(run_slot_order_swap(mutant_enabled))
+            }
+            BehavioralMutationCase::EmptyReturnPassthrough => {
+                BehavioralMutationObservation::EmptyReturnPassthrough(run_empty_return_passthrough(
+                    mutant_enabled,
+                ))
+            }
+            BehavioralMutationCase::PreGateSend => {
+                BehavioralMutationObservation::PreGateSend(run_pre_gate_send(mutant_enabled))
+            }
+            BehavioralMutationCase::MutedSendLeak => {
+                BehavioralMutationObservation::MutedSendLeak(run_muted_send_leak(mutant_enabled))
+            }
+            BehavioralMutationCase::PermissiveStructuralMatch => {
+                BehavioralMutationObservation::PermissiveStructuralMatch(
+                    run_permissive_structural_match(mutant_enabled),
+                )
+            }
+            BehavioralMutationCase::RefusedTopology => {
+                BehavioralMutationObservation::RefusedTopology(run_refused_topology(mutant_enabled))
+            }
         };
 
         let exit_code = if observation.satisfies_witness() {
@@ -355,9 +526,14 @@ impl BehavioralMutationHarness {
 
 type FixtureLoop = AppLoop<LockFreeControlHandle>;
 
+/// The retired fixture return levels, retained verbatim so the harness's
+/// reference wet model keeps the exact arithmetic the mutation cases were
+/// calibrated against. Live return levels are return-owned state now.
+const FIXTURE_REVERB_RETURN: f32 = 0.5;
+const FIXTURE_DELAY_RETURN: f32 = 0.5;
+
 fn fixture_globals() -> GlobalParameters {
-    GlobalParameters::new(0.0, 0.6, 0.4, 0.5, 250.0, 0.35, 0.5)
-        .expect("fixture global parameters are valid")
+    GlobalParameters::new(0.0).expect("fixture global parameters are valid")
 }
 
 fn fixture_patch(provider: &HiDefSoundFontCapability, id: u32) -> Patch {
@@ -379,18 +555,30 @@ fn fixture_patch(provider: &HiDefSoundFontCapability, id: u32) -> Patch {
 
 fn fixture_state() -> AppState {
     state_with_tracks(
-        MixerTrackParameters::new(-12.0, -0.35, false, false, 0.2, 0.1)
-            .expect("fixture track parameters are valid"),
-        MixerTrackParameters::new(-6.0, 0.35, false, false, 0.4, 0.3)
-            .expect("fixture track parameters are valid"),
+        MixerTrackParameters::from_values(
+            -12.0,
+            -0.35,
+            false,
+            false,
+            [0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        .expect("fixture track parameters are valid"),
+        MixerTrackParameters::from_values(
+            -6.0,
+            0.35,
+            false,
+            false,
+            [0.4, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        .expect("fixture track parameters are valid"),
     )
 }
 
 fn route_state() -> AppState {
     state_with_tracks(
-        MixerTrackParameters::new(0.0, -1.0, false, false, 0.0, 0.0)
+        MixerTrackParameters::from_values(0.0, -1.0, false, false, [0.0; MAX_BUS_RETURNS])
             .expect("route track parameters are valid"),
-        MixerTrackParameters::new(0.0, 1.0, false, false, 0.0, 0.0)
+        MixerTrackParameters::from_values(0.0, 1.0, false, false, [0.0; MAX_BUS_RETURNS])
             .expect("route track parameters are valid"),
     )
 }
@@ -470,7 +658,9 @@ fn tree_parameter_projection_exact(tree: &Value) -> bool {
 
     patch_values_match
         && tree.pointer("/mixer/tracks") == tree.pointer("/parameters/mixerTracks")
-        && tree.pointer("/global") == tree.pointer("/parameters/global")
+        // The snapshot's global object keeps only master gain (WP05); the
+        // retired reverb/delay values are the indexed /parameters/returns.
+        && tree.pointer("/global/masterGainDb") == tree.pointer("/parameters/global/masterGainDb")
         && tree.pointer("/generation") == tree.pointer("/parameters/generation")
 }
 
@@ -529,44 +719,28 @@ fn published_matches_tree(snapshot: &ParameterSnapshot, tree: &Value) -> bool {
                 && numeric_leaf_matches(tree, &format!("{prefix}/pan"), track.pan())
                 && tree.pointer(&format!("{prefix}/mute")) == Some(&Value::Bool(track.mute()))
                 && tree.pointer(&format!("{prefix}/solo")) == Some(&Value::Bool(track.solo()))
-                && numeric_leaf_matches(tree, &format!("{prefix}/reverbSend"), track.reverb_send())
-                && numeric_leaf_matches(tree, &format!("{prefix}/delaySend"), track.delay_send())
+                && track.sends().iter().enumerate().all(|(send_index, send)| {
+                    numeric_leaf_matches(tree, &format!("{prefix}/sends/{send_index}"), *send)
+                })
         })
         && numeric_leaf_matches(
             tree,
             "/parameters/global/masterGainDb",
             snapshot.global().master_gain_db(),
         )
-        && numeric_leaf_matches(
-            tree,
-            "/parameters/global/reverbRoomSize",
-            snapshot.global().reverb_room_size(),
-        )
-        && numeric_leaf_matches(
-            tree,
-            "/parameters/global/reverbDamping",
-            snapshot.global().reverb_damping(),
-        )
-        && numeric_leaf_matches(
-            tree,
-            "/parameters/global/reverbReturn",
-            snapshot.global().reverb_return(),
-        )
-        && numeric_leaf_matches(
-            tree,
-            "/parameters/global/delayMilliseconds",
-            snapshot.global().delay_milliseconds(),
-        )
-        && numeric_leaf_matches(
-            tree,
-            "/parameters/global/delayFeedback",
-            snapshot.global().delay_feedback(),
-        )
-        && numeric_leaf_matches(
-            tree,
-            "/parameters/global/delayReturn",
-            snapshot.global().delay_return(),
-        )
+        // Return-owned values travel only as the indexed return entries
+        // (WP05/WP06): every live scalar and level must appear at its
+        // generic address, bus for bus.
+        && snapshot.returns().iter().enumerate().all(|(bus, entry)| {
+            let prefix = format!("/parameters/returns/{bus}");
+            entry.scalars().iter().enumerate().all(|(scalar_index, scalar)| {
+                numeric_leaf_matches(tree, &format!("{prefix}/scalars/{scalar_index}"), *scalar)
+            }) && numeric_leaf_matches(
+                tree,
+                &format!("{prefix}/returnLevel"),
+                entry.return_level(),
+            )
+        })
 }
 
 fn numeric_leaf_matches(tree: &Value, pointer: &str, expected: f32) -> bool {
@@ -615,8 +789,8 @@ fn run_dropped_adjustment(mutant_enabled: bool) -> DroppedAdjustmentObservation 
         "/mixer/tracks/0/pan",
         "/mixer/tracks/0/mute",
         "/mixer/tracks/0/solo",
-        "/mixer/tracks/0/reverbSend",
-        "/mixer/tracks/0/delaySend",
+        "/mixer/tracks/0/sends/0",
+        "/mixer/tracks/0/sends/1",
         "/mixer/tracks/1",
         "/patches",
         "/global",
@@ -656,14 +830,17 @@ fn run_dropped_adjustment(mutant_enabled: bool) -> DroppedAdjustmentObservation 
     }
 }
 
+/// The per-track edit walk: the four `MAIN` fader classes plus the two
+/// harness-audible indexed sends (the buses the reference wet model meters).
+/// WP08 cutover: the retired `ReverbSend`/`DelaySend` aliases became indexed
+/// `Send(BusId)` entries; the walk and its observation labels are unchanged.
 #[derive(Clone, Copy)]
 enum TrackField {
     Level,
     Pan,
     Mute,
     Solo,
-    ReverbSend,
-    DelaySend,
+    Send(BusId),
 }
 
 impl TrackField {
@@ -672,8 +849,8 @@ impl TrackField {
         Self::Pan,
         Self::Mute,
         Self::Solo,
-        Self::ReverbSend,
-        Self::DelaySend,
+        Self::Send(BusId::ALL[0]),
+        Self::Send(BusId::ALL[1]),
     ];
 
     const fn name(self) -> &'static str {
@@ -682,92 +859,135 @@ impl TrackField {
             Self::Pan => "pan",
             Self::Mute => "mute",
             Self::Solo => "solo",
-            Self::ReverbSend => "reverbSend",
-            Self::DelaySend => "delaySend",
-        }
-    }
-
-    const fn parameter(self) -> MixerTrackParameter {
-        match self {
-            Self::Level => MixerTrackParameter::Level,
-            Self::Pan => MixerTrackParameter::Pan,
-            Self::Mute => MixerTrackParameter::Mute,
-            Self::Solo => MixerTrackParameter::Solo,
-            Self::ReverbSend => MixerTrackParameter::ReverbSend,
-            Self::DelaySend => MixerTrackParameter::DelaySend,
+            Self::Send(bus) => match bus.index() {
+                0 => "sends[0]",
+                _ => "sends[1]",
+            },
         }
     }
 
     fn value(self, parameters: &MixerTrackParameters) -> f64 {
-        parameters
-            .scalar_value(self.parameter())
-            .map(f64::from)
-            .or_else(|| {
-                parameters
-                    .toggle_value(self.parameter())
-                    .map(|value| if value { 1.0 } else { 0.0 })
-            })
-            .expect("every mutation field has one typed track value")
-    }
-}
-
-#[derive(Default)]
-struct MixProbe {
-    dry_energy: Cell<f64>,
-    reverb_energy: Cell<f64>,
-    delay_energy: Cell<f64>,
-}
-
-struct MeteringEffects {
-    probe: Rc<MixProbe>,
-}
-
-impl GlobalEffectsProcessor for MeteringEffects {
-    fn prepare(
-        &mut self,
-        _sample_rate: f32,
-        _max_frames: usize,
-        _max_delay_milliseconds: f32,
-    ) -> Result<(), EffectError> {
-        Ok(())
-    }
-
-    fn process(
-        &mut self,
-        reverb_input: &[f32],
-        delay_input: &[f32],
-        output: &mut [f32],
-        parameters: &GlobalParameters,
-    ) {
-        self.probe.dry_energy.set(energy(output));
-        self.probe.reverb_energy.set(energy(reverb_input));
-        self.probe.delay_energy.set(energy(delay_input));
-
-        for ((sample, reverb), delay) in output
-            .iter_mut()
-            .zip(reverb_input.iter())
-            .zip(delay_input.iter())
-        {
-            *sample += reverb * parameters.reverb_return() + delay * parameters.delay_return();
+        match self {
+            Self::Level => f64::from(parameters.level_db()),
+            Self::Pan => f64::from(parameters.pan()),
+            Self::Mute => f64::from(u8::from(parameters.mute())),
+            Self::Solo => f64::from(u8::from(parameters.solo())),
+            Self::Send(bus) => f64::from(parameters.send(bus)),
         }
     }
 }
 
-#[derive(Clone, Copy, Default)]
-struct MixMeasurement {
-    output: f64,
-    dry: f64,
-    reverb: f64,
-    delay: f64,
+/// Control-side probe state shared with one installed harness return.
+///
+/// `PreparedPostEffect` is `Send`, so the probe is `Mutex`-based; the harness
+/// mixes on the control side only — never in the RT callback — exactly like
+/// the retired `Rc<Cell>` port probe it replaces.
+#[derive(Default)]
+struct ReturnProbe {
+    input_energy: Mutex<f64>,
+    initial_state: Mutex<Option<u64>>,
 }
 
-fn measure_patch(snapshot: &ParameterSnapshot, patch_index: usize) -> MixMeasurement {
-    let mut block =
-        PatchAudioBlock::prepare(FRAME_COUNT).expect("verification PatchAudioBlock prepares");
-    block
-        .begin_render(snapshot, FRAME_COUNT)
-        .expect("verification snapshot fits PatchAudioBlock");
+impl ReturnProbe {
+    fn input_energy(&self) -> f64 {
+        *self
+            .input_energy
+            .lock()
+            .expect("harness probe lock is control-side only")
+    }
 
+    fn initial_state(&self) -> u64 {
+        self.initial_state
+            .lock()
+            .expect("harness probe lock is control-side only")
+            .unwrap_or(0)
+    }
+}
+
+/// The harness's reference wet model as an installed unity return: it meters
+/// its accumulated bus input and passes it through unchanged, so the rack's
+/// live return level supplies the exact retired fixture arithmetic
+/// (`input * FIXTURE_*_RETURN`). Reference model and live path stay distinct:
+/// live return levels are return-owned state; these fixture entries are
+/// overlaid onto the published snapshot only inside the harness mix.
+struct HarnessMeteringReturn {
+    probe: Arc<ReturnProbe>,
+    state: u64,
+}
+
+impl HarnessMeteringReturn {
+    fn new(probe: Arc<ReturnProbe>) -> Self {
+        Self { probe, state: 0 }
+    }
+}
+
+impl PreparedPostEffect for HarnessMeteringReturn {
+    fn patch_id(&self) -> PatchId {
+        PatchId::new(u32::MAX).expect("the static harness Patch id is non-zero")
+    }
+
+    fn slot_id(&self) -> EffectSlotId {
+        EffectSlotId::new(1).expect("the static harness slot id is non-zero")
+    }
+
+    fn process(
+        &mut self,
+        interleaved_stereo: &mut [f32],
+        frame_count: usize,
+        _parameters: &RtPostEffectParameters,
+    ) -> Result<(), PreparedEffectError> {
+        let sample_count = frame_count * 2;
+        *self
+            .probe
+            .input_energy
+            .lock()
+            .expect("harness probe lock is control-side only") =
+            energy(&interleaved_stereo[..sample_count]);
+        self.probe
+            .initial_state
+            .lock()
+            .expect("harness probe lock is control-side only")
+            .get_or_insert(self.state);
+        self.state = self.state.saturating_add(1);
+        Ok(())
+    }
+}
+
+/// The buses the harness's reference wet model occupies, with the retired
+/// fixture return levels as the live values.
+const HARNESS_RETURN_BUSES: [BusId; 2] = [BusId::ALL[0], BusId::ALL[1]];
+
+fn harness_return_levels() -> [f32; 2] {
+    [FIXTURE_REVERB_RETURN, FIXTURE_DELAY_RETURN]
+}
+
+fn harness_return_parameters() -> RtPostEffectParameters {
+    RtPostEffectParameters::new(
+        EffectSlotId::new(1).expect("the static harness slot id is non-zero"),
+        &[],
+    )
+    .expect("the empty harness scalar layout is valid")
+}
+
+/// Overlays the harness's fixture return entries onto one published snapshot.
+fn with_harness_returns(snapshot: &ParameterSnapshot) -> ParameterSnapshot {
+    let mut returns = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+    for (bus, level) in HARNESS_RETURN_BUSES.iter().zip(harness_return_levels()) {
+        returns[bus.index()] = RtBusReturnParameters::new(
+            EffectSlotId::new(1).expect("the static harness slot id is non-zero"),
+            &[],
+            level,
+        )
+        .expect("the fixture return entry is valid");
+    }
+    snapshot.with_returns(returns)
+}
+
+fn fill_measure_stems(
+    block: &mut PatchAudioBlock,
+    snapshot: &ParameterSnapshot,
+    patch_index: usize,
+) {
     for (index, patch) in snapshot.patches().iter().enumerate() {
         let stem = block
             .stem_mut(
@@ -784,23 +1004,58 @@ fn measure_patch(snapshot: &ParameterSnapshot, patch_index: usize) -> MixMeasure
         };
         stem.fill(amplitude);
     }
+}
 
-    let probe = Rc::new(MixProbe::default());
-    let effects = MeteringEffects {
-        probe: Rc::clone(&probe),
-    };
-    let mut mixer = MixEngine::new(effects);
+#[derive(Clone, Copy, Default)]
+struct MixMeasurement {
+    output: f64,
+    dry: f64,
+    bus_inputs: [f64; 2],
+}
+
+fn measure_patch(snapshot: &ParameterSnapshot, patch_index: usize) -> MixMeasurement {
+    let mut block =
+        PatchAudioBlock::prepare(FRAME_COUNT).expect("verification PatchAudioBlock prepares");
+    block
+        .begin_render(snapshot, FRAME_COUNT)
+        .expect("verification snapshot fits PatchAudioBlock");
+    fill_measure_stems(&mut block, snapshot, patch_index);
+
+    // The dry stage, measured exactly: the same deterministic mix without the
+    // reference returns installed.
+    let mut dry_mixer = MixEngine::new();
+    dry_mixer
+        .prepare(SAMPLE_RATE, FRAME_COUNT)
+        .expect("verification mixer prepares");
+    let mut dry_output = [0.0_f32; FRAME_COUNT * 2];
+    dry_mixer.mix(&block, snapshot, &mut dry_output);
+
+    let probes: [Arc<ReturnProbe>; 2] = [
+        Arc::new(ReturnProbe::default()),
+        Arc::new(ReturnProbe::default()),
+    ];
+    let mut mixer = MixEngine::new();
     mixer
         .prepare(SAMPLE_RATE, FRAME_COUNT)
         .expect("verification mixer prepares");
+    for (bus, probe) in HARNESS_RETURN_BUSES.iter().zip(&probes) {
+        mixer
+            .install_bus_return(
+                *bus,
+                Box::new(HarnessMeteringReturn::new(Arc::clone(probe))),
+                harness_return_parameters(),
+                1.0,
+            )
+            .expect("harness return installs");
+    }
+    let overlaid = with_harness_returns(snapshot);
     let mut output = [0.0_f32; FRAME_COUNT * 2];
-    mixer.mix(&block, snapshot, &mut output);
+    mixer.mix(&block, &overlaid, &mut output);
 
     MixMeasurement {
         output: energy(&output),
-        dry: probe.dry_energy.get(),
-        reverb: probe.reverb_energy.get(),
-        delay: probe.delay_energy.get(),
+        dry: energy(&dry_output),
+        bus_inputs: [probes[0].input_energy(), probes[1].input_energy()],
     }
 }
 
@@ -809,8 +1064,7 @@ fn relevant_energy(field: TrackField, measurement: MixMeasurement) -> f64 {
         TrackField::Level | TrackField::Pan | TrackField::Mute | TrackField::Solo => {
             measurement.dry
         }
-        TrackField::ReverbSend => measurement.reverb,
-        TrackField::DelaySend => measurement.delay,
+        TrackField::Send(bus) => measurement.bus_inputs[bus.index()],
     }
 }
 
@@ -848,10 +1102,22 @@ fn run_cross_track_parameter_leak(mutant_enabled: bool) -> CrossTrackParameterLe
     for field in TrackField::ALL {
         let state = if matches!(field, TrackField::Solo) {
             state_with_tracks(
-                MixerTrackParameters::new(-12.0, -0.35, false, true, 0.2, 0.1)
-                    .expect("solo comparison track parameters are valid"),
-                MixerTrackParameters::new(-6.0, 0.35, false, false, 0.4, 0.3)
-                    .expect("solo edited track parameters are valid"),
+                MixerTrackParameters::from_values(
+                    -12.0,
+                    -0.35,
+                    false,
+                    true,
+                    [0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                )
+                .expect("solo comparison track parameters are valid"),
+                MixerTrackParameters::from_values(
+                    -6.0,
+                    0.35,
+                    false,
+                    false,
+                    [0.4, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                )
+                .expect("solo edited track parameters are valid"),
             )
         } else {
             fixture_state()
@@ -879,16 +1145,18 @@ fn run_cross_track_parameter_leak(mutant_enabled: bool) -> CrossTrackParameterLe
                         .expect("fixture selects the track toggle");
                 }
             }
-            TrackField::ReverbSend | TrackField::DelaySend => {
+            TrackField::Send(bus) => {
+                // The Inspector's first region is the selected track's eight
+                // indexed sends in ascending BusId order; entry focuses B0.
                 app_loop
                     .dispatch(AppEvent::EnterSurface(
                         crate::control::SurfaceId::MixerInspector,
                     ))
                     .expect("fixture enters the selected track Inspector");
-                if matches!(field, TrackField::DelaySend) {
+                for _ in 0..bus.index() {
                     app_loop
                         .dispatch(AppEvent::Navigate(Direction::Down))
-                        .expect("fixture selects track Delay Send");
+                        .expect("fixture selects the indexed track send");
                 }
             }
         }
@@ -932,10 +1200,13 @@ fn run_cross_track_parameter_leak(mutant_enabled: bool) -> CrossTrackParameterLe
             TrackField::Level | TrackField::Pan | TrackField::Mute | TrackField::Solo => {
                 dry_path_isolated &= edited_audio_changed && comparison_audio_unchanged;
             }
-            TrackField::ReverbSend => {
+            // The retained observation labels keep their exact strings: the
+            // "reverb"/"delay" paths are the sends toward buses 0 and 1,
+            // whose returns the production composition occupies by default.
+            TrackField::Send(bus) if bus.index() == 0 => {
                 reverb_path_isolated &= edited_audio_changed && comparison_audio_unchanged;
             }
-            TrackField::DelaySend => {
+            TrackField::Send(_) => {
                 delay_path_isolated &= edited_audio_changed && comparison_audio_unchanged;
             }
         }
@@ -1257,88 +1528,6 @@ fn run_omitted_state_tree_leaf(mutant_enabled: bool) -> OmittedStateTreeLeafObse
     }
 }
 
-#[derive(Default)]
-struct DryWetProbe {
-    dry_input_energy: Cell<f64>,
-    reverb_input_energy: Cell<f64>,
-    delay_input_energy: Cell<f64>,
-    wet_output_energy: Cell<f64>,
-    initial_state: Cell<u64>,
-}
-
-struct DryWetEffects {
-    mutant_enabled: bool,
-    state: u64,
-    scratch: Vec<f32>,
-    probe: Rc<DryWetProbe>,
-}
-
-impl GlobalEffectsProcessor for DryWetEffects {
-    fn prepare(
-        &mut self,
-        _sample_rate: f32,
-        max_frames: usize,
-        _max_delay_milliseconds: f32,
-    ) -> Result<(), EffectError> {
-        self.scratch.resize(max_frames * 2, 0.0);
-        Ok(())
-    }
-
-    fn process(
-        &mut self,
-        reverb_input: &[f32],
-        delay_input: &[f32],
-        output: &mut [f32],
-        parameters: &GlobalParameters,
-    ) {
-        let sample_count = output
-            .len()
-            .min(reverb_input.len())
-            .min(delay_input.len())
-            .min(self.scratch.len());
-        self.probe.initial_state.set(self.state);
-        self.scratch[..sample_count].copy_from_slice(&output[..sample_count]);
-        self.probe
-            .dry_input_energy
-            .set(energy(&self.scratch[..sample_count]));
-        let reverb_energy = energy(&reverb_input[..sample_count]);
-        let delay_energy = energy(&delay_input[..sample_count]);
-        self.probe.reverb_input_energy.set(reverb_energy);
-        self.probe.delay_input_energy.set(delay_energy);
-
-        if self.mutant_enabled
-            && approximately_zero(reverb_energy)
-            && approximately_zero(delay_energy)
-        {
-            for (sample, dry) in output[..sample_count]
-                .iter_mut()
-                .zip(self.scratch[..sample_count].iter())
-            {
-                *sample += dry * 0.25;
-            }
-        } else {
-            for ((sample, reverb), delay) in output[..sample_count]
-                .iter_mut()
-                .zip(reverb_input[..sample_count].iter())
-                .zip(delay_input[..sample_count].iter())
-            {
-                *sample += reverb * parameters.reverb_return() + delay * parameters.delay_return();
-            }
-        }
-
-        let wet_output_energy = output[..sample_count]
-            .iter()
-            .zip(self.scratch[..sample_count].iter())
-            .map(|(after, dry)| {
-                let delta = f64::from(*after - *dry);
-                delta * delta
-            })
-            .sum();
-        self.probe.wet_output_energy.set(wet_output_energy);
-        self.state = self.state.saturating_add(1);
-    }
-}
-
 #[derive(Clone, Copy)]
 struct DryWetMeasurement {
     dry: f64,
@@ -1350,17 +1539,6 @@ struct DryWetMeasurement {
 }
 
 fn render_dry_wet(parameters: ParameterSnapshot, mutant_enabled: bool) -> DryWetMeasurement {
-    let probe = Rc::new(DryWetProbe::default());
-    let effects = DryWetEffects {
-        mutant_enabled,
-        state: 0,
-        scratch: Vec::new(),
-        probe: Rc::clone(&probe),
-    };
-    let mut mixer = MixEngine::new(effects);
-    mixer
-        .prepare(SAMPLE_RATE, FRAME_COUNT)
-        .expect("verification mixer prepares");
     let mut patch_audio = PatchAudioBlock::prepare(FRAME_COUNT).unwrap();
     patch_audio.begin_render(&parameters, FRAME_COUNT).unwrap();
     for (index, patch) in parameters.patches().iter().enumerate() {
@@ -1371,30 +1549,94 @@ fn render_dry_wet(parameters: ParameterSnapshot, mutant_enabled: bool) -> DryWet
             stem.fill(0.2 + index as f32 * 0.1);
         }
     }
+
+    // The dry stage, measured exactly: the same deterministic mix without
+    // the reference returns installed.
+    let mut dry_mixer = MixEngine::new();
+    dry_mixer
+        .prepare(SAMPLE_RATE, FRAME_COUNT)
+        .expect("verification mixer prepares");
+    let mut dry_output = [0.0_f32; FRAME_COUNT * 2];
+    dry_mixer.mix(&patch_audio, &parameters, &mut dry_output);
+
+    let probes: [Arc<ReturnProbe>; 2] = [
+        Arc::new(ReturnProbe::default()),
+        Arc::new(ReturnProbe::default()),
+    ];
+    let mut mixer = MixEngine::new();
+    mixer
+        .prepare(SAMPLE_RATE, FRAME_COUNT)
+        .expect("verification mixer prepares");
+    for (bus, probe) in HARNESS_RETURN_BUSES.iter().zip(&probes) {
+        mixer
+            .install_bus_return(
+                *bus,
+                Box::new(HarnessMeteringReturn::new(Arc::clone(probe))),
+                harness_return_parameters(),
+                1.0,
+            )
+            .expect("harness return installs");
+    }
+    let overlaid = with_harness_returns(&parameters);
     let mut output = [0.0_f32; FRAME_COUNT * 2];
-    mixer.mix(&patch_audio, &parameters, &mut output);
+    mixer.mix(&patch_audio, &overlaid, &mut output);
+
+    let reverb_energy = probes[0].input_energy();
+    let delay_energy = probes[1].input_energy();
+
+    // The mutant models a wet-sum stage that derives wet output from the dry
+    // mix when the declared send inputs are silent — the exact fault the
+    // retired port mutant modeled. The bus-return rack makes that fault
+    // structurally impossible inside a return (a return never sees the dry
+    // mix), so the seam stands at the harness's wet-sum stage.
+    if mutant_enabled && approximately_zero(reverb_energy) && approximately_zero(delay_energy) {
+        for (sample, dry) in output.iter_mut().zip(dry_output.iter()) {
+            *sample += dry * 0.25;
+        }
+    }
+
+    let wet_output_energy = output
+        .iter()
+        .zip(dry_output.iter())
+        .map(|(after, dry)| {
+            let delta = f64::from(*after - *dry);
+            delta * delta
+        })
+        .sum();
 
     DryWetMeasurement {
-        dry: probe.dry_input_energy.get(),
-        reverb: probe.reverb_input_energy.get(),
-        delay: probe.delay_input_energy.get(),
-        wet: probe.wet_output_energy.get(),
-        initial_state: probe.initial_state.get(),
+        dry: energy(&dry_output),
+        reverb: reverb_energy,
+        delay: delay_energy,
+        wet: wet_output_energy,
+        initial_state: probes[0].initial_state().max(probes[1].initial_state()),
         finite: output.iter().all(|sample| sample.is_finite()),
     }
 }
 
-fn parameter_snapshot_with_sends(reverb_send: f32, delay_send: f32) -> ParameterSnapshot {
+fn parameter_snapshot_with_sends(bus0_send: f32, bus1_send: f32) -> ParameterSnapshot {
     let tracks = MixerState::default()
         .with_track(
             MixerTrackId::ALL[0],
-            MixerTrackParameters::new(0.0, -0.25, false, false, reverb_send, delay_send)
-                .expect("verification sends are valid"),
+            MixerTrackParameters::from_values(
+                0.0,
+                -0.25,
+                false,
+                false,
+                [bus0_send, bus1_send, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            )
+            .expect("verification sends are valid"),
         )
         .with_track(
             MixerTrackId::ALL[1],
-            MixerTrackParameters::new(-3.0, 0.25, false, false, reverb_send, delay_send)
-                .expect("verification sends are valid"),
+            MixerTrackParameters::from_values(
+                -3.0,
+                0.25,
+                false,
+                false,
+                [bus0_send, bus1_send, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            )
+            .expect("verification sends are valid"),
         );
     let patches = [
         RtPatchParameters::new(
@@ -1518,6 +1760,714 @@ fn run_zero_renderer(mutant_enabled: bool) -> ZeroRendererObservation {
         renderer_called,
         renderer_nonzero: render_peak > 0.0,
         render_peak,
+        finite_audio,
+    }
+}
+
+// ---- WP08 topology and routing seam mutations (T048) ----------------------
+
+/// Prepares one positional registry effect instance with its descriptor
+/// defaults, ready for in-chain processing.
+fn prepared_registry_effect(
+    entry_index: usize,
+    slot: EffectSlotId,
+    sample_rate: f32,
+    max_frames: usize,
+) -> (Box<dyn PreparedPostEffect>, RtPostEffectParameters) {
+    let registry = crate::adapter::production_effects::production_effect_registry()
+        .expect("production effect registry composes");
+    let preparers = crate::adapter::production_effects::production_effect_preparers()
+        .expect("production effect preparers compose");
+    let descriptor = &registry.descriptors()[entry_index];
+    let config = descriptor
+        .default_config(slot)
+        .expect("descriptor default config is valid");
+    let scalars: Vec<f32> = descriptor
+        .scalar_parameters()
+        .map(|spec| {
+            spec.scalar_value(
+                config
+                    .value(spec.id())
+                    .expect("default config covers every scalar"),
+            )
+            .expect("default scalar is in range")
+        })
+        .collect();
+    let parameters =
+        RtPostEffectParameters::new(slot, &scalars).expect("default scalar layout projects");
+    let preparer = preparers
+        .iter()
+        .find(|preparer| preparer.capability_id() == config.capability_id())
+        .expect("the registry entry has a preparer");
+    let effect = preparer
+        .prepare(
+            PatchId::new(1).expect("fixture PatchId is nonzero"),
+            &config,
+            sample_rate,
+            max_frames,
+        )
+        .expect("the registry entry prepares");
+    (effect, parameters)
+}
+
+/// T048: swapping two slots' order must change the rendered output; a rack
+/// that ignores slot order (the mutant) renders both orders identically and
+/// is caught by the zero difference.
+fn run_slot_order_swap(mutant_enabled: bool) -> SlotOrderSwapObservation {
+    const ORDER_FRAMES: usize = 256;
+    const ORDER_BLOCKS: usize = 96;
+
+    let render_chain = |first_entry: usize, second_entry: usize| -> Vec<f32> {
+        let slot_one = EffectSlotId::new(1).expect("slot id one is nonzero");
+        let slot_two = EffectSlotId::new(2).expect("slot id two is nonzero");
+        let (mut first, first_parameters) =
+            prepared_registry_effect(first_entry, slot_one, SAMPLE_RATE, ORDER_FRAMES);
+        let (mut second, second_parameters) =
+            prepared_registry_effect(second_entry, slot_two, SAMPLE_RATE, ORDER_FRAMES);
+        let mut state: u32 = 0x2F6E_1B45;
+        let mut noise = move || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 8) as f32 / 16_777_216.0 - 0.5
+        };
+        let mut trace = Vec::with_capacity(ORDER_BLOCKS * ORDER_FRAMES * 2);
+        for _ in 0..ORDER_BLOCKS {
+            let mut block: Vec<f32> = (0..ORDER_FRAMES * 2).map(|_| noise()).collect();
+            first
+                .process(&mut block, ORDER_FRAMES, &first_parameters)
+                .expect("first slot processes in place");
+            second
+                .process(&mut block, ORDER_FRAMES, &second_parameters)
+                .expect("second slot processes in place");
+            trace.extend_from_slice(&block);
+        }
+        trace
+    };
+
+    // Positional entries 0 and 2: two genuinely different processors.
+    let forward = render_chain(0, 2);
+    let reversed = if mutant_enabled {
+        // The mutant ignores the exchanged order and renders the same
+        // chain again.
+        render_chain(0, 2)
+    } else {
+        render_chain(2, 0)
+    };
+
+    let order_difference_energy = forward
+        .iter()
+        .zip(reversed.iter())
+        .map(|(first, second)| {
+            let delta = f64::from(*first - *second);
+            delta * delta
+        })
+        .sum::<f64>();
+    let finite_audio = forward.iter().all(|sample| sample.is_finite())
+        && reversed.iter().all(|sample| sample.is_finite());
+
+    SlotOrderSwapObservation {
+        case: BehavioralMutationCase::SlotOrderSwap.as_str().to_owned(),
+        forward_energy: energy(&forward),
+        reversed_energy: energy(&reversed),
+        order_difference_energy,
+        order_sensitive: order_difference_energy > ENERGY_EPSILON,
+        finite_audio,
+    }
+}
+
+/// One deterministic mixer run over fixed stems for the send-seam cases.
+struct SendSeamRun {
+    output: Vec<f32>,
+    dry: Vec<f32>,
+    bus_input_energy: f64,
+}
+
+fn run_send_seam_mix(
+    track_parameters: MixerTrackParameters,
+    bus: BusId,
+    install_return: bool,
+) -> SendSeamRun {
+    let stem: Vec<f32> = (0..FRAME_COUNT * 2)
+        .map(|index| if index % 2 == 0 { 0.4 } else { 0.2 })
+        .collect();
+    let track_id = MixerTrackId::ALL[0];
+    let mixer_state = MixerState::default().with_track(track_id, track_parameters);
+    let patches = [RtPatchParameters::new(
+        PatchId::new(1).expect("fixture PatchId is nonzero"),
+        PatchOutput::to_track(track_id),
+    )];
+    let base = ParameterSnapshot::new(1, fixture_globals(), mixer_state, &patches)
+        .expect("send-seam snapshot is valid");
+    let mut returns =
+        [crate::real_time::parameter_snapshot::RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+    if install_return {
+        returns[bus.index()] = crate::real_time::parameter_snapshot::RtBusReturnParameters::new(
+            EffectSlotId::new(1).expect("the static harness slot id is non-zero"),
+            &[],
+            1.0,
+        )
+        .expect("the fixture return entry is valid");
+    }
+    let snapshot = base.with_returns(returns);
+
+    let mut block = PatchAudioBlock::prepare(FRAME_COUNT).expect("send-seam block prepares");
+    block
+        .begin_render(&snapshot, FRAME_COUNT)
+        .expect("send-seam snapshot fits");
+    block
+        .stem_mut(0, PatchId::new(1).expect("fixture PatchId is nonzero"))
+        .expect("fixture stem exists")
+        .copy_from_slice(&stem);
+
+    let mut dry_mixer = MixEngine::new();
+    dry_mixer
+        .prepare(SAMPLE_RATE, FRAME_COUNT)
+        .expect("send-seam mixer prepares");
+    let mut dry = vec![0.0_f32; FRAME_COUNT * 2];
+    dry_mixer.mix(&block, &base, &mut dry);
+
+    let probe = Arc::new(ReturnProbe::default());
+    let mut mixer = MixEngine::new();
+    mixer
+        .prepare(SAMPLE_RATE, FRAME_COUNT)
+        .expect("send-seam mixer prepares");
+    if install_return {
+        mixer
+            .install_bus_return(
+                bus,
+                Box::new(HarnessMeteringReturn::new(Arc::clone(&probe))),
+                harness_return_parameters(),
+                1.0,
+            )
+            .expect("send-seam return installs");
+    }
+    let mut output = vec![0.0_f32; FRAME_COUNT * 2];
+    mixer.mix(&block, &snapshot, &mut output);
+
+    SendSeamRun {
+        output,
+        dry,
+        bus_input_energy: probe.input_energy(),
+    }
+}
+
+/// T048: an unoccupied return must contribute silence, never its
+/// accumulated input (C-BR-6); the mutant models the passthrough fault.
+fn run_empty_return_passthrough(mutant_enabled: bool) -> EmptyReturnPassthroughObservation {
+    let bus = BusId::ALL[6];
+    let sends = MixerTrackParameters::default()
+        .with_send(bus, 1.0)
+        .expect("fixture send is valid");
+    let run = run_send_seam_mix(sends, bus, false);
+
+    let mut output = run.output.clone();
+    if mutant_enabled {
+        // The passthrough fault: the empty return hands its accumulated
+        // input straight to the mix.
+        for (index, sample) in output.iter_mut().enumerate() {
+            let stem = if index % 2 == 0 { 0.4_f32 } else { 0.2_f32 };
+            *sample += stem;
+        }
+    }
+
+    let unoccupied_wet_energy = output
+        .iter()
+        .zip(run.dry.iter())
+        .map(|(after, dry)| {
+            let delta = f64::from(*after - *dry);
+            delta * delta
+        })
+        .sum::<f64>();
+    let output_matches_dry_exactly = output
+        .iter()
+        .zip(run.dry.iter())
+        .all(|(after, dry)| after == dry);
+
+    EmptyReturnPassthroughObservation {
+        case: BehavioralMutationCase::EmptyReturnPassthrough
+            .as_str()
+            .to_owned(),
+        accumulated_send_energy: energy(&[0.4, 0.2]) * (FRAME_COUNT as f64),
+        unoccupied_wet_energy,
+        output_matches_dry_exactly,
+        unoccupied_return_silent: approximately_zero(unoccupied_wet_energy)
+            && output_matches_dry_exactly,
+        finite_audio: output.iter().all(|sample| sample.is_finite()),
+    }
+}
+
+/// T048: sends are taken post-fader (C-BR-1); the mutant models a send
+/// stage moved before the fader.
+fn run_pre_gate_send(mutant_enabled: bool) -> PreGateSendObservation {
+    let bus = BusId::ALL[5];
+    let level_db = -6.020_600_3_f32;
+    let send = 0.8_f32;
+    let parameters = MixerTrackParameters::default()
+        .with_scalar_value(
+            crate::mixer::mixer_track_parameters::MixerTrackParameter::Level,
+            level_db,
+        )
+        .expect("fixture level is valid")
+        .with_send(bus, send)
+        .expect("fixture send is valid");
+    let run = run_send_seam_mix(parameters, bus, true);
+
+    let gain = 10.0_f32.powf(level_db / 20.0);
+    let reference = |apply_fader: bool| -> f64 {
+        (0..FRAME_COUNT * 2)
+            .map(|index| {
+                let stem = if index % 2 == 0 { 0.4_f32 } else { 0.2_f32 };
+                let faded = if apply_fader { stem * gain } else { stem };
+                let bus_sample = faded * send;
+                f64::from(bus_sample) * f64::from(bus_sample)
+            })
+            .sum()
+    };
+    let post_fader_reference_energy = reference(true);
+    let pre_fader_reference_energy = reference(false);
+    let measured_send_energy = if mutant_enabled {
+        // The pre-fader fault: the send is accumulated before the fader
+        // and gate stage.
+        pre_fader_reference_energy
+    } else {
+        run.bus_input_energy
+    };
+
+    PreGateSendObservation {
+        case: BehavioralMutationCase::PreGateSend.as_str().to_owned(),
+        post_fader_reference_energy,
+        measured_send_energy,
+        pre_fader_reference_energy,
+        send_taken_post_fader: approximately_equal(
+            measured_send_energy,
+            post_fader_reference_energy,
+        ),
+        finite_audio: run.output.iter().all(|sample| sample.is_finite()),
+    }
+}
+
+/// T048: a muted track contributes nothing to any send (C-BR-2); the mutant
+/// strips the mute from the snapshot the mix stage consumes — the same
+/// ownership-seam fault shape as the cross-track leak.
+fn run_muted_send_leak(mutant_enabled: bool) -> MutedSendLeakObservation {
+    let bus = BusId::ALL[4];
+    let sounding = MixerTrackParameters::default()
+        .with_send(bus, 1.0)
+        .expect("fixture send is valid");
+    let muted = MixerTrackParameters::from_values(0.0, 0.0, true, false, sounding.sends())
+        .expect("fixture muted track is valid");
+    let sounding_run = run_send_seam_mix(sounding, bus, true);
+    let muted_run = if mutant_enabled {
+        // The gate fault: the send stage consumes a snapshot whose mute
+        // was dropped.
+        run_send_seam_mix(sounding, bus, true)
+    } else {
+        run_send_seam_mix(muted, bus, true)
+    };
+
+    let muted_wet_energy = muted_run
+        .output
+        .iter()
+        .zip(muted_run.dry.iter())
+        .map(|(after, dry)| {
+            let delta = f64::from(*after - *dry);
+            delta * delta
+        })
+        .sum::<f64>();
+
+    MutedSendLeakObservation {
+        case: BehavioralMutationCase::MutedSendLeak.as_str().to_owned(),
+        sounding_send_energy: sounding_run.bus_input_energy,
+        muted_send_energy: muted_run.bus_input_energy,
+        muted_wet_energy,
+        mute_gates_sends: approximately_zero(muted_run.bus_input_energy)
+            && approximately_zero(muted_wet_energy),
+        finite_audio: muted_run.output.iter().all(|sample| sample.is_finite()),
+    }
+}
+
+/// T048: a live return entry that does not attest the prepared instance
+/// contributes silence — never a wrong-values substitution; the mutant
+/// models permissive structural matching.
+fn run_permissive_structural_match(mutant_enabled: bool) -> PermissiveStructuralMatchObservation {
+    let bus = BusId::ALL[2];
+    let sends = MixerTrackParameters::default()
+        .with_send(bus, 1.0)
+        .expect("fixture send is valid");
+
+    let run_with_live_slot = |live_slot: u16| -> SendSeamRun {
+        let stem: Vec<f32> = (0..FRAME_COUNT * 2)
+            .map(|index| if index % 2 == 0 { 0.4 } else { 0.2 })
+            .collect();
+        let track_id = MixerTrackId::ALL[0];
+        let mixer_state = MixerState::default().with_track(track_id, sends);
+        let patches = [RtPatchParameters::new(
+            PatchId::new(1).expect("fixture PatchId is nonzero"),
+            PatchOutput::to_track(track_id),
+        )];
+        let base = ParameterSnapshot::new(1, fixture_globals(), mixer_state, &patches)
+            .expect("match snapshot is valid");
+        let mut returns =
+            [crate::real_time::parameter_snapshot::RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+        returns[bus.index()] = crate::real_time::parameter_snapshot::RtBusReturnParameters::new(
+            EffectSlotId::new(live_slot).expect("the live slot id is non-zero"),
+            &[],
+            1.0,
+        )
+        .expect("the live return entry is valid");
+        let snapshot = base.with_returns(returns);
+
+        let mut block = PatchAudioBlock::prepare(FRAME_COUNT).expect("match block prepares");
+        block
+            .begin_render(&snapshot, FRAME_COUNT)
+            .expect("match snapshot fits");
+        block
+            .stem_mut(0, PatchId::new(1).expect("fixture PatchId is nonzero"))
+            .expect("fixture stem exists")
+            .copy_from_slice(&stem);
+
+        let mut dry_mixer = MixEngine::new();
+        dry_mixer
+            .prepare(SAMPLE_RATE, FRAME_COUNT)
+            .expect("match mixer prepares");
+        let mut dry = vec![0.0_f32; FRAME_COUNT * 2];
+        dry_mixer.mix(&block, &base, &mut dry);
+
+        let probe = Arc::new(ReturnProbe::default());
+        let mut mixer = MixEngine::new();
+        mixer
+            .prepare(SAMPLE_RATE, FRAME_COUNT)
+            .expect("match mixer prepares");
+        mixer
+            .install_bus_return(
+                bus,
+                Box::new(HarnessMeteringReturn::new(Arc::clone(&probe))),
+                harness_return_parameters(),
+                1.0,
+            )
+            .expect("match return installs");
+        let mut output = vec![0.0_f32; FRAME_COUNT * 2];
+        mixer.mix(&block, &snapshot, &mut output);
+        SendSeamRun {
+            output,
+            dry,
+            bus_input_energy: probe.input_energy(),
+        }
+    };
+
+    let attested = run_with_live_slot(1);
+    let mismatched = if mutant_enabled {
+        // Permissive matching: the mismatched attestation is silently
+        // corrected to the prepared instance.
+        run_with_live_slot(1)
+    } else {
+        run_with_live_slot(2)
+    };
+    let wet = |run: &SendSeamRun| -> f64 {
+        run.output
+            .iter()
+            .zip(run.dry.iter())
+            .map(|(after, dry)| {
+                let delta = f64::from(*after - *dry);
+                delta * delta
+            })
+            .sum()
+    };
+    let attested_wet_energy = wet(&attested);
+    let mismatched_wet_energy = wet(&mismatched);
+
+    PermissiveStructuralMatchObservation {
+        case: BehavioralMutationCase::PermissiveStructuralMatch
+            .as_str()
+            .to_owned(),
+        attested_wet_energy,
+        mismatched_wet_energy,
+        strict_matching_enforced: attested_wet_energy > 0.0
+            && approximately_zero(mismatched_wet_energy),
+        finite_audio: mismatched
+            .output
+            .iter()
+            .chain(attested.output.iter())
+            .all(|sample| sample.is_finite()),
+    }
+}
+
+// ---- The declared refused-topology witness case ---------------------------
+
+const TOPOLOGY_FRAME_COUNT: usize = 128;
+const TOPOLOGY_SAMPLE_COUNT: usize = TOPOLOGY_FRAME_COUNT * 2;
+
+struct TopologyFixture {
+    app_loop: AppLoop<LockFreeControlHandle>,
+    renderer: crate::real_time::AudioRenderer<
+        crate::adapter::lock_free_audio_boundary::LockFreeAudioHandle,
+        crate::adapter::lock_free_structural_graph_boundary::LockFreeStructuralAudioHandle,
+        crate::adapter::atomic_audio_observation::AtomicAudioObservationWriter,
+    >,
+    worker:
+        crate::testing::deterministic_graph_preparation_worker::DeterministicGraphPreparationHandle,
+}
+
+/// Composes the complete production-path topology fixture: reducer,
+/// projector, deterministic worker, coordinator, and renderer, with the
+/// production default return occupancy and one track sending to bus 3.
+fn topology_fixture() -> TopologyFixture {
+    use crate::real_time::audio_observation::AudioObservation as _;
+    use crate::real_time::StructuralGraphBoundary as _;
+    let registry = crate::adapter::production_instruments::production_capability_registry()
+        .expect("production registry composes");
+    let effects = crate::adapter::production_effects::production_effect_registry()
+        .expect("production effect registry composes");
+    let bank = crate::adapter::production_effects::production_default_bus_returns(&effects)
+        .expect("production default returns occupy");
+
+    let mut sends = [0.0_f32; MAX_BUS_RETURNS];
+    sends[3] = 0.6;
+    let mixer = MixerState::default().with_track(
+        MixerTrackId::ALL[0],
+        MixerTrackParameters::from_values(0.0, 0.0, false, false, sends)
+            .expect("fixture sends are valid"),
+    );
+
+    let soundfont = crate::adapter::production_instruments::production_soundfont_capability()
+        .expect("production SoundFont capability composes");
+    let patch = Patch::new(
+        PatchId::new(1).expect("fixture PatchId is nonzero"),
+        "Topology 1".to_owned(),
+        create_soundfont_config(
+            &soundfont,
+            SoundFontInstrument::new(0, 0, false).expect("fixture instrument is valid"),
+        )
+        .expect("fixture config matches the production descriptor"),
+        MidiChannel::new(0).expect("fixture channel is valid"),
+        PatchOutput::to_track(MixerTrackId::ALL[0]),
+    );
+
+    let mut state = AppState::for_graph_with_effects(
+        registry.clone(),
+        effects.clone(),
+        fixture_globals(),
+        GraphRevision::INITIAL,
+    )
+    .with_initial_returns(bank)
+    .with_initial_mixer(mixer);
+    state
+        .apply(AppEvent::InstallPatches(vec![patch]))
+        .expect("fixture Patch installs");
+
+    let initial_transport =
+        ParameterSnapshot::new(0, fixture_globals(), MixerState::default(), &[])
+            .expect("initial transport parameters are valid");
+    let boundary = LockFreeAudioBoundary::new(128, initial_transport);
+    let (audio_control, audio_callback) = boundary.into_handles();
+    let mut app_loop = AppLoop::new(
+        state,
+        StateProjector::for_graph(GraphRevision::INITIAL),
+        audio_control,
+    )
+    .expect("fixture state projects");
+
+    let audio_config = crate::shell::audio_output::AudioDeviceConfig::new(
+        SAMPLE_RATE,
+        2,
+        crate::shell::audio_output::AudioSampleFormat::F32,
+        TOPOLOGY_FRAME_COUNT,
+    )
+    .expect("fixture audio config is valid");
+    let instrument_preparers =
+        crate::adapter::production_instruments::production_instrument_preparers()
+            .expect("production preparers compose");
+    let effect_preparers = crate::adapter::production_effects::production_effect_preparers()
+        .expect("production effect preparers compose");
+    let initial_graph = PreparedGraphBuilder::new(&registry, &instrument_preparers)
+        .with_effects(&effects, &effect_preparers)
+        .with_returns(app_loop.bus_returns())
+        .build(
+            GraphRevision::INITIAL,
+            app_loop.patches(),
+            *app_loop.current_parameters(),
+            SAMPLE_RATE,
+            TOPOLOGY_FRAME_COUNT,
+        )
+        .expect("complete production graph prepares");
+
+    let structural =
+        crate::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary::new(
+            1,
+            1,
+            crate::real_time::GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+        )
+        .expect("fixture structural boundary is valid");
+    let (structural_control, structural_callback) = structural.into_handles();
+    let worker = crate::testing::deterministic_graph_preparation_worker::DeterministicGraphPreparationWorker::new_with_effects(
+        registry.clone(),
+        crate::adapter::production_instruments::production_instrument_preparers()
+            .expect("worker preparers compose"),
+        effects.clone(),
+        crate::adapter::production_effects::production_effect_preparers()
+            .expect("worker effect preparers compose"),
+        audio_config,
+    );
+    let worker_handle = worker.advance_handle();
+    app_loop
+        .configure_engine_selection(
+            crate::synth::DescriptorDefaultConfigFactory::new(
+                registry,
+                crate::adapter::production_instruments::production_instrument_providers()
+                    .expect("production providers compose"),
+            ),
+            worker,
+            structural_control,
+            &initial_graph,
+            audio_config,
+        )
+        .expect("fixture engine-selection runtime configures");
+    let (writer, _reader) =
+        crate::adapter::atomic_audio_observation::AtomicAudioObservation::default().into_handles();
+    let renderer = crate::real_time::AudioRenderer::with_observation(
+        audio_callback,
+        structural_callback,
+        initial_graph,
+        writer,
+    );
+
+    TopologyFixture {
+        app_loop,
+        renderer,
+        worker: worker_handle,
+    }
+}
+
+/// The declared goal-witness counterexample: a refused topology change must
+/// leave the active graph, the canonical state, and the render untouched,
+/// with an attributable reason, and a valid change immediately afterwards
+/// must succeed. The mutant skips the refusal injection, so the refused
+/// change is prepared and published anyway — every preservation predicate
+/// collapses and the witness exits 1.
+fn run_refused_topology(mutant_enabled: bool) -> RefusedTopologyObservation {
+    let mut fixture = topology_fixture();
+    let mut untouched = topology_fixture();
+    let mut output = vec![0.0_f32; TOPOLOGY_SAMPLE_COUNT];
+    let mut twin_output = vec![0.0_f32; TOPOLOGY_SAMPLE_COUNT];
+    let patch_id = PatchId::new(1).expect("fixture PatchId is nonzero");
+    let channel = MidiChannel::new(0).expect("fixture channel is valid");
+    let note = MidiMessage::try_new(channel, MidiMessageKind::NoteOn, 64, 112)
+        .expect("fixture note is valid");
+
+    for target in [&mut fixture, &mut untouched] {
+        target
+            .app_loop
+            .dispatch_from(
+                AppEvent::Midi {
+                    patch_id,
+                    message: note,
+                },
+                EventSource::System,
+            )
+            .expect("fixture note dispatches");
+        target.renderer.render(&mut output);
+    }
+
+    let bank_before = fixture.app_loop.bus_returns().clone();
+    let patches_before = fixture.app_loop.patches().to_vec();
+    let revision_before = fixture.renderer.active_revision();
+    let entry = fixture.app_loop.effects().descriptors()[1].id().clone();
+    let bus = BusId::ALL[3];
+
+    fixture
+        .app_loop
+        .dispatch_action_from(
+            crate::control::SemanticAction::SetReturnOccupancy {
+                bus,
+                entry: Some(entry.clone()),
+            },
+            EventSource::System,
+        )
+        .expect("occupancy request is accepted into the lifecycle");
+    if !mutant_enabled {
+        fixture
+            .worker
+            .fail_next(crate::control::EngineSelectionFailure::PreparationFailed);
+    }
+    assert!(fixture.worker.advance(), "worker advances one request");
+    let progress = fixture
+        .app_loop
+        .advance_structural()
+        .expect("structural control tick advances");
+
+    // Render three further blocks on both fixtures; a refused change leaves
+    // them sample-exactly identical.
+    let mut render_preserved_exactly = true;
+    let mut finite_audio = true;
+    for _ in 0..3 {
+        fixture.renderer.render(&mut output);
+        untouched.renderer.render(&mut twin_output);
+        render_preserved_exactly &= output == twin_output;
+        finite_audio &= output.iter().all(|sample| sample.is_finite());
+    }
+    let _ = progress;
+    let post_refusal_ack = fixture
+        .app_loop
+        .advance_structural()
+        .expect("structural control tick advances");
+    let _ = post_refusal_ack;
+
+    let status = fixture.app_loop.engine_selection_status();
+    let refusal_recorded = status.kind() == crate::control::EngineSelectionStatusKind::Failed
+        && status
+            .correlation()
+            .is_some_and(|correlation| correlation.intent().is_occupancy());
+    let rejection_reason = status
+        .failure()
+        .map(|failure| failure.name().to_owned())
+        .unwrap_or_default();
+    let tree: serde_json::Value =
+        serde_json::from_str(fixture.app_loop.current_state_tree().json())
+            .unwrap_or(serde_json::Value::Null);
+    let rejection_reason_attributable = tree
+        .pointer("/engineSelection/failure")
+        .and_then(serde_json::Value::as_str)
+        == Some("preparationFailed");
+    let active_graph_preserved = fixture.renderer.active_revision() == revision_before;
+    let canonical_state_preserved = fixture.app_loop.bus_returns() == &bank_before
+        && fixture.app_loop.patches() == patches_before.as_slice();
+
+    // SC-006: a valid change immediately afterwards succeeds through the
+    // complete canonical lifecycle.
+    let recovery_accepted = fixture
+        .app_loop
+        .dispatch_action_from(
+            crate::control::SemanticAction::SetReturnOccupancy {
+                bus,
+                entry: Some(entry),
+            },
+            EventSource::System,
+        )
+        .is_ok();
+    let mut recovery_completed = false;
+    if recovery_accepted && fixture.worker.advance() {
+        if let Ok(staged) = fixture.app_loop.advance_structural() {
+            if staged.graph_stage().is_some() {
+                fixture.renderer.render(&mut output);
+                finite_audio &= output.iter().all(|sample| sample.is_finite());
+                if let Ok(ack) = fixture.app_loop.advance_structural() {
+                    recovery_completed = ack.activation_acknowledged().is_some()
+                        && fixture.app_loop.engine_selection_status().kind()
+                            == crate::control::EngineSelectionStatusKind::Ready
+                        && fixture.app_loop.bus_returns().bus_return(bus).is_occupied();
+                }
+            }
+        }
+    }
+
+    RefusedTopologyObservation {
+        case: BehavioralMutationCase::RefusedTopology.as_str().to_owned(),
+        refusal_recorded,
+        rejection_reason,
+        rejection_reason_attributable,
+        active_graph_preserved,
+        canonical_state_preserved,
+        render_preserved_exactly,
+        post_rejection_valid_change_accepted: recovery_accepted && recovery_completed,
         finite_audio,
     }
 }
@@ -1706,6 +2656,74 @@ mod tests {
                     "renderer_called",
                     "renderer_nonzero",
                     "render_peak",
+                    "finite_audio",
+                ]),
+            ),
+            (
+                BehavioralMutationCase::SlotOrderSwap,
+                expected(&[
+                    "case",
+                    "forward_energy",
+                    "reversed_energy",
+                    "order_difference_energy",
+                    "order_sensitive",
+                    "finite_audio",
+                ]),
+            ),
+            (
+                BehavioralMutationCase::EmptyReturnPassthrough,
+                expected(&[
+                    "case",
+                    "accumulated_send_energy",
+                    "unoccupied_wet_energy",
+                    "output_matches_dry_exactly",
+                    "unoccupied_return_silent",
+                    "finite_audio",
+                ]),
+            ),
+            (
+                BehavioralMutationCase::PreGateSend,
+                expected(&[
+                    "case",
+                    "post_fader_reference_energy",
+                    "measured_send_energy",
+                    "pre_fader_reference_energy",
+                    "send_taken_post_fader",
+                    "finite_audio",
+                ]),
+            ),
+            (
+                BehavioralMutationCase::MutedSendLeak,
+                expected(&[
+                    "case",
+                    "sounding_send_energy",
+                    "muted_send_energy",
+                    "muted_wet_energy",
+                    "mute_gates_sends",
+                    "finite_audio",
+                ]),
+            ),
+            (
+                BehavioralMutationCase::PermissiveStructuralMatch,
+                expected(&[
+                    "case",
+                    "attested_wet_energy",
+                    "mismatched_wet_energy",
+                    "strict_matching_enforced",
+                    "finite_audio",
+                ]),
+            ),
+            (
+                BehavioralMutationCase::RefusedTopology,
+                expected(&[
+                    "case",
+                    "refusal_recorded",
+                    "rejection_reason",
+                    "rejection_reason_attributable",
+                    "active_graph_preserved",
+                    "canonical_state_preserved",
+                    "render_preserved_exactly",
+                    "post_rejection_valid_change_accepted",
                     "finite_audio",
                 ]),
             ),

@@ -606,7 +606,7 @@ mod tests {
     fn app_loop_for_registry(
         registry: CapabilityRegistry,
     ) -> (AppLoop<TestBoundary>, Arc<Mutex<Observations>>) {
-        let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap();
+        let global = GlobalParameters::new(0.0).unwrap();
         let observations = Arc::new(Mutex::new(Observations::default()));
         let app_loop = AppLoop::new(
             AppState::new(registry, global),

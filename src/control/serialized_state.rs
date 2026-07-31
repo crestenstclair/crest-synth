@@ -1,5 +1,7 @@
 use crate::control::app_state::AppState;
 use crate::control::{EngineSelectionStatus, FocusPath, InteractionMode, ReturnPath};
+use crate::mixer::bus_id::MAX_BUS_RETURNS;
+use crate::mixer::bus_return::BusReturnBank;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_state::MixerState;
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -29,6 +31,8 @@ pub(crate) struct SerializedState<'a> {
     pub(crate) mixer: MixerState,
     pub(crate) global: SerializedGlobalParameters,
     #[serde(default)]
+    pub(crate) returns: SerializedBusReturns,
+    #[serde(default)]
     pub(crate) interaction: SerializedInteractionState,
     pub(crate) engine_selection: EngineSelectionStatus,
 }
@@ -42,6 +46,7 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
             patches: state.patches().iter().map(SerializedPatch::from).collect(),
             mixer: *state.mixer(),
             global: SerializedGlobalParameters::from(state.global()),
+            returns: SerializedBusReturns::from(state.bus_returns()),
             interaction: SerializedInteractionState::from_state(state),
             engine_selection: state.engine_selection().clone(),
         }
@@ -122,28 +127,67 @@ impl<'a> From<&'a Patch> for SerializedPatch<'a> {
     }
 }
 
+/// The one genuinely global serialized value.
+///
+/// The retired reverb/delay fields are gone from this shape: their state is
+/// return-owned and travels as the indexed `returns` section.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SerializedGlobalParameters {
     pub(crate) master_gain_db: f32,
-    pub(crate) reverb_room_size: f32,
-    pub(crate) reverb_damping: f32,
-    pub(crate) reverb_return: f32,
-    pub(crate) delay_milliseconds: f32,
-    pub(crate) delay_feedback: f32,
-    pub(crate) delay_return: f32,
 }
 
 impl From<&GlobalParameters> for SerializedGlobalParameters {
     fn from(parameters: &GlobalParameters) -> Self {
         Self {
             master_gain_db: parameters.master_gain_db(),
-            reverb_room_size: parameters.reverb_room_size(),
-            reverb_damping: parameters.reverb_damping(),
-            reverb_return: parameters.reverb_return(),
-            delay_milliseconds: parameters.delay_milliseconds(),
-            delay_feedback: parameters.delay_feedback(),
-            delay_return: parameters.delay_return(),
         }
+    }
+}
+
+/// One serialized bus return: zero-or-one occupying registry configuration
+/// plus the return-owned output level. Array position is the `BusId`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SerializedBusReturn {
+    #[serde(default)]
+    pub(crate) effect: Option<PostEffectConfig>,
+    pub(crate) return_level: f32,
+}
+
+/// The canonical serialized eight-return bank in ascending `BusId` order.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct SerializedBusReturns(pub(crate) Vec<SerializedBusReturn>);
+
+impl Default for SerializedBusReturns {
+    fn default() -> Self {
+        Self::from(&BusReturnBank::default())
+    }
+}
+
+impl From<&BusReturnBank> for SerializedBusReturns {
+    fn from(bank: &BusReturnBank) -> Self {
+        Self(
+            bank.returns()
+                .iter()
+                .map(|bus_return| SerializedBusReturn {
+                    effect: bus_return.effect().cloned(),
+                    return_level: bus_return.return_level(),
+                })
+                .collect(),
+        )
+    }
+}
+
+impl SerializedBusReturns {
+    /// Returns the serialized entries in ascending `BusId` order.
+    pub(crate) fn entries(&self) -> &[SerializedBusReturn] {
+        &self.0
+    }
+
+    /// Reports whether the serialized bank carries exactly eight entries.
+    pub(crate) fn is_complete(&self) -> bool {
+        self.0.len() == MAX_BUS_RETURNS
     }
 }

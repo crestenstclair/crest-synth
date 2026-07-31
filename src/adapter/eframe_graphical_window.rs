@@ -640,6 +640,27 @@ fn paint_semantic_control(
                                 MUTED_TEXT
                             }),
                     );
+                    // Structural rows carry their reducer-owned lifecycle and
+                    // any typed refusal as text, never colour alone; the
+                    // adapter renders the projection without recomputing it.
+                    if let Some(error) = control.error() {
+                        ui.label(
+                            egui::RichText::new(error.label())
+                                .monospace()
+                                .small()
+                                .color(ADJUST_ACCENT),
+                        );
+                    }
+                    if let Some(status) = control.status().filter(|status| {
+                        status.kind() != crate::control::EngineSelectionStatusKind::Ready
+                    }) {
+                        ui.label(
+                            egui::RichText::new(status.label())
+                                .monospace()
+                                .small()
+                                .color(ADJUST_ACCENT),
+                        );
+                    }
                 });
             });
         });

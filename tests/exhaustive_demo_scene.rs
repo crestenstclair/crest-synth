@@ -91,13 +91,15 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .len(),
         17
     );
+    // The eleven WP-era reducer events plus the four WP06 occupancy
+    // lifecycle events the WP08 retained scene exercises.
     assert_eq!(
         report
             .coverage()
             .group(DemoCoverageGroup::Events)
             .exercised()
             .len(),
-        11
+        15
     );
     assert_eq!(
         report
@@ -139,6 +141,11 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
                 ParameterId::new(parameter).unwrap(),
             )
         ));
+    }
+    // Every one of the three occupancy rows is reachable whether occupied or
+    // empty, so each contributes one exercised focus identity (FR-002).
+    for slot in crest_synth::synth::effect_slot_id::EffectSlotIndex::ALL {
+        expected_patch_controls.push(format!("patchControl.{}", PatchControlId::EffectSlot(slot)));
     }
     expected_patch_controls.sort();
     assert_eq!(
@@ -218,8 +225,8 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         "pan",
         "mute",
         "solo",
-        "reverbSend",
-        "delaySend",
+        "sends[0]",
+        "sends[7]",
         "attackMilliseconds",
         "decayMilliseconds",
         "sustain",
@@ -227,12 +234,14 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         "chorus.amount",
         "chorus.depth",
         "masterGainDb",
-        "reverbRoomSize",
-        "reverbDamping",
-        "reverbReturn",
-        "delayMilliseconds",
-        "delayFeedback",
-        "delayReturn",
+        // Return-owned state addressed by BusId: the occupying registry
+        // entries' descriptor scalars plus the return-owned level.
+        "reverb.room-size",
+        "reverb.damping",
+        "delay.milliseconds",
+        "delay.feedback",
+        "B0.returnLevel",
+        "B7.returnLevel",
     ] {
         assert!(
             report
@@ -272,7 +281,19 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
                 let (_, target) = track
                     .split_once('.')
                     .expect("track parameter identity contains its target");
-                format!("track.{target}")
+                // All eight indexed sends share one descriptor, so they are
+                // one boundary target kind exactly as one named track field
+                // is one kind across all sixteen tracks.
+                if target.starts_with("sends[") {
+                    "track.sends".to_owned()
+                } else {
+                    format!("track.{target}")
+                }
+            } else if let Some(bus) = identifier.strip_prefix("parameter.return.") {
+                let (_, target) = bus
+                    .split_once('.')
+                    .expect("return parameter identity contains its target");
+                format!("return.{target}")
             } else {
                 panic!("unexpected editable parameter identity {identifier}");
             }
