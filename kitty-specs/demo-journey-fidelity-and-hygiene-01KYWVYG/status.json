@@ -1,7 +1,7 @@
 {
-  "event_count": 49,
-  "last_event_id": "01KYX76YT14FTRS6NQ327B2X62",
-  "materialized_at": "2026-07-31T23:12:38.209947+00:00",
+  "event_count": 50,
+  "last_event_id": "01KYX7892RYDQX4F6TD3C1DQG1",
+  "materialized_at": "2026-07-31T23:13:21.496585+00:00",
   "mission_number": "",
   "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
   "mission_type": "software-dev",
@@ -11,9 +11,9 @@
     "canceled": 0,
     "claimed": 0,
     "done": 0,
-    "for_review": 1,
+    "for_review": 0,
     "in_progress": 0,
-    "in_review": 0,
+    "in_review": 1,
     "planned": 4
   },
   "work_packages": {
@@ -177,22 +177,23 @@
       }
     },
     "WP08": {
-      "actor": "user",
-      "agent": "",
-      "agent_profile": "implementer-ivan",
+      "actor": "claude",
+      "agent": "claude",
+      "agent_profile": "reviewer-renata",
       "agent_profile_version": "1.0",
       "force_count": 0,
-      "lane": "for_review",
-      "last_event_id": "01KYX76YT14FTRS6NQ327B2X62",
-      "last_transition_at": "2026-07-31T23:12:38.209947+00:00",
+      "lane": "in_review",
+      "last_event_id": "01KYX7892RYDQX4F6TD3C1DQG1",
+      "last_transition_at": "2026-07-31T23:13:21.496585+00:00",
       "model": "__resolved_model_absent__",
       "notes": [
-        "Per-position capability identity landed (commit f680a2c). Layout: fixed-size copyable PositionCapabilityIdentity (64-byte inline record, no heap) on PreparedGraphLayout per engine/effect-slot/return position plus on each rack slot; populated at build time from the validated candidate config, explicit None for unoccupied positions; builder refuses (UnrecordableCapabilityIdentity) rather than truncating. Guards: engine/post-effect/bus-return carry-over predicates each gained one identity-equality conjunct to the EXISTING fail-safe continue (no restructuring) - mismatch keeps the fresh instance. permits_replacement also compares identity outside the scoped position. C-004 preserved: all prepare-time/control-side, comparison at carry-over decision only, never per render block; zero allocation/locking/destruction movement toward callback. T030: worker's 3 post_effects() sites migrated to position-direct effect_slots() via validate_patch_effect_slots (gaps preserved); grep post_effects() clean; stale WP comments removed from all 6 owned files. Validations: cargo test carry_over_capability_identity = 8 passed; cargo test --test topology_change_lifecycle = 10 passed (both held-note carry-over tests green); cargo test --all-targets exit 0; cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --all -- --check exit 0. Flaky-test verdict: PRE-EXISTING environmental timing flakiness, NOT caused by this change. Candidate is tests/control_dispatch_performance.rs, the only single-test target asserting a wall-clock budget (MAX_DISPATCH_DURATION 50ms). Could not reproduce in 5 full-suite runs + 8 targeted runs; measured elapsed is 3-4ms against the 50ms budget (12-16x headroom); this WP adds no work to the measured dispatch path (prepare-time only)."
+        "Per-position capability identity landed (commit f680a2c). Layout: fixed-size copyable PositionCapabilityIdentity (64-byte inline record, no heap) on PreparedGraphLayout per engine/effect-slot/return position plus on each rack slot; populated at build time from the validated candidate config, explicit None for unoccupied positions; builder refuses (UnrecordableCapabilityIdentity) rather than truncating. Guards: engine/post-effect/bus-return carry-over predicates each gained one identity-equality conjunct to the EXISTING fail-safe continue (no restructuring) - mismatch keeps the fresh instance. permits_replacement also compares identity outside the scoped position. C-004 preserved: all prepare-time/control-side, comparison at carry-over decision only, never per render block; zero allocation/locking/destruction movement toward callback. T030: worker's 3 post_effects() sites migrated to position-direct effect_slots() via validate_patch_effect_slots (gaps preserved); grep post_effects() clean; stale WP comments removed from all 6 owned files. Validations: cargo test carry_over_capability_identity = 8 passed; cargo test --test topology_change_lifecycle = 10 passed (both held-note carry-over tests green); cargo test --all-targets exit 0; cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --all -- --check exit 0. Flaky-test verdict: PRE-EXISTING environmental timing flakiness, NOT caused by this change. Candidate is tests/control_dispatch_performance.rs, the only single-test target asserting a wall-clock budget (MAX_DISPATCH_DURATION 50ms). Could not reproduce in 5 full-suite runs + 8 targeted runs; measured elapsed is 3-4ms against the 50ms budget (12-16x headroom); this WP adds no work to the measured dispatch path (prepare-time only).",
+        "Cycle 1 fix (commit 0fc4aad, tests only, same 3 owned src/real_time files). BLOCKING truncation-refusal gap closed with 3 tests. (1) prepared_graph.rs::carry_over_capability_identity_records_at_capacity_and_refuses_one_byte_beyond — both sides of the exact edge for from_capability_id AND from_effect_capability_id: exactly MAX_CAPABILITY_IDENTITY_BYTES (64) records in full, 65 refuses; the two 65-byte identifiers are distinct capabilities sharing their first 64 bytes, so a truncating record would make them compare equal; empty is refused too (no sentinel collision). (2) prepared_graph_builder.rs::carry_over_capability_identity_beyond_the_record_refuses_the_whole_graph — driven through PreparedGraphBuilder::build using the production SoundFont descriptor under a boundary-length identity so nothing but the recorded identity varies: at 64 bytes the graph builds and BOTH the rack accessor and the attested layout carry the complete identity; at 65 bytes build returns Err(UnrecordableCapabilityIdentity) and no graph is returned at all; the Display text is pinned in the same test. (3) graph_preparation_worker.rs::carry_over_capability_identity_refusal_reports_an_invalid_candidate_config — map_graph_preparation_failure maps the refusal to EngineSelectionFailure::InvalidDefaultConfig. NON-VACUITY VERIFIED: from_identifier's length refusal was temporarily replaced with a truncating min() clamp; tests (1) and (2) FAILED, with the assertion output showing both distinct 65-byte capabilities collapsing onto one 64-byte record; test (3) passed as expected (pure mapping assertion, independent of the record). Mutation reverted, from_identifier byte-identical to f680a2c, suite re-verified green. ACCESSOR-SEAM DECISION (non-blocking note 2): KEEP the three PreparedGraphLayout identity accessors as WP09's single intended read seam for carryOverWrongEngineIdentityRefused. The rack accessors are NOT a competing seam — PreparedGraph::layout() is a production caller of all three (engine_rack.capability_identity, effect_rack.capability_identity_at, bus_returns().capability_identity), so they exist to compose the layout, not to be read by proofs. Three reasons the layout is the right seam: it returns the exact value permits_replacement consumes (the admission decision's own input, not a parallel copy); PreparedGraphLayout is Copy, so a proof can capture the active layout before activation and compare it after without holding two live graphs across the block boundary; and one Copy type carries engine/effect/return with one shape instead of three rack types with three signatures. GATES (run in the lane-h worktree): cargo test carry_over_capability_identity 11/11 pass (8 prior + 3 new); cargo test --test topology_change_lifecycle 10/10 pass incl. both held-note carry-over proofs (agreement still carries over); cargo test --all-targets exit 0; cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --all -- --check exit 0. BOOKKEEPING NOTE: the cycle-1 rejection reset T030-T034 to planned in status.json, which blocked this move; they were re-marked done (the work is committed in f680a2c + 0fc4aad) rather than using --force."
       ],
       "provider": "__resolved_provider_absent__",
-      "role": "implementer",
-      "shell_pid": 0,
-      "shell_pid_created_at": "1785537499.996157",
+      "role": "reviewer",
+      "shell_pid": 79984,
+      "shell_pid_created_at": "1785539599.983875",
       "subtasks": {
         "T030": "done",
         "T031": "done",
