@@ -8,6 +8,9 @@ requirement_refs:
 planning_base_branch: feat/expandable-effects-and-bus-topology
 merge_target_branch: feat/expandable-effects-and-bus-topology
 branch_strategy: Planning artifacts for this mission were generated on feat/expandable-effects-and-bus-topology. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/expandable-effects-and-bus-topology unless the human explicitly redirects the landing branch.
+base_branch: kitty/mission-demo-journey-fidelity-and-hygiene-01KYWVYG
+base_commit: 213052d6ee27b913f4250423c90ebb3f20a178e4
+created_at: '2026-07-31T20:52:42.917855+00:00'
 subtasks:
 - T017
 - T018
