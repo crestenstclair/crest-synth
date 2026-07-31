@@ -99,6 +99,13 @@ exceptions:
       Adds new phase checkpoints while every existing checkpoint identity must
       survive byte-identical for earlier retained scenes.
 
+  - path: "scripts/check_no_name_enumerated_identity.sh"
+    action: manual_review
+    reason: >-
+      New file declared by validation.no_name_enumerated_identity in the
+      crest-spec (WP01) and implemented by WP09. Review that it enforces
+      exactly the declared invariant.
+
   - path: "Makefile"
     action: manual_review
     reason: >-
