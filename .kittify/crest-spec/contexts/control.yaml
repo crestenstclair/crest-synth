@@ -116,8 +116,8 @@ valueObjects:
       - Activating
       - Failed
       activeGraphRevision: GraphRevision
-      correlation: 'Option<{requestId: EngineSelectionRequestId, patchId: PatchId, intent: StructuralEditIntent,
-        sourceCapabilityId: CapabilityId, targetCapabilityId: CapabilityId, sourceGraphRevision: GraphRevision,
+      correlation: 'Option<{requestId: EngineSelectionRequestId, patchId: Option<PatchId>, intent: StructuralEditIntent,
+        sourceCapabilityId: Option<CapabilityId>, targetCapabilityId: Option<CapabilityId>, sourceGraphRevision: GraphRevision,
         targetGraphRevision: Option<GraphRevision>}>'
       failure: Option<EngineSelectionFailure>
     invariants:
@@ -127,6 +127,9 @@ valueObjects:
     - Preparing has exact source correlation and no target revision; Activating has one nonzero target
       revision; Failed retains exact request correlation plus one typed failure while the active config
       and graph remain the source
+    - engine and preset intents carry an exact Patch and capability pair in the correlation; SetSlotOccupancy
+      carries its Patch and no capability pair; SetReturnOccupancy carries neither — absent context is
+      absent, never a fabricated anchor
     - at most one status is Preparing or Activating application-wide and only AppState.apply changes the
       status
     - the status contains no PreparedGraph, worker handle, channel, provider, preparer, asset data, UI
@@ -146,14 +149,16 @@ valueObjects:
       - GraphPublished
       - ActivationAcknowledged
       requestId: EngineSelectionRequestId
-      patchId: PatchId
+      patchId: Option<PatchId>
       intent: StructuralEditIntent
-      sourceCapabilityId: CapabilityId
-      targetCapabilityId: CapabilityId
+      sourceCapabilityId: Option<CapabilityId>
+      targetCapabilityId: Option<CapabilityId>
       sourceGraphRevision: GraphRevision
       targetGraphRevision: Option<GraphRevision>
     invariants:
     - the effect contains stable control metadata only and never owns a PreparedGraph or adapter error
+    - Patch and capability context mirror the correlation rule — present exactly when the intent's target
+      admits them, never fabricated for return edits
     - PrepareRequested names the active source revision and no target; candidate, staged, published, and
       acknowledged effects name the same newer target revision
     - EventRecord serializes every effect exactly once at the control transition or orchestration step
@@ -174,11 +179,15 @@ valueObjects:
       - SetInteractionMode
       - EnterSurface
       - Return
+      - SetSlotOccupancy
+      - SetReturnOccupancy
       payload:
       - TopLevelContext
       - Direction
       - InteractionMode
       - SurfaceId
+      - slot occupancy (PatchId, EffectSlotIndex, Option<EffectCapabilityId>)
+      - return occupancy (BusId, Option<EffectCapabilityId>)
       - none, according to kind
       surfaceDescriptor: typed exhaustive descriptors for every action and admitted payload
     invariants:
@@ -200,11 +209,12 @@ valueObjects:
       kind:
       - ReplaceCapability
       - ReplaceParameterChoice
-      - ReplaceSlotOccupancy
-      - ReplaceReturnOccupancy
+      - SetSlotOccupancy
+      - SetReturnOccupancy
       targetCapabilityId: Option<CapabilityId>
       targetParameterId: Option<ParameterId>
       targetChoiceId: Option<String>
+      targetPatchId: Option<PatchId>
       targetSlotIndex: Option<EffectSlotIndex>
       targetBusId: Option<BusId>
       targetEffectCapabilityId: Option<Option<EffectCapabilityId>>
@@ -212,9 +222,10 @@ valueObjects:
     - ReplaceCapability contains only one installed target CapabilityId and no parameter payload
     - ReplaceParameterChoice contains the active CapabilityId, one descriptor-declared StructuralChoice
       ParameterId, and one adjacent declared choice id
-    - ReplaceSlotOccupancy contains one EffectSlotIndex and one target occupancy — an installed EffectCapabilityId
-      or empty; ReplaceReturnOccupancy contains one BusId and the same occupancy payload; neither names
-      a concrete effect in its own shape and both leave every untargeted position exact
+    - SetSlotOccupancy contains one PatchId, one EffectSlotIndex, and one target occupancy — an installed
+      EffectCapabilityId or empty; SetReturnOccupancy contains one BusId and the same occupancy payload
+      with no Patch anchor, because a return belongs to no Patch; neither names a concrete effect in its
+      own shape and both leave every untargeted position exact
     - the intent contains no display label, prepared graph, worker, engine, asset contents, or callback
       owner
     - engine, preset, slot-occupancy, and return-occupancy selection use this one intent type, request
@@ -393,6 +404,10 @@ valueObjects:
       - EnginePrepared
       - EnginePreparationFailed
       - EngineActivationAcknowledged
+      - SetSlotOccupancy
+      - SetReturnOccupancy
+      - TopologyPrepared
+      - TopologyPreparationFailed
       payload: event-specific bounded payload
       surfaceDescriptor: typed exhaustive descriptors for every variant and Direction payload
     invariants:
@@ -409,6 +424,10 @@ valueObjects:
       adapter error string
     - EngineActivationAcknowledged carries requestId, target GraphRevision, retired GraphRevision, and
       collected=true from control ownership
+    - SetSlotOccupancy and SetReturnOccupancy carry exactly the matching SemanticAction occupancy payload;
+      TopologyPrepared and TopologyPreparationFailed mirror EnginePrepared and EnginePreparationFailed
+      for occupancy intents, whose correlation carries the context the target admits and whose prepared
+      result carries no InstrumentConfig
     - raw key codes, window objects, clocks, files, and audio devices never appear in AppEvent
     - surfaceDescriptor is produced beside the closed enum and is the only exhaustive event source consumed
       by DemoScene; adding or removing a variant cannot compile or pass schema equality without updating
