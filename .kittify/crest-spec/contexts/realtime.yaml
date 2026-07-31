@@ -337,6 +337,10 @@ aggregates:
       configuration
     - initialParameters is refreshed from the exact committed EnginePrepared generation immediately before
       publication so scalar edits accepted during preparation cannot be reverted by the swap
+    - activation of a replacement at the block boundary preserves every sounding voice of the Patches whose
+      engine identity the delta leaves unchanged — notes started before activation continue audibly across
+      the swap with their envelope and channel state, with no allocation or destruction on the callback;
+      only the position the delta changed may restart its local processing state
     - moving graph ownership through a queue performs no allocation or destruction; destruction is permitted
       only after the retired graph reaches control or worker ownership
     contributesTo:
