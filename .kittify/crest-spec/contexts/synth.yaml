@@ -428,6 +428,9 @@ aggregates:
       empty or occupied by one validated configuration against the immutable EffectCapabilityRegistry;
       occupied entries carry unique stable EffectSlotIds, slot order is render order, clearing one position
       never compacts the others, and a fourth position is unrepresentable
+    - the ordered per-position slot view is the only chain representation the aggregate exposes; no compacting
+      or position-erasing accessor exists, and every consumer receives positions exactly as stored so a
+      gapped chain can never be silently renumbered by a round-trip
     - two occupied positions holding the same registry entry are independent instances whose values and
       prepared state are disjoint
     - the ordered effect positions, their values, and their instance state are Patch-owned and follow

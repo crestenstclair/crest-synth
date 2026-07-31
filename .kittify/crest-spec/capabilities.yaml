@@ -650,13 +650,19 @@ capabilities:
         steps:
         - action: add one registry entry and resolve it into a Patch slot and into a bus return
           observes: both roles prepare from the same descriptor with no role marker, and slot, routing,
-            snapshot, preparation, projection, and render structure are unchanged
+            snapshot, preparation, projection, and render structure are unchanged; an executable end-to-end
+            fixture registers a fourth entry and drives it through slot, return, preparation, projection,
+            and render as a full citizen, so openness is demonstrated rather than inferred from structural
+            absence
         - action: run the no-name-enumeration validation over Synth, Mixer, RealTime, and Control
           observes: no type, variant, field, or descriptor entry in those contexts is named after a
             concrete effect or bus, with master gain the single declared exception
         - action: run make demo-live-effects-and-buses
           observes: the real window and physical stream expose ordered slots, eight destinations, an
             audible order change, a controlled rejection, finite nonzero audio, exact cleanup, stream
-            release, graph collection, and normal exit
+            release, graph collection, and normal exit; slot occupancy changes are walked on screen
+            through focused PATCH slot rows and adjacent-choice cycling with one occupant scalar edited
+            audibly from the PATCH page, return occupancy changes are walked through the MIXER return
+            rows, and the controlled rejection remains the single documented direct injection
         evidence:
         - evidence.expandable_effects_and_bus_topology_contract

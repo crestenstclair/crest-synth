@@ -287,6 +287,9 @@ valueObjects:
     - the complete EventLog remains retained for deterministic report verification while interactive terminal
       output uses one compact LiveEventLogSummary containing lossless counts and canonical first/last
       chain endpoints
+    - every derived measurement or latency summary distinguishes absent evidence from a measured zero;
+      a summary computed over an empty observation set renders as absent and can never satisfy a presence
+      or performance expectation
     - summary is human-readable control-side text derived from the structured report after completion
       and is never constructed or printed in the audio callback
     contributesTo:

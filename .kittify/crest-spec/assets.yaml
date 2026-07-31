@@ -17,6 +17,9 @@ assetKinds:
   rust-context-source:
     description: Rust source modules of one bounded context or the adapter layer under src/
     filePattern: src/*/*
+  validation-script:
+    description: Deterministic guard scripts invoked by declared validations
+    filePattern: scripts/*
 assets:
   KernelContextModules:
     kind: rust-context-source
@@ -846,3 +849,20 @@ assets:
     contributesTo:
       static_patch_effect: provides the focused executable architecture and DSP witness
       observable_demo_scene: keeps focused and exhaustive effect proof on production seams
+  ValidationScripts:
+    kind: validation-script
+    description: deterministic guard scripts under scripts/ that declared validations invoke; each script
+      verifies its own tool dependencies before scanning and exits non-zero naming any missing tool so
+      absent tooling can never read as a pass
+    targets:
+    - EffectCapabilityRegistry
+    - EffectSlotIndex
+    - BusId
+    prompts:
+    - Keep scripts/check_no_name_enumerated_identity.sh a deterministic static scan seeded with the retired
+      effect/bus identifiers, with MasterGainDb the single declared exception.
+    - Gate execution on the presence of every required tool (for example rg and perl); a missing tool
+      exits non-zero naming the tool instead of reporting no candidates.
+    contributesTo:
+      expandable_effects_and_bus_topology: keeps the no-name-enumeration gate honest on machines missing
+        its scanning tools

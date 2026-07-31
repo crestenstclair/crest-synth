@@ -343,6 +343,10 @@ aggregates:
       that installs or changes an occupant may end sounding notes at the boundary (accepted product
       behavior — adding an effect mid-performance is rare), but never tears, clicks, or truncates the
       block; scalar value edits never travel the structural path and never interrupt
+    - the prepared layout records the engine or effect capability identity of every prepared position;
+      carrying a live instance into a replacement requires exact per-position capability identity agreement
+      in addition to patch, slot, and scalar-layout agreement, and any mismatch keeps the freshly prepared
+      instance instead of the carried one
     - moving graph ownership through a queue performs no allocation or destruction; destruction is permitted
       only after the retired graph reaches control or worker ownership
     contributesTo:

@@ -1130,7 +1130,9 @@ projectValidations:
       with independent instance state, eight addressable returns drawn from the role-independent registry
       with post-gate send semantics and per-bus isolation, exact widened snapshot matching, block-boundary
       topology activation, controlled rejection that preserves the active graph, recovery after rejection,
-      and zero callback allocation or destruction
+      zero callback allocation or destruction, an end-to-end fourth-registry-entry fixture behaving as
+      a full citizen through slot, return, preparation, projection, and render with zero structural changes,
+      and refusal of a live-instance carry-over whose per-position capability identity mismatches
   no_name_enumerated_identity:
     scope: project
     kind: custom
@@ -1157,7 +1159,9 @@ projectValidations:
       type, variant, field, or descriptor entry named after a concrete effect or bus, seeded with the
       retired identifiers this mission removed (ReverbSend, DelaySend, GlobalEffectsProcessor, GlobalReverbDelay,
       and the named reverb/delay global fields); MasterGainDb is the single declared exception, so a future
-      closed shortcut fails the build rather than the review
+      closed shortcut fails the build rather than the review; the script verifies its required tools are
+      present before scanning and exits non-zero naming any missing tool, so absent tooling can never
+      read as a pass
 attachedValidations:
   service.mix_engine_global_mix:
     attachedTo: MixEngine
@@ -1350,6 +1354,24 @@ attachedValidations:
     - prepared_graph_builder
     description: complete compatible graphs prepare deterministically while every partial, mismatched,
       unsupported, or over-capacity input fails before publication
+  service.return_clear_held_note_continuity:
+    attachedTo: StructuralGraphCoordinator
+    kind: test
+    command:
+    - cargo
+    - test
+    - return_clear_held_note_continuity
+    description: clearing an occupied bus return preserves every sounding voice sample-exactly against
+      an untouched twin run, matching the slot-clear continuity proof
+  service.carry_over_capability_identity:
+    attachedTo: PreparedGraphBuilder
+    kind: test
+    command:
+    - cargo
+    - test
+    - carry_over_capability_identity
+    description: a carry-over candidate agreeing on patch, slot, and scalar layout but mismatching the
+      recorded per-position capability identity is refused and the freshly prepared instance is kept
   service.structural_graph_coordinator:
     attachedTo: StructuralGraphCoordinator
     kind: test

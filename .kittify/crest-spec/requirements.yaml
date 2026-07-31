@@ -1065,7 +1065,12 @@ requirements:
     kind: nonfunctional
     description: make demo-live-effects-and-buses SHALL play the real MIDI fixture through the production
       window, reducer, and physical stream while exercising ordered slots, an audible order change,
-      eight destinations, a return content change, and one controlled rejection; measured evidence SHALL
+      eight destinations, a return content change, and one controlled rejection; every effect-slot occupancy
+      change SHALL travel the player's on-screen PATCH journey — focus visibly reaches the slot row and
+      occupancy cycles by the adjacent-choice gesture — with at least one installed occupant scalar edited
+      audibly from the PATCH page, and every return occupancy change SHALL likewise travel the MIXER return
+      rows; the controlled rejection is the single permitted direct semantic-action injection because the
+      UI cannot express an unknown entry, and the scene SHALL document that exception inline; measured evidence SHALL
       include per-bus isolation below -60 dBFS, order sensitivity, instance independence, and two-run
       logical determinism, and the scene SHALL end with zero active notes, released stream and worker,
       collected graphs, and normal parent-process exit

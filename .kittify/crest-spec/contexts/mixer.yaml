@@ -163,6 +163,9 @@ valueObjects:
       carrying the behavior of the retired mixer-owned global effects, while returns 2 through 7 begin
       unoccupied; this is default occupancy, not identity — every return changes contents through the
       same structural gesture
+    - composing the declared default occupancy at production startup either succeeds exactly or surfaces
+      its composition error at the production composition root; the instrument never boots with silently
+      empty returns standing in for the declared default
     contributesTo:
       expandable_effects_and_bus_topology: separates persistent routing destinations from what occupies them
   GlobalParameters:

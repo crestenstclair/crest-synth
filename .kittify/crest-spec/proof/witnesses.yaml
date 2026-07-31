@@ -2861,6 +2861,7 @@ witnesses:
     - AppLoop
     - ParameterSnapshot
     - RtBusReturnParameters
+    - PreparedEngineRack
     - PreparedPostEffectRack
     - PreparedBusReturnRack
     - PreparedGraph
@@ -2936,6 +2937,8 @@ witnesses:
         postRejectionValidChangeAccepted: bool
         partiallyAppliedTopologyBlocks: number
         registryEntryAdditionStructuralChanges: number
+        fourthEntryEndToEndExercised: bool
+        carryOverWrongEngineIdentityRefused: bool
         callbackAllocations: number
         callbackDeallocations: number
         callbackDestructions: number
@@ -2945,7 +2948,7 @@ witnesses:
     predicates:
     - field: schemaVersion
       op: eq
-      value: 1
+      value: 2
     - field: orderedSlotCasesExercised
       op: eq
       value: 3
@@ -3049,6 +3052,19 @@ witnesses:
       repairResources:
       - EffectCapabilityRegistry
       - PreparedGraphBuilder
+    - field: fourthEntryEndToEndExercised
+      op: eq
+      value: true
+      repairResources:
+      - EffectCapabilityRegistry
+      - PreparedGraphBuilder
+    - field: carryOverWrongEngineIdentityRefused
+      op: eq
+      value: true
+      repairResources:
+      - PreparedEngineRack
+      - PreparedPostEffectRack
+      - PreparedBusReturnRack
     - field: callbackAllocations
       op: eq
       value: 0

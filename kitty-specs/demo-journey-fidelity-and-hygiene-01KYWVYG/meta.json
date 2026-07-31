@@ -11,5 +11,6 @@
   "purpose_tldr": "Make the Phase 3 live demo walk the player's on-screen PATCH/MIXER journey and sweep the post-merge review's open items before Phase 4.",
   "slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
   "target_branch": "feat/expandable-effects-and-bus-topology",
-  "topology": "single_branch"
+  "topology": "single_branch",
+  "crest_spec_impact": "structural"
 }

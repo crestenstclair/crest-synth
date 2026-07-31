@@ -210,7 +210,10 @@ evidence:
     description: the role-independent effect registry, three ordered slots per Patch, eight bounded bus
       returns, widened fixed snapshot, correlated topology lifecycle with controlled rejection, and the
       retained live scene agree on one open-by-construction effect and routing model in which no type
-      names an effect or bus and adding a registry entry changes no structure
+      names an effect or bus and adding a registry entry changes no structure; the retained scene walks
+      the slot and return occupancy journeys on screen through the player's PATCH and MIXER vocabulary,
+      and registry openness is demonstrated by an executable end-to-end fourth-entry fixture rather than
+      inferred from structural absence alone
     validations:
     - expandable_effects_and_bus_topology
     - no_name_enumerated_identity
