@@ -52,6 +52,10 @@ valueObjects:
       or unrelated-input strings
     - 'surfaceDescriptor contains exactly 17 unique valid values before any set conversion: KeyDown and
       KeyUp for Digit1, Digit2, W, S, A, D, K, and Other plus FocusLost with no key payload'
+    - the Start control is reserved and unbound in every phase before the Phase 7 Sample Browser, where
+      holding Start previews a focused sample; until that workflow owns complete hold/release behavior,
+      no WindowInput key, translator mapping, SemanticAction, or reducer path may bind Start, and any
+      physical Start input normalizes to Other
     contributesTo:
       observable_demo_scene: lets automated scenes exercise the actual current GUI input vocabulary
       schema_driven_patch_page: normalizes the two direct page bindings before semantic translation

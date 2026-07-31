@@ -595,16 +595,16 @@ applicationServices:
         StateTree, and ParameterSnapshot generation while retaining byte-identical session values, parameter
         values, active GraphRevision, prepared ownership, routing, and rendered audio
       - exercise every target from the canonical Patch Main and Utility resolvers for every installed
-        Patch plus all six MixerTrackParameter classes for every one of sixteen tracks and every global
-        target through their normal GUI paths; assert exact state/text/snapshot values, shared-track or
-        target-only measured behavior as applicable, and exact equality of every unrelated Patch, track,
-        and global value
-      - before global wet-parameter probes, make at least two Patches sound, route them through known
-        tracks, and establish nonzero track ReverbSend and DelaySend through the same GUI/reducer path;
-        assert nonzero reverb and delay input energy at GlobalEffectsProcessor, then compare each typed
-        GlobalParameters field from identical reset effect state
-      - the faithful effects observer may inspect and forward the supplied reverbInput and delayInput
-        but may never synthesize wet excitation from dry output, bypass post-gate track sends, add report-only
+        Patch plus every MixerTrackParameter class and every indexed send for every one of sixteen tracks,
+        every return target, and every global target through their normal GUI paths; assert exact state/text/snapshot
+        values, shared-track or target-only measured behavior as applicable, and exact equality of every
+        unrelated Patch, track, return, and global value
+      - before wet-parameter probes, make at least two Patches sound, route them through known tracks,
+        and establish nonzero indexed sends toward the probed bus returns through the same GUI/reducer
+        path; assert nonzero input energy at the prepared bus-return rack for each probed BusId, then
+        compare each probed value from identical reset effect state
+      - the faithful effects observer may inspect and forward the supplied per-bus return inputs but may
+        never synthesize wet excitation from dry output, bypass post-gate track sends, add report-only
         coverage, or mark an effect exercised merely because time-varying tails changed
       - select each typed GlobalParameters field and perform reversible fine and coarse edits; prove the
         exact selected value and complete expected mix response while Patch identity and unrelated values
@@ -831,7 +831,7 @@ applicationServices:
     - AudioBoundary
     - AudioRenderer
     - MixEngine
-    - GlobalEffectsProcessor
+    - PreparedBusReturnRack
     - ExhaustiveGuiDemo
     operations:
       run:
@@ -858,8 +858,8 @@ applicationServices:
       - OmittedStateTreeLeaf removes exactly one required typed leaf while constructing the serialized
         StateTree before coverage/property discovery; it does not append a fake missing identifier after
         report construction
-      - DryToWetBypass uses a nonzero dry signal as wet excitation while both supplied effect inputs are
-        exactly zero at the GlobalEffectsProcessor seam; paired healthy and mutant renders begin from
+      - DryToWetBypass uses a nonzero dry signal as wet excitation while every supplied bus-return input
+        is exactly zero at the PreparedBusReturnRack seam; paired healthy and mutant renders begin from
         identical reset effect state, and the mutant does not edit input-energy or output-delta measurements
       - ZeroRenderer clears the caller-owned audio buffer immediately after the production AudioRenderer
         render path and before measurement; it does not override the reported peak or completion flag

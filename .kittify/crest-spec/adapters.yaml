@@ -362,8 +362,8 @@ adapters:
       - the private prepared value implements PreparedInstrument, delegates polyphony to its one Patch-local
         synthesizer, and applies the Patch VoiceEnvelope independently through an engine-native per-note
         seam before native voices enter the caller-owned stem
-      - disable rustysynth's built-in reverb and chorus so only the separately declared Patch Chorus and
-        mixer-owned global reverb/delay stages process SoundFont output
+      - disable rustysynth's built-in reverb and chorus so only the separately declared Patch effect slots
+        and bus-return effects process SoundFont output
       - the descriptor declares EngineManaged polyphony and Crest does not impose a sixteen-note limit,
         create a synthesizer per note, or share mutable synthesizer state between Patches; the preparer
         still declares and proves a finite internal callback-work ceiling

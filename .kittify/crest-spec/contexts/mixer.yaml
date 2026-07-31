@@ -159,6 +159,10 @@ valueObjects:
     - array position is a bounded storage detail whose canonical semantic identity is the matching BusId
     - Patch installation, removal, schema replacement, or rerouting never creates, removes, reorders, or
       silently resets a return
+    - the production composition initially occupies BusId 0 with effect.reverb and BusId 1 with effect.delay
+      carrying the behavior of the retired mixer-owned global effects, while returns 2 through 7 begin
+      unoccupied; this is default occupancy, not identity — every return changes contents through the
+      same structural gesture
     contributesTo:
       expandable_effects_and_bus_topology: separates persistent routing destinations from what occupies them
   GlobalParameters:
@@ -169,6 +173,10 @@ valueObjects:
     - masterGainDb is in -60.0..=6.0 and is finite
     - master gain is the only genuinely global value; it is a property of the master stage rather than
       of any effect, and is the single documented exception to the no-name-enumeration invariant
+    - the master stage comprises masterGainDb followed by one fixed safety stage that keeps every final
+      stereo sample finite and within -1.0..=1.0, counting clipped samples in MixObservation instead of
+      emitting non-finite or out-of-range output; the safety stage is a fixed master-stage element, never
+      a registry effect, bypassable insert, or editable parameter
     - reverb and delay tuning values are descriptor scalars of their registry entries, and return levels
       are owned by their BusReturn; neither is duplicated here
     - a production-owned typed surface descriptor enumerates this field, its bounds, and its fine/coarse
@@ -215,7 +223,7 @@ ports: {}
 domainServices:
   MixEngine:
     purpose: trim and accumulate post-effect Patch stems into sixteen tracks, apply track controls and
-      gates, process current shared effects, and produce the master mix
+      gates, feed indexed sends into the eight bounded bus returns, and produce the master mix
     uses:
     - MixerTrackId
     - BusId
@@ -241,7 +249,8 @@ domainServices:
         mute always wins and when any solo is active only soloed non-muted tracks contribute
       - feed each of the eight bus inputs only from post-fader, post-gate track output scaled by that
         track's send for the matching BusId, then sum audible dry tracks and every occupied return and
-        apply masterGainDb; the send stage does not move when the number of destinations changes
+        apply the master stage — masterGainDb followed by the fixed safety stage that bounds the final
+        stereo output; the send stage does not move when the number of destinations changes
       - changing one track parameter changes every Patch contribution routed to that track and no contribution
         routed only to another track; changing one Patch route or trim changes only that Patch contribution
       - a route change is compatible fixed snapshot data because all sixteen destinations and scratch

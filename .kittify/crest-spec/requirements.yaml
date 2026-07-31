@@ -13,9 +13,9 @@ requirements:
   canonical_sixteen_track_bank:
     kind: functional
     description: AppState SHALL own one MixerState containing exactly sixteen persistent tracks identified
-      by MixerTrackId 0 through 15; every track SHALL own Level, Pan, Mute, Solo, ReverbSend, and DelaySend
-      while Patch installation, count, order, route, and capability schema SHALL NOT create, remove, reorder,
-      or reset tracks
+      by MixerTrackId 0 through 15; every track SHALL own Level, Pan, Mute, Solo, and eight indexed sends
+      addressed by BusId while Patch installation, count, order, route, and capability schema SHALL NOT
+      create, remove, reorder, or reset tracks
     goals:
     - route_patches_through_sixteen_tracks
     capabilities:
@@ -82,10 +82,12 @@ requirements:
     - schema_driven_patch_page
   fixed_patch_effect_topology:
     kind: functional
-    description: Each Patch owns an ordered PostEffectConfig list with current capacity zero or one; the
-      first fixture Patch contains effect.chorus and other fixture Patches contain none, and callback
-      signal order is PreparedEngineRack to PatchAudioBlock to PreparedPostEffectRack to MixEngine with
-      no selector, bypass, reordering, arbitrary edge, feedback route, or placeholder slot
+    description: Each Patch owns three ordered effect slot positions addressed by EffectSlotIndex, each
+      independently empty or occupied; the first fixture Patch initially occupies one slot with effect.chorus
+      and other fixture Patches begin empty, callback signal order is PreparedEngineRack to PatchAudioBlock
+      to PreparedPostEffectRack to MixEngine with the bounded PreparedBusReturnRack fed only by post-gate
+      sends, occupancy changes only through the correlated structural lifecycle, and there is no bypass,
+      arbitrary edge, or feedback route
     goals:
     - shape_patch_with_effect
     - play_test_song
@@ -584,9 +586,10 @@ requirements:
     - automatic_test_midi
   mixer_global_effects_only:
     kind: functional
-    description: MixEngine contains exactly one shared reverb and one shared delay fed by post-gate track
-      sends and owns no other processor; the separately prepared upstream Patch effect rack contains the
-      one configured Chorus insert
+    description: MixEngine owns no effect processor of its own; shared processing occurs only in the eight
+      bounded bus returns drawn from the role-independent effect registry and fed by post-gate track sends,
+      with effect.reverb and effect.delay occupying the first two returns by default, and the separately
+      prepared upstream Patch effect rack carries the ordered Patch-local slots
     goals:
     - play_test_song
     - shape_patch_with_effect
@@ -829,9 +832,10 @@ requirements:
   exhaustive_current_surface:
     kind: nonfunctional
     description: The demo and table-driven tests cover every declared AppEvent variant and direction,
-      every supported MidiMessage kind, every current editable Patch parameter, Patch output field, all
-      six parameter classes on every one of sixteen tracks, all seven global parameters, every serialized
-      state/projection property, accepted and rejected outcomes, and measured downstream effects
+      every supported MidiMessage kind, every current editable Patch parameter, Patch output field, every
+      track parameter class including every indexed send on every one of sixteen tracks, every return
+      target, every global parameter, every serialized state/projection property, accepted and rejected
+      outcomes, and measured downstream effects
     goals:
     - observe_synth
     capabilities:
@@ -849,9 +853,9 @@ requirements:
     - instrument_capability_model
   faithful_audio_observation:
     kind: nonfunctional
-    description: Audio proof uses only the reverb and delay inputs supplied through GlobalEffectsProcessor,
-      establishes nonzero sends before wet-parameter comparisons, isolates each comparison from effect-tail
-      evolution, and restores every edited value and send exactly to its captured baseline
+    description: Audio proof uses only the per-bus return inputs supplied through the prepared bus-return
+      rack, establishes nonzero indexed sends before wet-parameter comparisons, isolates each comparison
+      from effect-tail evolution, and restores every edited value and send exactly to its captured baseline
     goals:
     - observe_synth
     capabilities:
@@ -921,7 +925,7 @@ requirements:
     kind: functional
     description: The expected live scalar coverage set is frozen from production Patch, PatchOutput, MixerTrackParameter,
       and GlobalParameters descriptors plus installed Patch and fixed MixerTrack identities; every Patch-owned
-      scalar, both output fields, all six track parameter classes across the sixteen-track bank, and every
+      scalar, both output fields, every track parameter class across the sixteen-track bank, and every
       global instance is causally exercised through normal semantic paths with exact-generation audible
       or toggle evidence, while the separate ordered structural-transition set retains one adjacent authored-name
       SoundFont preset selection plus SoundFont-to-Braids and Braids-to-descriptor-default-SoundFont for

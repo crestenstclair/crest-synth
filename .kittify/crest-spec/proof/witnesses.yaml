@@ -489,8 +489,9 @@ witnesses:
     - AutomaticMidiTest
     - MixerTrackParameters
     - GlobalParameters
-    - GlobalEffectsProcessor
-    - GlobalReverbDelay
+    - PreparedBusReturnRack
+    - ReverbPreparer
+    - DelayPreparer
     - MixEngine
     - ParameterSnapshot
     - AudioCommand
@@ -542,7 +543,7 @@ witnesses:
     - AutomaticMidiTest
     - MixerTrackParameters
     - GlobalParameters
-    - GlobalReverbDelay
+    - PreparedBusReturnRack
     - MixEngine
     - ParameterSnapshot
     - AudioCommand
@@ -876,7 +877,7 @@ witnesses:
       - ExhaustiveGuiDemo
     - field: global_parameter_cases_exercised
       op: eq
-      value: 7
+      value: 1
       repairResources:
       - GlobalParameters
       - DemoScene
@@ -1129,7 +1130,7 @@ witnesses:
       - PatchOutput
       - MixerTrackParameters
       - GlobalParameters
-      - GlobalReverbDelay
+      - PreparedBusReturnRack
       - MixEngine
       - AudioRenderer
       - ExhaustiveGuiDemo
@@ -1230,7 +1231,7 @@ witnesses:
       value: true
       repairResources:
       - GlobalParameters
-      - GlobalReverbDelay
+      - PreparedBusReturnRack
       - MixEngine
       - AudioRenderer
       - ExhaustiveGuiDemo
@@ -1238,7 +1239,7 @@ witnesses:
       op: eq
       value: true
       repairResources:
-      - GlobalReverbDelay
+      - PreparedBusReturnRack
       - MixEngine
       - ExhaustiveGuiDemo
     - field: descriptors_unique
@@ -1841,8 +1842,9 @@ witnesses:
     resources:
     - MixerTrackParameters
     - GlobalParameters
-    - GlobalEffectsProcessor
-    - GlobalReverbDelay
+    - PreparedBusReturnRack
+    - ReverbPreparer
+    - DelayPreparer
     - MixEngine
     - AudioRenderer
     - ExhaustiveGuiDemo
@@ -1851,7 +1853,7 @@ witnesses:
     repairResources:
     - MixerTrackParameters
     - GlobalParameters
-    - GlobalReverbDelay
+    - PreparedBusReturnRack
     - MixEngine
     - AudioRenderer
     - ExhaustiveGuiDemo
@@ -1936,7 +1938,7 @@ witnesses:
       op: eq
       value: 0
       repairResources:
-      - GlobalReverbDelay
+      - PreparedBusReturnRack
       - MixEngine
       - BehavioralMutationHarness
     - field: nonzero_send_reverb_input_energy
@@ -1958,19 +1960,19 @@ witnesses:
       value: 0
       repairResources:
       - GlobalParameters
-      - GlobalReverbDelay
+      - PreparedBusReturnRack
       - MixEngine
     - field: identical_effect_state
       op: eq
       value: true
       repairResources:
-      - GlobalReverbDelay
+      - PreparedBusReturnRack
       - BehavioralMutationHarness
     - field: dry_bypass_absent
       op: eq
       value: true
       repairResources:
-      - GlobalReverbDelay
+      - PreparedBusReturnRack
       - MixEngine
       - BehavioralMutationHarness
     - field: finite_audio
@@ -2840,3 +2842,244 @@ witnesses:
     - field: callback_destructions
       op: eq
       value: 0
+  expandable_effects_and_bus_topology:
+    scope: goal
+    goal: expand_effects_and_buses
+    capability: expandable_effects_and_bus_topology
+    resources:
+    - EffectCapabilityRegistry
+    - EffectSlotIndex
+    - PostEffectConfig
+    - Patch
+    - BusId
+    - BusReturn
+    - BusReturnBank
+    - MixerTrackParameters
+    - StructuralEditIntent
+    - AppState
+    - StateProjector
+    - AppLoop
+    - ParameterSnapshot
+    - RtBusReturnParameters
+    - PreparedPostEffectRack
+    - PreparedBusReturnRack
+    - PreparedGraph
+    - PreparedGraphBuilder
+    - StructuralGraphCoordinator
+    - AudioRenderer
+    - MixEngine
+    - ReverbCapability
+    - ReverbPreparer
+    - DelayCapability
+    - DelayPreparer
+    - ChorusPreparer
+    - BehavioralAcceptanceTests
+    repairResources:
+    - EffectCapabilityRegistry
+    - PostEffectConfig
+    - Patch
+    - BusReturnBank
+    - AppState
+    - StateProjector
+    - AppLoop
+    - ParameterSnapshot
+    - PreparedPostEffectRack
+    - PreparedBusReturnRack
+    - PreparedGraphBuilder
+    - StructuralGraphCoordinator
+    - AudioRenderer
+    - MixEngine
+    evidence:
+    - evidence.expandable_effects_and_bus_topology_contract
+    command:
+    - cargo
+    - test
+    - --release
+    - --test
+    - expandable_effects_and_bus_topology
+    - --
+    - --nocapture
+    negativeCommand:
+    - cargo
+    - run
+    - --quiet
+    - --bin
+    - crest-synth-witness
+    - --
+    - --case
+    - refused-topology
+    - --mutant
+    - refused-topology-published
+    negativeExpectedExitCode: 1
+    timeout: 300s
+    artifacts:
+    - target/release/deps/expandable_effects_and_bus_topology-*
+    observation:
+      kind: json_stdout
+      marker: 'CREST_EFFECTS_AND_BUSES_OBSERVATION '
+      schema:
+        schemaVersion: number
+        orderedSlotCasesExercised: number
+        slotOrderExchangeDistinct: bool
+        sameEntryInstancesIndependent: bool
+        clearedSlotPreservedHeldNotes: bool
+        clearedSlotFocusRecovered: bool
+        addressableReturns: number
+        defaultReturnOccupancyExact: bool
+        maxOffTargetBusDbfs: number
+        mutedOrSoloExcludedWetContribution: number
+        unoccupiedReturnSilent: bool
+        returnContentChangeDryUninterrupted: bool
+        topologyRejectionsExercised: number
+        rejectionPreservedActiveGraph: bool
+        rejectionReasonAttributable: bool
+        postRejectionValidChangeAccepted: bool
+        partiallyAppliedTopologyBlocks: number
+        registryEntryAdditionStructuralChanges: number
+        callbackAllocations: number
+        callbackDeallocations: number
+        callbackDestructions: number
+        retiredGraphsCollectedOffCallback: number
+        activeNotesAtExit: number
+        twoRunTraceEqual: bool
+    predicates:
+    - field: schemaVersion
+      op: eq
+      value: 1
+    - field: orderedSlotCasesExercised
+      op: eq
+      value: 3
+      repairResources:
+      - Patch
+      - PreparedPostEffectRack
+    - field: slotOrderExchangeDistinct
+      op: eq
+      value: true
+      repairResources:
+      - PreparedPostEffectRack
+      - AudioRenderer
+    - field: sameEntryInstancesIndependent
+      op: eq
+      value: true
+      repairResources:
+      - EffectCapabilityRegistry
+      - PreparedPostEffectRack
+    - field: clearedSlotPreservedHeldNotes
+      op: eq
+      value: true
+      repairResources:
+      - StructuralGraphCoordinator
+      - AudioRenderer
+    - field: clearedSlotFocusRecovered
+      op: eq
+      value: true
+      repairResources:
+      - AppState
+      - StateProjector
+    - field: addressableReturns
+      op: eq
+      value: 8
+      repairResources:
+      - BusReturnBank
+      - PreparedBusReturnRack
+    - field: defaultReturnOccupancyExact
+      op: eq
+      value: true
+      repairResources:
+      - BusReturnBank
+      - ReverbPreparer
+      - DelayPreparer
+    - field: maxOffTargetBusDbfs
+      op: lt
+      value: -60
+      repairResources:
+      - MixEngine
+      - PreparedBusReturnRack
+    - field: mutedOrSoloExcludedWetContribution
+      op: eq
+      value: 0
+      repairResources:
+      - MixEngine
+    - field: unoccupiedReturnSilent
+      op: eq
+      value: true
+      repairResources:
+      - PreparedBusReturnRack
+      - MixEngine
+    - field: returnContentChangeDryUninterrupted
+      op: eq
+      value: true
+      repairResources:
+      - StructuralGraphCoordinator
+      - AudioRenderer
+    - field: topologyRejectionsExercised
+      op: gt
+      value: 0
+      repairResources:
+      - AppState
+      - StructuralEditIntent
+    - field: rejectionPreservedActiveGraph
+      op: eq
+      value: true
+      repairResources:
+      - AppState
+      - StructuralGraphCoordinator
+      - AudioRenderer
+    - field: rejectionReasonAttributable
+      op: eq
+      value: true
+      repairResources:
+      - AppState
+      - StateProjector
+    - field: postRejectionValidChangeAccepted
+      op: eq
+      value: true
+      repairResources:
+      - AppState
+      - StructuralGraphCoordinator
+    - field: partiallyAppliedTopologyBlocks
+      op: eq
+      value: 0
+      repairResources:
+      - AudioRenderer
+      - PreparedGraph
+    - field: registryEntryAdditionStructuralChanges
+      op: eq
+      value: 0
+      repairResources:
+      - EffectCapabilityRegistry
+      - PreparedGraphBuilder
+    - field: callbackAllocations
+      op: eq
+      value: 0
+      repairResources:
+      - AudioRenderer
+    - field: callbackDeallocations
+      op: eq
+      value: 0
+      repairResources:
+      - AudioRenderer
+    - field: callbackDestructions
+      op: eq
+      value: 0
+      repairResources:
+      - AudioRenderer
+      - StructuralGraphBoundary
+    - field: retiredGraphsCollectedOffCallback
+      op: gt
+      value: 0
+      repairResources:
+      - StructuralGraphCoordinator
+      - StructuralGraphBoundary
+    - field: activeNotesAtExit
+      op: eq
+      value: 0
+      repairResources:
+      - AudioRenderer
+      - AppLoop
+    - field: twoRunTraceEqual
+      op: eq
+      value: true
+      repairResources:
+      - AppLoop
+      - StateProjector

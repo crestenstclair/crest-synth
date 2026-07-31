@@ -3,8 +3,11 @@ purpose: capability-polymorphic Patch identity, off-thread instrument preparatio
   rendering
 ubiquitousLanguage:
   CapabilityId: a stable namespaced identifier for one installed instrument implementation
-  EffectCapabilityId: a stable namespaced identity for one installed Patch post-effect implementation
-  EffectSlotId: a stable Patch-local semantic identity for one ordered effect instance
+  EffectCapabilityId: a stable namespaced identity for one installed effect implementation serving Patch
+    slots and bus returns alike
+  EffectSlotId: a stable semantic identity for one configured effect instance
+  EffectSlotIndex: one of the three ordered effect positions on a Patch, addressed by index rather than
+    by name
   EffectCapabilityDescriptor: the immutable control-side parameter schema supplied by one installed effect
     capability
   ParameterId: a stable namespaced identifier for one capability-owned parameter
@@ -40,7 +43,7 @@ valueObjects:
       static_patch_effect: joins effect descriptor, config, provider, preparer, prepared instance, projections,
         and proof without processor-specific branching
   EffectSlotId:
-    description: a stable Patch-local identity for one ordered effect instance
+    description: a stable identity for one configured effect instance
     from: u16
     invariants:
     - zero is invalid and identities are unique within one Patch
@@ -49,6 +52,19 @@ valueObjects:
     contributesTo:
       static_patch_effect: keeps focus, scalar projection, prepared state, and observations attached to
         the same semantic slot
+  EffectSlotIndex:
+    description: one ordered effect position on a Patch
+    from: u8
+    invariants:
+    - the value is in 0..=2 and is rejected outside that range; it is never clamped, wrapped, defaulted,
+      or substituted
+    - the index names a position, not an instance; it identifies which of the three ordered slots is addressed
+      while EffectSlotId identifies the configured instance currently occupying one
+    - position is stable — clearing one slot never compacts or renumbers the others
+    - no variant, constructor, or descriptor entry is named after a concrete effect
+    contributesTo:
+      expandable_effects_and_bus_topology: makes slot order and occupancy addressable by bounded index
+        so adding a registry entry changes no type
   EffectCapabilityDescriptor:
     description: one immutable installed effect schema without instrument-only voice or MIDI metadata
     state:
@@ -62,6 +78,9 @@ valueObjects:
       is stable
     - parameters reuse the canonical ParameterSpec and at most eight are Scalar for one fixed RtPostEffectParameters
       slot
+    - the descriptor declares identity, visible parameters, bounds, units, and preparation requirements
+      and never declares a role, send-suitability, or return-only marker; whether an entry occupies a
+      Patch slot or a bus return is decided by the caller, not the entry
     - the descriptor contains no voice policy, MIDI semantics, engine factory, prepared processor, FFI
       object, delay buffer, closure, UI state, or callback owner
     - the current effect.chorus descriptor contains exactly Amount then Depth as finite Continuous Scalar
@@ -285,10 +304,17 @@ valueObjects:
     - lookup and PostEffectConfig validation use stable ids rather than labels or positions
     - unknown, duplicate, invalid, missing-provider, or missing-preparer cases are typed and never bypass
       or substitute an effect
-    - the current production composition installs exactly effect.chorus and exposes no effect choice surface
+    - one registry serves both Patch effect slots and bus returns; the same entry may be prepared into
+      either role, producing independent instances, and no entry, provider, or preparer is partitioned
+      by role
+    - the current production composition installs exactly effect.chorus, effect.reverb, and effect.delay
+      in stable order; slot and return occupancy rows project the registry entries plus empty as adjacent
+      nonwrapping choices, and adding an entry requires no change to slot, routing, snapshot, preparation,
+      projection, or render structure
     contributesTo:
-      static_patch_effect: freezes the one installed effect schema before Patch installation and graph
-        preparation
+      static_patch_effect: freezes the installed effect schemas before Patch installation and graph preparation
+      expandable_effects_and_bus_topology: is the single role-independent source of effect identity, schema,
+        and preparation for slots and returns
   SoundFontInstrument:
     description: the source instrument request derived from a MIDI fixture part before resolving the fixed
       SoundFont catalog
@@ -398,10 +424,17 @@ aggregates:
     - id is stable for the process lifetime
     - instrument capability and configuration are validated against the installed CapabilityRegistry before
       Patch construction
-    - postEffects preserve declared order, contain unique stable EffectSlotIds, validate against the immutable
-      EffectCapabilityRegistry, and have current capacity zero or one
-    - the production fixture configures exactly one effect.chorus slot on its first Patch and no slot
-      on every other Patch; the aggregate contains no placeholder, bypass, selector, or fallback effect
+    - postEffects owns exactly three ordered positions addressed by EffectSlotIndex, each independently
+      empty or occupied by one validated configuration against the immutable EffectCapabilityRegistry;
+      occupied entries carry unique stable EffectSlotIds, slot order is render order, clearing one position
+      never compacts the others, and a fourth position is unrepresentable
+    - two occupied positions holding the same registry entry are independent instances whose values and
+      prepared state are disjoint
+    - the ordered effect positions, their values, and their instance state are Patch-owned and follow
+      the Patch across output rerouting
+    - the production fixture configures exactly one effect.chorus occupancy on its first Patch and leaves
+      every other position empty; the aggregate contains no bypass, wet/dry duplicate, or fallback effect,
+      and occupancy changes only through the correlated structural lifecycle
     - descriptor-classified Scalar values may change through the canonical reducer; engine and descriptor-declared
       structural-choice edits atomically replace the complete InstrumentConfig only after one correlated
       candidate is prepared
@@ -553,8 +586,12 @@ ports:
       allocation fails with a typed error
     - a successful result has finished every allocation and capacity decision and no failure selects bypass,
       a null effect, or another processor
+    - the same preparer serves Patch effect slots and bus returns; each preparation yields an independent
+      instance and no preparer branches on which role requested it
     contributesTo:
       static_patch_effect: separates effect configuration from prepared callback ownership
+      expandable_effects_and_bus_topology: keeps one preparation boundary for both roles so slots and
+        returns cannot drift apart
 applicationServices:
   DescriptorDefaultConfigFactory:
     purpose: construct one exact provider-validated structural target config before graph preparation
@@ -651,8 +688,8 @@ applicationServices:
           result: Result<PreparedPostEffectRack, EffectRackPreparationError>
     meta:
       rules:
-      - preserve canonical Patch and ordered PostEffectConfig order and require at most one stable slot
-        per Patch in this increment
+      - preserve canonical Patch order and each Patch's three ordered slot positions exactly; an empty
+        position stays empty and an occupied position prepares one independent instance
       - resolve every config through exactly one descriptor and identity-matched preparer and validate
         the returned PatchId and EffectSlotId
       - fail atomically for duplicate ids, missing or extra registrations, capacity, sample-rate, config,

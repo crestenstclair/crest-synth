@@ -31,7 +31,10 @@ assets:
     - ChorusCapability
     - ChorusPreparer
     - ChorusSourceBundle
-    - GlobalReverbDelay
+    - ReverbCapability
+    - ReverbPreparer
+    - DelayCapability
+    - DelayPreparer
     - LockFreeAudioBoundary
     - LockFreeStructuralGraphBoundary
     - ThreadedGraphPreparationWorker
@@ -312,8 +315,9 @@ assets:
     - ParameterSnapshot
     - AudioRenderer
     - MixEngine
-    - GlobalEffectsProcessor
-    - GlobalReverbDelay
+    - PreparedBusReturnRack
+    - ReverbPreparer
+    - DelayPreparer
     prompts:
     - Create src/bin/crest_synth_witness.rs as a verification-only composition root over BehavioralMutationHarness;
       it is never called by the interactive crest-synth binary and exposes no product mode.
@@ -393,16 +397,17 @@ assets:
     - AtomicAudioObservation
     - AudioRenderer
     - MixEngine
-    - GlobalEffectsProcessor
-    - GlobalReverbDelay
+    - PreparedBusReturnRack
+    - ReverbPreparer
+    - DelayPreparer
     prompts:
-    - 'Create sixteen explicit Cargo integration-test targets: tests/capability_schema.rs, tests/patch_page_projection.rs,
+    - 'Create seventeen explicit Cargo integration-test targets: tests/capability_schema.rs, tests/patch_page_projection.rs,
       tests/engine_selection_workflow.rs, tests/prepared_engine_rack.rs, tests/braids_engine.rs, tests/per_voice_envelope.rs,
       tests/soundfont_preset_selection.rs, tests/control_dispatch_performance.rs, tests/exhaustive_demo_scene.rs,
       tests/live_demo_scene.rs, tests/schema_surface.rs, tests/eframe_context.rs, tests/graphical_application_shell.rs,
-      tests/semantic_graphical_view_model.rs, tests/sixteen_track_mixer_routing.rs, and tests/behavioral_mutation_harness.rs.
-      Project validations invoke them with cargo test --test, using --release for declared callback timing
-      witnesses, so a missing target is a hard failure.'
+      tests/semantic_graphical_view_model.rs, tests/sixteen_track_mixer_routing.rs, tests/expandable_effects_and_bus_topology.rs,
+      and tests/behavioral_mutation_harness.rs. Project validations invoke them with cargo test --test,
+      using --release for declared callback timing witnesses, so a missing target is a hard failure.'
     - Each target must call the public production seam it verifies. It may assemble deterministic fixtures,
       but it must not duplicate reducer, routing, state projection, GUI update, render, coverage, or mutation-verdict
       logic inside the test file.
@@ -546,7 +551,10 @@ assets:
     - LockFreeStructuralGraphBoundary
     - ThreadedGraphPreparationWorker
     - DeterministicGraphPreparationWorker
-    - GlobalReverbDelay
+    - ReverbCapability
+    - ReverbPreparer
+    - DelayCapability
+    - DelayPreparer
     - LockFreeAudioBoundary
     - CorridorsMidiEventSource
     - EframeGraphicalWindow

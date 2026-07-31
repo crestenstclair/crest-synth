@@ -16,9 +16,10 @@ valueObjects:
       audioConfig: AudioDeviceConfig
     invariants:
     - candidatePatches has the exact active PatchIds, order, capacity, PatchOutput values, envelopes,
-      and ordered PostEffectConfigs and candidateParameters has the exact complete MixerState, with only
-      patchId's InstrumentConfig replaced by the intent's descriptor-default capability config or one-assignment
-      structural-choice config
+      and ordered PostEffectConfigs and candidateParameters has the exact complete MixerState and bus-return
+      bank, with only the intent's named delta replaced — patchId's InstrumentConfig by a descriptor-default
+      capability config or one-assignment structural-choice config, one Patch effect-slot occupancy addressed
+      by its slot position, or one bus-return occupancy addressed by its BusId
     - candidateParameters is compatible with candidatePatches and targetGraphRevision; the prepared graph
       is refreshed from the exact committed target snapshot before publication
     - targetGraphRevision is greater than sourceGraphRevision and the selected candidate Patch config
@@ -70,28 +71,42 @@ valueObjects:
       graphRevision: GraphRevision
       patchCount: usize
       patches: '[RtPatchParameters; MAX_PATCHES]'
-      postEffects: '[RtPostEffectParameters; MAX_PATCHES]'
+      postEffects: '[[RtPostEffectParameters; MAX_EFFECT_SLOTS]; MAX_PATCHES]'
       tracks: '[MixerTrackParameters; 16]'
+      returns: '[RtBusReturnParameters; MAX_BUS_RETURNS]'
       global: GlobalParameters
     invariants:
     - MAX_PATCHES equals the bounded prepared rack capacity and is independent from the exactly sixteen
       persistent mixer tracks
+    - MAX_EFFECT_SLOTS is exactly 3 and MAX_BUS_RETURNS is exactly 8; these are the product-level maxima
+      recorded in DESIGN.md — three ordered post-FX slots per Patch and eight bus returns — declared here
+      as real bounds so no slice, snapshot, rack, or graph may exceed them without changing this declaration
+    - complete capacity is reserved before rendering — MAX_PATCHES by MAX_EFFECT_SLOTS slots of eight
+      effect scalars, sixteen tracks by MAX_BUS_RETURNS sends, and MAX_BUS_RETURNS returns of eight effect
+      scalars — and zero dynamic growth events occur at render time under any reachable configuration
     - graphRevision identifies the PreparedGraph whose exact PatchId order and fixed capacities this snapshot
       targets
     - unused entries are inactive
-    - the snapshot is fully owned, fixed-size, and readable without allocation
+    - the snapshot is fully owned, fixed-size, destructor-free, and readable without allocation; publish
+      cost through the latest-value transport stays bounded at the widened size and is measured, not assumed
     - each RtPatchParameters contains PatchId, fixed PatchOutput, VoiceEnvelope, scalarCount, and a descriptor-ordered
       [f32; 16] engine-scalar array fixed by the active graph revision
-    - postEffects is a separate Patch-aligned zero-or-one-slot section whose active entry carries stable
-      EffectSlotId, scalarCount, and descriptor-ordered [f32; 8] effect values fixed by the active graph
-      revision
+    - postEffects is a separate Patch-aligned section carrying MAX_EFFECT_SLOTS ordered entries per Patch;
+      each active entry carries stable EffectSlotId, scalarCount, and descriptor-ordered [f32; 8] effect
+      values fixed by the active graph revision, and clearing one slot leaves the other positions stable
+      rather than compacted
     - tracks contains exactly sixteen fixed MixerTrackParameters entries in MixerTrackId order whether
-      or not a Patch targets them
+      or not a Patch targets them, each carrying its eight indexed send values
+    - returns contains exactly MAX_BUS_RETURNS fixed entries in BusId order whether occupied or empty
+    - structural matching between this snapshot and the prepared racks remains exact rather than permissive
+      at the widened size; a mismatched Patch, slot, send, return, or scalar layout is rejected, never
+      partially consumed
     - choice values are encoded as descriptor indices and snapshots contain no string, vector, asset,
       capability union, engine object, or destructor-bearing owner
     - a production-owned typed leaf descriptor covers generation, graphRevision, patchCount, every active
-      PatchId/output/envelope/scalar parameter, all sixteen track parameter sets, and every global parameter
-      and exactly matches the StateTree parameters projection
+      PatchId/output/envelope/scalar parameter, every effect-slot entry, all sixteen track parameter sets
+      including every indexed send, every bus-return entry, and every global parameter and exactly matches
+      the StateTree parameters projection; no leaf of the widened block is unenumerated
     contributesTo:
       one_way_parameter_control: carries accepted AppState values to audio
       asynchronous_engine_selection: carries the exact descriptor scalar layout for the source or committed
@@ -179,9 +194,8 @@ valueObjects:
       leftPeak: f32
       rightPeak: f32
       outputRms: f32
-      reverbInputRms: f32
-      delayInputRms: f32
-      wetOutputRms: f32
+      busInputRms: '[f32; 8]'
+      busOutputRms: '[f32; 8]'
       patchEffect: PatchEffectObservation
       nonFiniteSamples: u64
       clippedSamples: u64
@@ -190,8 +204,9 @@ valueObjects:
       decoder, allocation, or destructible owner
     - sequence and renderedBlocks increase monotonically and parameterGeneration is the exact ParameterSnapshot
       generation used for the measured block
-    - tracks plus peak, RMS, wet-input, and wet-output fields copy the MixObservation produced from the
-      actual mixer-owned buffers for that observation window
+    - tracks plus peak, RMS, and per-bus input/output fields copy the MixObservation produced from the
+      actual mixer-owned buffers for that observation window; busInputRms and busOutputRms are indexed
+      by BusId and no observation field names a concrete effect
     - tracks contains exactly one post-level/pan, pre-gate numeric meter per MixerTrackId, including zero-valued
       empty tracks and sounding muted tracks
     - patchEffect copies fixed pre/post/difference/side measurements from the exact configured Patch stem
@@ -223,6 +238,27 @@ valueObjects:
       config, processor, pointer, reference, or destructor
     contributesTo:
       static_patch_effect: carries latest accepted Amount and Depth to one matching prepared Chorus slot
+      expandable_effects_and_bus_topology: carries each ordered slot's descriptor scalars without naming
+        any effect
+  RtBusReturnParameters:
+    description: one fixed destructor-free bus-return scalar projection
+    state:
+      active: bool
+      slotId: Option<EffectSlotId>
+      scalarCount: usize
+      scalars: '[f32; 8]'
+      returnLevel: f32
+    invariants:
+    - inactive entries contain zero scalar count; active entries match one immutable prepared effect descriptor
+      layout drawn from the same registry that fills Patch slots
+    - returnLevel is finite in 0.0..=1.0 and remains valid whether or not the return is occupied, because
+      it is owned by the return rather than by the occupying effect
+    - values are finite, choices use descriptor indices, and the value contains no String, Vec, asset,
+      config, processor, pointer, reference, or destructor
+    contributesTo:
+      expandable_effects_and_bus_topology: carries each return's occupancy scalars and return level through
+        the one fixed latest-value snapshot
+      realtime_execution: keeps return parameters fixed-size and destructor-free for callback reads
   PatchEffectObservation:
     description: fixed-size callback-local measurements around the configured Patch effect stage
     state:
@@ -280,21 +316,25 @@ aggregates:
       engineRack: PreparedEngineRack
       patchAudio: PatchAudioBlock
       postEffectRack: PreparedPostEffectRack
-      mixer: MixEngine<GlobalReverbDelay>
+      busReturnRack: PreparedBusReturnRack
+      mixer: MixEngine
     invariants:
     - all owned engines, parsed assets, voices, effect memory, stems, routing, and scratch capacity are
       fully prepared outside the callback
     - revision is nonzero and equals initialParameters.graphRevision
     - the engine rack, post-effect rack, parameter snapshot, instrument/effect scalar layouts, stems,
-      and mixer routing contain the same PatchIds in the same bounded order
+      and mixer routing contain the same PatchIds in the same bounded order, and the bus-return rack matches
+      the snapshot's return occupancy and scalar layouts exactly
     - sampleRate and maxFrames come from the accepted negotiated AudioDeviceConfig and are validated once
       before the device stream starts
     - every graph render block is bounded by maxFrames; a larger native device callback is completely
       rendered as consecutive bounded blocks without truncation or a silent tail
     - a replacement preserves the accepted PatchId set, order, rack capacity, every PatchOutput, the complete
-      MixerState, ordered PostEffectConfigs, effect scalar layouts, and device bounds while permitting
-      exactly the selected instrument config delta named by StructuralEditIntent—capability/default layout
-      or one descriptor-owned structural choice—to change to its validated candidate config
+      MixerState, ordered PostEffectConfigs, bus-return occupancy, effect scalar layouts, and device bounds
+      while permitting exactly the delta named by StructuralEditIntent — an instrument capability/default
+      layout, one descriptor-owned structural choice, one Patch effect-slot occupancy addressed by its
+      slot position, or one bus-return occupancy addressed by its BusId — to change to its validated candidate
+      configuration
     - initialParameters is refreshed from the exact committed EnginePrepared generation immediately before
       publication so scalar edits accepted during preparation cannot be reverted by the swap
     - moving graph ownership through a queue performs no allocation or destruction; destruction is permitted
@@ -314,22 +354,55 @@ aggregates:
     purpose: own a fixed-capacity Patch-aligned set of ordered capability-neutral prepared post effects
     state:
       patchCount: usize
-      slots: '[Option<{patchId: PatchId, slotId: EffectSlotId, effect: Box<dyn PreparedPostEffect>}>;
-        MAX_PATCHES]'
+      slots: '[[Option<{patchId: PatchId, slotId: EffectSlotId, effect: Box<dyn PreparedPostEffect>}>;
+        MAX_EFFECT_SLOTS]; MAX_PATCHES]'
     invariants:
-    - construction occurs outside the callback and slot positions align exactly with PreparedEngineRack,
+    - construction occurs outside the callback and Patch positions align exactly with PreparedEngineRack,
       PatchAudioBlock, and ParameterSnapshot Patch order
-    - the current bound is zero or one effect per Patch while processing semantics remain ordered
-    - process visits at most MAX_PATCHES slots, requires exact PatchId/EffectSlotId/scalar-layout agreement,
-      mutates each configured Patch stem in place after synthesis and before mixing, and reports mismatch
-      without bypass or cross-Patch processing
-    - each prepared instance owns independent delay/LFO state and no state, buffer, or tail is shared
-      between Patches
+    - each Patch owns exactly MAX_EFFECT_SLOTS ordered positions, each independently empty or occupied;
+      occupied positions process the Patch stem in place in ascending slot index order, an empty position
+      is skipped without compacting the others, and a fourth position is unrepresentable
+    - process visits at most MAX_PATCHES by MAX_EFFECT_SLOTS positions, requires exact PatchId/EffectSlotId/scalar-layout
+      agreement, mutates each configured Patch stem in place after synthesis and before mixing, and reports
+      mismatch without bypass or cross-Patch processing
+    - each prepared instance owns independent delay/LFO/tail state; no state, buffer, or tail is shared
+      between Patches, between slots, or between two instances of the same registry entry
     - callback operations never allocate, deallocate, destroy, lock, block, log, format, perform I/O,
       panic, throw, or unwind
     contributesTo:
       static_patch_effect: owns the bounded Patch-local processing stage between synthesis and mix
+      expandable_effects_and_bus_topology: makes slot order and instance independence structural properties
+        of the prepared rack
       realtime_execution: bounds effect dynamic dispatch and callback work
+  PreparedBusReturnRack:
+    root: true
+    purpose: own the fixed bank of prepared bus-return effects and their preallocated input scratch, replacing
+      the retired two-input global effects processor
+    state:
+      returns: '[Option<{busId: BusId, slotId: EffectSlotId, effect: Box<dyn PreparedPostEffect>}>; MAX_BUS_RETURNS]'
+    invariants:
+    - construction occurs outside the callback; every occupied return holds one fully prepared instance
+      drawn from the same EffectCapabilityRegistry and prepared through the same EffectPreparer boundary
+      that fills Patch effect slots, with no role marker or return-only registry
+    - each return owns its own preallocated input scratch buffer; wet excitation derives exclusively from
+      the declared return input accumulated by post-gate track sends, and samples already in the output
+      are never an implicit send
+    - zero return input cannot produce a wet return, and paired observations from identical reset effect
+      state make a dry-to-wet bypass falsifiable
+    - an unoccupied return contributes silence and never passes its accumulated input through
+    - every return sums into the dry mix and cannot feed any send or another return, so no routing cycle
+      is expressible
+    - each prepared instance owns independent delay/LFO/tail state; instances share nothing with Patch-slot
+      instances of the same registry entry
+    - a return that fails preparation is a typed refusal attributable to its BusId; no partially prepared
+      instance is published and no bypass or substitute is selected
+    - callback operations never allocate, deallocate, destroy, lock, block, log, format, perform I/O,
+      panic, throw, or unwind
+    contributesTo:
+      expandable_effects_and_bus_topology: carries the retired global-effects obligations forward as bounded,
+        registry-driven return processing
+      global_mix: preserves the shared reverb and delay behavior as ordinary prepared return instances
+      realtime_execution: keeps shared-effect processing bounded, prepared, and callback safe
 ports:
   AudioBoundary:
     direction: outbound
@@ -424,10 +497,10 @@ applicationServices:
     uses:
     - PreparedEngineRackBuilder
     - PreparedPostEffectRackBuilder
+    - PreparedBusReturnRack
     - PreparedGraph
     - ParameterSnapshot
     - MixEngine
-    - GlobalReverbDelay
     operations:
       build:
         input:
@@ -440,19 +513,20 @@ applicationServices:
           result: Result<PreparedGraph, GraphPreparationError>
     meta:
       rules:
-      - run only on control or worker ownership and finish engine, asset, voice, Patch effect, global
-        effect, routing, stem, and scratch preparation before returning
-      - require the supplied parameter graphRevision, PatchIds, order, count, stable effect slots, and
-        instrument/effect scalar layouts to match both prepared racks exactly
+      - run only on control or worker ownership and finish engine, asset, voice, Patch effect, bus-return,
+        routing, stem, and scratch preparation before returning
+      - require the supplied parameter graphRevision, PatchIds, order, count, stable effect slots, return
+        occupancy, and instrument/effect scalar layouts to match every prepared rack exactly
       - fail atomically with a typed error on any capacity, format, capability, asset, engine, effect,
-        routing, or allocation failure and never return a partial graph
+        return, routing, or allocation failure and never return a partial graph
       - construct the fixed PreparedEngineRack to PatchAudioBlock to PreparedPostEffectRack to MixEngine
-        topology; MixEngine retains exactly one global reverb and delay and no arbitrary graph edge or
-        feedback cycle exists
+        topology with the bounded PreparedBusReturnRack fed only by post-gate sends; no arbitrary graph
+        edge or feedback cycle exists and no builder step selects a concrete effect by name
       - for structural editing preserve PatchIds, order, count, every PatchOutput, the complete MixerState,
-        envelopes, ordered PostEffectConfigs, effect scalar layouts, device bounds, and untargeted instrument
-        configs exactly while allowing only the selected Patch instrument candidate and resulting instrument
-        scalar layout to differ according to StructuralEditIntent
+        envelopes, ordered PostEffectConfigs, bus-return occupancy, effect scalar layouts, device bounds,
+        and untargeted instrument configs exactly while allowing only the delta named by StructuralEditIntent
+        — the selected instrument candidate, one structural choice, one slot occupancy, or one return
+        occupancy — and its resulting scalar layout to differ
     contributesTo:
       prepared_engine_rack: turns accepted structural state into one complete callback-ready ownership
         unit
@@ -512,7 +586,7 @@ applicationServices:
   AudioRenderer:
     purpose: swap complete prepared graphs at block boundaries, consume ready commands and compatible
       parameters, render instruments, process ordered Patch effects, route them through sixteen tracks,
-      then mix prepared global effects
+      then mix through the bounded bus returns and master stage
     uses:
     - AudioBoundary
     - StructuralGraphBoundary
@@ -520,6 +594,7 @@ applicationServices:
     - PreparedGraph
     - PreparedEngineRack
     - PreparedPostEffectRack
+    - PreparedBusReturnRack
     - MixObservation
     - PatchEffectObservation
     operations:
@@ -547,13 +622,16 @@ applicationServices:
       - publish retiredRevision only after the return queue owns the old graph; control does not submit
         another structure until that acknowledgement is observed and collected
       - render drains only currently available AudioCommands, reads one latest ParameterSnapshot compatible
-        with the active graph revision, PatchIds, stable effect slots, and instrument/effect scalar layouts,
-        gives each targeted dispatch and per-Patch render only its matching RtPatchParameters, processes
-        each configured stem once through PreparedPostEffectRack using matching RtPostEffectParameters,
-        then passes processed stems, PatchOutput values, and all sixteen track parameter sets to MixEngine
+        with the active graph revision, PatchIds, stable effect slots, return occupancy, and instrument/effect
+        scalar layouts, gives each targeted dispatch and per-Patch render only its matching RtPatchParameters,
+        processes each configured stem through PreparedPostEffectRack in ascending slot index order using
+        matching RtPostEffectParameters, then passes processed stems, PatchOutput values, all sixteen
+        track parameter sets, and all eight return parameter sets to MixEngine and the prepared bus-return
+        rack
       - the callback signal order is engine rack, PatchAudioBlock, ordered post-effect rack, Patch trim,
-        fixed track accumulation, track level/pan, pre-gate meter, mute/solo gate, track sends, and global
-        mix; neither MixEngine nor a renderer capability branch implements Chorus
+        fixed track accumulation, track level/pan, pre-gate meter, mute/solo gate, indexed track sends,
+        bounded bus returns, dry-plus-return summing, and the master stage; neither MixEngine nor a renderer
+        capability branch implements any concrete effect
       - render divides an oversized interleaved stereo callback into complete consecutive blocks of at
         most PreparedGraph.maxFrames and renders every complete device frame without a silently cleared
         tail

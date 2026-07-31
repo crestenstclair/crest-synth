@@ -807,8 +807,9 @@ projectValidations:
     - MixerTrackParameters
     - GlobalParameters
     - MixObservation
-    - GlobalEffectsProcessor
-    - GlobalReverbDelay
+    - PreparedBusReturnRack
+    - ReverbPreparer
+    - DelayPreparer
     - MixEngine
     - ParameterSnapshot
     - AudioCommand
@@ -1058,8 +1059,9 @@ projectValidations:
     - MixerTrackParameters
     - GlobalParameters
     - MixEngine
-    - GlobalEffectsProcessor
-    - GlobalReverbDelay
+    - PreparedBusReturnRack
+    - ReverbPreparer
+    - DelayPreparer
     - BehavioralWitnessMain
     - BehavioralAcceptanceTests
     capabilities:
@@ -1070,6 +1072,92 @@ projectValidations:
     - observe_synth
     description: six isolated real-seam mutants cover dropped edits, cross-track parameter leakage, MIDI
       misrouting, schema omission, dry-to-wet bypass, and zero rendering with schema-valid measured counterexamples
+  expandable_effects_and_bus_topology:
+    scope: project
+    kind: integration
+    command:
+    - cargo
+    - test
+    - --release
+    - --test
+    - expandable_effects_and_bus_topology
+    - --
+    - --nocapture
+    assertions:
+    - type: exit-code
+      equals: 0
+    - type: stdout-contains
+      value: CREST_ACCEPTANCE expandable_effects_and_bus_topology passed
+    timeout: 300s
+    resources:
+    - EffectCapabilityRegistry
+    - EffectCapabilityDescriptor
+    - EffectSlotIndex
+    - PostEffectConfig
+    - Patch
+    - BusId
+    - BusSendLevel
+    - BusReturn
+    - BusReturnBank
+    - MixerTrackParameters
+    - GlobalParameters
+    - StructuralEditIntent
+    - AppState
+    - StateProjector
+    - AppLoop
+    - ParameterSnapshot
+    - RtBusReturnParameters
+    - PreparedPostEffectRack
+    - PreparedBusReturnRack
+    - PreparedGraph
+    - PreparedGraphBuilder
+    - StructuralGraphCoordinator
+    - AudioRenderer
+    - MixEngine
+    - ReverbCapability
+    - ReverbPreparer
+    - DelayCapability
+    - DelayPreparer
+    - ChorusCapability
+    - ChorusPreparer
+    capabilities:
+    - expandable_effects_and_bus_topology
+    - realtime_execution
+    - one_way_parameter_control
+    goals:
+    - expand_effects_and_buses
+    description: the named production-path target proves three ordered slots processing in slot order
+      with independent instance state, eight addressable returns drawn from the role-independent registry
+      with post-gate send semantics and per-bus isolation, exact widened snapshot matching, block-boundary
+      topology activation, controlled rejection that preserves the active graph, recovery after rejection,
+      and zero callback allocation or destruction
+  no_name_enumerated_identity:
+    scope: project
+    kind: custom
+    command:
+    - bash
+    - scripts/check_no_name_enumerated_identity.sh
+    assertions:
+    - type: exit-code
+      equals: 0
+    - type: stdout-contains
+      value: CREST_STATIC_VALIDATION no_name_enumerated_identity passed
+    resources:
+    - EffectCapabilityRegistry
+    - EffectSlotIndex
+    - BusId
+    - MixerTrackParameters
+    - GlobalParameters
+    - ParameterSnapshot
+    capabilities:
+    - expandable_effects_and_bus_topology
+    goals:
+    - expand_effects_and_buses
+    description: a static check over the Synth, Mixer, RealTime, and Control source trees fails on any
+      type, variant, field, or descriptor entry named after a concrete effect or bus, seeded with the
+      retired identifiers this mission removed (ReverbSend, DelaySend, GlobalEffectsProcessor, GlobalReverbDelay,
+      and the named reverb/delay global fields); MasterGainDb is the single declared exception, so a future
+      closed shortcut fails the build rather than the review
 attachedValidations:
   service.mix_engine_global_mix:
     attachedTo: MixEngine

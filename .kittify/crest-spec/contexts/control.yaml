@@ -42,19 +42,24 @@ valueObjects:
     - Engine
     - Envelope(VoiceEnvelopeParameter)
     - Capability(ParameterId)
+    - EffectSlot(EffectSlotIndex)
     - Effect(EffectSlotId, ParameterId)
     - Output(PatchOutputParameter)
     invariants:
     - the base ordered surface is Engine followed by the four VoiceEnvelope surface-descriptor parameters
       Attack, Decay, Sustain, and Release exactly once; the focused Patch resolver appends each visible
-      enabled active-instrument StructuralChoice ParameterId, then every ordered PostEffectConfig visible
-      enabled ScalarEdit ParameterId exactly once
+      enabled active-instrument StructuralChoice ParameterId, then for each of the three effect slots
+      in ascending EffectSlotIndex order one EffectSlot occupancy row followed by that slot's configured
+      visible enabled ScalarEdit ParameterIds exactly once
+    - EffectSlot rows use the same adjacent nonwrapping choice contract as the engine row, cycling through
+      empty plus every installed registry entry; an empty slot still projects its occupancy row so every
+      position stays reachable
     - PatchUtility has a distinct ordered resolver containing Output(TrimGain) then Output(OutputTrack);
       those controls reuse the canonical PatchOutput descriptor and never enter the PatchMain order
     - Engine serializes as patch.engine, Envelope(parameter) derives patch.envelope.<VoiceEnvelopeParameter.name>,
-      Capability(parameter) derives patch.capability.<ParameterId>, Effect(slotId, parameter) derives
-      patch.effect.<EffectSlotId>.<ParameterId>, and Output(parameter) derives patch.output.<PatchOutputParameter.name>
-      without declaring a second domain-field enum
+      Capability(parameter) derives patch.capability.<ParameterId>, EffectSlot(index) derives patch.effectSlot.<EffectSlotIndex>,
+      Effect(slotId, parameter) derives patch.effect.<EffectSlotId>.<ParameterId>, and Output(parameter)
+      derives patch.output.<PatchOutputParameter.name> without declaring a second domain-field enum
     - the value is never a widget index, text line, capability id, display label, choice label, or platform
       input code
     contributesTo:
@@ -195,17 +200,25 @@ valueObjects:
       kind:
       - ReplaceCapability
       - ReplaceParameterChoice
+      - ReplaceSlotOccupancy
+      - ReplaceReturnOccupancy
       targetCapabilityId: Option<CapabilityId>
       targetParameterId: Option<ParameterId>
       targetChoiceId: Option<String>
+      targetSlotIndex: Option<EffectSlotIndex>
+      targetBusId: Option<BusId>
+      targetEffectCapabilityId: Option<Option<EffectCapabilityId>>
     invariants:
     - ReplaceCapability contains only one installed target CapabilityId and no parameter payload
     - ReplaceParameterChoice contains the active CapabilityId, one descriptor-declared StructuralChoice
       ParameterId, and one adjacent declared choice id
+    - ReplaceSlotOccupancy contains one EffectSlotIndex and one target occupancy — an installed EffectCapabilityId
+      or empty; ReplaceReturnOccupancy contains one BusId and the same occupancy payload; neither names
+      a concrete effect in its own shape and both leave every untargeted position exact
     - the intent contains no display label, prepared graph, worker, engine, asset contents, or callback
       owner
-    - engine and preset selection use this one intent type, request counter, status, effect, and busy
-      guard rather than parallel lifecycles
+    - engine, preset, slot-occupancy, and return-occupancy selection use this one intent type, request
+      counter, status, effect, and busy guard rather than parallel lifecycles
     contributesTo:
       asynchronous_engine_selection: retains adjacent installed-capability selection as one structural
         intent
@@ -247,17 +260,28 @@ valueObjects:
     description: one stable semantic MIXER control identity
     from:
     - Track(MixerTrackId, MixerTrackParameter)
+    - Send(MixerTrackId, BusId)
+    - ReturnOccupancy(BusId)
+    - ReturnLevel(BusId)
+    - ReturnEffect(BusId, ParameterId)
     - Global(GlobalParameter)
     invariants:
     - Track identity is one of the fixed sixteen MixerTrackIds and target identity comes from the canonical
-      MixerTrackParameter descriptor; Global reuses the canonical GlobalParameter enum without becoming
-      a seventeenth track
+      MixerTrackParameter descriptor; Global reuses the canonical GlobalParameters surface descriptor,
+      whose single remaining identity is master gain, without becoming a seventeenth track
+    - Send is addressed by the pair of MixerTrackId and BusId and Return rows are addressed by BusId;
+      no variant is named after a concrete effect and a return's contents changing never changes its identity
+    - ReturnOccupancy uses the same adjacent nonwrapping choice contract as a Patch effect slot, cycling
+      through empty plus every installed registry entry; ReturnLevel addresses the return-owned level
+      and ReturnEffect addresses the occupying entry's visible enabled ScalarEdit parameters
     - the value contains no PatchId, Patch parameter, parameter index, row, column, label, or widget identity
     contributesTo:
       semantic_graphical_view_model: preserves MIXER row meaning while horizontal navigation crosses fixed
         tracks
       sixteen_track_mixer_routing: prevents Patch identity or collection position from becoming mixer-channel
         focus
+      expandable_effects_and_bus_topology: gives sends and returns stable index-addressed focus identities
+        with no name-enumerated variant
   SemanticControlId:
     description: one context-neutral stable control identity used by FocusPath
     from:
@@ -338,8 +362,8 @@ valueObjects:
     - direct context selection saves the active root path, restores the destination context's remembered
       valid root path, clears returnPath, and enters Navigate mode
     - entering PatchUtility records the exact PatchMain origin and focuses Output(TrimGain); entering
-      MixerInspector records the exact MixerMain track origin and focuses that track's ReverbSend; Return
-      restores the origin, clears returnPath, and enters Navigate mode
+      MixerInspector records the exact MixerMain track origin and focuses that track's first send, Send(trackId,
+      BusId 0); Return restores the origin, clears returnPath, and enters Navigate mode
     - main-surface paths resolve through the canonical PATCH or MIXER descriptor order; after schema/dependency
       change the reducer repairs active, remembered, and return paths through the one deterministic next-before-previous
       sibling rule
@@ -472,20 +496,22 @@ valueObjects:
         Vec<{parameterId, value}>, assetReferences: Vec<{parameterId, reference}>}>, envelope: {attackMilliseconds,
         decayMilliseconds, sustain, releaseMilliseconds}, output: {trackId, trimGainDb}}>'
       mixer: '{tracks: [MixerTrackParameters; 16]}'
-      global: '{masterGainDb, reverbRoomSize, reverbDamping, reverbReturn, delayMilliseconds, delayFeedback,
-        delayReturn}'
+      busReturns: 'Vec<{busId, effect: Option<{slotId, capabilityId, values: Vec<{parameterId, value}>,
+        assetReferences: Vec<{parameterId, reference}>}>, returnLevel}>'
+      global: '{masterGainDb}'
       interaction: '{focusPath, rememberedPatchPath, rememberedMixerPath, mode, returnPath}'
       engineSelection: EngineSelectionStatus
       patchPage: Option<PatchPageProjection>
       semanticGraphicalViewModel: SemanticGraphicalViewModel
       graphicalShell: GraphicalShellProjection
       projection: '{context, body, selectedLine, stateHash}'
-      parameters: '{generation, graphRevision, patchCount, patches, postEffects, tracks, global}'
+      parameters: '{generation, graphRevision, patchCount, patches, postEffects, tracks, returns, global}'
       serializedLeafDescriptor: typed stable paths derived beside the StateTree serializer
     invariants:
     - the tree contains every currently serialized CapabilityDescriptor, EffectCapabilityDescriptor, ParameterSpec,
       Patch, InstrumentConfig, PostEffectConfig, ParameterAssignment, AssetReference, VoiceEnvelope, PatchOutput,
-      MixerTrackId, MixerTrackParameters, MixerState, GlobalParameters, InteractionState, FocusPath, ReturnPath,
+      MixerTrackId, MixerTrackParameters, MixerState, BusReturn, BusReturnBank, GlobalParameters, InteractionState,
+      FocusPath, ReturnPath,
       SemanticAction, EngineSelectionStatus, EngineSelectionFailure, PatchPageProjection, SemanticGraphicalViewModel,
       GraphicalShellProjection, TextProjection, and ParameterSnapshot property without an opaque debug-string
       substitute
@@ -524,7 +550,8 @@ valueObjects:
     invariants:
     - JSON contains the complete installed instrument and effect registries, every Patch InstrumentConfig,
       ordered PostEffectConfig, asset reference, VoiceEnvelope, PatchOutput, the complete sixteen-entry
-      MixerState, GlobalParameters, InteractionState, and EngineSelectionStatus including any typed failure
+      MixerState, the complete eight-entry BusReturnBank, GlobalParameters, InteractionState, and EngineSelectionStatus
+      including any typed failure
     - decode(encode(state)) equals state
     - a MIDI-only accepted generation may share the immutable canonical JSON suffix and defer full String
       materialization, but requested JSON and its hash exactly equal eager serialization of the same AppState
@@ -552,10 +579,13 @@ valueObjects:
         status: Option<Ready | Preparing | Activating | Failed>, requestId: Option<EngineSelectionRequestId>,
         targetGraphRevision: Option<GraphRevision>, failure: Option<EngineSelectionFailure>, unit: Option<String>,
         enabled: bool, visible: bool, editable: bool}>}>'
-      effects: 'Vec<{slotId: EffectSlotId, capabilityId: EffectCapabilityId, label: String, editableIdentity:
-        false, sections: Vec<{id, label, parameters: Vec<{controlId: Option<PatchControlId>, id: ParameterId,
+      effects: '[{slotIndex: EffectSlotIndex, occupancyControlId: PatchControlId, occupancy: Empty | {slotId:
+        EffectSlotId, capabilityId: EffectCapabilityId, label: String}, choices: Vec<{id, label}>, requestedChoiceId:
+        Option<String>, status: Option<Ready | Preparing | Activating | Failed>, requestId: Option<EngineSelectionRequestId>,
+        targetGraphRevision: Option<GraphRevision>, failure: Option<EngineSelectionFailure>, editable:
+        bool, sections: Vec<{id, label, parameters: Vec<{controlId: Option<PatchControlId>, id: ParameterId,
         label: String, kind, update, patchInteraction, value: ParameterValue | AssetReference, choices:
-        Vec<{id, label}>, unit: Option<String>, enabled: bool, visible: bool, editable: bool}>}>}>'
+        Vec<{id, label}>, unit: Option<String>, enabled: bool, visible: bool, editable: bool}>}>}; 3]'
       stateHash: String
       serializedLeafDescriptor: typed stable paths for every Patch-page field and row variant
     invariants:
@@ -579,9 +609,11 @@ valueObjects:
       kinds, update classes, patch interactions, choices, units, dependency visibility/enabled results,
       and canonical InstrumentConfig values or assets; only visible enabled StructuralChoice fields receive
       Capability(ParameterId), adjacent-choice metadata, and structural editability
-    - effects exactly preserve Patch PostEffectConfig order and stable slot identity, resolve each EffectCapabilityDescriptor
-      generically, show effect identity read-only, and give only visible enabled ScalarEdit parameters
-      Effect(slotId, ParameterId) control ids and scalar editability
+    - effects contains exactly three entries in ascending EffectSlotIndex order whether occupied or empty;
+      each entry projects one EffectSlot occupancy row whose adjacent nonwrapping choices are empty plus
+      every installed registry entry, resolves any occupying EffectCapabilityDescriptor generically, and
+      gives only visible enabled ScalarEdit parameters Effect(slotId, ParameterId) control ids and scalar
+      editability; occupancy rows share the structural lifecycle projection used by the engine row
     - the targeted engine or capability row projects active and requested identity, Preparing/Activating/Failed
       status, request/revision correlation, and failure while every other structural row remains inactive;
       Ready has no pending target
@@ -599,8 +631,10 @@ valueObjects:
         worker or graph state
       soundfont_preset_selection: projects the exact authored preset label, ordered choices, focus, request
         status, and typed failure from the generic descriptor/config/lifecycle
-      static_patch_effect: projects the read-only Chorus identity and editable Amount/Depth rows from
-        canonical effect descriptor/config state
+      static_patch_effect: projects the configured effect identity and its editable scalar rows from canonical
+        effect descriptor/config state
+      expandable_effects_and_bus_topology: projects three ordered slot occupancy rows and their descriptor-driven
+        parameters without naming any effect
       sixteen_track_mixer_routing: supplies PATCH Utility with canonical trim and output-track data
   TextProjection:
     description: the retained lossless diagnostic text body derived from StateSnapshot and its reducer-owned
@@ -619,8 +653,10 @@ valueObjects:
     - context exactly equals InteractionState.focusPath.context and the body begins with its semantic
       PATCH or MIXER identity plus the direct 1/2 page bindings
     - in MIXER, tracks T00 through T0F each appear once in stable MixerTrackId order with exact level,
-      pan, mute, solo, reverb send, delay send, and routed Patch identities; no Patch becomes a mixer
-      column, empty tracks remain present, and a distinct final GLOBAL section retains all seven values
+      pan, mute, solo, all eight indexed send values, and routed Patch identities; no Patch becomes a
+      mixer column, empty tracks remain present, a distinct RETURNS section renders each of the eight
+      bus returns with its occupancy, values, and return level, and a distinct final GLOBAL section retains
+      master gain
     - in PATCH, the body is a lossless deterministic rendering of PatchPageProjection including Patch
       identity, MIDI channel, active/requested structural target, Ready/Preparing/Activating/Failed status,
       typed failure, installed engine and parameter choices, ADSR, every instrument descriptor field,
@@ -749,6 +785,7 @@ aggregates:
       effectCapabilities: EffectCapabilityRegistry
       patches: Vec<Patch>
       mixer: MixerState
+      busReturns: BusReturnBank
       global: GlobalParameters
       interaction: InteractionState
       engineSelection: EngineSelectionStatus
@@ -764,7 +801,7 @@ aggregates:
     - CapabilityRegistry is supplied at construction, remains immutable, and the current increment contains
       exactly instrument.soundfont.hidef and instrument.braids
     - EffectCapabilityRegistry is supplied at construction, remains immutable, and the current increment
-      contains exactly effect.chorus
+      contains exactly effect.chorus, effect.reverb, and effect.delay
     - 'SelectContext changes only InteractionState: it stores the active root FocusPath, restores the
       destination remembered root path, clears ReturnPath, enters Navigate, emits no AudioCommand, and
       requires an installed valid remembered PATCH path before selecting PATCH'
@@ -780,13 +817,19 @@ aggregates:
       and Left is unavailable; Left or Return from PatchUtility restores the main origin
     - EnterSurface from PatchMain records that exact FocusPath as ReturnPath and focuses PatchUtility
       Output(TrimGain); EnterSurface from MixerMain records the exact track path and focuses MixerInspector
-      ReverbSend for that MixerTrackId; Return restores the origin and clears the path
+      Send(trackId, BusId 0) for that MixerTrackId; Return restores the origin and clears the path
     - in PATCH Utility Navigate moves nonwrapping between Output(TrimGain) and Output(OutputTrack); Adjust
       applies canonical trim steps or adjacent nonwrapping MixerTrackId changes to exactly the focused
       Patch through AppState.apply and emits only a latest parameter snapshot
-    - in MIXER Inspector Navigate moves nonwrapping between the selected track's ReverbSend and DelaySend
-      plus distinct global controls; Adjust changes only the resolved track send or global value and never
-      a Patch-owned value
+    - in MIXER Inspector Navigate moves nonwrapping through the selected track's eight sends in ascending
+      BusId order, then each of the eight bus returns' occupancy, return level, and visible ScalarEdit
+      rows in ascending BusId order, then distinct global controls; scalar Adjust changes only the resolved
+      send, return level, return effect value, or global value and never a Patch-owned value
+    - Adjust Left/Right on an EffectSlot or ReturnOccupancy row resolves the adjacent nonwrapping choice
+      among empty plus every installed registry entry and accepts one correlated structural request through
+      the same one-in-flight lifecycle as the engine row; Adjust Up/Down on those rows is ActionUnavailableInContext,
+      and a refused or failed topology request preserves the active configuration exactly and remains
+      attributable to its slot or return position
     - SetInteractionMode accepts Navigate or Adjust only when the current target supports the transition,
       K release and focus loss restore Navigate, and every Navigate or Adjust event is rejected unchanged
       when its mode does not match
@@ -828,10 +871,11 @@ aggregates:
       and adapter never repair focus
     - InstallPatches preserves supplied order, rejects duplicate MidiChannels, more than the prepared
       Patch capacity, invalid PatchOutput track/trim, instrument or effect capability/config/asset/slot
-      identities, duplicate ParameterIds, or more than one post effect per Patch, initializes rememberedPatchPath
-      to the first accepted PatchMain Engine path, preserves all sixteen existing tracks, and is rejected
-      after startup; the production composition separately supplies deterministic output routes and exactly
-      one effect.chorus slot on its first fixture Patch
+      identities, duplicate ParameterIds, or more than three ordered effect slots per Patch, initializes
+      rememberedPatchPath to the first accepted PatchMain Engine path, preserves all sixteen existing
+      tracks and all eight existing returns, and is rejected after startup; the production composition
+      separately supplies deterministic output routes, exactly one effect.chorus occupancy on its first
+      fixture Patch, and the default effect.reverb and effect.delay occupancy of the first two bus returns
     - Midi validates its Patch target read-only, preserves the exact CapabilityRegistry and Patch storage,
       changes only generation, and yields one AudioCommand effect after state acceptance
     - every accepted event increments generation once and every rejected event leaves state identical
@@ -900,11 +944,12 @@ domainServices:
         GraphicalShellProjection only from the accepted StateSnapshot; resolve both context bodies from
         FocusPath and typed descriptors without positional or capability-specific matching
       - 'derive ordered visible/enabled focus resolvers per surface: PatchMain uses Engine, VoiceEnvelope,
-        instrument StructuralChoice, and ordered effect ScalarEdit identities; PatchUtility uses PatchOutputParameter;
-        MixerMain uses all sixteen MixerTrackIds crossed with Level, Pan, Mute, and Solo; MixerInspector
-        uses the selected track''s ReverbSend and DelaySend plus distinct GlobalParameter identities;
-        reducer navigation, focus recovery, valid actions, projection, coverage, and demos share these
-        exact resolvers'
+        instrument StructuralChoice, then the three ordered EffectSlot occupancy and effect ScalarEdit
+        identities; PatchUtility uses PatchOutputParameter; MixerMain uses all sixteen MixerTrackIds crossed
+        with Level, Pan, Mute, and Solo; MixerInspector uses the selected track''s eight sends in ascending
+        BusId order, the eight returns'' occupancy, level, and ScalarEdit identities in ascending BusId
+        order, then distinct global identities; reducer navigation, focus recovery, valid actions, projection,
+        coverage, and demos share these exact resolvers'
       - derive SemanticGraphicalViewModel from that same generation, FocusPath, InteractionMode, ReturnPath,
         descriptors, canonical values, EngineSelectionStatus, and typed failures; every valid action must
         pass the same pure precondition used by AppState.apply
@@ -915,9 +960,11 @@ domainServices:
         descriptor, active CapabilityDescriptor, InstrumentConfig, EngineSelectionStatus, and complete
         installed registry; use stable ids and descriptor order and never match on SoundFont or Braids
       - copy every PatchOutput and envelope value plus at most sixteen descriptor-ordered Scalar engine
-        values and a separate zero-or-one fixed effect slot with at most eight descriptor-ordered Scalar
-        values per Patch, exactly sixteen MixerTrackParameters entries, every global value, and the caller-owned
-        target GraphRevision into ParameterSnapshot; reject Patch, slot, scalar, or route capacity mismatch
+        values and a separate Patch-aligned section of three ordered effect slots with at most eight descriptor-ordered
+        Scalar values each per Patch, exactly sixteen MixerTrackParameters entries each with eight indexed
+        sends, exactly eight bus-return entries with occupancy scalars and return level, every global
+        value, and the caller-owned target GraphRevision into ParameterSnapshot; reject Patch, slot, send,
+        return, scalar, or route capacity mismatch
       - derive StateTree from the exact same StateSnapshot, PatchPageProjection, GraphicalShellProjection,
         TextProjection, and ParameterSnapshot without reading or mutating any second state copy
       - when accepted Midi changes only generation, share the prior immutable state suffix, text body,
