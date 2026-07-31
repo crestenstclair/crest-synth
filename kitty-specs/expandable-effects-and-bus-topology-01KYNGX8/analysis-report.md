@@ -4,7 +4,7 @@ artifact_type: spec-kitty.analysis-report
 command: /spec-kitty.analyze
 mission_slug: expandable-effects-and-bus-topology-01KYNGX8
 mission_id: 01KYNGX8QA8V49BX2WQ1Q6G2BP
-generated_at: '2026-07-31T05:07:28.859996+00:00'
+generated_at: '2026-07-31T16:27:32.557460+00:00'
 analyzer_agent: unknown
 input_artifacts:
   spec.md:
@@ -15,16 +15,16 @@ input_artifacts:
     sha256: fa2ddd28e07a48c1cf3a3742ddaecd152b584879c7d6a728800df6625e7caacb
   tasks.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/tasks.md
-    sha256: c1b3b066a0248b3bb2e2f41784a0fc54151b9c128509a9147a2c10aa148183b2
+    sha256: 8134529658d079b349b90e0ffc5fa71a934c9f1f4e197c8d82063096c662565c
   charter:
     path: /Users/crestenstclair/workspace/crest-synth/.kittify/charter/charter.md
     sha256: 0b21a43cf5772d1308561d843239947e53247cc7d071c98c920023d23024672b
 verdict: ready
 issue_counts:
-  low: 1
   critical: 0
-  medium: 0
   high: 0
+  low: 1
+  medium: 0
   info: 0
 findings:
 - id: G1R
@@ -35,7 +35,7 @@ findings:
 
 ## Specification Analysis Report
 
-Mission: `expandable-effects-and-bus-topology-01KYNGX8` — third pass. Second pass followed remediation of the first pass's six findings (1 HIGH, 2 MEDIUM, 3 LOW), all applied in commit `fa9d3fc` with operator approval. This pass refreshes against the project charter established in `417a1a1` (the prior passes ran charterless); WP01 has since been implemented and approved.
+Mission: `expandable-effects-and-bus-topology-01KYNGX8` — fourth pass, after WP10 (voice carry-over across topology activation) was added as a corrective work package. WP01–WP09 are implemented and approved; the WP08 witness honestly measured `clearedSlotPreservedHeldNotes` false (production graph swap clears voices, contradicting the declared predicate, spec AS-1.5, and SC-001), and the operator chose implementing voice carry-over over revising the declaration. The crest-spec now declares the voice-continuity invariant (contexts/realtime.yaml, PreparedGraph); WP10 (T057–T060, dependencies WP08+WP09) realizes it, re-measures the witness, and re-runs the live gate. Coverage: FR-001/FR-002 slot-edit-during-held-notes now has a dedicated implementing WP; T059 re-runs the physical-device scene because the audible contract changed. Prior passes: six findings (1 HIGH, 2 MEDIUM, 3 LOW) remediated in `fa9d3fc`; charter refresh in pass three.
 
 | ID | Category | Severity | Location(s) | Summary | Recommendation |
 |----|----------|----------|-------------|---------|----------------|
