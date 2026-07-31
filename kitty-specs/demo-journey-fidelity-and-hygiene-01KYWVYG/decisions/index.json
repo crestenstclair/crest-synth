@@ -1,0 +1,30 @@
+{
+  "entries": [
+    {
+      "created_at": "2026-07-31T19:57:56.024061Z",
+      "decision_id": "01KYWW2EDRF9BQV7KE2S956Q6C",
+      "final_answer": "Confirmed \u2014 proceed (title 'Phase 3 Demo Journey Fidelity and Hygiene', slug demo-journey-fidelity-and-hygiene, software-dev, bulk-edit classified, landing on feat/expandable-effects-and-bus-topology)",
+      "input_key": "intent_summary_confirmed",
+      "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+      "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
+      "opened_by": "cli",
+      "options": [
+        "Confirmed \u2014 proceed",
+        "Confirmed, but adjust identity",
+        "Needs scope changes"
+      ],
+      "origin_flow": "specify",
+      "other_answer": false,
+      "question": "Does the Intent Summary (actor, outcome, invariants, bulk-edit classification, optional stretch items) and the proposed mission identity match what you want for this corrective gate?",
+      "rationale": null,
+      "resolved_at": "2026-07-31T19:58:07.948752Z",
+      "resolved_by": null,
+      "slot_key": "specify.intent.summary-confirmation",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    }
+  ],
+  "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+  "version": 1
+}
