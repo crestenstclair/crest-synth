@@ -9,6 +9,7 @@ requirement_refs:
 - NFR-005
 - NFR-006
 - NFR-007
+- NFR-008
 planning_base_branch: feat/expandable-effects-and-bus-topology
 merge_target_branch: feat/expandable-effects-and-bus-topology
 branch_strategy: Planning artifacts for this mission were generated on feat/expandable-effects-and-bus-topology. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/expandable-effects-and-bus-topology unless the human explicitly redirects the landing branch.
@@ -81,7 +82,7 @@ or dry-run substitute does not satisfy this gate. T052 is therefore not a formal
 - **Mission**: expandable-effects-and-bus-topology-01KYNGX8
 - **Priority**: P1
 - **Dependencies**: WP07 (the full behavior must exist to be demonstrated)
-- **Related requirements**: FR-019 (retained scene), NFR-004 (audio continuity), NFR-005 (deterministic evidence), NFR-006 (clean teardown), NFR-007 (routing isolation)
+- **Related requirements**: FR-019 (retained scene), NFR-004 (audio continuity), NFR-005 (deterministic evidence), NFR-006 (clean teardown), NFR-007 (routing isolation), NFR-008 (edit responsiveness)
 - **Constraints**: C-010 (live demo gate)
 - **Read first**: `ROADMAP.md` § Live-demo requirement for every phase — it is the acceptance contract for this WP
 
@@ -147,6 +148,7 @@ or dry-run substitute does not satisfy this gate. T052 is therefore not a formal
   3. Measure accumulation: two tracks into one bus sum correctly, each scaled by its own send.
   4. Measure gate behavior: muted and solo-excluded tracks contribute zero wet signal (SC-005).
   5. Measure order sensitivity: A→B ≠ B→A by output difference (SC-002).
+  6. Measure edit responsiveness (NFR-008): from an accepted occupancy edit, record the frames until the projection reflects it (must be ≤ 1) and the render blocks from activation until the change is audible in the output (must be ≤ 1). Correlate through the T047 checkpoints rather than a new timing channel.
 
 - **Validation**: All measurements produce numeric evidence in the structured report.
 

@@ -11,6 +11,7 @@ requirement_refs:
 - FR-014
 - FR-015
 - FR-016
+- FR-018
 planning_base_branch: feat/expandable-effects-and-bus-topology
 merge_target_branch: feat/expandable-effects-and-bus-topology
 branch_strategy: Planning artifacts for this mission were generated on feat/expandable-effects-and-bus-topology. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/expandable-effects-and-bus-topology unless the human explicitly redirects the landing branch.
@@ -83,7 +84,7 @@ yourself writing a parallel lifecycle, stop — you are duplicating a proven one
 - **Priority**: P1
 - **Dependencies**: WP05 (the widened transport must exist first)
 - **Related requirements**: FR-002 (slot occupancy selection), FR-010 (return occupancy selection), FR-012 (prepared exchange), FR-013 (validated rejection), FR-014 (observable outcome), FR-015 (recovery), FR-016 (retirement)
-- **Read first**: `contracts/realtime-snapshot.md` § Structural change lifecycle — obligations C-RT-8 through C-RT-14
+- **Read first**: `research/contracts/realtime-snapshot.md` § Structural change lifecycle — obligations C-RT-8 through C-RT-14
 - **Study**: `src/control/engine_selection.rs` — the pattern you are extending
 
 ## Branch Strategy
@@ -165,8 +166,9 @@ yourself writing a parallel lifecycle, stop — you are duplicating a proven one
   1. **Recovery**: after a refusal, make a valid change; assert it is accepted, becomes audible, and leaves no residue of the failed attempt.
   2. **Ordering (C-RT-13)**: request two changes before the first is acknowledged; assert acknowledgements are neither reordered nor dropped, and that the final state matches the last accepted request.
   3. **Coexistence**: assert scalar and structural changes within one block both survive — an existing proven property that must not regress at the widened size.
+  4. **Chain follows Patch (FR-018)**: with a Patch carrying a configured multi-slot chain, reroute it to a different mixer track through a topology change; assert the chain, its parameter values, and its per-instance state (an audible tail started before the reroute) follow the Patch, and that nothing about the chain attaches to the vacated or receiving track.
 
-- **Validation**: All three properties hold deterministically across two runs.
+- **Validation**: All four properties hold deterministically across two runs.
 
 ### T038 – Prove off-callback retirement at the widened size
 
@@ -183,7 +185,7 @@ yourself writing a parallel lifecycle, stop — you are duplicating a proven one
 
 - Validation tests for each invalid class in T033 (out-of-range index, unresolvable entry, unpreparable entry).
 - Rejection continuity test (T035) — sample-exact audio continuity across a refusal.
-- Recovery test and acknowledgement-ordering test (T037).
+- Recovery test, acknowledgement-ordering test, and chain-follows-Patch rerouting test (T037).
 - Scalar/structural coexistence test at the widened size.
 - Retirement and ownership tests (T038).
 - Two-run determinism for the whole lifecycle.

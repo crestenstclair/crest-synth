@@ -130,8 +130,9 @@ as a mission constraint. Nothing else in this mission may merge ahead of it.
   7. `proof/validations.yaml` — add the matching validation with its proof role.
   8. `proof/witnesses.yaml` — add a witness with a **positive command and a controlled negative command**, structured observations, and predicates. A witness without a negative command proves nothing.
   9. `project.yaml` `mission` (lines 2-10) — restate the executable slice to include ordered slots and bounded bus returns.
+  10. **Fold the planning contract obligations into the crest-spec.** The mission's Phase 1 planning produced `research/data-model.md` and `research/contracts/{effect-registry,bus-routing,realtime-snapshot}.md` (obligations C-ER-1..5, C-BR-1..10, C-RT-1..14) before `CLAUDE.md` declared such files forks of the canonical resources. Express each obligation that is not already declared as a crest-spec invariant, validation predicate, or context invariant in the files touched above. After this WP the crest-spec is the sole authority for these obligations; the `research/` copies are historical derivation notes, and later WPs may cite them only as commentary, never as the contract itself.
 
-- **Validation**: `spec-kitty context architecture` reloads with no unresolved references. Every `contributesTo` edge you add points at a capability that exists.
+- **Validation**: `spec-kitty crest-spec doctor` reloads with no unresolved references. Every `contributesTo` edge you add points at a capability that exists. Spot-check three obligations (one per contract file) and confirm each has a crest-spec declaration that names it.
 
 ### T005 – Declare the no-name-enumeration invariant
 
@@ -174,7 +175,7 @@ as a mission constraint. Nothing else in this mission may merge ahead of it.
 
 This package produces declarations, not code, so its proof is structural:
 
-- `spec-kitty context architecture` reloads cleanly with no dangling references.
+- `spec-kitty crest-spec doctor` reloads cleanly with no dangling references.
 - No surviving declaration contradicts any FR in `spec.md`.
 - The deferred roster (C-011) is still excluded after every edit.
 - DESIGN.md lines 690 and 692 are unchanged.
@@ -185,7 +186,7 @@ This package produces declarations, not code, so its proof is structural:
 - New capability, goal, requirement, evidence, validation, and witness entries present and cross-linked.
 - The no-name-enumeration invariant declared with its exception.
 - Four DESIGN.md statements restated; the signal-flow diagram updated.
-- `spec-kitty context architecture` reloads without error.
+- `spec-kitty crest-spec doctor` reloads without error.
 - The twelve-effect roster remains out of scope everywhere.
 
 ## Risks & Mitigations

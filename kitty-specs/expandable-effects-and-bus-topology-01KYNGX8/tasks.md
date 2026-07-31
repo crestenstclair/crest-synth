@@ -5,7 +5,7 @@ description: "Work packages for expandable effects and bus topology"
 # Tasks: Expandable Effects and Bus Topology
 
 **Input**: Design documents from `kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/`
-**Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/, quickstart.md, occurrence_map.yaml
+**Prerequisites**: plan.md, spec.md, research.md, research/data-model.md, research/contracts/, quickstart.md, occurrence_map.yaml
 
 **Tests**: Tests ARE requested. This project's charter is measured, falsifiable proof
 using the production reducer and render path; `ROADMAP.md` makes a retained live demo
@@ -22,7 +22,8 @@ implementable and testable.
 ## Path Conventions
 
 Single Rust project: `src/` and `tests/` at repository root, seven bounded contexts
-under `src/` (kernel, synth, mixer, real_time, control, shell, adapter, testing).
+under `src/` (kernel, synth, mixer, real_time, control, shell, testing) plus the
+`adapter` layer.
 
 ## The governing rule
 
@@ -99,7 +100,7 @@ functional requirement passes. WP09 makes this mechanically enforceable.
 ### WP01 – Architecture and design reconciliation (Priority: P1)
 
 - **Goal**: Narrow the declarations that make this mission a non-goal, and add the capability, goal, requirements, and proof entries it needs.
-- **Independent test**: `spec-kitty context architecture` reloads cleanly and no longer contradicts the mission; DESIGN.md no longer states the zero-or-one bound.
+- **Independent test**: `spec-kitty crest-spec doctor` reloads cleanly and no longer contradicts the mission; DESIGN.md no longer states the zero-or-one bound.
 - **Prompt**: `tasks/WP01-architecture-reconciliation.md`
 - **Dependencies**: none
 - **Subtasks**:

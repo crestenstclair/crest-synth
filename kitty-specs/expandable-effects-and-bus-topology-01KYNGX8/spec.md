@@ -162,11 +162,11 @@ Canonical terms for this mission; avoid the listed alternatives so later work do
 | effect slot | An ordered position on a Patch holding zero or one effect | insert, FX unit, chain link |
 | bus | The stable routing destination identity | aux, group, submix |
 | send | Track-owned amount directed at one bus | aux send level, wet knob |
-| bus return | The processing and output stage of a bus | global effect, shared FX, master FX |
+| bus return | The processing and output stage of a bus | global effect, shared FX, master FX, wet destination (in code) |
 | registry entry | One available effect and its declared schema | plugin, module, processor type |
 | prepared topology | The complete ready-to-render arrangement | graph rebuild, patch graph, live graph |
 
-"Global reverb" and "global delay" are retired as concepts once they become bus returns; refer to them as the reverb return and the delay return.
+"Global reverb" and "global delay" are retired as concepts once they become bus returns; refer to them as the reverb return and the delay return. "Destination" remains acceptable in player-facing prose (as in the user stories above), but code identifiers use the bus / bus return vocabulary.
 
 ### Cross-cutting rename
 

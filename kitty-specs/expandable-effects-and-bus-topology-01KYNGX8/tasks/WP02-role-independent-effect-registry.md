@@ -84,7 +84,7 @@ that, which is why the port is deleted rather than widened.
 - **Priority**: P1
 - **Dependencies**: WP01 (the architecture spec must permit this before it lands)
 - **Related requirements**: FR-003 (descriptor-driven parameters), FR-005 (independent instance state), FR-009 (reverb and delay as registry effects)
-- **Read first**: `contracts/effect-registry.md` — obligations C-ER-1 through C-ER-5
+- **Read first**: `research/contracts/effect-registry.md` — obligations C-ER-1 through C-ER-5
 - **Reference**: `research.md` R-02 (why the port is retired, not widened)
 
 ## Branch Strategy

@@ -28,7 +28,7 @@ is the acceptance test for this plan's design, not merely for its code.
 **Project Type**: Single Rust binary + library, hexagonal, seven bounded contexts under `src/`
 **Performance Goals**: Bounded stereo render at 48 kHz with zero underruns across the live scene; topology activation at a block boundary with no partially applied state observable
 **Constraints**: Hard real-time callback — no allocation, locking, blocking, I/O, logging, panic, or destruction; fixed preallocated capacity for 16 patches x 3 slots x 8 scalars, 16 tracks x 8 sends, and 8 returns x 8 scalars; product ceiling of three slots and eight returns must not be exceeded
-**Scale/Scope**: ~25 source files touched across Synth, Mixer, RealTime, Control, Shell, and Testing contexts; ~330 occurrences of the four retired name-enumerated concepts; one new retained live demo scene
+**Scale/Scope**: ~25 source files touched across Synth, Mixer, RealTime, Control, Shell, and Testing contexts; ~348 occurrences of the four retired name-enumerated concepts (per `occurrence_map.yaml`); one new retained live demo scene
 
 ## Charter Check
 
@@ -148,13 +148,14 @@ kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/
 ├── plan.md               # This file
 ├── spec.md               # Mission specification
 ├── research.md           # Phase 0 output
-├── data-model.md         # Phase 1 output
 ├── quickstart.md         # Phase 1 output
 ├── occurrence_map.yaml   # Bulk-edit classification (required before implement)
-├── contracts/            # Phase 1 output
-│   ├── effect-registry.md
-│   ├── bus-routing.md
-│   └── realtime-snapshot.md
+├── research/             # Historical derivation notes — the crest-spec is canonical
+│   ├── data-model.md     # Phase 1 shapes; WP01 folds these into the crest-spec
+│   └── contracts/        # Phase 1 obligations; WP01 folds these into the proof model
+│       ├── effect-registry.md
+│       ├── bus-routing.md
+│       └── realtime-snapshot.md
 ├── checklists/
 │   └── requirements.md
 └── tasks/                # /spec-kitty.tasks output — NOT created here

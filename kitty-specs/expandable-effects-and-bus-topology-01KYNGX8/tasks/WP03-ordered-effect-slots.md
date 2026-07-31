@@ -74,7 +74,7 @@ exists to prevent.
 - **Priority**: P1
 - **Dependencies**: WP02 (needs the role-independent registry)
 - **Related requirements**: FR-001 (three ordered slots), FR-004 (order-faithful processing), FR-005 (independent instance state), FR-018 (chain follows the Patch across rerouting)
-- **Read first**: `data-model.md` § Patch and § Prepared graph
+- **Read first**: `research/data-model.md` § Patch and § Prepared graph
 - **Parallel with**: WP04 — different contexts, disjoint files, both unblocked by WP02
 
 ## Branch Strategy

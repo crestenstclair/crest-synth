@@ -7,7 +7,7 @@ Read in this order before touching code:
 1. `spec.md` — what the mission delivers and, in "Cross-cutting rename", what it retires
 2. `plan.md` — Architecture Reconciliation and the Implementation Concern Map
 3. `research.md` — why the design is generic rather than widened
-4. `data-model.md` and `contracts/` — the shapes and obligations
+4. `research/data-model.md` and `research/contracts/` — the shapes and obligations
 
 ## The one rule
 

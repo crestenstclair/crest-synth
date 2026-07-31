@@ -80,7 +80,7 @@ assumed acceptable.
 - **Priority**: P1
 - **Dependencies**: WP03 (slots), WP04 (buses) — both must land first
 - **Related requirements**: FR-012 (prepared topology exchange), FR-016 (graph retirement), NFR-001 (render-path safety), NFR-002 (bounded capacity), NFR-003 (atomic activation)
-- **Read first**: `contracts/realtime-snapshot.md` — obligations C-RT-1 through C-RT-14
+- **Read first**: `research/contracts/realtime-snapshot.md` — obligations C-RT-1 through C-RT-14
 - **Reference**: `research.md` R-01
 
 ## Branch Strategy

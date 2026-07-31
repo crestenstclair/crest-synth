@@ -80,7 +80,7 @@ position. Generalizing the count must not move the stage.
 - **Priority**: P1
 - **Dependencies**: WP02 (returns draw from the registry it establishes)
 - **Related requirements**: FR-006 (explicit bus identities), FR-007 (eight returns), FR-008 (sends address bus identities), FR-010 (configurable return contents), FR-011 (preserved send semantics)
-- **Read first**: `contracts/bus-routing.md` — obligations C-BR-1 through C-BR-10
+- **Read first**: `research/contracts/bus-routing.md` — obligations C-BR-1 through C-BR-10
 - **Reference**: `research.md` R-02, R-03, R-04
 - **Parallel with**: WP03 — different contexts, disjoint files
 
