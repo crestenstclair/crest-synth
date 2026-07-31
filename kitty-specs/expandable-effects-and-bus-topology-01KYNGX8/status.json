@@ -16,5 +16,19 @@
     "in_review": 0,
     "planned": 0
   },
-  "work_packages": {}
+  "work_packages": {
+    "WP05": {
+      "actor": "operator",
+      "force_count": 0,
+      "lane": "uninitialized",
+      "last_event_id": null,
+      "last_transition_at": null,
+      "review": {
+        "actor": "operator",
+        "at": "2026-07-31T08:14:43Z",
+        "reason": "Review passed (cycle 2): the rejected artifact is reviewer-renata's own cycle-1 feedback; its single issue (stale reverbSend/delaySend and full-global checks in src/bin/crest_synth.rs demo diagnostics) is fixed by eed873c exactly as prescribed and verified: demo observation false set restored to the pre-existing pair, cargo test --all-targets/lint/fmt-check green",
+        "wp_id": "WP05"
+      }
+    }
+  }
 }
