@@ -39,11 +39,11 @@ Project canonical application state into host-neutral graphical view models that
 - Prove deterministic focus recovery when responsive composition or schema changes alter visible placement.
 - Add `make demo-live-semantic-view-model`: play the real MIDI fixture while the scene traverses semantic focus, interaction modes, valid actions, return paths, status, and error projections across both contexts, proving that visible focus and canonical state remain correlated.
 
-## Current corrective gate — Canonical sixteen-track mixer routing
+## Corrective gate (completed) — Canonical sixteen-track mixer routing
 
-The active OpenSpec change corrects the Patch-shaped transitional MIXER model
-before Phase 3 builds any additional routing topology. It is the current gate
-for all later phases.
+This correction fixed the Patch-shaped transitional MIXER model before Phase 3
+built any additional routing topology. It completed with its retained live
+scene and remains a permanent regression gate.
 
 - Introduce one canonical mixer bank with exactly sixteen persistent tracks, independent of Patch count and instrument schema.
 - Give each Patch one validated output-track identity and Patch-local trim; allow multiple Patches to share a track without losing Patch identity.
@@ -57,15 +57,31 @@ rendering behavior. Phase 6 still owns assembly from the shared component
 library, responsive density refinement, multi-select where specified, and final
 functional Mixer composition.
 
-## Phase 3 — Expandable effects and bus topology
+## Phase 3 (delivered 2026-07-31, with one open gate) — Expandable effects and bus topology
 
 Grow the fixed first-effect foundation into the bounded effect and routing model required by the product interface.
+Delivered by mission `expandable-effects-and-bus-topology-01KYNGX8` (all behaviors proven; post-merge review
+PASS WITH NOTES). One HIGH finding remains and is the current corrective gate below: the retained scene drives
+slot and return occupancy by injected semantic actions instead of the player's on-screen journey.
 
 - Support up to three descriptor-driven ordered effect slots per Patch without processor-specific UI structure.
 - Introduce explicit buses, sends, returns, and routing identities, with at most eight bus returns in the prepared topology, while preserving Patch ownership and hard real-time preparation boundaries.
 - Prepare and exchange complete structural graphs off the callback; never allocate, block, destroy, or silently bypass in real-time work.
 - Keep topology changes semantic, validated, observable, and recoverable without replacing the active graph on failure.
 - Add `make demo-live-effects-and-buses`: play real multi-Patch MIDI while the scene changes ordered Patch effects, sends, buses, and returns through production structural/scalar paths, audibly proves routing and isolation, exercises one controlled rejection, and verifies graph retirement and teardown.
+
+## Current corrective gate — Phase 3 demo journey fidelity and mission hygiene
+
+The Phase 3 retained scene proves every declared behavior audibly but performs
+slot and return occupancy changes by injecting semantic actions directly,
+bypassing the player journey the phase exists to demonstrate. This gate heals
+that gap and sweeps the post-merge review's open items before Phase 4 begins.
+It is the current gate for all later phases.
+
+- Rework `demo-live-effects-and-buses` so slot occupancy changes travel the player's PATCH journey on screen: focus moves to each effect-slot row, occupancy cycles by the adjacent-choice gesture, and at least one occupant parameter is edited audibly from the PATCH page; return occupancy likewise travels the MIXER return rows. The controlled rejection may keep direct injection — the UI cannot request an unknown entry by design — with that exception documented in the scene.
+- Keep every existing checkpoint identity byte-identical (add-only), then re-run the scene on a physical device and refresh the recorded evidence; amend the mission's acceptance matrix and post-merge review addendum accordingly.
+- Sweep the review's open items: retire the transitional `post_effects()` compact view (migrate callers to `effect_slots()`; the composition-root round-trip must stop re-compacting gapped chains); propagate default-return composition errors at the production root instead of `unwrap_or_default`; add the RETURN-clear held-note continuity twin test; make the live-report measurement fields distinguish absent evidence from zero; clean stale WP-numbered handoff comments, the `DESIGN.md` "aux buses" wording, and leftover `reverbSend` test-fixture literals; gate the name-enumeration guard script on its tool dependencies.
+- Optional hardening if cheap while there: an end-to-end register-a-fourth-effect fixture converting SC-008's structural inference into a demonstration, and per-position engine-capability identity in the prepared-graph layout attestation.
 
 ## Phase 4 — Component library blockout
 

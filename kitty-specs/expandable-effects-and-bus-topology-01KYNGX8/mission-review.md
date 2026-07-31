@@ -154,6 +154,27 @@ release.
 6. RISK-1 — optional layout hardening: record engine-capability identity per position.
 7. Guard script tool-presence check (security note).
 
+## Addendum (2026-07-31, post-review operator finding)
+
+### DRIFT-6: Retained scene bypasses the PATCH-view player journey
+**Type**: DEMO-EVIDENCE GAP — **Severity**: HIGH (deferred-with-followup: ROADMAP "Current corrective gate — Phase 3 demo journey fidelity and mission hygiene")
+**Spec reference**: User Story 1 ("moves focus to an effect slot row and cycles it"), FR-002, FR-003, T046 step 4, C-010
+**Evidence**: `src/testing/live_effects_and_buses_scene.rs:267` — every slot change is a directly injected `SemanticAction::SetSlotOccupancy`; all return changes are injected `SetReturnOccupancy` literals; `PatchControlId::EffectSlot` appears nowhere in the scene; the only UI-driven topology interactions are the MIXER send walks and the PatchUtility reroute.
+**Analysis**: The scene proves every declared behavior audibly but performs the slot/return
+occupancy journey backstage, so the phase gate never demonstrates the PATCH view's new
+functionality (slot rows, adjacent-choice cycling, descriptor-driven parameter rows) on
+screen. T046 step 3's "through semantic actions and AppState::apply" was satisfied literally
+while step 4's "see the focused control, the action, the resulting state" was not. The
+reducer-level UI vocabulary is fully proven deterministically (`tests/semantic_focus_and_projection.rs`),
+so this is an evidence gap in the retained scene, not a correctness hole — but the live
+gate's FR-019/C-010 grading above (RECORDED-MANUAL, pass) is **superseded: inadequate for
+the player journey** until the scene is reworked and re-run on hardware. Found by the
+operator, missed by WP08's implementer, WP08's reviewer, and this review's first pass.
+
+**Verdict impact**: remains **PASS WITH NOTES** solely because the finding is documented
+and deferred with a concrete follow-up handle (the roadmap corrective gate, which also
+carries this review's open items 1–7). Absent that deferral it would be FAIL under rule 8.
+
 ## Retrospective Reminder
 
 The retrospective was captured at merge terminus: `kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/retrospective.yaml`
