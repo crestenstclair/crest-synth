@@ -96,6 +96,14 @@ WP08 have migrated every caller.
   this WP. It is another compact-view accessor (it addresses "the nth
   occupied slot"), so it goes with the rest. Its only non-`patch.rs` caller
   was in `src/control/app_state.rs`, already migrated by WP02.
+- And the backing state: WP02's implementer reports an `effects_compact`
+  field on the aggregate that exists only to serve the compact view. Confirm
+  it against the code and delete it with the accessors — leaving the field
+  would keep the second representation alive in storage even after its
+  accessors are gone, which is exactly what the crest-spec invariant
+  forbids. Take the full inventory yourself before deleting (grep for
+  `compact` in `src/synth/patch.rs`); the three names listed here are the
+  known set, not a guaranteed-complete one.
 
 ## Subtasks
 
