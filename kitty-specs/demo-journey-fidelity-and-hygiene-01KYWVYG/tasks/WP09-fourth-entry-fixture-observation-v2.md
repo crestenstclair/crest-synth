@@ -109,13 +109,39 @@ declared witness predicates (`schemaVersion eq 2`,
 
 ### T037 — carryOverWrongEngineIdentityRefused measured in the target
 
+**Read first — seam guidance from WP08's reviewer (2026-07-31).** Refusal is
+observable at two distinct layers, and you must be explicit about which one
+your witness field measures:
+
+- **(a) Admission-time**: `StructuralGraphCoordinator::stage_replacement` →
+  `GraphPublicationFailure::IncompatibleLayout`. A discrete, observable
+  signal.
+- **(b) Activation-time**: the rack guards inside `carry_live_state_from`.
+  The guard `continue`s silently and emits no status, so refusal is
+  observable ONLY as "the fresh instance is still there" — an audio/sample
+  level inference. **There is no counter or status field for a refused
+  carry-over.** If you need a discrete signal at this layer, that plumbing
+  does not exist and you must not fabricate it in the test — either measure
+  (a), or measure (b) by its sample-level consequence, and say which.
+
+Do not conflate either with a third, unrelated path:
+`GraphPreparationError::UnrecordableCapabilityIdentity` →
+`EngineSelectionFailure::InvalidDefaultConfig` (surfaced as
+`"invalidDefaultConfig"`), which is about an unrecordable identity, not a
+refused carry-over.
+
+WP08's handoff note names the single intended read seam (layout accessors vs
+rack accessors — it was asked to pick one). Use that seam; if both still
+exist when you start, report it rather than choosing arbitrarily.
+
 **Steps**:
 1. Using WP08's mechanism through production types, stage a carry-over
    scenario where a candidate agrees on patch/slot/scalar layout but
    mismatches the recorded per-position capability identity; measure that
    the carry-over is refused and the fresh instance is kept.
 2. Emit the measured result as `carryOverWrongEngineIdentityRefused: bool` —
-   measured, not asserted-by-construction.
+   measured, not asserted-by-construction. State in a comment which layer
+   (a or b) the measurement witnesses.
 
 **Validation**: field emitted true from a real refusal; predicate passes;
 the negative witness case (`--case refused-topology --mutant
