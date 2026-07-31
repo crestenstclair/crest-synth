@@ -57,19 +57,23 @@ tracker_refs: []
 
 ## Objective
 
-Make held notes survive an accepted topology change. Today
-`AudioRenderer::apply_structural_handoff` clears all voices at graph
-activation because the replacement graph carries freshly prepared engines; the
-crest-spec (`contexts/realtime.yaml`, PreparedGraph invariants) now declares
-the opposite: activation preserves every sounding voice of the Patches whose
-engine identity the delta leaves unchanged, with no allocation or destruction
-on the callback; only the position the delta changed may restart its local
-processing state.
+Make held notes survive a CLEARING topology change. Today
+`AudioRenderer::apply_structural_handoff` clears all voices at every graph
+activation. The crest-spec (`contexts/realtime.yaml`, PreparedGraph
+invariants) now declares the operator-ruled contract (2026-07-31): a delta
+that only CLEARS a slot or return occupancy preserves every sounding voice
+across the swap; a delta that INSTALLS or CHANGES an occupant may end
+sounding notes at the boundary (accepted — mid-performance additions are
+rare) but must never tear, click, or truncate the block; scalar value edits
+never travel the structural path and never interrupt. If your mechanism
+naturally preserves voices for installs/changes too, that is welcome but NOT
+required — do not add complexity for it.
 
 The witness field `clearedSlotPreservedHeldNotes` (measured honestly as
 `false` by WP08, emitted with a `MEASURED GAP` diagnostic) must measure `true`
 through the production path, satisfying the declared predicate at
-`spec-kitty accept`, spec acceptance scenario 1.5, and SC-001.
+`spec-kitty accept`, spec acceptance scenario 1.5, and the narrowed SC-001
+(note: the witness field measures exactly the CLEAR case).
 
 ## Context
 
@@ -91,7 +95,7 @@ through the production path, satisfying the declared predicate at
 ### T058 – Prove voice continuity deterministically
 
 - **Steps**:
-  1. Extend `tests/topology_change_lifecycle.rs`: hold notes through an accepted slot occupancy change; assert the notes remain active and audibly continuous across the activation block (sample-level continuity of the engine output for untouched Patches; no retrigger, no gap).
+  1. Extend `tests/topology_change_lifecycle.rs`: hold notes through an accepted slot CLEAR; assert the notes remain active and audibly continuous across the activation block (sample-level continuity of the engine output; no retrigger, no gap). Also assert an install/change delta, while free to end notes, does not tear, click, or truncate the block.
   2. Assert the negative space: the changed position's processing restarts cleanly; a refused change still leaves everything untouched (existing proofs must not regress).
   3. Prove callback discipline at the new path: 0 allocations, 0 deallocations, 0 drops during carry-over activation (reuse the counting-allocator harness).
 
@@ -99,7 +103,7 @@ through the production path, satisfying the declared predicate at
 
 - **Steps**:
   1. `tests/expandable_effects_and_bus_topology.rs`: `clearedSlotPreservedHeldNotes` must now measure `true` through the production observation; remove the `MEASURED GAP` diagnostic; keep the measurement honest (it must still be able to measure false if the mechanism regresses).
-  2. `src/testing/live_effects_and_buses_scene.rs`: rework the slot-clear step to hold a note across the change (the scene previously used the engine-transition model as a workaround); keep every existing checkpoint identity byte-identical — add, never rename.
+  2. `src/testing/live_effects_and_buses_scene.rs`: rework the slot-clear step to hold a note across the clear (the scene previously used the engine-transition model as a workaround); install/change steps stay as they are; keep every existing checkpoint identity byte-identical — add, never rename.
   3. Run the retained scene on the physical device (`make demo-live-effects-and-buses`) and record the observation — the live gate re-run is required because the audible contract changed.
 
 ### T060 – Regression sweep

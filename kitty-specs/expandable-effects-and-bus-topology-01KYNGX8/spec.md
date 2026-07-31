@@ -144,7 +144,7 @@ A player attempts a topology change that cannot be honored. The attempt is refus
 
 ### Measurable Outcomes
 
-- **SC-001**: A player can configure any Patch with three ordered effects and hear each addition take effect with 0 audible dropouts and 0 interrupted held notes.
+- **SC-001**: A player can configure any Patch with three ordered effects and hear each addition take effect with 0 audible dropouts of the surrounding mix and 0 torn or truncated blocks. Clearing a slot leaves held notes uninterrupted; installing or changing an occupant may end sounding notes at the boundary (operator ruling 2026-07-31: mid-performance effect additions are rare enough that note preservation is required only for clearing and for value edits).
 - **SC-002**: Exchanging the positions of two different effects produces a measurably different rendered output, confirming order is honored in 100% of trials.
 - **SC-003**: Two instances of the same effect on one Patch produce independent tails, with neither instance's output altered by the other's presence.
 - **SC-004**: Eight wet destinations are individually addressable, and a send raised toward one leaves the other seven below −60 dBFS from that source.
