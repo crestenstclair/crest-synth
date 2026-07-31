@@ -125,6 +125,21 @@ So the target is "zero callers of the Patch aggregate's compact view", NOT
 "zero occurrences of the string `post_effects`". Resolve every hit by
 receiver type before touching it.
 
+Note also that at least one surviving serialized-side read is written in UFCS
+form — `PatchInput::post_effects(patch)` in `src/shell/standalone_application.rs`
+(WP04) — which the literal `post_effects()` grep does **not** match. Do not
+read a zero-match grep as proof that the record accessor is gone; it is
+supposed to be there.
+
+**Fixture invariant you must preserve (from WP04's review).** WP04's
+composition-root rebuild places recorded occupants by matching
+`config.slot_id()` against `EffectSlotIndex::ALL`'s `instance_identity()`.
+The `src/testing/automatic_midi_test.rs` fixture — now yours — currently
+satisfies `slot_id == position + 1`. If your migration off
+`with_post_effects()` assigns slot identities that break that relationship,
+the round trip will silently RELOCATE the occupant instead of failing.
+Preserve it, and assert it in a test rather than trusting it.
+
 **Steps**:
 1. `grep -rn "post_effects()\|with_post_effects(\|set_post_effect_config" src/ tests/ --include="*.rs"`
    and triage every hit BY RECEIVER: `Patch`-typed receivers in
