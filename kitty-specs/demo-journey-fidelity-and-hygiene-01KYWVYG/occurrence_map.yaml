@@ -99,6 +99,16 @@ categories:
       is declared in the crest-spec, not performed as a rename.
 
 exceptions:
+  - path: "src/bin/crest_synth.rs"
+    action: manual_review
+    reason: >-
+      The cli_commands do_not_change ruling protects command/target/scene
+      NAMES (make targets, witness --case selectors), not this file. WP01
+      owns src/bin/crest_synth.rs for its demo-observation mirror checks
+      (T007); the path heuristic classifies any src/bin/* file as
+      cli_commands, which is too coarse here. Command surfaces and scene
+      names remain unchanged — reviewers verify that manually.
+
   - path: "tests/no_name_enumeration_guard.rs"
     action: do_not_change
     reason: >-
