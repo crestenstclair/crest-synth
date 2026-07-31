@@ -10,6 +10,9 @@ requirement_refs:
 planning_base_branch: feat/expandable-effects-and-bus-topology
 merge_target_branch: feat/expandable-effects-and-bus-topology
 branch_strategy: Planning artifacts for this mission were generated on feat/expandable-effects-and-bus-topology. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/expandable-effects-and-bus-topology unless the human explicitly redirects the landing branch.
+base_branch: kitty/mission-expandable-effects-and-bus-topology-01KYNGX8
+base_commit: 875a5e2387f125cb97f4823693c84b932f7dd5c7
+created_at: '2026-07-31T05:10:19.639138+00:00'
 subtasks:
 - T007
 - T008

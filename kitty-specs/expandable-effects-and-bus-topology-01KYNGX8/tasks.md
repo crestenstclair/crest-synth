@@ -92,6 +92,10 @@ functional requirement passes. WP09 makes this mechanically enforceable.
 | T054 | Seed it with the retired identifiers and contexts | WP09 | |
 | T055 | Register it as a project check | WP09 | |
 | T056 | Close pre-existing DESIGN.md reconciliation drift | WP01 | |
+| T057 | Design and implement voice carry-over across activation | WP10 | |
+| T058 | Prove voice continuity deterministically | WP10 | |
+| T059 | Re-measure the witness and the retained live scene | WP10 | |
+| T060 | Regression sweep at the carried-over path | WP10 | |
 
 *Reference table only. `[P]` marks parallel-safe work; it is not a status column.*
 
@@ -240,6 +244,19 @@ functional requirement passes. WP09 makes this mechanically enforceable.
   T055 Register it as a project check
 - **Risks / Notes**: Must not false-positive on `MasterGainDb` or on genuinely singular concepts. Deliberately narrow: it constrains effect and routing identity, not all naming. Estimated prompt: ~250 lines.
 
+### WP10 – Voice carry-over across topology activation (Priority: P1)
+
+- **Goal**: Held notes survive an accepted topology change, realizing the crest-spec voice-continuity invariant so `clearedSlotPreservedHeldNotes` measures true.
+- **Independent test**: Hold a note, change a slot's occupancy, and confirm the note continues sample-continuously across activation; the witness predicate passes.
+- **Prompt**: `tasks/WP10-voice-carry-over.md`
+- **Dependencies**: WP08, WP09
+- **Subtasks**:
+  T057 Design and implement voice carry-over across activation
+  T058 Prove voice continuity deterministically
+  T059 Re-measure the witness and the retained live scene
+  T060 Regression sweep at the carried-over path
+- **Risks / Notes**: Corrective WP added after the WP08 witness honestly measured the gap and the operator chose implementation over declaration revision. The mechanism decision (component reuse vs bounded voice-state transfer) must be recorded. The live scene re-run (physical device) is required because the audible contract changed.
+
 ## Dependencies & Execution Order
 
 ```
@@ -249,8 +266,8 @@ WP01 (reconciliation)
         └── WP04 (buses) ─┴── WP05 (transport)
                                  └── WP06 (lifecycle)
                                        └── WP07 (focus/projection)
-                                             ├── WP08 (live scene)
-                                             └── WP09 (guard)
+                                             ├── WP08 (live scene) ─┐
+                                             └── WP09 (guard) ───────┴── WP10 (voice carry-over)
 ```
 
 - WP01 must land before or alongside the first implementation WP, never after (C-009).

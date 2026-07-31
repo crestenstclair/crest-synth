@@ -21,134 +21,7 @@
       "parallel_group": 0
     },
     {
-      "lane_id": "lane-a",
-      "wp_ids": [
-        "WP02"
-      ],
-      "write_scope": [
-        "src/adapter/delay_capability.rs",
-        "src/adapter/delay_preparer.rs",
-        "src/adapter/global_reverb_delay.rs",
-        "src/adapter/mod.rs",
-        "src/adapter/production_effects.rs",
-        "src/adapter/reverb_capability.rs",
-        "src/adapter/reverb_preparer.rs",
-        "src/synth/effect_capability.rs",
-        "src/synth/effect_capability_id.rs",
-        "src/synth/effect_capability_provider.rs",
-        "src/synth/effect_preparer.rs",
-        "src/synth/prepared_post_effect.rs"
-      ],
-      "predicted_surfaces": [
-        "api",
-        "app-shell",
-        "artifact-rendering",
-        "legacy-cleanup",
-        "workspace"
-      ],
-      "depends_on_lanes": [
-        "lane-planning"
-      ],
-      "parallel_group": 1
-    },
-    {
       "lane_id": "lane-b",
-      "wp_ids": [
-        "WP03"
-      ],
-      "write_scope": [
-        "src/real_time/patch_effect_observation.rs",
-        "src/real_time/prepared_post_effect_rack.rs",
-        "src/synth/effect_composition.rs",
-        "src/synth/effect_slot_id.rs",
-        "src/synth/patch.rs",
-        "src/synth/prepared_post_effect_rack_builder.rs"
-      ],
-      "predicted_surfaces": [
-        "api",
-        "app-shell",
-        "artifact-rendering",
-        "workspace"
-      ],
-      "depends_on_lanes": [
-        "lane-a"
-      ],
-      "parallel_group": 2
-    },
-    {
-      "lane_id": "lane-c",
-      "wp_ids": [
-        "WP04"
-      ],
-      "write_scope": [
-        "src/mixer/**",
-        "src/real_time/prepared_bus_return_rack.rs"
-      ],
-      "predicted_surfaces": [
-        "api",
-        "legacy-cleanup",
-        "workspace"
-      ],
-      "depends_on_lanes": [
-        "lane-a"
-      ],
-      "parallel_group": 2
-    },
-    {
-      "lane_id": "lane-d",
-      "wp_ids": [
-        "WP05"
-      ],
-      "write_scope": [
-        "src/real_time/audio_renderer.rs",
-        "src/real_time/callback_safety.rs",
-        "src/real_time/parameter_snapshot.rs",
-        "src/real_time/patch_audio_block.rs",
-        "src/real_time/prepared_graph.rs",
-        "src/real_time/prepared_graph_builder.rs"
-      ],
-      "predicted_surfaces": [
-        "api",
-        "app-shell",
-        "artifact-rendering",
-        "legacy-cleanup",
-        "workspace"
-      ],
-      "depends_on_lanes": [
-        "lane-b",
-        "lane-c"
-      ],
-      "parallel_group": 3
-    },
-    {
-      "lane_id": "lane-e",
-      "wp_ids": [
-        "WP06"
-      ],
-      "write_scope": [
-        "src/control/app_event.rs",
-        "src/control/engine_selection.rs",
-        "src/control/semantic_action.rs",
-        "src/control/serialized_state.rs",
-        "src/control/state_projector.rs",
-        "src/control/state_tree.rs",
-        "src/real_time/graph_handoff_status.rs",
-        "src/real_time/graph_preparation_worker.rs",
-        "src/real_time/graph_revision.rs",
-        "src/real_time/structural_graph_coordinator.rs"
-      ],
-      "predicted_surfaces": [
-        "api",
-        "artifact-rendering",
-        "workspace"
-      ],
-      "depends_on_lanes": [
-        "lane-d"
-      ],
-      "parallel_group": 4
-    },
-    {
-      "lane_id": "lane-f",
       "wp_ids": [
         "WP07"
       ],
@@ -171,39 +44,12 @@
         "workspace"
       ],
       "depends_on_lanes": [
-        "lane-e"
+        "lane-a"
       ],
-      "parallel_group": 5
+      "parallel_group": 1
     },
     {
-      "lane_id": "lane-g",
-      "wp_ids": [
-        "WP08"
-      ],
-      "write_scope": [
-        "Makefile",
-        "src/bin/crest_synth.rs",
-        "src/testing/**",
-        "tests/behavioral_mutation_harness.rs",
-        "tests/effects_and_buses.rs",
-        "tests/exhaustive_demo_scene.rs",
-        "tests/live_demo_scene.rs",
-        "tests/production_runtime_contracts.rs",
-        "tests/sixteen_track_mixer_routing.rs",
-        "tests/static_patch_effect.rs"
-      ],
-      "predicted_surfaces": [
-        "api",
-        "artifact-rendering",
-        "workspace"
-      ],
-      "depends_on_lanes": [
-        "lane-f"
-      ],
-      "parallel_group": 6
-    },
-    {
-      "lane_id": "lane-h",
+      "lane_id": "lane-c",
       "wp_ids": [
         "WP09"
       ],
@@ -216,14 +62,137 @@
         "workspace"
       ],
       "depends_on_lanes": [
-        "lane-f"
+        "lane-b"
       ],
-      "parallel_group": 6
+      "parallel_group": 2
+    },
+    {
+      "lane_id": "lane-a",
+      "wp_ids": [
+        "WP02",
+        "WP03",
+        "WP04",
+        "WP05",
+        "WP06",
+        "WP08",
+        "WP10"
+      ],
+      "write_scope": [
+        "Makefile",
+        "src/adapter/delay_capability.rs",
+        "src/adapter/delay_preparer.rs",
+        "src/adapter/global_reverb_delay.rs",
+        "src/adapter/mod.rs",
+        "src/adapter/production_effects.rs",
+        "src/adapter/reverb_capability.rs",
+        "src/adapter/reverb_preparer.rs",
+        "src/bin/crest_synth.rs",
+        "src/control/app_event.rs",
+        "src/control/engine_selection.rs",
+        "src/control/semantic_action.rs",
+        "src/control/serialized_state.rs",
+        "src/control/state_projector.rs",
+        "src/control/state_tree.rs",
+        "src/mixer/**",
+        "src/real_time/**",
+        "src/real_time/audio_renderer.rs",
+        "src/real_time/callback_safety.rs",
+        "src/real_time/graph_handoff_status.rs",
+        "src/real_time/graph_preparation_worker.rs",
+        "src/real_time/graph_revision.rs",
+        "src/real_time/parameter_snapshot.rs",
+        "src/real_time/patch_audio_block.rs",
+        "src/real_time/patch_effect_observation.rs",
+        "src/real_time/prepared_bus_return_rack.rs",
+        "src/real_time/prepared_graph.rs",
+        "src/real_time/prepared_graph_builder.rs",
+        "src/real_time/prepared_post_effect_rack.rs",
+        "src/real_time/structural_graph_coordinator.rs",
+        "src/synth/effect_capability.rs",
+        "src/synth/effect_capability_id.rs",
+        "src/synth/effect_capability_provider.rs",
+        "src/synth/effect_composition.rs",
+        "src/synth/effect_preparer.rs",
+        "src/synth/effect_slot_id.rs",
+        "src/synth/patch.rs",
+        "src/synth/prepared_engine_rack_builder.rs",
+        "src/synth/prepared_post_effect.rs",
+        "src/synth/prepared_post_effect_rack_builder.rs",
+        "src/testing/**",
+        "tests/behavioral_mutation_harness.rs",
+        "tests/effects_and_buses.rs",
+        "tests/exhaustive_demo_scene.rs",
+        "tests/expandable_effects_and_bus_topology.rs",
+        "tests/graphical_application_shell.rs",
+        "tests/live_demo_scene.rs",
+        "tests/production_runtime_contracts.rs",
+        "tests/sixteen_track_mixer_routing.rs",
+        "tests/static_patch_effect.rs",
+        "tests/topology_change_lifecycle.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "legacy-cleanup",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-b",
+        "lane-c",
+        "lane-planning"
+      ],
+      "parallel_group": 3
     }
   ],
-  "computed_at": "2026-07-29T02:21:35.975804+00:00",
+  "computed_at": "2026-07-31T16:26:39.651832+00:00",
   "computed_from": "dependency_graph+ownership",
   "planning_artifact_wps": [
     "WP01"
-  ]
+  ],
+  "collapse_report": {
+    "events": [
+      {
+        "wp_a": "WP02",
+        "wp_b": "WP04",
+        "rule": "write_scope_overlap",
+        "evidence": "overlapping globs: 'src/adapter/global_reverb_delay.rs' vs 'src/adapter/global_reverb_delay.rs', 'src/adapter/production_effects.rs' vs 'src/adapter/production_effects.rs'; WP04 depends on WP02"
+      },
+      {
+        "wp_a": "WP02",
+        "wp_b": "WP05",
+        "rule": "write_scope_overlap",
+        "evidence": "overlapping globs: 'src/adapter/global_reverb_delay.rs' vs 'src/adapter/global_reverb_delay.rs', 'src/adapter/production_effects.rs' vs 'src/adapter/production_effects.rs'"
+      },
+      {
+        "wp_a": "WP03",
+        "wp_b": "WP10",
+        "rule": "write_scope_overlap",
+        "evidence": "overlapping globs: 'src/real_time/prepared_post_effect_rack.rs' vs 'src/real_time/**', 'src/real_time/patch_effect_observation.rs' vs 'src/real_time/**'"
+      },
+      {
+        "wp_a": "WP04",
+        "wp_b": "WP10",
+        "rule": "write_scope_overlap",
+        "evidence": "overlapping globs: 'src/real_time/prepared_bus_return_rack.rs' vs 'src/real_time/**'"
+      },
+      {
+        "wp_a": "WP06",
+        "wp_b": "WP10",
+        "rule": "write_scope_overlap",
+        "evidence": "overlapping globs: 'src/real_time/structural_graph_coordinator.rs' vs 'src/real_time/**', 'src/real_time/graph_preparation_worker.rs' vs 'src/real_time/**', 'src/real_time/graph_handoff_status.rs' vs 'src/real_time/**', 'src/real_time/graph_revision.rs' vs 'src/real_time/**'"
+      },
+      {
+        "wp_a": "WP08",
+        "wp_b": "WP10",
+        "rule": "write_scope_overlap",
+        "evidence": "overlapping globs: 'src/testing/**' vs 'src/testing/**', 'tests/effects_and_buses.rs' vs 'tests/effects_and_buses.rs'; WP10 depends on WP08"
+      }
+    ],
+    "total_merges": 6,
+    "independent_wps_collapsed": 0,
+    "by_rule": {
+      "write_scope_overlap": 6
+    }
+  }
 }
