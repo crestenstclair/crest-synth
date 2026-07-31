@@ -99,6 +99,21 @@ exceptions:
       Adds new phase checkpoints while every existing checkpoint identity must
       survive byte-identical for earlier retained scenes.
 
+  - path: "Makefile"
+    action: manual_review
+    reason: >-
+      cli_commands protection means no existing target changes; this mission
+      ADDS demo-live-effects-and-buses and repoints the demo-live alias to the
+      newest cumulative scene (both declared in the crest-spec BuildMakefile
+      asset). Review by hand that every prior target survives byte-identical.
+
+  - path: "src/bin/crest_synth_witness.rs"
+    action: manual_review
+    reason: >-
+      The witness binary must gain the refused-topology case and mutant that
+      proof/witnesses.yaml declares for this mission. Existing witness cases
+      stay byte-identical; review by hand that only declared cases were added.
+
   - path: "src/bin/crest_synth.rs"
     action: manual_review
     reason: >-
