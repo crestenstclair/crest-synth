@@ -109,11 +109,29 @@ WP08 have migrated every caller.
 
 ### T021 — Delete post_effects()/with_post_effects() from Patch
 
+**⚠️ NAME COLLISION — read before grepping.** Two unrelated methods share the
+name `post_effects()`:
+
+- `Patch::post_effects()` (`src/synth/patch.rs:148`) — the compact view.
+  **DELETE THIS.**
+- `PatchInput::post_effects()` (`src/control/event_record.rs:190`) — frozen
+  serialized-input vocabulary, `do_not_change` per `occurrence_map.yaml`, and
+  read by the retained live scene
+  (`src/testing/live_effects_and_buses_scene.rs:377`, WP01). **THIS MUST
+  SURVIVE.** Deleting it breaks the frozen serialization contract and the
+  Phase 3 evidence gate.
+
+So the target is "zero callers of the Patch aggregate's compact view", NOT
+"zero occurrences of the string `post_effects`". Resolve every hit by
+receiver type before touching it.
+
 **Steps**:
 1. `grep -rn "post_effects()\|with_post_effects(\|set_post_effect_config" src/ tests/ --include="*.rs"`
-   and triage every hit: `src/synth/patch.rs` (definitions/internal uses) and
-   your seven other owned files are yours to migrate; a hit in another WP's
-   owned file means stop and report (see Context).
+   and triage every hit BY RECEIVER: `Patch`-typed receivers in
+   `src/synth/patch.rs` (definitions/internal uses) and your seven other
+   owned files are yours to migrate; `PatchInput`/serialized-side receivers
+   stay untouched; a `Patch`-typed hit in another WP's owned file means stop
+   and report (see Context).
 2. Migrate your owned files' constructor call sites to per-position
    construction (`set_slot_occupancy` or the equivalent per-position builder
    entry point) — position-preserving, no local compaction, assertions never
@@ -149,8 +167,12 @@ reintroduced.
 ### T023 — Repo-wide zero-caller verification + patch.rs comment cleanup
 
 **Steps**:
-1. Re-run the repo-wide grep from T021 as a final check and paste the (empty)
-   result into the WP completion notes.
+1. Re-run the repo-wide grep from T021 as a final check and paste the result
+   into the WP completion notes. Expected residue: the surviving
+   `PatchInput::post_effects()` definition and its serialized-side callers
+   (see the name-collision warning in T021) — nothing `Patch`-typed. State
+   explicitly in your notes which surviving hits you verified as
+   serialized-side.
 2. Remove the remaining stale WP-numbered comment in `patch.rs`
    (planning-time count: 1) and any timeline narration in the touched
    regions.
@@ -176,8 +198,11 @@ gapped-stability unit tests complete the proof.
 
 ## Definition of Done
 
-- `post_effects()` and `with_post_effects()` no longer exist anywhere in the
-  repository.
+- The Patch aggregate's compact view is gone: `Patch::post_effects()`,
+  `with_post_effects()`, `set_post_effect_config()`, and the `effects_compact`
+  backing field no longer exist. `PatchInput::post_effects()` (frozen
+  serialized vocabulary) is intentionally still present and still read by the
+  retained scene.
 - Patch module tests pin gapped stability and identity stability.
 - Durable single-view documentation in place; no stale WP comments.
 - Full suite and release behavioral target green.

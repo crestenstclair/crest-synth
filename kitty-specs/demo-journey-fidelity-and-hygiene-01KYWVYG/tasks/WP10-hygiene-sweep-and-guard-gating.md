@@ -161,7 +161,12 @@ constraint knowledge lost (reviewer judges).
    - `grep -rn "WP0[0-9]\|WP10" src/ --include="*.rs"` → empty
    - `grep -rn "reverbSend" src/ tests/` → only the guard fixture
    - `grep -in "aux bus" DESIGN.md` → empty
-   - `grep -rn "post_effects()\|with_post_effects(" src/ tests/` → empty
+   - `grep -rn "post_effects()\|with_post_effects(" src/ tests/` → the only
+     surviving hits are `PatchInput::post_effects()`
+     (`src/control/event_record.rs`, frozen serialized vocabulary, read by
+     the retained scene) and its serialized-side callers. Any `Patch`-typed
+     hit means WP05's retirement is incomplete — report it, do not "fix" it
+     by deleting the serialized method.
 2. Any hit outside your ownership: report it against the owning WP (do not
    fix cross-ownership from here).
 
