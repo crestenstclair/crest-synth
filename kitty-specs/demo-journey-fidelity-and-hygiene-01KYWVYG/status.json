@@ -1,19 +1,19 @@
 {
-  "event_count": 44,
-  "last_event_id": "01KYX5869SZDNDRBMK96T6TTTR",
-  "materialized_at": "2026-07-31T22:38:21.497937+00:00",
+  "event_count": 45,
+  "last_event_id": "01KYX5MRKQP2HJBM6SDK0G6C16",
+  "materialized_at": "2026-07-31T22:45:13.463392+00:00",
   "mission_number": "",
   "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
   "mission_type": "software-dev",
   "summary": {
-    "approved": 5,
+    "approved": 6,
     "blocked": 0,
     "canceled": 0,
     "claimed": 0,
     "done": 0,
     "for_review": 0,
     "in_progress": 0,
-    "in_review": 2,
+    "in_review": 1,
     "planned": 4
   },
   "work_packages": {
@@ -46,14 +46,14 @@
       }
     },
     "WP02": {
-      "actor": "claude",
+      "actor": "user",
       "agent": "claude",
       "agent_profile": "reviewer-renata",
       "agent_profile_version": "1.0",
       "force_count": 0,
-      "lane": "in_review",
-      "last_event_id": "01KYX4VV86GSQAA7BT0PAQ8STZ",
-      "last_transition_at": "2026-07-31T22:31:36.966499+00:00",
+      "lane": "approved",
+      "last_event_id": "01KYX5MRKQP2HJBM6SDK0G6C16",
+      "last_transition_at": "2026-07-31T22:45:13.463392+00:00",
       "model": "__resolved_model_absent__",
       "notes": [
         "Migrated all 10 post_effects() call sites in the six owned src/control/ files to the per-position effect_slots() view; grep -n 'post_effects()' src/control/*.rs is clean. No local re-compaction: dense frozen postEffects payloads (event_record PatchInput, serialized_state SerializedPatch) are derived once for output from effect_slots() in position order and never indexed back into by dense position; keys/structure/ordering byte-identical. app_state gains validate_effect_slots(), a per-position peer of the registry's compacted validator (accepts gaps, rejects duplicate slot identities); adjust_patch_effect now resolves the occupant's true EffectSlotIndex by stable identity and mutates via set_slot_occupancy. Added 9 gapped-case module tests (slot 0 empty + slot 1 occupied) covering install, scalar edit, focus resolution, PATCH projection, semantic view model, and serialization, plus an interior-gap case; each fails if anyone re-compacts. ZERO projection/serialization expectation-file changes. Stale WP comment removed from semantic_graphical_view_model.rs:855; grep for WP0/WP1 in owned files is clean. OUT-OF-MAP (6 lines, coordinator-approved): src/synth/patch.rs set_post_effect_config is now DEAD — this migration removed its last production caller — so it carries #[allow(dead_code)] plus a doc note to keep the build warning-free. WP05 MUST DELETE set_post_effect_config along with post_effects()/with_post_effects() and the effects_compact field; it is not to be preserved. Validation: cargo test --all-targets green (26 targets, 0 failures, all 9 new tests confirmed running by name); cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --all -- --check exit 0. Commit c08514d."
