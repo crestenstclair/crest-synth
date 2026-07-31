@@ -1,7 +1,7 @@
 {
-  "event_count": 35,
-  "last_event_id": "01KYX1D6WK8RYD6ENSMNEFZPMG",
-  "materialized_at": "2026-07-31T21:31:11.635091+00:00",
+  "event_count": 36,
+  "last_event_id": "01KYX1EM8BJ26AD83BTHQX2QVH",
+  "materialized_at": "2026-07-31T21:31:58.091305+00:00",
   "mission_number": "",
   "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
   "mission_type": "software-dev",
@@ -11,29 +11,29 @@
     "canceled": 0,
     "claimed": 0,
     "done": 0,
-    "for_review": 2,
+    "for_review": 1,
     "in_progress": 2,
-    "in_review": 1,
+    "in_review": 2,
     "planned": 4
   },
   "work_packages": {
     "WP01": {
       "actor": "claude",
       "agent": "claude",
-      "agent_profile": "implementer-ivan",
+      "agent_profile": "reviewer-renata",
       "agent_profile_version": "1.0",
       "force_count": 0,
-      "lane": "for_review",
-      "last_event_id": "01KYX19HGQG8ZZX1XZZEHV1415",
-      "last_transition_at": "2026-07-31T21:29:11.447334+00:00",
+      "lane": "in_review",
+      "last_event_id": "01KYX1EM8BJ26AD83BTHQX2QVH",
+      "last_transition_at": "2026-07-31T21:31:58.091305+00:00",
       "model": "__resolved_model_absent__",
       "notes": [
         "WP01 ready: all occupancy changes journey-driven (focus-walk + VerifyPatchFocus/VerifyMixerFocus + Edit-mode adjacent-choice gesture); runner verifies committed occupancy against declared intent at Activating. Frozen baseline: 17 topology checkpoint identities captured by running the deterministic scene at the claim state BEFORE rework (parent evidence logs were never committed), enumerated in tests/effects_and_buses.rs as FROZEN_TOPOLOGY_IDENTITY_BASELINE; add-only proven by filter-equality on declared AND emitted sequences; 13 pure insertions (adjacent-cycle passes + SlotOccupant.scalarEdited audible PATCH-page edit) = 30 transitions. Exactly one direct injection remains (Topology.refused, UI-inexpressible unknown entry, documented inline; asserted mechanically). crest_synth.rs mirror comments rewritten durably; checks stay exact (no count-keyed expectations exist). Validations: cargo test --all-targets green; cargo test --release --test expandable_effects_and_bus_topology green (schemaVersion 1); clippy -D warnings exit 0; cargo fmt --check exit 0. Out-of-map (tiny, necessary): src/testing/live_demo_runner.rs gesture dispatch for journey transitions + two focus-walk support handlers; scene-only vocabulary cannot express a gesture-driven structural lifecycle."
       ],
       "provider": "__resolved_provider_absent__",
-      "role": "implementer",
-      "shell_pid": 13847,
-      "shell_pid_created_at": "1785531124.384626",
+      "role": "reviewer",
+      "shell_pid": 89476,
+      "shell_pid_created_at": "1785533515.75181",
       "subtasks": {
         "T001": "done",
         "T002": "done",
@@ -94,6 +94,9 @@
       "last_event_id": "01KYX1D6WK8RYD6ENSMNEFZPMG",
       "last_transition_at": "2026-07-31T21:31:11.635091+00:00",
       "model": "__resolved_model_absent__",
+      "notes": [
+        "T017 pre-fix failure evidence (REQUIRED): gapped_chain_survives_the_composition_root_round_trip FAILED against unfixed code at tests/production_runtime_contracts.rs — 'position 0 occupancy must survive the composition-root round trip exactly / left: Some(PostEffectConfig { slot_id: EffectSlotId(2), capability_id: EffectCapabilityId(\"effect.chorus\"), ... }) right: None' — i.e. the slot-1 occupant was re-compacted into slot 0. Passes post-fix.\n\nT018: installed_patches_from_log (standalone_application.rs, formerly :1470) now rebuilds each recorded effect at the position its recorded slotId instance identity names (EffectSlotIndex::instance_identity law) via set_slot_occupancy, replacing with_post_effects(post_effects().to_vec()). A record whose identity names no bounded position fails loudly with the new typed ApplicationError::RecordedEffectPosition. Zero post_effects()/with_post_effects call sites remain in either owned source file (grep exit 1). NOTE FOR WP05: with_post_effects has no remaining production caller in shell/adapter; remaining callers are test/fixture code (src/testing/automatic_midi_test.rs, src/control tests, tests/*).\n\nT019: split by construction — production_startup_bus_returns(registry) -> Result<BusReturnBank, ProductionEffectCompositionError> is strict and is the ONLY variant the production root (prepare_startup, formerly :715) consumes, mapping failures to ApplicationError::DefaultBusReturns(..). No unwrap_or_default remains on the production path. The permissive startup_bus_returns() keeps its unwrap_or_default for partial TEST registries only; it is unreachable from the production root because the root's call site is typed Result and propagates with ?. New tests: defective_default_return_composition_aborts_startup_with_the_named_error (a chorus-only registry -> ApplicationError::DefaultBusReturns(ReturnOccupancy(_)), device never started, no instruments prepared) and declared_default_return_composition_boots_the_production_root (healthy contrast, full production registry at 48 kHz). Adapter unit test startup_returns_split_is_strict_for_production_and_permissive_for_tests covers empty/partial/full registries for both variants.\n\nT020: stale WP-numbered comments removed from both owned source files (3 + 3); grep for WP[0-9] in owned files returns nothing.\n\nValidation: cargo test --all-targets = 496 passed / 0 failed; cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --all -- --check exit 0; grep -n 'post_effects()' over both owned source files exit 1 (no output). Committed as 10ce42d (targeted staging of the 3 owned files only)."
+      ],
       "provider": "__resolved_provider_absent__",
       "role": "implementer",
       "shell_pid": 14328,
