@@ -1004,3 +1004,68 @@ requirements:
     - prepared_engine_rack
     - braids_engine
     - per_voice_envelope
+  ordered_patch_effect_slots:
+    kind: functional
+    description: A Patch SHALL own exactly three ordered effect slots addressed by EffectSlotIndex, each
+      independently empty or occupied by one registry entry; slots SHALL process the Patch stem in place
+      in ascending index order, two occupied slots holding the same entry SHALL own disjoint internal
+      state, clearing a slot SHALL NOT compact the others, and a fourth slot SHALL be unrepresentable
+      rather than rejected at runtime
+    goals:
+    - expand_effects_and_buses
+    capabilities:
+    - expandable_effects_and_bus_topology
+  role_independent_effect_registry:
+    kind: functional
+    description: One EffectCapabilityRegistry SHALL serve both Patch effect slots and bus returns; an
+      entry SHALL declare identity, visible parameters, bounds, units, and preparation requirements and
+      SHALL NOT declare a role, send-suitability, or return-only marker; reverb and delay SHALL be ordinary
+      entries peer to Chorus, and their rendered output SHALL be unchanged by the move
+    goals:
+    - expand_effects_and_buses
+    capabilities:
+    - expandable_effects_and_bus_topology
+  bounded_bus_routing_identities:
+    kind: functional
+    description: The Mixer SHALL own exactly eight bus returns identified by BusId 0 through 7; a track
+      SHALL own one indexed send per BusId taken post-fader and post-gate, an unoccupied return SHALL
+      contribute silence rather than pass its input through, a return SHALL own its return level, and
+      no return SHALL feed any send so that no routing cycle is expressible
+    goals:
+    - expand_effects_and_buses
+    capabilities:
+    - expandable_effects_and_bus_topology
+  widened_bounded_realtime_topology:
+    kind: nonfunctional
+    description: One fixed latest-value ParameterSnapshot SHALL carry sixteen Patches by three slots by
+      eight scalars, sixteen tracks by eight sends, and eight returns with fixed destructor-free layout;
+      structural matching between snapshot and prepared racks SHALL remain exact rather than permissive
+      at the widened size, activation SHALL occur at a block boundary with zero partially applied topology
+      observable, and the render path SHALL perform zero allocation, locking, blocking, I/O, logging,
+      panic, or destruction including during topology activation
+    goals:
+    - expand_effects_and_buses
+    capabilities:
+    - expandable_effects_and_bus_topology
+  no_name_enumerated_effect_identity:
+    kind: nonfunctional
+    description: No type, variant, field, or descriptor entry in Synth, Mixer, RealTime, or Control SHALL
+      be named after a concrete effect or bus; effects, slots, sends, and returns SHALL be addressed by
+      index into descriptor-driven arrays, master gain SHALL be the single declared exception, and adding
+      a registry entry SHALL require no change to any of those types
+    goals:
+    - expand_effects_and_buses
+    capabilities:
+    - expandable_effects_and_bus_topology
+  expandable_effects_behavioral_proof:
+    kind: nonfunctional
+    description: make demo-live-effects-and-buses SHALL play the real MIDI fixture through the production
+      window, reducer, and physical stream while exercising ordered slots, an audible order change,
+      eight destinations, a return content change, and one controlled rejection; measured evidence SHALL
+      include per-bus isolation below -60 dBFS, order sensitivity, instance independence, and two-run
+      logical determinism, and the scene SHALL end with zero active notes, released stream and worker,
+      collected graphs, and normal parent-process exit
+    goals:
+    - expand_effects_and_buses
+    capabilities:
+    - expandable_effects_and_bus_topology

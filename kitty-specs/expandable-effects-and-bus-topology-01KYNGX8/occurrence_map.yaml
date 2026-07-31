@@ -105,7 +105,7 @@ exceptions:
       Durable design decisions. Lines 309, 418, 689, and 691 are superseded by
       this mission and must be rewritten deliberately, not mechanically.
 
-  - path: ".kittify/architecture/**"
+  - path: ".kittify/crest-spec/**"
     action: manual_review
     reason: >-
       The architecture spec declares this mission a non-goal. Each declaration is

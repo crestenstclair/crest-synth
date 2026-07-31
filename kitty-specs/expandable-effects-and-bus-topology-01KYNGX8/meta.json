@@ -15,5 +15,6 @@
   "source_description": "Roadmap Phase 3 - Expandable effects and bus topology. Opened from ROADMAP.md after Phase 1, Phase 2, and the corrective sixteen-track mixer routing gate completed.",
   "target_branch": "feat/expandable-effects-and-bus-topology",
   "topology": "coord",
-  "vcs": "git"
+  "vcs": "git",
+  "crest_spec_impact": "structural"
 }

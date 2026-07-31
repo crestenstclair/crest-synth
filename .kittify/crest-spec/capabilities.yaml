@@ -595,3 +595,68 @@ capabilities:
             effect consequences; make demo-live completes and exits normally after physical playback
         evidence:
         - evidence.static_patch_effect_contract
+  expandable_effects_and_bus_topology:
+    description: Own, edit, project, render, and prove up to three ordered descriptor-driven effect slots
+      per Patch and eight bounded bus returns through one role-independent effect registry, with no effect
+      or routing identity named in any type
+    goals:
+    - expand_effects_and_buses
+    acceptance:
+      ordered_patch_effect_chain:
+        description: three ordered slots per Patch process in slot order with independent instance state
+        actor: maintainer
+        steps:
+        - action: cycle a slot through empty and each installed registry entry with Edit+Left/Right
+          observes: the adjacent-choice contract matches the engine row without wrapping, Edit+Up/Down
+            is unavailable, and the correlated structural-edit lifecycle prepares one complete graph
+            off the callback
+        - action: occupy all three slots on one Patch and exchange two of them
+          observes: each slot processes the stem in place in ascending index order and the exchanged
+            order produces a measurably different render, proving order is honored rather than assumed
+        - action: configure the same registry entry in two slots and sound overlapping notes
+          observes: each instance owns its delay lines, LFO phase, and tail, and neither is altered by
+            the other's presence
+        - action: clear the middle slot while its scalar parameters hold focus
+          observes: position stays a stable address rather than compacting, focus resolves deterministically
+            to a valid neighbouring row, and held notes are not interrupted
+        evidence:
+        - evidence.expandable_effects_and_bus_topology_contract
+      bounded_bus_routing:
+        description: eight addressable returns draw from the same registry and preserve post-gate send
+          semantics
+        actor: maintainer
+        steps:
+        - action: inspect the return bank with no sends raised
+          observes: eight returns are addressable by BusId, the first two carry the reverb and delay
+            behavior formerly owned by the mixer, and every unoccupied return contributes silence rather
+            than passing its accumulated input through
+        - action: raise one track send toward one return
+          observes: only that return produces wet signal, the other seven measure below -60 dBFS from
+            that source, and the send scales only that track's own contribution
+        - action: mute a track and solo another while both sends are raised
+          observes: sends remain post-fader and post-gate, mute always wins, solo exclusion suppresses
+            wet contribution, and pre-gate meters still read so muted tracks stay diagnosable
+        - action: change which registry entry occupies a return
+          observes: the same adjacent-choice contract applies, the return level survives the change
+            because it is return-owned, and the dry mix is not interrupted
+        - action: attempt an out-of-range BusId and an unpreparable entry
+          observes: each is a typed unchanged rejection attributable to its position, no graph is
+            published, the active graph keeps rendering, and a following valid change succeeds
+        evidence:
+        - evidence.expandable_effects_and_bus_topology_contract
+      open_effect_registry:
+        description: adding an effect requires no structural change anywhere
+        actor: maintainer
+        steps:
+        - action: add one registry entry and resolve it into a Patch slot and into a bus return
+          observes: both roles prepare from the same descriptor with no role marker, and slot, routing,
+            snapshot, preparation, projection, and render structure are unchanged
+        - action: run the no-name-enumeration validation over Synth, Mixer, RealTime, and Control
+          observes: no type, variant, field, or descriptor entry in those contexts is named after a
+            concrete effect or bus, with master gain the single declared exception
+        - action: run make demo-live-effects-and-buses
+          observes: the real window and physical stream expose ordered slots, eight destinations, an
+            audible order change, a controlled rejection, finite nonzero audio, exact cleanup, stream
+            release, graph collection, and normal exit
+        evidence:
+        - evidence.expandable_effects_and_bus_topology_contract

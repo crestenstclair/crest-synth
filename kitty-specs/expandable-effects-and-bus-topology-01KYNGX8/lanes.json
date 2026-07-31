@@ -11,7 +11,7 @@
         "WP01"
       ],
       "write_scope": [
-        ".kittify/architecture/**",
+        ".kittify/crest-spec/**",
         "DESIGN.md"
       ],
       "predicted_surfaces": [

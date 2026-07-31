@@ -49,7 +49,7 @@ apply and the ones that bind this plan are:
 Re-checked after Phase 1: no new violations. Complexity Tracking records the one
 standing tension.
 
-## Architecture Reconciliation
+## Crest-Spec Derivation
 
 `CLAUDE.md` requires this section, and here it is load-bearing rather than
 ceremonial: the architecture spec currently declares this mission a **non-goal**.
@@ -62,12 +62,12 @@ planning, not a downstream task. C-009 restates this as a mission constraint.
 
 | Source | Current declaration | Required change |
 |---|---|---|
-| `.kittify/architecture/project.yaml:17-19` | `nonGoals.additional_effects` — "does not provide another insert type, more than one slot per Patch, bypass, selection, reordering, effect chains" | Narrow to: the roster of additional effect *types* remains out of scope; slots, selection, and ordering are now in scope up to the declared ceiling |
-| `.kittify/architecture/project.yaml:32-35` | `nonGoals.later_roadmap_phases` — excludes "Phase 3 expansion beyond at most three effect slots per Patch and eight bus returns" | Remove the Phase 3 clause; keep Phases 4-9 excluded |
-| `.kittify/architecture/project.yaml:47-52` | `meta.avoid` — "effect selection, bypass, multiple slots, reordering, or arbitrary routing"; "arbitrary buses" | Replace with the sharper rule this mission actually needs: avoid *name-enumerated* effect and routing identities; buses remain bounded and validated, never arbitrary |
-| `.kittify/architecture/project.yaml:2-10` | `mission` — describes "one configured first-Patch Chorus" and "one fixed sixteen-track mixer" | Restate the executable slice to include ordered slots and bounded bus returns |
-| `.kittify/architecture/project.yaml:104-117` | `completion.requiredGoals` | Add the new goal |
-| `.kittify/architecture/project.yaml:118-145` | `completion.projectChecks` | Add the new project check |
+| `.kittify/crest-spec/project.yaml:17-19` | `nonGoals.additional_effects` — "does not provide another insert type, more than one slot per Patch, bypass, selection, reordering, effect chains" | Narrow to: the roster of additional effect *types* remains out of scope; slots, selection, and ordering are now in scope up to the declared ceiling |
+| `.kittify/crest-spec/project.yaml:32-35` | `nonGoals.later_roadmap_phases` — excludes "Phase 3 expansion beyond at most three effect slots per Patch and eight bus returns" | Remove the Phase 3 clause; keep Phases 4-9 excluded |
+| `.kittify/crest-spec/project.yaml:47-52` | `meta.avoid` — "effect selection, bypass, multiple slots, reordering, or arbitrary routing"; "arbitrary buses" | Replace with the sharper rule this mission actually needs: avoid *name-enumerated* effect and routing identities; buses remain bounded and validated, never arbitrary |
+| `.kittify/crest-spec/project.yaml:2-10` | `mission` — describes "one configured first-Patch Chorus" and "one fixed sixteen-track mixer" | Restate the executable slice to include ordered slots and bounded bus returns |
+| `.kittify/crest-spec/project.yaml:104-117` | `completion.requiredGoals` | Add the new goal |
+| `.kittify/crest-spec/project.yaml:118-145` | `completion.projectChecks` | Add the new project check |
 | `DESIGN.md:689` | "Chorus is the first concrete Patch effect" | Reverb and delay join the same registry as peers |
 | `DESIGN.md:691` | "statically bounded to zero or one post effect per Patch… no selector, bypass, reorder, placeholder, or dynamic graph editing yet" | Superseded; restate at three ordered slots with selection |
 | `DESIGN.md:309` | "at most eight values for the current zero-or-one effect slot"; "MIXER contains only the sixteen track-owned controls and distinct globals" | Restate for three slots and for sends addressed by bus |
@@ -268,7 +268,7 @@ declared in `occurrence_map.yaml`.
 
 - **Purpose**: Narrow the three non-goal declarations, restate the superseded DESIGN.md decisions, and add the new capability, goal, requirements, evidence, validation, witness, and the no-name-enumeration invariant.
 - **Relevant requirements**: C-009, DIRECTIVE_010
-- **Affected surfaces**: `.kittify/architecture/project.yaml`, `capabilities.yaml`, `goals.yaml`, `requirements.yaml`, `contexts/{synth,mixer,realtime,control,testing}.yaml`, `proof/{evidence,validations,witnesses,invariants}.yaml`, `adapters.yaml`, `assets.yaml`, `DESIGN.md`
+- **Affected surfaces**: `.kittify/crest-spec/project.yaml`, `capabilities.yaml`, `goals.yaml`, `requirements.yaml`, `contexts/{synth,mixer,realtime,control,testing}.yaml`, `proof/{evidence,validations,witnesses,invariants}.yaml`, `adapters.yaml`, `assets.yaml`, `DESIGN.md`
 - **Sequencing/depends-on**: none — must land before or alongside the first implementation WP, never after
 - **Risks**: Narrowing a non-goal too far would silently pull the deferred roster into scope; C-011 must survive the edit
 

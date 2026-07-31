@@ -280,3 +280,22 @@ goals:
     - deterministic_focus_recovery
     - passive_semantic_action_boundary
     - semantic_view_model_behavioral_proof
+  expand_effects_and_buses:
+    description: The player can build an ordered chain of up to three effects on a Patch and route tracks
+      to eight shared destinations whose contents are configurable, without the instrument gaining a new
+      concept each time an effect is added
+    priority: required
+    actors:
+    - player
+    - maintainer
+    dependsOn:
+    - goal.route_patches_through_sixteen_tracks
+    capabilities:
+    - expandable_effects_and_bus_topology
+    requirements:
+    - ordered_patch_effect_slots
+    - role_independent_effect_registry
+    - bounded_bus_routing_identities
+    - widened_bounded_realtime_topology
+    - no_name_enumerated_effect_identity
+    - expandable_effects_behavioral_proof

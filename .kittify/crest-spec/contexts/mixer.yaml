@@ -1,10 +1,13 @@
 context: Mixer
 purpose: route post-effect Patch stems through one fixed bank of sixteen configurable tracks, then through
-  one shared reverb and one shared delay
+  a bounded bank of eight descriptor-driven bus returns
 ubiquitousLanguage:
   MixerTrackId: one stable zero-based identity in the fixed T00 through T0F mixer bank
+  BusId: one stable zero-based identity in the fixed bank of eight bus returns
   PatchOutput: one Patch-owned output-track choice plus pre-track trim
-  MixerTrackParameters: the level, pan, mute, solo, and send values owned by one mixer track
+  MixerTrackParameters: the level, pan, mute, solo, and indexed send values owned by one mixer track
+  BusSendLevel: one track-owned amount directed at one BusId, taken post-fader and post-gate
+  BusReturn: one bounded destination holding zero or one registry effect and its own return level
 valueObjects:
   MixerTrackId:
     description: the stable identity of one persistent mixer track
@@ -43,24 +46,46 @@ valueObjects:
       sixteen_track_mixer_routing: routes one post-effect Patch contribution without conflating the Patch
         with its destination track
       one_way_parameter_control: is edited only through semantic action, AppEvent, and AppState.apply
+  BusId:
+    description: the stable identity of one persistent bus return
+    from: u8
+    invariants:
+    - the value is in 0..=7 and is rejected outside that range; it is never clamped, wrapped, defaulted,
+      or substituted
+    - the identity is positional and independent of whichever effect currently occupies the return, so
+      changing a return's contents changes no BusId
+    - no variant, constructor, or descriptor entry is named after a concrete effect
+    contributesTo:
+      expandable_effects_and_bus_topology: joins track sends, return contents, fixed snapshots, and proof
+        through one bounded routing identity
+      global_mix: replaces the two implicit shared-effect destinations with explicit addressable ones
   MixerTrackParameter:
-    description: one stable configurable field owned by a mixer track
+    description: one stable configurable fader field owned by a mixer track
     from:
     - Level
     - Pan
     - Mute
     - Solo
-    - ReverbSend
-    - DelaySend
     invariants:
-    - MixerMain orders Level, Pan, Mute, and Solo; MixerInspector orders ReverbSend then DelaySend for
-      the selected track
+    - MixerMain orders Level, Pan, Mute, and Solo; MixerInspector orders the eight sends by ascending BusId
+      for the selected track
+    - a send is addressed by the pair of MixerTrackId and BusId rather than by a named variant, so the
+      identity does not grow when a return's contents change
     - the production-owned descriptor supplies kind, bounds, default, fine/coarse step, toggle behavior,
-      label, and unit exactly once for every field
+      label, and unit exactly once for every field; all eight sends share one send descriptor
     - the identity contains no PatchId, Patch parameter, row number, column number, label, or widget id
     contributesTo:
       sixteen_track_mixer_routing: defines the complete configurable surface for each of sixteen tracks
+      expandable_effects_and_bus_topology: separates fader identity from routing address
       semantic_graphical_view_model: keeps row meaning stable while horizontal navigation changes tracks
+  BusSendLevel:
+    description: one track-owned amount directed at one bus return
+    from: f32
+    invariants:
+    - the value is finite in 0.0..=1.0 and shares one production-owned descriptor across all eight sends
+    - the value scales only its own track's contribution to its own destination
+    contributesTo:
+      expandable_effects_and_bus_topology: carries the send amount without naming its destination
   MixerTrackParameters:
     description: all canonical scalar and toggle state owned by one mixer track
     state:
@@ -68,18 +93,19 @@ valueObjects:
       pan: f32
       mute: bool
       solo: bool
-      reverbSend: f32
-      delaySend: f32
+      sends: '[BusSendLevel; 8]'
     invariants:
     - levelDb is finite in -60.0..=6.0 and pan is finite in -1.0..=1.0
-    - reverbSend and delaySend are finite in 0.0..=1.0
+    - sends is indexed by BusId and contains no field named after a concrete effect; adding a registry
+      entry to a return changes no field of this value
     - mute and solo are explicit toggles; mute always wins and an active solo set excludes every non-soloed
       track from dry and send contribution
     - the value contains no Patch config, output route, meter, processor, buffer, UI state, or duplicate
       global parameter
     contributesTo:
-      global_mix: configures one post-accumulation track before the shared effects and master
+      global_mix: configures one post-accumulation track before the bus returns and master
       sixteen_track_mixer_routing: is the canonical per-track state changed by the track controls
+      expandable_effects_and_bus_topology: carries eight indexed sends at the cost of one field
   MixerState:
     description: the canonical fixed mixer bank owned inside AppState
     state:
@@ -107,27 +133,50 @@ valueObjects:
     contributesTo:
       sixteen_track_mixer_routing: makes every track's routed signal independently observable
       realtime_execution: keeps track metering bounded on the callback
+  BusReturn:
+    description: one bounded destination holding zero or one registry effect and its own output level
+    state:
+      id: BusId
+      effect: Option<EffectConfig>
+      returnLevel: f32
+    invariants:
+    - effect is drawn from the same EffectCapabilityRegistry that fills Patch effect slots; there is no
+      role marker, send-suitability flag, or return-only registry
+    - returnLevel is finite in 0.0..=1.0 and is owned by the return rather than declared as an effect
+      descriptor scalar, so replacing the occupying effect neither resets nor loses it
+    - an unoccupied return contributes silence and never passes its accumulated input through
+    - a return sums into the dry mix and cannot feed any send, so no routing cycle is expressible
+    contributesTo:
+      expandable_effects_and_bus_topology: makes shared processing configurable through the ordinary effect
+        contract instead of two fixed processors
+      global_mix: carries the reverb and delay that were previously mixer-owned
+  BusReturnBank:
+    description: the canonical fixed return bank owned inside AppState
+    state:
+      returns: '[BusReturn; 8]'
+    invariants:
+    - all eight returns exist before Patch installation and remain addressable whether occupied or empty
+    - array position is a bounded storage detail whose canonical semantic identity is the matching BusId
+    - Patch installation, removal, schema replacement, or rerouting never creates, removes, reorders, or
+      silently resets a return
+    contributesTo:
+      expandable_effects_and_bus_topology: separates persistent routing destinations from what occupies them
   GlobalParameters:
     description: all editable parameters shared by the complete mix
     state:
       masterGainDb: f32
-      reverbRoomSize: f32
-      reverbDamping: f32
-      reverbReturn: f32
-      delayMilliseconds: f32
-      delayFeedback: f32
-      delayReturn: f32
     invariants:
-    - masterGainDb is in -60.0..=6.0
-    - room size, damping, returns, and feedback are in 0.0..=1.0
-    - delayMilliseconds is in 1.0..=2000.0
-    - values are finite
-    - a production-owned typed surface descriptor enumerates these seven fields, bounds, and fine/coarse
+    - masterGainDb is in -60.0..=6.0 and is finite
+    - master gain is the only genuinely global value; it is a property of the master stage rather than
+      of any effect, and is the single documented exception to the no-name-enumeration invariant
+    - reverb and delay tuning values are descriptor scalars of their registry entries, and return levels
+      are owned by their BusReturn; neither is duplicated here
+    - a production-owned typed surface descriptor enumerates this field, its bounds, and its fine/coarse
       steps; AppState, StateProjector, and DemoScene consume the same descriptor
     - the descriptor contains each field exactly once before set conversion and is the independent pre-dispatch
       oracle for bounds and step sizes
     contributesTo:
-      global_mix: configures the one shared reverb, one shared delay, and master level
+      global_mix: configures the master level above the bus returns
       one_way_parameter_control: keeps global controls distinct from the sixteen track identities
   MixObservation:
     description: fixed-size callback-local measurements produced by MixEngine from its track, send, wet,
@@ -137,18 +186,18 @@ valueObjects:
       leftPeak: f32
       rightPeak: f32
       outputRms: f32
-      reverbInputRms: f32
-      delayInputRms: f32
-      wetOutputRms: f32
+      busInputRms: '[f32; 8]'
+      busOutputRms: '[f32; 8]'
       nonFiniteSamples: u64
       clippedSamples: u64
     invariants:
     - the value is Copy, fixed-size, numeric, and created from exact callback buffers already owned by
       MixEngine without allocation, logging, formatting, locking, blocking, or I/O
-    - tracks contains exactly one pre-gate meter in MixerTrackId order; reverbInputRms and delayInputRms
-      measure only post-gate track-send sums
-    - wetOutputRms measures only the shared effect return before final master gain; peak and RMS fields
-      are finite and nonnegative
+    - tracks contains exactly one pre-gate meter in MixerTrackId order; busInputRms measures only post-gate
+      track-send sums, indexed by BusId
+    - busOutputRms measures each return's contribution before final master gain, indexed by BusId; an
+      unoccupied return measures zero
+    - peak and RMS fields are finite and nonnegative
     - the observation never feeds back into mixing decisions and is not a second owner of audio or parameter
       state
     contributesTo:
@@ -156,35 +205,31 @@ valueObjects:
       live_observable_demo: provides causal send, wet, track, and output measurements from mixer-owned
         buffers
       realtime_execution: keeps callback measurements fixed-size and local before latest-value publication
-ports:
-  GlobalEffectsProcessor:
-    direction: outbound
-    contract:
-      prepare: '(sampleRate: f32, maxFrames: usize, maxDelayMilliseconds: f32) -> Result<(), EffectError>'
-      process: '(reverbInput: &[f32], delayInput: &[f32], output: &mut [f32], parameters: &GlobalParameters)'
-    invariants:
-    - the implementation contains exactly one mixer-owned reverb and one mixer-owned delay shared by every
-      track; the upstream PreparedPostEffectRack is not part of this port
-    - prepare allocates all effect storage and process is allocation-free and lock-free
-    - production and verification implementations derive wet excitation only from reverbInput and delayInput;
-      dry output is never treated as an implicit send, and zero inputs cannot create a wet return
-    contributesTo:
-      global_mix: defines the complete replaceable boundary for the two current global effects
+ports: {}
+# GlobalEffectsProcessor is retired. Its contract encoded both the number and the identity of returns in
+# a signature — process(reverbInput, delayInput, output, parameters) — so no downstream generality could
+# survive it. Bus returns now process through port.Synth.EffectPreparer and PreparedPostEffect, the same
+# boundary that fills Patch effect slots, leaving exactly one prepared-effect contract in the system.
+# Its two input obligations are preserved verbatim as PreparedBusReturnRack invariants in context.RealTime:
+# wet excitation derives only from the declared return input, and zero input cannot create a wet return.
 domainServices:
   MixEngine:
     purpose: trim and accumulate post-effect Patch stems into sixteen tracks, apply track controls and
       gates, process current shared effects, and produce the master mix
     uses:
     - MixerTrackId
+    - BusId
     - PatchOutput
     - MixerTrackParameters
     - MixerState
+    - BusReturn
+    - BusReturnBank
     - TrackMeter
     - GlobalParameters
     - MixObservation
     - PatchAudioBlock
     - ParameterSnapshot
-    - GlobalEffectsProcessor
+    - PreparedBusReturnRack
     meta:
       rules:
       - accept one independently rendered and already Patch-effect-processed stereo stem per active Patch,
@@ -194,21 +239,23 @@ domainServices:
         sum before any track control
       - for each track apply its level and pan, measure one TrackMeter, then apply mute/solo audibility;
         mute always wins and when any solo is active only soloed non-muted tracks contribute
-      - feed reverb and delay only from post-fader, post-gate track output scaled by that track's sends,
-        then sum audible dry tracks and both global returns and apply masterGainDb
+      - feed each of the eight bus inputs only from post-fader, post-gate track output scaled by that
+        track's send for the matching BusId, then sum audible dry tracks and every occupied return and
+        apply masterGainDb; the send stage does not move when the number of destinations changes
       - changing one track parameter changes every Patch contribution routed to that track and no contribution
         routed only to another track; changing one Patch route or trim changes only that Patch contribution
       - a route change is compatible fixed snapshot data because all sixteen destinations and scratch
         buffers are already prepared; an invalid route is rejected before publication and never clamped,
         wrapped, dropped, or substituted
-      - MixEngine owns no Patch insert, effect slot, processor selection, effect chain, EQ, compression,
-        chorus, distortion, limiter, or arbitrary auxiliary bus; the only current mixer-owned processors
-        remain the shared reverb and delay
-      - all track, send, wet, and output scratch buffers are fixed-capacity and prepared before the audio
-        callback
-      - the mix operation returns one MixObservation measured from the sixteen track buffers, mixer-owned
-        reverb input, delay input, wet return, and final output; callers never inspect or borrow private
-        buffers directly
+      - MixEngine owns no Patch insert, effect slot, processor selection, or effect chain; it addresses
+        eight bounded returns and never an arbitrary auxiliary bus, and it selects no concrete effect
+      - an unoccupied return contributes silence; skipping its processing must not leave accumulated
+        send input in the output buffer
+      - all track, send, return, and output scratch buffers are fixed-capacity, indexed by BusId, and
+        prepared before the audio callback
+      - the mix operation returns one MixObservation measured from the sixteen track buffers, the eight
+        bus inputs, the eight return outputs, and the final output; callers never inspect or borrow
+        private buffers directly
     contributesTo:
       sixteen_track_mixer_routing: implements the fixed Patch-to-track-to-master signal path
       global_mix: implements track sends through the current shared effects and master

@@ -2,7 +2,7 @@
 
 Read `DESIGN.md` before changing product behavior or architecture. It is the master design; its linked Figma file is the visual and interaction reference.
 
-The architecture spec in `.kittify/architecture/` (terse YAML: intent, bounded contexts, proof model) is the executable implementation declaration. Read it via `spec-kitty context architecture` and reconcile it to `DESIGN.md` before planning; plans must record an `## Architecture Reconciliation` section. A deliberately narrow implementation slice must not redefine the product. Use Spec Kitty missions (`/spec-kitty.specify` → plan → tasks → implement → review → accept) for all changes; `spec-kitty accept` runs the declared deterministic validations and both acceptance layers must pass. Do not invoke legacy crest-spec, CUE, or OpenSpec tooling (retired to `archive/`).
+The **crest-spec** at `.kittify/crest-spec/` (terse YAML: intent, bounded contexts, resources, assets, proof model) is the bedrock — the executable declaration of what the system is and the single source of implementation intent. Planning, work packages, code, and proof derive FROM it; it is never reconciled to other documents after the fact. A mission that adds, changes, or retires structure authors the crest-spec FIRST (`/spec-kitty.crest-spec`, after specify, before plan); `plan.md` derives from it and records a `## Crest-Spec Derivation` section; work packages derive from its `assets[]`. Read it via `spec-kitty crest-spec context`; validate with `spec-kitty crest-spec doctor`. `DESIGN.md` remains the product authority for what the product should be — when it and the crest-spec disagree, resolve that deliberately during crest-spec authoring; never silently edit the crest-spec to permit code that was already planned, and never produce `data-model.md`/`contracts/` (they fork the canonical resources and fail acceptance). A deliberately narrow implementation slice must not redefine the product. Use Spec Kitty missions (`/spec-kitty.specify` → crest-spec → plan → tasks → implement → review → accept) for all changes; `spec-kitty accept` runs the declared deterministic validations and both acceptance layers must pass. Do not invoke the retired CUE DSL or OpenSpec tooling (immutable snapshots in `archive/legacy-cue-dsl/`, `archive/legacy-cue-workflows/`, `archive/legacy-openspec/`) — the crest-spec means exactly one thing: the live DDD declaration at `.kittify/crest-spec/`.
 
 Preserve these boundaries:
 
@@ -20,7 +20,7 @@ Figma example engines, effects, patches, and values are design fixtures, not an 
 **Spec Kitty v3.2.6** — project: unknown (healthy)
 
 Two usage patterns:
-- **Full mission** (spec → plan → tasks → implement → review → merge):
+- **Full mission** (spec → crest-spec → plan → tasks → implement → review → merge):
   trigger: "spec out", "create a mission", "write a spec", "plan this"
   → run `/spec-kitty.specify`
 - **Lightweight dispatch** (ad-hoc fix, question, or advice — no mission created):

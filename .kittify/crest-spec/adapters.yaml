@@ -178,18 +178,72 @@ adapters:
     contributesTo:
       realtime_execution: implements the physical low-latency stereo output
       live_observable_demo: keeps the real device callback running while the visible scene advances
-  GlobalReverbDelay:
-    implements: GlobalEffectsProcessor
+  ReverbCapability:
+    implements: EffectCapabilityProvider
     layer: infrastructure
     profile:
       kind: in_process
     meta:
       rules:
-      - implement exactly one modest algorithmic stereo reverb and one stereo feedback delay
+      - own the product-facing Reverb schema as an ordinary effect registry entry, peer to ChorusCapability
+      - declare exactly the descriptor scalars RoomSize and Damping, carrying forward the bounds, defaults,
+        fine and coarse steps, and units of the retired reverbRoomSize and reverbDamping global fields
+        without alteration
+      - declare no return level; return level is owned by BusReturn because it is a property of the
+        destination rather than of the effect
+      - declare no role, send-suitability, or return-only marker; admissibility is the caller's decision
+    contributesTo:
+      expandable_effects_and_bus_topology: proves the shared reverb is an ordinary registry entry rather
+        than a fixed mixer-owned processor
+      global_mix: preserves the shared reverb behind the generic effect contract
+  ReverbPreparer:
+    implements: EffectPreparer
+    layer: infrastructure
+    profile:
+      kind: in_process
+    meta:
+      rules:
+      - adapt the existing modest algorithmic stereo reverb to the generic PreparedPostEffect boundary
+        without altering its algorithm, coefficients, or internal state layout
       - allocate all delay lines and ring buffers only in prepare
       - process has no locks, allocation, I/O, logging, or destruction
+      - derive wet excitation only from the declared input; never treat samples already present in the
+        output as an implicit send, and never let zero input create a wet return
     contributesTo:
-      global_mix: implements the one shared reverb and one shared delay
+      expandable_effects_and_bus_topology: moves shared reverb processing onto the one prepared-effect boundary
+      realtime_execution: keeps reverb state bounded, prepared, and callback safe
+  DelayCapability:
+    implements: EffectCapabilityProvider
+    layer: infrastructure
+    profile:
+      kind: in_process
+    meta:
+      rules:
+      - own the product-facing Delay schema as an ordinary effect registry entry, peer to ChorusCapability
+      - declare exactly the descriptor scalars Milliseconds and Feedback, carrying forward the bounds,
+        defaults, fine and coarse steps, and units of the retired delayMilliseconds and delayFeedback
+        global fields without alteration
+      - declare the maximum-delay preparation requirement so an unsatisfiable configuration is refused
+        rather than silently truncated
+      - declare no return level and no role marker
+    contributesTo:
+      expandable_effects_and_bus_topology: proves the shared delay is an ordinary registry entry
+      global_mix: preserves the shared delay behind the generic effect contract
+  DelayPreparer:
+    implements: EffectPreparer
+    layer: infrastructure
+    profile:
+      kind: in_process
+    meta:
+      rules:
+      - adapt the existing stereo feedback delay to the generic PreparedPostEffect boundary without
+        altering its algorithm or delay-line sizing contract
+      - allocate all delay lines and ring buffers only in prepare
+      - process has no locks, allocation, I/O, logging, or destruction
+      - derive wet excitation only from the declared input; zero input cannot create a wet return
+    contributesTo:
+      expandable_effects_and_bus_topology: moves shared delay processing onto the one prepared-effect boundary
+      realtime_execution: keeps delay state bounded, prepared, and callback safe
   HiDefSoundFontAsset:
     layer: infrastructure
     profile:

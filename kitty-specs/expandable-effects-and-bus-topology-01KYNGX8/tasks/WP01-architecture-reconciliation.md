@@ -24,14 +24,14 @@ history:
   actor: planner
   action: added T056 to close pre-existing DESIGN.md reconciliation drift
 agent_profile: architect-alphonso
-authoritative_surface: .kittify/architecture/
+authoritative_surface: .kittify/crest-spec/
 create_intent: []
 execution_mode: planning_artifact
 mission_id: 01KYNGX8QA8V49BX2WQ1Q6G2BP
 mission_slug: expandable-effects-and-bus-topology-01KYNGX8
 model: ''
 owned_files:
-- .kittify/architecture/**
+- .kittify/crest-spec/**
 - DESIGN.md
 priority: P1
 role: implementer
@@ -89,7 +89,7 @@ as a mission constraint. Nothing else in this mission may merge ahead of it.
 - **Purpose**: The current text forbids "another insert type, more than one slot per Patch, bypass, selection, reordering, effect chains" — which is most of the mission.
 
 - **Steps**:
-  1. Open `.kittify/architecture/project.yaml`, lines 17-19.
+  1. Open `.kittify/crest-spec/project.yaml`, lines 17-19.
   2. Rewrite so the *roster of additional effect types* stays excluded while slots, selection, and ordering become in-scope up to the declared ceiling. The distinction that matters: this mission adds **capacity and generality**, not new effect types.
   3. Keep the exclusion of bypass if nothing in the mission delivers it — check `spec.md` FR list before removing any clause. FR-002 delivers occupancy selection including empty, which is not the same as bypass.
 
@@ -192,7 +192,7 @@ This package produces declarations, not code, so its proof is structural:
 
 - **Narrowing too far pulls the roster into scope** → after each edit, re-read the surviving text against C-011 and confirm all twelve effects are still excluded.
 - **Deleting a non-goal instead of narrowing it** → these declarations also protect Phases 4-9. Narrow surgically; never remove a whole entry.
-- **Editing mechanically** → `occurrence_map.yaml` marks `.kittify/architecture/**` and `DESIGN.md` as `manual_review` precisely so no bulk replace touches them. Every edit here is by hand.
+- **Editing mechanically** → `occurrence_map.yaml` marks `.kittify/crest-spec/**` and `DESIGN.md` as `manual_review` precisely so no bulk replace touches them. Every edit here is by hand.
 
 ## Reviewer Guidance
 

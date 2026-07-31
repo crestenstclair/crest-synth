@@ -29,7 +29,7 @@ Two gates block progress if skipped:
 
 1. **Architecture reconciliation (IC-07, C-009).** The architecture spec declares
    this mission a non-goal. Narrow the three declarations in
-   `.kittify/architecture/project.yaml`, restate the superseded `DESIGN.md`
+   `.kittify/crest-spec/project.yaml`, restate the superseded `DESIGN.md`
    decisions, and add the new capability, goal, requirements, evidence, validation,
    witness, and invariant. Reload the spec afterwards. This is planning work that
    must land before or alongside the first WP — never after.
