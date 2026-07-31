@@ -1,0 +1,107 @@
+schema_version: 1.0.0
+mission: software-dev
+profile: comprehensive
+answers:
+  project_intent: >-
+    Crest Synth is a controller-first software synthesizer in Rust: a SoundFont
+    engine behind capability ports, a fixed sixteen-track mixer, and a bounded,
+    descriptor-driven effect and bus topology, driven by a schema-driven
+    controller UI with PATCH and MIXER as the only top-level contexts.
+    DESIGN.md is the product authority; the crest-spec at .kittify/crest-spec/
+    is the executable declaration of what the system is and the single source
+    of implementation intent. All work flows through Spec Kitty missions that
+    derive from the crest-spec, and full mission rigor (specify, crest-spec,
+    plan, analyze, tasks, implement, review, accept) is the standard for every
+    change, not just large ones.
+  languages_frameworks: >-
+    Rust 2021 edition (toolchain 1.96), single binary + library, hexagonal with
+    seven bounded contexts under src/ (kernel, synth, mixer, real_time,
+    control, shell, testing) plus a thin adapter layer. Key dependencies: cpal
+    (audio device), eframe/egui (shell), rustysynth (SoundFont), midly (MIDI
+    fixtures), rtrb (event ring), triple_buffer (latest-value snapshots),
+    serde; pinned Mutable Instruments C++ DSP compiled via a cc build script.
+    Make targets drive retained demo scenes.
+  testing_requirements: >-
+    Measured, falsifiable proof using the production reducer and render path —
+    never mocked or demo-only paths. cargo test --all-targets plus
+    cargo-nextest (JUnit) in the pre-review gate. Deterministic scene proofs
+    (two runs, logically identical observations), a behavioral mutation
+    harness where every mutation must be caught by a test, real-time contract
+    validations, and retained named live demo scenes run on a physical device
+    with a real window, physical audio, and the real MIDI fixture as
+    phase-completion gates. Witnesses declare both a positive command and a
+    controlled negative command; a witness without a negative proves nothing.
+  quality_gates: >-
+    spec-kitty accept runs the declared deterministic validations and both
+    acceptance layers must pass. spec-kitty crest-spec doctor must pass after
+    any crest-spec edit. The no-name-enumerated-identity project check keeps
+    effect and routing identity open-closed. Bulk edits require an
+    occurrence_map.yaml classification before implementation. The pre-review
+    regression gate runs scoped tests at every for_review transition. The
+    live-demo gate cannot be satisfied headlessly.
+  review_policy: >-
+    Every work package is independently reviewed by a non-author reviewer
+    against WP scope, spec, plan, and the crest-spec, with mechanical
+    verification of claims rather than trust in the implementer's report.
+    Reviews prioritize design fidelity above all: silent drift between code,
+    the crest-spec, and DESIGN.md is the costliest failure class in this
+    project. Never silently plan around a conflict with the crest-spec; a
+    mission that changes structure authors the crest-spec first, and the
+    crest-spec is never edited after the fact to permit code that was already
+    planned. Reviewers verify that declarations and implementation moved
+    together, deliberately.
+  performance_targets: >-
+    Bounded stereo render at 48 kHz with zero underruns across the live
+    scenes. The audio callback is hard real-time: no allocation, locking,
+    blocking, I/O, logging, panics, or destructor work — ever, including
+    during topology changes. All capacity is preallocated and bounded;
+    structural changes are prepared off-callback and exchanged whole at block
+    boundaries; superseded graphs are retired away from the audio path.
+  deployment_constraints: >-
+    Desktop macOS and Linux plus the Steam Deck viewport class. Single Rust
+    binary. No preset or session persistence exists. No new third-party audio
+    processing enters the tree without explicit mission scope; engines sit
+    behind capability ports with no silent fallback.
+  documentation_policy: >-
+    Durable product decisions live in DESIGN.md (with its linked Figma file as
+    the visual reference); the crest-spec holds the executable declarations
+    and is read via spec-kitty crest-spec context. Planning must not produce
+    data-model.md or contracts/ files — they fork the canonical crest-spec
+    resources and fail acceptance. Temporary plans and handoffs belong in
+    issues or commits, not documents. The mission's Domain Language tables are
+    binding for terminology in code identifiers.
+  risk_boundaries: >-
+    The costliest failure is silent design drift: code or declarations
+    quietly diverging from DESIGN.md or the crest-spec without deliberate
+    reconciliation. Guards: crest-spec-first authoring, reconciliation
+    constraints in missions (spec edits land before implementation),
+    proof-enforced invariants over prose, and the no-name-enumeration static
+    check. Second-order risk is any real-time contract violation on the render
+    path. A deliberately narrow implementation slice must never redefine the
+    product.
+  amendment_process: >-
+    Charter and crest-spec changes are explicit, versioned commits reviewed
+    like code. Crest-spec changes happen during mission planning, authored
+    before plan.md derives from them. Charter updates go through
+    /spec-kitty.charter: update interview answers or charter.yaml governance
+    sections and regenerate; never mutate governance silently mid-mission.
+  exception_policy: >-
+    Documented self-service waiver for process gates: an agent blocked by a
+    process or tooling gate (sync state, missing scaffolding artifacts, stale
+    workspace) may waive or work around it only by committing the waiver
+    in-repo with its rationale and flagging it in the next human-visible
+    report. Product and proof gates — acceptance validations, live-demo
+    physical-device gates, real-time contract proofs, crest-spec doctor — are
+    never waived autonomously; those stop and ask the human.
+selected_paradigms:
+  - domain-driven-design
+selected_directives:
+  - DIRECTIVE_001
+  - DIRECTIVE_003
+  - DIRECTIVE_010
+  - DIRECTIVE_024
+  - DIRECTIVE_025
+available_tools:
+  - git
+  - cargo
+  - make
