@@ -99,6 +99,16 @@ exceptions:
       Adds new phase checkpoints while every existing checkpoint identity must
       survive byte-identical for earlier retained scenes.
 
+  - path: "src/bin/crest_synth.rs"
+    action: manual_review
+    reason: >-
+      The binary carries both the protected CLI flag surface (cli_commands:
+      no existing flag or target may change; WP08 adds the new scene flag)
+      and internal diagnostic checks over serialized leaves, which the
+      sanctioned serialized_keys rename forces to the indexed shape (WP05).
+      Review by hand that only leaf checks moved and every existing flag
+      survives byte-identical.
+
   - path: "DESIGN.md"
     action: manual_review
     reason: >-
