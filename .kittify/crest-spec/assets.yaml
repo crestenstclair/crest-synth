@@ -14,7 +14,40 @@ assetKinds:
   rust-integration-tests:
     description: Named Cargo integration-test targets
     filePattern: tests/*.rs
+  rust-context-source:
+    description: Rust source modules of one bounded context or the adapter layer under src/
+    filePattern: src/*/*
 assets:
+  KernelContextModules:
+    kind: rust-context-source
+    description: src/kernel — shared identity and value primitives realizing context.Kernel resources
+  SynthContextModules:
+    kind: rust-context-source
+    description: src/synth — Patch aggregate, effect registry, descriptors, slots, and engine/effect preparation
+      realizing context.Synth resources
+  MixerContextModules:
+    kind: rust-context-source
+    description: src/mixer — sixteen-track bank, bus identities, sends, returns, and mix engine realizing
+      context.Mixer resources
+  RealTimeContextModules:
+    kind: rust-context-source
+    description: src/real_time — bounded snapshot transport, prepared graphs and racks, structural coordination,
+      and renderer realizing context.RealTime resources
+  ControlContextModules:
+    kind: rust-context-source
+    description: src/control — reducer, semantic actions and focus, and view projections realizing context.Control
+      resources
+  ShellContextModules:
+    kind: rust-context-source
+    description: src/shell — egui rendering of projected state realizing context.Shell resources
+  TestingContextModules:
+    kind: rust-context-source
+    description: src/testing — retained scenes, deterministic workers, mutation harness, and measurements
+      realizing context.Testing resources
+  AdapterModules:
+    kind: rust-context-source
+    description: src/adapter — thin capability, preparer, device, window, and asset adapters implementing
+      the declared ports
   CargoManifest:
     kind: cargo-manifest
     description: Cargo.toml and build.rs for the capability-configured standalone synth with Rust SoundFont
