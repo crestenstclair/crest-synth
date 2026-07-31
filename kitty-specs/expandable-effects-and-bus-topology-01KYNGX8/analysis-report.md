@@ -4,7 +4,7 @@ artifact_type: spec-kitty.analysis-report
 command: /spec-kitty.analyze
 mission_slug: expandable-effects-and-bus-topology-01KYNGX8
 mission_id: 01KYNGX8QA8V49BX2WQ1Q6G2BP
-generated_at: '2026-07-31T04:11:19.529799+00:00'
+generated_at: '2026-07-31T05:07:28.859996+00:00'
 analyzer_agent: unknown
 input_artifacts:
   spec.md:
@@ -17,14 +17,14 @@ input_artifacts:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/tasks.md
     sha256: c1b3b066a0248b3bb2e2f41784a0fc54151b9c128509a9147a2c10aa148183b2
   charter:
-    path:
-    sha256:
+    path: /Users/crestenstclair/workspace/crest-synth/.kittify/charter/charter.md
+    sha256: 0b21a43cf5772d1308561d843239947e53247cc7d071c98c920023d23024672b
 verdict: ready
 issue_counts:
+  low: 1
+  critical: 0
   medium: 0
   high: 0
-  critical: 0
-  low: 1
   info: 0
 findings:
 - id: G1R
@@ -35,7 +35,7 @@ findings:
 
 ## Specification Analysis Report
 
-Mission: `expandable-effects-and-bus-topology-01KYNGX8` — second pass, after remediation of the first pass's six findings (1 HIGH, 2 MEDIUM, 3 LOW), all applied in commit `fa9d3fc` with operator approval.
+Mission: `expandable-effects-and-bus-topology-01KYNGX8` — third pass. Second pass followed remediation of the first pass's six findings (1 HIGH, 2 MEDIUM, 3 LOW), all applied in commit `fa9d3fc` with operator approval. This pass refreshes against the project charter established in `417a1a1` (the prior passes ran charterless); WP01 has since been implemented and approved.
 
 | ID | Category | Severity | Location(s) | Summary | Recommendation |
 |----|----------|----------|-------------|---------|----------------|
@@ -66,7 +66,7 @@ Mission: `expandable-effects-and-bus-topology-01KYNGX8` — second pass, after r
 | C-001..C-011 | Yes | WP01 (C-009, C-011), WP03/WP04/WP07/WP08 risk gates | |
 | SC-001..SC-008 | Yes | WP08 scene + WP09 guard (SC-008) | |
 
-**Charter Alignment Issues:** No charter exists (`.kittify/charter/charter.md` absent); plan.md binds the built-in directives instead, and no conflicts remain beyond the DIRECTIVE_024 tension already justified in plan.md Complexity Tracking.
+**Charter Alignment Issues:** None. The charter (established 2026-07-31, `.kittify/charter/charter.yaml` + curated `charter.md`) post-dates this mission's planning but encodes the same governance the plan already bound: full mission rigor as standard, silent design drift as the costliest failure, DDD paradigm, and directives DIRECTIVE_001/003/010/024/025. plan.md's Charter Check table maps onto the charter's selections one-for-one (its "no charter exists" preamble is now historical); the DIRECTIVE_024 locality tension remains justified in Complexity Tracking, which the charter's rationale explicitly sanctions ("held in deliberate, documented tension whenever a mission's blast radius is the point"). The charter's exception policy was followed for the one process-gate incident so far (charter preflight — resolved by operator decision, recorded in-repo).
 
 **Unmapped Tasks:** None — all 56 subtasks map to at least one requirement, constraint, or success criterion.
 
