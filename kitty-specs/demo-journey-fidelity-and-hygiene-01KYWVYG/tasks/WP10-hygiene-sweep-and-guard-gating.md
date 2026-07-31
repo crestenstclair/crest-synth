@@ -38,7 +38,6 @@ owned_files:
 - src/mixer/global_parameters.rs
 - src/mixer/mix_engine.rs
 - src/mixer/mixer_track_parameters.rs
-- src/real_time/audio_renderer.rs
 - src/synth/effect_capability.rs
 - src/testing/behavioral_mutation_harness.rs
 - src/testing/live_demo_checkpoint.rs
@@ -135,13 +134,16 @@ fixture; state_tree tests green with equally strong assertions.
 ### T042 — Stale WP-comment sweep in enumerated remainder files
 
 **Steps**:
-1. Sweep the 11 owned source files (planning-time counts:
+1. Sweep the 10 owned source files (planning-time counts:
    `src/control/app_loop.rs` 1, `src/mixer/bus_return.rs` 1,
    `global_parameters.rs` 1, `mix_engine.rs` 2, `mixer_track_parameters.rs`
-   4, `src/real_time/audio_renderer.rs` 4, `src/synth/effect_capability.rs`
+   4, `src/synth/effect_capability.rs`
    1, `src/testing/behavioral_mutation_harness.rs` 4,
    `live_demo_checkpoint.rs` 5, `live_demo_scene.rs` 6,
-   `live_mixer_routing_measurement.rs` 1).
+   `live_mixer_routing_measurement.rs` 1). Note:
+   `src/real_time/audio_renderer.rs` moved to WP05 (it needed a
+   constructor migration that must precede the compact-view deletion);
+   WP05 cleans its four comments.
 2. Judgment rule (spec FR-011): delete pure timeline narration ("added in
    WP04", "WP06 will retire this"); rewrite comments that carry a genuine
    constraint in durable, mission-agnostic language. At least two parent

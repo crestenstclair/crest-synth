@@ -28,6 +28,13 @@ mission_slug: demo-journey-fidelity-and-hygiene-01KYWVYG
 model: ''
 owned_files:
 - src/synth/patch.rs
+- src/synth/prepared_post_effect_rack_builder.rs
+- src/testing/automatic_midi_test.rs
+- src/real_time/audio_renderer.rs
+- tests/schema_surface.rs
+- tests/support/mod.rs
+- tests/semantic_graphical_view_model.rs
+- tests/semantic_focus_and_projection.rs
 priority: P2
 role: implementer
 status: pending
@@ -65,24 +72,54 @@ WP08 have migrated every caller.
   "WP05/WP06" — both shipped without it (the review's headline OWNERSHIP/SEAM
   drift). Deletion, not deprecation, is the decision of record
   (research.md R-4).
-- Dependencies WP02/WP03/WP04/WP08 own all 15 caller files. If you find a
-  surviving caller outside your owned file, STOP and report it against the
-  owning WP — do not migrate it here (ownership discipline).
+- **Scope correction (found by WP03's reviewer, folded in before dispatch)**:
+  the accessor `post_effects()` is fully covered by WP02/WP03/WP04/WP08, but
+  the *constructor* `with_post_effects()` is used far more widely — 18
+  occurrences across 12 files at planning time — and about six of those files
+  belong to no migration WP. Those unowned files are now yours (see
+  `owned_files`): `src/synth/prepared_post_effect_rack_builder.rs`,
+  `src/testing/automatic_midi_test.rs`, `src/real_time/audio_renderer.rs`,
+  `tests/schema_surface.rs`, `tests/support/mod.rs`,
+  `tests/semantic_graphical_view_model.rs`,
+  `tests/semantic_focus_and_projection.rs`. `audio_renderer.rs` moved here
+  from WP10 (which no longer owns it) — so you also own its four stale
+  WP-numbered comments. Expect a constructor sweep across ~8 files, not a
+  two-line deletion.
+- If a surviving caller appears in a file owned by ANOTHER WP
+  (`src/control/*`, `src/testing/{demo_scene,exhaustive_gui_demo,live_demo_runner,live_demo_report}.rs`,
+  `src/shell/standalone_application.rs`, `src/adapter/production_effects.rs`,
+  `src/real_time/{graph_preparation_worker,prepared_*}.rs`, or the test
+  targets those WPs own), STOP and report it against the owning WP — do not
+  migrate it here (ownership discipline).
+- Also retire `set_post_effect_config()`: WP02's migration orphaned it and
+  parked it behind `#[allow(dead_code)]` with a note deferring removal to
+  this WP. It is another compact-view accessor (it addresses "the nth
+  occupied slot"), so it goes with the rest. Its only non-`patch.rs` caller
+  was in `src/control/app_state.rs`, already migrated by WP02.
 
 ## Subtasks
 
 ### T021 — Delete post_effects()/with_post_effects() from Patch
 
 **Steps**:
-1. `grep -rn "post_effects()\|with_post_effects(" src/ tests/ --include="*.rs"`
-   — expect matches only in `src/synth/patch.rs` (definitions and any
-   internal uses). Anything else: stop, report to the owning WP.
-2. Delete both the accessor and the constructor, plus any internal helpers
-   that exist only to serve compaction. Replace internal uses with the
-   per-position view.
-3. Replace the transitional doc comment block (`patch.rs:84-90`) with durable
+1. `grep -rn "post_effects()\|with_post_effects(\|set_post_effect_config" src/ tests/ --include="*.rs"`
+   and triage every hit: `src/synth/patch.rs` (definitions/internal uses) and
+   your seven other owned files are yours to migrate; a hit in another WP's
+   owned file means stop and report (see Context).
+2. Migrate your owned files' constructor call sites to per-position
+   construction (`set_slot_occupancy` or the equivalent per-position builder
+   entry point) — position-preserving, no local compaction, assertions never
+   weakened. `tests/support/mod.rs` is shared fixture infrastructure: change
+   it carefully and re-run every target that uses it.
+3. Delete the accessor `post_effects()`, the constructor
+   `with_post_effects()`, and `set_post_effect_config()`, plus any internal
+   helpers that exist only to serve compaction. Replace internal uses with
+   the per-position view.
+4. Replace the transitional doc comment block (`patch.rs:84-90`) with durable
    documentation of the single-view contract, phrased as the invariant (no WP
-   numbers, no timeline).
+   numbers, no timeline). Remove the four stale WP-numbered comments in
+   `src/real_time/audio_renderer.rs` (inherited from WP10) and any others in
+   your newly owned files.
 
 **Validation**: workspace compiles; repo-wide grep for both names returns
 zero matches.

@@ -133,9 +133,10 @@ T020 Stale WP-comment cleanup (shell/adapter files) (WP04)
 
 ### WP05 — Retire the compact view
 **Prompt**: `tasks/WP05-retire-compact-view.md` (~300 lines)
-**Goal**: `post_effects()`/`with_post_effects()` deleted; the Patch exposes exactly one (gapped, never-compacted) chain view, per the crest-spec invariant.
+**Goal**: `post_effects()`, `with_post_effects()`, and `set_post_effect_config()` deleted; the Patch exposes exactly one (gapped, never-compacted) chain view, per the crest-spec invariant.
 **Priority**: P2
 **Independent test**: repo-wide grep zero; Patch unit tests prove gapped stability and the absence of any compacting surface; full suite green.
+**Scope correction (2026-07-31, from WP03's review)**: the *constructor* `with_post_effects()` has ~18 occurrences across 12 files, ~6 of which no migration WP owned. Those unowned files moved into WP05's ownership, plus `src/real_time/audio_renderer.rs` (reassigned from WP10, which needed it migrated before the deletion). WP05 is a constructor sweep across ~8 files, not a two-line deletion.
 **Requirements**: FR-007 (C-007)
 **Subtasks**:
 
@@ -226,7 +227,7 @@ T038 Two-run determinism and existing predicates stay green (WP09)
 T039 Guard script tool gating + guard-test coverage (WP10)
 T040 Replace reverbSend fixture literals (guard fixture preserved) (WP10)
 T041 DESIGN.md:204 "aux buses" → bus-return vocabulary (WP10)
-T042 Stale WP-comment sweep in enumerated remainder files (WP10)
+T042 Stale WP-comment sweep in enumerated remainder files (WP10; `src/real_time/audio_renderer.rs` reassigned to WP05)
 T043 Repo-wide final hygiene verification greps (WP10)
 
 **Dependencies**: WP05 (final verification greps run against the fully migrated tree).
