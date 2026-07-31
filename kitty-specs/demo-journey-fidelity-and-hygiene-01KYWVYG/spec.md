@@ -49,7 +49,8 @@ rejection remains a direct injection — the UI cannot request an unknown entry
 by design — and the scene documents that exception where it occurs.
 
 **Why this priority**: This is the HIGH finding (DRIFT-6) that superseded the
-parent mission's FR-019/C-010 live grading and is the declared gate for all
+parent mission's retained-live-demo requirement and live-demo-gate grading
+(its requirement 19 and constraint 10) and is the declared gate for all
 later phases. Without it the phase's headline UI functionality remains
 undemonstrated in live evidence.
 
