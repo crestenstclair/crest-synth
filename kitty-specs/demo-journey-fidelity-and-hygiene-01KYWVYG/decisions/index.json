@@ -69,6 +69,52 @@
       "status": "resolved",
       "step_id": null,
       "summary_json": null
+    },
+    {
+      "created_at": "2026-07-31T20:23:36.653765Z",
+      "decision_id": "01KYWXHEYD6ZY8RF4GHHBDNYH1",
+      "final_answer": "Confirmed",
+      "input_key": "engineering_alignment_confirmed",
+      "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+      "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
+      "opened_by": "cli",
+      "options": [
+        "Confirmed",
+        "Needs changes"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "Confirm the Engineering Alignment: scene journeys via the existing support-script vocabulary (add-only checkpoint identities), 36-call-site effect_slots() migration with compact-view deletion, error propagation at the production root, twin test, absent-vs-zero measurements, cleanups, guard tool gating, fourth-entry fixture + per-position identity in witness schema v2, physical re-run with amended artifacts?",
+      "rationale": null,
+      "resolved_at": "2026-07-31T20:25:15.507939Z",
+      "resolved_by": null,
+      "slot_key": "plan.alignment.engineering-alignment",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-07-31T20:23:37.428509Z",
+      "decision_id": "01KYWXHFPMFT3P092AW1H7E56C",
+      "final_answer": "Approved as drafted (manual_review call sites; serialized/cli/logs untouched; guard-fixture, parent-mission-history, and crest-spec exceptions)",
+      "input_key": "occurrence_map_approved",
+      "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+      "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
+      "opened_by": "cli",
+      "options": [
+        "Approve",
+        "Adjust"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "Approve the occurrence map for the post_effects() -> effect_slots() retirement (code_symbols manual_review; serialized keys, CLI, logs do_not_change; guard-fixture reverbSend exception)?",
+      "rationale": null,
+      "resolved_at": "2026-07-31T20:25:16.276621Z",
+      "resolved_by": null,
+      "slot_key": "plan.bulk-edit.occurrence-map-approval",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
     }
   ],
   "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
