@@ -105,6 +105,37 @@ WP08 have migrated every caller.
   `compact` in `src/synth/patch.rs`); the three names listed here are the
   known set, not a guaranteed-complete one.
 
+## ⚠️ Reviewer deletion lists are LANE-LOCAL — verify against the merged tree
+
+WP02's reviewer produced an 8-item deletion list. It is a good lead, but two
+items are wrong when all lanes are merged, because each reviewer only sees its
+own worktree. Verified by the coordinator across lanes on 2026-07-31:
+
+- **`PatchInput::post_effects()` (`src/control/event_record.rs:191`) — DO NOT
+  DELETE.** WP02's reviewer called it "newly orphaned" because lane-b's own
+  callers moved to field access. But lane-d (WP04) calls it live at
+  `src/shell/standalone_application.rs:1513`, written UFCS as
+  `PatchInput::post_effects(patch)`. Post-merge it has a caller. It is also
+  frozen serialized vocabulary. Deleting it breaks the merged build.
+- **`EffectCapabilityRegistry::validate_patch_effects()`
+  (`src/synth/effect_capability.rs`) — NOT YOURS, and probably not dead.** It
+  takes a dense `&[PostEffectConfig]`, which is the correct shape for
+  *serialized* input, and serialized-side callers remain
+  (`src/testing/live_demo_scene.rs`, `src/testing/live_demo_report.rs`
+  operate on decoded payloads). Only its `Patch`-side callers went away.
+  The file is owned by WP10 in any case — report, do not delete.
+
+**Method**: for every deletion candidate, re-check callers in the merged tree
+your lane is based on (`git log --oneline -1` should show the dependency
+lanes merged in), not in a single lane's view. If a candidate still has a
+caller, leave it and say so in your notes.
+
+Genuinely-yours candidates from that same review, worth verifying and likely
+correct: `Patch::rebuild_compact_view()` (`patch.rs:266-268`) plus its call
+inside `set_slot_occupancy` (`patch.rs:224` — the *call* goes, the function
+`set_slot_occupancy` stays), and the compact-view module tests at
+`patch.rs:331, 348, 386, 416, 441` that pin the retired mapping.
+
 ## Subtasks
 
 ### T021 — Delete post_effects()/with_post_effects() from Patch
