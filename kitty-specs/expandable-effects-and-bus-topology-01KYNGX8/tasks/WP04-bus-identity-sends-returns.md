@@ -37,6 +37,9 @@ model: ''
 owned_files:
 - src/mixer/**
 - src/real_time/prepared_bus_return_rack.rs
+- src/adapter/global_reverb_delay.rs
+- src/adapter/production_effects.rs
+- tests/graphical_application_shell.rs
 priority: P1
 role: implementer
 status: pending
@@ -206,6 +209,8 @@ position. Generalizing the count must not move the stage.
 - `make lint`, `make fmt-check`, and `make test` pass.
 
 ## Risks & Mitigations
+
+- **WP02 handoff (bridge retirement)**: WP02 kept `src/adapter/global_reverb_delay.rs` as a zero-DSP bridge over the two prepared registry entries because this WP had not yet landed the return rack. When T023 retires `GlobalEffectsProcessor`, delete the bridge (and update `production_effects.rs` and `tests/graphical_application_shell.rs`, now in owned_files). If full deletion would require touching WP05-owned files (`prepared_graph*.rs`), reduce the port to the narrowest compiling seam and leave the final deletion to WP05, which also owns these files.
 
 - **The send stage moves during generalization** → the highest-consequence regression here, and no current unit test catches it by accident. Write the T025 position and gate tests *before* touching `mix_engine.rs`.
 - **An empty return passes its input through** → assert silence explicitly; do not assume skipping processing is equivalent.

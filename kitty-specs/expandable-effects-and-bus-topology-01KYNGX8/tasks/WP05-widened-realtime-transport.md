@@ -38,6 +38,9 @@ owned_files:
 - src/real_time/audio_renderer.rs
 - src/real_time/patch_audio_block.rs
 - src/real_time/callback_safety.rs
+- src/adapter/global_reverb_delay.rs
+- src/adapter/production_effects.rs
+- tests/graphical_application_shell.rs
 priority: P1
 role: implementer
 status: pending
@@ -187,6 +190,8 @@ assumed acceptable.
 - `make lint`, `make fmt-check`, and `make test` pass.
 
 ## Risks & Mitigations
+
+- **WP02 handoff (bridge retirement)**: WP02 kept `src/adapter/global_reverb_delay.rs` as a zero-DSP bridge over the two prepared registry entries because this WP had not yet landed the return rack. When T023 retires `GlobalEffectsProcessor`, delete the bridge (and update `production_effects.rs` and `tests/graphical_application_shell.rs`, now in owned_files). If full deletion would require touching WP05-owned files (`prepared_graph*.rs`), reduce the port to the narrowest compiling seam and leave the final deletion to WP05, which also owns these files.
 
 - **Publish cost regression** → measure under full occupancy, not a typical case. If it is a problem, report rather than re-architecting; R-01 is a recorded decision.
 - **A missed `EMPTY` construction site** → there are at least four in `parameter_snapshot.rs`. Grep for `RtPostEffectParameters::EMPTY` and check each.
