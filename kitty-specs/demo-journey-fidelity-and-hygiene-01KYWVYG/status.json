@@ -1,7 +1,7 @@
 {
-  "event_count": 11,
-  "last_event_id": "01KYWYY85A11R9RGH0WP1Q1W8E",
-  "materialized_at": "2026-07-31T20:48:04.266602+00:00",
+  "event_count": 13,
+  "last_event_id": "01KYWZ5MHFXKQHWJHKVH8E6778",
+  "materialized_at": "2026-07-31T20:52:06.319521+00:00",
   "mission_number": "",
   "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
   "mission_type": "software-dev",
@@ -12,17 +12,20 @@
     "claimed": 0,
     "done": 0,
     "for_review": 0,
-    "in_progress": 0,
+    "in_progress": 1,
     "in_review": 0,
-    "planned": 11
+    "planned": 10
   },
   "work_packages": {
     "WP01": {
-      "actor": "finalize-tasks",
+      "actor": "claude",
+      "agent": "claude",
       "force_count": 0,
-      "lane": "planned",
-      "last_event_id": "01KYWYY11643E0J0MZCJDC9NF7",
-      "last_transition_at": "2026-07-31T20:47:56.966158+00:00"
+      "lane": "in_progress",
+      "last_event_id": "01KYWZ5MHFXKQHWJHKVH8E6778",
+      "last_transition_at": "2026-07-31T20:52:06.319521+00:00",
+      "shell_pid": 13847,
+      "shell_pid_created_at": "1785531124.384626"
     },
     "WP02": {
       "actor": "finalize-tasks",
