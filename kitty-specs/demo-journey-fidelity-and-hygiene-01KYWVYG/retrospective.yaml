@@ -97,6 +97,45 @@ helped:
   summary: WP11 completed without rejection cycles
   evidence_refs:
   - e-016
+- id: h-011
+  category: process
+  summary: Falsification-by-execution found a proof gap that eleven work-package reviews missed
+  evidence_refs:
+  - e-021
+  details: >-
+    During the post-merge review the orchestrator reverted
+    src/testing/live_demo_runner.rs:959-964 to unconditional
+    AppEvent::from_semantic_action — literally reintroducing DRIFT-6, the defect
+    this mission exists to close — and ran cargo test --test effects_and_buses.
+    It returned exit 0, 1 passed, 0 failed. The runner was restored from backup
+    and re-verified green. No amount of reading the guard source revealed this;
+    executing the defect did, in one command. Adopt as standing practice: a
+    proof that is claimed to prevent a regression must be tested by performing
+    that regression.
+- id: h-012
+  category: process
+  summary: Running the physical demo directly (rather than delegating it) produced the first
+    committed live-run evidence in this mission line
+  evidence_refs:
+  - e-022
+  details: >-
+    WP11's log was captured and committed at
+    kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log
+    (493KB). The parent mission cited two live-run logs (t052-run.log,
+    wp10-t059-live-run.log) that are committed in no branch and do not exist on
+    this host — its physical claims are unauditable today. Referencing evidence
+    is not retaining it; commit the artifact or the claim decays to hearsay.
+- id: h-013
+  category: process
+  summary: Building the merged tree before declaring done caught a break invisible to every
+    lane reviewer
+  evidence_refs:
+  - e-015
+  details: >-
+    WP09 (branched from WP08) called Patch::with_post_effects, which WP05
+    deleted in a sibling lane. Both lanes reviewed clean because neither
+    reviewer could observe the other. Only compiling the integrated tree
+    surfaced it. See n-006 for the structural cause.
 not_helpful:
 - id: n-004
   category: doc
@@ -125,14 +164,126 @@ not_helpful:
   evidence_refs:
   - e-017
   details: WP WP08 was sent back from review to planning 1 time(s).
+- id: n-005
+  category: spec_quality
+  summary: The mission graded its own fix with acceptance criteria that cannot fail — the
+    exact defect class it was chartered to close, one level up
+  evidence_refs:
+  - e-021
+  details: >-
+    This mission exists because a demo claim outran its demonstration. It fixed
+    the claim, then proved the fix with two assertions that hold whether or not
+    the behavior occurs. (1) The journey guard asserts over the scene's
+    declaration (transition.adjust(), support_before()), never over the
+    dispatched event; LiveTopologyCheckpoint has no dispatched-event field, so
+    reverting the runner leaves every checkpoint, the live report, and the
+    hardware evidence byte-identical. (2) FR-002's three assertions — Accepted,
+    audible_on_activated_graph(), active_notes() > 0 — are satisfied by the
+    ambient probe note on the already-sounding chain with the parameter edit
+    removed entirely. The post-merge verdict is FAIL on proof adequacy for this
+    reason. The orchestrator authored the acceptance-matrix row that cited the
+    vacuous FR-002 evidence; the error is the reviewer's own.
+- id: n-006
+  category: process
+  summary: Lane isolation let a deleted API survive review in a sibling lane and broke the
+    merged build
+  evidence_refs:
+  - e-015
+  details: >-
+    Per-WP lane worktrees give each reviewer a view that excludes concurrent
+    lanes. WP05 deleted Patch::with_post_effects; WP09, branched from WP08,
+    still called it. Both lanes passed review; the merged tree did not compile.
+    Two reviewers also filed deletion claims that proved wrong post-merge, same
+    root cause. Lane-local green is not integration green — nothing in the
+    workflow compiled the union before the merge gate.
+- id: n-007
+  category: doc
+  summary: The acceptance matrix omitted every NFR and constraint row — identically to the
+    parent mission
+  evidence_refs:
+  - e-021
+  details: >-
+    Both this mission and expandable-effects-and-bus-topology-01KYNGX8 produced
+    acceptance matrices covering functional requirements only, silently dropping
+    NFR and constraint grading. The same omission in two consecutive missions by
+    different authors indicts the artifact template, not the author.
+- id: n-008
+  category: tooling
+  summary: 'spec-kitty retrospect summary enumerates mission *types* instead of missions and
+    reports every real record as missing'
+  evidence_refs:
+  - e-023
+  details: >-
+    The command documents itself as reading kitty-specs/*/retrospective.yaml but
+    enumerates .kittify/missions/*, which on this project contains exactly one
+    entry — software-dev, the mission TYPE. Observed output: mission_count 1,
+    mission_id "software-dev", mission_slug "", findings_status "missing",
+    aggregate missing=1 has_findings=0. On disk both records are well-formed and
+    both carry findings_status: has_findings. The classifier
+    (retrospective/summary.py:630 classify_mission_record) is correct; its
+    caller passes the wrong directory. spec-kitty agent retrospect synthesize
+    resolves the same mission correctly, so only the summary path is affected.
+    Cross-mission learning is invisible in this project until it is fixed.
+    Upstream defect in spec-kitty v3.2.6 — not fixable in this repository.
 gaps:
 - id: g-001
   category: doc
   summary: data-model.md absent
   evidence_refs:
   - e-002
-  details: spec.md declares domain entities but data-model.md is missing. A data model document clarifies domain entity 
+  details: spec.md declares domain entities but data-model.md is missing. A data model document clarifies domain entity
     relationships.
+- id: g-002
+  category: spec_quality
+  summary: No checkpoint field records which input kind was dispatched, so no gate can tell a
+    journey-driven change from an injected one
+  evidence_refs:
+  - e-021
+  details: >-
+    LiveTopologyCheckpoint carries the scene's declared intent but not the event
+    the runner actually emitted. Direct cause of HIGH finding DRIFT-1 and of
+    n-005 (1). Remediation: pin the dispatched input kind on the topology
+    checkpoint so the guard asserts over what happened, not over what was
+    declared.
+- id: g-003
+  category: spec_quality
+  summary: No checkpoint field records an occupant scalar's before/after value, so no gate
+    can prove a parameter edit took effect
+  evidence_refs:
+  - e-021
+  details: >-
+    FR-002 can only assert acceptance and audibility, both of which the ambient
+    probe note supplies unaided. Direct cause of HIGH finding DRIFT-2 and of
+    n-005 (2). Remediation: assert the occupant scalar's before and after values
+    on the edit checkpoint.
+- id: g-004
+  category: design
+  summary: SemanticAction has no patch-selection gesture, bounding every live demo to a
+    single instrument
+  evidence_refs:
+  - e-021
+  details: >-
+    The 8-variant SemanticAction union contains no SelectPatch or NextPatch, so
+    the player journey cannot reach a second patch and every scene demonstrates
+    all channels of exactly one instrument. Recorded as LIMIT-1 in the parent
+    mission's review Addendum 2 and promoted to an explicit Phase 5 entry
+    condition in ROADMAP.md by operator direction (2026-08-01), requiring both a
+    patch-selection semantic gesture and a multi-instrument
+    demo-live-patch-editor.
+- id: g-005
+  category: tooling
+  summary: 'Correction: g-001 above is a false finding — this project forbids data-model.md
+    by doctrine'
+  evidence_refs:
+  - e-024
+  details: >-
+    CLAUDE.md states verbatim that the mission must "never produce
+    data-model.md/contracts/ (they fork the canonical resources and fail
+    acceptance)"; the canonical resources live in the crest-spec at
+    .kittify/crest-spec/. The generator's absent-artifact heuristic is unaware of
+    project-level doctrine and will emit this false gap on every future crest-synth
+    mission. g-001 is left byte-intact as generated and corrected here rather
+    than quietly deleted. Acting on g-001 would fail acceptance.
 proposals: []
 evidence_refs:
 - id: e-001
@@ -198,5 +349,17 @@ evidence_refs:
 - id: e-020
   kind: file
   path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/analysis-report.md
+- id: e-021
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/mission-review.md
+- id: e-022
+  kind: file
+  path: kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log
+- id: e-023
+  kind: file
+  path: kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/retrospective.yaml
+- id: e-024
+  kind: file
+  path: CLAUDE.md
 generator_version: '1.0'
 provenance_history: []
