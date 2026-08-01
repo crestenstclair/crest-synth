@@ -2939,6 +2939,12 @@ witnesses:
         registryEntryAdditionStructuralChanges: number
         fourthEntryEndToEndExercised: bool
         carryOverWrongEngineIdentityRefused: bool
+        occupancyStepsDeclaringJourney: number
+        occupancyStepsNotGradedOnRecordedDispatch: number
+        directInjectionsRecorded: number
+        occupantScalarEditsExercised: number
+        occupantScalarEditsWithoutRecordedChange: number
+        mismatchedSlotIdentityInexpressible: bool
         callbackAllocations: number
         callbackDeallocations: number
         callbackDestructions: number
@@ -2948,7 +2954,38 @@ witnesses:
     predicates:
     - field: schemaVersion
       op: eq
-      value: 2
+      value: 3
+    - field: occupancyStepsDeclaringJourney
+      op: gt
+      value: 0
+      repairResources:
+      - BehavioralAcceptanceTests
+    - field: occupancyStepsNotGradedOnRecordedDispatch
+      op: eq
+      value: 0
+      repairResources:
+      - BehavioralAcceptanceTests
+    - field: directInjectionsRecorded
+      op: lte
+      value: 1
+      repairResources:
+      - BehavioralAcceptanceTests
+    - field: occupantScalarEditsExercised
+      op: gt
+      value: 0
+      repairResources:
+      - BehavioralAcceptanceTests
+    - field: occupantScalarEditsWithoutRecordedChange
+      op: eq
+      value: 0
+      repairResources:
+      - BehavioralAcceptanceTests
+    - field: mismatchedSlotIdentityInexpressible
+      op: eq
+      value: true
+      repairResources:
+      - Patch
+      - PostEffectConfig
     - field: orderedSlotCasesExercised
       op: eq
       value: 3

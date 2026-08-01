@@ -155,3 +155,4 @@ completion:
   - zero_selection_guard
   - expandable_effects_and_bus_topology
   - no_name_enumerated_identity
+  - acceptance_matrix_covers_all_requirement_kinds

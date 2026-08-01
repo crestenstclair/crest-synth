@@ -1070,10 +1070,37 @@ requirements:
       occupancy cycles by the adjacent-choice gesture — with at least one installed occupant scalar edited
       audibly from the PATCH page, and every return occupancy change SHALL likewise travel the MIXER return
       rows; the controlled rejection is the single permitted direct semantic-action injection because the
-      UI cannot express an unknown entry, and the scene SHALL document that exception inline; measured evidence SHALL
+      UI cannot express an unknown entry, and the scene SHALL document that exception inline; every occupancy
+      checkpoint SHALL record which input kind the production reducer actually received and the journey
+      SHALL be graded against that record rather than against the scene's declaration, and the occupant
+      scalar edit SHALL be graded on a recorded before/after change rather than on acceptance and audibility
+      alone; measured evidence SHALL
       include per-bus isolation below -60 dBFS, order sensitivity, instance independence, and two-run
       logical determinism, and the scene SHALL end with zero active notes, released stream and worker,
       collected graphs, and normal parent-process exit
+    goals:
+    - expand_effects_and_buses
+    capabilities:
+    - expandable_effects_and_bus_topology
+  falsifiable_journey_proof:
+    kind: nonfunctional
+    description: every check that attests the on-screen player journey or an audible occupant edit SHALL
+      assert over what the production reducer received and produced — the recorded dispatched input kind
+      and the recorded occupant scalar before/after pair — never over the scene's own declaration of what
+      it intended; a check whose subject is the declaration cannot detect a dispatch path that stopped
+      travelling the journey, and is therefore not proof of it; each such check SHALL additionally be
+      demonstrated falsifiable by a recorded mutation that removes the behavior and makes the check fail,
+      followed by a restoration that makes it pass, and a check with only one recorded outcome is unproven
+    goals:
+    - expand_effects_and_buses
+    capabilities:
+    - expandable_effects_and_bus_topology
+  acceptance_record_covers_all_requirement_kinds:
+    kind: nonfunctional
+    description: a mission's acceptance record SHALL grade every requirement kind its specification
+      declares — functional, nonfunctional, and constraint alike — and acceptance SHALL fail naming any
+      kind the specification declares and the record omits, so a whole class of requirements cannot be
+      silently ungraded
     goals:
     - expand_effects_and_buses
     capabilities:

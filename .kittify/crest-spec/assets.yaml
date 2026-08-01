@@ -896,11 +896,15 @@ assets:
     - EffectCapabilityRegistry
     - EffectSlotIndex
     - BusId
+    - BehavioralAcceptanceTests
     prompts:
     - Keep scripts/check_no_name_enumerated_identity.sh a deterministic static scan seeded with the retired
       effect/bus identifiers, with MasterGainDb the single declared exception.
     - Gate execution on the presence of every required tool (for example rg and perl); a missing tool
       exits non-zero naming the tool instead of reporting no candidates.
+    - Add scripts/check_acceptance_matrix_coverage.sh comparing each mission's declared requirement kinds
+      against the kinds its acceptance record grades; exit non-zero naming any kind the specification
+      declares and the record omits, and emit the declared passing marker otherwise.
     contributesTo:
-      expandable_effects_and_bus_topology: keeps the no-name-enumeration gate honest on machines missing
-        its scanning tools
+      expandable_effects_and_bus_topology: keeps the no-name-enumeration and acceptance-coverage gates
+        honest on machines missing their scanning tools

@@ -664,5 +664,11 @@ capabilities:
             through focused PATCH slot rows and adjacent-choice cycling with one occupant scalar edited
             audibly from the PATCH page, return occupancy changes are walked through the MIXER return
             rows, and the controlled rejection remains the single documented direct injection
+        - action: revert the runner's dispatch selection so every occupancy change is injected directly,
+            then remove the occupant scalar edit while the chain keeps sounding
+          observes: each mutation makes at least one declared check fail and names the step it broke,
+            and restoring makes them pass again; the journey and the audible edit are graded on the
+            recorded dispatched input kind and the recorded scalar before/after pair, so neither can be
+            lost while the checkpoints, the report, and the recorded evidence stay byte-identical
         evidence:
         - evidence.expandable_effects_and_bus_topology_contract

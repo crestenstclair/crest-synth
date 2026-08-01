@@ -1162,6 +1162,29 @@ projectValidations:
       closed shortcut fails the build rather than the review; the script verifies its required tools are
       present before scanning and exits non-zero naming any missing tool, so absent tooling can never
       read as a pass
+  acceptance_matrix_covers_all_requirement_kinds:
+    scope: project
+    kind: custom
+    command:
+    - bash
+    - scripts/check_acceptance_matrix_coverage.sh
+    assertions:
+    - type: exit-code
+      equals: 0
+    - type: stdout-contains
+      value: CREST_STATIC_VALIDATION acceptance_matrix_covers_all_requirement_kinds passed
+    resources:
+    - BehavioralAcceptanceTests
+    capabilities:
+    - expandable_effects_and_bus_topology
+    goals:
+    - expand_effects_and_buses
+    description: a static check over each mission's specification and acceptance record fails when the
+      record omits a requirement kind the specification declares, naming the omitted kind; functional,
+      nonfunctional, and constraint rows are all graded or acceptance fails, so a whole class of
+      requirements cannot go silently ungraded as it did in two consecutive missions; the script verifies
+      its required tools are present before scanning and exits non-zero naming any missing tool, so absent
+      tooling can never read as a pass
 attachedValidations:
   service.mix_engine_global_mix:
     attachedTo: MixEngine

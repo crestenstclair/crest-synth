@@ -203,6 +203,10 @@ valueObjects:
       input:
       - SemanticAction
       - AppEvent
+      dispatchedInputKind: typed discriminator recording which kind of input the production reducer actually
+        received for this step — an adjacent-choice gesture on a focused row, or a direct semantic action
+      occupantScalarBefore: Option<projected occupant scalar value read before dispatch>
+      occupantScalarAfter: Option<projected occupant scalar value read after acceptance>
       expectedTransition: typed expected outcome and exact values captured before dispatch
       outcome:
       - Accepted
@@ -229,6 +233,19 @@ valueObjects:
     invariants:
     - expectedTransition is computed and frozen before input dispatch; no actual state, projection, effect,
       or audio value can define its own expectation
+    - dispatchedInputKind is copied from the input handed to the production reducer at the moment of
+      dispatch and is never re-derived from the declared transition; a check that reads the declaration
+      instead of this field cannot observe a dispatch path that stopped travelling the player's journey
+    - an occupancy step whose declared transition carries an adjacent-choice direction records the gesture
+      as its dispatchedInputKind; a direct semantic action is recorded as such and is permitted only for
+      a declared rejection the UI cannot express, so at most one direct injection appears in a scene and
+      an added one is attributable to its step
+    - a step that edits an occupant scalar records occupantScalarBefore before dispatch and occupantScalarAfter
+      after acceptance, both read from the canonical projection; the step's criterion is satisfied only
+      when the two differ, so acceptance, audibility, and a nonzero active-note count cannot pass it while
+      the surrounding chain merely keeps sounding
+    - both occupant scalar fields are absent rather than zero when the step edits no occupant scalar; a
+      defaulted zero standing in for an unmeasured value is a defect
     - all control fields come from one production EventRecord and the canonical projections plus structural
       status for that record's accepted generation or unchanged rejected generation
     - audioObservation is copied from the bounded callback-to-control port only after its sequence advances

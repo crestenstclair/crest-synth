@@ -49,6 +49,10 @@ valueObjects:
     - zero is invalid and identities are unique within one Patch
     - the value remains stable across projection and structural engine/preset replacement and is never
       a widget or vector index
+    - the identity of an occupant is derived from the position it occupies rather than supplied alongside
+      it, exactly as bus returns derive theirs; occupancy is set per position and instances are never
+      relocated, so uniqueness holds by construction and an occupant carrying another position's identity
+      is inexpressible rather than merely refused
     contributesTo:
       static_patch_effect: keeps focus, scalar projection, prepared state, and observations attached to
         the same semantic slot
@@ -428,6 +432,9 @@ aggregates:
       empty or occupied by one validated configuration against the immutable EffectCapabilityRegistry;
       occupied entries carry unique stable EffectSlotIds, slot order is render order, clearing one position
       never compacts the others, and a fourth position is unrepresentable
+    - installing an occupant stamps that position's derived identity onto it rather than trusting an
+      identity supplied by the caller, so a valid-but-mismatched identity cannot silently relocate an
+      effect; uniqueness follows from the derivation instead of being separately enforced
     - the ordered per-position slot view is the only chain representation the aggregate exposes; no compacting
       or position-erasing accessor exists, and every consumer receives positions exactly as stored so a
       gapped chain can never be silently renumbered by a round-trip
