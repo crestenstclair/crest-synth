@@ -20,6 +20,12 @@ assetKinds:
   validation-script:
     description: Deterministic guard scripts invoked by declared validations
     filePattern: scripts/*
+  product-design-authority:
+    description: The master product design document — authority for what the product should be
+    filePattern: DESIGN.md
+  delivery-roadmap:
+    description: The phase roadmap and its corrective gates
+    filePattern: ROADMAP.md
 assets:
   KernelContextModules:
     kind: rust-context-source
@@ -849,6 +855,38 @@ assets:
     contributesTo:
       static_patch_effect: provides the focused executable architecture and DSP witness
       observable_demo_scene: keeps focused and exhaustive effect proof on production seams
+  ProductDesignAuthority:
+    kind: product-design-authority
+    description: DESIGN.md, the master product design and the authority for what the product should be;
+      hand-authored, never generated, and kept in vocabulary agreement with this crest-spec
+    targets:
+    - BusReturn
+    - BusReturnBank
+    - EffectSlotIndex
+    - EffectCapabilityRegistry
+    prompts:
+    - Never generate or rewrite this document from the crest-spec; it is the product authority and edits
+      are deliberate authorial acts.
+    - Keep its vocabulary in agreement with the declared model — bus returns are named as returns, effect
+      positions as ordered slots — and carry no retired term for a routing destination or effect.
+    - When product intent here and the crest-spec disagree, resolve it during crest-spec authoring rather
+      than by silently editing either.
+    contributesTo:
+      expandable_effects_and_bus_topology: states the product-level bounds the declared topology realizes
+  DeliveryRoadmap:
+    kind: delivery-roadmap
+    description: ROADMAP.md, the phase sequence and its corrective gates; records which phase is current
+      and what must be true before the next begins
+    targets:
+    - BusReturnBank
+    - EffectSlotIndex
+    prompts:
+    - Record each phase's completion condition and any corrective gate that blocks later phases, including
+      the evidence that closes it.
+    - A gate is closed only by recorded evidence, never by assertion; keep closed gates in place as history
+      rather than deleting them.
+    contributesTo:
+      live_observable_demo: carries the retained-scene phase gates and their closure conditions
   ValidationScripts:
     kind: validation-script
     description: deterministic guard scripts under scripts/ that declared validations invoke; each script
