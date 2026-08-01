@@ -1,7 +1,7 @@
 {
-  "event_count": 64,
-  "last_event_id": "01KYXBYX27PXGDYFD376TVMS1Y",
-  "materialized_at": "2026-08-01T00:35:37.159431+00:00",
+  "event_count": 65,
+  "last_event_id": "01KYXC26W3B4P73AMPDQ6CJXXT",
+  "materialized_at": "2026-08-01T00:37:25.507770+00:00",
   "mission_number": "",
   "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
   "mission_type": "software-dev",
@@ -11,9 +11,9 @@
     "canceled": 0,
     "claimed": 0,
     "done": 0,
-    "for_review": 1,
+    "for_review": 0,
     "in_progress": 0,
-    "in_review": 0,
+    "in_review": 1,
     "planned": 1
   },
   "work_packages": {
@@ -248,17 +248,20 @@
     "WP10": {
       "actor": "claude",
       "agent": "claude",
-      "agent_profile": "implementer-ivan",
+      "agent_profile": "reviewer-renata",
       "agent_profile_version": "1.0",
       "force_count": 0,
-      "lane": "for_review",
-      "last_event_id": "01KYXBYX27PXGDYFD376TVMS1Y",
-      "last_transition_at": "2026-08-01T00:35:37.159431+00:00",
+      "lane": "in_review",
+      "last_event_id": "01KYXC26W3B4P73AMPDQ6CJXXT",
+      "last_transition_at": "2026-08-01T00:37:25.507770+00:00",
       "model": "__resolved_model_absent__",
+      "notes": [
+        "T039 guard tool gating: scripts/check_no_name_enumerated_identity.sh now verifies every external program it invokes (rg, perl, sort, mktemp, mkdir, rm, cat) BEFORE scanning and exits NON-ZERO naming each absent tool. Three outcomes are now three exit codes: 0 clean / 1 violations found / 3 not checked. The '|| true' that turned a missing scanner into 'no candidates' is gone; rg exit 1 (no matches) is separated from rg exit >=2 (scanner failure), and a perl pipeline failure returns 2 instead of silently yielding an empty stripped line. NOTE: repo-root resolution was changed from dirname to bash parameter expansion because dirname ran BEFORE the gate — on a tool-less PATH the script died on dirname instead of reporting, so the gate is now genuinely the script's first external dependency. Tool-gating proof (re-run post-merge): PATH holding every guard tool EXCEPT rg -> exit 3 naming only rg (not perl, proving per-tool detection rather than 'PATH is empty'); EXCEPT perl -> exit 3 naming perl; empty PATH -> exit 3 naming all seven; healthy run byte-compatible at exit 0 with the declared marker 'CREST_STATIC_VALIDATION no_name_enumerated_identity passed'; --self-test exit 0. Three new cases in tests/no_name_enumeration_guard.rs pin this, including one asserting the missing-tool code differs from the violation code; 8/8 pass. T040 reverbSend fixture replaced by a shared PROJECTION_BODY const 'TRACK T00 routedPatches=[01:Lead]\\n> sends[0]=0.4\\nGLOBAL' — vocabulary text_projection.rs and state_projector.rs really emit; the 3-line shape and selectedLine=1 are preserved and both call sites now share the const. The guard's positive-detection fixture at tests/no_name_enumeration_guard.rs is untouched. T041 DESIGN.md:204 'aux buses' -> 'bus returns'; also cleaned DESIGN.md:173 'aux slots' -> 'mixer track, and bus-return slots' as the same residue. T042 stale WP comments removed from all 10 owned source files (src/real_time/audio_renderer.rs is WP05's and is already clean in this lane). Deleted as pure timeline narration: the 'WP08 completed the cutover chartered at WP07' paragraph in mixer_track_parameters.rs (its durable content was already stated in the paragraph above it), the 'WP08 topology and routing seam mutations (T048)' section ruler in behavioral_mutation_harness.rs, and bare (WP05)/(WP08)/(WP10) tags on otherwise-durable comments. Rewritten because they carried a real constraint: MAX_POST_EFFECTS_PER_PATCH's atomic-width rule with ParameterSnapshot/PreparedGraphLayout; the serialized sends <-> SERIALIZED_LEAF_DESCRIPTOR lockstep (both the impl Serialize doc and the pinned-shape test comment); bus_return.rs's factually-false 'WP06 wires this operation to a semantic action' -> the shipped fact that callers reach it through the reducer's SetReturnOccupancy action, never from a view adapter; and both #[allow(dead_code)] rationales in live_demo_scene.rs, which now state the real reason (the fields exist so the serialized shape must decode) instead of deferring to a shipped WP. T043 verification greps (all re-run post-merge, unchanged): (1) 'WP0[0-9]\\|WP10' in src/ -> 9 residual hits, ALL outside my ownership and ALL already cleaned in their owning lanes — src/bin/crest_synth.rs and src/testing/live_effects_and_buses_scene.rs are WP01's and verified clean on lane-a; src/testing/live_demo_report.rs is WP06's and verified clean on lane-f. This lane simply does not carry those commits, so the grep will be empty on the merged tree; nothing to report against those WPs. (2) 'reverbSend' in src/ tests/ -> only the guard fixture. (3) 'aux bus' in DESIGN.md -> empty. (4) 'post_effects()\\|with_post_effects(' in src/ tests/ -> empty; the compact-view symbol set post_effects()|with_post_effects(|set_post_effect_config|effects_compact|rebuild_compact_view over src/ tests/ -> ZERO. Serialized-side triage: a bare 'post_effects' grep returns 34 hits, all correctly RETAINED and triaged BY RECEIVER TYPE — PatchInput::post_effects() plus its field (src/control/event_record.rs) and its UFCS caller (src/shell/standalone_application.rs:1513), SerializedPatch.post_effects (src/control/serialized_state.rs), the reads in src/control/state_tree.rs, and the decoded-record fields in src/testing/live_demo_scene.rs and src/testing/live_demo_report.rs. No Patch-typed receiver anywhere, so WP05's retirement is complete. EffectCapabilityRegistry::validate_patch_effects() retained: three live serialized-side dense-slice callers. ALSO, authorized out-of-map with rationale: added a regression pin in src/synth/patch.rs asserting with_effect_slot refuses one instance identity at two positions (#[should_panic] on set_slot_occupancy's own guard message, so a silent bypass fails rather than an incidental panic). Teeth proven: temporarily rewrote with_effect_slot to assign self.effects[index.index()] directly, bypassing the duplicate guard — the new pin was the ONLY failing test while the other 10 patch tests stayed green, exactly reproducing WP05's reviewer's finding; then restored and re-verified 11/11. Rationale for editing a WP05-owned file: WP05 is approved and merged into this lane, so no agent is live there; the edit is confined to that one test (+17 lines). Validation, all re-run after merging feat/expandable-effects-and-bus-topology into the lane (merge brought only planning artifacts plus .kittify/crest-spec/assets.yaml +38 — zero code delta): cargo test --all-targets EXIT 0 (26 targets ok, 458 lib tests, no failures); cargo clippy --all-targets -- -D warnings EXIT 0; cargo fmt --all -- --check EXIT 0; cargo test --test no_name_enumeration_guard 8/8; bash scripts/check_no_name_enumerated_identity.sh EXIT 0 with the declared marker. Implementation commit d3546af; lane head 157c78c."
+      ],
       "provider": "__resolved_provider_absent__",
-      "role": "implementer",
-      "shell_pid": 48402,
-      "shell_pid_created_at": "1785543135.11433",
+      "role": "reviewer",
+      "shell_pid": 74463,
+      "shell_pid_created_at": "1785544644.012512",
       "subtasks": {
         "T039": "done",
         "T040": "done",
