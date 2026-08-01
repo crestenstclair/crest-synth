@@ -198,15 +198,33 @@ not_helpful:
     workflow compiled the union before the merge gate.
 - id: n-007
   category: doc
-  summary: The acceptance matrix omitted every NFR and constraint row — identically to the
-    parent mission
+  summary: This mission's acceptance matrix graded functional requirements only; the parent
+    under-graded constraints but did grade its NFRs
   evidence_refs:
   - e-021
+  - e-025
   details: >-
-    Both this mission and expandable-effects-and-bus-topology-01KYNGX8 produced
-    acceptance matrices covering functional requirements only, silently dropping
-    NFR and constraint grading. The same omission in two consecutive missions by
-    different authors indicts the artifact template, not the author.
+    CORRECTED 2026-08-01, during the successor mission's planning. The original
+    text of this finding claimed both missions "produced acceptance matrices
+    covering functional requirements only" and concluded that a repeat across
+    two authors "indicts the artifact template, not the author". Counting the
+    graded rows shows that is false for the parent.
+
+    Measured: expandable-effects-and-bus-topology-01KYNGX8 grades 43 rows — FR
+    21, NFR 10, SC 11, C 1. demo-journey-fidelity-and-hygiene-01KYWVYG grades 16
+    rows, all FR, with zero NFR and zero constraint rows against 4 declared NFRs
+    and 8 declared constraints.
+
+    So the NFR omission is this mission's alone and belongs to its author, not
+    to the template. What genuinely recurs is constraint under-grading: the
+    parent graded 1 constraint row against roughly eleven declared, and its own
+    review recorded that gap. The declared-validation remediation stands on the
+    corrected facts — 12 of 28 declared rows went ungraded here and nothing
+    caught it — but it is justified by that, not by a two-mission pattern that
+    did not exist.
+
+    Filing a claim of recurrence without counting the parent's rows is the same
+    error class this mission's review was written to name.
 - id: n-008
   category: tooling
   summary: 'spec-kitty retrospect summary enumerates mission *types* instead of missions and
@@ -361,5 +379,8 @@ evidence_refs:
 - id: e-024
   kind: file
   path: CLAUDE.md
+- id: e-025
+  kind: file
+  path: kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/acceptance-matrix.json
 generator_version: '1.0'
 provenance_history: []

@@ -150,6 +150,17 @@ recorded as graded acceptance rows. The parent mission carried the same gap — 
 noted "constraints C-001..C-011 are not enumerated as acceptance-matrix rows" — so this is
 a **recurring** bookkeeping defect, now twice observed.
 
+> **Correction (2026-08-01, successor mission's planning phase).** The sentence above
+> overstates the recurrence, and the "Open items" entry below repeats the overstatement.
+> Counting graded rows: the parent grades 43 — FR 21, **NFR 10**, SC 11, C 1 — so it did
+> *not* omit NFR grading. This mission grades 16 rows, all FR, against 4 declared NFRs and 8
+> declared constraints. **The NFR omission is this mission's alone.** What recurs is
+> constraint under-grading (parent: 1 row against ~11 declared), which is what the parent's
+> quoted review sentence actually says. The finding's severity and remediation are unchanged
+> — 12 of 28 declared rows went ungraded and nothing caught it — but it is not evidence of a
+> template defect observed twice. Recorded here rather than silently amended: this report
+> exists to name claims that outran their evidence, and this was one of mine.
+
 ### DRIFT-4: NFR-002's silent-fallback closure is incomplete on the evidence path
 **Type**: SILENT-FALLBACK RESIDUE — **Severity**: MEDIUM — **Spec ref**: FR-008, NFR-002, SC-006
 **Evidence**: `src/adapter/production_effects.rs:110-112` still exposes
@@ -319,8 +330,9 @@ Both were available during the mission.
 
 ### Open items (non-blocking, for the follow-up)
 
-1. **DRIFT-3** — add NFR-001..004 and C-001..008 rows to the acceptance matrix (recurring:
-   the parent mission had the identical gap).
+1. **DRIFT-3** — add NFR-001..004 and C-001..008 rows to the acceptance matrix. (See the
+   correction under DRIFT-3: the parent graded its NFRs; only constraint under-grading
+   recurs. This mission's NFR omission is its own.)
 2. **DRIFT-4** — make the permissive `startup_bus_returns` unreachable by construction.
 3. **DRIFT-5** — extend the comment sweep to `tests/` and to `T0xx` refs; the mission
    net-added WP markers there.
