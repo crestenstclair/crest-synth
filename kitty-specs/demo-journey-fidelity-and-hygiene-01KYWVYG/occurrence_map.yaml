@@ -110,10 +110,25 @@ exceptions:
       names remain unchanged — reviewers verify that manually.
 
   - path: "tests/no_name_enumeration_guard.rs"
-    action: do_not_change
+    action: manual_review
     reason: >-
-      Contains the deliberate reverbSend detection fixture proving the guard
-      flags forbidden terms; removing it would weaken the guard's self-test.
+      Narrowed from do_not_change (2026-07-31): the intent was always "the
+      deliberate reverbSend detection fixture must survive", but a
+      whole-file do_not_change also forbade FR-014's required extension —
+      WP10 must add cases here proving the guard script fails loudly when a
+      required tool is missing. Reviewers verify the detection fixture is
+      still present and still asserted; other changes to this file are
+      reviewed on their merits.
+
+  - path: "scripts/*"
+    action: manual_review
+    reason: >-
+      FR-014 requires editing scripts/check_no_name_enumerated_identity.sh to
+      gate on its tool dependencies. The path is declared in the crest-spec
+      as asset.ValidationScripts (assetKind validation-script) but carries no
+      bulk-edit term, so the heuristic leaves it unclassified. Reviewed on
+      merits; the healthy-path contract (exit 0 plus the declared marker)
+      must stay byte-compatible.
 
   - path: "kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/**"
     action: manual_review
