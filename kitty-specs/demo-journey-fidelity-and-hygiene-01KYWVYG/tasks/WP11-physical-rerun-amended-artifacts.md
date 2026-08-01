@@ -93,6 +93,26 @@ journey is demonstrated ON HARDWARE and the record says so.
   DRIFT-3/4/5 cleanups (WP06/WP10 + per-WP sweeps), 6 RISK-1 layout
   hardening (WP08, operator-included), 7 guard tool gating (WP10).
 
+**Numbers that moved (from WP09's review — do not copy the parent's values
+blindly):**
+- The deterministic observation is now `schemaVersion: 2`, with the added
+  fields `fourthEntryEndToEndExercised` and
+  `carryOverWrongEngineIdentityRefused` (both true).
+- `retiredGraphsCollectedOffCallback` moved **8 → 15** (WP09 drives seven
+  more structural changes; the predicate is `gt 0`, so it still passes).
+  This is the ONLY pre-existing numeric that changed. Any artifact you amend
+  from the parent's `deterministic-acceptance.json` must expect 15, not 8.
+- **The fourth entry is test-only.** It lives solely in
+  `tests/expandable_effects_and_bus_topology.rs`; the production composition
+  root still builds the three-entry registry. The physical
+  `make demo-live-effects-and-buses` run must therefore still show exactly
+  three product effects on screen — do NOT expect the witness entry to
+  appear in the real window, and treat its appearance as a defect.
+- SC-008 can now be graded on demonstration rather than structural absence.
+  Citable evidence: `fourthEntryEndToEndExercised: true` plus the
+  zero-production-diff fact, satisfying the crest-spec
+  `open_effect_registry` step-1 `observes` clause verbatim.
+
 ## Subtasks
 
 ### T044 — Physical re-run of demo-live-effects-and-buses; capture evidence
