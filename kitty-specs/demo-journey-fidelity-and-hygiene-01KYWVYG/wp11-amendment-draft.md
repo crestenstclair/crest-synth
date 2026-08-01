@@ -1,6 +1,18 @@
 # WP11 staging draft — parent-artifact amendments pending hardware evidence
 
-**Status: DRAFT. Not applied.** The parent mission's `acceptance-matrix.json`
+> **SUPERSEDED 2026-08-01 — this draft has been APPLIED. Retained for method, not status.**
+>
+> The physical run completed (`make demo-live-effects-and-buses`, exit 0;
+> evidence at `kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log`),
+> and the amendments below were applied append-only to the parent mission's
+> `acceptance-matrix.json` (80 added / 0 removed) and `mission-review.md`
+> (180 added / 0 removed, original bytes an exact prefix). Every
+> `TODO(physical)` placeholder in this file is discharged; read the parent
+> artifacts, not this file, for the authoritative record. The status line
+> below describes the pre-run state and is kept only so the method — draft
+> first, measure, then apply — remains auditable.
+
+**Status (pre-run, historical): DRAFT. Not applied.** The parent mission's `acceptance-matrix.json`
 and `mission-review.md` are deliberately left **byte-untouched** by WP11 so far.
 They are the parent mission's acceptance record; writing TODO placeholders into
 them would corrupt a machine-read acceptance authority and would look, to any
