@@ -737,14 +737,26 @@ impl ParameterSnapshot {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let instrument = RtInstrumentParameters::new(&instrument_values)?;
-                effect_registry
-                    .validate_patch_effects(patch.post_effects())
-                    .map_err(|_| ParameterSnapshotError::InvalidEffectConfig { index })?;
                 let mut effects = [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS];
-                for (position, occupancy) in patch.effect_slots().iter().enumerate() {
+                let slots = patch.effect_slots();
+                for (position, occupancy) in slots.iter().enumerate() {
                     let Some(config) = occupancy else {
                         continue;
                     };
+                    // Per-position feed validation: every occupied position
+                    // must hold a canonical registry config, and an instance
+                    // identity may occupy only one position. The bounded slot
+                    // array makes a capacity violation unrepresentable.
+                    if slots[..position]
+                        .iter()
+                        .flatten()
+                        .any(|prior| prior.slot_id() == config.slot_id())
+                    {
+                        return Err(ParameterSnapshotError::InvalidEffectConfig { index });
+                    }
+                    effect_registry
+                        .validate_config(config)
+                        .map_err(|_| ParameterSnapshotError::InvalidEffectConfig { index })?;
                     let effect_descriptor = effect_registry
                         .descriptor(config.capability_id())
                         .ok_or(ParameterSnapshotError::InvalidEffectConfig { index })?;
@@ -954,6 +966,7 @@ mod tests {
     use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::graph_revision::GraphRevision;
     use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
+    use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
     use crate::synth::voice_envelope::VoiceEnvelope;
     use crate::synth::{EffectSlotId, MAX_EFFECT_SCALAR_PARAMETERS};
     use serde_json::Value;
@@ -1196,7 +1209,162 @@ mod tests {
         }
     }
 
-    /// T028/WP06: the eight return entries derive only from the canonical
+    fn gapped_chain_patch() -> crate::synth::Patch {
+        use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
+        use crate::adapter::production_effects::production_chorus_config;
+        use crate::synth::effect_slot_id::EffectSlotIndex;
+        use crate::synth::DescriptorDefaultConfigFactory;
+
+        let braids = BraidsCapability::new().unwrap();
+        let capabilities =
+            crate::synth::instrument_capability::CapabilityRegistry::new(vec![braids.descriptor()])
+                .unwrap();
+        let factory = DescriptorDefaultConfigFactory::new(capabilities, vec![Box::new(braids)]);
+        let mut patch = crate::synth::Patch::new(
+            PatchId::new(1).unwrap(),
+            "Gapped".to_owned(),
+            factory
+                .create(&crate::synth::CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap())
+                .unwrap(),
+            crate::kernel::midi_channel::MidiChannel::new(0).unwrap(),
+            PatchOutput::default(),
+        )
+        .with_effect_slot(
+            EffectSlotIndex::new(0).unwrap(),
+            production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap(),
+        )
+        .with_effect_slot(
+            EffectSlotIndex::new(1).unwrap(),
+            production_chorus_config(EffectSlotId::new(2).unwrap()).unwrap(),
+        )
+        .with_effect_slot(
+            EffectSlotIndex::new(2).unwrap(),
+            production_chorus_config(EffectSlotId::new(3).unwrap()).unwrap(),
+        );
+        patch
+            .set_slot_occupancy(EffectSlotIndex::new(1).unwrap(), None)
+            .unwrap();
+        patch
+    }
+
+    /// A gapped Patch chain feeds the snapshot per-position: each occupied
+    /// entry lands at its true slot index and the cleared middle position
+    /// stays inactive at its own index — the feed never compacts.
+    #[test]
+    fn gapped_patch_chain_feeds_occupied_entries_at_true_positions() {
+        let patch = gapped_chain_patch();
+        let braids = crate::adapter::braids_capability::BraidsCapability::new().unwrap();
+        let capabilities =
+            crate::synth::instrument_capability::CapabilityRegistry::new(vec![braids.descriptor()])
+                .unwrap();
+        let effects = crate::adapter::production_effects::production_effect_registry().unwrap();
+
+        let snapshot = ParameterSnapshot::project_patches_with_effects(
+            5,
+            GraphRevision::INITIAL,
+            global(),
+            MixerState::default(),
+            std::slice::from_ref(&patch),
+            &capabilities,
+            &effects,
+        )
+        .unwrap();
+
+        let projected = &snapshot.patches()[0];
+        assert!(projected.effects()[0].is_active());
+        assert_eq!(
+            projected.effects()[0].slot_id(),
+            Some(EffectSlotId::new(1).unwrap())
+        );
+        assert!(
+            !projected.effects()[1].is_active(),
+            "the cleared middle position must stay inactive, never compacted over"
+        );
+        assert_eq!(projected.effects()[1].slot_id(), None);
+        assert!(projected.effects()[2].is_active());
+        assert_eq!(
+            projected.effects()[2].slot_id(),
+            Some(EffectSlotId::new(3).unwrap())
+        );
+    }
+
+    /// An instance identity can never occupy two positions of one Patch: the
+    /// aggregate refuses the second occupancy outright, so the duplicate the
+    /// feed used to catch cannot reach it. The feed's own refusal keeps its
+    /// strength for what remains representable — an occupied position holding
+    /// a config the effect registry does not recognise is still refused as an
+    /// invalid effect configuration for that Patch.
+    #[test]
+    fn duplicate_instance_identity_is_refused_before_the_feed_sees_it() {
+        use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
+        use crate::adapter::production_effects::production_chorus_config;
+        use crate::synth::effect_slot_id::EffectSlotIndex;
+        use crate::synth::patch::EffectSlotOccupancyError;
+        use crate::synth::{DescriptorDefaultConfigFactory, EffectCapabilityId, PostEffectConfig};
+
+        let braids = BraidsCapability::new().unwrap();
+        let capabilities =
+            crate::synth::instrument_capability::CapabilityRegistry::new(vec![braids.descriptor()])
+                .unwrap();
+        let factory =
+            DescriptorDefaultConfigFactory::new(capabilities.clone(), vec![Box::new(braids)]);
+        let effects = crate::adapter::production_effects::production_effect_registry().unwrap();
+        let mut patch = crate::synth::Patch::new(
+            PatchId::new(1).unwrap(),
+            "Duplicated".to_owned(),
+            factory
+                .create(&crate::synth::CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap())
+                .unwrap(),
+            crate::kernel::midi_channel::MidiChannel::new(0).unwrap(),
+            PatchOutput::default(),
+        )
+        .with_effect_slot(
+            EffectSlotIndex::new(0).unwrap(),
+            production_chorus_config(EffectSlotId::new(9).unwrap()).unwrap(),
+        );
+
+        assert_eq!(
+            patch.set_slot_occupancy(
+                EffectSlotIndex::new(1).unwrap(),
+                Some(production_chorus_config(EffectSlotId::new(9).unwrap()).unwrap()),
+            ),
+            Err(EffectSlotOccupancyError::DuplicateSlotId(
+                EffectSlotId::new(9).unwrap()
+            ))
+        );
+        assert!(
+            patch.effect_slots()[1].is_none(),
+            "the refused duplicate never lands, and never replaces the original"
+        );
+
+        patch
+            .set_slot_occupancy(
+                EffectSlotIndex::new(1).unwrap(),
+                Some(PostEffectConfig::from_parts(
+                    EffectSlotId::new(10).unwrap(),
+                    EffectCapabilityId::new("effect.unregistered").unwrap(),
+                    Vec::new(),
+                    Vec::new(),
+                )),
+            )
+            .unwrap();
+
+        assert_eq!(
+            ParameterSnapshot::project_patches_with_effects(
+                5,
+                GraphRevision::INITIAL,
+                global(),
+                MixerState::default(),
+                std::slice::from_ref(&patch),
+                &capabilities,
+                &effects,
+            )
+            .unwrap_err(),
+            ParameterSnapshotError::InvalidEffectConfig { index: 0 }
+        );
+    }
+
+    /// T028: the eight return entries derive only from the canonical
     /// `BusReturnBank` — an unsupplied bank projects all-inactive, and the
     /// production default occupancy projects reverb/delay at returns 0 and 1
     /// with their descriptor default scalars and levels.

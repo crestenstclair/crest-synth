@@ -18,10 +18,12 @@ use crate::mixer::mixer_track_parameters::{
 use crate::mixer::patch_output::{PatchOutputParameter, PatchOutputParameterKind};
 use crate::real_time::audio_command::AudioCommand;
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
+use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::instrument_capability::{CapabilityRegistry, ParameterValue};
 use crate::synth::patch::{Patch, PatchEditableTarget};
 use crate::synth::{
-    EffectCapabilityRegistry, ParameterId, PatchInteraction, VoiceEnvelopeParameter,
+    EffectCapabilityRegistry, ParameterId, PatchInteraction, PostEffectConfig,
+    VoiceEnvelopeParameter,
 };
 use core::fmt;
 use std::collections::BTreeSet;
@@ -404,11 +406,10 @@ impl DemoScene {
         }) {
             return Err(DemoSceneError::InvalidInstrumentConfig);
         }
-        if installed_patches.iter().any(|patch| {
-            effects
-                .validate_patch_effects(patch.post_effects())
-                .is_err()
-        }) {
+        if installed_patches
+            .iter()
+            .any(|patch| !effect_chain_is_valid(effects, patch.effect_slots()))
+        {
             return Err(DemoSceneError::InvalidEffectConfig);
         }
         if installed_patches[0]
@@ -1406,6 +1407,25 @@ fn push_mixer_track_parameter_steps(
     push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
 }
 
+/// Returns whether every occupied position of one Patch effect chain holds a
+/// canonical registry configuration and a unique instance identity. Empty
+/// positions are valid wherever they sit; the bounded slot array itself makes
+/// a capacity violation unrepresentable.
+fn effect_chain_is_valid(
+    effects: &EffectCapabilityRegistry,
+    slots: &[Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
+) -> bool {
+    slots.iter().enumerate().all(|(position, occupancy)| {
+        occupancy.as_ref().is_none_or(|config| {
+            effects.validate_config(config).is_ok()
+                && !slots[..position]
+                    .iter()
+                    .flatten()
+                    .any(|prior| prior.slot_id() == config.slot_id())
+        })
+    })
+}
+
 fn push_patch_effect_control_steps(
     steps: &mut Vec<DemoSceneStep>,
     capabilities: &CapabilityRegistry,
@@ -1442,8 +1462,9 @@ fn push_patch_effect_control_steps(
             }
             PatchControlId::Effect(slot_id, parameter_id) => {
                 let config = patch
-                    .post_effects()
+                    .effect_slots()
                     .iter()
+                    .flatten()
                     .find(|config| config.slot_id() == *slot_id)
                     .expect("the canonical resolver only lists configured effect scalars");
                 let descriptor = effects
@@ -1709,7 +1730,7 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
     push_checkpoint(steps, DemoCheckpoint::new("engine.context.restored"));
 }
 
-/// WP08: exercises the four WP06 occupancy lifecycle events through the
+/// Exercises the four occupancy lifecycle events through the
 /// canonical structural path — a refused request that mutates nothing, a
 /// worker-refused preparation, post-rejection recovery, and (when the effect
 /// registry has entries) a real slot occupancy change that is cleared again
@@ -2105,7 +2126,10 @@ fn build_expected_coverage(
         }
     }
 
-    if patches.iter().any(|patch| !patch.post_effects().is_empty()) {
+    if patches
+        .iter()
+        .any(|patch| patch.effect_slots().iter().any(Option::is_some))
+    {
         expected.extend(
             [
                 "effect.patchEffect.targetExact",
@@ -2272,7 +2296,7 @@ fn build_expected_coverage(
                 ));
             }
         }
-        for config in patch.post_effects() {
+        for config in patch.effect_slots().iter().flatten() {
             for property in ["slotId", "capabilityId"] {
                 expected.push(format!(
                     "property.stateTree.patch.{}.postEffect.{}.{property}",
@@ -2446,8 +2470,8 @@ fn build_expected_coverage(
         expected.push(format!("parameter.global.{parameter}"));
         expected.push(format!("effect.parameterSnapshot.global.{parameter}"));
     }
-    // WP07: every return contributes its return-owned level plus the
-    // occupying registry entry's visible ScalarEdit rows, addressed by BusId.
+    // Every return contributes its return-owned level plus the occupying
+    // registry entry's visible ScalarEdit rows, addressed by BusId.
     for bus in crate::mixer::bus_id::BusId::ALL {
         expected.push(format!("parameter.return.{bus}.returnLevel"));
         expected.push(format!("effect.parameterSnapshot.return.{bus}.returnLevel"));
@@ -2473,12 +2497,12 @@ fn build_expected_coverage(
             ));
         }
     }
-    // WP06: the six retired reverb/delay `global` leaves are gone from the
-    // tree; return-owned state serializes as the indexed `returns` section.
+    // The six retired reverb/delay `global` leaves are gone from the tree;
+    // return-owned state serializes as the indexed `returns` section.
     expected.push("property.stateTree.global.masterGainDb".to_owned());
     expected.push("property.stateTree.returns.effect".to_owned());
     expected.push("property.stateTree.returns.returnLevel".to_owned());
-    // The snapshot's global object keeps only master gain (WP05): the six
+    // The snapshot's global object keeps only master gain: the six
     // retired reverb/delay leaves no longer exist to be covered; their values
     // are the indexed `parameters.returns` entries, whose array property is
     // covered through the StateTree property descriptor below.

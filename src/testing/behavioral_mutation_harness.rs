@@ -658,8 +658,8 @@ fn tree_parameter_projection_exact(tree: &Value) -> bool {
 
     patch_values_match
         && tree.pointer("/mixer/tracks") == tree.pointer("/parameters/mixerTracks")
-        // The snapshot's global object keeps only master gain (WP05); the
-        // retired reverb/delay values are the indexed /parameters/returns.
+        // The snapshot's global object keeps only master gain; every
+        // return-owned value lives at the indexed /parameters/returns.
         && tree.pointer("/global/masterGainDb") == tree.pointer("/parameters/global/masterGainDb")
         && tree.pointer("/generation") == tree.pointer("/parameters/generation")
 }
@@ -728,9 +728,9 @@ fn published_matches_tree(snapshot: &ParameterSnapshot, tree: &Value) -> bool {
             "/parameters/global/masterGainDb",
             snapshot.global().master_gain_db(),
         )
-        // Return-owned values travel only as the indexed return entries
-        // (WP05/WP06): every live scalar and level must appear at its
-        // generic address, bus for bus.
+        // Return-owned values travel only as the indexed return entries:
+        // every live scalar and level must appear at its generic address,
+        // bus for bus.
         && snapshot.returns().iter().enumerate().all(|(bus, entry)| {
             let prefix = format!("/parameters/returns/{bus}");
             entry.scalars().iter().enumerate().all(|(scalar_index, scalar)| {
@@ -832,8 +832,8 @@ fn run_dropped_adjustment(mutant_enabled: bool) -> DroppedAdjustmentObservation 
 
 /// The per-track edit walk: the four `MAIN` fader classes plus the two
 /// harness-audible indexed sends (the buses the reference wet model meters).
-/// WP08 cutover: the retired `ReverbSend`/`DelaySend` aliases became indexed
-/// `Send(BusId)` entries; the walk and its observation labels are unchanged.
+/// Sends enter the walk as `Send(BusId)`, so widening the bus count changes
+/// which buses are walked, never the shape of this enum.
 #[derive(Clone, Copy)]
 enum TrackField {
     Level,
@@ -1764,7 +1764,7 @@ fn run_zero_renderer(mutant_enabled: bool) -> ZeroRendererObservation {
     }
 }
 
-// ---- WP08 topology and routing seam mutations (T048) ----------------------
+// ---- Topology and routing seam mutations ----------------------------------
 
 /// Prepares one positional registry effect instance with its descriptor
 /// defaults, ready for in-chain processing.

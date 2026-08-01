@@ -1,4 +1,4 @@
-//! WP07 acceptance: semantic focus and projection for slots and returns.
+//! Semantic focus and projection for effect slots and bus returns.
 //!
 //! Proves FR-002 (adjacent-choice occupancy, no modal — C-008), FR-003
 //! (descriptor-driven slot parameters), FR-014 (observable outcome), FR-017
@@ -52,10 +52,10 @@ fn installed_state() -> AppState {
         support::globals(),
     )
     .with_initial_returns(returns);
-    let first = soundfont_patch(1, 0, 2).with_post_effects(vec![production_chorus_config(
-        EffectSlotId::new(1).unwrap(),
-    )
-    .unwrap()]);
+    let first = soundfont_patch(1, 0, 2).with_effect_slot(
+        EffectSlotIndex::ALL[0],
+        production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap(),
+    );
     state
         .apply(AppEvent::InstallPatches(vec![
             first,
@@ -100,7 +100,7 @@ fn focused_patch_control(state: &AppState) -> PatchControlId {
     state.interaction().patch_control_focus().unwrap()
 }
 
-/// T039/T045: the PATCH focus order contributes one occupancy row per slot
+/// The PATCH focus order contributes one occupancy row per slot
 /// whether occupied or empty, bare Up/Down never wraps, and PATCH and MIXER
 /// remain the only top-level contexts with the four fixed surfaces.
 #[test]
@@ -162,7 +162,7 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
     );
 }
 
-/// T040: occupancy rows use the engine row's adjacent nonwrapping choice
+/// Occupancy rows use the engine row's adjacent nonwrapping choice
 /// contract — empty, then each installed registry entry in declared order —
 /// and Edit+Up/Down is unavailable. No modal, picker, or new key exists
 /// (C-008): the whole cycle happens through Adjust(Left/Right) in place.
@@ -231,7 +231,7 @@ fn slot_occupancy_cycles_adjacent_choices_without_wrapping() {
             Some(expected_entry.clone())
         );
         // Focus stayed on the occupancy row while its parameter rows
-        // appeared beneath (T043).
+        // appeared beneath.
         assert_eq!(
             focused_patch_control(&state),
             PatchControlId::EffectSlot(EffectSlotIndex::ALL[1])
@@ -246,7 +246,7 @@ fn slot_occupancy_cycles_adjacent_choices_without_wrapping() {
     assert_eq!(state, end);
 }
 
-/// T040 (returns): the same contract on a bus return's occupancy row.
+/// The same contract on a bus return's occupancy row.
 #[test]
 fn return_occupancy_uses_the_same_adjacent_choice_contract() {
     let mut state = installed_state();
@@ -316,7 +316,7 @@ fn return_occupancy_uses_the_same_adjacent_choice_contract() {
     );
 }
 
-/// T043: clearing a slot while its scalar rows hold focus resolves through
+/// Clearing a slot while its scalar rows hold focus resolves through
 /// the one deterministic next-before-previous rule — the first scalar falls
 /// back to its own occupancy row, the last scalar advances to the next
 /// surviving row — and two identical runs land on identical focus paths.
@@ -376,7 +376,7 @@ fn clearing_a_focused_slot_recovers_focus_deterministically() {
     assert_eq!(run(2).0, second_focus);
 }
 
-/// T041/SC-008 at the projection layer: the projected slot rows are the
+/// SC-008 at the projection layer: the projected slot rows are the
 /// occupying entry's descriptor rows, generically. Installing a different
 /// registry entry changes the projected rows with zero projector changes —
 /// the projection is compared field-for-field against whichever descriptor
@@ -426,7 +426,7 @@ fn slot_projection_is_descriptor_driven_for_every_registry_entry() {
     }
 }
 
-/// T042: the MIXER text projection carries all eight indexed sends per track,
+/// The MIXER text projection carries all eight indexed sends per track,
 /// a distinct RETURNS section with every return's occupancy, values, and
 /// return level, and a final GLOBAL section holding master gain alone.
 #[test]

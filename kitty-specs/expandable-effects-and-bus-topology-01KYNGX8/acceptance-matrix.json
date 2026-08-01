@@ -353,6 +353,86 @@
       "verified_by": "reviewer-renata (accept gate, fresh run)",
       "verified_at": "2026-07-31T18:06:41Z",
       "notes": null
+    },
+    {
+      "criterion_id": "FR-019-AMEND-01KYWVYG",
+      "description": "Retained live demo scene demonstrates the on-screen PATCH/MIXER player journey on hardware (resolves the DRIFT-6 supersession of the FR-019 grading)",
+      "proof_type": "manual_qa",
+      "evidence": "Physical run of 'make demo-live-effects-and-buses' (cargo run --release --bin crest-synth -- --demo-live-effects-and-buses) on the fully merged demo-journey-fidelity-and-hygiene-01KYWVYG lane; process exit 0. Complete log committed at kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log (evidence commit 5238020, 2026-08-01). CREST_LIVE_SUMMARY verbatim: 'live demo complete: 105/105 editable parameters, 3/3 engine transitions, 7718 qualifying shell frames, 144 checkpoints, 17462 events, 0 dropped, banks=1, instruments=15, soundfontPatches=8, braidsPatches=7, alternatingCapabilities=true, initialGraphRevision=1, graphRevision=30, engineSwitches=3, fallbacks=0, callbackAllocations=0, callbackDestructions=0, cleanup=true, activeNotes=0'. Every effect-slot and bus-return occupancy change travelled the focus-verified adjacent-choice journey on screen; the only remaining direct injection is the documented rejection (controlled_rejection_observed=true, rejection_reason='invalidEffectConfig', post_rejection_recovery_observed=true). Exactly three product effects appeared (effect.chorus, effect.delay, effect.reverb); the test-only fourth entry 'witness-tilt' occurs 0 times in the log, confirming it is absent from the production registry on hardware.",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "Amends, does not replace, the FR-019 row above; that row's grade and evidence stay as recorded history. The parent's cited logs (t052-run.log, wp10-t059-live-run.log) were never committed to this repository, so this amendment commits its log rather than citing a filename. SCOPE BOUND: the retained scene demonstrates the effect-slot and bus-return journey for ONE instrument only (the scene's subject is patches.first()); recorded as LIMIT-1 in mission-review.md Addendum 2 and escalated to a Phase 5 entry condition in ROADMAP.md."
+    },
+    {
+      "criterion_id": "C-010-AMEND-01KYWVYG",
+      "description": "Live demo gate \u2014 the phase's retained live scene has been run with a real window, physical audio, and the real MIDI fixture, showing the player journey",
+      "proof_type": "manual_qa",
+      "evidence": "Same run and committed log as FR-019-AMEND-01KYWVYG (kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log). CREST_EFFECTS_AND_BUSES_LIVE_OBSERVATION carries 45 keys and zero false values, including physical_audio_nonzero=true, window_closed=true, stream_released=true, owned_graphs_remaining=0, active_notes_after_cleanup=0. Measurement fields are MEASURED, not defaulted: frames_to_projection_max=1, activation_sequence_gap_max=3, render_blocks_to_audible_max=46 (a defaulted zero would be a WP06 regression; none is present).",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "Constraints C-001..C-011 were never enumerated as rows in the parent record (see mission-review.md, 'Minor matrix bookkeeping'); this amendment ADDS the C-010 row rather than altering any existing row. The DRIFT-6 supersession of the C-010 grading is resolved by this evidence."
+    },
+    {
+      "criterion_id": "SC-003-AMEND-01KYWVYG",
+      "description": "Add-only checkpoint-identity contract proven by comparing the physical run's emitted topology identities against the frozen pre-journey baseline",
+      "proof_type": "manual_qa",
+      "evidence": "T045 comparison. BASELINE: FROZEN_TOPOLOGY_IDENTITY_BASELINE, 17 identities, tests/effects_and_buses.rs:59 \u2014 the exact topology checkpoint identity sequence the phase gate emitted pre-rework; corroborated by this matrix's own SC-007 row, which records topology_checkpoints=17 for the parent's physical runs. METHOD (reproducible against the committed log): extract lines beginning 'CREST_LIVE_CHECKPOINT ', strip that marker, parse each remainder as JSON, select records where .kind == \"topology\", project .checkpoint.transition in emission order; then (a) filter that sequence to baseline members and diff it against the frozen constant, and (b) take the complement as the addition set. RESULT: 17/17 baseline identities preserved byte-identically and in order; 0 modified; 0 removed; 13 added; 30 topology checkpoints total. The 13 additions, in emission order: SlotOccupant.scalarEdited, SlotFill.secondCycle1, SlotFill.thirdCycle1, SlotFill.thirdCycle2, Return.contentChangedCycle1, Return.emptyOccupiedCycle1, Return.emptyOccupiedCycle2, Topology.recoveredAfterRefusalCycle1, Slot.startupOccupantRestoredCycle1, Slot.thirdClearedCycle1, Slot.thirdClearedCycle2, Return.emptyRestoredCycle1, Return.emptyRestoredCycle2.",
+      "pass_fail": "pass",
+      "verified_by": "implementer-ivan (WP11/T045, reproduced against the committed log)",
+      "verified_at": "2026-08-01",
+      "notes": "This id carries demo-journey-fidelity-and-hygiene-01KYWVYG's SC-003 (byte-level checkpoint-identity comparison), NOT the parent's SC-003 (independent same-entry tails), whose row above is untouched. HONEST GAP: a byte-diff against the parent's own run logs was impossible \u2014 t052-run.log and wp10-t059-live-run.log were cited by filename in the rows above and were never committed to any branch of this repository. The frozen constant is the durable substitute. The deterministic twin of this comparison is asserted at tests/effects_and_buses.rs:161-171 (declared surface) and :341-347 (emitted surface), both green on the merged lane."
+    },
+    {
+      "criterion_id": "NFR-004-AMEND-01KYWVYG",
+      "description": "Zero dropouts/underruns/discontinuities across the reworked live scene",
+      "proof_type": "manual_qa",
+      "evidence": "From the committed log (kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log), CREST_LIVE_EVENT_LOG_SUMMARY verbatim: {\"schemaVersion\":3,\"eventLogSchemaVersion\":5,\"totalObserved\":17462,\"retainedRecords\":17462,\"droppedRecords\":0,\"firstSequence\":0,\"lastSequence\":17461,\"generationBefore\":0,\"generationAfter\":17460,\"stateHashBefore\":\"4c7040327492fad0\",\"stateHashAfter\":\"933ecdc044fbb8a4\",\"activeGraphRevision\":30,\"lossless\":true}. Checkpoints carrying audio_uninterrupted=false: 0. Checkpoint completeness 144/144; 105/105 editable parameters; 3/3 engine transitions; 7718 qualifying shell frames.",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "Amends, does not replace, the NFR-004 row above."
+    },
+    {
+      "criterion_id": "NFR-006-AMEND-01KYWVYG",
+      "description": "Clean teardown at scene end after the journey rework",
+      "proof_type": "manual_qa",
+      "evidence": "From the committed log: cleanup=true, activeNotes=0, callbackAllocations=0, callbackDestructions=0; observation window_closed=true, stream_released=true, owned_graphs_remaining=0, active_notes_after_cleanup=0; process exit 0. Deterministic half re-measured on the merged lane: activeNotesAtExit=0 and retiredGraphsCollectedOffCallback=15.",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "MOVED NUMBER: the NFR-006 row above cites retiredGraphsCollectedOffCallback=8. That value moved 8 -> 15 under demo-journey WP09, which drives seven further structural changes; the predicate is 'gt 0', so the grade is unaffected. This is the ONLY pre-existing numeric in this matrix that changed. The parent's row and its recorded 8 stay as recorded history."
+    },
+    {
+      "criterion_id": "SC-007-AMEND-01KYWVYG",
+      "description": "Reworked live scene completes with every declared behavior demonstrated, 0 active notes, released resources, normal exit",
+      "proof_type": "manual_qa",
+      "evidence": "CREST_LIVE_SUMMARY verbatim: 'live demo complete: 105/105 editable parameters, 3/3 engine transitions, 7718 qualifying shell frames, 144 checkpoints, 17462 events, 0 dropped, banks=1, instruments=15, soundfontPatches=8, braidsPatches=7, alternatingCapabilities=true, initialGraphRevision=1, graphRevision=30, engineSwitches=3, fallbacks=0, callbackAllocations=0, callbackDestructions=0, cleanup=true, activeNotes=0'. CREST_EFFECTS_AND_BUSES_LIVE_OBSERVATION carries 45 keys and ZERO false values, including topology_checkpoints=30 (the parent recorded 17), slot_fills_exercised=6, startup_occupant_cleared=true, slot_order_exchange_exercised=true, same_entry_twin_exercised=true, sends_raised_toward_destinations=true, return_content_changes=4, empty_return_occupied_and_restored=true, reroute_chain_followed=true, all_audible_on_activated_graph=true, send_isolation_exact=true, max_off_target_bus_dbfs=-200.0, accumulation_exact=true, gated_wet_contribution=0.0, unoccupied_return_silent=true. graphRevision advanced 1 -> 30. Process exit 0.",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "All seven of the post-merge review's open items are CLOSED, none deferred \u2014 per-item proof pointers are in mission-review.md Addendum 2 (2026-08-01). SC-007's deferral allowance for the two optional items (4 and 6) was not needed; both were delivered. Amends, does not replace, the SC-007 row above."
+    },
+    {
+      "criterion_id": "SC-008-AMEND-01KYWVYG",
+      "description": "Adding a further registry effect is graded on end-to-end demonstration rather than structural inference",
+      "proof_type": "automated_test",
+      "evidence": "Merged-lane release run of 'cargo test --release --test expandable_effects_and_bus_topology': observation schemaVersion 2 with fourthEntryEndToEndExercised=true and registryEntryAdditionStructuralChanges=0, satisfying the crest-spec open_effect_registry step-1 'observes' clause verbatim. The fourth entry ('witness-tilt') is test-only, living solely in tests/expandable_effects_and_bus_topology.rs; the production composition root still builds the three-entry registry, so the diff to production is zero. Corroborated on hardware: 'witness-tilt' occurs 0 times in the committed live-run log, and exactly three product effects (effect.chorus, effect.delay, effect.reverb) appear.",
+      "pass_fail": "pass",
+      "verified_by": "implementer-ivan (WP11 preflight and hardware corroboration, merged lane)",
+      "verified_at": "2026-08-01",
+      "notes": "Regrades the post-merge review's PARTIAL adequacy note for SC-008 to a demonstration; closes open item 4. The SC-008 row above (pass, by structural absence) is untouched."
+    },
+    {
+      "criterion_id": "FR-006-AMEND-01KYWVYG",
+      "description": "Parent acceptance record amended append-only with the refreshed evidence (demo-journey-fidelity-and-hygiene-01KYWVYG FR-006 / C-008)",
+      "proof_type": "manual_qa",
+      "evidence": "This amendment ADDS rows only. No existing criterion object's criterion_id, description, proof_type, evidence, pass_fail, verified_by, verified_at, or notes was altered or removed; overall_verdict stays 'pass'; negative_invariants stays []. Verified mechanically by parsing the pre-amendment file out of git and deep-comparing all 35 original criterion objects against their post-amendment counterparts \u2014 all identical. The only non-addition visible in 'git diff' is the JSON separator comma appended to the previously-last row's closing brace, which is required container syntax. Deterministic gates re-run on the merged lane at amendment time: cargo test --all-targets exit 0; cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --all -- --check exit 0.",
+      "pass_fail": "pass",
+      "verified_by": "implementer-ivan (WP11/T046)",
+      "verified_at": "2026-08-01",
+      "notes": "MOVED NUMBERS, recorded once for the whole amendment: (1) the deterministic observation is now schemaVersion 2, adding the fields fourthEntryEndToEndExercised and carryOverWrongEngineIdentityRefused, both true; (2) retiredGraphsCollectedOffCallback moved 8 -> 15, the ONLY pre-existing numeric in this matrix that changed, with its 'gt 0' predicate still satisfied. Every other pre-existing numeric is unchanged. Out-of-map rationale for this edit: FR-006 amendment of parent acceptance record; kitty-specs paths are non-declarable by rule (INVALID_WP_OWNED_FILES_KITTY_SPECS)."
     }
   ],
   "negative_invariants": []

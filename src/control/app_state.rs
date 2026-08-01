@@ -28,11 +28,38 @@ use crate::synth::instrument_capability::{
 };
 use crate::synth::patch::{Patch, PatchEditableTarget};
 use crate::synth::{
-    EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, ParameterId, VoiceEnvelopeParameter,
+    EffectCapabilityError, EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, ParameterId,
+    PostEffectConfig, VoiceEnvelopeParameter,
 };
 use core::fmt;
 
 const MAX_PATCH_COUNT: usize = 16;
+
+/// Validates one Patch's per-position effect chain against the registry.
+///
+/// Every occupied position must hold a registry-canonical configuration and
+/// no stable slot identity may occupy two positions. Empty positions are
+/// legal anywhere in the chain; validation walks positions as stored and
+/// never builds a compacted intermediate.
+pub(crate) fn validate_effect_slots(
+    effects: &EffectCapabilityRegistry,
+    slots: &[Option<PostEffectConfig>],
+) -> Result<(), EffectCapabilityError> {
+    for (position, slot) in slots.iter().enumerate() {
+        let Some(config) = slot.as_ref() else {
+            continue;
+        };
+        if slots[..position]
+            .iter()
+            .flatten()
+            .any(|prior| prior.slot_id() == config.slot_id())
+        {
+            return Err(EffectCapabilityError::DuplicateSlot(config.slot_id()));
+        }
+        effects.validate_config(config)?;
+    }
+    Ok(())
+}
 
 /// The domain event emitted after an AppEvent has been accepted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -364,14 +391,16 @@ pub(crate) fn exercise_reducer_table_rejections(
         Vec::new(),
         Vec::new(),
     );
+    let mut invalid_effect_probe = probe_patch(1, 0, instrument_config);
+    invalid_effect_probe
+        .set_slot_occupancy(
+            EffectSlotIndex::new(0).expect("probe slot position is valid"),
+            Some(invalid_effect_config),
+        )
+        .expect("probe occupancy uses a unique slot identity");
     let mut invalid_effect = AppState::new(capabilities.clone(), global);
     let invalid_effect = invalid_effect
-        .apply(AppEvent::InstallPatches(vec![probe_patch(
-            1,
-            0,
-            instrument_config,
-        )
-        .with_post_effects(vec![invalid_effect_config])]))
+        .apply(AppEvent::InstallPatches(vec![invalid_effect_probe]))
         .expect_err("unknown effect config violates registry installation");
 
     let mut no_patches = AppState::new(capabilities.clone(), global);
@@ -896,11 +925,10 @@ impl AppState {
         }) {
             return Err(EventRejection::InvalidInstrumentConfig);
         }
-        if patches.iter().any(|patch| {
-            self.effects
-                .validate_patch_effects(patch.post_effects())
-                .is_err()
-        }) {
+        if patches
+            .iter()
+            .any(|patch| validate_effect_slots(&self.effects, patch.effect_slots()).is_err())
+        {
             return Err(EventRejection::InvalidEffectConfig);
         }
         for (index, patch) in patches.iter().enumerate() {
@@ -1620,12 +1648,18 @@ impl AppState {
             .iter()
             .position(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::NoPatchesInstalled)?;
-        let effect_index = self.patches[patch_index]
-            .post_effects()
+        let slot_index = self.patches[patch_index]
+            .effect_slots()
             .iter()
-            .position(|effect| effect.slot_id() == slot_id)
+            .position(|slot| {
+                slot.as_ref()
+                    .is_some_and(|effect| effect.slot_id() == slot_id)
+            })
+            .and_then(|position| EffectSlotIndex::new(position).ok())
             .ok_or(EventRejection::InvalidSelection)?;
-        let config = &self.patches[patch_index].post_effects()[effect_index];
+        let config = self.patches[patch_index]
+            .effect_slot(slot_index)
+            .ok_or(EventRejection::InvalidSelection)?;
         let descriptor = self
             .effects
             .descriptor(config.capability_id())
@@ -1652,7 +1686,12 @@ impl AppState {
                 }
                 _ => EventRejection::InvalidEffectConfig,
             })?;
-        self.patches[patch_index].set_post_effect_config(effect_index, candidate);
+        // Replacing an occupant's configuration at its own validated position
+        // keeps the identity and every other position untouched; the identity
+        // duplicate check cannot fire because the slot id already lives here.
+        self.patches[patch_index]
+            .set_slot_occupancy(slot_index, Some(candidate))
+            .map_err(|_| EventRejection::InvalidEffectConfig)?;
         Ok(())
     }
 
@@ -2360,6 +2399,91 @@ mod tests {
             ]))
             .unwrap();
         state
+    }
+
+    /// One installed patch whose chain occupies only slot 1: slot 0 is empty
+    /// and stays empty. This is exactly the shape a compacting view would
+    /// silently squeeze down to position 0.
+    fn gapped_effects_state() -> AppState {
+        let mut state = AppState::new_with_effects(
+            registry(),
+            crate::adapter::production_effects::production_effect_registry().unwrap(),
+            global_parameters(),
+        );
+        let mut gapped = patch(1, 0.0);
+        gapped
+            .set_slot_occupancy(
+                EffectSlotIndex::new(1).unwrap(),
+                Some(
+                    crate::adapter::production_effects::production_chorus_config(
+                        EffectSlotId::new(2).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        state.apply(AppEvent::InstallPatches(vec![gapped])).unwrap();
+        state
+    }
+
+    #[test]
+    fn install_accepts_a_gapped_chain_and_keeps_every_position() {
+        let state = gapped_effects_state();
+        let slots = state.patches()[0].effect_slots();
+        assert!(slots[0].is_none(), "slot 0 must stay empty after install");
+        assert_eq!(
+            slots[1].as_ref().map(|config| config.slot_id().value()),
+            Some(2),
+            "the occupant must keep its position and stable identity"
+        );
+        assert!(slots[2].is_none());
+    }
+
+    #[test]
+    fn adjust_edits_a_gapped_occupant_at_its_true_position() {
+        let mut state = gapped_effects_state();
+        let amount =
+            ParameterId::new(crate::adapter::chorus_capability::CHORUS_AMOUNT_PARAMETER_ID)
+                .unwrap();
+        let before = state.patches()[0].effect_slots()[1]
+            .as_ref()
+            .and_then(|config| config.value(&amount))
+            .cloned()
+            .expect("chorus declares an amount value");
+
+        state
+            .adjust_patch_effect(EffectSlotId::new(2).unwrap(), &amount, Direction::Up)
+            .unwrap();
+
+        let slots = state.patches()[0].effect_slots();
+        assert!(
+            slots[0].is_none(),
+            "a scalar edit must never compact the occupant into slot 0"
+        );
+        let occupant = slots[1]
+            .as_ref()
+            .expect("the occupant stays at position 1 after the edit");
+        assert_eq!(occupant.slot_id().value(), 2);
+        assert_ne!(occupant.value(&amount), Some(&before));
+        assert!(slots[2].is_none());
+    }
+
+    #[test]
+    fn validate_effect_slots_accepts_gaps_and_rejects_duplicate_identities() {
+        let effects = crate::adapter::production_effects::production_effect_registry().unwrap();
+        let occupant = |slot: u16| {
+            crate::adapter::production_effects::production_chorus_config(
+                EffectSlotId::new(slot).unwrap(),
+            )
+            .unwrap()
+        };
+
+        validate_effect_slots(&effects, &[Some(occupant(1)), None, Some(occupant(3))])
+            .expect("an interior gap is a legal chain shape");
+        assert!(matches!(
+            validate_effect_slots(&effects, &[Some(occupant(1)), None, Some(occupant(1))]),
+            Err(crate::synth::EffectCapabilityError::DuplicateSlot(_))
+        ));
     }
 
     fn mixed_registry() -> CapabilityRegistry {

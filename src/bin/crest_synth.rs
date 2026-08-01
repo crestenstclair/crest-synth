@@ -809,8 +809,8 @@ fn fixed_fixture_baseline_restored(tree: &Value) -> bool {
                         && track.pointer("/pan").and_then(Value::as_f64) == Some(0.0)
                         && track.pointer("/mute").and_then(Value::as_bool) == Some(false)
                         && track.pointer("/solo").and_then(Value::as_bool) == Some(false)
-                        // WP05 serialized-key rename: the named sends became
-                        // the one indexed array; the baseline is all-zero.
+                        // Sends travel as one indexed per-track array in
+                        // ascending BusId order; the baseline is all-zero.
                         && track
                             .pointer("/sends")
                             .and_then(Value::as_array)
@@ -1059,10 +1059,10 @@ fn parameter_projection_matches_state(tree: &Value) -> bool {
     let Some(parameters) = tree.get("parameters") else {
         return false;
     };
-    // The snapshot mirror's global object keeps only master gain (WP05): the
-    // retired reverb/delay values travel as the indexed return entries, while
-    // the tree's top-level global keeps the seven-key surface until WP06
-    // retires the remaining leaves. Only the shared leaf can be compared.
+    // The snapshot mirror's global object and the tree's top-level global
+    // both carry master gain alone — return-owned values travel as the
+    // indexed return entries, never as global leaves — so the one shared
+    // global leaf is compared exactly.
     if parameters.get("generation").and_then(Value::as_u64) != Some(generation)
         || parameters.get("patchCount").and_then(Value::as_u64) != u64::try_from(patches.len()).ok()
         || global.get("masterGainDb").is_none()

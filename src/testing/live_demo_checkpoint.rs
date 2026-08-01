@@ -262,7 +262,7 @@ impl LiveDemoCheckpoint {
 
 /// A serialized live checkpoint is one scalar observation, one
 /// engine-selection lifecycle observation, or one topology-transition
-/// observation (WP08). The evidence sets remain distinct even though the
+/// observation. The evidence sets remain distinct even though the
 /// standalone callback presents them uniformly.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -327,7 +327,7 @@ impl LiveCheckpoint {
     }
 }
 
-/// One immutable observation of a planned topology transition (WP08):
+/// One immutable observation of a planned topology transition:
 /// correlates the dispatched semantic cause, the accepted lifecycle
 /// (request id, source and target graph revisions), the visible projection,
 /// the measured edit responsiveness (NFR-008), and the audible consequence.
@@ -372,11 +372,11 @@ pub struct LiveTopologyCheckpoint {
     audio_uninterrupted: bool,
     callback_allocations: usize,
     callback_destructions: usize,
-    /// WP10 (add-only field): `Some(true)` when this transition held its
-    /// probe note through activation — never re-sounding it — and the note
-    /// was still observed active on the activated graph, so the sounding
-    /// voice itself survived the swap. `None` for transitions that use the
-    /// re-sound model.
+    /// `Some(true)` when this transition held its probe note through
+    /// activation — never re-sounding it — and the note was still observed
+    /// active on the activated graph, so the sounding voice itself survived
+    /// the swap. `None` for transitions that use the re-sound model, which is
+    /// why this is an option rather than a plain flag.
     held_note_carried_across_activation: Option<bool>,
 }
 
@@ -500,8 +500,8 @@ impl LiveTopologyCheckpoint {
         self.audio_uninterrupted
     }
 
-    /// WP10: `Some(true)` when the held probe note survived activation
-    /// without being re-sounded; `None` for re-sound-model transitions.
+    /// `Some(true)` when the held probe note survived activation without
+    /// being re-sounded; `None` for re-sound-model transitions.
     pub const fn held_note_carried_across_activation(&self) -> Option<bool> {
         self.held_note_carried_across_activation
     }
@@ -515,8 +515,8 @@ impl LiveTopologyCheckpoint {
             || !audio_fields_are_finite(self.audio_before)
             || !audio_fields_are_finite(self.audio_after)
             || self.audio_after.sequence() <= self.audio_before.sequence()
-            // WP10: a held-note transition whose measured note did not
-            // survive activation must fail loudly, never pass silently.
+            // A held-note transition whose measured note did not survive
+            // activation must fail loudly, never pass silently.
             || self.held_note_carried_across_activation == Some(false)
         {
             return false;

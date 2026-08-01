@@ -315,7 +315,10 @@ fn effect_fixture_patches() -> (CapabilityRegistry, EffectCapabilityRegistry, Ve
             crest_synth::kernel::MidiChannel::new(0).unwrap(),
             PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
         )
-        .with_post_effects(vec![chorus]),
+        .with_effect_slot(
+            crest_synth::synth::effect_slot_id::EffectSlotIndex::new(0).unwrap(),
+            chorus,
+        ),
         Patch::new(
             PatchId::new(2).unwrap(),
             "Dry".to_owned(),
@@ -427,7 +430,10 @@ fn static_patch_effect() {
             crest_synth::kernel::MidiChannel::new(0).unwrap(),
             PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
         )
-        .with_post_effects(vec![chorus.clone()]),
+        .with_effect_slot(
+            crest_synth::synth::effect_slot_id::EffectSlotIndex::new(0).unwrap(),
+            chorus.clone(),
+        ),
         Patch::new(
             second_id,
             "Dry".to_owned(),
@@ -484,7 +490,7 @@ fn static_patch_effect() {
         .position(|control| control == &depth_control)
         .unwrap();
     // The occupied slot's occupancy row precedes its scalars, and the two
-    // empty slots still contribute their occupancy rows at the end (WP07).
+    // empty slots still contribute their occupancy rows at the end.
     let page = app_loop.current_patch_page().unwrap();
     let patch_focus_order_exact = depth_index == amount_index + 1
         && focus_order[amount_index - 1]
@@ -543,10 +549,15 @@ fn static_patch_effect() {
             .unwrap()
             .scalars()
             == [0.5, 0.5]
-        && app_loop.patches()[0].post_effects()[0].value(&amount_id)
-            == Some(&ParameterValue::continuous(0.5).unwrap())
-        && app_loop.patches()[0].post_effects()[0].value(&depth_id)
-            == Some(&ParameterValue::continuous(0.5).unwrap());
+        && app_loop.patches()[0].effect_slots()[0]
+            .as_ref()
+            .is_some_and(|config| {
+                config.value(&amount_id) == Some(&ParameterValue::continuous(0.5).unwrap())
+                    && config.value(&depth_id) == Some(&ParameterValue::continuous(0.5).unwrap())
+            })
+        && app_loop.patches()[0].effect_slots()[1..]
+            .iter()
+            .all(Option::is_none);
     assert!(scalar_only_publication);
 
     let missing_registration_rejected = matches!(
@@ -619,8 +630,8 @@ fn static_patch_effect() {
         app_loop.bus_returns(),
     )
     .unwrap();
-    let structural_config_preserved = request.candidate_patches()[0].post_effects()
-        == app_loop.patches()[0].post_effects()
+    let structural_config_preserved = request.candidate_patches()[0].effect_slots()
+        == app_loop.patches()[0].effect_slots()
         && request
             .candidate_parameters()
             .patch(first_id)
@@ -717,7 +728,7 @@ fn static_patch_effect() {
     let configured_effect_slots = app_loop
         .patches()
         .iter()
-        .map(|patch| patch.post_effects().len() as u32)
+        .map(|patch| patch.effect_slots().iter().flatten().count() as u32)
         .sum::<u32>();
     assert_eq!(configured_effect_slots, 1);
     assert_eq!(effect_providers.len(), 3);
@@ -809,9 +820,9 @@ fn chorus_capability_schema_and_config_are_exact() {
         registry.validate_config(&reversed),
         Err(EffectCapabilityError::ConfigOrderMismatch(_))
     ));
-    // WP05 lifted the per-Patch cap to the three ordered positions: the same
-    // instance twice is a duplicate, and a fourth distinct instance exceeds
-    // the widened capacity.
+    // The per-Patch cap is the three ordered positions: the same instance
+    // twice is a duplicate, and a fourth distinct instance exceeds the
+    // capacity.
     assert!(matches!(
         registry.validate_patch_effects(&[config.clone(), config.clone()]),
         Err(EffectCapabilityError::DuplicateSlot(_))

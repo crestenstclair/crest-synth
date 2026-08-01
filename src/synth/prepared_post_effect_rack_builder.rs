@@ -212,7 +212,7 @@ impl std::error::Error for EffectRackPreparationError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{EffectRackPreparationError, PreparedPostEffectRackBuilder};
+    use super::PreparedPostEffectRackBuilder;
     use crate::adapter::production_effects::{
         production_effect_preparers, production_effect_registry,
     };
@@ -222,9 +222,9 @@ mod tests {
     use crate::real_time::MAX_PATCHES;
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
+    use crate::synth::patch::EffectSlotOccupancyError;
     use crate::synth::{
-        EffectCapabilityError, EffectCapabilityRegistry, EffectSlotId, InstrumentConfig, Patch,
-        PostEffectConfig,
+        EffectCapabilityRegistry, EffectSlotId, InstrumentConfig, Patch, PostEffectConfig,
     };
 
     fn patch(id: u32) -> Patch {
@@ -322,27 +322,41 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_instance_identity_across_positions_is_rejected() {
+    fn duplicate_instance_identity_across_positions_never_reaches_preparation() {
         let registry = production_effect_registry().unwrap();
         let preparers = production_effect_preparers().unwrap();
-        let duplicated = patch(1).with_post_effects(vec![
-            default_config(&registry, 0, 1),
-            default_config(&registry, 1, 1),
-        ]);
-
-        assert_eq!(
-            PreparedPostEffectRackBuilder::build(
-                &[duplicated],
-                &registry,
-                &preparers,
-                48_000.0,
-                128,
+        let mut duplicated = patch(1);
+        duplicated
+            .set_slot_occupancy(
+                EffectSlotIndex::new(0).unwrap(),
+                Some(default_config(&registry, 0, 1)),
             )
-            .unwrap_err(),
-            EffectRackPreparationError::InvalidConfiguration {
-                patch_id: PatchId::new(1).unwrap(),
-                source: EffectCapabilityError::DuplicateSlot(EffectSlotId::new(1).unwrap()),
-            }
+            .unwrap();
+
+        // The aggregate refuses the second position outright, so no chain
+        // carrying a duplicated instance identity can ever be handed to the
+        // builder: the identity is rejected, never silently replaced.
+        assert_eq!(
+            duplicated.set_slot_occupancy(
+                EffectSlotIndex::new(1).unwrap(),
+                Some(default_config(&registry, 1, 1)),
+            ),
+            Err(EffectSlotOccupancyError::DuplicateSlotId(
+                EffectSlotId::new(1).unwrap()
+            ))
         );
+
+        let rack = PreparedPostEffectRackBuilder::build(
+            &[duplicated],
+            &registry,
+            &preparers,
+            48_000.0,
+            128,
+        )
+        .unwrap();
+
+        assert_eq!(rack.slot_id_at(0, 0), Some(EffectSlotId::new(1).unwrap()));
+        assert_eq!(rack.slot_id_at(0, 1), None);
+        assert_eq!(rack.occupied_slot_count(0), 1);
     }
 }

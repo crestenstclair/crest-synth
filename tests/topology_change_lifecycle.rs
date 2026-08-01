@@ -1180,6 +1180,247 @@ fn held_voices_carry_over_a_slot_clear_activation_sample_continuously() {
     assert_eq!(control.renderer.active_revision(), source_revision);
 }
 
+/// WP07 (FR-009) — the RETURN-side twin of the slot-clear proof directly
+/// above, wired to the crest-spec attached validation selector
+/// `return_clear_held_note_continuity`: a delta that only CLEARS an occupied
+/// bus return preserves every sounding voice across the swap.
+///
+/// Fixture: track 0 sends 0.6 to bus 2 (the raised send), and both the
+/// clearing run and its untouched twin occupy bus 2 with a chorus so the
+/// return is audibly wet while notes are held; the dry Patch carries a
+/// stateful chorus chain so continuity covers engine voices AND carried
+/// effect-instance state. The clear activates at a block boundary while both
+/// notes ring.
+///
+/// The protected (dry/track) path — each held voice's per-Patch stem — must
+/// be byte-identical to the untouched twin on the activation block and every
+/// block after. The cleared return's declared semantics — it contributes
+/// exact silence afterward, never a torn or clicking tail — is proven by
+/// comparing the cleared run's full mix byte-exactly against a third run
+/// whose return was never occupied at all. The untouched twin's mix keeps
+/// its wet contribution on those same blocks: that wet-tail difference is
+/// deliberately excluded from the continuity comparison, and its continued
+/// presence is asserted so the exclusion is never vacuous.
+#[test]
+fn return_clear_held_note_continuity_preserves_held_voices_sample_exactly() {
+    const POST_BLOCKS: usize = 8;
+
+    let mut cleared = fixture();
+    let mut untouched = fixture();
+    let mut never_occupied = fixture();
+    let sending_patch = PatchId::new(1).unwrap();
+    let dry_patch = PatchId::new(2).unwrap();
+    let cleared_bus = BusId::new(2).unwrap();
+    let mut output = [0.0_f32; SAMPLE_COUNT];
+
+    // All three runs: the dry Patch carries a stateful chorus chain through
+    // the production lifecycle, so the protected path includes carried
+    // effect-instance state, not merely engine voices.
+    for fixture in [&mut cleared, &mut untouched, &mut never_occupied] {
+        fixture
+            .app_loop
+            .dispatch_action_from(
+                SemanticAction::SetSlotOccupancy {
+                    patch_id: dry_patch,
+                    slot: EffectSlotIndex::new(0).unwrap(),
+                    entry: Some(entry("effect.chorus")),
+                },
+                EventSource::Keyboard,
+            )
+            .unwrap();
+        fixture.complete_pending_change(&mut output);
+    }
+    // The clearing run and its untouched twin occupy the return that will
+    // later be cleared; the reference run renders one plain block instead,
+    // so all three runs stay block-aligned with identical engine
+    // trajectories.
+    for fixture in [&mut cleared, &mut untouched] {
+        fixture
+            .app_loop
+            .dispatch_action_from(
+                SemanticAction::SetReturnOccupancy {
+                    bus: cleared_bus,
+                    entry: Some(entry("effect.chorus")),
+                },
+                EventSource::Keyboard,
+            )
+            .unwrap();
+        fixture.complete_pending_change(&mut output);
+    }
+    never_occupied.counted_render(&mut output);
+
+    // Hold one note on each Patch in every run and let them ring: the
+    // occupied return receiving the raised send is audibly wet before the
+    // clear, so clearing it is a real change, not a no-op.
+    for fixture in [&mut cleared, &mut untouched, &mut never_occupied] {
+        fixture.note_on(sending_patch, MidiChannel::new(0).unwrap());
+        fixture.note_on(dry_patch, MidiChannel::new(1).unwrap());
+    }
+    let mut cleared_output = [0.0_f32; SAMPLE_COUNT];
+    let mut untouched_output = [0.0_f32; SAMPLE_COUNT];
+    let mut reference_output = [0.0_f32; SAMPLE_COUNT];
+    for _ in 0..2 {
+        cleared.counted_render(&mut cleared_output);
+        untouched.counted_render(&mut untouched_output);
+        never_occupied.counted_render(&mut reference_output);
+        assert_eq!(cleared_output[..], untouched_output[..]);
+    }
+    assert!(block_energy(&cleared_output) > 0.0, "both notes ring");
+    assert_ne!(
+        cleared_output[..],
+        reference_output[..],
+        "the occupied return is audibly wet before the clear"
+    );
+
+    // The accepted delta: CLEAR bus 2's return occupancy while both notes
+    // ring — and nothing else. The correlated intent is the clear itself.
+    let patches_before = cleared.app_loop.patches().to_vec();
+    cleared
+        .app_loop
+        .dispatch_action_from(
+            SemanticAction::SetReturnOccupancy {
+                bus: cleared_bus,
+                entry: None,
+            },
+            EventSource::Keyboard,
+        )
+        .unwrap();
+    assert!(matches!(
+        cleared
+            .app_loop
+            .engine_selection_status()
+            .correlation()
+            .unwrap()
+            .intent(),
+        StructuralEditIntent::SetReturnOccupancy { bus, entry: None } if bus.index() == 2
+    ));
+    assert!(cleared.worker.advance());
+    let staged = cleared.app_loop.advance_structural().unwrap();
+    assert!(staged.graph_stage().is_some());
+
+    // Activation block plus the post-activation window, block-aligned across
+    // all three runs, with callback discipline measured on every cleared-run
+    // block.
+    let source_revision = cleared.renderer.active_revision();
+    let mut cleared_allocations = 0_usize;
+    let mut cleared_deallocations = 0_usize;
+    let mut protected_stems: Vec<[(Vec<f32>, Vec<f32>); 2]> = Vec::new();
+    let mut mixes: Vec<(Vec<f32>, Vec<f32>, Vec<f32>)> = Vec::new();
+    for block in 0..=POST_BLOCKS {
+        let memory = cleared.counted_render(&mut cleared_output);
+        cleared_allocations += memory.0;
+        cleared_deallocations += memory.1;
+        untouched.counted_render(&mut untouched_output);
+        never_occupied.counted_render(&mut reference_output);
+        if block == 0 {
+            assert!(
+                cleared.renderer.active_revision() > source_revision,
+                "block-boundary activation"
+            );
+        }
+        let cleared_run = cleared.renderer.active_patch_audio().stems();
+        let untouched_run = untouched.renderer.active_patch_audio().stems();
+        assert_eq!(cleared_run[0].patch_id(), Some(sending_patch));
+        assert_eq!(cleared_run[1].patch_id(), Some(dry_patch));
+        protected_stems.push([
+            (
+                cleared_run[0].samples().to_vec(),
+                untouched_run[0].samples().to_vec(),
+            ),
+            (
+                cleared_run[1].samples().to_vec(),
+                untouched_run[1].samples().to_vec(),
+            ),
+        ]);
+        mixes.push((
+            cleared_output.to_vec(),
+            untouched_output.to_vec(),
+            reference_output.to_vec(),
+        ));
+    }
+    let ack = cleared.app_loop.advance_structural().unwrap();
+    assert!(ack.activation_acknowledged().is_some());
+
+    // Callback discipline across the clear activation and every block after:
+    // zero allocations, zero deallocations, zero drops (a drop deallocates).
+    assert_eq!(cleared_allocations, 0);
+    assert_eq!(cleared_deallocations, 0);
+
+    // The protected (dry/track) path: every held voice's stem — the sending
+    // Patch's raw engine voice and the dry Patch's voice through its carried
+    // chorus chain — is byte-identical to the untouched twin on the
+    // activation block and every block after. A retrigger, gap, or click at
+    // the boundary fails this equality.
+    for (block, stems) in protected_stems.iter().enumerate() {
+        for (patch_index, (cleared_stem, untouched_stem)) in stems.iter().enumerate() {
+            assert_eq!(
+                cleared_stem, untouched_stem,
+                "protected Patch {patch_index} stem diverged at post-clear block {block}"
+            );
+            assert!(
+                block_energy(cleared_stem) > 0.0,
+                "held note on Patch {patch_index} remains audible at post-clear block {block}"
+            );
+        }
+    }
+
+    // The cleared return contributes exact silence from the activation block
+    // on: the cleared run's full mix is byte-identical to the run whose
+    // return was never occupied — no torn or clicking wet tail. On the same
+    // blocks the untouched twin still carries its wet contribution: that
+    // difference is the wet tail deliberately excluded from the continuity
+    // comparison, asserted present so the exclusion is not vacuous.
+    for (block, (cleared_mix, untouched_mix, reference_mix)) in mixes.iter().enumerate() {
+        assert_eq!(
+            cleared_mix, reference_mix,
+            "cleared return contributed non-silence at post-clear block {block}"
+        );
+        assert_ne!(
+            untouched_mix, reference_mix,
+            "the untouched twin's excluded wet contribution vanished at post-clear block {block}"
+        );
+    }
+
+    // Held notes remain active through the production observation.
+    let observation = cleared.observation.read_latest_on_control();
+    assert_eq!(observation.active_notes(), 2, "both held notes survive");
+    assert!(observation.primary_active_notes() > 0);
+    assert_eq!(observation.non_finite_samples(), 0);
+
+    // The delta landed exactly at its named position and nowhere else: the
+    // return is cleared canonically and in the projection, the Patches —
+    // including the carried chorus chain — are untouched, the production
+    // default returns survive, and the twin never advanced its revision.
+    assert!(!cleared
+        .app_loop
+        .bus_returns()
+        .bus_return(cleared_bus)
+        .is_occupied());
+    assert!(!cleared.app_loop.current_parameters().returns()[2].is_active());
+    assert_eq!(cleared.app_loop.patches(), patches_before.as_slice());
+    for bus in BusId::ALL {
+        if bus == cleared_bus {
+            continue;
+        }
+        assert_eq!(
+            cleared.app_loop.bus_returns().bus_return(bus).is_occupied(),
+            untouched
+                .app_loop
+                .bus_returns()
+                .bus_return(bus)
+                .is_occupied(),
+            "the clear-only delta must not touch bus {}",
+            bus.index()
+        );
+    }
+    assert!(untouched
+        .app_loop
+        .bus_returns()
+        .bus_return(cleared_bus)
+        .is_occupied());
+    assert_eq!(untouched.renderer.active_revision(), source_revision);
+}
+
 /// T038 (C-RT-14): repeated topology changes at the widened size retire every
 /// superseded graph off-callback with zero callback allocation, deallocation,
 /// or destruction, and leave nothing owned at exit.

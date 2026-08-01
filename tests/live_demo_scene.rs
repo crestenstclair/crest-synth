@@ -129,7 +129,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
             .patches()
             .first()
             .into_iter()
-            .flat_map(|patch| patch.post_effects())
+            .flat_map(|patch| patch.effect_slots().iter().flatten())
             .map(|config| {
                 app_loop
                     .effects()

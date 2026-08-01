@@ -120,7 +120,12 @@ impl<'a> From<&'a Patch> for SerializedPatch<'a> {
             name: Cow::Borrowed(patch.name()),
             channel: patch.channel().value(),
             instrument: Cow::Borrowed(patch.instrument_config()),
-            post_effects: Cow::Borrowed(patch.post_effects()),
+            // The frozen `postEffects` leaf shape: the occupied positions of
+            // the per-position chain in position order. Each entry carries
+            // its stable slot identity, so true positions survive the dense
+            // serialized shape; the payload is derived once for output and
+            // never indexed back into by dense position.
+            post_effects: Cow::Owned(patch.effect_slots().iter().flatten().cloned().collect()),
             envelope: *patch.envelope(),
             output: patch.output(),
         }
@@ -189,5 +194,79 @@ impl SerializedBusReturns {
     /// Reports whether the serialized bank carries exactly eight entries.
     pub(crate) fn is_complete(&self) -> bool {
         self.0.len() == MAX_BUS_RETURNS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SerializedPatch;
+    use crate::adapter::braids_capability::BraidsCapability;
+    use crate::adapter::production_effects::production_chorus_config;
+    use crate::kernel::midi_channel::MidiChannel;
+    use crate::kernel::patch_id::PatchId;
+    use crate::mixer::mixer_track_id::MixerTrackId;
+    use crate::mixer::patch_output::PatchOutput;
+    use crate::synth::effect_slot_id::EffectSlotIndex;
+    use crate::synth::patch::Patch;
+    use crate::synth::EffectSlotId;
+
+    fn test_patch() -> Patch {
+        Patch::new(
+            PatchId::new(1).unwrap(),
+            "Serialized".to_owned(),
+            BraidsCapability::new().unwrap().default_config().unwrap(),
+            MidiChannel::new(0).unwrap(),
+            PatchOutput::new(MixerTrackId::new(0).unwrap(), -6.0).unwrap(),
+        )
+    }
+
+    #[test]
+    fn gapped_chain_serializes_the_occupant_with_its_stable_identity() {
+        // Slot 0 empty, slot 1 occupied: the shape a compacting accessor
+        // used to silently squeeze down to position 0.
+        let mut patch = test_patch();
+        patch
+            .set_slot_occupancy(
+                EffectSlotIndex::new(1).unwrap(),
+                Some(production_chorus_config(EffectSlotId::new(2).unwrap()).unwrap()),
+            )
+            .unwrap();
+
+        let serialized = SerializedPatch::from(&patch);
+
+        // The frozen dense `postEffects` payload lists exactly the occupied
+        // configuration, and its stable slot identity still names position
+        // 1 — an identity of 1 here would mean serialization renumbered the
+        // chain.
+        assert_eq!(serialized.post_effects.len(), 1);
+        assert_eq!(serialized.post_effects[0].slot_id().value(), 2);
+        let json = serde_json::to_value(&serialized).unwrap();
+        assert_eq!(json["postEffects"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn interior_gap_serializes_neighbors_in_position_order() {
+        let mut patch = test_patch();
+        patch
+            .set_slot_occupancy(
+                EffectSlotIndex::new(0).unwrap(),
+                Some(production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap()),
+            )
+            .unwrap();
+        patch
+            .set_slot_occupancy(
+                EffectSlotIndex::new(2).unwrap(),
+                Some(production_chorus_config(EffectSlotId::new(3).unwrap()).unwrap()),
+            )
+            .unwrap();
+
+        let serialized = SerializedPatch::from(&patch);
+
+        // Occupants surround an empty middle position: the payload keeps
+        // position order and both stable identities, so the gap is fully
+        // recoverable from the dense serialized shape.
+        assert_eq!(serialized.post_effects.len(), 2);
+        assert_eq!(serialized.post_effects[0].slot_id().value(), 1);
+        assert_eq!(serialized.post_effects[1].slot_id().value(), 3);
     }
 }

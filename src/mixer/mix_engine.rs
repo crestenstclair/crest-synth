@@ -17,11 +17,10 @@ use crate::synth::PreparedPostEffect;
 /// eight (FR-011, C-BR-1). Each occupied return sums into the mix before
 /// master gain; an unoccupied return contributes silence (C-BR-6).
 ///
-/// WP08 deleted the retired two-input `GlobalEffectsProcessor` port and the
-/// generic seam that carried it: every shared return renders through the
-/// bus-return rack, with live scalar values and levels read from the
+/// There is no named shared-effects port: every shared return renders through
+/// the bus-return rack, with live scalar values and levels read from the
 /// snapshot's indexed return entries, and the measurement harnesses probe the
-/// per-bus sends through [`MixObservation`] and installed returns instead.
+/// per-bus sends through [`MixObservation`] and installed returns.
 pub struct MixEngine {
     returns: PreparedBusReturnRack,
     track_scratch: [Vec<f32>; MixerTrackId::COUNT],
@@ -108,7 +107,7 @@ impl MixEngine {
         &self.returns
     }
 
-    /// Mutable access for the graph-owned voice carry-over exchange (WP10):
+    /// Mutable access for the graph-owned voice carry-over exchange:
     /// `PreparedGraph::carry_live_state_from` swaps still-live return
     /// instances between two complete graphs at block-boundary activation.
     /// The rack's own carry operation is callback-safe; this accessor adds no

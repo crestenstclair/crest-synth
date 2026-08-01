@@ -14,6 +14,7 @@ use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::GraphRevision;
+use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
     CapabilityId, EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry,
@@ -76,9 +77,9 @@ fn configured_state(first: InstrumentConfig, second: InstrumentConfig) -> AppSta
             )
             .with_envelope(VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap());
             if index == 0 {
-                patch.with_post_effects(vec![chorus.clone()])
+                patch.with_effect_slot(EffectSlotIndex::ALL[0], chorus.clone())
             } else {
-                patch.with_post_effects(vec![schema_effect_config.clone()])
+                patch.with_effect_slot(EffectSlotIndex::ALL[0], schema_effect_config.clone())
             }
         })
         .collect();
@@ -229,7 +230,7 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             false,
         ),
     ];
-    // WP06: occupancy correlations expose the position-bearing intent leaves
+    // Occupancy correlations expose the position-bearing intent leaves
     // (patchId/slot/bus/entry) of the shared structural lifecycle.
     trees.push(state_tree_after(
         soundfont_config.clone(),

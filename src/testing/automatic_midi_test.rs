@@ -10,6 +10,7 @@ use crate::kernel::patch_id::PatchId;
 use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::mixer::patch_output::PatchOutput;
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
+use crate::synth::effect_slot_id::EffectSlotIndex;
 use crate::synth::instrument_capability::{
     AssetAssignment, AssetKind, AssetReference, CapabilityDescriptor, CapabilityError,
     CapabilityRegistry, InstrumentConfig, ParameterAssignment, ParameterDefault, ParameterValue,
@@ -299,12 +300,17 @@ where
                 if let (Some(provider), Some(descriptor)) =
                     (effect_providers.first(), effect_descriptors.first())
                 {
+                    // The occupant's instance identity is derived from the
+                    // position it occupies, so a recorded chain replays back
+                    // onto the same address instead of being relocated by an
+                    // identity that names a different position.
+                    let slot = EffectSlotIndex::ALL[0];
                     let effect = create_default_effect_config(
                         provider.as_ref(),
                         descriptor,
-                        EffectSlotId::new(1).expect("the production fixture slot is nonzero"),
+                        slot.instance_identity(),
                     )?;
-                    patch = patch.with_post_effects(vec![effect]);
+                    patch = patch.with_effect_slot(slot, effect);
                 }
             }
 
@@ -507,6 +513,7 @@ mod tests {
     use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
     use crate::real_time::audio_command::AudioCommand;
     use crate::real_time::parameter_snapshot::ParameterSnapshot;
+    use crate::synth::effect_slot_id::EffectSlotIndex;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::{
         AssetAssignment, CapabilityDescriptor, CapabilityError, CapabilityRegistry,
@@ -632,6 +639,36 @@ mod tests {
         .unwrap();
         let (app_loop, observations) = app_loop_for_registry(registry);
         (app_loop, observations, providers)
+    }
+
+    fn app_loop_with_effects() -> (
+        AppLoop<TestBoundary>,
+        Providers,
+        Vec<Box<dyn crate::synth::EffectCapabilityProvider>>,
+    ) {
+        let providers: Providers = vec![Box::new(
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap(),
+        )];
+        let registry = CapabilityRegistry::new(
+            providers
+                .iter()
+                .map(|provider| provider.descriptor())
+                .collect(),
+        )
+        .unwrap();
+        let effect_providers =
+            crate::adapter::production_effects::production_effect_providers().unwrap();
+        let effects = crate::adapter::production_effects::production_effect_registry().unwrap();
+        let observations = Arc::new(Mutex::new(Observations::default()));
+        let app_loop = AppLoop::new(
+            AppState::new_with_effects(registry, effects, GlobalParameters::new(0.0).unwrap()),
+            StateProjector::new(),
+            TestBoundary {
+                observations: Arc::clone(&observations),
+            },
+        )
+        .unwrap();
+        (app_loop, providers, effect_providers)
     }
 
     fn mixed_app_loop() -> (AppLoop<TestBoundary>, CapabilityRegistry, Providers) {
@@ -913,6 +950,57 @@ mod tests {
 
         assert_eq!(error, TestInputError::DuplicatePartIndex { part_index: 7 });
         assert!(!service.source.started);
+    }
+
+    /// The fixture's effect occupant must carry the instance identity its own
+    /// position derives (`slot_id == position + 1`). The composition root
+    /// replays a recorded chain by matching each recorded `slot_id` against
+    /// the positions' derived identities, so an occupant whose identity names
+    /// another position would be silently relocated by the round trip instead
+    /// of failing.
+    #[test]
+    fn the_effect_fixture_derives_each_occupant_identity_from_its_position() {
+        let source = source(
+            vec![part(4, "Piano", 0), part(12, "Strings", 48)],
+            Vec::new(),
+        );
+        let mut service = AutomaticMidiTest::new(source);
+        let (mut app_loop, providers, effect_providers) = app_loop_with_effects();
+
+        service
+            .initialize_with_effects(&providers, &effect_providers, &mut app_loop)
+            .unwrap();
+
+        let first = &app_loop.patches()[0];
+        let occupied: Vec<usize> = first
+            .effect_slots()
+            .iter()
+            .enumerate()
+            .filter_map(|(position, occupant)| occupant.as_ref().map(|_| position))
+            .collect();
+        assert_eq!(
+            occupied,
+            vec![0],
+            "the fixture occupies exactly the first position of the first Patch"
+        );
+        for (position, occupant) in first.effect_slots().iter().enumerate() {
+            let Some(occupant) = occupant else {
+                continue;
+            };
+            let address = EffectSlotIndex::new(position).unwrap();
+            assert_eq!(
+                occupant.slot_id(),
+                address.instance_identity(),
+                "position {position} must carry the identity that position derives"
+            );
+            assert_eq!(occupant.slot_id().value(), position as u16 + 1);
+        }
+        for patch in &app_loop.patches()[1..] {
+            assert!(
+                patch.effect_slots().iter().all(Option::is_none),
+                "only the first fixture Patch carries an effect"
+            );
+        }
     }
 
     #[test]

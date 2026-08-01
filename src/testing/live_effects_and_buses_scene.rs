@@ -1,4 +1,4 @@
-//! The retained `demo-live-effects-and-buses` scene (WP08, FR-019).
+//! The retained `demo-live-effects-and-buses` scene.
 //!
 //! This is the phase-completion gate: the cumulative live scene inherits the
 //! complete sixteen-track routing scene — scalar sweep, engine transitions,
@@ -18,6 +18,19 @@
 //! first — while a held note rings — and the grid is restored to the startup
 //! configuration before the frozen semantic tail, preserving the base
 //! scene's structural-restoration teardown contract.
+//!
+//! Every slot and return occupancy change travels the player's on-screen
+//! journey: focus visibly walks to the PATCH effect-slot row (or the MIXER
+//! Inspector return row), the landing is verified against the canonical
+//! projection, and occupancy cycles by the adjacent-choice Edit gesture —
+//! the same nonwrapping contract as the engine row. A target that is not
+//! adjacent to the current occupant is reached by cycling through the
+//! intervening choices; each pass is its own audible transition, and the
+//! retained identity always lands on the same resulting occupancy the scene
+//! has always proven. The single exception is the controlled rejection,
+//! which stays a direct injection because the UI cannot express an unknown
+//! registry entry. One installed occupant's descriptor scalar is also edited
+//! audibly from the PATCH page.
 //!
 //! Registry entries are always addressed positionally through the installed
 //! registry — nothing in this scene names an effect.
@@ -64,6 +77,17 @@ pub enum LiveTopologySupport {
     FocusMixerTrack {
         track_id: crate::mixer::mixer_track_id::MixerTrackId,
     },
+    /// Walks the PATCH Main focus vertically, one accepted step per tick,
+    /// until the named control row is focused.
+    FocusPatchControl {
+        control: PatchControlId,
+    },
+    /// Walks the selected track's MIXER Inspector focus vertically, one
+    /// accepted step per tick, until the named control is focused.
+    FocusInspectorControl {
+        track_id: crate::mixer::mixer_track_id::MixerTrackId,
+        control: MixerControlId,
+    },
     VerifyMixerFocus {
         control: MixerControlId,
     },
@@ -91,11 +115,15 @@ pub enum LiveTopologyAudibleWitness {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveTopologyTransition {
     id: String,
-    /// The occupancy action under proof; `None` for support-driven scalar
-    /// transitions (send raises and the reroute).
+    /// The occupancy result under proof; `None` for support-driven scalar
+    /// transitions (send raises, the occupant scalar edit, and the reroute).
+    /// When `adjust` is also declared the runner dispatches the gesture as
+    /// the measured cause and verifies the committed occupancy against this
+    /// declaration at Activating.
     action: Option<SemanticAction>,
-    /// A focused-control scalar adjustment dispatched as the measured cause
-    /// (the chain-follows-reroute transition).
+    /// A focused-control adjustment dispatched as the measured cause: the
+    /// adjacent-choice occupancy gesture when `action` declares the expected
+    /// result, or a plain scalar edit when it does not.
     adjust: Option<Direction>,
     expected_rejection: Option<&'static str>,
     sounding_patch: PatchId,
@@ -104,7 +132,7 @@ pub struct LiveTopologyTransition {
     support_before: Vec<LiveTopologySupport>,
     support_after: Vec<LiveTopologySupport>,
     audible: LiveTopologyAudibleWitness,
-    /// WP10 voice carry-over: the probe note sounded before the dispatch is
+    /// Voice carry-over: the probe note sounded before the dispatch is
     /// held through preparation, activation, and the audible capture — the
     /// runner must NOT re-sound it after Ready, so the captured witness can
     /// only hold if the sounding voice itself survived the swap.
@@ -140,7 +168,7 @@ impl LiveTopologyTransition {
         }
     }
 
-    /// Marks this transition's probe note as held across activation (WP10).
+    /// Marks this transition's probe note as held across activation.
     fn holding_note_through_activation(mut self) -> Self {
         self.hold_note_through_activation = true;
         self
@@ -187,7 +215,7 @@ impl LiveTopologyTransition {
     }
 
     /// Whether the probe note is held — never re-sounded — through
-    /// activation, so the audible capture measures voice carry-over (WP10).
+    /// activation, so the audible capture measures voice carry-over.
     pub const fn hold_note_through_activation(&self) -> bool {
         self.hold_note_through_activation
     }
@@ -263,20 +291,143 @@ pub fn from_installed_state(tree: &StateTree) -> Result<LiveDemoScene, LiveDemoS
         .map_err(|_| LiveDemoSceneError::InvalidEffectConfig)?;
 
     let slot = |index: usize| EffectSlotIndex::ALL[index];
+    // Declared expected results, never dispatches: a journey transition
+    // pairs one of these with an adjacent-choice gesture direction, and the
+    // runner dispatches the gesture while verifying the committed occupancy
+    // against the declaration. The only occupancy action dispatched directly
+    // is the documented rejection below.
     let occupy =
         |slot_index: usize, entry: Option<EffectCapabilityId>| SemanticAction::SetSlotOccupancy {
             patch_id: subject_id,
             slot: slot(slot_index),
             entry,
         };
+    let occupy_return = |bus: BusId, entry: Option<EffectCapabilityId>| {
+        SemanticAction::SetReturnOccupancy { bus, entry }
+    };
+
+    // The player's slot journey: enter the PATCH context, walk focus to the
+    // slot's occupancy row, prove the landing against the canonical
+    // projection, and arm Edit mode for the adjacent-choice gesture. The
+    // occupancy change itself is the transition's measured Adjust dispatch.
+    let slot_journey = |slot_index: usize| {
+        let control = PatchControlId::EffectSlot(slot(slot_index));
+        vec![
+            LiveTopologySupport::Event {
+                event: AppEvent::SelectContext(TopLevelContext::Patch),
+            },
+            LiveTopologySupport::FocusPatchControl {
+                control: control.clone(),
+            },
+            LiveTopologySupport::VerifyPatchFocus { control },
+            LiveTopologySupport::Event {
+                event: AppEvent::SetInteractionMode(InteractionMode::Adjust),
+            },
+        ]
+    };
+    // Leaving Edit mode closes every PATCH-side edit journey.
+    let patch_edit_exit = || {
+        vec![LiveTopologySupport::Event {
+            event: AppEvent::SetInteractionMode(InteractionMode::Navigate),
+        }]
+    };
+    // The player's return journey: select the MIXER context, focus the
+    // subject's track, enter the Inspector, walk focus to the return's
+    // occupancy row, prove the landing, and arm Edit mode.
+    let return_journey = |bus: BusId| {
+        let control = MixerControlId::ReturnOccupancy { bus };
+        vec![
+            LiveTopologySupport::Event {
+                event: AppEvent::SelectContext(TopLevelContext::Mixer),
+            },
+            LiveTopologySupport::FocusMixerTrack {
+                track_id: subject_track,
+            },
+            LiveTopologySupport::Event {
+                event: AppEvent::EnterSurface(SurfaceId::MixerInspector),
+            },
+            LiveTopologySupport::FocusInspectorControl {
+                track_id: subject_track,
+                control: control.clone(),
+            },
+            LiveTopologySupport::VerifyMixerFocus { control },
+            LiveTopologySupport::Event {
+                event: AppEvent::SetInteractionMode(InteractionMode::Adjust),
+            },
+        ]
+    };
+    // Leaving Edit mode and returning to MIXER Main closes every
+    // Inspector-side edit journey.
+    let return_edit_exit = || {
+        vec![
+            LiveTopologySupport::Event {
+                event: AppEvent::SetInteractionMode(InteractionMode::Navigate),
+            },
+            LiveTopologySupport::Event {
+                event: AppEvent::Return,
+            },
+        ]
+    };
+
+    // The startup occupant's first visible descriptor scalar, edited from
+    // the PATCH page as its own audible transition. The row identity and an
+    // accepted fine-step direction derive from the installed descriptor and
+    // config — positional and value-driven, never a name.
+    let startup_occupant = subject
+        .post_effects
+        .first()
+        .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+    let occupant_descriptor = state
+        .effects
+        .descriptor(startup_occupant.capability_id())
+        .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+    let occupant_predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
+        predicate.is_none_or(|predicate| {
+            startup_occupant.value(predicate.parameter_id()) == Some(predicate.equals())
+        })
+    };
+    let scalar_spec = occupant_descriptor
+        .parameters()
+        .find(|spec| {
+            spec.patch_interaction() == crate::synth::PatchInteraction::ScalarEdit
+                && spec.update() == crate::synth::ParameterUpdate::Scalar
+                && occupant_predicate_satisfied(spec.visible_when())
+                && occupant_predicate_satisfied(spec.enabled_when())
+        })
+        .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+    let scalar_current = startup_occupant
+        .value(scalar_spec.id())
+        .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+    let scalar_direction = match scalar_spec.adjusted_scalar_value(
+        scalar_current,
+        crate::synth::ParameterAdjustment::FineIncrease,
+    ) {
+        Ok(next) if &next != scalar_current => Direction::Right,
+        _ => Direction::Left,
+    };
+    let occupant_scalar_row =
+        PatchControlId::Effect(startup_occupant.slot_id(), scalar_spec.id().clone());
+    let scalar_journey = vec![
+        LiveTopologySupport::Event {
+            event: AppEvent::SelectContext(TopLevelContext::Patch),
+        },
+        LiveTopologySupport::FocusPatchControl {
+            control: occupant_scalar_row.clone(),
+        },
+        LiveTopologySupport::VerifyPatchFocus {
+            control: occupant_scalar_row,
+        },
+        LiveTopologySupport::Event {
+            event: AppEvent::SetInteractionMode(InteractionMode::Adjust),
+        },
+    ];
 
     // The send-raise support script. The frozen post-scalar MIXER context
     // still selects the subject's track (the base scene restores it), and
     // Inspector entry always focuses the selected track's first indexed
     // send, so the walk below is deterministic and loudly verified.
-    // The MIXER context is already selected when this script runs: the base
-    // scene's engine phase ends by restoring it, and no earlier topology
-    // transition changes context.
+    // The MIXER context is selected when this script runs: the preceding
+    // slot journey's exit restores it.
     let raised_buses = [BusId::ALL[0], BusId::ALL[1], BusId::ALL[2]];
     let mut raise_sends = vec![
         LiveTopologySupport::FocusMixerTrack {
@@ -352,98 +503,164 @@ pub fn from_installed_state(tree: &StateTree) -> Result<LiveDemoScene, LiveDemoS
     });
 
     let transitions = vec![
-        // FR-003/AS-1.5 (WP10): clearing the startup occupant travels the
-        // full lifecycle while the requesting note is HELD — it rings through
-        // preparation, survives the block-boundary activation via voice
-        // carry-over, and is never re-sounded, so the dry-continuity witness
-        // measures the carried voice itself.
+        // The startup occupant's descriptor scalar edited from the PATCH
+        // page: journey to the occupant's parameter row, one accepted
+        // fine-step edit, audibly witnessed on the sounding chain.
+        LiveTopologyTransition::new(
+            "SlotOccupant.scalarEdited",
+            None,
+            Some(scalar_direction),
+            None,
+            subject_id,
+            subject_channel,
+            60,
+            scalar_journey,
+            patch_edit_exit(),
+            LiveTopologyAudibleWitness::PatchChain,
+        ),
+        // FR-003/AS-1.5 (voice carry-over): clearing the startup occupant
+        // travels the full lifecycle while the requesting note is HELD — it
+        // rings through preparation, survives the block-boundary activation
+        // via voice carry-over, and is never re-sounded, so the
+        // dry-continuity witness measures the carried voice itself. The
+        // clear is the adjacent-choice gesture from the focused slot row.
         LiveTopologyTransition::new(
             "Slot.startupOccupantCleared",
             Some(occupy(0, None)),
-            None,
+            Some(Direction::Left),
             None,
             subject_id,
             subject_channel,
             60,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(0),
+            patch_edit_exit(),
             LiveTopologyAudibleWitness::DryContinuity,
         )
         .holding_note_through_activation(),
-        // FR-002/FR-004: fill all three slots, one at a time, each audibly.
+        // FR-002/FR-004: fill all three slots, one at a time, each audibly,
+        // each from the focused slot row. The adjacent-choice gesture is
+        // nonwrapping — empty, then each installed entry in declared order —
+        // so a non-adjacent target entry is reached by cycling through the
+        // intervening entries; each pass is its own added audible
+        // transition, and the retained identity lands on the exact
+        // occupancy the scene has always proven.
         LiveTopologyTransition::new(
             "SlotFill.first",
             Some(occupy(0, Some(first_entry.clone()))),
-            None,
+            Some(Direction::Right),
             None,
             subject_id,
             subject_channel,
             60,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(0),
+            patch_edit_exit(),
+            LiveTopologyAudibleWitness::PatchChain,
+        ),
+        LiveTopologyTransition::new(
+            "SlotFill.secondCycle1",
+            Some(occupy(1, Some(first_entry.clone()))),
+            Some(Direction::Right),
+            None,
+            subject_id,
+            subject_channel,
+            62,
+            slot_journey(1),
+            patch_edit_exit(),
             LiveTopologyAudibleWitness::PatchChain,
         ),
         LiveTopologyTransition::new(
             "SlotFill.second",
             Some(occupy(1, Some(second_entry.clone()))),
-            None,
+            Some(Direction::Right),
             None,
             subject_id,
             subject_channel,
             62,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(1),
+            patch_edit_exit(),
+            LiveTopologyAudibleWitness::PatchChain,
+        ),
+        LiveTopologyTransition::new(
+            "SlotFill.thirdCycle1",
+            Some(occupy(2, Some(first_entry.clone()))),
+            Some(Direction::Right),
+            None,
+            subject_id,
+            subject_channel,
+            64,
+            slot_journey(2),
+            patch_edit_exit(),
+            LiveTopologyAudibleWitness::PatchChain,
+        ),
+        LiveTopologyTransition::new(
+            "SlotFill.thirdCycle2",
+            Some(occupy(2, Some(second_entry.clone()))),
+            Some(Direction::Right),
+            None,
+            subject_id,
+            subject_channel,
+            64,
+            slot_journey(2),
+            patch_edit_exit(),
             LiveTopologyAudibleWitness::PatchChain,
         ),
         LiveTopologyTransition::new(
             "SlotFill.third",
             Some(occupy(2, Some(third_entry.clone()))),
-            None,
+            Some(Direction::Right),
             None,
             subject_id,
             subject_channel,
             64,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(2),
+            patch_edit_exit(),
             LiveTopologyAudibleWitness::PatchChain,
         ),
         // FR-005/SC-002: exchange two genuinely different effects.
         LiveTopologyTransition::new(
             "SlotOrder.exchangeFirst",
             Some(occupy(0, Some(second_entry.clone()))),
-            None,
+            Some(Direction::Right),
             None,
             subject_id,
             subject_channel,
             65,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(0),
+            patch_edit_exit(),
             LiveTopologyAudibleWitness::PatchChain,
         ),
         LiveTopologyTransition::new(
             "SlotOrder.exchangeSecond",
             Some(occupy(1, Some(first_entry.clone()))),
-            None,
+            Some(Direction::Left),
             None,
             subject_id,
             subject_channel,
             65,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(1),
+            patch_edit_exit(),
             LiveTopologyAudibleWitness::PatchChain,
         ),
         // FR-006/SC-003: two instances of one registry entry (positions 0
-        // and 2 both carry the third entry after this transition).
+        // and 2 both carry the third entry after this transition). The exit
+        // also restores the MIXER context for the send-raise script.
         LiveTopologyTransition::new(
             "SlotTwin.sameEntry",
             Some(occupy(0, Some(third_entry.clone()))),
-            None,
+            Some(Direction::Right),
             None,
             subject_id,
             subject_channel,
             67,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(0),
+            vec![
+                LiveTopologySupport::Event {
+                    event: AppEvent::SetInteractionMode(InteractionMode::Navigate),
+                },
+                LiveTopologySupport::Event {
+                    event: AppEvent::SelectContext(TopLevelContext::Mixer),
+                },
+            ],
             LiveTopologyAudibleWitness::PatchChain,
         ),
         // FR-010/FR-011: raise sends toward several of the eight
@@ -460,41 +677,80 @@ pub fn from_installed_state(tree: &StateTree) -> Result<LiveDemoScene, LiveDemoS
             Vec::new(),
             LiveTopologyAudibleWitness::WetReturn,
         ),
-        // FR-013: change the effect occupying an already-occupied return.
+        // FR-013: change the effect occupying an already-occupied return,
+        // from the focused Inspector return row, cycling adjacent choices.
         LiveTopologyTransition::new(
-            "Return.contentChanged",
-            Some(SemanticAction::SetReturnOccupancy {
-                bus: BusId::ALL[1],
-                entry: Some(first_entry.clone()),
-            }),
-            None,
+            "Return.contentChangedCycle1",
+            Some(occupy_return(BusId::ALL[1], Some(second_entry.clone()))),
+            Some(Direction::Left),
             None,
             subject_id,
             subject_channel,
             69,
-            Vec::new(),
-            Vec::new(),
+            return_journey(BusId::ALL[1]),
+            return_edit_exit(),
+            LiveTopologyAudibleWitness::WetReturn,
+        ),
+        LiveTopologyTransition::new(
+            "Return.contentChanged",
+            Some(occupy_return(BusId::ALL[1], Some(first_entry.clone()))),
+            Some(Direction::Left),
+            None,
+            subject_id,
+            subject_channel,
+            69,
+            return_journey(BusId::ALL[1]),
+            return_edit_exit(),
             LiveTopologyAudibleWitness::WetReturn,
         ),
         // FR-013/C-BR-6: occupy a previously empty destination the raised
         // send already feeds.
         LiveTopologyTransition::new(
-            "Return.emptyOccupied",
-            Some(SemanticAction::SetReturnOccupancy {
-                bus: BusId::ALL[2],
-                entry: Some(third_entry.clone()),
-            }),
-            None,
+            "Return.emptyOccupiedCycle1",
+            Some(occupy_return(BusId::ALL[2], Some(first_entry.clone()))),
+            Some(Direction::Right),
             None,
             subject_id,
             subject_channel,
             69,
-            Vec::new(),
-            Vec::new(),
+            return_journey(BusId::ALL[2]),
+            return_edit_exit(),
+            LiveTopologyAudibleWitness::WetReturn,
+        ),
+        LiveTopologyTransition::new(
+            "Return.emptyOccupiedCycle2",
+            Some(occupy_return(BusId::ALL[2], Some(second_entry.clone()))),
+            Some(Direction::Right),
+            None,
+            subject_id,
+            subject_channel,
+            69,
+            return_journey(BusId::ALL[2]),
+            return_edit_exit(),
+            LiveTopologyAudibleWitness::WetReturn,
+        ),
+        LiveTopologyTransition::new(
+            "Return.emptyOccupied",
+            Some(occupy_return(BusId::ALL[2], Some(third_entry.clone()))),
+            Some(Direction::Right),
+            None,
+            subject_id,
+            subject_channel,
+            69,
+            return_journey(BusId::ALL[2]),
+            return_edit_exit(),
             LiveTopologyAudibleWitness::WetReturn,
         ),
         // FR-015/SC-006: one controlled rejection with a visible reason and
         // uninterrupted audio.
+        //
+        // This dispatch stays a direct semantic injection by design: the
+        // adjacent-choice gesture on a focused occupancy row can only reach
+        // the installed registry entries and empty, so an unknown registry
+        // entry is inexpressible through the UI. Requesting one therefore
+        // requires the injection below — the single sanctioned exception to
+        // the journey-driven occupancy contract (spec C-003, crest-spec
+        // requirement.expandable_effects_behavioral_proof).
         LiveTopologyTransition::new(
             "Topology.refused",
             Some(SemanticAction::SetSlotOccupancy {
@@ -512,20 +768,30 @@ pub fn from_installed_state(tree: &StateTree) -> Result<LiveDemoScene, LiveDemoS
             LiveTopologyAudibleWitness::DryContinuity,
         ),
         // SC-006: a valid change immediately after the rejection succeeds —
-        // restoring the changed return's startup occupant.
+        // restoring the changed return's startup occupant through the same
+        // Inspector journey.
         LiveTopologyTransition::new(
-            "Topology.recoveredAfterRefusal",
-            Some(SemanticAction::SetReturnOccupancy {
-                bus: BusId::ALL[1],
-                entry: Some(third_entry.clone()),
-            }),
-            None,
+            "Topology.recoveredAfterRefusalCycle1",
+            Some(occupy_return(BusId::ALL[1], Some(second_entry.clone()))),
+            Some(Direction::Right),
             None,
             subject_id,
             subject_channel,
             71,
-            Vec::new(),
-            Vec::new(),
+            return_journey(BusId::ALL[1]),
+            return_edit_exit(),
+            LiveTopologyAudibleWitness::WetReturn,
+        ),
+        LiveTopologyTransition::new(
+            "Topology.recoveredAfterRefusal",
+            Some(occupy_return(BusId::ALL[1], Some(third_entry.clone()))),
+            Some(Direction::Right),
+            None,
+            subject_id,
+            subject_channel,
+            71,
+            return_journey(BusId::ALL[1]),
+            return_edit_exit(),
             LiveTopologyAudibleWitness::WetReturn,
         ),
         // FR-018: reroute the subject Patch through the focused Utility
@@ -566,60 +832,120 @@ pub fn from_installed_state(tree: &StateTree) -> Result<LiveDemoScene, LiveDemoS
         // Restore the subject grid to the startup configuration: the first
         // entry back at its startup position, the other slots cleared, so
         // the frozen teardown's structural-restoration check observes the
-        // exact pre-engine baseline.
+        // exact pre-engine baseline — every step from the focused slot row.
         LiveTopologyTransition::new(
-            "Slot.startupOccupantRestored",
-            Some(occupy(0, Some(first_entry.clone()))),
-            None,
+            "Slot.startupOccupantRestoredCycle1",
+            Some(occupy(0, Some(second_entry.clone()))),
+            Some(Direction::Left),
             None,
             subject_id,
             subject_channel,
             74,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(0),
+            patch_edit_exit(),
+            LiveTopologyAudibleWitness::PatchChain,
+        ),
+        LiveTopologyTransition::new(
+            "Slot.startupOccupantRestored",
+            Some(occupy(0, Some(first_entry.clone()))),
+            Some(Direction::Left),
+            None,
+            subject_id,
+            subject_channel,
+            74,
+            slot_journey(0),
+            patch_edit_exit(),
             LiveTopologyAudibleWitness::PatchChain,
         ),
         LiveTopologyTransition::new(
             "Slot.secondCleared",
             Some(occupy(1, None)),
-            None,
+            Some(Direction::Left),
             None,
             subject_id,
             subject_channel,
             74,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(1),
+            patch_edit_exit(),
             LiveTopologyAudibleWitness::DryContinuity,
+        ),
+        LiveTopologyTransition::new(
+            "Slot.thirdClearedCycle1",
+            Some(occupy(2, Some(second_entry.clone()))),
+            Some(Direction::Left),
+            None,
+            subject_id,
+            subject_channel,
+            74,
+            slot_journey(2),
+            patch_edit_exit(),
+            LiveTopologyAudibleWitness::PatchChain,
+        ),
+        LiveTopologyTransition::new(
+            "Slot.thirdClearedCycle2",
+            Some(occupy(2, Some(first_entry.clone()))),
+            Some(Direction::Left),
+            None,
+            subject_id,
+            subject_channel,
+            74,
+            slot_journey(2),
+            patch_edit_exit(),
+            LiveTopologyAudibleWitness::PatchChain,
         ),
         LiveTopologyTransition::new(
             "Slot.thirdCleared",
             Some(occupy(2, None)),
-            None,
+            Some(Direction::Left),
             None,
             subject_id,
             subject_channel,
             74,
-            Vec::new(),
-            Vec::new(),
+            slot_journey(2),
+            patch_edit_exit(),
             LiveTopologyAudibleWitness::DryContinuity,
         ),
         // Restore the raised sends and the extra destination so the frozen
-        // semantic tail observes the documented end state.
+        // semantic tail observes the documented end state. The clear cycles
+        // back down through the intervening entries from the focused row.
         LiveTopologyTransition::new(
-            "Return.emptyRestored",
-            Some(SemanticAction::SetReturnOccupancy {
-                bus: BusId::ALL[2],
-                entry: None,
-            }),
-            None,
+            "Return.emptyRestoredCycle1",
+            Some(occupy_return(BusId::ALL[2], Some(second_entry.clone()))),
+            Some(Direction::Left),
             None,
             subject_id,
             subject_channel,
             76,
-            vec![LiveTopologySupport::Event {
-                event: AppEvent::SelectContext(TopLevelContext::Mixer),
-            }],
-            lower_sends,
+            return_journey(BusId::ALL[2]),
+            return_edit_exit(),
+            LiveTopologyAudibleWitness::WetReturn,
+        ),
+        LiveTopologyTransition::new(
+            "Return.emptyRestoredCycle2",
+            Some(occupy_return(BusId::ALL[2], Some(first_entry.clone()))),
+            Some(Direction::Left),
+            None,
+            subject_id,
+            subject_channel,
+            76,
+            return_journey(BusId::ALL[2]),
+            return_edit_exit(),
+            LiveTopologyAudibleWitness::WetReturn,
+        ),
+        LiveTopologyTransition::new(
+            "Return.emptyRestored",
+            Some(occupy_return(BusId::ALL[2], None)),
+            Some(Direction::Left),
+            None,
+            subject_id,
+            subject_channel,
+            76,
+            return_journey(BusId::ALL[2]),
+            {
+                let mut exit = return_edit_exit();
+                exit.extend(lower_sends);
+                exit
+            },
             LiveTopologyAudibleWitness::DryContinuity,
         ),
     ];

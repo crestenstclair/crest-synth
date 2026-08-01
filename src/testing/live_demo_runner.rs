@@ -16,6 +16,7 @@ use crate::real_time::audio_boundary::ControlAudioBoundary;
 use crate::real_time::audio_observation::ControlAudioObservation;
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
 use crate::shell::{ShellFrameObservation, ShellRegionId};
+use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::{
     InstrumentConfig, ParameterDefault, ParameterKind, ParameterValue, PostEffectConfig,
     VoiceEnvelope,
@@ -64,7 +65,7 @@ pub struct LiveDemoRunner<Source, Observation> {
     last_ready_graph_revision: crate::real_time::GraphRevision,
     engine_envelope_baseline: Option<VoiceEnvelope>,
     structural_config_baseline: Option<InstrumentConfig>,
-    structural_effect_baseline: Option<Vec<PostEffectConfig>>,
+    structural_effect_baseline: Option<[Option<PostEffectConfig>; MAX_EFFECT_SLOTS]>,
     pending_focus_recovery: Option<(FocusPath, Vec<FocusPath>)>,
     cleanup_sequence_before: Option<u64>,
     completed_report: Option<LiveDemoReport>,
@@ -479,7 +480,7 @@ where
                     .ok_or(LiveDemoError::EngineLifecycleMismatch)?;
                 self.engine_envelope_baseline = Some(*patch.envelope());
                 self.structural_config_baseline = Some(patch.instrument_config().clone());
-                self.structural_effect_baseline = Some(patch.post_effects().to_vec());
+                self.structural_effect_baseline = Some(patch.effect_slots().clone());
                 self.engine_phase = LiveEnginePhase::FocusControl;
                 self.mark_progress();
                 Ok(None)
@@ -881,7 +882,7 @@ where
                         .ok_or(LiveDemoError::EngineLifecycleMismatch)?;
                     self.engine_envelope_baseline = Some(*patch.envelope());
                     self.structural_config_baseline = Some(patch.instrument_config().clone());
-                    self.structural_effect_baseline = Some(patch.post_effects().to_vec());
+                    self.structural_effect_baseline = Some(patch.effect_slots().clone());
                     LiveEnginePhase::FocusControl
                 } else {
                     LiveEnginePhase::RestoreMixer
@@ -899,7 +900,7 @@ where
         }
     }
 
-    /// Drives the retained scene's topology transitions (WP08): support
+    /// Drives the retained scene's topology transitions: support
     /// events, the occupancy dispatch, the correlated
     /// Preparing/Activating/Ready lifecycle, and the NFR-008 responsiveness
     /// measurement, capturing one topology checkpoint per transition.
@@ -950,7 +951,17 @@ where
                     rejection: None,
                 };
                 if let Some(action) = transition.action() {
-                    let event = AppEvent::from_semantic_action(action.clone());
+                    // A transition declaring both the expected occupancy and
+                    // an adjacent-choice direction is journey-driven: the
+                    // measured cause is the Adjust gesture on the focused
+                    // occupancy row, and the committed result is still
+                    // verified against the declared action at Activating.
+                    let event = match transition.adjust() {
+                        Some(direction) if transition.expected_rejection().is_none() => {
+                            AppEvent::Adjust(direction)
+                        }
+                        _ => AppEvent::from_semantic_action(action.clone()),
+                    };
                     if let Some(expected) = transition.expected_rejection() {
                         let rejection =
                             dispatch_rejected_topology_event(app_loop, event, expected)?;
@@ -1030,7 +1041,7 @@ where
                         Ok(None)
                     }
                     EngineSelectionStatusKind::Ready => {
-                        // WP10: a held-note transition never re-sounds its
+                        // A held-note transition never re-sounds its
                         // probe — the note sounded before the dispatch must
                         // itself survive the block-boundary activation via
                         // voice carry-over, so the audible capture measures
@@ -1096,7 +1107,7 @@ where
                     && observation.sequence() > context.audio_before.sequence()
                     && observation.active_notes() > 0
                     && observation.routing_failures() == 0;
-                // WP10: for a held-note transition the runner dispatched no
+                // For a held-note transition the runner dispatched no
                 // note after activation, so an active note observed on the
                 // target graph is the carried voice itself — measured, never
                 // assumed.
@@ -1362,7 +1373,7 @@ where
         if self.engine_envelope_baseline.as_ref() != Some(patch.envelope()) {
             return Err(LiveDemoError::EngineProjectionMismatch);
         }
-        if self.structural_effect_baseline.as_deref() != Some(patch.post_effects()) {
+        if self.structural_effect_baseline.as_ref() != Some(patch.effect_slots()) {
             return Err(LiveDemoError::EngineTargetConfigMismatch);
         }
         let baseline = self
@@ -1545,7 +1556,7 @@ where
             .iter()
             .find(|patch| patch.id() == focused_patch)
             .ok_or(LiveDemoError::EngineTargetConfigMismatch)?;
-        if self.structural_effect_baseline.as_deref() != Some(final_patch.post_effects()) {
+        if self.structural_effect_baseline.as_ref() != Some(final_patch.effect_slots()) {
             return Err(LiveDemoError::EngineTargetConfigMismatch);
         }
 
@@ -1778,6 +1789,57 @@ where
                 Direction::Right
             } else {
                 Direction::Left
+            };
+            dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+            Ok(false)
+        }
+        LiveTopologySupport::FocusPatchControl { control } => {
+            let page = app_loop
+                .current_patch_page()
+                .ok_or(LiveDemoError::MissingPatchProjection)?;
+            if page.focused_control_id() == *control {
+                return Ok(true);
+            }
+            let controls = app_loop.state().focused_patch_controls()?;
+            let current = controls
+                .iter()
+                .position(|candidate| candidate == &page.focused_control_id())
+                .ok_or(LiveDemoError::TopologySupportMismatch)?;
+            let target = controls
+                .iter()
+                .position(|candidate| candidate == control)
+                .ok_or(LiveDemoError::TopologySupportMismatch)?;
+            let direction = if current < target {
+                Direction::Down
+            } else {
+                Direction::Up
+            };
+            dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+            Ok(false)
+        }
+        LiveTopologySupport::FocusInspectorControl { track_id, control } => {
+            let focused = app_loop.state().interaction().focus_path().clone();
+            let paths = SemanticResolver::new(app_loop.state()).mixer_inspector_paths(*track_id)?;
+            let current = paths
+                .iter()
+                .position(|path| path == &focused)
+                .ok_or(LiveDemoError::TopologySupportMismatch)?;
+            let target = paths
+                .iter()
+                .position(|path| {
+                    matches!(
+                        path.control_id(),
+                        crate::control::SemanticControlId::Mixer(actual) if actual == control
+                    )
+                })
+                .ok_or(LiveDemoError::TopologySupportMismatch)?;
+            if current == target {
+                return Ok(true);
+            }
+            let direction = if current < target {
+                Direction::Down
+            } else {
+                Direction::Up
             };
             dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
             Ok(false)

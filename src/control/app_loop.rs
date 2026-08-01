@@ -907,7 +907,7 @@ where
 
 /// Derives the layout-admission scope for one correlated replacement.
 ///
-/// WP10: delegated to the correlation's canonical derivation so publication
+/// Delegated to the correlation's canonical derivation so publication
 /// admission and the renderer's voice carry-over share one scope vocabulary.
 fn replacement_scope(
     correlation: &crate::real_time::GraphPreparationCorrelation,

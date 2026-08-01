@@ -262,7 +262,7 @@ where
 
         let replacement_revision = replacement.revision();
         let replacement_parameters = *replacement.initial_parameters();
-        // WP10 voice carry-over: before the graphs exchange, move every
+        // Voice carry-over: before the graphs exchange, move every
         // still-live prepared instance the declared delta leaves unchanged
         // from the active graph into the replacement — bounded pointer swaps,
         // no allocation, no destruction. The fresh never-sounded instances
@@ -1108,7 +1108,7 @@ mod tests {
         assert!(output.iter().all(|sample| sample.is_finite()));
     }
 
-    // ---- WP10: voice carry-over across topology activation ----------------
+    // ---- Voice carry-over across topology activation ----------------------
 
     /// Preparer whose instruments render a distinct serial-numbered level, so
     /// a test can observe which prepared instance (live or fresh) is sounding
@@ -1235,7 +1235,7 @@ mod tests {
         }
     }
 
-    /// WP10/T057: an occupancy-scoped activation exchanges the live prepared
+    /// An occupancy-scoped activation exchanges the live prepared
     /// instrument into the replacement — the sounding instance survives, the
     /// observed notes survive, and the callback allocates, deallocates, and
     /// destroys nothing.
@@ -1308,7 +1308,7 @@ mod tests {
         assert_eq!(renderer.structural.retired_count, 1);
     }
 
-    /// WP10 negative space: a `SelectedEngine` scope restarts exactly the
+    /// Negative space: a `SelectedEngine` scope restarts exactly the
     /// selected Patch — the fresh instance sounds and its observed notes
     /// clear — and an unscoped replacement keeps the full-reset semantics.
     #[test]
@@ -1388,7 +1388,7 @@ mod tests {
         assert_eq!(graph.patch_audio().storage().len(), MAX_PATCHES);
     }
 
-    // ---- T031: full-occupancy measurements (C-RT-1/3/7, NFR-001/002/003) --
+    // ---- Full-occupancy measurements (C-RT-1/3/7, NFR-001/002/003) --------
 
     mod full_occupancy {
         use super::{
@@ -1416,7 +1416,7 @@ mod tests {
         use crate::real_time::prepared_graph::PreparedGraph;
         use crate::real_time::prepared_graph_builder::PreparedGraphBuilder;
         use crate::synth::capability_id::CapabilityId;
-        use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
+        use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
         use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
         use crate::synth::patch::Patch;
         use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
@@ -1512,26 +1512,30 @@ mod tests {
                 let capabilities = ["effect.chorus", "effect.reverb", "effect.delay"];
                 let patches = (1..=MAX_PATCHES as u32)
                     .map(|id| {
-                        let effects: Vec<PostEffectConfig> = (0..MAX_EFFECT_SLOTS)
-                            .map(|position| {
-                                let slot = EffectSlotId::new(
-                                    ((id - 1) as u16) * MAX_EFFECT_SLOTS as u16
-                                        + position as u16
-                                        + 1,
-                                )
-                                .unwrap();
-                                effect_registry
-                                    .descriptors()
-                                    .iter()
-                                    .find(|descriptor| {
-                                        descriptor.id().as_str() == capabilities[position]
-                                    })
-                                    .unwrap()
-                                    .default_config(slot)
-                                    .unwrap()
-                            })
-                            .collect();
-                        Patch::new(
+                        let occupants: Vec<(EffectSlotIndex, PostEffectConfig)> =
+                            EffectSlotIndex::ALL
+                                .into_iter()
+                                .map(|address| {
+                                    let position = address.index();
+                                    let slot = EffectSlotId::new(
+                                        ((id - 1) as u16) * MAX_EFFECT_SLOTS as u16
+                                            + position as u16
+                                            + 1,
+                                    )
+                                    .unwrap();
+                                    let config = effect_registry
+                                        .descriptors()
+                                        .iter()
+                                        .find(|descriptor| {
+                                            descriptor.id().as_str() == capabilities[position]
+                                        })
+                                        .unwrap()
+                                        .default_config(slot)
+                                        .unwrap();
+                                    (address, config)
+                                })
+                                .collect();
+                        let patch = Patch::new(
                             PatchId::new(id).unwrap(),
                             format!("Full {id}"),
                             create_soundfont_config(
@@ -1541,8 +1545,12 @@ mod tests {
                             .unwrap(),
                             MidiChannel::new((id - 1) as u8).unwrap(),
                             PatchOutput::to_track(MixerTrackId::new((id - 1) as u8).unwrap()),
-                        )
-                        .with_post_effects(effects)
+                        );
+                        occupants
+                            .into_iter()
+                            .fold(patch, |patch, (address, config)| {
+                                patch.with_effect_slot(address, config)
+                            })
                     })
                     .collect();
                 Self {
@@ -1654,7 +1662,7 @@ mod tests {
             assert!(snapshot.returns().iter().all(|entry| entry.is_active()));
         }
 
-        /// T031/C-RT-3/NFR-002: a steady-state block and a topology-activation
+        /// C-RT-3/NFR-002: a steady-state block and a topology-activation
         /// block at the complete widened occupancy perform zero allocation,
         /// zero deallocation, and zero destruction; the superseded graph is
         /// returned off-callback intact; activation is atomic at block start.
@@ -1737,7 +1745,7 @@ mod tests {
             assert!(output.iter().all(|sample| sample.is_finite()));
         }
 
-        /// T031/C-RT-7: the publish cost of the widened snapshot through the
+        /// C-RT-7: the publish cost of the widened snapshot through the
         /// production triple-buffer transport is measured — not assumed — at
         /// the complete fully occupied configuration, and the publish path is
         /// allocation- and destruction-free.

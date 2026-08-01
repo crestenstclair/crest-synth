@@ -5,7 +5,7 @@ use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_loop::{AppLoop, StructuralAdvanceError};
 use crate::control::app_state::{AppState, EventRejection};
 use crate::control::event_log::EventLog;
-use crate::control::event_record::{EventInput, EventSource};
+use crate::control::event_record::{EventInput, EventSource, PatchInput};
 use crate::control::state_projector::{StateProjectionError, StateProjector};
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -38,6 +38,7 @@ use crate::shell::audio_output::{
     AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
     AudioOutputError, AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
 };
+use crate::synth::effect_slot_id::EffectSlotIndex;
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::instrument_composition::{
@@ -47,7 +48,7 @@ use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPr
 use crate::synth::patch::Patch;
 use crate::synth::{
     compose_effect_registry, DescriptorDefaultConfigFactory, EffectCapabilityProvider,
-    EffectCapabilityRegistry, EffectCompositionError, EffectPreparer, VoicePolicy,
+    EffectCapabilityRegistry, EffectCompositionError, EffectPreparer, EffectSlotId, VoicePolicy,
 };
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::demo_scene::{DemoScene, DemoSceneError};
@@ -241,7 +242,7 @@ impl GraphicalShellLiveObservation {
 
     /// The retained effects-and-buses teardown projection: the cumulative
     /// sixteen-track evidence plus the topology, responsiveness, and
-    /// eight-destination measurements (WP08).
+    /// eight-destination measurements.
     pub fn effects_and_buses(&self) -> Option<EffectsAndBusesLiveObservation> {
         self.effects_and_buses
             .as_ref()
@@ -252,7 +253,7 @@ impl GraphicalShellLiveObservation {
     }
 }
 
-/// Final effects-and-buses witness emitted after physical teardown (WP08).
+/// Final effects-and-buses witness emitted after physical teardown.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct EffectsAndBusesLiveObservation {
     #[serde(flatten)]
@@ -272,7 +273,7 @@ impl EffectsAndBusesLiveObservation {
 pub enum LiveSceneKind {
     /// The retained sixteen-track mixer-routing scene.
     SixteenTrackMixerRouting,
-    /// The retained cumulative effects-and-buses scene (WP08).
+    /// The retained cumulative effects-and-buses scene.
     EffectsAndBuses,
 }
 
@@ -282,6 +283,10 @@ pub enum ApplicationError {
     Capability(CapabilityError),
     InstrumentComposition(InstrumentCompositionError),
     EffectComposition(EffectCompositionError),
+    /// The declared default bus-return occupancy failed to compose at the
+    /// production root; startup aborts instead of substituting silent
+    /// returns.
+    DefaultBusReturns(crate::adapter::production_effects::ProductionEffectCompositionError),
     Instrument(InstrumentPreparationError),
     Graph(GraphPreparationError),
     GraphWorker(ThreadedGraphPreparationWorkerError),
@@ -304,6 +309,12 @@ pub enum ApplicationError {
     ObservationOverflow,
     ObservationUnavailable,
     FixtureUnavailable,
+    /// A recorded install carries an effect whose instance identity names no
+    /// bounded chain position, so its recorded placement cannot be rebuilt.
+    RecordedEffectPosition {
+        patch_id: u32,
+        slot_id: EffectSlotId,
+    },
 }
 
 impl fmt::Display for ApplicationError {
@@ -315,6 +326,12 @@ impl fmt::Display for ApplicationError {
             }
             Self::EffectComposition(error) => {
                 write!(formatter, "effect composition failed: {error}")
+            }
+            Self::DefaultBusReturns(error) => {
+                write!(
+                    formatter,
+                    "default bus-return composition failed at startup: {error}"
+                )
             }
             Self::Instrument(error) => write!(formatter, "instrument preparation failed: {error}"),
             Self::Graph(error) => write!(formatter, "prepared graph setup failed: {error}"),
@@ -357,6 +374,11 @@ impl fmt::Display for ApplicationError {
             Self::FixtureUnavailable => {
                 formatter.write_str("the accepted automatic fixture Patch set is unavailable")
             }
+            Self::RecordedEffectPosition { patch_id, slot_id } => write!(
+                formatter,
+                "the recorded install for patch {patch_id} cannot place effect instance \
+                 {slot_id} at its declared chain position"
+            ),
         }
     }
 }
@@ -367,6 +389,7 @@ impl std::error::Error for ApplicationError {
             Self::Capability(error) => Some(error),
             Self::InstrumentComposition(error) => Some(error),
             Self::EffectComposition(error) => Some(error),
+            Self::DefaultBusReturns(error) => Some(error),
             Self::Instrument(error) => Some(error),
             Self::Graph(error) => Some(error),
             Self::GraphWorker(error) => Some(error),
@@ -388,7 +411,8 @@ impl std::error::Error for ApplicationError {
             | Self::LiveEventLogCapacity
             | Self::ObservationOverflow
             | Self::ObservationUnavailable
-            | Self::FixtureUnavailable => None,
+            | Self::FixtureUnavailable
+            | Self::RecordedEffectPosition { .. } => None,
         }
     }
 }
@@ -706,15 +730,19 @@ where
     } = instruments;
     let revision = GraphRevision::INITIAL;
     let (control_boundary, audio_boundary) = boundary.into_handles();
+    // The production root propagates a failed default bus-return
+    // composition as a typed startup error; the permissive test-registry
+    // variant (`startup_bus_returns`) is never consumed here.
+    let startup_returns =
+        crate::adapter::production_effects::production_startup_bus_returns(&effects)
+            .map_err(ApplicationError::DefaultBusReturns)?;
     let state = AppState::for_graph_with_effects(
         capabilities.clone(),
         effects.clone(),
         config.global_parameters(),
         revision,
     )
-    .with_initial_returns(crate::adapter::production_effects::startup_bus_returns(
-        &effects,
-    ));
+    .with_initial_returns(startup_returns);
     let projector = StateProjector::for_graph(revision);
     let mut app_loop = match plan.event_log {
         Some(event_log) => AppLoop::with_event_log(state, projector, control_boundary, event_log)?,
@@ -1440,7 +1468,19 @@ where
     }
 }
 
-fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, ApplicationError> {
+/// Rebuilds the startup-installed Patch set from the accepted installation
+/// record in the event log — the composition-root round trip the demo scene
+/// composes its fixture Patches through.
+///
+/// The record stores the chain in the frozen serialized vocabulary: the
+/// occupied `postEffects` entries in position order, each carrying its
+/// `slotId` instance identity. Positions map one-to-one onto instance
+/// identities ([`EffectSlotIndex::instance_identity`]), so every recorded
+/// entry is placed back at exactly the position its identity names. A gapped
+/// chain — an empty position before an occupied one — survives the round
+/// trip per position, never compacted down. A recorded identity that names
+/// no bounded position is a corrupted record and fails loudly.
+pub fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, ApplicationError> {
     let patches = event_log
         .records()
         .iter()
@@ -1454,10 +1494,10 @@ fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, Applic
         })
         .ok_or(ApplicationError::FixtureUnavailable)?;
 
-    Ok(patches
+    patches
         .iter()
         .map(|patch| {
-            Patch::new(
+            let mut rebuilt = Patch::new(
                 PatchId::new(patch.id())
                     .expect("an accepted fixture record contains a valid PatchId"),
                 patch.name().to_owned(),
@@ -1466,10 +1506,28 @@ fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, Applic
                     .expect("an accepted fixture record contains a valid MIDI channel"),
                 patch.output(),
             )
-            .with_envelope(*patch.envelope())
-            .with_post_effects(patch.post_effects().to_vec())
+            .with_envelope(*patch.envelope());
+            // The read is fully qualified: this is the record's frozen
+            // serialized chain (retained evidence vocabulary), not the Patch
+            // aggregate's retired compacting accessor that shares its name.
+            for config in PatchInput::post_effects(patch) {
+                let position = EffectSlotIndex::ALL
+                    .into_iter()
+                    .find(|position| position.instance_identity() == config.slot_id())
+                    .ok_or(ApplicationError::RecordedEffectPosition {
+                        patch_id: patch.id(),
+                        slot_id: config.slot_id(),
+                    })?;
+                rebuilt
+                    .set_slot_occupancy(position, Some(config.clone()))
+                    .map_err(|_| ApplicationError::RecordedEffectPosition {
+                        patch_id: patch.id(),
+                        slot_id: config.slot_id(),
+                    })?;
+            }
+            Ok(rebuilt)
         })
-        .collect())
+        .collect()
 }
 
 fn queue_demo_notes<Boundary>(

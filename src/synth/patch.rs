@@ -80,14 +80,12 @@ pub struct Patch {
     /// positions, each independently empty or occupied. Slot order is render
     /// order, positions are stable addresses, and a fourth effect is
     /// unrepresentable in the type.
-    effects: [Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
-    /// Derived occupied-slots-in-index-order projection of `effects`.
     ///
-    /// Transitional: it exists only so `post_effects()` can keep returning a
-    /// slice to the legacy zero-or-one callers (snapshot projection,
-    /// persistence, demos) until WP05/WP06 migrate them to `effect_slots()`.
-    /// It is rebuilt after every mutation and never carries independent state.
-    effects_compact: Vec<PostEffectConfig>,
+    /// This array is the aggregate's only chain representation. No compacted
+    /// or otherwise position-erasing projection is stored beside it, so every
+    /// consumer reads positions exactly as they were written and a gapped
+    /// chain can never be silently renumbered by a round trip.
+    effects: [Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
 }
 
 impl Patch {
@@ -107,7 +105,6 @@ impl Patch {
             envelope: VoiceEnvelope::default(),
             output,
             effects: std::array::from_fn(|_| None),
-            effects_compact: Vec::new(),
         }
     }
 
@@ -141,18 +138,11 @@ impl Patch {
         self.output
     }
 
-    /// Returns the occupied post-effect configurations in slot index order.
-    ///
-    /// Transitional compact view for legacy zero-or-one callers; it erases
-    /// empty positions. Position-aware code must use `effect_slots()`.
-    pub fn post_effects(&self) -> &[PostEffectConfig] {
-        &self.effects_compact
-    }
-
     /// Returns the canonical ordered effect chain, one entry per position.
     ///
-    /// Slot order is render order. Empty positions stay in place: clearing
-    /// slot 1 leaves slot 2 occupied at index 2, never compacted down.
+    /// This is the only chain view the aggregate exposes. Slot order is render
+    /// order and empty positions stay in place: clearing slot 1 leaves slot 2
+    /// occupied at index 2, never compacted down.
     pub const fn effect_slots(&self) -> &[Option<PostEffectConfig>; MAX_EFFECT_SLOTS] {
         &self.effects
     }
@@ -173,25 +163,23 @@ impl Patch {
         self
     }
 
-    /// Supplies the ordered post-effect list while constructing a Patch,
-    /// occupying positions `0..len` in order. Installation validates registry
-    /// identity and config; the type itself bounds the chain, so more than
-    /// `MAX_EFFECT_SLOTS` entries is a construction-time programmer error.
+    /// Occupies one validated position while constructing a Patch, leaving
+    /// every other position exactly as it stands.
+    ///
+    /// Construction is position-explicit: the caller names the address, so a
+    /// list order is never reinterpreted as a chain layout and a fixture can
+    /// state a gapped chain directly. Installation validates registry identity
+    /// and config; the type itself bounds the chain, so a fourth position is
+    /// unrepresentable rather than refused.
     ///
     /// # Panics
     ///
-    /// Panics when given more than `MAX_EFFECT_SLOTS` configurations; a
-    /// fourth effect is unrepresentable in the slot array.
-    pub fn with_post_effects(mut self, post_effects: Vec<PostEffectConfig>) -> Self {
-        assert!(
-            post_effects.len() <= MAX_EFFECT_SLOTS,
-            "a Patch holds at most {MAX_EFFECT_SLOTS} ordered effect slots"
-        );
-        self.effects = std::array::from_fn(|_| None);
-        for (position, config) in post_effects.into_iter().enumerate() {
-            self.effects[position] = Some(config);
-        }
-        self.rebuild_compact_view();
+    /// Panics when the occupant's instance identity already occupies another
+    /// position. A duplicate identity is a construction-time programmer error;
+    /// the reducer path reports it as `EffectSlotOccupancyError` instead.
+    pub fn with_effect_slot(mut self, index: EffectSlotIndex, occupant: PostEffectConfig) -> Self {
+        self.set_slot_occupancy(index, Some(occupant))
+            .expect("a constructed occupant carries an identity unique to its Patch");
         self
     }
 
@@ -221,7 +209,6 @@ impl Patch {
             }
         }
         self.effects[index.index()] = occupant;
-        self.rebuild_compact_view();
         Ok(())
     }
 
@@ -239,26 +226,6 @@ impl Patch {
 
     pub(crate) fn set_instrument_config(&mut self, config: InstrumentConfig) {
         self.instrument = config;
-    }
-
-    /// Replaces the configuration at one compact-view index (the nth occupied
-    /// slot in position order), preserving its position. Transitional peer of
-    /// `post_effects()` for the legacy scalar-edit path.
-    pub(crate) fn set_post_effect_config(&mut self, index: usize, config: PostEffectConfig) {
-        let position = self
-            .effects
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| slot.is_some())
-            .map(|(position, _)| position)
-            .nth(index)
-            .expect("compact post-effect index addresses an occupied slot");
-        self.effects[position] = Some(config);
-        self.rebuild_compact_view();
-    }
-
-    fn rebuild_compact_view(&mut self) {
-        self.effects_compact = self.effects.iter().flatten().cloned().collect();
     }
 }
 
@@ -322,9 +289,14 @@ mod tests {
     fn patch_holds_zero_through_three_ordered_effects() {
         for count in 0..=MAX_EFFECT_SLOTS {
             let configs: Vec<_> = (0..count).map(|index| config(index as u16 + 1)).collect();
-            let patch = test_patch().with_post_effects(configs.clone());
+            let patch =
+                configs
+                    .iter()
+                    .enumerate()
+                    .fold(test_patch(), |patch, (position, occupant)| {
+                        patch.with_effect_slot(slot(position), occupant.clone())
+                    });
             assert_eq!(patch.effect_slots().len(), MAX_EFFECT_SLOTS);
-            assert_eq!(patch.post_effects(), configs.as_slice());
             for position in 0..MAX_EFFECT_SLOTS {
                 assert_eq!(
                     patch.effect_slot(slot(position)),
@@ -336,10 +308,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "at most 3 ordered effect slots")]
-    fn a_fourth_effect_is_refused_at_construction() {
-        let configs = (1..=4).map(config).collect();
-        let _ = test_patch().with_post_effects(configs);
+    fn a_fourth_position_is_unrepresentable() {
+        assert_eq!(test_patch().effect_slots().len(), MAX_EFFECT_SLOTS);
+        assert_eq!(
+            EffectSlotIndex::new(MAX_EFFECT_SLOTS),
+            Err(
+                crate::synth::effect_slot_id::EffectSlotIndexError::OutOfRange {
+                    value: MAX_EFFECT_SLOTS
+                }
+            )
+        );
     }
 
     #[test]
@@ -377,13 +355,71 @@ mod tests {
 
     #[test]
     fn clearing_a_slot_never_compacts_the_others() {
-        let mut patch = test_patch().with_post_effects(vec![config(1), config(2), config(3)]);
+        let mut patch = test_patch()
+            .with_effect_slot(slot(0), config(1))
+            .with_effect_slot(slot(1), config(2))
+            .with_effect_slot(slot(2), config(3));
         patch.set_slot_occupancy(slot(1), None).unwrap();
 
         assert_eq!(patch.effect_slot(slot(0)), Some(&config(1)));
         assert_eq!(patch.effect_slot(slot(1)), None);
         assert_eq!(patch.effect_slot(slot(2)), Some(&config(3)));
-        assert_eq!(patch.post_effects(), &[config(1), config(3)]);
+        // The survivors keep their addresses and their instance identities:
+        // nothing slid down into the hole the cleared position left.
+        assert_eq!(
+            patch.effect_slots()[2]
+                .as_ref()
+                .map(PostEffectConfig::slot_id),
+            Some(EffectSlotId::new(3).unwrap())
+        );
+    }
+
+    #[test]
+    fn an_occupied_later_position_leaves_the_earlier_one_empty() {
+        let patch = test_patch().with_effect_slot(slot(1), config(2));
+
+        assert_eq!(patch.effect_slot(slot(0)), None);
+        assert_eq!(patch.effect_slot(slot(1)), Some(&config(2)));
+        assert_eq!(patch.effect_slot(slot(2)), None);
+        assert_eq!(
+            patch.effect_slots(),
+            &[None, Some(config(2)), None],
+            "an occupied second position is reported at index 1, never at index 0"
+        );
+    }
+
+    #[test]
+    fn instance_identities_stay_stable_across_occupancy_changes_elsewhere() {
+        let mut patch = test_patch()
+            .with_effect_slot(slot(0), config(1))
+            .with_effect_slot(slot(1), config(2))
+            .with_effect_slot(slot(2), config(3));
+        let identities_before: Vec<_> = patch
+            .effect_slots()
+            .iter()
+            .map(|occupant| occupant.as_ref().map(PostEffectConfig::slot_id))
+            .collect();
+
+        patch.set_slot_occupancy(slot(1), None).unwrap();
+        patch.set_slot_occupancy(slot(1), Some(config(9))).unwrap();
+
+        let identities_after: Vec<_> = patch
+            .effect_slots()
+            .iter()
+            .map(|occupant| occupant.as_ref().map(PostEffectConfig::slot_id))
+            .collect();
+        assert_eq!(identities_before[0], identities_after[0]);
+        assert_eq!(identities_after[1], Some(EffectSlotId::new(9).unwrap()));
+        assert_eq!(identities_before[2], identities_after[2]);
+        let occupied: Vec<_> = identities_after.iter().flatten().collect();
+        let mut unique = occupied.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            occupied.len(),
+            unique.len(),
+            "every occupied position holds a distinct instance identity"
+        );
     }
 
     #[test]
@@ -405,9 +441,28 @@ mod tests {
         assert_eq!(patch.effect_slot(slot(0)), Some(&config(7)));
     }
 
+    /// The fluent constructor must route through the same duplicate-identity
+    /// guard as the reducer path, not write the slot array directly.
+    ///
+    /// Nothing else pins that routing: a constructor that assigned
+    /// `self.effects[index] = Some(occupant)` would let one instance identity
+    /// occupy two positions and leave every other test green, which is exactly
+    /// the bypass the retired compact chain constructor allowed. The panic
+    /// message is asserted so the pin fails on a silent bypass rather than on
+    /// any incidental panic.
+    #[test]
+    #[should_panic(expected = "a constructed occupant carries an identity unique to its Patch")]
+    fn with_effect_slot_refuses_one_instance_identity_at_two_positions() {
+        let _duplicate = test_patch()
+            .with_effect_slot(slot(0), config(7))
+            .with_effect_slot(slot(2), config(7));
+    }
+
     #[test]
     fn rerouting_the_output_leaves_the_effect_chain_untouched() {
-        let mut patch = test_patch().with_post_effects(vec![config(1), config(2)]);
+        let mut patch = test_patch()
+            .with_effect_slot(slot(0), config(1))
+            .with_effect_slot(slot(1), config(2));
         patch.set_slot_occupancy(slot(1), None).unwrap();
         let chain_before = patch.effect_slots().clone();
 
@@ -421,10 +476,10 @@ mod tests {
     }
 
     #[test]
-    fn compact_index_updates_address_the_nth_occupied_position() {
-        let mut patch = test_patch();
-        patch.set_slot_occupancy(slot(0), Some(config(1))).unwrap();
-        patch.set_slot_occupancy(slot(2), Some(config(3))).unwrap();
+    fn replacing_a_gapped_occupant_addresses_its_own_position() {
+        let mut patch = test_patch()
+            .with_effect_slot(slot(0), config(1))
+            .with_effect_slot(slot(2), config(3));
 
         let replacement = PostEffectConfig::from_parts(
             EffectSlotId::new(3).unwrap(),
@@ -432,12 +487,13 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        patch.set_post_effect_config(1, replacement.clone());
+        patch
+            .set_slot_occupancy(slot(2), Some(replacement.clone()))
+            .unwrap();
 
         assert_eq!(patch.effect_slot(slot(2)), Some(&replacement));
         assert_eq!(patch.effect_slot(slot(1)), None);
         assert_eq!(patch.effect_slot(slot(0)), Some(&config(1)));
-        assert_eq!(patch.post_effects(), &[config(1), replacement]);
     }
 
     #[test]
@@ -450,6 +506,9 @@ mod tests {
         let _: fn(&Patch) -> MidiChannel = Patch::channel;
         let _: for<'a> fn(&'a Patch) -> &'a VoiceEnvelope = Patch::envelope;
         let _: fn(&Patch) -> PatchOutput = Patch::output;
+        let _: for<'a> fn(&'a Patch) -> &'a [Option<PostEffectConfig>; MAX_EFFECT_SLOTS] =
+            Patch::effect_slots;
+        let _: fn(Patch, EffectSlotIndex, PostEffectConfig) -> Patch = Patch::with_effect_slot;
 
         let config = InstrumentConfig::from_parts(
             CapabilityId::new("instrument.test").unwrap(),

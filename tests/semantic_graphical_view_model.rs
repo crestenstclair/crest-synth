@@ -23,6 +23,7 @@ use crest_synth::shell::app_window::{
     AppInputCallback, FrameObservationCallback, ProjectionCallback, TickCallback,
 };
 use crest_synth::shell::{ShellFrameObservation, ShellRegionId};
+use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{EffectSlotId, InstrumentConfig, Patch};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
@@ -86,10 +87,10 @@ fn installed_state(soundfont_first: bool) -> AppState {
                     .unwrap(),
             );
             if index == 0 && soundfont_first {
-                patch.with_post_effects(vec![production_chorus_config(
-                    EffectSlotId::new(1).unwrap(),
+                patch.with_effect_slot(
+                    EffectSlotIndex::ALL[0],
+                    production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap(),
                 )
-                .unwrap()])
             } else {
                 patch
             }
@@ -156,7 +157,7 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     assert!(initial.surface(SurfaceId::MixerInspector).is_some());
     let inspector = initial.surface(SurfaceId::MixerInspector).unwrap();
     // Eight indexed sends for the selected track, each empty return's
-    // occupancy and level rows, then master gain alone (T042).
+    // occupancy and level rows, then master gain alone.
     let bus_count = crest_synth::mixer::bus_id::BusId::COUNT;
     assert_eq!(
         inspector.controls().len(),

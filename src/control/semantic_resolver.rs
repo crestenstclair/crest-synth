@@ -59,9 +59,13 @@ impl<'a> SemanticResolver<'a> {
                     patch.instrument_config().capability_id().clone(),
                 )),
                 PatchControlId::Effect(slot_id, _) => {
+                    // The occupant is found by stable instance identity over
+                    // the per-position chain; empty positions stay in place
+                    // and are simply skipped.
                     let effect = patch
-                        .post_effects()
+                        .effect_slots()
                         .iter()
+                        .flatten()
                         .find(|effect| effect.slot_id() == *slot_id)
                         .ok_or(EventRejection::InvalidEffectConfig)?;
                     Some(FocusCapabilityId::Effect(effect.capability_id().clone()))
@@ -322,6 +326,78 @@ mod tests {
     use super::SemanticResolver;
     use crate::control::{FocusPath, PatchControlId};
     use crate::kernel::PatchId;
+
+    #[test]
+    fn gapped_chain_resolves_slot_rows_per_position_and_the_occupant_by_identity() {
+        // Slot 0 empty, slot 1 occupied: the shape a compacting view would
+        // silently squeeze down to position 0.
+        let mut state = crate::control::AppState::new_with_effects(
+            crate::adapter::production_instruments::production_capability_registry().unwrap(),
+            crate::adapter::production_effects::production_effect_registry().unwrap(),
+            crate::mixer::global_parameters::GlobalParameters::new(0.0).unwrap(),
+        );
+        let mut patch = crate::synth::Patch::new(
+            PatchId::new(7).unwrap(),
+            "Gapped".to_owned(),
+            crate::adapter::braids_capability::BraidsCapability::new()
+                .unwrap()
+                .default_config()
+                .unwrap(),
+            crate::kernel::MidiChannel::new(3).unwrap(),
+            crate::mixer::patch_output::PatchOutput::to_track(
+                crate::mixer::mixer_track_id::MixerTrackId::new(3).unwrap(),
+            ),
+        );
+        patch
+            .set_slot_occupancy(
+                crate::synth::effect_slot_id::EffectSlotIndex::new(1).unwrap(),
+                Some(
+                    crate::adapter::production_effects::production_chorus_config(
+                        crate::synth::EffectSlotId::new(2).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        state
+            .apply(crate::control::AppEvent::InstallPatches(vec![patch]))
+            .unwrap();
+
+        let patch_id = PatchId::new(7).unwrap();
+        let paths = SemanticResolver::new(&state)
+            .patch_main_paths(patch_id)
+            .unwrap();
+
+        // Every position contributes its occupancy row, occupied or empty.
+        for index in crate::synth::effect_slot_id::EffectSlotIndex::ALL {
+            assert!(
+                paths.contains(&FocusPath::patch_main(
+                    patch_id,
+                    None,
+                    PatchControlId::EffectSlot(index),
+                )),
+                "position {index} must keep its occupancy row"
+            );
+        }
+        // The occupant's parameter row resolves by stable identity at its
+        // true position, with slot 0 still empty around it.
+        assert!(paths.contains(&FocusPath::patch_main(
+            patch_id,
+            Some(crate::control::FocusCapabilityId::Effect(
+                crate::synth::EffectCapabilityId::new(
+                    crate::adapter::chorus_capability::CHORUS_CAPABILITY_ID,
+                )
+                .unwrap(),
+            )),
+            PatchControlId::Effect(
+                crate::synth::EffectSlotId::new(2).unwrap(),
+                crate::synth::ParameterId::new(
+                    crate::adapter::chorus_capability::CHORUS_AMOUNT_PARAMETER_ID,
+                )
+                .unwrap(),
+            ),
+        )));
+    }
 
     #[test]
     fn recovery_is_exact_then_next_before_previous() {

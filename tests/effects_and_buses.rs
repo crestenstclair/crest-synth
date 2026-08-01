@@ -1,12 +1,13 @@
 //! Deterministic integration surface for the retained effects-and-buses
-//! scene (WP08): drives the cumulative live scene headless through the
-//! production reducer, projections, renderer, and observation paths, and
-//! asserts the phase contract — topology transitions correlated through
-//! their checkpoints, the controlled rejection with uninterrupted audio,
-//! and the NFR-008 edit-responsiveness measurements (acceptance-to-
-//! projection ≤ 1 frame; the change audible in the first observed block on
-//! the activated graph, with an activation-sequence gap of exactly 1 in
-//! this block-per-tick deterministic drive).
+//! scene: drives the cumulative live scene headless through the production
+//! reducer, projections, renderer, and observation paths, and asserts the
+//! phase contract — topology transitions correlated through their
+//! checkpoints, the controlled rejection with uninterrupted audio, the
+//! add-only frozen checkpoint-identity baseline with the journey-driven
+//! occupancy contract, and the NFR-008 edit-responsiveness measurements
+//! (acceptance-to-projection ≤ 1 frame; the change audible in the first
+//! observed block on the activated graph, with an activation-sequence gap
+//! of exactly 1 in this block-per-tick deterministic drive).
 
 #[allow(dead_code)]
 mod support;
@@ -27,7 +28,9 @@ use crest_synth::control::app_state::AppState;
 use crest_synth::control::event_log::EventLog;
 use crest_synth::control::event_record::EventOutcome;
 use crest_synth::control::state_projector::StateProjector;
-use crest_synth::control::GraphicalShellProjection;
+use crest_synth::control::{
+    GraphicalShellProjection, MixerControlId, PatchControlId, SemanticAction,
+};
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::real_time::audio_observation::AudioObservation;
 use crest_synth::real_time::audio_renderer::AudioRenderer;
@@ -41,9 +44,37 @@ use crest_synth::shell::{
 use crest_synth::synth::DescriptorDefaultConfigFactory;
 use crest_synth::testing::automatic_midi_test::AutomaticMidiTest;
 use crest_synth::testing::live_demo_runner::LiveDemoRunner;
+use crest_synth::testing::live_effects_and_buses_scene::LiveTopologySupport;
 use crest_synth::testing::{RuntimeAudioWitness, EFFECTS_AND_BUSES_SCENE_NAME};
 use std::time::Duration;
 use support::{globals, FixtureMidiSource, FRAME_COUNT, SAMPLE_RATE};
+
+/// The frozen pre-journey checkpoint-identity baseline (spec C-001).
+///
+/// Captured from the deterministic scene run at the claim state before the
+/// journey rework: the exact topology checkpoint identity sequence the phase
+/// gate emitted. The rework is strictly add-only — these identities must
+/// survive byte-identically and in this order, with the journey identities
+/// appearing only as pure insertions between them.
+const FROZEN_TOPOLOGY_IDENTITY_BASELINE: [&str; 17] = [
+    "Slot.startupOccupantCleared",
+    "SlotFill.first",
+    "SlotFill.second",
+    "SlotFill.third",
+    "SlotOrder.exchangeFirst",
+    "SlotOrder.exchangeSecond",
+    "SlotTwin.sameEntry",
+    "Send.towardDestinations",
+    "Return.contentChanged",
+    "Return.emptyOccupied",
+    "Topology.refused",
+    "Topology.recoveredAfterRefusal",
+    "Reroute.chainFollows",
+    "Slot.startupOccupantRestored",
+    "Slot.secondCleared",
+    "Slot.thirdCleared",
+    "Return.emptyRestored",
+];
 
 fn shell_frame(projection: &GraphicalShellProjection) -> ShellFrameObservation {
     ShellFrameObservation::try_new_semantic(
@@ -118,9 +149,68 @@ fn effects_and_buses_scene_completes_with_measured_topology_and_responsiveness()
     )
     .expect("installed fixture produces the effects-and-buses scene");
     assert_eq!(scene.name(), EFFECTS_AND_BUSES_SCENE_NAME);
-    assert_eq!(scene.expected_topology_transitions().len(), 17);
+    assert_eq!(scene.expected_topology_transitions().len(), 30);
     assert!(scene.total_timeout() > Duration::from_secs(120));
     assert!(app_loop.event_log().capacity() >= scene.required_event_log_capacity(60_000));
+
+    // C-001, declared surface: the frozen identity baseline survives
+    // byte-identically and in order; filtering the declared sequence down to
+    // baseline members must reproduce the baseline exactly, so a renamed,
+    // removed, reordered, or duplicated identity fails here and every other
+    // declared identity is a pure insertion.
+    let declared: Vec<&str> = scene
+        .expected_topology_transitions()
+        .iter()
+        .map(|transition| transition.identifier())
+        .collect();
+    let retained: Vec<&str> = declared
+        .iter()
+        .copied()
+        .filter(|identifier| FROZEN_TOPOLOGY_IDENTITY_BASELINE.contains(identifier))
+        .collect();
+    assert_eq!(retained, FROZEN_TOPOLOGY_IDENTITY_BASELINE);
+
+    // Journey contract: exactly one direct occupancy injection remains — the
+    // documented rejection, whose unknown registry entry the adjacent-choice
+    // gesture cannot express — and every other occupancy change dispatches
+    // the gesture behind a focus-verified journey to the exact row.
+    let mut injected = Vec::new();
+    for transition in scene.expected_topology_transitions() {
+        match transition.action() {
+            Some(SemanticAction::SetSlotOccupancy { slot, .. }) => {
+                if transition.adjust().is_none() {
+                    injected.push(transition.identifier());
+                } else {
+                    let row = PatchControlId::EffectSlot(*slot);
+                    assert!(
+                        transition.support_before().iter().any(|item| matches!(
+                            item,
+                            LiveTopologySupport::VerifyPatchFocus { control } if *control == row
+                        )),
+                        "{} lacks a focus-verified slot journey",
+                        transition.identifier()
+                    );
+                }
+            }
+            Some(SemanticAction::SetReturnOccupancy { bus, .. }) => {
+                if transition.adjust().is_none() {
+                    injected.push(transition.identifier());
+                } else {
+                    let row = MixerControlId::ReturnOccupancy { bus: *bus };
+                    assert!(
+                        transition.support_before().iter().any(|item| matches!(
+                            item,
+                            LiveTopologySupport::VerifyMixerFocus { control } if *control == row
+                        )),
+                        "{} lacks a focus-verified return journey",
+                        transition.identifier()
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(injected, ["Topology.refused"]);
 
     let observation = AtomicAudioObservation::default();
     let (writer, reader) = observation.into_handles();
@@ -237,19 +327,39 @@ fn effects_and_buses_scene_completes_with_measured_topology_and_responsiveness()
         report.coverage().unexpected_topology_transitions(),
         &[] as &[String]
     );
-    assert_eq!(report.coverage().exercised_topology_transitions().len(), 17);
+    assert_eq!(report.coverage().exercised_topology_transitions().len(), 30);
 
     let topology: Vec<_> = report
         .checkpoints()
         .iter()
         .filter_map(|checkpoint| checkpoint.as_topology())
         .collect();
-    assert_eq!(topology.len(), 17);
+    assert_eq!(topology.len(), 30);
     assert!(topology.iter().all(|checkpoint| checkpoint.agrees()));
 
-    // WP10/AS-1.5: the slot-clear step held its probe note through the
-    // activation — never re-sounding it — and the note was still observed
-    // active on the target graph: the sounding voice itself carried over.
+    // C-001, emitted surface: the captured checkpoint sequence keeps the
+    // frozen baseline identities unchanged and in order too.
+    let emitted_retained: Vec<&str> = topology
+        .iter()
+        .map(|checkpoint| checkpoint.transition())
+        .filter(|identifier| FROZEN_TOPOLOGY_IDENTITY_BASELINE.contains(identifier))
+        .collect();
+    assert_eq!(emitted_retained, FROZEN_TOPOLOGY_IDENTITY_BASELINE);
+
+    // The occupant scalar edit from the PATCH page carries its own accepted,
+    // audibly witnessed checkpoint.
+    let scalar_edited = topology
+        .iter()
+        .find(|checkpoint| checkpoint.transition() == "SlotOccupant.scalarEdited")
+        .expect("the journey scene edits an installed occupant scalar");
+    assert_eq!(scalar_edited.outcome(), EventOutcome::Accepted);
+    assert!(scalar_edited.audible_on_activated_graph());
+    assert!(scalar_edited.audio_after().active_notes() > 0);
+
+    // AS-1.5 voice carry-over: the slot-clear step held its probe note
+    // through the activation — never re-sounding it — and the note was still
+    // observed active on the target graph: the sounding voice itself carried
+    // over.
     let cleared = topology
         .iter()
         .find(|checkpoint| checkpoint.transition() == "Slot.startupOccupantCleared")

@@ -7,11 +7,38 @@ use crate::real_time::{
     GraphPreparationError, GraphRevision, ParameterSnapshot, PreparedGraph, PreparedGraphBuilder,
 };
 use crate::shell::audio_output::AudioDeviceConfig;
+use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::{
-    CapabilityId, CapabilityRegistry, EffectCapabilityRegistry, EffectPreparer, InstrumentConfig,
-    InstrumentPreparationError, InstrumentPreparer, Patch, RackPreparationError,
+    CapabilityId, CapabilityRegistry, EffectCapabilityError, EffectCapabilityRegistry,
+    EffectPreparer, InstrumentConfig, InstrumentPreparationError, InstrumentPreparer, Patch,
+    PostEffectConfig, RackPreparationError,
 };
 use core::fmt;
+
+/// Validates one Patch's canonical per-position effect chain directly against
+/// the installed registry: every occupied position must satisfy its
+/// descriptor, and no two positions may claim the same instance identity.
+/// Position-direct — the gapped view is never compacted into a transitional
+/// list, so an empty position stays a validated gap.
+fn validate_patch_effect_slots(
+    effects: &EffectCapabilityRegistry,
+    slots: &[Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
+) -> Result<(), EffectCapabilityError> {
+    for (position, occupant) in slots.iter().enumerate() {
+        let Some(config) = occupant else {
+            continue;
+        };
+        if slots[..position]
+            .iter()
+            .flatten()
+            .any(|prior| prior.slot_id() == config.slot_id())
+        {
+            return Err(EffectCapabilityError::DuplicateSlot(config.slot_id()));
+        }
+        effects.validate_config(config)?;
+    }
+    Ok(())
+}
 
 /// Complete immutable correlation shared by one worker request and result.
 ///
@@ -258,8 +285,7 @@ impl GraphPreparationRequest {
             registry
                 .validate_config(patch.instrument_config())
                 .map_err(|_| GraphPreparationRequestError::InvalidActiveConfig)?;
-            effects
-                .validate_patch_effects(patch.post_effects())
+            validate_patch_effect_slots(effects, patch.effect_slots())
                 .map_err(|_| GraphPreparationRequestError::InvalidActiveEffectConfig)?;
         }
         let selected_index = active_patches
@@ -339,8 +365,7 @@ impl GraphPreparationRequest {
             registry
                 .validate_config(patch.instrument_config())
                 .map_err(|_| GraphPreparationRequestError::InvalidActiveConfig)?;
-            effects
-                .validate_patch_effects(patch.post_effects())
+            validate_patch_effect_slots(effects, patch.effect_slots())
                 .map_err(|_| GraphPreparationRequestError::InvalidActiveEffectConfig)?;
         }
 
@@ -460,11 +485,11 @@ impl GraphPreparationRequest {
         {
             return Err(EngineSelectionFailure::InvalidDefaultConfig);
         }
-        if self.candidate_patches.iter().any(|patch| {
-            effects
-                .validate_patch_effects(patch.post_effects())
-                .is_err()
-        }) {
+        if self
+            .candidate_patches
+            .iter()
+            .any(|patch| validate_patch_effect_slots(effects, patch.effect_slots()).is_err())
+        {
             return Err(EngineSelectionFailure::InvalidDefaultConfig);
         }
         let expected = ParameterSnapshot::project_patches_with_effects_and_returns(
@@ -738,7 +763,7 @@ pub(crate) fn prepare_graph_request_with_effects(
         );
     match result {
         Ok(mut prepared_graph) => {
-            // WP10: the replacement declares its exact correlated delta so
+            // The replacement declares its exact correlated delta so
             // block-boundary activation can carry every live instance the
             // delta leaves unchanged. Set on worker ownership, never on the
             // callback.
@@ -766,6 +791,9 @@ fn map_graph_preparation_failure(error: &GraphPreparationError) -> EngineSelecti
         GraphPreparationError::RevisionMismatch { .. }
         | GraphPreparationError::ParameterLayoutMismatch => {
             EngineSelectionFailure::GraphIncompatible
+        }
+        GraphPreparationError::UnrecordableCapabilityIdentity => {
+            EngineSelectionFailure::InvalidDefaultConfig
         }
         GraphPreparationError::Rack(error) => match error {
             RackPreparationError::MissingPreparer { .. } => EngineSelectionFailure::PreparerMissing,
@@ -853,7 +881,8 @@ fn map_graph_preparation_failure(error: &GraphPreparationError) -> EngineSelecti
 #[cfg(test)]
 mod tests {
     use super::{
-        GraphPreparationCorrelation, GraphPreparationRequest, GraphPreparationRequestError,
+        map_graph_preparation_failure, EngineSelectionFailure, GraphPreparationCorrelation,
+        GraphPreparationError, GraphPreparationRequest, GraphPreparationRequestError,
     };
     use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
     use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
@@ -894,6 +923,19 @@ mod tests {
 
     fn audio_config() -> AudioDeviceConfig {
         AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 64).unwrap()
+    }
+
+    /// A per-position capability identity the graph cannot record exactly is
+    /// a candidate-configuration refusal, and the worker reports it as one:
+    /// the selection fails visibly with `InvalidDefaultConfig` rather than
+    /// being reported as an incompatible graph — or, worse, succeeding with a
+    /// truncated identity.
+    #[test]
+    fn carry_over_capability_identity_refusal_reports_an_invalid_candidate_config() {
+        assert_eq!(
+            map_graph_preparation_failure(&GraphPreparationError::UnrecordableCapabilityIdentity),
+            EngineSelectionFailure::InvalidDefaultConfig
+        );
     }
 
     #[test]

@@ -496,12 +496,12 @@ where
             run.baseline_patches
                 .iter()
                 .find(|baseline| baseline.id() == patch.id())
-                .is_some_and(|baseline| baseline.post_effects() == patch.post_effects())
+                .is_some_and(|baseline| baseline.effect_slots() == patch.effect_slots())
         });
         let effect_stage_required = run
             .baseline_patches
             .iter()
-            .any(|patch| !patch.post_effects().is_empty());
+            .any(|patch| patch.effect_slots().iter().any(Option::is_some));
         if effect_stage_required && structural_effects_preserved {
             run.observed
                 .insert("effect.patchEffect.structuralPreservation".to_owned());
@@ -1313,7 +1313,7 @@ where
             .app_loop
             .patches()
             .iter()
-            .filter(|patch| !patch.post_effects().is_empty())
+            .filter(|patch| patch.effect_slots().iter().any(Option::is_some))
             .collect::<Vec<_>>();
         if configured.is_empty() {
             return Ok(());
@@ -1365,7 +1365,7 @@ where
             .patches()
             .iter()
             .enumerate()
-            .filter(|(_, patch)| patch.post_effects().is_empty())
+            .filter(|(_, patch)| patch.effect_slots().iter().all(Option::is_none))
             .any(|(index, patch)| {
                 effect.patch_id() != Some(patch.id())
                     && self
@@ -1745,8 +1745,8 @@ fn dynamic_patch_property(tree: &Value, rest: &str, parameter_projection: bool) 
 
     if parameter_projection {
         if let Some(rest) = path.strip_prefix("effect.") {
-            // WP05: one live entry per ordered position — the property must
-            // exist on every entry of the widened `effects` array.
+            // One live entry per ordered position — the property must
+            // exist on every entry of the per-position `effects` array.
             return patch
                 .get("effects")
                 .and_then(Value::as_array)

@@ -29,12 +29,12 @@ pub(crate) const ISOLATION_FLOOR_DBFS: f32 = -60.0;
 /// these paired fixed-stem runs make the signal-order predicates falsifiable
 /// without relying on oscillator phase or effect-tail timing.
 ///
-/// WP08: the retired two-input effects port is deleted, so every send is
-/// probed through [`MixObservation`]'s indexed per-bus measurements and
-/// sample-exact unity returns installed on the production bus-return rack.
-/// The measurement now covers all eight destinations (SC-004, NFR-007) with
-/// numeric isolation evidence, many-to-one accumulation, gate behavior
-/// (SC-005), and unoccupied-return silence.
+/// There is no named shared-effects port to probe, so every send is measured
+/// through [`MixObservation`]'s indexed per-bus measurements and sample-exact
+/// unity returns installed on the production bus-return rack. The measurement
+/// covers all eight destinations (SC-004, NFR-007) with numeric isolation
+/// evidence, many-to-one accumulation, gate behavior (SC-005), and
+/// unoccupied-return silence.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LiveMixerDspEvidence {
     pub(crate) shared_track_sum_exact: bool,

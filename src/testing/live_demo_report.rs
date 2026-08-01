@@ -204,11 +204,15 @@ pub struct LiveDemoCoverage {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LiveMixerRoutingEvidence {
-    track_count: usize,
+    /// The measured canonical mixer track count; `None` when the StateTree
+    /// carried no mixer track evidence (absent, never a fabricated `0`).
+    track_count: Option<usize>,
     track_ids_exact: bool,
     all_tracks_projected: bool,
     empty_tracks_addressable: bool,
-    shared_track_patch_count: usize,
+    /// The measured number of Patches sharing the observed reroute target;
+    /// `None` when no reroute checkpoint identified a shared destination.
+    shared_track_patch_count: Option<usize>,
     shared_track_sum_exact: bool,
     track_level_controls_shared_sum: bool,
     patch_trim_isolated: bool,
@@ -235,8 +239,20 @@ impl LiveMixerRoutingEvidence {
         self
     }
 
+    /// The measured canonical mixer track count.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the measurement is absent (the StateTree carried no mixer
+    /// track evidence). Absent evidence has no numeric value and already
+    /// fails [`Self::is_complete`]; gate on completeness before reading.
     pub const fn track_count(self) -> usize {
-        self.track_count
+        match self.track_count {
+            Some(count) => count,
+            None => panic!(
+                "track_count is absent: the canonical StateTree carried no mixer track evidence"
+            ),
+        }
     }
 
     pub const fn track_ids_exact(self) -> bool {
@@ -251,8 +267,21 @@ impl LiveMixerRoutingEvidence {
         self.empty_tracks_addressable
     }
 
+    /// The measured number of Patches sharing the observed reroute target.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the measurement is absent (no reroute checkpoint
+    /// identified a shared destination track). Absent evidence has no
+    /// numeric value and already fails [`Self::is_complete`]; gate on
+    /// completeness before reading.
     pub const fn shared_track_patch_count(self) -> usize {
-        self.shared_track_patch_count
+        match self.shared_track_patch_count {
+            Some(count) => count,
+            None => panic!(
+                "shared_track_patch_count is absent: no reroute checkpoint identified a shared destination track"
+            ),
+        }
     }
 
     pub const fn shared_track_sum_exact(self) -> bool {
@@ -312,11 +341,21 @@ impl LiveMixerRoutingEvidence {
     }
 
     pub const fn is_complete(self) -> bool {
-        self.track_count == MixerTrackId::COUNT
+        // Absent measurements (`None`) can never satisfy an expectation; a
+        // measured value is judged on its own merits.
+        let track_count_complete = match self.track_count {
+            Some(count) => count == MixerTrackId::COUNT,
+            None => false,
+        };
+        let shared_track_patch_count_complete = match self.shared_track_patch_count {
+            Some(count) => count > 1,
+            None => false,
+        };
+        track_count_complete
             && self.track_ids_exact
             && self.all_tracks_projected
             && self.empty_tracks_addressable
-            && self.shared_track_patch_count > 1
+            && shared_track_patch_count_complete
             && self.shared_track_sum_exact
             && self.track_level_controls_shared_sum
             && self.patch_trim_isolated
@@ -748,9 +787,14 @@ pub struct LiveDemoReport {
 }
 
 /// Measured effects-and-buses evidence retained by the cumulative live
-/// report (WP08): per-transition topology lifecycle coverage, NFR-008 edit
+/// report: per-transition topology lifecycle coverage, NFR-008 edit
 /// responsiveness, and the numeric eight-destination routing measurements
 /// (SC-004, SC-005, NFR-007).
+///
+/// Every derived measurement distinguishes absent evidence from a measured
+/// zero: a summary computed over an empty observation set is `None`,
+/// serializes as `null` under its retained key name, and can never satisfy
+/// a presence or performance expectation.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LiveEffectsAndBusesEvidence {
@@ -763,18 +807,24 @@ pub struct LiveEffectsAndBusesEvidence {
     return_content_changes: usize,
     empty_return_occupied_and_restored: bool,
     controlled_rejection_observed: bool,
-    rejection_reason: String,
+    /// The attributable reason of the observed controlled rejection; `None`
+    /// when no rejected transition was observed (absent evidence, never an
+    /// empty placeholder).
+    rejection_reason: Option<String>,
     post_rejection_recovery_observed: bool,
     reroute_chain_followed: bool,
-    /// NFR-008: worst measured acceptance-to-projection window (frames).
-    frames_to_projection_max: u64,
+    /// NFR-008: worst measured acceptance-to-projection window (frames);
+    /// `None` when no observed transition carried the measurement.
+    frames_to_projection_max: Option<u64>,
     /// NFR-008: worst observed activation-sequence gap (render blocks);
-    /// exactly 1 when the observer sees every block.
-    activation_sequence_gap_max: u64,
+    /// exactly 1 when the observer sees every block. `None` when no observed
+    /// transition carried the measurement.
+    activation_sequence_gap_max: Option<u64>,
     /// NFR-008: worst observed distance from the target-note dispatch on an
     /// activated graph to its first audible block; exactly 1 when the
-    /// observer sees every block.
-    render_blocks_to_audible_max: u64,
+    /// observer sees every block. `None` when no observed transition carried
+    /// the measurement.
+    render_blocks_to_audible_max: Option<u64>,
     all_audible_on_activated_graph: bool,
     send_isolation_exact: bool,
     max_off_target_bus_dbfs: f32,
@@ -788,16 +838,52 @@ impl LiveEffectsAndBusesEvidence {
         self.topology_checkpoints
     }
 
+    /// The measured worst acceptance-to-projection window (frames).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the measurement is absent (no observed transition carried
+    /// it). Absent evidence has no numeric value and already fails
+    /// [`Self::is_complete`]; gate on completeness before reading.
     pub const fn frames_to_projection_max(&self) -> u64 {
-        self.frames_to_projection_max
+        match self.frames_to_projection_max {
+            Some(frames) => frames,
+            None => panic!(
+                "frames_to_projection_max is absent: no observed topology transition carried the measurement"
+            ),
+        }
     }
 
+    /// The measured worst activation-sequence gap (render blocks).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the measurement is absent (no observed transition carried
+    /// it). Absent evidence has no numeric value and already fails
+    /// [`Self::is_complete`]; gate on completeness before reading.
     pub const fn activation_sequence_gap_max(&self) -> u64 {
-        self.activation_sequence_gap_max
+        match self.activation_sequence_gap_max {
+            Some(gap) => gap,
+            None => panic!(
+                "activation_sequence_gap_max is absent: no observed topology transition carried the measurement"
+            ),
+        }
     }
 
+    /// The measured worst distance to the first audible block.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the measurement is absent (no observed transition carried
+    /// it). Absent evidence has no numeric value and already fails
+    /// [`Self::is_complete`]; gate on completeness before reading.
     pub const fn render_blocks_to_audible_max(&self) -> u64 {
-        self.render_blocks_to_audible_max
+        match self.render_blocks_to_audible_max {
+            Some(blocks) => blocks,
+            None => panic!(
+                "render_blocks_to_audible_max is absent: no observed topology transition carried the measurement"
+            ),
+        }
     }
 
     pub const fn max_off_target_bus_dbfs(&self) -> f32 {
@@ -818,12 +904,19 @@ impl LiveEffectsAndBusesEvidence {
             && self.return_content_changes >= 2
             && self.empty_return_occupied_and_restored
             && self.controlled_rejection_observed
-            && !self.rejection_reason.is_empty()
+            && self
+                .rejection_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.is_empty())
             && self.post_rejection_recovery_observed
             && self.reroute_chain_followed
-            && self.frames_to_projection_max <= 1
-            && self.activation_sequence_gap_max >= 1
-            && self.render_blocks_to_audible_max >= 1
+            && self
+                .frames_to_projection_max
+                .is_some_and(|frames| frames <= 1)
+            && self.activation_sequence_gap_max.is_some_and(|gap| gap >= 1)
+            && self
+                .render_blocks_to_audible_max
+                .is_some_and(|blocks| blocks >= 1)
             && self.all_audible_on_activated_graph
             && self.send_isolation_exact
             && self.max_off_target_bus_dbfs
@@ -869,21 +962,21 @@ fn measure_effects_and_buses(
                 && checkpoint.agrees()
         })
     });
+    // Absent-vs-zero: each derived measurement stays `None` when no observed
+    // transition carried the underlying observation — an empty observation
+    // set must never fabricate the strongest possible pass (a measured `0`).
     let frames_to_projection_max = topology
         .iter()
         .filter_map(|checkpoint| checkpoint.frames_to_projection())
-        .max()
-        .unwrap_or(0);
+        .max();
     let activation_sequence_gap_max = topology
         .iter()
         .filter_map(|checkpoint| checkpoint.observed_activation_sequence_gap())
-        .max()
-        .unwrap_or(0);
+        .max();
     let render_blocks_to_audible_max = topology
         .iter()
         .filter_map(|checkpoint| checkpoint.render_blocks_to_audible())
-        .max()
-        .unwrap_or(0);
+        .max();
     Some(LiveEffectsAndBusesEvidence {
         topology_checkpoints: topology.len(),
         slot_fills_exercised: by_id("SlotFill."),
@@ -899,8 +992,7 @@ fn measure_effects_and_buses(
         controlled_rejection_observed: rejection.is_some_and(|checkpoint| checkpoint.agrees()),
         rejection_reason: rejection
             .and_then(|checkpoint| checkpoint.rejection())
-            .unwrap_or_default()
-            .to_owned(),
+            .map(str::to_owned),
         post_rejection_recovery_observed,
         reroute_chain_followed: complete_by_id("Reroute.chainFollows"),
         frames_to_projection_max,
@@ -1198,11 +1290,13 @@ fn measure_mixer_routing(
 ) -> LiveMixerRoutingEvidence {
     let dsp = LiveMixerDspEvidence::measure();
     let tree = serde_json::from_str::<serde_json::Value>(state_tree.json()).ok();
+    // Absent-vs-zero: `None` when the StateTree carries no mixer track
+    // array; a parsed empty array is a genuinely measured `Some(0)`.
     let track_count = tree
         .as_ref()
         .and_then(|value| value.pointer("/mixer/tracks"))
         .and_then(serde_json::Value::as_array)
-        .map_or(0, Vec::len);
+        .map(Vec::len);
 
     let expected_main_controls = MixerTrackId::ALL
         .into_iter()
@@ -1334,8 +1428,9 @@ fn measure_mixer_routing(
     let track_parameter_classes_exercised = (0..TRACK_PARAMETER_CLASSES)
         .filter(|parameter| exercised.iter().any(|track| track[*parameter]))
         .count();
-    let all_tracks_projected =
-        track_count == MixerTrackId::COUNT && track_ids_exact && all_track_parameters_exercised;
+    let all_tracks_projected = track_count == Some(MixerTrackId::COUNT)
+        && track_ids_exact
+        && all_track_parameters_exercised;
 
     let installed_outputs = installed_patch_outputs(event_log);
     let final_outputs = tree
@@ -1385,7 +1480,10 @@ fn measure_mixer_routing(
             .ok()
             .map(|track_id| (*patch_id, track_id))
     });
-    let shared_track_patch_count = route_identity.map_or(0, |(patch_id, target)| {
+    // Absent-vs-zero: `None` when no reroute checkpoint identified a shared
+    // destination track; a measured count (even `Some(0)`) is judged on its
+    // own merits by the completeness expectation.
+    let shared_track_patch_count = route_identity.map(|(patch_id, target)| {
         installed_outputs
             .iter()
             .filter(|(candidate, output)| {
@@ -1394,6 +1492,7 @@ fn measure_mixer_routing(
             })
             .count()
     });
+    let shared_track_measured = shared_track_patch_count.is_some_and(|count| count > 1);
 
     let route_audio_exact =
         route_checkpoint
@@ -1470,7 +1569,7 @@ fn measure_mixer_routing(
                     .pointer("/patches")
                     .and_then(serde_json::Value::as_array)
                     .map(|patches| patches.len() as u64)
-            && track_count == MixerTrackId::COUNT
+            && track_count == Some(MixerTrackId::COUNT)
             && parameter_checkpoints
                 .iter()
                 .all(|checkpoint| checkpoint.agrees())
@@ -1493,10 +1592,10 @@ fn measure_mixer_routing(
         all_tracks_projected,
         empty_tracks_addressable,
         shared_track_patch_count,
-        shared_track_sum_exact: shared_track_patch_count > 1
+        shared_track_sum_exact: shared_track_measured
             && shared_level_exact
             && dsp.shared_track_sum_exact,
-        track_level_controls_shared_sum: shared_track_patch_count > 1
+        track_level_controls_shared_sum: shared_track_measured
             && shared_level_exact
             && dsp.track_level_controls_shared_sum,
         patch_trim_isolated: patch_trim_isolated && dsp.patch_trim_isolated,
@@ -1907,11 +2006,359 @@ impl std::error::Error for LiveDemoReportError {}
 
 #[cfg(test)]
 mod tests {
-    use super::LiveDemoCoverage;
+    use super::{
+        measure_effects_and_buses, LiveDemoCoverage, LiveEffectsAndBusesEvidence,
+        LiveMixerRoutingEvidence, TRACK_PARAMETER_CLASSES,
+    };
+    use crate::control::event_record::EventOutcome;
+    use crate::control::{EngineSelectionRequestId, SemanticAction};
     use crate::mixer::global_parameters::GlobalParameter;
+    use crate::mixer::mix_observation::MixObservation;
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::mixer::mixer_track_parameters::MixerTrackParameter;
+    use crate::mixer::track_meter::TrackMeter;
+    use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
+    use crate::real_time::GraphRevision;
+    use crate::testing::live_demo_checkpoint::{LiveCheckpoint, LiveTopologyCheckpoint};
     use crate::testing::live_demo_scene::LiveEditableParameter;
+    use crate::testing::live_effects_and_buses_scene::LiveTopologyAudibleWitness;
+    use crate::testing::live_mixer_routing_measurement::LiveMixerDspEvidence;
+
+    fn snapshot(sequence: u64, revision: GraphRevision) -> AudioObservationSnapshot {
+        let mix = MixObservation::new(
+            [TrackMeter::default(); MixerTrackId::COUNT],
+            0.25,
+            0.25,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0,
+            0,
+        );
+        AudioObservationSnapshot::from_mix_with_graph_and_routing(
+            sequence,
+            sequence,
+            sequence * 64,
+            1,
+            revision,
+            0,
+            1,
+            0,
+            None,
+            mix,
+        )
+    }
+
+    /// A support-driven scalar transition legitimately carries none of the
+    /// NFR-008 lifecycle measurements: an observation set built only from
+    /// such transitions is empty for every derived maximum.
+    fn scalar_send_checkpoint() -> LiveCheckpoint {
+        let checkpoint = LiveTopologyCheckpoint::new(
+            "Send.towardDestinations",
+            0,
+            None,
+            EventOutcome::Accepted,
+            None,
+            None,
+            GraphRevision::INITIAL,
+            None,
+            7,
+            "state-hash",
+            None,
+            None,
+            None,
+            true,
+            LiveTopologyAudibleWitness::WetReturn,
+            snapshot(1, GraphRevision::INITIAL),
+            snapshot(2, GraphRevision::INITIAL),
+            true,
+            0,
+            0,
+            None,
+        )
+        .expect("support-driven scalar checkpoint agrees without lifecycle measurements");
+        LiveCheckpoint::topology(checkpoint)
+    }
+
+    fn lifecycle_checkpoint(transition: &str) -> LiveCheckpoint {
+        let target = GraphRevision::INITIAL
+            .checked_next()
+            .expect("a second graph revision is available");
+        let checkpoint = LiveTopologyCheckpoint::new(
+            transition,
+            1,
+            Some(SemanticAction::Return),
+            EventOutcome::Accepted,
+            None,
+            Some(EngineSelectionRequestId::FIRST),
+            GraphRevision::INITIAL,
+            Some(target),
+            8,
+            "state-hash",
+            Some(1),
+            Some(1),
+            Some(1),
+            true,
+            LiveTopologyAudibleWitness::PatchChain,
+            snapshot(3, GraphRevision::INITIAL),
+            snapshot(4, target),
+            true,
+            0,
+            0,
+            None,
+        )
+        .expect("lifecycle checkpoint agrees with measured responsiveness");
+        LiveCheckpoint::topology(checkpoint)
+    }
+
+    fn rejected_checkpoint() -> LiveCheckpoint {
+        let checkpoint = LiveTopologyCheckpoint::new(
+            "Occupancy.invalidRefused",
+            2,
+            None,
+            EventOutcome::Rejected,
+            Some("invalidEffectConfig".to_owned()),
+            None,
+            GraphRevision::INITIAL,
+            None,
+            9,
+            "state-hash",
+            None,
+            None,
+            None,
+            true,
+            LiveTopologyAudibleWitness::DryContinuity,
+            snapshot(5, GraphRevision::INITIAL),
+            snapshot(6, GraphRevision::INITIAL),
+            true,
+            0,
+            0,
+            None,
+        )
+        .expect("controlled rejection checkpoint agrees");
+        LiveCheckpoint::topology(checkpoint)
+    }
+
+    fn dsp_evidence() -> LiveMixerDspEvidence {
+        LiveMixerDspEvidence {
+            shared_track_sum_exact: true,
+            track_level_controls_shared_sum: true,
+            patch_trim_isolated: true,
+            patch_reroute_isolated: true,
+            mute_wins: true,
+            any_solo_exact: true,
+            post_gate_sends_exact: true,
+            pre_gate_meters_exact: true,
+            send_isolation_exact: true,
+            max_off_target_bus_dbfs: -120.0,
+            accumulation_exact: true,
+            gated_wet_contribution: 0.0,
+            unoccupied_return_silent: true,
+        }
+    }
+
+    fn complete_effects_evidence() -> LiveEffectsAndBusesEvidence {
+        LiveEffectsAndBusesEvidence {
+            topology_checkpoints: 12,
+            slot_fills_exercised: 3,
+            startup_occupant_cleared: true,
+            slot_order_exchange_exercised: true,
+            same_entry_twin_exercised: true,
+            sends_raised_toward_destinations: true,
+            return_content_changes: 2,
+            empty_return_occupied_and_restored: true,
+            controlled_rejection_observed: true,
+            rejection_reason: Some("invalidEffectConfig".to_owned()),
+            post_rejection_recovery_observed: true,
+            reroute_chain_followed: true,
+            frames_to_projection_max: Some(1),
+            activation_sequence_gap_max: Some(1),
+            render_blocks_to_audible_max: Some(1),
+            all_audible_on_activated_graph: true,
+            send_isolation_exact: true,
+            max_off_target_bus_dbfs: -120.0,
+            accumulation_exact: true,
+            gated_wet_contribution: 0.0,
+            unoccupied_return_silent: true,
+        }
+    }
+
+    fn complete_routing_evidence() -> LiveMixerRoutingEvidence {
+        LiveMixerRoutingEvidence {
+            track_count: Some(MixerTrackId::COUNT),
+            track_ids_exact: true,
+            all_tracks_projected: true,
+            empty_tracks_addressable: true,
+            shared_track_patch_count: Some(2),
+            shared_track_sum_exact: true,
+            track_level_controls_shared_sum: true,
+            patch_trim_isolated: true,
+            patch_reroute_isolated: true,
+            invalid_route_rejected: true,
+            track_parameter_classes_exercised: TRACK_PARAMETER_CLASSES,
+            mute_wins: true,
+            any_solo_exact: true,
+            post_gate_sends_exact: true,
+            pre_gate_meters_exact: true,
+            fixed_snapshot_exact: true,
+            stable_focus_exact: true,
+            callback_allocations: 0,
+            callback_destructions: 0,
+        }
+    }
+
+    #[test]
+    fn empty_observation_set_derives_absent_measurements_that_render_null_and_fail() {
+        let evidence = measure_effects_and_buses(&[scalar_send_checkpoint()], &dsp_evidence())
+            .expect("topology checkpoints retain effects evidence");
+
+        assert_eq!(evidence.frames_to_projection_max, None);
+        assert_eq!(evidence.activation_sequence_gap_max, None);
+        assert_eq!(evidence.render_blocks_to_audible_max, None);
+        assert_eq!(evidence.rejection_reason, None);
+        assert!(!evidence.is_complete());
+
+        let json = serde_json::to_value(&evidence).expect("effects evidence serializes");
+        for key in [
+            "frames_to_projection_max",
+            "activation_sequence_gap_max",
+            "render_blocks_to_audible_max",
+            "rejection_reason",
+        ] {
+            let value = json.get(key).expect("serialized key name is retained");
+            assert!(value.is_null(), "{key} must render as explicitly absent");
+        }
+    }
+
+    #[test]
+    fn measured_lifecycle_observations_derive_unchanged_nonzero_maximums() {
+        let evidence = measure_effects_and_buses(
+            &[
+                scalar_send_checkpoint(),
+                lifecycle_checkpoint("SlotFill.reverbHall"),
+                rejected_checkpoint(),
+            ],
+            &dsp_evidence(),
+        )
+        .expect("topology checkpoints retain effects evidence");
+
+        assert_eq!(evidence.frames_to_projection_max, Some(1));
+        assert_eq!(evidence.activation_sequence_gap_max, Some(1));
+        assert_eq!(evidence.render_blocks_to_audible_max, Some(1));
+        assert_eq!(
+            evidence.rejection_reason.as_deref(),
+            Some("invalidEffectConfig")
+        );
+        assert_eq!(evidence.frames_to_projection_max(), 1);
+        assert_eq!(evidence.activation_sequence_gap_max(), 1);
+        assert_eq!(evidence.render_blocks_to_audible_max(), 1);
+
+        let json = serde_json::to_value(&evidence).expect("effects evidence serializes");
+        assert_eq!(json.get("frames_to_projection_max"), Some(&1.into()));
+        assert_eq!(json.get("activation_sequence_gap_max"), Some(&1.into()));
+        assert_eq!(json.get("render_blocks_to_audible_max"), Some(&1.into()));
+    }
+
+    #[test]
+    fn absent_measurement_fails_every_effects_completeness_expectation() {
+        assert!(complete_effects_evidence().is_complete());
+
+        let mut absent_frames = complete_effects_evidence();
+        absent_frames.frames_to_projection_max = None;
+        assert!(!absent_frames.is_complete());
+
+        let mut absent_gap = complete_effects_evidence();
+        absent_gap.activation_sequence_gap_max = None;
+        assert!(!absent_gap.is_complete());
+
+        let mut absent_blocks = complete_effects_evidence();
+        absent_blocks.render_blocks_to_audible_max = None;
+        assert!(!absent_blocks.is_complete());
+
+        let mut absent_reason = complete_effects_evidence();
+        absent_reason.rejection_reason = None;
+        assert!(!absent_reason.is_complete());
+
+        let mut empty_reason = complete_effects_evidence();
+        empty_reason.rejection_reason = Some(String::new());
+        assert!(!empty_reason.is_complete());
+    }
+
+    #[test]
+    fn measured_zero_renders_as_zero_and_is_judged_on_its_merits() {
+        // A genuinely measured zero-frame projection window satisfies the
+        // `<= 1` expectation on its own merits and renders as `0`, not null.
+        let mut zero_frames = complete_effects_evidence();
+        zero_frames.frames_to_projection_max = Some(0);
+        assert!(zero_frames.is_complete());
+        let json = serde_json::to_value(&zero_frames).expect("effects evidence serializes");
+        assert_eq!(json.get("frames_to_projection_max"), Some(&0.into()));
+        assert_eq!(zero_frames.frames_to_projection_max(), 0);
+
+        // A measured zero gap or zero blocks-to-audible fails its `>= 1`
+        // expectation on its merits — as a measured value, not as absence.
+        let mut zero_gap = complete_effects_evidence();
+        zero_gap.activation_sequence_gap_max = Some(0);
+        assert!(!zero_gap.is_complete());
+        let json = serde_json::to_value(&zero_gap).expect("effects evidence serializes");
+        assert_eq!(json.get("activation_sequence_gap_max"), Some(&0.into()));
+
+        let mut zero_blocks = complete_effects_evidence();
+        zero_blocks.render_blocks_to_audible_max = Some(0);
+        assert!(!zero_blocks.is_complete());
+    }
+
+    #[test]
+    #[should_panic(expected = "frames_to_projection_max is absent")]
+    fn absent_frames_to_projection_never_renders_through_the_accessor() {
+        let mut evidence = complete_effects_evidence();
+        evidence.frames_to_projection_max = None;
+        let _ = evidence.frames_to_projection_max();
+    }
+
+    #[test]
+    fn mixer_routing_distinguishes_absent_counts_from_measured_zero() {
+        let complete = complete_routing_evidence();
+        assert!(complete.is_complete());
+        assert_eq!(complete.track_count(), MixerTrackId::COUNT);
+        assert_eq!(complete.shared_track_patch_count(), 2);
+
+        let mut absent_tracks = complete;
+        absent_tracks.track_count = None;
+        assert!(!absent_tracks.is_complete());
+        let json = serde_json::to_value(absent_tracks).expect("routing evidence serializes");
+        let value = json
+            .get("track_count")
+            .expect("serialized key name is retained");
+        assert!(value.is_null(), "absent track_count must render as null");
+
+        let mut zero_tracks = complete;
+        zero_tracks.track_count = Some(0);
+        assert!(!zero_tracks.is_complete());
+        let json = serde_json::to_value(zero_tracks).expect("routing evidence serializes");
+        assert_eq!(json.get("track_count"), Some(&0.into()));
+
+        let mut absent_shared = complete;
+        absent_shared.shared_track_patch_count = None;
+        assert!(!absent_shared.is_complete());
+        let json = serde_json::to_value(absent_shared).expect("routing evidence serializes");
+        assert!(json
+            .get("shared_track_patch_count")
+            .is_some_and(serde_json::Value::is_null));
+
+        let mut solitary_shared = complete;
+        solitary_shared.shared_track_patch_count = Some(1);
+        assert!(!solitary_shared.is_complete());
+    }
+
+    #[test]
+    #[should_panic(expected = "track_count is absent")]
+    fn absent_track_count_never_renders_through_the_accessor() {
+        let mut evidence = complete_routing_evidence();
+        evidence.track_count = None;
+        let _ = evidence.track_count();
+    }
 
     #[test]
     fn exact_coverage_reports_missing_unexpected_and_duplicate_expected_values() {

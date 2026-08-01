@@ -840,7 +840,7 @@ impl LiveDemoScene {
         })
     }
 
-    /// WP08: extends one frozen base scene into the retained cumulative
+    /// Extends one frozen base scene into the retained cumulative
     /// effects-and-buses scene by appending the ordered topology transitions
     /// the runner drives after the engine phase. The scalar steps, engine
     /// transitions, and teardown contract are inherited unchanged.
@@ -2134,8 +2134,8 @@ pub(crate) struct DecodedStateTree {
 struct DecodedSerializedReturn {
     #[serde(default)]
     effect: Option<crate::synth::PostEffectConfig>,
-    /// Retained for the WP08 retained-scene rework; row counting needs only
-    /// the occupancy shape today.
+    /// Part of the serialized return shape, decoded so a missing or renamed
+    /// key fails here; row counting itself needs only the occupancy shape.
     #[allow(dead_code)]
     return_level: f32,
 }
@@ -2179,14 +2179,16 @@ struct DecodedParameterSnapshot {
     graph_revision: GraphRevision,
     patches: Vec<DecodedParameterPatch>,
     mixer_tracks: [MixerTrackParameters; MixerTrackId::COUNT],
-    /// Retained for the WP08 retained-scene rework of return coverage.
+    /// Part of the serialized snapshot shape, decoded so the return section
+    /// must be present and well-formed even where this scene's assertions
+    /// read only the patch and track sections.
     #[allow(dead_code)]
     returns: Vec<DecodedReturnParameters>,
     global: DecodedParameterGlobal,
 }
 
-/// The snapshot's global object keeps only master gain (WP05): the retired
-/// reverb/delay values travel as the indexed `returns` entries.
+/// The snapshot's global object keeps only master gain: return-owned values
+/// travel as the indexed `returns` entries.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecodedParameterGlobal {
@@ -2210,7 +2212,7 @@ struct DecodedParameterPatch {
     patch_id: u32,
     envelope: VoiceEnvelope,
     instrument: DecodedInstrumentParameters,
-    /// One live entry per ordered effect position (WP05 widened transport).
+    /// One live entry per ordered effect position.
     effects: Vec<DecodedEffectParameters>,
     output: PatchOutput,
 }
@@ -2225,7 +2227,7 @@ struct DecodedEffectParameters {
 }
 
 /// One live bus-return entry: the occupying instance's scalars plus the
-/// return-owned level (WP05 widened transport).
+/// return-owned level.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]

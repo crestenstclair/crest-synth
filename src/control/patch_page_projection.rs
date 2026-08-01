@@ -878,9 +878,7 @@ impl PatchPageProjection {
             .capabilities()
             .validate_config(patch.instrument_config())
             .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
-        state
-            .effects()
-            .validate_patch_effects(patch.post_effects())
+        crate::control::app_state::validate_effect_slots(state.effects(), patch.effect_slots())
             .map_err(|_| PatchPageProjectionError::InvalidEffectConfig)?;
         let resolved_controls = if matches!(focused_control_id, PatchControlId::Output(_)) {
             PatchControlId::utility_surface_descriptor().to_vec()
@@ -1298,18 +1296,49 @@ mod tests {
             production_effect_registry().unwrap(),
             GlobalParameters::new(0.0).unwrap(),
         );
-        let patch = Patch::new(
+        let mut patch = Patch::new(
             PatchId::new(7).unwrap(),
             "Focused".to_owned(),
             config,
             MidiChannel::new(3).unwrap(),
             PatchOutput::to_track(MixerTrackId::new(3).unwrap()),
         )
-        .with_envelope(crate::synth::VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap())
-        .with_post_effects(vec![production_chorus_config(
-            EffectSlotId::new(1).unwrap(),
-        )
-        .unwrap()]);
+        .with_envelope(crate::synth::VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap());
+        patch
+            .set_slot_occupancy(
+                crate::synth::effect_slot_id::EffectSlotIndex::new(0).unwrap(),
+                Some(production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap()),
+            )
+            .unwrap();
+        state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+    }
+
+    /// A state whose focused patch occupies only slot 1: slot 0 is empty and
+    /// stays empty. This is exactly the shape a compacting view would
+    /// silently squeeze down to position 0.
+    fn state_with_gapped_effect_chain(config: crate::synth::InstrumentConfig) -> AppState {
+        let mut state = AppState::new_with_effects(
+            production_capability_registry().unwrap(),
+            production_effect_registry().unwrap(),
+            GlobalParameters::new(0.0).unwrap(),
+        );
+        let mut patch = Patch::new(
+            PatchId::new(7).unwrap(),
+            "Focused".to_owned(),
+            config,
+            MidiChannel::new(3).unwrap(),
+            PatchOutput::to_track(MixerTrackId::new(3).unwrap()),
+        );
+        patch
+            .set_slot_occupancy(
+                crate::synth::effect_slot_id::EffectSlotIndex::new(1).unwrap(),
+                Some(production_chorus_config(EffectSlotId::new(2).unwrap()).unwrap()),
+            )
+            .unwrap();
         state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
@@ -1415,6 +1444,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn gapped_chain_projects_the_occupant_at_its_true_position() {
+        let page = project(&state_with_gapped_effect_chain(
+            BraidsCapability::new().unwrap().default_config().unwrap(),
+        ));
+        let slots = page.effects();
+        assert_eq!(slots.len(), crate::synth::effect_slot_id::MAX_EFFECT_SLOTS);
+        for (position, slot) in slots.iter().enumerate() {
+            assert_eq!(slot.slot_index().index(), position);
+        }
+        // Slot 0 stays projected as empty — a compacting view would have
+        // squeezed the occupant down into this position.
+        assert!(matches!(
+            slots[0].occupancy(),
+            PatchPageSlotOccupancy::Empty
+        ));
+        assert!(slots[0].sections().is_empty());
+        let PatchPageSlotOccupancy::Occupied {
+            slot_id,
+            capability_id,
+            ..
+        } = slots[1].occupancy()
+        else {
+            panic!("the occupant must stay projected at slot position 1");
+        };
+        assert_eq!(slot_id.value(), 2);
+        assert_eq!(
+            capability_id.as_str(),
+            crate::adapter::chorus_capability::CHORUS_CAPABILITY_ID
+        );
+        assert!(!slots[1].sections().is_empty());
+        assert!(matches!(
+            slots[2].occupancy(),
+            PatchPageSlotOccupancy::Empty
+        ));
     }
 
     #[test]

@@ -27,11 +27,12 @@ use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
 use crest_synth::real_time::{GraphHandoffStatus, StructuralGraphBoundary};
 use crest_synth::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
+use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::patch::Patch;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityId, DescriptorDefaultConfigFactory, EffectSlotId, InstrumentPreparationError,
-    InstrumentPreparer, PreparedInstrument, PreparedInstrumentError,
+    CapabilityId, DescriptorDefaultConfigFactory, InstrumentPreparationError, InstrumentPreparer,
+    PreparedInstrument, PreparedInstrumentError,
 };
 use crest_synth::testing::automatic_midi_test::{create_soundfont_config, AutomaticMidiTest};
 use crest_synth::testing::demo_scene::DemoScene;
@@ -101,10 +102,15 @@ fn scene_patches() -> Vec<Patch> {
                 ),
             );
             if index == 0 {
-                patch = patch.with_post_effects(vec![production_chorus_config(
-                    EffectSlotId::new(1).expect("fixture effect slot is valid"),
-                )
-                .expect("fixture Chorus config is valid")]);
+                // Position-explicit: the fixture states the address it
+                // occupies, and the occupant's identity is the one that
+                // address derives, so a round trip lands it back in place.
+                let address = EffectSlotIndex::ALL[0];
+                patch = patch.with_effect_slot(
+                    address,
+                    production_chorus_config(address.instance_identity())
+                        .expect("fixture Chorus config is valid"),
+                );
             }
             patch
         })

@@ -170,7 +170,7 @@ Before audio starts, preallocate:
 - stereo buses and per-block scratch;
 - effect delay/convolution working memory;
 - maximum events consumed per block;
-- active patch, effect, mixer, and aux slots;
+- active patch, effect, mixer track, and bus-return slots;
 - graph handoff and retirement capacity.
 
 The standalone binary is the production composition root. It selects and
@@ -201,7 +201,7 @@ the control tick consumes it, retains the visible application error, and asks
 the disposable window to close. Formatting, logging, recovery policy, and UI
 behavior never run in the device callback.
 
-Render complexity is bounded by explicit limits for active patches, voices, post-FX slots, tracks, aux buses, events, and frames. The product-level maxima are three ordered post-FX slots per Patch and eight bus returns; a current executable slice may impose narrower limits.
+Render complexity is bounded by explicit limits for active patches, voices, post-FX slots, tracks, bus returns, events, and frames. The product-level maxima are three ordered post-FX slots per Patch and eight bus returns; a current executable slice may impose narrower limits.
 
 ### Overflow and recovery
 

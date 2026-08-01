@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// `MasterGainDb` is the only global value: it is a property of the master
 /// stage rather than of any effect, and it is the single documented exception
-/// to the no-name-enumeration invariant. The six retired reverb and delay
-/// rows are gone (WP07): their canonical successors are the per-return MIXER
-/// rows — `ReturnOccupancy`, `ReturnLevel`, and the occupying registry
-/// entry's descriptor scalars — addressed by `BusId` on `MixerControlId`.
+/// to the no-name-enumeration invariant. Effect-owned values are never global
+/// rows: they belong to the per-return MIXER rows — `ReturnOccupancy`,
+/// `ReturnLevel`, and the occupying registry entry's descriptor scalars —
+/// addressed by `BusId` on `MixerControlId`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GlobalParameter {

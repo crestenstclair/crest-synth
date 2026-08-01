@@ -245,7 +245,8 @@ impl BusReturnBank {
     /// The entry resolves through the same shared registry that fills Patch
     /// effect slots — no role filter is applied (FR-010). The return-owned
     /// level is deliberately untouched by every occupancy transition
-    /// (C-BR-10). WP06 wires this operation to a semantic action.
+    /// (C-BR-10). Callers reach this operation through the reducer's
+    /// `SetReturnOccupancy` semantic action, never from a view adapter.
     pub fn set_return_occupancy(
         &mut self,
         registry: &EffectCapabilityRegistry,

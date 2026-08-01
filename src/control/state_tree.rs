@@ -1384,12 +1384,17 @@ mod tests {
         .with_returns(returns)
     }
 
+    /// A three-line MIXER body whose selected line is line 1, written in
+    /// indexed vocabulary (`sends[n]`, the serialized-snapshot leaf name) and
+    /// never a per-effect name. The rendered MIXER line is spelled `send[n]=`
+    /// (see `render_mixer_text`); the fixture does not have to match it,
+    /// because the tree assertions care only about this body travelling
+    /// verbatim and the selection index travelling with it — nothing here
+    /// parses the text.
+    const PROJECTION_BODY: &str = "TRACK T00 routedPatches=[01:Lead]\n> sends[0]=0.4\nGLOBAL";
+
     fn projection(snapshot: &StateSnapshot) -> TextProjection {
-        TextProjection::new(
-            "PATCH Lead\n> reverbSend=0.4\nGLOBAL".to_owned(),
-            1,
-            snapshot.hash().to_owned(),
-        )
+        TextProjection::new(PROJECTION_BODY.to_owned(), 1, snapshot.hash().to_owned())
     }
 
     fn graphical_shell(
@@ -1588,10 +1593,7 @@ mod tests {
             value["projection"]
         );
         assert_eq!(value["projection"]["context"], "mixer");
-        assert_eq!(
-            value["projection"]["body"],
-            "PATCH Lead\n> reverbSend=0.4\nGLOBAL"
-        );
+        assert_eq!(value["projection"]["body"], PROJECTION_BODY);
         assert_eq!(value["projection"]["selectedLine"], 1);
         assert_eq!(value["projection"]["stateHash"], snapshot.hash());
         assert_eq!(value["parameters"]["generation"], 42);

@@ -852,8 +852,8 @@ fn project_errors(
         .correlation()
         .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?;
     // Occupancy refusals carry their position in the intent and stay
-    // attributable to that exact slot or return row (WP07); instrument
-    // intents anchor a PATCH-surface source path through the resolver.
+    // attributable to that exact slot or return row; instrument intents
+    // anchor a PATCH-surface source path through the resolver.
     let source_path = match correlation.intent() {
         crate::control::StructuralEditIntent::SetSlotOccupancy { patch_id, slot, .. } => Some(
             FocusPath::patch_main(*patch_id, None, PatchControlId::EffectSlot(*slot)),
@@ -1077,16 +1077,19 @@ fn project_patch_surfaces(
         }
     }
 
+    // The summary counts configured effects: occupied positions of the
+    // per-position chain, wherever they sit. Empty positions never count.
+    let configured_effect_count = patch.effect_slots().iter().flatten().count();
     let summary = SemanticSurfaceSummary::Patch {
         patch_id,
         patch_name: patch.name().to_owned(),
         capability_id: descriptor.id().clone(),
-        effect_count: patch.post_effects().len(),
+        effect_count: configured_effect_count,
     };
     let side_summary = SemanticSurfaceSummary::PatchUtility {
         patch_id,
         capability_id: descriptor.id().clone(),
-        effect_count: patch.post_effects().len(),
+        effect_count: configured_effect_count,
     };
     let utility_paths = resolver
         .patch_utility_paths(patch_id)
@@ -1621,4 +1624,96 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
         return Err(SemanticGraphicalViewModelError::DuplicateValidAction);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::AppEvent;
+
+    /// One installed patch whose chain occupies only slot 1: slot 0 is empty
+    /// and stays empty. This is exactly the shape a compacting view would
+    /// silently squeeze down to position 0.
+    fn gapped_patch_state() -> AppState {
+        let mut state = AppState::new_with_effects(
+            crate::adapter::production_instruments::production_capability_registry().unwrap(),
+            crate::adapter::production_effects::production_effect_registry().unwrap(),
+            crate::mixer::global_parameters::GlobalParameters::new(0.0).unwrap(),
+        );
+        let mut patch = crate::synth::Patch::new(
+            PatchId::new(7).unwrap(),
+            "Gapped".to_owned(),
+            crate::adapter::braids_capability::BraidsCapability::new()
+                .unwrap()
+                .default_config()
+                .unwrap(),
+            crate::kernel::MidiChannel::new(3).unwrap(),
+            crate::mixer::patch_output::PatchOutput::to_track(
+                crate::mixer::mixer_track_id::MixerTrackId::new(3).unwrap(),
+            ),
+        );
+        patch
+            .set_slot_occupancy(
+                crate::synth::effect_slot_id::EffectSlotIndex::new(1).unwrap(),
+                Some(
+                    crate::adapter::production_effects::production_chorus_config(
+                        crate::synth::EffectSlotId::new(2).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+    }
+
+    #[test]
+    fn gapped_chain_counts_occupants_and_projects_rows_per_position() {
+        let state = gapped_patch_state();
+        let model = SemanticGraphicalViewModel::project(&state, "gapped-state-hash").unwrap();
+        let patch_surface = model
+            .surfaces()
+            .iter()
+            .find(|surface| surface.id() == SurfaceId::PatchMain)
+            .expect("PATCH Main projects for the focused patch");
+
+        let SemanticSurfaceSummary::Patch { effect_count, .. } = patch_surface.summary() else {
+            panic!("PATCH Main carries a Patch summary");
+        };
+        assert_eq!(
+            *effect_count, 1,
+            "only occupied positions count as configured effects"
+        );
+
+        let slot_value = |position: usize| {
+            patch_surface
+                .controls()
+                .iter()
+                .find(|control| {
+                    matches!(
+                        control.path().control_id(),
+                        crate::control::SemanticControlId::Patch(PatchControlId::EffectSlot(slot))
+                            if slot.index() == position
+                    )
+                })
+                .map(|control| control.value().clone())
+        };
+        assert_eq!(
+            slot_value(0),
+            Some(SemanticControlValue::Identity("Empty".to_owned())),
+            "slot 0 must project as empty, never receive the squeezed occupant"
+        );
+        assert_eq!(
+            slot_value(1),
+            Some(SemanticControlValue::Identity("Chorus".to_owned())),
+            "the occupant must project at its true position"
+        );
+        assert_eq!(
+            slot_value(2),
+            Some(SemanticControlValue::Identity("Empty".to_owned()))
+        );
+    }
 }

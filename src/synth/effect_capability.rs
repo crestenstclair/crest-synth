@@ -9,10 +9,9 @@ use serde::{Deserialize, Serialize};
 
 /// One Patch accepts as many post effects as it has ordered slot positions.
 ///
-/// Lifted from the transitional value of 1 by WP05 together with the widened
-/// `ParameterSnapshot` layout and the per-position `PreparedGraphLayout` — the
-/// three caps change atomically so a partially widened transport is never
-/// constructible.
+/// This cap, the per-position `ParameterSnapshot` layout, and the
+/// `PreparedGraphLayout` positions are one width and must change together: a
+/// partially widened transport is otherwise constructible.
 pub const MAX_POST_EFFECTS_PER_PATCH: usize = crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 pub const MAX_EFFECT_SCALAR_PARAMETERS: usize = 8;
 

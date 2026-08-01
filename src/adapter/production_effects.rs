@@ -81,13 +81,34 @@ pub fn production_default_bus_returns(
     Ok(bank)
 }
 
-/// Startup occupancy for one composed effect registry: the production
-/// default bank when its entries are installed, the empty bank otherwise.
+/// Startup bus-return occupancy for the production composition root.
 ///
-/// A composition without the production registry entries simply starts with
-/// every return unoccupied — nothing is substituted.
+/// A registry composed without any effect entries declares no default
+/// occupancy: every return starts unoccupied, exactly as composed. A
+/// registry that does install effect entries must compose the declared
+/// production default (reverb on return 0, delay on return 1) exactly — any
+/// failure is a composition defect that propagates to the caller. Nothing is
+/// ever substituted on error; the production root surfaces this as a typed
+/// startup failure.
+pub fn production_startup_bus_returns(
+    registry: &EffectCapabilityRegistry,
+) -> Result<BusReturnBank, ProductionEffectCompositionError> {
+    if registry.descriptors().is_empty() {
+        return Ok(BusReturnBank::default());
+    }
+    production_default_bus_returns(registry)
+}
+
+/// Permissive startup occupancy for partial TEST registries only: a registry
+/// that installs some entries but cannot compose the declared production
+/// default starts with every return unoccupied instead of failing.
+///
+/// The production composition root never consumes this variant — it consumes
+/// [`production_startup_bus_returns`] and propagates the composition error as
+/// a typed startup failure
+/// (`shell::ApplicationError::DefaultBusReturns`).
 pub fn startup_bus_returns(registry: &EffectCapabilityRegistry) -> BusReturnBank {
-    production_default_bus_returns(registry).unwrap_or_default()
+    production_startup_bus_returns(registry).unwrap_or_default()
 }
 
 pub fn production_chorus_config(
@@ -231,6 +252,46 @@ mod tests {
     }
 
     #[test]
+    fn startup_returns_split_is_strict_for_production_and_permissive_for_tests() {
+        use crate::adapter::chorus_capability::ChorusCapability;
+        use crate::adapter::chorus_preparer::ChorusPreparer;
+        use crate::synth::{compose_effect_registry, EffectCapabilityProvider, EffectPreparer};
+
+        // A composition without effect entries declares no default occupancy.
+        let empty = compose_effect_registry(&[], &[]).unwrap();
+        let bank = super::production_startup_bus_returns(&empty).unwrap();
+        assert!(bank.returns().iter().all(|entry| entry.effect().is_none()));
+
+        // A registry with entries that cannot compose the declared default
+        // propagates the composition error instead of substituting.
+        let providers: Vec<Box<dyn EffectCapabilityProvider>> =
+            vec![Box::new(ChorusCapability::new().unwrap())];
+        let preparers: Vec<Box<dyn EffectPreparer>> =
+            vec![Box::new(ChorusPreparer::new().unwrap())];
+        let partial = compose_effect_registry(&providers, &preparers).unwrap();
+        assert!(matches!(
+            super::production_startup_bus_returns(&partial),
+            Err(super::ProductionEffectCompositionError::ReturnOccupancy(_))
+        ));
+        // The permissive test-registry variant starts the same partial
+        // registry with every return unoccupied.
+        let permissive = super::startup_bus_returns(&partial);
+        assert!(permissive
+            .returns()
+            .iter()
+            .all(|entry| entry.effect().is_none()));
+
+        // The full production registry composes the declared default exactly
+        // through the strict variant.
+        let full = production_effect_registry().unwrap();
+        let declared = super::production_startup_bus_returns(&full).unwrap();
+        assert_eq!(
+            declared,
+            super::production_default_bus_returns(&full).unwrap()
+        );
+    }
+
+    #[test]
     fn providers_and_preparers_stay_paired() {
         let providers = production_effect_providers().unwrap();
         let preparers = production_effect_preparers().unwrap();
@@ -302,7 +363,7 @@ mod tests {
         const REVERB_RIGHT_MILLISECONDS: f32 = 37.1;
 
         /// The retired shared reverb, split per return now that the retired
-        /// two-input port is deleted (WP08): the coupling of the two returns
+        /// two-input port is deleted: the coupling of the two returns
         /// was only structural — the reverb and delay states were always
         /// independent — so processing them through separate rack returns
         /// changes no arithmetic. Overwrites the buffer with wet only; the
@@ -576,13 +637,13 @@ mod tests {
         .with_returns(returns)
     }
 
-    /// WP05 migration-fidelity proof (successor of the deleted bridge's
+    /// Migration-fidelity proof (successor of the deleted bridge's
     /// `bus_return_rack_matches_the_bridge_sample_for_sample`): the production
     /// mix path — default return occupancy, live scalar values from the
     /// snapshot's indexed return entries — must match the retired mixer-owned
     /// processor sample for sample on identical stems, for every rendered
     /// block. Both paths run through the one bus-return rack now that the
-    /// retired two-input port is deleted (WP08); the retired DSP rides
+    /// retired two-input port is deleted; the retired DSP rides
     /// per-return shims, preserving the retired `output + (wet_a + wet_b)`
     /// association. This is also the double-wet evidence: the wet signal
     /// appears exactly once.

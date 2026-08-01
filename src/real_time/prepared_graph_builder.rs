@@ -5,7 +5,9 @@ use crate::mixer::mix_engine::MixEngine;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::patch_audio_block::{PatchAudioBlock, PatchAudioBlockError};
-use crate::real_time::prepared_graph::{PreparedGraph, PreparedGraphResources};
+use crate::real_time::prepared_graph::{
+    PositionCapabilityIdentity, PreparedGraph, PreparedGraphResources,
+};
 use crate::synth::instrument_capability::CapabilityRegistry;
 use crate::synth::instrument_preparer::InstrumentPreparer;
 use crate::synth::patch::Patch;
@@ -95,7 +97,7 @@ impl<'a> PreparedGraphBuilder<'a> {
             return Err(GraphPreparationError::ParameterLayoutMismatch);
         }
 
-        let engine_rack = PreparedEngineRackBuilder::build(
+        let mut engine_rack = PreparedEngineRackBuilder::build(
             patches,
             self.registry,
             self.preparers,
@@ -106,10 +108,23 @@ impl<'a> PreparedGraphBuilder<'a> {
         if !engine_rack.matches_parameters(&parameters) {
             return Err(GraphPreparationError::ParameterLayoutMismatch);
         }
+        // Record every engine position's capability identity from the
+        // validated candidate configuration. Carry-over later requires exact
+        // per-position identity agreement, so the identity is captured here
+        // at build time, never re-derived.
+        for (index, patch) in patches.iter().enumerate() {
+            let identity = PositionCapabilityIdentity::from_capability_id(
+                patch.instrument_config().capability_id(),
+            )
+            .ok_or(GraphPreparationError::UnrecordableCapabilityIdentity)?;
+            if !engine_rack.record_capability_identity(index, patch.id(), identity) {
+                return Err(GraphPreparationError::ParameterLayoutMismatch);
+            }
+        }
 
         let empty_effect_registry = EffectCapabilityRegistry::default();
         let effect_registry = self.effect_registry.unwrap_or(&empty_effect_registry);
-        let effect_rack = PreparedPostEffectRackBuilder::build(
+        let mut effect_rack = PreparedPostEffectRackBuilder::build(
             patches,
             effect_registry,
             self.effect_preparers,
@@ -119,6 +134,28 @@ impl<'a> PreparedGraphBuilder<'a> {
         .map_err(GraphPreparationError::EffectRack)?;
         if !effect_rack.matches_parameters(&parameters) {
             return Err(GraphPreparationError::ParameterLayoutMismatch);
+        }
+        // Record every occupied effect position's capability identity from
+        // the candidate's canonical per-position chain; empty positions stay
+        // explicitly empty.
+        for (index, patch) in patches.iter().enumerate() {
+            for (position, occupant) in patch.effect_slots().iter().enumerate() {
+                let Some(config) = occupant else {
+                    continue;
+                };
+                let identity =
+                    PositionCapabilityIdentity::from_effect_capability_id(config.capability_id())
+                        .ok_or(GraphPreparationError::UnrecordableCapabilityIdentity)?;
+                if !effect_rack.record_capability_identity_at(
+                    index,
+                    position,
+                    patch.id(),
+                    config.slot_id(),
+                    identity,
+                ) {
+                    return Err(GraphPreparationError::ParameterLayoutMismatch);
+                }
+            }
         }
 
         let patch_audio =
@@ -186,6 +223,19 @@ impl<'a> PreparedGraphBuilder<'a> {
                         bus,
                         source: BusReturnPreparationError::Install(source),
                     })?;
+                // Record the occupant's capability identity from the
+                // validated candidate bank entry, exactly as the engine and
+                // effect positions record theirs.
+                let identity =
+                    PositionCapabilityIdentity::from_effect_capability_id(config.capability_id())
+                        .ok_or(GraphPreparationError::UnrecordableCapabilityIdentity)?;
+                if !mixer.bus_returns_mut().record_occupant_identity(
+                    bus,
+                    config.slot_id(),
+                    identity,
+                ) {
+                    return Err(GraphPreparationError::ParameterLayoutMismatch);
+                }
             }
         }
         if !mixer.bus_returns().matches_parameters(&parameters) {
@@ -223,6 +273,10 @@ pub enum GraphPreparationError {
         parameters: GraphRevision,
     },
     ParameterLayoutMismatch,
+    /// One prepared position's capability identity exceeds the fixed
+    /// per-position identity record; the candidate is refused, never
+    /// truncated.
+    UnrecordableCapabilityIdentity,
     Rack(RackPreparationError),
     EffectRack(EffectRackPreparationError),
     PatchAudio(PatchAudioBlockError),
@@ -282,6 +336,9 @@ impl fmt::Display for GraphPreparationError {
             Self::ParameterLayoutMismatch => formatter.write_str(
                 "prepared graph Patch count or ordered identities do not match parameters",
             ),
+            Self::UnrecordableCapabilityIdentity => formatter.write_str(
+                "a prepared position's capability identity exceeds the fixed identity record",
+            ),
             Self::Rack(source) => write!(formatter, "prepared engine rack failed: {source}"),
             Self::EffectRack(source) => {
                 write!(formatter, "prepared post-effect rack failed: {source}")
@@ -314,23 +371,38 @@ impl std::error::Error for GraphPreparationError {
 #[cfg(test)]
 mod tests {
     use super::{GraphPreparationError, PreparedGraphBuilder};
+    use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
     use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
+    use crate::adapter::production_effects::{
+        production_effect_preparers, production_effect_registry,
+    };
+    use crate::adapter::production_instruments::{
+        production_capability_registry, production_instrument_preparers,
+        production_instrument_providers,
+    };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::MidiMessage;
     use crate::kernel::patch_id::PatchId;
+    use crate::mixer::bus_id::BusId;
+    use crate::mixer::bus_return::BusReturnBank;
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mixer_state::MixerState;
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::graph_revision::{GraphRevision, GraphRevisionError};
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
+    use crate::real_time::prepared_graph::MAX_CAPABILITY_IDENTITY_BYTES;
     use crate::real_time::PreparedGraphRefreshError;
     use crate::synth::capability_id::CapabilityId;
+    use crate::synth::effect_slot_id::EffectSlotIndex;
+    use crate::synth::instrument_capability::{CapabilityDescriptor, CapabilityRegistry};
+    use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
     use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
     use crate::synth::patch::Patch;
     use crate::synth::prepared_engine_rack_builder::RackPreparationError;
     use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
     use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::{DescriptorDefaultConfigFactory, EffectCapabilityId, EffectSlotId};
     use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn patch(id: u32) -> Patch {
@@ -369,8 +441,12 @@ mod tests {
 
     impl FixturePreparer {
         fn boxed(fail: bool) -> Box<dyn InstrumentPreparer> {
+            Self::boxed_for(CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(), fail)
+        }
+
+        fn boxed_for(capability_id: CapabilityId, fail: bool) -> Box<dyn InstrumentPreparer> {
             Box::new(Self {
-                capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+                capability_id,
                 fail,
             })
         }
@@ -426,6 +502,254 @@ mod tests {
         }
 
         fn all_notes_off(&mut self) {}
+    }
+
+    /// The builder records the exact capability identity of every prepared
+    /// position for a mixed configuration — two different engines, duplicate
+    /// effect entries in two slots with a gap between them, and one occupied
+    /// return among empty ones — with an explicit empty everywhere
+    /// unoccupied. The recorded identities surface identically through the
+    /// racks and through the replacement layout the coordinator attests.
+    #[test]
+    fn builder_records_carry_over_capability_identity_for_every_position() {
+        let registry = production_capability_registry().unwrap();
+        let preparers = production_instrument_preparers().unwrap();
+        let effect_registry = production_effect_registry().unwrap();
+        let effect_preparers = production_effect_preparers().unwrap();
+
+        let chorus_at = |slot_id: u16| {
+            effect_registry
+                .descriptors()
+                .iter()
+                .find(|descriptor| descriptor.id().as_str() == "effect.chorus")
+                .expect("production chorus entry exists")
+                .default_config(EffectSlotId::new(slot_id).unwrap())
+                .unwrap()
+        };
+        let mut first = patch(1);
+        first
+            .set_slot_occupancy(EffectSlotIndex::new(0).unwrap(), Some(chorus_at(1)))
+            .unwrap();
+        first
+            .set_slot_occupancy(EffectSlotIndex::new(2).unwrap(), Some(chorus_at(2)))
+            .unwrap();
+        let second = Patch::new(
+            PatchId::new(2).unwrap(),
+            "Patch 2".to_owned(),
+            DescriptorDefaultConfigFactory::new(
+                production_capability_registry().unwrap(),
+                production_instrument_providers().unwrap(),
+            )
+            .create(&CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap())
+            .unwrap(),
+            MidiChannel::new(1).unwrap(),
+            PatchOutput::to_track(MixerTrackId::new(1).unwrap()),
+        );
+        let patches = [first, second];
+
+        let mut bank = BusReturnBank::default();
+        let reverb_bus = BusId::new(2).unwrap();
+        bank.set_return_occupancy(
+            &effect_registry,
+            reverb_bus,
+            Some(&EffectCapabilityId::new("effect.reverb").unwrap()),
+        )
+        .unwrap();
+
+        let revision = GraphRevision::new(7).unwrap();
+        let parameters = ParameterSnapshot::project_patches_with_effects_and_returns(
+            1,
+            revision,
+            globals(),
+            MixerState::default(),
+            &patches,
+            &registry,
+            &effect_registry,
+            &bank,
+        )
+        .unwrap();
+        let graph = PreparedGraphBuilder::new(&registry, &preparers)
+            .with_effects(&effect_registry, &effect_preparers)
+            .with_returns(&bank)
+            .build(revision, &patches, parameters, 48_000.0, 128)
+            .unwrap();
+
+        // Engine positions: each Patch records its own engine capability,
+        // and positions beyond the Patch count stay explicitly empty.
+        let engine_rack = graph.engine_rack();
+        assert_eq!(
+            engine_rack.capability_identity(0).unwrap().as_str(),
+            HIDEF_CAPABILITY_ID
+        );
+        assert_eq!(
+            engine_rack.capability_identity(1).unwrap().as_str(),
+            BRAIDS_CAPABILITY_ID
+        );
+        assert_eq!(engine_rack.capability_identity(2), None);
+
+        // Effect grid: both duplicate entries record the shared capability at
+        // their own positions; the gap and the effect-free Patch stay empty.
+        let effect_rack = graph.effect_rack();
+        assert_eq!(
+            effect_rack.capability_identity_at(0, 0).unwrap().as_str(),
+            "effect.chorus"
+        );
+        assert_eq!(effect_rack.capability_identity_at(0, 1), None);
+        assert_eq!(
+            effect_rack.capability_identity_at(0, 2).unwrap().as_str(),
+            "effect.chorus"
+        );
+        for position in 0..crate::synth::effect_slot_id::MAX_EFFECT_SLOTS {
+            assert_eq!(effect_rack.capability_identity_at(1, position), None);
+        }
+
+        // Bus returns: the occupied return records its occupant; every empty
+        // return stays explicitly empty.
+        let returns = graph.bus_return_rack();
+        assert_eq!(
+            returns.capability_identity(reverb_bus).unwrap().as_str(),
+            "effect.reverb"
+        );
+        for bus in BusId::ALL {
+            if bus != reverb_bus {
+                assert_eq!(returns.capability_identity(bus), None);
+            }
+        }
+
+        // The replacement layout carries the same per-position record.
+        let layout = graph.layout();
+        assert_eq!(
+            layout.engine_capability_identity(0).unwrap().as_str(),
+            HIDEF_CAPABILITY_ID
+        );
+        assert_eq!(
+            layout.engine_capability_identity(1).unwrap().as_str(),
+            BRAIDS_CAPABILITY_ID
+        );
+        assert_eq!(
+            layout.effect_capability_identity(0, 2).unwrap().as_str(),
+            "effect.chorus"
+        );
+        assert_eq!(layout.effect_capability_identity(0, 1), None);
+        assert_eq!(
+            layout
+                .return_capability_identity(reverb_bus.index())
+                .unwrap()
+                .as_str(),
+            "effect.reverb"
+        );
+        assert_eq!(layout.return_capability_identity(0), None);
+    }
+
+    /// Builds one complete graph whose single Patch declares `identifier` as
+    /// its engine capability.
+    ///
+    /// The descriptor is the production SoundFont descriptor carrying a
+    /// different identity, so the recorded capability identity is the only
+    /// thing that varies between the at-capacity and beyond-capacity runs —
+    /// every other preparation step sees the same inputs.
+    fn build_with_engine_capability(
+        identifier: &str,
+        revision: GraphRevision,
+    ) -> Result<super::PreparedGraph, GraphPreparationError> {
+        let provider =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
+        let canonical = provider.descriptor();
+        let capability_id = CapabilityId::new(identifier).unwrap();
+        let descriptor = CapabilityDescriptor::new(
+            capability_id.clone(),
+            canonical.label(),
+            canonical.semantic_accent(),
+            canonical.sections().to_vec(),
+            canonical.asset_requirements().to_vec(),
+            canonical.voice_policy(),
+            canonical.supported_midi_kinds().to_vec(),
+        )
+        .unwrap();
+        let canonical_config =
+            create_soundfont_config(&provider, SoundFontInstrument::new(0, 0, false).unwrap())
+                .unwrap();
+        let config = descriptor
+            .create_config(
+                canonical_config.values(),
+                canonical_config.asset_references(),
+            )
+            .unwrap();
+        assert_eq!(config.capability_id().as_str(), identifier);
+        let patches = [Patch::new(
+            PatchId::new(1).unwrap(),
+            "Boundary capability Patch".to_owned(),
+            config,
+            MidiChannel::new(0).unwrap(),
+            PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
+        )];
+        let registry = CapabilityRegistry::new(vec![descriptor]).unwrap();
+        let preparers = vec![FixturePreparer::boxed_for(capability_id, false)];
+        PreparedGraphBuilder::new(&registry, &preparers).build(
+            revision,
+            &patches,
+            parameters(revision, &patches),
+            48_000.0,
+            128,
+        )
+    }
+
+    /// A capability identity one byte past the fixed per-position record
+    /// refuses the whole graph instead of recording a truncated one, and the
+    /// same configuration at exactly the capacity builds and records the
+    /// identity in full.
+    ///
+    /// Pinning both sides of the edge is what makes truncation
+    /// non-reintroducible: two capabilities sharing a
+    /// `MAX_CAPABILITY_IDENTITY_BYTES` prefix would compare equal under a
+    /// truncating record, so a live instance from the wrong capability would
+    /// be carried over. The refusal is whole-graph — `build` returns no graph
+    /// at all, so no position can reach a carry-over decision holding a
+    /// truncated or missing identity.
+    #[test]
+    fn carry_over_capability_identity_beyond_the_record_refuses_the_whole_graph() {
+        const PREFIX: &str = "instrument.fixture.";
+        let at_capacity = format!(
+            "{PREFIX}{}",
+            "a".repeat(MAX_CAPABILITY_IDENTITY_BYTES - PREFIX.len())
+        );
+        let beyond_capacity = format!("{at_capacity}b");
+        assert_eq!(at_capacity.len(), MAX_CAPABILITY_IDENTITY_BYTES);
+        assert_eq!(beyond_capacity.len(), MAX_CAPABILITY_IDENTITY_BYTES + 1);
+
+        let revision = GraphRevision::new(3).unwrap();
+
+        // Exactly at the capacity the graph builds, and both the rack and the
+        // layout the coordinator attests carry the complete identity.
+        let recorded = build_with_engine_capability(&at_capacity, revision).unwrap();
+        assert_eq!(
+            recorded
+                .engine_rack()
+                .capability_identity(0)
+                .unwrap()
+                .as_str(),
+            at_capacity
+        );
+        assert_eq!(
+            recorded
+                .layout()
+                .engine_capability_identity(0)
+                .unwrap()
+                .as_str(),
+            at_capacity
+        );
+
+        // One byte beyond the capacity the complete graph is refused.
+        assert_eq!(
+            build_with_engine_capability(&beyond_capacity, revision).unwrap_err(),
+            GraphPreparationError::UnrecordableCapabilityIdentity
+        );
+
+        // The refusal stays attributable through its own visible surface.
+        assert_eq!(
+            GraphPreparationError::UnrecordableCapabilityIdentity.to_string(),
+            "a prepared position's capability identity exceeds the fixed identity record"
+        );
     }
 
     #[test]

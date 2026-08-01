@@ -7,12 +7,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 ///
 /// The genuine fader controls are `Level`, `Pan`, `Mute`, and `Solo` (`MAIN`).
 /// Sends are not named fields: they are one indexed array on
-/// [`MixerTrackParameters`], addressed by `(MixerTrackId, BusId)`.
-///
-/// WP08 completed the cutover chartered at WP07: the transitional
-/// `ReverbSend`/`DelaySend` compatibility aliases are gone, so this enum has
-/// exactly the four `MAIN` variants and every send is addressed by
-/// `(MixerTrackId, BusId)`.
+/// [`MixerTrackParameters`], addressed by `(MixerTrackId, BusId)`. This enum
+/// therefore holds exactly the four `MAIN` variants; a destination-named
+/// send variant here would close the open bus topology.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MixerTrackParameter {
@@ -356,12 +353,11 @@ impl Default for MixerTrackParameters {
     }
 }
 
-/// WP05 indexed-key rename (`occurrence_map.yaml` `serialized_keys: rename`,
-/// anticipated by the WP04 review): the two named send keys become the one
-/// indexed `sends` array, landed together with the widened
-/// `ParameterSnapshot`/`StateTree` `SERIALIZED_LEAF_DESCRIPTOR` tables so the
-/// serialized shape and its declarations move in one change. These keys have
-/// no persisted documents and no external consumers.
+/// The serialized send surface is the one indexed `sends` array, never a key
+/// per destination. It must stay in step with the
+/// `ParameterSnapshot`/`StateTree` `SERIALIZED_LEAF_DESCRIPTOR` tables: the
+/// shape and its declarations move in one change. These keys have no
+/// persisted documents and no external consumers.
 impl Serialize for MixerTrackParameters {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -607,8 +603,8 @@ mod tests {
 
     #[test]
     fn serialized_shape_stays_byte_identical_to_the_declared_leaves() {
-        // WP05 indexed-key rename: the pinned shape is the one indexed sends
-        // array, matching the widened SERIALIZED_LEAF_DESCRIPTOR tables.
+        // The pinned shape is the one indexed sends array, matching the
+        // SERIALIZED_LEAF_DESCRIPTOR tables.
         let json = serde_json::to_string(&MixerTrackParameters::default()).unwrap();
         assert_eq!(
             json,

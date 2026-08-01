@@ -1,17 +1,23 @@
 use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
 use crate::mixer::bus_return::{EffectError, RETURN_LEVEL_DESCRIPTOR};
+use crate::real_time::prepared_graph::PositionCapabilityIdentity;
 use crate::real_time::{ParameterSnapshot, RtBusReturnParameters, RtPostEffectParameters};
 use crate::synth::{EffectSlotId, PreparedPostEffect};
 use core::fmt;
 
 /// One prepared bus return: a registry-prepared effect instance, its
 /// install-time parameter block (the structural attestation: instance
-/// identity and scalar layout), the install-time return level, and
-/// preallocated input scratch. Live scalar values and the live return level
-/// arrive per block from the `ParameterSnapshot`.
+/// identity and scalar layout), the occupant's recorded effect capability
+/// identity, the install-time return level, and preallocated input scratch.
+/// Live scalar values and the live return level arrive per block from the
+/// `ParameterSnapshot`.
 struct PreparedBusReturn {
     effect: Box<dyn PreparedPostEffect>,
     parameters: RtPostEffectParameters,
+    /// The effect capability identity this occupant was prepared from,
+    /// recorded at build time from the validated candidate configuration.
+    /// Fixed-size and copyable; compared only at carry-over decision time.
+    capability_identity: Option<PositionCapabilityIdentity>,
     return_level: f32,
     input_scratch: Vec<f32>,
 }
@@ -98,10 +104,41 @@ impl PreparedBusReturnRack {
         self.returns[bus.index()] = Some(PreparedBusReturn {
             effect,
             parameters,
+            capability_identity: None,
             return_level,
             input_scratch,
         });
         Ok(())
+    }
+
+    /// Records the validated effect capability identity prepared at one
+    /// occupied return.
+    ///
+    /// Prepare-time only: the graph builder stamps every occupant from the
+    /// validated candidate configuration right after installation. Returns
+    /// whether the return is occupied and carries the exact instance
+    /// identity; a disagreeing return is left untouched.
+    pub(crate) fn record_occupant_identity(
+        &mut self,
+        bus: BusId,
+        slot_id: EffectSlotId,
+        identity: PositionCapabilityIdentity,
+    ) -> bool {
+        let Some(prepared) = self.returns[bus.index()].as_mut() else {
+            return false;
+        };
+        if prepared.parameters.slot_id() != Some(slot_id) {
+            return false;
+        }
+        prepared.capability_identity = Some(identity);
+        true
+    }
+
+    /// Returns the recorded occupant capability identity at one return.
+    pub fn capability_identity(&self, bus: BusId) -> Option<PositionCapabilityIdentity> {
+        self.returns[bus.index()]
+            .as_ref()
+            .and_then(|prepared| prepared.capability_identity)
     }
 
     /// Empties one return. Prepare-time only: drops the prepared effect.
@@ -159,7 +196,7 @@ impl PreparedBusReturnRack {
     /// Exchanges the still-live prepared effect instance from the superseded
     /// bank into this replacement at every return the structural delta leaves
     /// unchanged, so unchanged shared returns keep their tails across
-    /// block-boundary activation (WP10 voice carry-over).
+    /// block-boundary activation.
     ///
     /// Callback-safe: bounded by `MAX_BUS_RETURNS` pointer-sized `mem::swap`s
     /// with no allocation, deallocation, locking, blocking, or destruction.
@@ -168,8 +205,11 @@ impl PreparedBusReturnRack {
     ///
     /// `exclude` names the one return the delta changed; it keeps its fresh
     /// instance (the permitted local restart). Every exchange requires exact
-    /// instance-identity and scalar-layout agreement at the same return — a
-    /// non-matching return keeps its fresh instance.
+    /// instance-identity, scalar-layout, and recorded occupant
+    /// capability-identity agreement at the same return — a non-matching
+    /// return keeps its fresh instance. The identity check is a fixed-size
+    /// comparison made once at this carry-over decision, never per render
+    /// block.
     pub(crate) fn carry_live_returns_from(
         &mut self,
         superseded: &mut Self,
@@ -187,6 +227,7 @@ impl PreparedBusReturnRack {
             };
             if target.parameters.slot_id() != source.parameters.slot_id()
                 || target.parameters.scalar_count() != source.parameters.scalar_count()
+                || target.capability_identity != source.capability_identity
             {
                 continue;
             }
@@ -278,8 +319,9 @@ mod tests {
     use crate::mixer::bus_return::EffectError;
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mixer_state::MixerState;
+    use crate::real_time::prepared_graph::PositionCapabilityIdentity;
     use crate::real_time::{ParameterSnapshot, RtBusReturnParameters, RtPostEffectParameters};
-    use crate::synth::{EffectSlotId, PreparedEffectError, PreparedPostEffect};
+    use crate::synth::{EffectCapabilityId, EffectSlotId, PreparedEffectError, PreparedPostEffect};
 
     struct UnityEffect;
 
@@ -483,7 +525,87 @@ mod tests {
         assert_eq!(output[2..], [0.0; 6]);
     }
 
-    /// WP05/C-RT-5: a live entry that does not attest the prepared instance
+    struct MarkerReturnEffect {
+        value: f32,
+    }
+
+    impl PreparedPostEffect for MarkerReturnEffect {
+        fn patch_id(&self) -> PatchId {
+            PatchId::new(u32::MAX).unwrap()
+        }
+
+        fn slot_id(&self) -> EffectSlotId {
+            EffectSlotId::new(1).unwrap()
+        }
+
+        fn process(
+            &mut self,
+            interleaved_stereo: &mut [f32],
+            _frame_count: usize,
+            _parameters: &RtPostEffectParameters,
+        ) -> Result<(), PreparedEffectError> {
+            interleaved_stereo.fill(self.value);
+            Ok(())
+        }
+    }
+
+    /// One occupied return with a marker occupant, its recorded effect
+    /// capability identity stamped as the graph builder does at build time.
+    fn marker_rack(bus: BusId, value: f32, capability: &str) -> PreparedBusReturnRack {
+        let mut rack = PreparedBusReturnRack::new(2).unwrap();
+        rack.install(
+            bus,
+            Box::new(MarkerReturnEffect { value }),
+            parameters(),
+            1.0,
+        )
+        .unwrap();
+        let identity = PositionCapabilityIdentity::from_effect_capability_id(
+            &EffectCapabilityId::new(capability).unwrap(),
+        )
+        .unwrap();
+        assert!(rack.record_occupant_identity(bus, EffectSlotId::new(1).unwrap(), identity));
+        rack
+    }
+
+    fn wet_marker(rack: &mut PreparedBusReturnRack, bus: BusId) -> f32 {
+        let mut output = [0.0_f32; 4];
+        rack.process_return(bus, &[1.0; 4], &mut output, &live(1.0));
+        output[0]
+    }
+
+    /// A candidate agreeing on instance identity and scalar layout but
+    /// carrying a different recorded occupant capability identity at the
+    /// same return is refused: the freshly prepared instance stays and
+    /// nothing panics.
+    #[test]
+    fn carry_over_capability_identity_mismatch_keeps_the_fresh_return_instance() {
+        let bus = BusId::new(3).unwrap();
+        let mut fresh = marker_rack(bus, 0.25, "effect.alpha");
+        let mut superseded = marker_rack(bus, 0.75, "effect.beta");
+
+        fresh.carry_live_returns_from(&mut superseded, None);
+
+        assert_eq!(wet_marker(&mut fresh, bus), 0.25);
+        assert_eq!(wet_marker(&mut superseded, bus), 0.75);
+    }
+
+    /// Exact per-return agreement — instance identity, scalar layout, and
+    /// recorded capability identity — still carries the live occupant and
+    /// its tail state over.
+    #[test]
+    fn carry_over_capability_identity_agreement_still_carries_the_live_return() {
+        let bus = BusId::new(3).unwrap();
+        let mut fresh = marker_rack(bus, 0.25, "effect.alpha");
+        let mut superseded = marker_rack(bus, 0.75, "effect.alpha");
+
+        fresh.carry_live_returns_from(&mut superseded, None);
+
+        assert_eq!(wet_marker(&mut fresh, bus), 0.75);
+        assert_eq!(wet_marker(&mut superseded, bus), 0.25);
+    }
+
+    /// C-RT-5: a live entry that does not attest the prepared instance
     /// contributes silence — wrong values are never substituted.
     #[test]
     fn mismatched_live_entry_contributes_silence_never_wrong_values() {
@@ -520,7 +642,7 @@ mod tests {
         assert!(rack.process_return(bus, &input, &mut output, &live(1.0)) > 0.0);
     }
 
-    /// WP05/C-RT-5: rack/snapshot matching is exact per bus — occupancy,
+    /// C-RT-5: rack/snapshot matching is exact per bus — occupancy,
     /// instance identity, and scalar layout must all agree at every index.
     #[test]
     fn matches_parameters_stays_exact_at_every_return() {

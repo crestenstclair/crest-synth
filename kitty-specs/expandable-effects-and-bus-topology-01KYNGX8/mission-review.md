@@ -183,3 +183,183 @@ The retrospective was captured at merge terminus: `kitty-specs/expandable-effect
 no `RetrospectiveCaptureFailed` events. Surface findings with `spec-kitty retrospect summary`
 (cross-mission, read-only) and `spec-kitty agent retrospect synthesize --mission expandable-effects-and-bus-topology-01KYNGX8`
 (dry-run by default; add `--apply` to stage proposals).
+
+## Addendum 2 (2026-08-01) — DRIFT-6 resolution, open-item disposition, and a new demo-scope finding
+
+Mission `demo-journey-fidelity-and-hygiene-01KYWVYG` reworked the retained scene
+and swept this review's open items. WP01–WP10 are approved and merged; WP11
+carried the evidence gate. This section resolves the DRIFT-6 addendum above. It
+appends to the record; nothing above it is rewritten.
+
+### Scene rework
+
+Every effect-slot and bus-return occupancy change now dispatches the
+adjacent-choice gesture behind a focus-verified journey to the exact row, and at
+least one occupant parameter is edited audibly from the PATCH page. The scene's
+declared topology transitions grew 17 → 30. The single surviving direct
+injection is the documented rejection (`Topology.refused`) — the UI cannot
+request an unknown registry entry by design — asserted as the only one in
+`tests/effects_and_buses.rs`.
+
+### Refreshed physical evidence
+
+`make demo-live-effects-and-buses` was run on the fully merged lane with a real
+window, physical audio device, and the real MIDI fixture. **Process exit 0.**
+The complete log is **committed**, not merely cited, at
+`kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log`
+(evidence commit `5238020`, 2026-08-01).
+
+- `CREST_LIVE_SUMMARY` verbatim: `live demo complete: 105/105 editable
+  parameters, 3/3 engine transitions, 7718 qualifying shell frames, 144
+  checkpoints, 17462 events, 0 dropped, banks=1, instruments=15,
+  soundfontPatches=8, braidsPatches=7, alternatingCapabilities=true,
+  initialGraphRevision=1, graphRevision=30, engineSwitches=3, fallbacks=0,
+  callbackAllocations=0, callbackDestructions=0, cleanup=true, activeNotes=0`
+- Completeness: 144/144 checkpoints; `droppedRecords=0`, `lossless=true`
+  (17,462 observed / 17,462 retained); **0** checkpoints with
+  `audio_uninterrupted=false`; clean teardown (`cleanup=true`,
+  `window_closed=true`, `stream_released=true`, `owned_graphs_remaining=0`,
+  `active_notes_after_cleanup=0`).
+- `CREST_EFFECTS_AND_BUSES_LIVE_OBSERVATION` carries 45 keys and **zero false
+  values**, including `topology_checkpoints=30` (the parent recorded 17),
+  `physical_audio_nonzero=true`, `controlled_rejection_observed=true`,
+  `rejection_reason="invalidEffectConfig"`,
+  `post_rejection_recovery_observed=true`, `send_isolation_exact=true`,
+  `max_off_target_bus_dbfs=-200.0`, `unoccupied_return_silent=true`.
+- **DRIFT-4 discharged on hardware**: the measurement fields are MEASURED, not
+  defaulted — `frames_to_projection_max=1`, `activation_sequence_gap_max=3`,
+  `render_blocks_to_audible_max=46`. A defaulted zero would have been a
+  regression; none is present.
+- Exactly **three** product effects appeared on screen (`effect.chorus`,
+  `effect.delay`, `effect.reverb`). The test-only fourth registry entry
+  `witness-tilt` occurs **0** times in the log, confirming on hardware that
+  WP09's fourth entry never reaches the production registry.
+
+### Identity comparison (add-only contract)
+
+Baseline: `FROZEN_TOPOLOGY_IDENTITY_BASELINE` — 17 identities at
+`tests/effects_and_buses.rs:59`, the exact pre-rework sequence, corroborated by
+the acceptance matrix's own SC-007 row recording `topology_checkpoints=17` for
+the parent's physical runs.
+
+Method, reproducible against the committed log: extract lines beginning
+`CREST_LIVE_CHECKPOINT `, strip the marker, parse each remainder as JSON, select
+records where `.kind == "topology"`, project `.checkpoint.transition` in
+emission order; then diff the baseline-member subsequence against the frozen
+constant, and take the complement as the addition set.
+
+**Result: 17/17 baseline identities preserved byte-identically and in order.
+0 modified. 0 removed. 13 added. 30 total.** The 13 additions:
+`SlotOccupant.scalarEdited`, `SlotFill.secondCycle1`, `SlotFill.thirdCycle1`,
+`SlotFill.thirdCycle2`, `Return.contentChangedCycle1`,
+`Return.emptyOccupiedCycle1`, `Return.emptyOccupiedCycle2`,
+`Topology.recoveredAfterRefusalCycle1`, `Slot.startupOccupantRestoredCycle1`,
+`Slot.thirdClearedCycle1`, `Slot.thirdClearedCycle2`,
+`Return.emptyRestoredCycle1`, `Return.emptyRestoredCycle2`.
+
+Recorded honestly: a byte-diff against the **parent's own** logs was impossible.
+`t052-run.log` and `wp10-t059-live-run.log` were cited by filename in the
+acceptance matrix and were never committed to any branch of this repository. The
+frozen constant is the durable substitute, corroborated by the parent matrix's
+own recorded `topology_checkpoints=17`. This amendment commits its log so the
+same gap does not recur.
+
+### FR-019 / C-010 grading — restored to adequate
+
+On the evidence above — the committed run at
+`kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log`,
+exit 0, 144/144 checkpoints, zero dropped records, zero false observation keys,
+clean teardown, and the 0-modified / 0-removed / 13-added identity comparison —
+the DRIFT-6 note **"superseded: inadequate for the player journey" is
+resolved**, and the FR-019 / C-010 RECORDED-MANUAL grading is **restored to
+adequate**. The phase gate now demonstrates the PATCH view's slot rows,
+adjacent-choice cycling, and descriptor-driven parameter edit on screen, and the
+MIXER return-row walks, rather than performing them backstage.
+
+### Open items 1–7 — disposition
+
+All seven **CLOSED**; none deferred. SC-007's deferral allowance for the two
+optional items (4 and 6) was not needed — both were delivered.
+
+| # | Item | Disposition | Closing WP | Verified proof pointer |
+| --- | --- | --- | --- | --- |
+| 1 | DRIFT-1 compact view | **CLOSED** | WP02–WP05 | The compact-view symbol set is now **zero repo-wide**: `grep -rn "post_effects()\|with_post_effects(" --include="*.rs" .` (excluding `archive/`) → **0 hits**. `Patch::with_effect_slot` (`src/synth/patch.rs:180`) is the position-explicit replacement. The round-trip at the composition root is gone. Only `PatchInput::post_effects` (`src/control/event_record.rs:190`) survives, and solely as frozen **serialized** vocabulary — its own doc comment states it is "an output shape, never an addressable chain" — which T043 sanctions. |
+| 2 | DRIFT-2 startup fallback | **CLOSED** | WP04 | `production_startup_bus_returns` (`src/adapter/production_effects.rs:93`) returns `Result`. The production composition root consumes it at `src/shell/standalone_application.rs:737-738` and propagates the typed error `ApplicationError::DefaultBusReturns` (`:289`, `:330`, `:392`) via `?`. The permissive `unwrap_or_default` survives only inside the documented TEST-only `startup_bus_returns` (`:110-111`), which is **unreachable from production** — its callers are unit tests, `src/testing/`, and `tests/`. |
+| 3 | RISK-2 RETURN-clear held-note twin test | **CLOSED** | WP07 | `cargo test return_clear_held_note_continuity` → `return_clear_held_note_continuity_preserves_held_voices_sample_exactly` (`tests/topology_change_lifecycle.rs:1205`), passing in the full-suite run below. |
+| 4 | SC-008 fourth-entry fixture (optional) | **CLOSED — delivered, not deferred** | WP09 | Release observation `fourthEntryEndToEndExercised: true` (schemaVersion 2) with `registryEntryAdditionStructuralChanges: 0`, satisfying the crest-spec `open_effect_registry` step-1 `observes` clause verbatim. The fourth entry is test-only (`tests/expandable_effects_and_bus_topology.rs`); the production composition root still builds the three-entry registry, so the **diff to production is zero** — corroborated on hardware by `witness-tilt` occurring 0 times in the live log. **SC-008 is therefore regraded from PARTIAL to a demonstration**: the structural inference recorded in the FR coverage matrix above is now backed by an end-to-end exercise. |
+| 5 | DRIFT-3/4/5 cleanups | **CLOSED** | WP06, WP10 + per-WP sweeps | `grep -rn "WP0[0-9]\|WP10" src/ --include="*.rs"` → **0**. `grep -in "aux bus" DESIGN.md` → **0**. `grep -rn "reverbSend" src/ tests/` → **1**, the guard fixture literal only (`tests/no_name_enumeration_guard.rs:236`), as T043 specifies. DRIFT-4: `src/testing/live_demo_report.rs` measurements are `Option`-typed and distinguish absent from measured; **no `unwrap_or(0)` remains** in that file — and the hardware run above proves the fields carry real values (1 / 3 / 46), not defaults. |
+| 6 | RISK-1 layout hardening (optional) | **CLOSED — delivered, not deferred** | WP08 | Per-position engine-capability identity: `PreparedGraphLayout::effect_capability_identity` (`src/real_time/prepared_graph.rs:435`), exercised by `measure_carry_over_identity_refusal` (`tests/expandable_effects_and_bus_topology.rs:1454`) and surfaced as `carryOverWrongEngineIdentityRefused: true`, asserted at `:1539`. |
+| 7 | Guard script tool gating | **CLOSED** | WP10 | `require_tools()` (`scripts/check_no_name_enumerated_identity.sh:75-89`) tests `command -v` **per tool**, names each missing tool, and exits with a **distinct code 3** ("a missing tool is a failure, never a pass"), separating it from a clean pass (0) and a real violation (1). Covered by `tests/no_name_enumeration_guard.rs`. The reviewer reproduced the **pre-fix** script printing PASS with `rg` absent from `PATH`, confirming the vacuous-gate was real and is now closed. |
+
+---
+
+### LIMIT-1: The retained scene demonstrates the journey for ONE instrument only
+
+**Type**: DEMO-SCOPE BOUND — **Severity**: MEDIUM (accepted for Phase 3, binding
+on Phase 5) — **Found by**: the operator, at WP11 evidence review.
+
+**Evidence**: the scene's subject is `patches.first()`
+(`src/testing/live_effects_and_buses_scene.rs:284`, whose comment reads "The
+demonstration subject: the first installed Patch"). Every effect-slot and
+bus-return journey in the retained scene occurs on that single Patch. The live
+run's `CREST_LIVE_COVERAGE` confirms it: every Patch-scoped editable parameter
+in the expected set is `patch.1.*`, while all sixteen mixer tracks
+(`track.T00`–`track.T0F`, level/pan/mute/solo/sends) and all fifteen installed
+instruments are exercised for sends and routing.
+
+**Root cause — there is no patch-switching gesture in the semantic vocabulary.**
+`SemanticAction` (`src/control/semantic_action.rs:54`) is a closed union of
+exactly eight kinds: `SelectContext`, `Navigate`, `Adjust`,
+`SetInteractionMode`, `EnterSurface`, `Return`, `SetSlotOccupancy`,
+`SetReturnOccupancy`. `SelectContext` takes a `TopLevelContext` and therefore
+switches only PATCH↔MIXER. `FocusPath` (`src/control/semantic_focus.rs:205-213`)
+carries a `patch_id: Option<PatchId>`, and `SetSlotOccupancy` carries a
+`patch_id`, so focus and occupancy are both addressed **per-Patch** — but **no
+`SelectPatch` / `NextPatch` semantic action exists to change which Patch is
+focused.** (`LiveEnginePhase::SelectPatch` in
+`src/testing/live_demo_runner.rs:473` is not a counterexample: it dispatches
+`SelectContext(TopLevelContext::Patch)` and then locates the patch by id in the
+model directly — a backstage lookup, exactly the pattern this mission set out to
+remove.)
+
+**Analysis — the bound is a consequence of this mission's own fix.** Before
+WP01, the scene changed occupancy by backstage injection, and could have driven
+effects on any Patch without ever needing a UI path to reach it. Requiring the
+on-screen journey structurally pins the demonstration to whichever Patch the
+scene starts on — the first one — because the UI offers no gesture to move to
+another. **Making the demo honest is what exposed the missing patch selector.**
+This is not a regression and not a defect in WP01; it is the true reach of the
+current UI surface, now visible instead of hidden behind injection.
+
+**Disposition**: **accepted for Phase 3**, which closes on its declared
+behaviors — the phase's requirements concern slots, sends, buses, returns, and
+topology lifecycle for a Patch, and every one of them is now demonstrated on
+screen and on hardware. **Escalated to a Phase 5 entry condition** (see
+`ROADMAP.md`, "Phase 5 — Functional Patch editor blockout"): Phase 5 must
+deliver a patch-selection gesture in the semantic vocabulary, and its
+`demo-live-patch-editor` scene must demonstrate the effect-slot journey on more
+than one instrument.
+
+---
+
+### Deterministic re-verification on the merged lane (2026-08-01)
+
+- `cargo test --all-targets` — exit 0 — **533 passed / 0 failed across 26
+  targets**.
+- `cargo clippy --all-targets -- -D warnings` — exit 0, zero warnings.
+- `cargo fmt --all -- --check` — exit 0.
+- Observation `schemaVersion: 2` with `fourthEntryEndToEndExercised: true`,
+  `carryOverWrongEngineIdentityRefused: true`, `twoRunTraceEqual: true`,
+  `callbackAllocations: 0`, `callbackDeallocations: 0`,
+  `callbackDestructions: 0`, `activeNotesAtExit: 0`.
+- **Moved numbers**: `retiredGraphsCollectedOffCallback` moved **8 → 15** (WP09
+  drives seven further structural changes); the predicate is `gt 0`, so the
+  grade is unaffected. This is the **only** pre-existing numeric that changed.
+
+### Verdict impact
+
+The DRIFT-6 deferral is discharged. The mission's verdict remains **PASS WITH
+NOTES**, now on demonstrated rather than deferred grounds: the HIGH finding is
+resolved with committed hardware evidence, all seven open items are closed, and
+the one new finding (LIMIT-1) is a scope bound accepted for this phase with a
+binding entry condition on Phase 5.

@@ -49,10 +49,44 @@
 #                      tests/no_name_enumeration_guard.rs fixtures)
 #   --self-test        prove the failure path: a seeded reintroduction must
 #                      fail and the documented exceptions must pass
+#
+# Exit codes — a missing tool, a found candidate, and a clean tree are three
+# different answers and must never collapse into one:
+#   0  clean (or self-test satisfied)
+#   1  name-enumerated identifiers found
+#   2  usage error, or the scanner itself failed while running
+#   3  a required external tool is absent — the invariant was NOT checked
 set -u
 set -o pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
+# Locate the repository root with parameter expansion rather than dirname, so
+# the tool gate below is the first external dependency this script has: a
+# pre-gate call to a missing tool would fail with a message about that tool
+# instead of the gate's own report.
+script_dir="${BASH_SOURCE[0]%/*}"
+[[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir='.'
+cd "$script_dir/.." || exit 2
+
+# Tool gate. Every external program this script invokes is verified before
+# anything is scanned. An absent scanner cannot report "no candidates": that
+# would turn a machine without ripgrep into a permanent pass for an invariant
+# that exists precisely because prose controls failed here once already.
+readonly REQUIRED_TOOLS=(rg perl sort mktemp mkdir rm cat)
+require_tools() {
+  local tool missing=()
+  for tool in "${REQUIRED_TOOLS[@]}"; do
+    command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+  done
+  if [[ "${#missing[@]}" -ne 0 ]]; then
+    for tool in "${missing[@]}"; do
+      printf 'check_no_name_enumerated_identity: required tool not found: %s\n' \
+        "$tool" >&2
+    done
+    printf 'check_no_name_enumerated_identity: the no-name-enumerated-identity invariant was NOT checked; install the tool(s) named above and re-run. A missing tool is a failure, never a pass.\n' >&2
+    exit 3
+  fi
+}
+require_tools
 
 pascal='ReverbSend|DelaySend|GlobalEffectsProcessor|GlobalReverbDelay'
 pascal+='|ReverbRoomSize|ReverbDamping|ReverbReturn'
@@ -72,22 +106,42 @@ strip_noncode() {
   perl -pe 's/r?"(?:\\.|[^"\\])*"/""/g; s{//.*$}{}'
 }
 
-# scan <dir>... — prints one line per violation, returns 1 if any.
+# scan <dir>... — prints one line per violation.
+# Returns 0 clean, 1 violations found, 2 the scanner itself failed. rg exits 1
+# for "no matches" and >=2 for a real error; conflating those is how a broken
+# scan would read as a clean tree, so the two are separated here.
 scan() {
   local violations=0 candidate file rest line content stripped ident
+  local candidates rg_status
+  candidates="$(rg -n --no-heading --sort path -g '*.rs' -e "$FORBIDDEN" "$@")"
+  rg_status=$?
+  case "$rg_status" in
+    0) ;;
+    1) return 0 ;;
+    *)
+      printf 'check_no_name_enumerated_identity: rg failed (exit %s) while scanning %s\n' \
+        "$rg_status" "$*" >&2
+      return 2
+      ;;
+  esac
   while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
     file="${candidate%%:*}"
     rest="${candidate#*:}"
     line="${rest%%:*}"
     content="${rest#*:}"
-    stripped="$(printf '%s\n' "$content" | strip_noncode)"
+    if ! stripped="$(printf '%s\n' "$content" | strip_noncode)"; then
+      printf 'check_no_name_enumerated_identity: perl failed while stripping %s:%s\n' \
+        "$file" "$line" >&2
+      return 2
+    fi
     if printf '%s\n' "$stripped" | rg -q -e "$FORBIDDEN"; then
       while IFS= read -r ident; do
         printf '%s:%s: name-enumerated identifier %s\n' "$file" "$line" "$ident"
       done < <(printf '%s\n' "$stripped" | rg -o -e "$FORBIDDEN" | sort -u)
       violations=1
     fi
-  done < <(rg -n --no-heading --sort path -g '*.rs' -e "$FORBIDDEN" "$@" || true)
+  done <<<"$candidates"
   return "$violations"
 }
 
@@ -142,10 +196,18 @@ pub const CAPABILITY: &str = "effect.reverb";
 pub const LABEL: &str = "PATCH Lead\n> reverbSend=0.4\nGLOBAL";
 EOF
 
-  violation_output="$(scan "$fixture_root/violation")" && {
-    echo 'self-test: seeded reintroduction was NOT detected' >&2
-    exit 1
-  }
+  violation_output="$(scan "$fixture_root/violation")"
+  case "$?" in
+    0)
+      echo 'self-test: seeded reintroduction was NOT detected' >&2
+      exit 1
+      ;;
+    1) ;;
+    *)
+      echo 'self-test: the scanner failed while reading the seeded fixture' >&2
+      exit 2
+      ;;
+  esac
   for expected in \
     'reintroduced.rs:3: name-enumerated identifier ReverbSend' \
     'reintroduced.rs:5: name-enumerated identifier GlobalReverbDelay' \
@@ -158,24 +220,43 @@ EOF
     fi
   done
 
-  if ! allowed_output="$(scan "$fixture_root/allowed")"; then
-    echo 'self-test: documented exceptions were incorrectly flagged' >&2
-    printf '%s\n' "$allowed_output" >&2
-    exit 1
-  fi
+  allowed_output="$(scan "$fixture_root/allowed")"
+  case "$?" in
+    0) ;;
+    1)
+      echo 'self-test: documented exceptions were incorrectly flagged' >&2
+      printf '%s\n' "$allowed_output" >&2
+      exit 1
+      ;;
+    *)
+      echo 'self-test: the scanner failed while reading the exception fixture' >&2
+      exit 2
+      ;;
+  esac
 
   echo 'CREST_STATIC_VALIDATION no_name_enumerated_identity self-test passed'
   exit 0
 fi
+
+# report <dir>... — scan and turn the three scan outcomes into the three
+# declared exit codes; a scanner failure never prints the pass marker.
+report() {
+  scan "$@"
+  case "$?" in
+    0) ;;
+    1) fail_with_guidance ;;
+    *) exit 2 ;;
+  esac
+  echo 'CREST_STATIC_VALIDATION no_name_enumerated_identity passed'
+  exit 0
+}
 
 if [[ "${1:-}" == "--scan-root" ]]; then
   if [[ "$#" -ne 2 || ! -d "$2" ]]; then
     echo 'usage: check_no_name_enumerated_identity.sh --scan-root <dir>' >&2
     exit 2
   fi
-  scan "$2" || fail_with_guidance
-  echo 'CREST_STATIC_VALIDATION no_name_enumerated_identity passed'
-  exit 0
+  report "$2"
 fi
 
 if [[ "$#" -ne 0 ]]; then
@@ -183,5 +264,4 @@ if [[ "$#" -ne 0 ]]; then
   exit 2
 fi
 
-scan src/synth src/mixer src/real_time src/control || fail_with_guidance
-echo 'CREST_STATIC_VALIDATION no_name_enumerated_identity passed'
+report src/synth src/mixer src/real_time src/control

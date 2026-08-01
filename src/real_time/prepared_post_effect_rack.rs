@@ -1,5 +1,6 @@
 use crate::kernel::PatchId;
 use crate::real_time::patch_effect_observation::PatchEffectSlotObservations;
+use crate::real_time::prepared_graph::PositionCapabilityIdentity;
 use crate::real_time::{
     ParameterSnapshot, PatchAudioBlock, PatchEffectObservation, RtPostEffectParameters, MAX_PATCHES,
 };
@@ -11,6 +12,10 @@ pub(crate) struct PreparedPostEffectSlot {
     patch_id: PatchId,
     slot_id: EffectSlotId,
     scalar_count: usize,
+    /// The effect capability identity this grid position was prepared from,
+    /// recorded at build time from the validated candidate configuration.
+    /// Fixed-size and copyable; compared only at carry-over decision time.
+    capability_identity: Option<PositionCapabilityIdentity>,
     effect: Box<dyn PreparedPostEffect>,
     input_scratch: Vec<f32>,
 }
@@ -27,6 +32,7 @@ impl PreparedPostEffectSlot {
             patch_id,
             slot_id,
             scalar_count,
+            capability_identity: None,
             effect,
             input_scratch,
         }
@@ -86,6 +92,53 @@ impl PreparedPostEffectRack {
             .and_then(|slots| slots.get(slot_index))
             .and_then(Option::as_ref)
             .map(|slot| slot.scalar_count)
+    }
+
+    /// Returns the recorded effect capability identity at one grid position.
+    pub fn capability_identity_at(
+        &self,
+        patch_index: usize,
+        slot_index: usize,
+    ) -> Option<PositionCapabilityIdentity> {
+        self.slots
+            .get(patch_index)
+            .and_then(|slots| slots.get(slot_index))
+            .and_then(Option::as_ref)
+            .and_then(|slot| slot.capability_identity)
+    }
+
+    /// Records the validated effect capability identity prepared at one grid
+    /// position.
+    ///
+    /// Prepare-time only: the graph builder stamps every occupied position
+    /// from the validated candidate configuration right after rack
+    /// preparation. Returns whether the position is occupied and carries the
+    /// exact Patch and instance identity; a disagreeing position is left
+    /// untouched.
+    pub(crate) fn record_capability_identity_at(
+        &mut self,
+        patch_index: usize,
+        slot_index: usize,
+        patch_id: PatchId,
+        slot_id: EffectSlotId,
+        identity: PositionCapabilityIdentity,
+    ) -> bool {
+        if self.patch_ids.get(patch_index).copied().flatten() != Some(patch_id) {
+            return false;
+        }
+        let Some(slot) = self
+            .slots
+            .get_mut(patch_index)
+            .and_then(|slots| slots.get_mut(slot_index))
+            .and_then(Option::as_mut)
+        else {
+            return false;
+        };
+        if slot.patch_id != patch_id || slot.slot_id != slot_id {
+            return false;
+        }
+        slot.capability_identity = Some(identity);
+        true
     }
 
     /// Returns how many of one Patch's ordered positions are occupied.
@@ -206,7 +259,7 @@ impl PreparedPostEffectRack {
     /// Exchanges the still-live prepared effect instance from the superseded
     /// grid into this replacement at every position the structural delta
     /// leaves unchanged, so unchanged instances keep their delay/LFO/tail
-    /// state across block-boundary activation (WP10 voice carry-over).
+    /// state across block-boundary activation.
     ///
     /// Callback-safe: bounded by `MAX_PATCHES * MAX_EFFECT_SLOTS`
     /// pointer-sized `mem::swap`s with no allocation, deallocation, locking,
@@ -216,9 +269,12 @@ impl PreparedPostEffectRack {
     ///
     /// `exclude` names the one `(PatchId, position)` the delta changed; that
     /// position keeps its fresh instance (the permitted local restart). Every
-    /// exchange requires exact PatchId, instance-identity, and scalar-layout
-    /// agreement at the same grid position — a non-matching position keeps
-    /// its fresh instance rather than gaining wrong state.
+    /// exchange requires exact PatchId, instance-identity, scalar-layout, and
+    /// recorded effect capability-identity agreement at the same grid
+    /// position — a non-matching position keeps its fresh instance rather
+    /// than gaining wrong state. The identity check is a fixed-size
+    /// comparison made once at this carry-over decision, never per render
+    /// block.
     pub(crate) fn carry_live_effects_from(
         &mut self,
         superseded: &mut Self,
@@ -247,6 +303,7 @@ impl PreparedPostEffectRack {
                 if target.patch_id != source.patch_id
                     || target.slot_id != source.slot_id
                     || target.scalar_count != source.scalar_count
+                    || target.capability_identity != source.capability_identity
                 {
                     continue;
                 }
@@ -350,7 +407,10 @@ impl std::error::Error for EffectRackProcessError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{EffectRackProcessError, PreparedPostEffectRack};
+    use super::{
+        EffectRackProcessError, PreparedPatchEffectSlots, PreparedPostEffectRack,
+        PreparedPostEffectSlot,
+    };
     use crate::adapter::production_effects::{
         production_effect_preparers, production_effect_registry,
     };
@@ -360,6 +420,7 @@ mod tests {
     use crate::mixer::mixer_state::MixerState;
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::mixer::patch_output::PatchOutput;
+    use crate::real_time::prepared_graph::PositionCapabilityIdentity;
     use crate::real_time::{
         ParameterSnapshot, PatchAudioBlock, PatchEffectObservation, RtInstrumentParameters,
         RtPatchParameters, RtPostEffectParameters, MAX_PATCHES,
@@ -367,6 +428,7 @@ mod tests {
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
     use crate::synth::voice_envelope::VoiceEnvelope;
+    use crate::synth::{EffectCapabilityId, PreparedEffectError, PreparedPostEffect};
     use crate::synth::{
         EffectCapabilityRegistry, EffectPreparer, EffectSlotId, InstrumentConfig, Patch,
         PostEffectConfig, PreparedPostEffectRackBuilder,
@@ -499,9 +561,9 @@ mod tests {
         ((energy / a.len().max(1) as f64).sqrt()) as f32
     }
 
-    /// T016/WP05: the widened check is exact PER POSITION; each deliberately
-    /// mismatched layout is rejected, never repositioned, never partially
-    /// consumed. Extends the WP03 negatives — none are weakened.
+    /// The widened check is exact PER POSITION; each deliberately mismatched
+    /// layout is rejected, never repositioned, never partially consumed.
+    /// Extends the original single-position negatives — none are weakened.
     #[test]
     fn matches_parameters_stays_exact_at_every_slot_position() {
         let registry = production_effect_registry().unwrap();
@@ -601,7 +663,7 @@ mod tests {
 
         // Two occupied positions: only the exact two-position attestation
         // matches. Every partial or repositioned claim stays rejected — the
-        // WP03 negatives hold verbatim at the widened size.
+        // single-position negatives hold verbatim at the widened size.
         let reverb = entry_config(&registry, "effect.reverb", 2);
         let reverb_params = rt_effect(&registry, &reverb);
         let rack_multi = build_rack(
@@ -963,7 +1025,114 @@ mod tests {
         }
     }
 
-    /// T017: every occupied position enforces its own frame capacity.
+    struct MarkerPostEffect {
+        patch_id: PatchId,
+        slot_id: EffectSlotId,
+        add: f32,
+    }
+
+    impl PreparedPostEffect for MarkerPostEffect {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn slot_id(&self) -> EffectSlotId {
+            self.slot_id
+        }
+
+        fn process(
+            &mut self,
+            interleaved_stereo: &mut [f32],
+            _frame_count: usize,
+            _parameters: &RtPostEffectParameters,
+        ) -> Result<(), PreparedEffectError> {
+            for sample in interleaved_stereo.iter_mut() {
+                *sample += self.add;
+            }
+            Ok(())
+        }
+    }
+
+    /// One Patch with one marker occupant at position 1, its recorded effect
+    /// capability identity stamped as the graph builder does at build time.
+    fn marker_rack(add: f32, capability: &str) -> PreparedPostEffectRack {
+        let patch_id = PatchId::new(1).unwrap();
+        let slot_id = EffectSlotId::new(7).unwrap();
+        let mut patch_ids = [None; MAX_PATCHES];
+        patch_ids[0] = Some(patch_id);
+        let mut slots: [PreparedPatchEffectSlots; MAX_PATCHES] =
+            std::array::from_fn(|_| std::array::from_fn(|_| None));
+        slots[0][1] = Some(PreparedPostEffectSlot::new(
+            patch_id,
+            slot_id,
+            0,
+            Box::new(MarkerPostEffect {
+                patch_id,
+                slot_id,
+                add,
+            }),
+            vec![0.0; MAX_FRAMES * 2],
+        ));
+        let mut rack = PreparedPostEffectRack::from_slots(1, patch_ids, slots);
+        let identity = PositionCapabilityIdentity::from_effect_capability_id(
+            &EffectCapabilityId::new(capability).unwrap(),
+        )
+        .unwrap();
+        assert!(rack.record_capability_identity_at(0, 1, patch_id, slot_id, identity));
+        rack
+    }
+
+    fn processed_marker(rack: &mut PreparedPostEffectRack) -> f32 {
+        let patch_id = PatchId::new(1).unwrap();
+        let mut stem = vec![0.0_f32; MAX_FRAMES * 2];
+        let mut observations = [PatchEffectObservation::EMPTY; MAX_EFFECT_SLOTS];
+        PreparedPostEffectRack::process_slots_in_place(
+            &mut rack.slots[0],
+            0,
+            patch_id,
+            &mut stem,
+            MAX_FRAMES,
+            &[
+                &RtPostEffectParameters::EMPTY,
+                &RtPostEffectParameters::EMPTY,
+                &RtPostEffectParameters::EMPTY,
+            ],
+            &mut observations,
+        )
+        .unwrap();
+        stem[0]
+    }
+
+    /// A candidate agreeing on Patch, instance identity, and scalar layout
+    /// but carrying a different recorded effect capability identity at the
+    /// same grid position is refused: the freshly prepared instance stays
+    /// and nothing panics.
+    #[test]
+    fn carry_over_capability_identity_mismatch_keeps_the_fresh_effect_instance() {
+        let mut fresh = marker_rack(0.25, "effect.alpha");
+        let mut superseded = marker_rack(0.75, "effect.beta");
+
+        fresh.carry_live_effects_from(&mut superseded, None);
+
+        assert_eq!(processed_marker(&mut fresh), 0.25);
+        assert_eq!(processed_marker(&mut superseded), 0.75);
+    }
+
+    /// Exact per-position agreement — Patch, instance identity, scalar
+    /// layout, and recorded capability identity — still carries the live
+    /// effect instance and its state over.
+    #[test]
+    fn carry_over_capability_identity_agreement_still_carries_the_live_effect() {
+        let mut fresh = marker_rack(0.25, "effect.alpha");
+        let mut superseded = marker_rack(0.75, "effect.alpha");
+
+        fresh.carry_live_effects_from(&mut superseded, None);
+
+        assert_eq!(processed_marker(&mut fresh), 0.75);
+        assert_eq!(processed_marker(&mut superseded), 0.25);
+    }
+
+    /// Every occupied position enforces its own frame capacity.
     #[test]
     fn each_slot_enforces_its_own_frame_capacity() {
         let registry = production_effect_registry().unwrap();
