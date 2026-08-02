@@ -8,6 +8,9 @@ requirement_refs:
 - FR-007
 - FR-008
 - NFR-005
+planning_base_branch: feat/crest-component-foundations
+merge_target_branch: feat/crest-component-foundations
+branch_strategy: Planning artifacts for this mission were generated on feat/crest-component-foundations. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/crest-component-foundations unless the human explicitly redirects the landing branch.
 subtasks:
 - T026
 - T027

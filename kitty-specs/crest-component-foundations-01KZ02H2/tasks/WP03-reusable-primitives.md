@@ -8,6 +8,9 @@ requirement_refs:
 - FR-004
 - FR-005
 - FR-009
+planning_base_branch: feat/crest-component-foundations
+merge_target_branch: feat/crest-component-foundations
+branch_strategy: Planning artifacts for this mission were generated on feat/crest-component-foundations. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/crest-component-foundations unless the human explicitly redirects the landing branch.
 subtasks:
 - T013
 - T014
@@ -23,7 +26,8 @@ history:
   action: Prompt generated via /spec-kitty.tasks
 agent_profile: implementer-ivan
 authoritative_surface: src/shell/visual/primitives
-create_intent: []
+create_intent:
+- src/shell/visual/primitives.rs
 execution_mode: code_change
 owned_files:
 - src/shell/visual/primitives.rs
