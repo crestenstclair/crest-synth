@@ -10,6 +10,9 @@ requirement_refs:
 planning_base_branch: feat/crest-component-foundations
 merge_target_branch: feat/crest-component-foundations
 branch_strategy: Planning artifacts for this mission were generated on feat/crest-component-foundations. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/crest-component-foundations unless the human explicitly redirects the landing branch.
+base_branch: kitty/mission-crest-component-foundations-01KZ02H2
+base_commit: 41c37b1e37f2e9e0de42b210c44d1d7e36aa2c28
+created_at: '2026-08-02T03:04:05.368664+00:00'
 subtasks:
 - T001
 - T002
@@ -18,12 +21,12 @@ subtasks:
 - T005
 - T006
 phase: Phase 1 - Foundation
+agent: claude
 history:
 - at: '2026-08-02T02:26:18Z'
   actor: system
   action: Prompt generated via /spec-kitty.tasks
 agent_profile: implementer-ivan
-agent: claude
 authoritative_surface: src/shell/visual/
 create_intent:
 - src/shell/visual/mod.rs
@@ -244,7 +247,7 @@ Execution worktrees are allocated per computed lane from `lanes.json`.
        The design file publishes a selected-row background this document omitted; this document declares
        elevated, strong border, patch, and chorus accents the design file does not publish as variables.
        Neither source is trimmed to match the other.
-     - The Steam Deck density policy is **authored** from the desktop frames, not measured from an
+     - The compact density policy is **authored** from the desktop frames, not measured from an
        authored small-viewport design, because none exists.
      - Loading and error appearances **reuse** the structural-edit vocabulary this document already
        declares (`DESIGN.md:454`) rather than inventing a second visual language.

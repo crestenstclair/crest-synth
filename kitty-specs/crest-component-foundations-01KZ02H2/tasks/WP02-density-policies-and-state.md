@@ -67,7 +67,7 @@ Complete when:
 
 - `ViewportDensityPolicy` resolves both authored viewports, carrying bands, split, inset, row height, row pitch, and control geometry.
 - The Desktop policy reproduces today's geometry **exactly** — no silent visual change.
-- The Steam Deck policy exists, is authored from the desktop frames, and is marked as authored rather than measured.
+- The compact policy exists, is authored from the desktop frames, and is marked as authored rather than measured.
 - `ComponentState` is a closed nine-value set, exhaustively matchable.
 - Loading and Error map onto the structural-edit vocabulary rather than a new visual language.
 - A test proves both policies retain every band, the side region, and the 48 px minimum.
@@ -135,12 +135,12 @@ Execution worktrees are allocated per computed lane from `lanes.json`.
 
 - **Notes**: Row height 52 exceeds the 48 px minimum target. That is correct, not a rounding error.
 
-### Subtask T008 – Author the Steam Deck density policy
+### Subtask T008 – Author the compact density policy
 
 - **Purpose**: Give the 1280×800 viewport a declared policy. No authored design exists for it, so this is authorship, not transcription.
 
 - **Steps**:
-  1. Declare the Steam Deck policy at 1280×800.
+  1. Declare the compact policy at 1280×800.
   2. Constraints that must hold (`DESIGN.md:450`):
      - All five structural bands remain present.
      - The Utility/Inspector side region stays **visible** — never hidden to fit.
@@ -154,7 +154,7 @@ Execution worktrees are allocated per computed lane from `lanes.json`.
      - Row height 48 (the floor, not below), pitch 56.
   4. Mark this policy **authored, not measured** in a doc comment, and note that it needs visual review.
   5. Declare how a viewport between or below the two authored sizes resolves. Simplest defensible rule:
-     use the Steam Deck policy at or below 1280 wide, Desktop above. State the rule; do not leave it implicit.
+     use the compact policy at or below 1280 wide, Desktop above. State the rule; do not leave it implicit.
 
 - **Files**: `src/shell/visual/density.rs`
 
@@ -257,14 +257,14 @@ Tests are required for T010 and T012 — NFR-003 and the closed-set guarantee ar
 | Risk | Mitigation |
 |---|---|
 | Desktop policy silently changes today's geometry | T012 asserts it equals the current adapter constants exactly |
-| Steam Deck policy is never reviewed by a human | Flag it in the Activity Log as needing visual review; WP05 makes it viewable |
+| compact policy is never reviewed by a human | Flag it in the Activity Log as needing visual review; WP05 makes it viewable |
 | Loading/Error implemented as color-only | Declared as data pairing accent **with** text, and WP06 asserts non-color legibility |
 | A wildcard `match` arm creeps in | Doc comment forbids it; WP06 asserts exhaustiveness |
 
 ## Review Guidance
 
 - Does the Desktop policy reproduce `eframe_graphical_window.rs:17-25` exactly? This is the regression risk.
-- Is the Steam Deck policy clearly marked authored rather than measured?
+- Is the compact policy clearly marked authored rather than measured?
 - Does the side region stay visible at 1280×800, or was it dropped to fit?
 - Is `ComponentState` genuinely closed — no catch-all, no `Unknown`?
 - Do Loading and Error carry text, or only color?
@@ -274,3 +274,14 @@ Tests are required for T010 and T012 — NFR-003 and the closed-set guarantee ar
 > **CRITICAL**: Activity log entries MUST be in chronological order (oldest first, newest last). Append at the END.
 
 - 2026-08-02T02:26:18Z – system – Prompt created.
+- 2026-08-01 – claude (implementer-ivan) – T007. Read `src/adapter/eframe_graphical_window.rs:17-25` before writing anything. Every measured value in the T007 table matches the constants already there: 1920×1080, 1280×800, context 48, identity 72, footer 64, side 420, minimum side 320. No mismatch to report. Workspace 896 and main 1500 are the remainders the adapter derives through `StripBuilder` rather than naming; the policy names them. Declared `ViewportDensityPolicy::Desktop` with `PolicyProvenance::MeasuredFromAuthoredDesign`.
+- 2026-08-01 – claude (implementer-ivan) – T008. Authored `ViewportDensityPolicy::SteamDeck` at 1280×800 from the suggested starting point: bands 40/60/56 with workspace 644 (the remainder, so the four bands tile 800 exactly), side region 320 with main 960, inset 16, row 48 on a 56 pitch. The side region is narrowed to the existing `MINIMUM_SIDE_WIDTH`, never hidden. Utility control width 280 rather than the desktop 380, keeping the same 40 px total side-region padding; height stays 48 because it is an interactive target and pitch drops to 56. Bar thickness stays 5 px in both policies — it is a visual weight, not a spatial one, and thinning it would cost legibility without buying room. Marked `PolicyProvenance::AuthoredFromDesktopFrames`. **This policy needs the operator's eye.** Every number in it is authorship against declared minimums, not transcription, and no design exists at this size to check it against. WP05 makes it viewable; please look at it there before it hardens.
+- 2026-08-01 – claude (implementer-ivan) – T008 resolution rule. Declared `STEAM_DECK_MAX_WIDTH_PX = 1280` and `ViewportDensityPolicy::resolve(viewport_width_px)`: at or below that width — including below the authored Steam Deck size — the Steam Deck policy applies, above it the Desktop policy does. One threshold, two outcomes, no interpolated third layout.
+- 2026-08-01 – claude (implementer-ivan) – T009. Exposed `bands()`, `split()`, `rhythm()`, `utility_control()`, `provenance()`, `authored_viewport()`, and `canonical_name()`. `resolve` is the only function that reads a raw viewport width, and it is documented as such; `authored_viewport()` exists for opening a window or sizing a specimen frame and is documented as not being a layout branch. Kept the surface to what WP04 needs to delete `desired_side_width` and the band constants — nothing speculative. Doc comment names `eframe_graphical_window.rs` as the intended first consumer and points at WP04.
+- 2026-08-01 – claude (implementer-ivan) – T010. Declared `ComponentState` as exactly nine variants with no catch-all and no `Unknown`, plus `ALL_COMPONENT_STATES` and `COMPONENT_STATE_COUNT = 9`. The module doc states that any `match` on the type is exhaustive with no wildcard arm, and why: a `_` arm converts the compile error this type exists to produce into a silent visual default. The iteration test matches exhaustively over each variant, so adding one without updating `ALL_COMPONENT_STATES` fails rather than silently under-covering.
+- 2026-08-01 – claude (implementer-ivan) – T011. Declared state appearance as data next to `ComponentState`, not as branching inside primitives: accent, keyline width, halo, row fill, and a `NonColorSignal`. Loading is `color/accent/adjust` with `NonColorSignal::ProgressWord` drawn from `LOADING_PROGRESS_WORDS = ["Preparing", "Activating"]`; Error is `color/accent/warning` with `NonColorSignal::TypedFailure`. Both carry text, neither animates. Casing follows `DESIGN.md:454` and the existing `EngineSelectionStatusKind::Preparing`/`Activating` rather than the prompt's uppercase rendering of the same words, so one vocabulary reads the same everywhere. Disabled carries `"Locked"` and Muted/Soloed carry `"M ON"`/`"S ON"` from `DESIGN.md:468` — authored words, not invented ones. Loading deliberately shares the adjustment accent with Adjusting and is told apart by text, which is the point of the reuse.
+- 2026-08-01 – claude (implementer-ivan) – Judgement call on `Resting`. The crest-spec invariant reads "every state renders with text or shape in addition to color". Resting is the baseline the other eight read against, so it carries no distinguishing mark of its own and inventing one would be dishonest. The test asserts the falsifiable form instead: no two of the nine states differ only in accent, and every state other than Resting is distinguishable from Resting without color. Flagging it here rather than burying it, since a reviewer reading the invariant literally will look for a ninth mark.
+- 2026-08-01 – claude (implementer-ivan) – T012. Ten tests in `density.rs`: the Desktop regression guard against the current adapter constants, the authored-design values, the Steam Deck values, all five structural regions present, bands tiling the viewport height exactly, the split tiling its width exactly, every interactive target at or above `MIN_INTERACTIVE_TARGET_PX`, positive row and control gaps, the control fitting inside its side region, and the resolution threshold at 1280/1281 plus each authored size resolving to itself. Eleven in `state.rs`, including the count, exhaustive iteration, and the no-two-states-differ-only-in-color pairwise proof.
+- 2026-08-01 – claude (implementer-ivan) – Out-of-map edit: added `pub use density::{…}` and `pub use state::{…}` re-export lines to `src/shell/visual/mod.rs`, matching the `pub use token::{…}` line WP01 established so downstream work packages import from `shell::visual` rather than reaching into submodules. No other change to that file.
+- 2026-08-01 – claude (implementer-ivan) – Environment note, not a code finding: `cargo test --lib` initially reported 145 failures in this lane, all `FileOpen` on `./sf2/HiDef.sf2`. That asset is gitignored (`/sf2/`, 247 MB) and exists only in the primary checkout, so a fresh git worktree cannot see it. Symlinked it into the lane (git-excluded, not committed) and the suite went green. Any lane that runs the SoundFont tests needs the same link.
+- 2026-08-01 – claude (implementer-ivan) – Verification. `cargo test --lib shell::visual`: 41 passed, 0 failed. Full `cargo test`: 508 lib plus every integration target, 0 failed across the suite. `make lint` (clippy `--all-targets -D warnings`) and `make fmt-check` both clean. Committed as `8f57722`.

@@ -211,8 +211,8 @@ Execution worktrees are allocated per computed lane from `lanes.json`.
      non-color mark.
   3. **ActionHints**: all four hint tones with representative content.
   4. **ShellBands**: the five structural bands, rendered from both density policies so the desktop and
-     Steam Deck compositions can be compared side by side. This is the page the operator reviews for
-     T008's authored Steam Deck policy — make it clear and label which is which.
+     compact compositions can be compared side by side. This is the page the operator reviews for
+     T008's authored compact policy — make it clear and label which is which.
   5. Every specimen must be **labeled with its state name**. A wall of unlabeled variants is not judgable,
      and NFR-005 requires each state legible without relying on color.
 
@@ -221,14 +221,14 @@ Execution worktrees are allocated per computed lane from `lanes.json`.
 - **Parallel?**: `[P]` — independent of T028.
 
 - **Notes**: Page 8 is the highest-value page in the mission — it is where the authored-not-measured
-  Steam Deck policy gets its only human check.
+  compact policy gets its only human check.
 
 ### Subtask T030 – Show both authored viewports
 
 - **Purpose**: NFR-003 and the witness both require both sizes to be actually rendered, not described.
 
 - **Steps**:
-  1. Render each page's specimens at both the Desktop and Steam Deck density policies.
+  1. Render each page's specimens at both the Desktop and compact density policies.
   2. Simplest approach that satisfies the witness: render both compositions within one window, each
      labeled, so a single screenshot shows both. Alternatively let a key toggle which policy is active —
      if you do, the page-walk observation must still record both as painted.
@@ -322,10 +322,11 @@ Never pipe test or demo output through `head`/`tail` — the pipe reports the pa
 - Is the generation delta genuinely 0 across a full page walk?
 - Could the observation pass without painting? Read where the counters increment.
 - Does `make demo-live` still point at the autonomous scene?
-- Page 8: do both viewport compositions render, and is the Steam Deck one actually reviewable?
+- Page 8: do both viewport compositions render, and is the compact one actually reviewable?
 
 ## Activity Log
 
 > **CRITICAL**: Activity log entries MUST be in chronological order (oldest first, newest last). Append at the END.
 
 - 2026-08-02T02:26:18Z – system – Prompt created.
+- 2026-08-02T07:35:32Z – implement-command – shell_pid=60108 – Implemented src/testing/component_gallery_scene.rs plus the --demo-live-component-library flag and Makefile target. Verified by running the real window: walked digits 1-8, pressed the unbound digit 9, closed the window. The emitted ComponentGalleryObservation satisfied all 15 witness.component_gallery predicates (pages 8/8, states 9/9, both viewports painted, bands retained at both policies, 0 clipped/overlapping text, token_source_exact, typeface_resolved, app_state_generation_delta 0, window_closed). make demo-live still runs the autonomous effects-and-buses witness (exit 0, 144 checkpoints, input-isolated). make test exit 0; clippy and fmt-check clean. Three real defects were found and fixed by the measurement itself: clipped band labels on page 8, a redundant page identity line, and an incorrect colour-count assertion. Note: the gallery window minimum is the Desktop authored viewport, not the Steam Deck one, because both compositions render side by side in one window.
