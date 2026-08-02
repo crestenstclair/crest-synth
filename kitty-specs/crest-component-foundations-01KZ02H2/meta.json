@@ -1,4 +1,16 @@
 {
+  "acceptance_history": [
+    {
+      "acceptance_mode": "pr",
+      "accepted_at": "2026-08-02T21:05:07.405124+00:00",
+      "accepted_by": "cresten",
+      "accepted_from_commit": "3d24ed8a70288a227d303999141fcaafb84b46fa"
+    }
+  ],
+  "acceptance_mode": "pr",
+  "accepted_at": "2026-08-02T21:05:07.405124+00:00",
+  "accepted_by": "cresten",
+  "accepted_from_commit": "3d24ed8a70288a227d303999141fcaafb84b46fa",
   "baseline_merge_commit": "61c5f90c052a6231e37c8389e32e7759ece7ca3d",
   "created_at": "2026-08-02T01:48:30.071306+00:00",
   "crest_spec_impact": "structural",
