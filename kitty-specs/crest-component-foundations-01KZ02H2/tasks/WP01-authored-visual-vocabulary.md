@@ -23,6 +23,7 @@ history:
   actor: system
   action: Prompt generated via /spec-kitty.tasks
 agent_profile: implementer-ivan
+agent: claude
 authoritative_surface: src/shell/visual/
 create_intent:
 - src/shell/visual/mod.rs

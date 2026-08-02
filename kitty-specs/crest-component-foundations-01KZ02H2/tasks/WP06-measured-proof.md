@@ -23,6 +23,7 @@ history:
   actor: system
   action: Prompt generated via /spec-kitty.tasks
 agent_profile: implementer-ivan
+agent: claude
 authoritative_surface: tests/component_vocabulary.rs
 create_intent:
 - tests/component_vocabulary.rs

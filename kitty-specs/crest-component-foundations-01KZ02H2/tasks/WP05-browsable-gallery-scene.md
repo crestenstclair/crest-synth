@@ -25,6 +25,7 @@ history:
   actor: system
   action: Prompt generated via /spec-kitty.tasks
 agent_profile: implementer-ivan
+agent: claude
 authoritative_surface: src/testing/component_gallery_scene.rs
 create_intent:
 - src/testing/component_gallery_scene.rs

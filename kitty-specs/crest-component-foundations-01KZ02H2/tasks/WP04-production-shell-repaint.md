@@ -24,6 +24,7 @@ history:
   actor: system
   action: Prompt generated via /spec-kitty.tasks
 agent_profile: implementer-ivan
+agent: claude
 authoritative_surface: src/adapter/eframe_graphical_window.rs
 create_intent: []
 execution_mode: code_change
