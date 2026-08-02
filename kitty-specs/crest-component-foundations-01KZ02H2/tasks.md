@@ -26,7 +26,7 @@ asset file pattern; nothing here restates implementation intent the crest-spec a
 | ID | Description | WP | Parallel |
 |---|---|---|---|
 | T001 | Create `src/shell/visual/` module tree with compiling stubs | WP01 | |
-| T002 | Declare the 13 semantic colors with authored values | WP01 | |
+| T002 | Declare the 17 semantic colors with authored values | WP01 | |
 | T003 | Declare the 8 type styles, 6 spacing steps, and geometry | WP01 | [P] |
 | T004 | Register the vendored typeface with typed failure on absence | WP01 | |
 | T005 | Record the three durable decisions in `DESIGN.md` | WP01 | [P] |

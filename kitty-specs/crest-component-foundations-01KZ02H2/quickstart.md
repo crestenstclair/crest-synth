@@ -22,7 +22,7 @@ input on purpose.
 
 | Key | Page | Shows |
 |---|---|---|
-| 1 | Colors | All 13 semantic colors with their canonical names |
+| 1 | Colors | All 17 semantic colors with their canonical names |
 | 2 | Type | All 8 type styles at their authored size, weight, line height, tracking |
 | 3 | Spacing and geometry | The 6 spacing steps, radii, keyline widths, 48 px minimum target |
 | 4 | Interaction states | Resting, focused, adjusting — keylines and the focus halo |

@@ -689,7 +689,7 @@ capabilities:
             SemanticVisualToken and equals its authored value exactly; every text run resolves to the
             authored family at its declared weight
         - action: compare the declared vocabulary against the authored design table
-          observes: all thirteen colors, all eight type styles, the six spacing steps, and the focus
+          observes: all seventeen colors, all eight type styles, the six spacing steps, and the focus
             halo radius/spread/opacity match exactly, measured through the production render path rather
             than a constructed table
         - action: search every adapter, view, scene, and test outside the vocabulary for a literal color,

@@ -13,7 +13,7 @@
   "purpose_tldr": "Give Crest Synth one shared source for every color, font, and measurement so the real screen finally matches the approved design.",
   "slug": "crest-component-foundations-01KZ02H2",
   "source_description": "Phase 4 (ROADMAP.md:170-184), first of two missions. Vocabulary, primitives, gallery scene, and production-shell repaint; controls, compositions, and demo-live-component-library deferred to the follow-on mission.",
-  "target_branch": "main",
+  "target_branch": "feat/crest-component-foundations",
   "topology": "coord",
   "vcs": "git"
 }

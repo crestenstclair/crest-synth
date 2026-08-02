@@ -3,7 +3,7 @@
 **Mission Branch**: `feat/crest-component-foundations` (merges to `main`)
 **Created**: 2026-08-02
 **Status**: Draft
-**Input**: Phase 4 (`ROADMAP.md:170-184`), first of two missions. Scope confirmed with the operator: the shared visual vocabulary, the reusable primitives, the gallery, and the production-shell repaint. Configurable controls, compositions, and `make demo-live-component-library` are deferred to the follow-on mission.
+**Input**: Phase 4 (`ROADMAP.md:170-184`), first of two missions. Scope confirmed with the operator: the shared visual vocabulary, the reusable primitives, the gallery, and the production-shell repaint. Configurable controls and compositions are deferred to the follow-on mission. The gallery ships with its `make demo-live-component-library` launch target — every scene gets a demo target.
 
 ## Crest-Spec Grounding
 
@@ -122,7 +122,7 @@ A maintainer assembling the real Patch or Mixer screen in a later phase reaches 
 
 | ID | Title | Requirement | Category | Priority | Status |
 |----|-------|-------------|----------|----------|--------|
-| NFR-001 | Exact authored-value fidelity | Every semantic color equals its authored value exactly across all 13 declared colors, and every one of the 8 type styles matches its authored family, weight, size, line height, and letter spacing exactly. Zero tolerated deviations, asserted by test. | Correctness | High | Open |
+| NFR-001 | Exact authored-value fidelity | Every semantic color equals its authored value exactly across all 17 declared colors, and every one of the 8 type styles matches its authored family, weight, size, line height, and letter spacing exactly. Zero tolerated deviations, asserted by test. | Correctness | High | Open |
 | NFR-002 | No visual literals outside the vocabulary | Zero literal color constructions, literal type sizes, or literal spacing constants exist in any adapter, view, or scene file outside the vocabulary module, enforced by an automated check rather than review. | Maintainability | High | Open |
 | NFR-003 | Both authored viewports render intact | At 1920×1080 and 1280×800, all five structural bands and the persistent side region remain visible, with zero clipped or overlapping text runs and every interactive target at or above the authored 48 px minimum. | Compatibility | High | Open |
 | NFR-004 | No real-time or control-path regression | The audio callback contract is unchanged: zero allocation, locking, blocking, I/O, or logging on the audio thread. Interactive rendering remains event-driven at the 16 ms idle cadence, and the 512-event control-path acceptance fixture stays within its declared 50 ms ceiling. | Performance | High | Open |
@@ -134,7 +134,7 @@ A maintainer assembling the real Patch or Mixer screen in a later phase reaches 
 | ID | Title | Constraint | Category | Priority | Status |
 |----|-------|------------|----------|----------|--------|
 | C-001 | eframe/egui stack only | The UI remains eframe/egui with egui_extras. No alternate GUI runtime and no third-party component system is introduced; Crest owns the component API, behavior, and visual contract. Binds `requirement.selected_egui_stack`. | Technical | High | Open |
-| C-002 | Bounded scope | Configurable controls, reusable compositions, and `make demo-live-component-library` are out of scope and belong to the follow-on Phase 4 mission. This mission ships the vocabulary, the primitives, the gallery, and the production repaint. | Scope | High | Open |
+| C-002 | Bounded scope | Configurable controls and reusable compositions are out of scope and belong to the follow-on Phase 4 mission. This mission ships the vocabulary, the primitives, the gallery, the production repaint, and the gallery's `make demo-live-component-library` launch target. Every scene in this project ships with a demo target; that is never deferred. | Scope | High | Open |
 | C-003 | Crest-spec authored before planning | `/spec-kitty.crest-spec` declares the new vocabulary, density policy, state descriptor, and gallery resources before `/spec-kitty.plan` derives from them, and `spec-kitty crest-spec doctor` stays green. | Process | High | Open |
 | C-004 | Two top-level contexts preserved | PATCH and MIXER remain the only top-level contexts. The gallery is a scene, never a third context. Its page selection is scene-local, never becomes a `SemanticAction`, and never enters canonical application state. | Technical | High | Open |
 | C-005 | Gallery input isolation is one-way | The gallery scene accepts input by design and therefore makes no exact-generation claim. It must not weaken the autonomous `demo-live-*` witness contract (`DESIGN.md:634-644`), which stays input-isolated. | Technical | High | Open |
@@ -167,7 +167,7 @@ A maintainer assembling the real Patch or Mixer screen in a later phase reaches 
 
 ### Measurable Outcomes
 
-- **SC-001**: All 13 authored colors and all 8 authored text styles render exactly as authored, with zero deviations, measured through the production render path.
+- **SC-001**: All 17 authored colors and all 8 authored text styles render exactly as authored, with zero deviations, measured through the production render path.
 - **SC-002**: A person launching the application recognizes the approved design from the screen alone, without consulting a log, a test report, or a design file.
 - **SC-003**: One command opens a real, browsable window; every declared gallery page is reachable by its number key; and every declared behavioral state of every primitive appears at both authored sizes with no declared state missing.
 - **SC-004**: Zero visual values remain defined outside the single shared source; changing any authored value in one place changes every appearance of it.

@@ -81,7 +81,7 @@ valueObjects:
     - SpacingStep
     - Geometry
     state:
-      color: the thirteen authored semantic colors addressed by their canonical authored names — background
+      color: the seventeen authored semantic colors addressed by their canonical authored names — background
         canvas/surface/panel/elevated/selected, border default/strong, text primary/secondary/muted, and
         accents focus/adjust/positive/warning plus the declared identity accents
       typeStyle: the eight authored styles, each carrying family, weight, size, line height, and letter

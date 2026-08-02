@@ -29,7 +29,7 @@ for no benefit. The design file remains the source for measurements `DESIGN.md` 
 **Decision**: Union both sets. Keep the design file's selected-row background *and* `DESIGN.md`'s
 elevated, strong border, patch, and chorus accents.
 
-**Rationale**: The design file publishes 13 color variables; `DESIGN.md` lists 15. Where both define a
+**Rationale**: The design file publishes 13 color variables; `DESIGN.md` lists 16. Where both define a
 value they agree exactly, so this is coverage, not conflict. The selected-row background is needed for
 multi-select; the four `DESIGN.md`-only accents are needed for identity and elevation. Trimming either
 source to match the other would delete a value some surface requires.
@@ -38,7 +38,8 @@ source to match the other would delete a value some surface requires.
 rejected, `DESIGN.md` is the product authority for what the product should be. Treating `DESIGN.md` as
 exhaustive and dropping the selected-row background — rejected for the same reason in the other direction.
 
-**Consequence**: 13 declared colors in `SemanticVisualToken`, recorded as a durable decision in
+**Consequence**: 17 declared colors in `SemanticVisualToken` — the 12 shared, the design file's
+`bg/selected`, and `DESIGN.md`'s four — recorded as a durable decision in
 `DESIGN.md` via `asset.ProductDesignAuthority`.
 
 ---

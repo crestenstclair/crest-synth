@@ -27,7 +27,7 @@ live*. That containment is why this mission can be measured for zero real-time a
 **Project Type**: single Rust workspace — hexagonal, one crate, contexts under `src/`
 **Performance Goals**: interactive rendering stays event-driven at the existing 16 ms idle cadence; token and policy resolution adds no per-frame allocation beyond what egui already owns; typeface registration happens once before the first painted frame
 **Constraints**: audio callback contract unchanged (zero allocation, locking, blocking, I/O, logging on the audio thread); the 512-event control-path acceptance fixture stays within its declared 50 ms ceiling; all five structural bands and the persistent side region retained at both authored viewports; no interactive target below 48 px
-**Scale/Scope**: 13 semantic colors, 8 type styles, 6 spacing steps, 4 typeface weights, 2 density policies, 9 component states, 7 primitive families, 8 gallery pages
+**Scale/Scope**: 17 semantic colors, 8 type styles, 6 spacing steps, 4 typeface weights, 2 density policies, 9 component states, 7 primitive families, 8 gallery pages
 
 ## Charter Check
 

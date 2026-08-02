@@ -74,7 +74,7 @@ values exactly, and make the vendored typeface actually renderable.
 Complete when:
 
 - `src/shell/visual/` exists as a compiling module tree, with stub files for the modules WP02 and WP03 fill in.
-- All 13 semantic colors, all 8 type styles, all 6 spacing steps, and the geometry values are declared with their authored values.
+- All 17 semantic colors, all 8 type styles, all 6 spacing steps, and the geometry values are declared with their authored values.
 - The vendored typeface registers in four weights, and an unavailable face produces a typed error rather than a fallback.
 - `DESIGN.md` records the three durable decisions.
 - A test proves each declared value equals its authored counterpart — comparing **values**, not names.
@@ -133,7 +133,7 @@ Execution worktrees are allocated per computed lane from `lanes.json`.
 
 - **Notes**: `primitives` may become a directory in WP03. Declaring it as `pub mod primitives;` works either way (`primitives.rs` or `primitives/mod.rs`), so WP03 can promote it without touching this file.
 
-### Subtask T002 – Declare the 13 semantic colors with authored values
+### Subtask T002 – Declare the 17 semantic colors with authored values
 
 - **Purpose**: One authoritative color set, addressed by canonical name, with raw values private.
 
