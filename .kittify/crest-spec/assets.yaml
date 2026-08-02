@@ -988,9 +988,11 @@ assets:
     prompts:
     - Vendor only the files the product renders plus the verbatim license, the upstream source and revision,
       and a hash manifest covering every vendored file.
-    - Upstream ships one variable font; the renderer resolves no variable axis and would paint every style
-      at the default instance. Derive the four authored static weights from it and record the exact reproducible
-      derivation rather than hand-editing outlines, metrics, or naming.
+    - Upstream ships one variable font. The glyph layer supports variation axes but the font-registration
+      layer above it exposes only file bytes, a face index, and a scale tweak, so a variable font paints
+      every style at its default instance. Derive the four authored static weights from the variable source
+      and record the exact reproducible derivation rather than hand-editing outlines, metrics, or naming.
+      Re-evaluate if that registration layer ever exposes an axis.
     - Never generate or rewrite these binaries from the crest-spec. Replacing them is a deliberate authorial
       act that updates the manifest and provenance in the same change.
     contributesTo:

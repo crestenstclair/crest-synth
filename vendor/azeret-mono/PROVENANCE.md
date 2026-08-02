@@ -10,9 +10,13 @@ Regular, Medium, SemiBold, and Bold weights.
   Copyright 2021 The Azeret Project Authors.
 
 `AzeretMono[wght].ttf` is the upstream variable font, retained byte-exact as the
-provenance record. egui renders through `ab_glyph`, which has no variable-axis
-support and would otherwise paint every style at the font's default instance, so
-the four static weights Crest actually uses are derived from it:
+provenance record. `ab_glyph` 0.2.32 does expose variation axes through its
+`VariableFont` trait, but `epaint` 0.32.3 — the layer egui actually registers
+fonts through — does not: `FontData` carries only the file bytes, a font-face
+`index`, and a scale/offset `FontTweak`, and `epaint` never calls
+`set_variation` anywhere. A variable font handed to egui therefore paints every
+style at its default instance. The four static weights Crest uses are derived
+from the variable source instead:
 
 ```
 fonttools varLib.instancer "AzeretMono[wght].ttf" wght=<400|500|600|700> \
