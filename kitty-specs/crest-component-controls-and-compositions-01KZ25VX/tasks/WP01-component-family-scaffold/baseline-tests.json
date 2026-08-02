@@ -1,0 +1,19 @@
+{
+  "wp_id": "WP01",
+  "captured_at": "2026-08-02T23:31:31Z",
+  "base_branch": "feat/crest-component-controls-and-compositions",
+  "base_commit": "1f609d2ba3051bce6eb5f106aee3e5a070c544cc",
+  "test_runner": "custom",
+  "total": 1,
+  "passed": 0,
+  "failed": 1,
+  "skipped": 0,
+  "failures": [
+    {
+      "test": "<declared-command>",
+      "error": "For more information, try '--help'.",
+      "file": "unknown"
+    }
+  ],
+  "source_identity": "DeclaredCommandScopeSource/text"
+}
