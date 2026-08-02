@@ -7,6 +7,8 @@ dependencies:
 requirement_refs:
 - FR-005
 - FR-006
+- NFR-003
+- NFR-005
 planning_base_branch: feat/crest-component-controls-and-compositions
 merge_target_branch: feat/crest-component-controls-and-compositions
 branch_strategy: Planning artifacts for this mission were generated on feat/crest-component-controls-and-compositions. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/crest-component-controls-and-compositions unless the human explicitly redirects the landing branch.
@@ -22,7 +24,6 @@ history:
 - at: '2026-08-02T21:46:28Z'
   actor: system
   action: Prompt generated via /spec-kitty.tasks
-agent: claude
 agent_profile: paula-patterns
 authoritative_surface: src/adapter/
 create_intent: []
