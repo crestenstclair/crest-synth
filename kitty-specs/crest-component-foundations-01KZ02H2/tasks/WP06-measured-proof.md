@@ -279,3 +279,78 @@ recorded that way is a lie. Redirect to a file.
 > **CRITICAL**: Activity log entries MUST be in chronological order (oldest first, newest last). Append at the END.
 
 - 2026-08-02T02:26:18Z – system – Prompt created.
+- 2026-08-02T11:35:00Z – claude – **T033–T038 complete.** `tests/component_vocabulary.rs` created (11 tests). Declared
+  validation run by redirect, never through a pipe:
+  `cargo test --test component_vocabulary -- --nocapture > /tmp/wp06i.log 2>&1` → `exit=0`, stdout carries
+  `CREST_ACCEPTANCE component_vocabulary passed`. `make test` → exit 0, 27/27 targets ok. `make lint` → exit 0.
+  `make fmt-check` → exit 0.
+- 2026-08-02T11:35:00Z – claude – **Independence of the expected values (T034).** The authored table is transcribed from
+  `DESIGN.md` § Colors and § Type and geometry, not read back from `token.rs`. Colors are written as the `#rrggbb`
+  strings the design file publishes and parsed by a hex parser local to the test, so nothing shares a derivation with
+  the vocabulary's `Color32::from_rgb(0x.., 0x.., 0x..)`. Both directions are asserted — every authored entry has a
+  declaration and every declaration has an authored entry — plus counts (17 / 8 / 6 / 3), so a dropped token fails
+  rather than passing by absence.
+- 2026-08-02T11:35:00Z – claude – **The render path is the production one (T034, T036).** `paint_production_frames`
+  drives the real `EframeGraphicalApplication` through a real `egui::Context` with `install_authored_typeface`, at
+  1920×1080 and 1280×800 in both PATCH and MIXER, and reads the emitted `epaint` shapes. 334 glyph runs measured.
+  Every painted fill, stroke, glyph, and halo resolves through the authored table with **zero exceptions**; every glyph
+  run matches exactly one authored style's family, size, line height, and tracking; every stroked keyline is 1 px or
+  3 px. No limitation was needed here — reaching the render path was practical.
+- 2026-08-02T11:35:00Z – claude – **Six production defects found by measuring rather than declaring, and fixed.**
+  Operator was consulted on the first two and directed "fix the adapter, assert the real claim" and "fix it too, allow
+  nothing"; the remaining four are the same categories found while implementing that direction. All fixes are in
+  `src/adapter/eframe_graphical_window.rs`, which is WP04's authoritative surface — recorded here explicitly because
+  WP06 owns only `tests/component_vocabulary.rs`:
+  (1) **Every interactive target was below the authored 48 px minimum** — valid-action buttons 18 px, semantic control
+  rows 38 px, the diagnostic collapsing header 22 px. Both density policies already declared ≥ 48 px; the adapter never
+  applied it. Now `MIN_INTERACTIVE_TARGET_PX` binds each. Measured after: buttons and header 48 px, rows 50 px resting
+  / 54 px focused.
+  (2) **Four unauthored grays reached the screen** — the meter's unfilled track (`#0a0a0a`), the rule between panels and
+  beside an indented body (`#3c3c3c`), and the disclosure triangle (`#b4b4b4`), all from the rendering stack's default
+  visuals. `install_authored_chrome` now names them as authored roles once per context.
+  (3) **A mixer track's controls ran left to right instead of stacking**, because `egui::Frame` inherits the enclosing
+  horizontal layout; each row's right-aligned value landed on top of its label at both viewports. Fixed with an explicit
+  `ui.vertical` and `set_width` for the column.
+  (4) **The meter's `Code/Value` text was taller than the bar holding it** (20 px text in an 18 px bar). The bar now
+  takes its height from that type style.
+- 2026-08-02T11:35:00Z – claude – **The literal guard is shown failing, twice (T035).**
+  `the_literal_guard_reports_a_planted_literal` feeds planted samples covering all four families (raw-channel colors,
+  authored palette hex, font-size literals, spacing literals) and asserts each is reported with file, line, and kind;
+  `the_literal_guard_allows_what_the_vocabulary_permits` asserts named constants, `Color32::TRANSPARENT`, resolved
+  tokens, zero, and comment narration stay clean. Falsified against the **real tree** as well: a
+  `Color32::from_rgb(0x65, 0xe5, 0xff)` planted in `src/adapter/production_effects.rs` produced
+  `src/adapter/production_effects.rs:890: color literal outside the vocabulary` and
+  `…:890: palette literal outside the vocabulary — color/accent/focus (#65e5ff) is spelled here`; the file was restored
+  and `git diff --stat` is clean. The scan reads 59 sources / 40 990 lines, and asserts that footprint before asserting
+  emptiness so it cannot pass vacuously.
+- 2026-08-02T11:35:00Z – claude – **Recorded limitations, stated rather than downgraded** (all also in the module docs):
+  (a) *Spacing steps do not reach the shape stream* — `ui.add_space` emits no shape, so what is measured for spacing is
+  the band/split arithmetic plus the declared step values.
+  (b) *Corner radii are not asserted through the render path* — the rendering stack composes its own radii for the
+  widgets it owns; radii are compared at the declaration.
+  (c) *Interactive-target measurement is split in two* — the shell's own framed rects are measured as painted geometry;
+  the pointer targets the stack lays out are read from its interactive-widget registry via the debug overlay, filtered
+  to the click-only sense because the stack registers every label as click-and-drag for text selection.
+  (d) *Clipping is asserted only where nothing scrolls* — the shell composes three scroll regions whose content
+  legitimately exceeds their viewport at 1280×800 and a shape stream cannot tell "scrolled" from "cut". Containment is
+  asserted for the two bands with no scroll region inside them; the other 14 runs that left their container are counted
+  and reported as `runs_scrolled_out_of_view` in the observation line. Overlap is asserted only between runs that are
+  both fully visible.
+  (e) *Per-page painted specimen coverage lives elsewhere* — `paint_gallery` is private to
+  `src/testing/component_gallery_scene.rs`, so this target proves page/digit totality in both directions and leaves
+  "every state painted a specimen at both authored sizes" to that module's own tests over its real paint pass.
+- 2026-08-02T11:35:00Z – claude – **Open design question for a follow-on mission, not answered here.** At 1280×800 the
+  footer's valid-action hints and the mixer track strip extend past the right edge and are reachable only by scrolling.
+  That is inside the shell's declared scroll regions, so it is not asserted as a defect, but whether a controller-first
+  Steam Deck layout should scroll its action hints at all is a design decision `DESIGN.md` does not settle.
+- 2026-08-02T11:35:00Z – claude – **Marker discipline (T033).** `CREST_ACCEPTANCE component_vocabulary passed` is
+  printed by `component_vocabulary_acceptance` and nowhere else, strictly after every check function returns; a failing
+  check panics before the print. The same checks are also exposed as ten individual `#[test]`s so a failure names which
+  claim broke.
+- 2026-08-02T11:35:00Z – claude – **Verified by running the program.** `cargo run --bin crest-synth` opened the real
+  window; a screenshot confirms the mixer now renders as stacked track columns with label left and value right and no
+  collision, the focus keyline is the authored cyan, the footer targets are full height, and the band rules are the
+  authored hairline.
+- 2026-08-02T11:35:00Z – claude – Note for whoever runs this next: `sf2/` is gitignored and absent from a fresh
+  worktree, so the render-path tests (and the pre-existing `graphical_application_shell` ones) need it symlinked in.
+  Nothing was committed for it.
