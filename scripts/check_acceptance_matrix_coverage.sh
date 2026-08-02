@@ -15,6 +15,15 @@
 # record omits a declared kind is named individually rather than folded into a
 # count.
 #
+# Scope: a mission is graded once it has actually run acceptance (it has a
+# deterministic-acceptance.json) and has not yet been archived. That is the
+# window where grading can still change an outcome, and it is what "acceptance
+# record" in the declaration names — a mission that never reached the gate has a
+# scaffolded placeholder matrix, not a record, and an archived mission's record
+# is closed history the operator has already signed off. Grading either forever
+# would make every future archive re-litigate missions that shipped months ago,
+# which blocks work without protecting anything.
+#
 # A mission whose acceptance record is not present on this surface is reported
 # as not-yet-graded and does not fail the check. Under coordination topology the
 # matrix is a coordination-partition artifact that lives on the coordination
@@ -58,6 +67,36 @@ from pathlib import Path
 
 VALIDATION = os.environ["VALIDATION_NAME"]
 MISSIONS = Path(os.environ["MISSIONS_DIR"])
+ARCHIVE_LEDGER = MISSIONS.parent / ".kittify" / "archive" / "archived-missions.jsonl"
+
+
+def archived_mission_ids() -> set[str]:
+    """Mission ids the operator has formally archived (closed history)."""
+    ids: set[str] = set()
+    if not ARCHIVE_LEDGER.is_file():
+        return ids
+    for line in ARCHIVE_LEDGER.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        mission_id = record.get("mission_id")
+        if mission_id:
+            ids.add(mission_id)
+    return ids
+
+
+def mission_id_of(mission_dir: Path) -> str | None:
+    meta = mission_dir / "meta.json"
+    if not meta.is_file():
+        return None
+    try:
+        return json.loads(meta.read_text(encoding="utf-8")).get("mission_id")
+    except (OSError, json.JSONDecodeError):
+        return None
 
 # The kinds a specification can declare that an acceptance record must grade.
 # Success criteria (SC-) are graded by some missions and are accepted when
@@ -104,12 +143,22 @@ def graded_kinds(matrix_path: Path) -> tuple[set[str], str | None]:
 
 failures: list[str] = []
 ungraded: list[str] = []
+out_of_scope: list[str] = []
 checked = 0
+archived = archived_mission_ids()
 
 for mission_dir in sorted(p for p in MISSIONS.iterdir() if p.is_dir()):
     spec = mission_dir / "spec.md"
     if not spec.is_file():
         continue
+
+    if mission_id_of(mission_dir) in archived:
+        out_of_scope.append(f"{mission_dir.name} (archived)")
+        continue
+    if not (mission_dir / "deterministic-acceptance.json").is_file():
+        out_of_scope.append(f"{mission_dir.name} (has not run acceptance)")
+        continue
+
     matrix = mission_dir / "acceptance-matrix.json"
     if not matrix.is_file():
         # No acceptance record on this surface — nothing to grade yet.
@@ -142,6 +191,8 @@ if checked == 0:
     print("  no mission carried both a specification and an acceptance record", file=sys.stderr)
     sys.exit(1)
 
+for name in out_of_scope:
+    print(f"out of scope: {name}")
 for name in ungraded:
     print(f"not yet graded (no acceptance record on this surface): {name}")
 print(f"graded {checked} mission acceptance record(s) against {', '.join(REQUIRED_KINDS)}")
