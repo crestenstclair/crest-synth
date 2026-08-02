@@ -1,20 +1,20 @@
 {
-  "event_count": 7,
-  "last_event_id": "01KZ24R632R4X8NGAPCQVQAXK3",
-  "materialized_at": "2026-08-02T21:05:49.154100+00:00",
+  "event_count": 8,
+  "last_event_id": "01KZ24R7P2Z42PG9ZM1XHTT363",
+  "materialized_at": "2026-08-02T21:05:50.786450+00:00",
   "mission_number": "",
   "mission_slug": "falsifiable-journey-proof-01KYZTQ1",
   "mission_type": "software-dev",
   "summary": {
     "approved": 0,
     "blocked": 0,
-    "canceled": 1,
+    "canceled": 2,
     "claimed": 0,
     "done": 0,
     "for_review": 0,
     "in_progress": 0,
     "in_review": 0,
-    "planned": 5
+    "planned": 4
   },
   "work_packages": {
     "WP01": {
@@ -22,14 +22,17 @@
       "force_count": 0,
       "lane": "canceled",
       "last_event_id": "01KZ24R632R4X8NGAPCQVQAXK3",
-      "last_transition_at": "2026-08-02T21:05:49.154100+00:00"
+      "last_transition_at": "2026-08-02T21:05:49.154100+00:00",
+      "notes": [
+        "Parked before implementation per PARKED.md; delivers no synth. WP04 superseded by scripts/check_acceptance_matrix_coverage.sh"
+      ]
     },
     "WP02": {
-      "actor": "finalize-tasks",
+      "actor": "user",
       "force_count": 0,
-      "lane": "planned",
-      "last_event_id": "01KYZXC5YJZRS0Y8HS07NV5PHY",
-      "last_transition_at": "2026-08-02T00:18:26.898619+00:00"
+      "lane": "canceled",
+      "last_event_id": "01KZ24R7P2Z42PG9ZM1XHTT363",
+      "last_transition_at": "2026-08-02T21:05:50.786450+00:00"
     },
     "WP03": {
       "actor": "finalize-tasks",
