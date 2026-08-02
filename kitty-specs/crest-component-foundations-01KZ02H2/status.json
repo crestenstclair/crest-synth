@@ -1,16 +1,16 @@
 {
-  "event_count": 0,
-  "last_event_id": null,
-  "materialized_at": "",
-  "mission_number": "",
-  "mission_slug": "",
+  "event_count": 60,
+  "last_event_id": "01KZ22XNA5WS0KS0N234ZTVDY4",
+  "materialized_at": "2026-08-02T20:33:51.429400+00:00",
+  "mission_number": "2",
+  "mission_slug": "crest-component-foundations-01KZ02H2",
   "mission_type": "software-dev",
   "summary": {
     "approved": 0,
     "blocked": 0,
     "canceled": 0,
     "claimed": 0,
-    "done": 0,
+    "done": 6,
     "for_review": 0,
     "in_progress": 0,
     "in_review": 0,
@@ -18,16 +18,171 @@
   },
   "work_packages": {
     "WP01": {
-      "actor": "operator",
+      "actor": "merge",
+      "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
+      "force_count": 1,
+      "lane": "done",
+      "last_event_id": "01KZ22XGXHDVE9P36593TJXJ6Q",
+      "last_transition_at": "2026-08-02T20:33:46.929751+00:00",
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Vocabulary, typeface, and DESIGN.md decisions landed. 15 new unit tests; full suite green (482 lib + all integration targets, 0 failures). Lane fixes required first: merged feat/ into the mission branch and lane-a (lane lacked vendor/azeret-mono and the crest-spec proof files), and linked sf2/ fixtures. Note: the three WP02/WP03 stubs T001 mandates are in create_intent but not owned_files, so the scope guard warns on them.",
+        "Review cycle 1 R1 fixed: NFR-006 now has four assertions in src/shell/visual/typeface.rs (byte-exact SHA256 over every manifest entry, manifest-vs-directory path-set equality, verbatim OFL 1.1 text, PROVENANCE upstream+derivation), mirroring tests/static_patch_effect.rs:269. Guard mutation-checked — a flipped hash character fails it by name. 19 visual unit tests; full suite green, 0 failures. Non-blocking N1 (no production caller yet) and N2 (three stubs in create_intent but not owned_files) remain as recorded; N1 is WP04's to close by deleting the seven adapter constants.",
+        "Cycle 3 review passed; cycle-2 rejection (R1) is resolved. NFR-006 is now test-enforced in typeface.rs — SHA256 manifest recompute, manifest/directory set equality, verbatim OFL 1.1, PROVENANCE upstream + varLib.instancer derivation naming wght 400/500/600/700. Mutation-verified: appending a byte to OFL.txt and adding an unlisted face each fail the suite. All 17 colors, 8 type styles, 6 spacing steps and geometry match DESIGN.md exactly; expected values are independent literals. Raw values private to token.rs. Missing/empty face returns typed TypefaceError. cargo test --lib shell::visual 19/19; make test 486 lib + all integration targets, 0 failures; make lint and make fmt-check clean. Carry-forward (non-blocking): N1 no production caller yet — WP04 must delete the 7 adapter constants at src/adapter/eframe_graphical_window.rs:28-34 and its reviewer must require a shell::visual grep hit; N2 owned_files still omits the density/state/primitives stubs that create_intent lists, so the commit guard logs ACTIVE_WP_SCOPE_VIOLATION; N3 mod.rs re-exports are a shared surface — WP02/WP03 should use full paths; N4 load() detects missing and empty faces but not a non-empty unparseable one, which panics inside epaint fonts.rs:215 at set_fonts instead of returning TypefaceError — the hash test guards the vendored files and ab_glyph is not a direct dependency, so the fix belongs with WP04's error surfacing.",
+        "Review cycle 3: R1 discharged and mechanically falsified"
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 89759,
+      "shell_pid_created_at": "1785702693.884003",
+      "subtasks": {
+        "T001": "done",
+        "T002": "done",
+        "T003": "done",
+        "T004": "done",
+        "T005": "done",
+        "T006": "done"
+      }
+    },
+    "WP02": {
+      "actor": "merge",
+      "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
-      "lane": "uninitialized",
-      "last_event_id": null,
-      "last_transition_at": null,
-      "review": {
-        "actor": "operator",
-        "at": "2026-08-02T04:08:45Z",
-        "reason": "Cycle 3 review passed; cycle-2 rejection (R1) is resolved. NFR-006 is now test-enforced in typeface.rs — SHA256 manifest recompute, manifest/directory set equality, verbatim OFL 1.1, PROVENANCE upstream + varLib.instancer derivation naming wght 400/500/600/700. Mutation-verified: appending a byte to OFL.txt and adding an unlisted face each fail the suite. All 17 colors, 8 type styles, 6 spacing steps and geometry match DESIGN.md exactly; expected values are independent literals. Raw values private to token.rs. Missing/empty face returns typed TypefaceError. cargo test --lib shell::visual 19/19; make test 486 lib + all integration targets, 0 failures; make lint and make fmt-check clean. Carry-forward (non-blocking): N1 no production caller yet — WP04 must delete the 7 adapter constants at src/adapter/eframe_graphical_window.rs:28-34 and its reviewer must require a shell::visual grep hit; N2 owned_files still omits the density/state/primitives stubs that create_intent lists, so the commit guard logs ACTIVE_WP_SCOPE_VIOLATION; N3 mod.rs re-exports are a shared surface — WP02/WP03 should use full paths; N4 load() detects missing and empty faces but not a non-empty unparseable one, which panics inside epaint fonts.rs:215 at set_fonts instead of returning TypefaceError — the hash test guards the vendored files and ab_glyph is not a direct dependency, so the fix belongs with WP04's error surfacing.",
-        "wp_id": "WP01"
+      "lane": "done",
+      "last_event_id": "01KZ22XHW429JSAR160P9BG2CQ",
+      "last_transition_at": "2026-08-02T20:33:47.908889+00:00",
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: both density policies declared with provenance recorded, closed nine-value ComponentState with Loading/Error mapped onto the structural-edit vocabulary; 41 shell::visual tests and the full suite green, lint and fmt clean. Steam Deck policy is authored and flagged for the operator's visual review.",
+        "Review passed. Anti-pattern checklist all PASS. Desktop policy verified byte-for-byte against eframe_graphical_window.rs:17-25 (1920x1080, 48/72/64, side 420); both policies tile their viewport exactly (48+72+896+64=1080, 1500+420=1920; 40+60+644+56=800, 960+320=1280); side region narrowed to 320 never hidden; ComponentState closed at 9 with no catch-all; Loading/Error carry text (ProgressWord/TypedFailure), no animation. 41 shell::visual tests pass, full suite 508 lib + all integration targets 0 failed, clippy -D warnings and fmt-check clean. Shared-file note: mod.rs re-export lines only (WP01-owned, explicitly permitted by prompt, logged). Carry-forward for WP05: SteamDeck policy is authored not measured and still needs the operator's visual review."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 36242,
+      "shell_pid_created_at": "1785645656.845172",
+      "subtasks": {
+        "T007": "done",
+        "T008": "done",
+        "T009": "done",
+        "T010": "done",
+        "T011": "done",
+        "T012": "done"
+      }
+    },
+    "WP03": {
+      "actor": "merge",
+      "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ22XJQWQ95ENFZG198QYTRV",
+      "last_transition_at": "2026-08-02T20:33:48.796978+00:00",
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "T013-T019 complete. Seven primitive families in src/shell/visual/primitives/; all passive over immutable data plus an explicit ComponentState. Verified: cargo test --lib shell::visual 88/88; make test 555 lib + all integration targets, 0 failures; make lint and make fmt-check clean. T019 guards mutation-verified (forbidden import, wildcard arm, missing source, color-only selection each fail then restore). Three deliberate decisions in the Activity Log: keyline is 1px border/strong not 3px (3px means focus); the frame paints for every state declaring the emphasis width, so WP02's Loading/Error emphasis is not dropped; Disabled paints its declared 'Locked' word despite the T017 note, because FR-005 names disabled among the states that must read without color. Reviewer note: sf2/ is gitignored and absent from a fresh lane worktree, so SoundFont-backed tests fail with Asset(FileOpen) until it is symlinked from the repo root.",
+        "R1 fixed: ownership guard now scans full source text for the seven non-visual crate roots plus a relative-path escape; module doc corrected to state exactly what is proven. Mutation-verified with the reviewer's inline snippet. 49/49 primitives, 90/90 shell::visual, make test 557 lib + all integration targets, lint and fmt clean.",
+        "Review passed (cycle 3): R1 closed and independently mutation-verified in the lane worktree; 557/557 lib tests, lint and fmt clean; all 8 anti-pattern items PASS. Findings recorded in review-cycle-3.md."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 94602,
+      "shell_pid_created_at": "1785649684.515381",
+      "subtasks": {
+        "T013": "done",
+        "T014": "done",
+        "T015": "done",
+        "T016": "done",
+        "T017": "done",
+        "T018": "done",
+        "T019": "done"
+      }
+    },
+    "WP04": {
+      "actor": "merge",
+      "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ22XKKNKEXNY11D4BKWV8JM",
+      "last_transition_at": "2026-08-02T20:33:49.685873+00:00",
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Adapter repainted through the authored vocabulary: 7 colour + 9 layout constants deleted, typeface installed with typed failure, WindowKey 21 to 33 descriptors, unbound digits produce no action. make test/lint/fmt-check all exit=0; demo-live 105/105 audio predicates passed.",
+        "Review passed. Verified independently: make test exit=0 (563 lib + all integration, redirected to file), make lint exit=0, make fmt-check exit=0. Zero color/type-size literals remain in the adapter (grep for Color32::from/RichText/monospace/FontId returns nothing). Descriptor assertion is exact equality at 33 (assert_eq!, not >=), ALL_WINDOW_KEYS=16 with duplicate and completeness checks. Digit3-Digit8 translate to None on down and up and under the K modifier, with no gallery binding added. src/real_time/ untouched (0 commits). Ran make run myself and captured the frame: cyan focus keyline, #0c1015 canvas, Azeret Mono throughout, '>' focus cursor present, band boundaries identical to the pre-WP capture. New render test drives the real adapter through a real egui::Context and asserts on emitted shapes, so the palette and typeface claims are falsifiable rather than described. Anti-pattern checklist: 1 dead-code PASS-with-note, 2 synthetic-fixture PASS, 3 silent-empty-return PASS, 4 FR coverage PASS (FR-006, NFR-004), 5 frozen surface PASS, 6 locked decision PASS, 7 shared-file ownership PASS (files touched outside owned_files -- src/testing/demo_scene.rs, src/testing/exhaustive_gui_demo.rs, tests/*.rs -- are owned by no other WP in this mission and the edits were compile-forced by the 21->33 change), 8 production fragility PASS. Two non-blocking notes carried forward: (a) install_authored_typeface and ALL_WINDOW_KEYS are pub with test-only callers today -- WP05's gallery scene builds its own egui::Context and should consume the former, otherwise WP06 should narrow visibility; (b) the mixer track-strip label/value overlap is pre-existing, confirmed by me in both the before and after captures, correctly disclosed and correctly left out of scope."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 48743,
+      "shell_pid_created_at": "1785652962.526923",
+      "subtasks": {
+        "T020": "done",
+        "T021": "done",
+        "T022": "done",
+        "T023": "done",
+        "T024": "done",
+        "T025": "done"
+      }
+    },
+    "WP05": {
+      "actor": "merge",
+      "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ22XMEHJGE6RV78TC92HDBA",
+      "last_transition_at": "2026-08-02T20:33:50.545849+00:00",
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: browsable component gallery scene, verified live against all 15 witness.component_gallery predicates",
+        "Review cycle 1 fixes: gallery window minimum bounded to the display (footer band now on screen), state coverage measured per density policy, page 6 specimens named by state. Re-verified live: all 15 witness predicates, 24 unit tests, make test exit 0, clippy and fmt clean.",
+        "Review passed (cycle 2). The rejected review-cycle-2.md is superseded by review-cycle-3.md (verdict: approved) — all three cycle-1 issues are fixed and each fix was verified by running the window. The gallery now opens 1280x888 at (320,71) on a 1920x1080 display with the footer band on screen; the compile-time bound was falsified by raising the constant, which fails compilation as declared. states_painted is indexed per density policy and the shortfall test proves it reports 8 when one composition's record is removed. Page 6 rows lead with the state name. Live walk of 1-8 then the unbound 9: the page-9 and page-8 screenshots are byte-identical while page-7 differs. All 15 witness.component_gallery predicates satisfied, app_state_generation_delta 0. 24 gallery tests, make test exit 0 (587 lib plus every integration target), clippy 0 warnings, fmt clean. make demo-live still the autonomous witness (144 checkpoints, 0 dropped, cleanup=true). Ownership exact across the four declared owned_files. WP06 must rebase: minimum_gallery_viewport() and the meaning of states_painted both changed."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 49870,
+      "shell_pid_created_at": "1785691773.709427",
+      "subtasks": {
+        "T026": "done",
+        "T027": "done",
+        "T028": "done",
+        "T029": "done",
+        "T030": "done",
+        "T031": "done",
+        "T032": "done"
+      }
+    },
+    "WP06": {
+      "actor": "merge",
+      "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ22XNA5WS0KS0N234ZTVDY4",
+      "last_transition_at": "2026-08-02T20:33:51.429400+00:00",
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: production render-path proof of authored values, literal-absence guard shown failing, viewport integrity, state legibility, page totality, typed typeface failure. Six adapter defects found and fixed.",
+        "Review passed: authored table verified line-by-line against DESIGN.md (17 colors, 8 type styles, spacing/radii/keylines/halo all exact). Falsified 6 ways — planted literal in the real tree, drifted token, and adapter reverted to pre-WP06 — each broke the right test (guard reports file:line; 4 mixer collisions and 3 unauthored grays reappear). make test 27/27, lint and fmt-check clean; ran the binary and confirmed by screenshot. Coordination: this WP also carries 146 lines in src/adapter/eframe_graphical_window.rs, WP04's authoritative surface — disclosed in the Activity Log, operator-directed, WP04 already approved and upstream of lane-f so no concurrent writer."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 8957,
+      "shell_pid_created_at": "1785696185.390847",
+      "subtasks": {
+        "T033": "done",
+        "T034": "done",
+        "T035": "done",
+        "T036": "done",
+        "T037": "done",
+        "T038": "done"
       }
     }
   }

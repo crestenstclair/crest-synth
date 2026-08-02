@@ -2609,6 +2609,12 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
     match (input.kind(), input.key()) {
         (WindowInputKind::KeyDown, WindowKey::Digit1) => "keyDown.digit1",
         (WindowInputKind::KeyDown, WindowKey::Digit2) => "keyDown.digit2",
+        (WindowInputKind::KeyDown, WindowKey::Digit3) => "keyDown.digit3",
+        (WindowInputKind::KeyDown, WindowKey::Digit4) => "keyDown.digit4",
+        (WindowInputKind::KeyDown, WindowKey::Digit5) => "keyDown.digit5",
+        (WindowInputKind::KeyDown, WindowKey::Digit6) => "keyDown.digit6",
+        (WindowInputKind::KeyDown, WindowKey::Digit7) => "keyDown.digit7",
+        (WindowInputKind::KeyDown, WindowKey::Digit8) => "keyDown.digit8",
         (WindowInputKind::KeyDown, WindowKey::Q) => "keyDown.q",
         (WindowInputKind::KeyDown, WindowKey::E) => "keyDown.e",
         (WindowInputKind::KeyDown, WindowKey::W) => "keyDown.w",
@@ -2619,6 +2625,12 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyDown, WindowKey::Other) => "keyDown.other",
         (WindowInputKind::KeyUp, WindowKey::Digit1) => "keyUp.digit1",
         (WindowInputKind::KeyUp, WindowKey::Digit2) => "keyUp.digit2",
+        (WindowInputKind::KeyUp, WindowKey::Digit3) => "keyUp.digit3",
+        (WindowInputKind::KeyUp, WindowKey::Digit4) => "keyUp.digit4",
+        (WindowInputKind::KeyUp, WindowKey::Digit5) => "keyUp.digit5",
+        (WindowInputKind::KeyUp, WindowKey::Digit6) => "keyUp.digit6",
+        (WindowInputKind::KeyUp, WindowKey::Digit7) => "keyUp.digit7",
+        (WindowInputKind::KeyUp, WindowKey::Digit8) => "keyUp.digit8",
         (WindowInputKind::KeyUp, WindowKey::Q) => "keyUp.q",
         (WindowInputKind::KeyUp, WindowKey::E) => "keyUp.e",
         (WindowInputKind::KeyUp, WindowKey::W) => "keyUp.w",
@@ -2761,7 +2773,7 @@ mod tests {
             .expected_coverage()
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
-        assert_eq!(WindowInput::surface_descriptor().len(), 21);
+        assert_eq!(WindowInput::surface_descriptor().len(), 33);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
             26

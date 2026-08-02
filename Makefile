@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-effects-and-buses demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell semantic-graphical-view-model-acceptance clean
+.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-effects-and-buses demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell demo-live-component-library semantic-graphical-view-model-acceptance clean
 
 help: ## Show the available project commands
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -54,6 +54,11 @@ demo-live-semantic-view-model: ## Run the Phase Two semantic view model with a r
 
 demo-live-graphical-shell: ## Run the Phase One shell with a real window and physical audio
 	cargo run --release --bin crest-synth -- --demo-live-graphical-shell
+
+# Browsable by hand, not autonomous: it waits for the operator and is
+# deliberately not part of the demo-live alias group above.
+demo-live-component-library: ## Browse the component gallery by hand — digit keys 1-8 change page, closing the window finishes
+	cargo run --release --bin crest-synth -- --demo-live-component-library
 
 semantic-graphical-view-model-acceptance: ## Prove the deterministic Phase Two semantic view model
 	cargo test --test semantic_graphical_view_model -- --nocapture

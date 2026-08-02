@@ -137,7 +137,24 @@ fn run(options: Options) -> Result<()> {
         .context("failed to validate the production composition")
     };
 
-    if options.demo_live {
+    if options.demo_component_library {
+        // Browsable rather than autonomous: no milestone timeout, no total
+        // timeout, and no generation correlation. It finishes when the operator
+        // closes the window.
+        eprintln!(
+            "crest-synth component gallery: browsable and operator-driven. Press 1-8 to change page, press 9 for a digit that binds no page, then close the window to finish. Page selection is scene-local and changes no application state."
+        );
+        let observation = crest_synth::testing::ComponentGalleryScene::new()
+            .context("failed to construct the component gallery scene")?
+            .run()
+            .context("component gallery execution failed")?;
+        let json = serde_json::to_string(&observation)
+            .context("failed to serialize the component gallery observation")?;
+        println!(
+            "{}{json}",
+            crest_synth::testing::COMPONENT_GALLERY_OBSERVATION_MARKER
+        );
+    } else if options.demo_live {
         let scene_kind = if options.demo_live_effects_and_buses {
             LiveSceneKind::EffectsAndBuses
         } else {
@@ -263,6 +280,10 @@ struct Options {
     demo_live_semantic: bool,
     demo_live_sixteen_track: bool,
     demo_live_effects_and_buses: bool,
+    /// The browsable component gallery. Deliberately not a `demo_live` scene:
+    /// it accepts input, correlates with no generation, and is not part of the
+    /// `--demo-live` alias group.
+    demo_component_library: bool,
     degenerate: Option<DegenerateMode>,
 }
 
@@ -294,6 +315,12 @@ where
             "--demo-live-graphical-shell" if !options.demo_live => {
                 options.demo_live = true;
             }
+            // Deliberately absent from the `--demo-live` alias group above: the
+            // gallery is browsable rather than autonomous, and `--demo-live`
+            // must keep pointing at the newest cumulative autonomous scene.
+            "--demo-live-component-library" if !options.demo_component_library => {
+                options.demo_component_library = true;
+            }
             "--degenerate-audio" if options.degenerate.is_none() => {
                 options.degenerate = Some(DegenerateMode::Audio);
             }
@@ -307,7 +334,8 @@ where
             | "--demo-live-effects-and-buses"
             | "--demo-live-sixteen-track-mixer-routing"
             | "--demo-live-semantic-view-model"
-            | "--demo-live-graphical-shell" => {
+            | "--demo-live-graphical-shell"
+            | "--demo-live-component-library" => {
                 bail!("duplicate option {}", argument.as_ref());
             }
             "--degenerate-audio" | "--degenerate-control" => {
@@ -330,6 +358,15 @@ where
         && (options.smoke || options.observe || options.demo_scene || options.degenerate.is_some())
     {
         bail!("the live demo option must be used by itself");
+    }
+    if options.demo_component_library
+        && (options.smoke
+            || options.observe
+            || options.demo_scene
+            || options.demo_live
+            || options.degenerate.is_some())
+    {
+        bail!("the component gallery option must be used by itself");
     }
 
     Ok(options)
@@ -1106,6 +1143,7 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_component_library: false,
                 degenerate: None,
             }
         );
@@ -1119,6 +1157,7 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_component_library: false,
                 degenerate: None,
             }
         );
@@ -1132,6 +1171,7 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_component_library: false,
                 degenerate: None,
             }
         );
@@ -1145,6 +1185,7 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_component_library: false,
                 degenerate: Some(DegenerateMode::Audio),
             }
         );
@@ -1164,6 +1205,7 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_component_library: false,
                 degenerate: Some(DegenerateMode::Control),
             }
         );
@@ -1206,6 +1248,42 @@ mod tests {
                 ..Options::default()
             }
         );
+    }
+
+    /// The gallery is its own scene, not a live-demo alias.
+    ///
+    /// `--demo-live` must keep resolving to the newest cumulative autonomous
+    /// witness, and the gallery must never set any `demo_live` flag: the
+    /// autonomous scenes' input isolation protects a generation-correlated
+    /// claim this scene deliberately does not make.
+    #[test]
+    fn the_component_gallery_is_its_own_option_and_never_a_live_demo_alias() {
+        assert_eq!(
+            parse_options(["--demo-live-component-library"]).unwrap(),
+            Options {
+                demo_component_library: true,
+                ..Options::default()
+            }
+        );
+        let gallery = parse_options(["--demo-live-component-library"]).unwrap();
+        assert!(!gallery.demo_live);
+        assert!(!gallery.demo_live_effects_and_buses);
+        assert!(!gallery.demo_live_sixteen_track);
+        assert!(!gallery.demo_live_semantic);
+
+        let alias = parse_options(["--demo-live"]).unwrap();
+        assert!(!alias.demo_component_library);
+        assert!(alias.demo_live_effects_and_buses);
+
+        assert!(parse_options([
+            "--demo-live-component-library",
+            "--demo-live-component-library",
+        ])
+        .is_err());
+        assert!(parse_options(["--demo-live-component-library", "--demo-live"]).is_err());
+        assert!(parse_options(["--demo-live", "--demo-live-component-library"]).is_err());
+        assert!(parse_options(["--demo-live-component-library", "--smoke"]).is_err());
+        assert!(parse_options(["--demo-live-component-library", "--smoke", "--observe"]).is_err());
     }
 
     #[test]

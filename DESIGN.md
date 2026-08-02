@@ -537,6 +537,7 @@ The interface is dark-only. Raw colors stay private to the theme.
 | surface | `#121821` | primary surfaces |
 | panel | `#17202a` | grouped regions |
 | elevated | `#1d2733` | controls/modals |
+| selected | `#2a3745` | selected row background |
 | border/default | `#2a3745` | resting hairlines |
 | border/strong | `#415166` | structural separation |
 | text/primary | `#f2f6f8` | primary content |
@@ -719,4 +720,7 @@ An architecture change must preserve the one-way state path and callback contrac
 - Discrete events, scalar snapshots, and structural graphs cross the RT boundary differently.
 - Structural audio state is prepared and destroyed off the callback.
 - The authored mixer has sixteen tracks; patch and voice capacity remain explicit runtime bounds.
+- The authored color set is the union of the design file's published variables and this document's table. The design file publishes a selected-row background this document omitted; this document declares elevated, strong border, patch, and chorus accents the design file does not publish as variables. Neither source is trimmed to match the other, so the vocabulary holds seventeen semantic colors.
+- The Steam Deck density policy is authored from the desktop frames and the declared minimums, not measured from an authored small-viewport design, because no such design exists.
+- Loading and error appearances reuse the structural-edit vocabulary this document already declares — the `Preparing`/`Activating` treatment and the typed-failure text — rather than inventing a second visual language.
 - This file is the repository's only master design.

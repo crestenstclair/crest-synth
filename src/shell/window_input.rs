@@ -1,8 +1,21 @@
 /// A platform-independent key understood at the application window boundary.
+///
+/// `Digit3` through `Digit8` are normalized here because the window sees them,
+/// not because anything at this boundary binds them. What a normalized key
+/// means is decided downstream: the translator binds `Digit1` and `Digit2` to
+/// the two top-level contexts and nothing else, and a scene that pages a
+/// gallery binds its own digits locally without those ever becoming a semantic
+/// action.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WindowKey {
     Digit1,
     Digit2,
+    Digit3,
+    Digit4,
+    Digit5,
+    Digit6,
+    Digit7,
+    Digit8,
     /// Step to the previous installed Patch.
     Q,
     /// Step to the next installed Patch.
@@ -14,6 +27,38 @@ pub enum WindowKey {
     K,
     Other,
 }
+
+/// Every normalized key the window boundary accepts, in declaration order.
+///
+/// The descriptor below carries a key-down and a key-up for each of these plus
+/// the single focus-loss value, so this list and
+/// [`WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN`] move together.
+pub const ALL_WINDOW_KEYS: [WindowKey; 16] = [
+    WindowKey::Digit1,
+    WindowKey::Digit2,
+    WindowKey::Digit3,
+    WindowKey::Digit4,
+    WindowKey::Digit5,
+    WindowKey::Digit6,
+    WindowKey::Digit7,
+    WindowKey::Digit8,
+    WindowKey::Q,
+    WindowKey::E,
+    WindowKey::W,
+    WindowKey::S,
+    WindowKey::A,
+    WindowKey::D,
+    WindowKey::K,
+    WindowKey::Other,
+];
+
+/// How many unique normalized inputs the window boundary accepts.
+///
+/// Sixteen keys in each of two kinds, plus focus loss. Declared here and
+/// asserted equal to the constructed descriptor, so a key added to
+/// [`ALL_WINDOW_KEYS`] without a matching pair of descriptor entries fails
+/// rather than shipping a vocabulary the descriptor does not cover.
+pub const WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN: usize = 33;
 
 /// The normalized kind of a window-boundary input.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -39,9 +84,15 @@ pub struct WindowInput {
 ///
 /// Entries are concrete production values so deterministic adapters can feed
 /// them directly through the same translator as the native window.
-const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; 21] = [
+const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN] = [
     WindowInput::key_down(WindowKey::Digit2),
     WindowInput::key_down(WindowKey::Digit1),
+    WindowInput::key_down(WindowKey::Digit3),
+    WindowInput::key_down(WindowKey::Digit4),
+    WindowInput::key_down(WindowKey::Digit5),
+    WindowInput::key_down(WindowKey::Digit6),
+    WindowInput::key_down(WindowKey::Digit7),
+    WindowInput::key_down(WindowKey::Digit8),
     WindowInput::key_down(WindowKey::Q),
     WindowInput::key_down(WindowKey::E),
     WindowInput::key_down(WindowKey::W),
@@ -52,6 +103,12 @@ const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; 21] = [
     WindowInput::key_down(WindowKey::Other),
     WindowInput::key_up(WindowKey::Digit1),
     WindowInput::key_up(WindowKey::Digit2),
+    WindowInput::key_up(WindowKey::Digit3),
+    WindowInput::key_up(WindowKey::Digit4),
+    WindowInput::key_up(WindowKey::Digit5),
+    WindowInput::key_up(WindowKey::Digit6),
+    WindowInput::key_up(WindowKey::Digit7),
+    WindowInput::key_up(WindowKey::Digit8),
     WindowInput::key_up(WindowKey::Q),
     WindowInput::key_up(WindowKey::E),
     WindowInput::key_up(WindowKey::W),
@@ -64,7 +121,7 @@ const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; 21] = [
 ];
 
 impl WindowInput {
-    /// Returns all 21 unique valid normalized input values.
+    /// Returns all 33 unique valid normalized input values.
     ///
     /// This production-owned descriptor is the only exhaustive GUI-input
     /// vocabulary deterministic scenes and acceptance tests need to consume.
@@ -113,13 +170,21 @@ impl WindowInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{WindowInput, WindowInputKind, WindowKey};
+    use super::{
+        WindowInput, WindowInputKind, WindowKey, ALL_WINDOW_KEYS,
+        WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN,
+    };
 
     #[test]
     fn surface_descriptor_contains_exactly_the_normalized_vocabulary() {
         let descriptor = WindowInput::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 21);
+        // Exact equality, not a minimum: the point of this assertion is to
+        // fail when the key vocabulary grows without the descriptor growing
+        // with it, and a `>=` would pass through exactly that change.
+        assert_eq!(descriptor.len(), 33);
+        assert_eq!(descriptor.len(), WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN);
+        assert_eq!(ALL_WINDOW_KEYS.len() * 2 + 1, 33);
         for (index, input) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(input),
@@ -127,18 +192,15 @@ mod tests {
             );
         }
 
-        for key in [
-            WindowKey::Digit1,
-            WindowKey::Digit2,
-            WindowKey::W,
-            WindowKey::S,
-            WindowKey::A,
-            WindowKey::D,
-            WindowKey::K,
-            WindowKey::Other,
-        ] {
-            assert!(descriptor.contains(&WindowInput::key_down(key)));
-            assert!(descriptor.contains(&WindowInput::key_up(key)));
+        for key in ALL_WINDOW_KEYS {
+            assert!(
+                descriptor.contains(&WindowInput::key_down(key)),
+                "{key:?} has no key-down entry"
+            );
+            assert!(
+                descriptor.contains(&WindowInput::key_up(key)),
+                "{key:?} has no key-up entry"
+            );
         }
 
         let focus_lost = descriptor
@@ -150,20 +212,36 @@ mod tests {
         assert_eq!(focus_lost[0].key(), WindowKey::Other);
     }
 
+    /// The declared key list is complete and holds no duplicates, so the
+    /// descriptor test above cannot be satisfied by a list that quietly lost a
+    /// key.
+    #[test]
+    fn the_declared_key_list_names_every_key_once() {
+        assert_eq!(ALL_WINDOW_KEYS.len(), 16);
+        for (index, key) in ALL_WINDOW_KEYS.iter().enumerate() {
+            assert!(
+                !ALL_WINDOW_KEYS[..index].contains(key),
+                "duplicate declared key: {key:?}"
+            );
+        }
+        for key in [
+            WindowKey::Digit3,
+            WindowKey::Digit4,
+            WindowKey::Digit5,
+            WindowKey::Digit6,
+            WindowKey::Digit7,
+            WindowKey::Digit8,
+        ] {
+            assert!(
+                ALL_WINDOW_KEYS.contains(&key),
+                "{key:?} is missing from the declared vocabulary"
+            );
+        }
+    }
+
     #[test]
     fn key_down_preserves_every_normalized_key() {
-        let keys = [
-            WindowKey::Digit1,
-            WindowKey::Digit2,
-            WindowKey::W,
-            WindowKey::S,
-            WindowKey::A,
-            WindowKey::D,
-            WindowKey::K,
-            WindowKey::Other,
-        ];
-
-        for key in keys {
+        for key in ALL_WINDOW_KEYS {
             let input = WindowInput::key_down(key);
             assert_eq!(input.key(), key);
             assert_eq!(input.kind(), WindowInputKind::KeyDown);
@@ -172,18 +250,7 @@ mod tests {
 
     #[test]
     fn key_up_preserves_every_normalized_key() {
-        let keys = [
-            WindowKey::Digit1,
-            WindowKey::Digit2,
-            WindowKey::W,
-            WindowKey::S,
-            WindowKey::A,
-            WindowKey::D,
-            WindowKey::K,
-            WindowKey::Other,
-        ];
-
-        for key in keys {
+        for key in ALL_WINDOW_KEYS {
             let input = WindowInput::key_up(key);
             assert_eq!(input.key(), key);
             assert_eq!(input.kind(), WindowInputKind::KeyUp);
