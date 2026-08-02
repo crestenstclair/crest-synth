@@ -2,7 +2,7 @@
   "event_count": 75,
   "last_event_id": "01KYWPJB589FBDGDCX2V93RXAG",
   "materialized_at": "2026-07-31T18:21:45.512610+00:00",
-  "mission_number": "",
+  "mission_number": "1",
   "mission_slug": "expandable-effects-and-bus-topology-01KYNGX8",
   "mission_type": "software-dev",
   "summary": {
@@ -20,102 +20,278 @@
     "WP01": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJ3NP6T5XAE245MP2S7CH",
       "last_transition_at": "2026-07-31T18:21:37.846052+00:00",
-      "shell_pid": 32856,
-      "shell_pid_created_at": "1785471089.142303"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: crest-spec and DESIGN.md reconciled; doctor passes; C-011 roster still excluded; DESIGN.md 690/692 byte-identical",
+        "Review passed: doctor OK; C-011 airtight (universal any-further-effect-type clause + meta.avoid ceiling, roster grep clean); intent/proof entries cross-linked with positive+negative witness commands; G1R contract obligations landed in requirements.yaml and contexts; DESIGN.md 690/692 byte-identical to 30c517e; T056 drift closures in realtime.yaml:81, mixer.yaml:176-179, shell.yaml:55-58"
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 53207,
+      "shell_pid_created_at": "1785472531.343539",
+      "subtasks": {
+        "T001": "done",
+        "T002": "done",
+        "T003": "done",
+        "T004": "done",
+        "T005": "done",
+        "T006": "done",
+        "T056": "done"
+      }
     },
     "WP02": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJ66ENRCHGNRG1EZ2STT4",
       "last_transition_at": "2026-07-31T18:21:40.430313+00:00",
-      "shell_pid": 81163,
-      "shell_pid_created_at": "1785474615.692005"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: reverb and delay extracted as role-independent registry entries with sample-exact A/B fidelity proof; registry installs chorus, reverb, delay in stable order",
+        "Review passed: DSP moved token-identically (mechanical diff vs merge-base), sample-exact A/B green over 4 parameter sets x 16 noise blocks, descriptors match retired global surface value-for-value via live comparison test, no role markers, no return-level scalar, RT process paths allocation/panic-free with provable index bounds, cargo test --all-targets + clippy -D warnings + fmt-check all green. Coordination notes: (1) bridge global_reverb_delay.rs deletion is forced by WP04 T023 trait deletion but src/adapter/global_reverb_delay.rs is in neither WP04 nor WP05 owned_files - orchestrator should grant it to whichever WP lands the return rack; (2) consumer updates to src/testing/live_demo_scene.rs (WP08 surface) and tests/static_patch_effect.rs were required by the registry count 1->3 and are minimal."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 18721,
+      "shell_pid_created_at": "1785476943.438289",
+      "subtasks": {
+        "T007": "done",
+        "T008": "done",
+        "T009": "done",
+        "T010": "done",
+        "T011": "done",
+        "T012": "done"
+      }
     },
     "WP03": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJ70Q0JXT033ZKBEFEQE5",
       "last_transition_at": "2026-07-31T18:21:41.271657+00:00",
-      "shell_pid": 27314,
-      "shell_pid_created_at": "1785477617.043877"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: three ordered slots on Patch, 16x3 prepared grid, exact matches_parameters at widened size, measured order/independence/rerouting proofs",
+        "Review passed: exact matches_parameters at widened 16x3 size verified line-by-line against original with negative tests at every position; production loop process_slots_in_place proven in-place/ordered/sample-exact; RT discipline preserved (preallocated scratch, no alloc/lock/panic, error->silence); scope confined to owned files; 434 tests, clippy, fmt all green"
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 61256,
+      "shell_pid_created_at": "1785479760.650913",
+      "subtasks": {
+        "T013": "done",
+        "T014": "done",
+        "T015": "done",
+        "T016": "done",
+        "T017": "done",
+        "T018": "done"
+      }
     },
     "WP04": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJ7TKS8EK3H9VXZS5R6V3",
       "last_transition_at": "2026-07-31T18:21:42.099998+00:00",
-      "shell_pid": 27815,
-      "shell_pid_created_at": "1785477631.489582"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: BusId + indexed sends + BusReturn/Bank + PreparedBusReturnRack + generalized MixEngine; seven routing proofs plus byte-exact bridge A/B proof; documented transitional seams for WP05-WP08",
+        "Review passed: BusId bounded/validated/no named constructors; indexed [f32;8] sends with one shared descriptor and pinned legacy serde; BusReturn owns return_level through occupancy transitions via shared registry; PreparedBusReturnRack carries C-BR-7/8 obligations with preallocated scratch; send stage unmoved (post-fader post-gate, pre-gate meters); all seven T025 proofs pass; bit-exact rack-vs-bridge A/B proof; suite+lint+fmt green. Coordination note: src/real_time/mod.rs received 2 additive lines (prepared_bus_return_rack registration) outside owned_files, placed alphabetically to avoid conflict — WP05 (owner) must preserve them during merge. T021/T020 enum reductions deferred behind documented seams owned by WP05-WP08; no dual authority today (bridge reads GlobalParameters as single writer; nothing outside tests can set sends 2-7)."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 61646,
+      "shell_pid_created_at": "1785479780.674306",
+      "subtasks": {
+        "T019": "done",
+        "T020": "done",
+        "T021": "done",
+        "T022": "done",
+        "T023": "done",
+        "T024": "done",
+        "T025": "done"
+      }
     },
     "WP05": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJ8N9TKW40JFN8AKGP58D",
       "last_transition_at": "2026-07-31T18:21:42.953915+00:00",
-      "shell_pid": 33762,
-      "shell_pid_created_at": "1785484976.862639"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: widened snapshot (16x3 slots, 16x8 sends, 8 returns), per-position exact matching on both racks, bridge retired to return-rack occupancy, C-RT-7 measured (4632 B, 284 ns publish), zero-growth + atomic activation proven at full occupancy",
+        "Review cycle 2: crest_synth checks mirrored",
+        "Review passed (cycle 2): the rejected artifact is reviewer-renata's own cycle-1 feedback; its single issue (stale reverbSend/delaySend and full-global checks in src/bin/crest_synth.rs demo diagnostics) is fixed by eed873c exactly as prescribed and verified: demo observation false set restored to the pre-existing pair, cargo test --all-targets/lint/fmt-check green"
+      ],
+      "provider": "__resolved_provider_absent__",
+      "review": {
+        "actor": "operator",
+        "at": "2026-07-31T08:14:43Z",
+        "reason": "Review passed (cycle 2): the rejected artifact is reviewer-renata's own cycle-1 feedback; its single issue (stale reverbSend/delaySend and full-global checks in src/bin/crest_synth.rs demo diagnostics) is fixed by eed873c exactly as prescribed and verified: demo observation false set restored to the pre-existing pair, cargo test --all-targets/lint/fmt-check green",
+        "wp_id": "WP05"
+      },
+      "role": "reviewer",
+      "shell_pid": 39500,
+      "shell_pid_created_at": "1785485424.627176",
+      "subtasks": {
+        "T026": "done",
+        "T027": "done",
+        "T028": "done",
+        "T029": "done",
+        "T030": "done",
+        "T031": "done"
+      }
     },
     "WP06": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJ9FSMQ517AHMEKHDXP4G",
       "last_transition_at": "2026-07-31T18:21:43.801793+00:00",
-      "shell_pid": 43298,
-      "shell_pid_created_at": "1785485718.567235"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: occupancy lifecycle on the shared correlated structural path; bank-driven returns seam; T032-T038 proofs green; lint/fmt clean; demo false-set unchanged",
+        "Review passed: occupancy lifecycle reuses the existing correlated structural-edit lifecycle (one intent type, request counter, status, busy guard); validated per-class refusal without mutation; sample-exact C-RT-10 rejection continuity proven lockstep on the production path; C-RT-13 ordering via visible StructuralEditBusy refusal plus stale-ack discard, faithful to the declared one-in-flight contract; FR-018 chain-follows-Patch with live tail on the production route path; C-RT-14 retirement with zero callback allocation and clean exit; transitional returns seam deleted with BusReturnBank as single source; schema v12 fixtures exact; cargo test --all-targets, make lint, make fmt-check clean; demo observation false set unchanged. Note for mission review: implemented intent kinds setSlotOccupancy/setReturnOccupancy and Option-al correlation context diverge from control.yaml's declared ReplaceSlotOccupancy/ReplaceReturnOccupancy and non-optional correlation patchId (spec shape is itself incoherent for return edits); SemanticAction/AppEvent closed-union declarations in control.yaml were not extended. Resolve deliberately during crest-spec authoring before WP07/WP08 cement schema v12 consumers. Declared goal witness (tests/expandable_effects_and_bus_topology.rs + crest-synth-witness refused-topology case) does not exist yet."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 12803,
+      "shell_pid_created_at": "1785490932.420517",
+      "subtasks": {
+        "T032": "done",
+        "T033": "done",
+        "T034": "done",
+        "T035": "done",
+        "T036": "done",
+        "T037": "done",
+        "T038": "done"
+      }
     },
     "WP07": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJ4JNQVJBBRZ33T3W5HKG",
       "last_transition_at": "2026-07-31T18:21:38.773813+00:00",
-      "shell_pid": 26552,
-      "shell_pid_created_at": "1785491999.743219"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: slots and returns reachable/editable via adjacent choice; three-slot PatchPage projection; indexed sends+returns inspector; GlobalParameter reduced to MasterGainDb; deterministic focus recovery proven; all tests green, lint/fmt clean, demo false-set unchanged",
+        "Review passed: T039-T045 verified mechanically. Slot/return focus rows indexed and reachable when empty; adjacent-choice occupancy via existing Adjust vocabulary through request_topology_change (no modal, C-008); deterministic focus recovery proven via shared SemanticResolver::recover; GlobalParameter reduced to MasterGainDb, ReturnAlias deleted; top_level_context.rs untouched (C-003). 482 tests green, clippy -D warnings clean, demo coverage missing=0 unexpected=0, false set exactly [all_parameter_boundaries_exercised, selection_clamps_exact], two_run_trace_equal=true. Out-of-owned-file edits (app_state, mixer trio, state_projector/state_tree, testing scenes, six tests) all charge-forced; ReverbSend/DelaySend aliases retained for WP08 with charge comment. Noted for WP08: errors[].sourcePath.controlId.id.bus leaves undeclared until occupancy-failure states enter a leaf-equality corpus; MixerControlId::bus() awaits its WP08 consumer."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 96884,
+      "shell_pid_created_at": "1785497500.176315",
+      "subtasks": {
+        "T039": "done",
+        "T040": "done",
+        "T041": "done",
+        "T042": "done",
+        "T043": "done",
+        "T044": "done",
+        "T045": "done"
+      }
     },
     "WP08": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJAB8EMWX6APZZ9RT3BSH",
       "last_transition_at": "2026-07-31T18:21:44.680957+00:00",
-      "shell_pid": 7717,
-      "shell_pid_created_at": "1785498340.036615"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: retained effects-and-buses live scene delivered and run on hardware (T052 complete report, 131 checkpoints, clean teardown); chartered send-alias + effects-port cutover done; demo-scene occupancy coverage lifted; eight-destination measurement + NFR-008 numbers in checkpoints; 6 new mutations all caught; declared goal witness + refused-topology counterexample implemented (exit 0/1 verified). One honest finding: clearedSlotPreservedHeldNotes measured false - production swap semantics clear graph-owned voices at activation; emitted for the witness layer to adjudicate.",
+        "Review passed: T046 scene drives all seventeen topology transitions through semantic actions and AppState::apply on the production path; T047 checkpoint identities byte-identical (additions only); T048 five declared mutations plus refused-topology all caught differentially; T049 eight-destination numeric isolation/accumulation/gate evidence with NFR-008 projection==1 frame and activation gap==1 block asserted; T050 Makefile/flags additive with prior targets verbatim; T051 targets intact and tests green; T052 hardware run log shows 131 checkpoints and clean teardown; goal witness exits 0 with clearedSlotPreservedHeldNotes honestly measured false (MEASURED GAP, witness predicate still eq true); cutover exact (MixerTrackParameter = Level/Pan/Mute/Solo, aliases and global_effects_processor removed); cargo test --all-targets, lint, fmt-check clean; demo false-set exactly the two declared keys."
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 4997,
+      "shell_pid_created_at": "1785505668.339283",
+      "subtasks": {
+        "T046": "done",
+        "T047": "done",
+        "T048": "done",
+        "T049": "done",
+        "T050": "done",
+        "T051": "done",
+        "T052": "done"
+      }
     },
     "WP09": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJ5C671RA2E65E938DVMT",
       "last_transition_at": "2026-07-31T18:21:39.590681+00:00",
-      "shell_pid": 15608,
-      "shell_pid_created_at": "1785506492.068142"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: guard script + cargo wrapper delivered; observed failing on seeded reintroduction, passes delivered tree",
+        "Review passed: declared validation implemented exactly (4-tree scan, declared marker, seeded families, MasterGainDb exception); negative proof observed live (exit 1 with file:line:identifier on reintroduced GlobalReverbDelay/reverb_send); self-test, guard test 5/5, cargo test --all-targets, make lint, make fmt-check all green; no existing surface modified"
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 28320,
+      "shell_pid_created_at": "1785507251.190386",
+      "subtasks": {
+        "T053": "done",
+        "T054": "done",
+        "T055": "done"
+      }
     },
     "WP10": {
       "actor": "merge",
       "agent": "claude",
+      "agent_profile": "__resolved_profile_absent__",
+      "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KYWPJB589FBDGDCX2V93RXAG",
       "last_transition_at": "2026-07-31T18:21:45.512610+00:00",
-      "shell_pid": 12989,
-      "shell_pid_created_at": "1785515251.42567"
+      "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: voice carry-over across topology activation — mechanism (unchanged-position live-instance exchange), narrowed-contract CLEAR proof, witness true, live gate re-run clean"
+      ],
+      "provider": "__resolved_provider_absent__",
+      "role": "reviewer",
+      "shell_pid": 69936,
+      "shell_pid_created_at": "1785519460.17905",
+      "subtasks": {
+        "T057": "done",
+        "T058": "done",
+        "T059": "done",
+        "T060": "done"
+      }
     }
   }
 }
