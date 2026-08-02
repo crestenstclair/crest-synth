@@ -732,9 +732,11 @@ capabilities:
           state that applies to it, and owns nothing
         actor: maintainer
         steps:
-        - action: enumerate SemanticControlKind and resolve each to its rendering
-          observes: each kind resolves to exactly one declared ComponentControl; adding a kind fails compilation
-            or the declared coverage assertion rather than falling back to a generic label-and-value row
+        - action: enumerate every declared SemanticControlKind and presentation role pair and resolve
+            each to its rendering
+          observes: every pair resolves to exactly one declared ComponentControl and every declared control
+            is reachable by at least one pair; adding a kind or a role fails compilation or the declared
+            coverage assertion rather than falling back to a generic label-and-value row
         - action: render each control across its declared applicableStates at both authored viewports
           observes: every applicable state carries text or shape in addition to color and is legible without
             it; a state a control cannot be handed is declared non-applicable rather than silently absent

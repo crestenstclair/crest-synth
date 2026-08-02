@@ -80,10 +80,14 @@ assets:
       than defaulting silently, and render every state with text or shape in addition to color.
     - Repaint the existing eframe adapter through the vocabulary and delete the constants it previously
       painted from. The production application, not only the gallery, must show the authored design.
-    - Provide one control per declared ComponentControl variant, and resolve every SemanticControlKind
-      to exactly one of them exhaustively. A control takes an immutable SemanticControlViewModel plus
-      an explicit ComponentState and returns typed semantic intent; it dispatches nothing, owns nothing,
-      and reaches AppState never.
+    - Provide one control per declared ComponentControl variant. Selection is total over SemanticControlKind
+      and presentation role together — the same continuous parameter is a parameter row on a listed surface
+      and a fader in a mixer strip — and every declared control is reachable by at least one pair. A control
+      takes an immutable SemanticControlViewModel, an explicit ComponentState, and the role its caller
+      asks in, and returns typed semantic intent; it dispatches nothing, owns nothing, and reaches AppState
+      never.
+    - The requesting composition supplies the presentation role. A control never infers it from the value,
+      the surface identity, or the viewport.
     - Declare per control which ComponentStates apply to it. Non-applicability is declared, not silently
       omitted, so the coverage assertion checks declared applicability rather than the full cross product.
     - Take each control's geometry, spacing, and state treatment from the visual design reference the
@@ -1113,9 +1117,11 @@ assets:
     prompts:
     - Create tests/component_composition.rs with ordinary assertion-bearing tests and emit CREST_ACCEPTANCE
       component_composition passed only after every declared check holds.
-    - Prove every SemanticControlKind resolves to exactly one declared ComponentControl, and that the
-      mapping is exhaustive rather than defaulted. A test that only proves the controls exist is vacuous;
-      drive them through the production render path with real projected view data.
+    - Prove selection is total over SemanticControlKind and presentation role together, that every declared
+      pair resolves to exactly one declared ComponentControl, that every declared control is reachable
+      by at least one pair, and that the mapping is exhaustive rather than defaulted. A test that only
+      proves the controls exist is vacuous; drive them through the production render path with real projected
+      view data.
     - Prove each control renders every state it declares applicable with text or shape beyond color, and
       that a state it declares non-applicable is declared rather than merely absent.
     - Prove every region the production window shows is produced by a declared ShellComposition and every

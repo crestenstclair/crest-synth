@@ -185,13 +185,19 @@ valueObjects:
       viewData: the immutable SemanticControlViewModel a control paints — kind, value, numeric range,
         lifecycle status, and typed error
       componentState: the explicit ComponentState the control is handed
+      presentationRole: the declared role the requesting composition asks in — a listed row, a vertical
+        strip, a panel entry, or a modal entry — since the same control kind is a parameter row on a
+        listed surface and a fader in a mixer strip
       applicableStates: the declared subset of ComponentState this control can be handed, so a control
         that can never be muted or soloed declares that rather than silently omitting a specimen
       intent: the typed semantic intent a control returns; it dispatches nothing itself
     invariants:
-    - every SemanticControlKind resolves to exactly one declared control, and the mapping is exhaustive,
-      so an added kind fails compilation or the declared coverage assertion rather than falling back to
-      a generic row
+    - selection is total over SemanticControlKind and presentationRole together — every declared pair
+      resolves to exactly one declared control, and every declared control is reachable by at least one
+      pair, so an added kind or role fails compilation or the declared coverage assertion rather than
+      falling back to a generic label-and-value row
+    - presentationRole is supplied by the requesting composition and never inferred from the value, the
+      surface identity, or the viewport; a control does not decide what it is
     - a control paints every value it shows from the immutable view data handed to it; it owns, caches,
       and derives no Patch value, focus, navigation, reducer state, or audio state, and never reaches
       AppState

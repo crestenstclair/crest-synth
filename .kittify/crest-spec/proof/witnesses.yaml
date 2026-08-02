@@ -3174,7 +3174,8 @@ witnesses:
         states_distinguishable_without_color: bool
         controls_declared: number
         controls_painted: number
-        control_kinds_unmapped: number
+        kind_role_pairs_unmapped: number
+        controls_unreachable_by_any_pair: number
         compositions_declared: number
         compositions_painted: number
         desktop_viewport_painted: bool
@@ -3217,7 +3218,10 @@ witnesses:
     - field: controls_painted
       op: eq
       value: 8
-    - field: control_kinds_unmapped
+    - field: kind_role_pairs_unmapped
+      op: eq
+      value: 0
+    - field: controls_unreachable_by_any_pair
       op: eq
       value: 0
     - field: compositions_declared

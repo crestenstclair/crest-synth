@@ -1166,10 +1166,11 @@ requirements:
     - one_way_parameter_control
   configurable_control_family:
     kind: functional
-    description: Every SemanticControlKind resolves to exactly one declared ComponentControl — parameter
-      row, choice row, toggle, compact slider, fader, meter, browser row, or modal option — each presenting
-      immutable view data in an explicit ComponentState, declaring which states apply to it, and returning
-      typed semantic intent rather than acting
+    description: Every SemanticControlKind and presentation-role pair resolves to exactly one declared
+      ComponentControl — parameter row, choice row, toggle, compact slider, fader, meter, browser row,
+      or modal option — each presenting immutable view data in an explicit ComponentState, declaring which
+      states apply to it, and returning typed semantic intent rather than acting; the requesting composition
+      supplies the role, so a control never decides what it is
     goals:
     - build_from_component_vocabulary
     capabilities:

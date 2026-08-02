@@ -74,9 +74,10 @@ projectValidations:
     goals:
     - build_from_component_vocabulary
     - use_graphical_shell
-    description: the production render path proves every SemanticControlKind resolves to exactly one declared
-      control, that each control renders every state it declares applicable with text or shape beyond
-      color, that every region the shipped window shows is produced by a declared composition, that the
+    description: the production render path proves selection is total over SemanticControlKind and presentation
+      role together with every declared control reachable, that each control renders every state it declares
+      applicable with text or shape beyond color, that every region the shipped window shows is produced
+      by a declared composition, that the
       render adapter holds no paint, layout, band-height, or state-visualization decision, that a composition
       with no view data omits or marks the gap rather than painting a placeholder, that no control or
       composition owns application state, and that both authored viewports keep every band and the authored
