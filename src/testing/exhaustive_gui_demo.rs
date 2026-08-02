@@ -1548,6 +1548,10 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
                 observed.insert("event.selectContext".to_owned());
                 observed.insert(format!("context.{}", context.label().to_ascii_lowercase()));
             }
+            EventInput::SelectPatch { direction } => {
+                observed.insert("event.selectPatch".to_owned());
+                observed.insert(format!("direction.{}", direction_identifier(*direction)));
+            }
             EventInput::Navigate { direction } => {
                 observed.insert("event.navigate".to_owned());
                 observed.insert(format!("direction.{}", direction_identifier(*direction)));
@@ -2150,6 +2154,8 @@ const fn window_input_identifier(input: WindowInput) -> &'static str {
     match (input.kind(), input.key()) {
         (WindowInputKind::KeyDown, WindowKey::Digit1) => "keyDown.digit1",
         (WindowInputKind::KeyDown, WindowKey::Digit2) => "keyDown.digit2",
+        (WindowInputKind::KeyDown, WindowKey::Q) => "keyDown.q",
+        (WindowInputKind::KeyDown, WindowKey::E) => "keyDown.e",
         (WindowInputKind::KeyDown, WindowKey::W) => "keyDown.w",
         (WindowInputKind::KeyDown, WindowKey::S) => "keyDown.s",
         (WindowInputKind::KeyDown, WindowKey::A) => "keyDown.a",
@@ -2158,6 +2164,8 @@ const fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyDown, WindowKey::Other) => "keyDown.other",
         (WindowInputKind::KeyUp, WindowKey::Digit1) => "keyUp.digit1",
         (WindowInputKind::KeyUp, WindowKey::Digit2) => "keyUp.digit2",
+        (WindowInputKind::KeyUp, WindowKey::Q) => "keyUp.q",
+        (WindowInputKind::KeyUp, WindowKey::E) => "keyUp.e",
         (WindowInputKind::KeyUp, WindowKey::W) => "keyUp.w",
         (WindowInputKind::KeyUp, WindowKey::S) => "keyUp.s",
         (WindowInputKind::KeyUp, WindowKey::A) => "keyUp.a",

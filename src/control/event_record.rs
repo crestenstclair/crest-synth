@@ -225,6 +225,9 @@ pub enum EventInput {
     SelectContext {
         context: TopLevelContext,
     },
+    SelectPatch {
+        direction: EventDirection,
+    },
     Navigate {
         direction: EventDirection,
     },
@@ -324,6 +327,9 @@ impl From<&AppEvent> for EventInput {
     fn from(event: &AppEvent) -> Self {
         match event {
             AppEvent::SelectContext(context) => Self::SelectContext { context: *context },
+            AppEvent::SelectPatch(direction) => Self::SelectPatch {
+                direction: (*direction).into(),
+            },
             AppEvent::Navigate(direction) => Self::Navigate {
                 direction: (*direction).into(),
             },

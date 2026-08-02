@@ -53,6 +53,12 @@ impl InteractionMode {
 )]
 pub enum SemanticAction {
     SelectContext(TopLevelContext),
+    /// Moves the focused Patch one position along the installed order. This is
+    /// the only way the focused Patch changes: every installed instrument is
+    /// reached through the same physical input → semantic action → reducer
+    /// path as any other edit, never by a UI-local selection or a backstage
+    /// lookup.
+    SelectPatch(Direction),
     Navigate(Direction),
     Adjust(Direction),
     SetInteractionMode(InteractionMode),
@@ -73,6 +79,7 @@ pub enum SemanticAction {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SemanticActionKind {
     SelectContext,
+    SelectPatch,
     Navigate,
     Adjust,
     SetInteractionMode,
@@ -83,8 +90,9 @@ pub enum SemanticActionKind {
 }
 
 impl SemanticActionKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::SelectContext,
+        Self::SelectPatch,
         Self::Navigate,
         Self::Adjust,
         Self::SetInteractionMode,
@@ -99,9 +107,13 @@ impl SemanticActionKind {
     }
 }
 
-const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 15] = [
+const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 17] = [
     SemanticAction::SelectContext(TopLevelContext::Patch),
     SemanticAction::SelectContext(TopLevelContext::Mixer),
+    // Only the horizontal pair: moving along the installed Patch order is an
+    // adjacent choice, exactly like every other adjacent-choice surface.
+    SemanticAction::SelectPatch(Direction::Left),
+    SemanticAction::SelectPatch(Direction::Right),
     SemanticAction::Navigate(Direction::Up),
     SemanticAction::Navigate(Direction::Down),
     SemanticAction::Navigate(Direction::Left),
@@ -131,6 +143,7 @@ impl SemanticAction {
     pub const fn kind(&self) -> SemanticActionKind {
         match self {
             Self::SelectContext(_) => SemanticActionKind::SelectContext,
+            Self::SelectPatch(_) => SemanticActionKind::SelectPatch,
             Self::Navigate(_) => SemanticActionKind::Navigate,
             Self::Adjust(_) => SemanticActionKind::Adjust,
             Self::SetInteractionMode(_) => SemanticActionKind::SetInteractionMode,
@@ -194,7 +207,7 @@ mod tests {
 
     #[test]
     fn semantic_action_descriptors_are_closed_unique_and_phase_two_safe() {
-        assert_eq!(SemanticActionKind::surface_descriptor().len(), 8);
+        assert_eq!(SemanticActionKind::surface_descriptor().len(), 9);
         assert_eq!(InteractionMode::surface_descriptor().len(), 4);
         assert_eq!(InteractionMode::PHASE_TWO.len(), 2);
         assert!(SemanticAction::surface_descriptor()

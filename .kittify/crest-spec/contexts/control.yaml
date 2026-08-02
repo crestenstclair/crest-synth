@@ -174,6 +174,7 @@ valueObjects:
     state:
       kind:
       - SelectContext
+      - SelectPatch
       - Navigate
       - Adjust
       - SetInteractionMode
@@ -194,6 +195,13 @@ valueObjects:
     - SelectContext, Navigate, and Adjust reuse TopLevelContext and Direction; SetInteractionMode carries
       Navigate or Adjust in Phase 2; EnterSurface carries one context-compatible side SurfaceId; Return
       has no payload
+    - SelectPatch carries a Direction and moves the focused Patch one position along the installed order
+      without wrapping, exactly as every other adjacent-choice surface behaves; it is the only way the
+      focused Patch changes, so every instrument the fixture installs is reachable through the same
+      physical input to semantic action to reducer path as any other edit, and no UI-local selection or
+      backstage lookup may substitute for it
+    - SelectPatch is available only in the Patch context and only in Navigate mode; at either end of the
+      installed order the action is a typed unchanged rejection rather than a clamp or a wrap
     - Modal and MultiSelect are named InteractionMode values but no Phase 2 SemanticAction can enter them
       until a later workflow defines its focus trap, exit, and valid-action rules
     - the value contains no raw key/button, widget, label, parameter value, AppState, engine, graph, audio
@@ -378,6 +386,11 @@ valueObjects:
     - main-surface paths resolve through the canonical PATCH or MIXER descriptor order; after schema/dependency
       change the reducer repairs active, remembered, and return paths through the one deterministic next-before-previous
       sibling rule
+    - a SelectPatch switch rebuilds rememberedPatchPath and the active path against the destination Patch's
+      own descriptor schema, keeping the same control when that Patch offers it and otherwise recovering
+      deterministically to its first valid control; the switch never carries a control identity the
+      destination cannot host, and returnPath is cleared because the subordinate surface belonged to the
+      Patch being left
     - mode is Navigate or Adjust in Phase 2; Modal and MultiSelect remain typed but unreachable until
       their later workflow owns complete entry, trap, and exit behavior
     - the value contains no Patch/config copy, capability descriptor copy, engine, graph, parameter snapshot,

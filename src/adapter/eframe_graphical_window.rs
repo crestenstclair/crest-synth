@@ -743,6 +743,8 @@ fn normalize_key(key: egui::Key) -> WindowKey {
     match key {
         egui::Key::Num1 => WindowKey::Digit1,
         egui::Key::Num2 => WindowKey::Digit2,
+        egui::Key::Q => WindowKey::Q,
+        egui::Key::E => WindowKey::E,
         egui::Key::W => WindowKey::W,
         egui::Key::S => WindowKey::S,
         egui::Key::A => WindowKey::A,
@@ -796,6 +798,8 @@ mod tests {
         let cases = [
             (Key::Num1, WindowKey::Digit1),
             (Key::Num2, WindowKey::Digit2),
+            (Key::Q, WindowKey::Q),
+            (Key::E, WindowKey::E),
             (Key::W, WindowKey::W),
             (Key::S, WindowKey::S),
             (Key::A, WindowKey::A),

@@ -293,6 +293,10 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
     match action {
         SemanticAction::SelectContext(TopLevelContext::Mixer) => ("Open MIXER", Some("1")),
         SemanticAction::SelectContext(TopLevelContext::Patch) => ("Open PATCH", Some("2")),
+        SemanticAction::SelectPatch(Direction::Left) => ("Previous patch", Some("Q")),
+        SemanticAction::SelectPatch(Direction::Right) => ("Next patch", Some("E")),
+        SemanticAction::SelectPatch(Direction::Up)
+        | SemanticAction::SelectPatch(Direction::Down) => ("Unavailable patch step", None),
         SemanticAction::Navigate(Direction::Up) => ("Move up", Some("W")),
         SemanticAction::Navigate(Direction::Down) => ("Move down", Some("S")),
         SemanticAction::Navigate(Direction::Left) => ("Move left", Some("A")),

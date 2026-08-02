@@ -89,17 +89,18 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .group(DemoCoverageGroup::Inputs)
             .exercised()
             .len(),
-        17
+        21
     );
-    // The eleven WP-era reducer events plus the four WP06 occupancy
-    // lifecycle events the WP08 retained scene exercises.
+    // The eleven WP-era reducer events, the four WP06 occupancy lifecycle
+    // events the WP08 retained scene exercises, and SelectPatch — the gesture
+    // that makes every installed instrument reachable.
     assert_eq!(
         report
             .coverage()
             .group(DemoCoverageGroup::Events)
             .exercised()
             .len(),
-        15
+        16
     );
     assert_eq!(
         report

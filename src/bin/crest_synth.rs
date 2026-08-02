@@ -399,7 +399,7 @@ struct DemoSceneObservation {
 impl DemoSceneObservation {
     fn from_report(report: &DemoSceneReport, two_run_trace_equal: bool) -> Self {
         let records = report.event_log().records();
-        let mut event_variants = [false; 15];
+        let mut event_variants = [false; 16];
         let mut top_level_contexts = Vec::new();
         let mut navigate_directions = Vec::new();
         let mut adjust_directions = Vec::new();
@@ -414,6 +414,10 @@ impl DemoSceneObservation {
                     push_unique(&mut top_level_contexts, *context);
                 }
                 EventInput::InstallPatches { .. } => event_variants[1] = true,
+                EventInput::SelectPatch { direction } => {
+                    event_variants[15] = true;
+                    push_unique(&mut navigate_directions, *direction);
+                }
                 EventInput::Navigate { direction } => {
                     event_variants[2] = true;
                     push_unique(&mut navigate_directions, *direction);

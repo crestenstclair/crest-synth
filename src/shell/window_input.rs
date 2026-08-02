@@ -3,6 +3,10 @@
 pub enum WindowKey {
     Digit1,
     Digit2,
+    /// Step to the previous installed Patch.
+    Q,
+    /// Step to the next installed Patch.
+    E,
     W,
     S,
     A,
@@ -35,9 +39,11 @@ pub struct WindowInput {
 ///
 /// Entries are concrete production values so deterministic adapters can feed
 /// them directly through the same translator as the native window.
-const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; 17] = [
+const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; 21] = [
     WindowInput::key_down(WindowKey::Digit2),
     WindowInput::key_down(WindowKey::Digit1),
+    WindowInput::key_down(WindowKey::Q),
+    WindowInput::key_down(WindowKey::E),
     WindowInput::key_down(WindowKey::W),
     WindowInput::key_down(WindowKey::S),
     WindowInput::key_down(WindowKey::A),
@@ -46,6 +52,8 @@ const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; 17] = [
     WindowInput::key_down(WindowKey::Other),
     WindowInput::key_up(WindowKey::Digit1),
     WindowInput::key_up(WindowKey::Digit2),
+    WindowInput::key_up(WindowKey::Q),
+    WindowInput::key_up(WindowKey::E),
     WindowInput::key_up(WindowKey::W),
     WindowInput::key_up(WindowKey::S),
     WindowInput::key_up(WindowKey::A),
@@ -56,7 +64,7 @@ const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; 17] = [
 ];
 
 impl WindowInput {
-    /// Returns all 17 unique valid normalized input values.
+    /// Returns all 21 unique valid normalized input values.
     ///
     /// This production-owned descriptor is the only exhaustive GUI-input
     /// vocabulary deterministic scenes and acceptance tests need to consume.
@@ -111,7 +119,7 @@ mod tests {
     fn surface_descriptor_contains_exactly_the_normalized_vocabulary() {
         let descriptor = WindowInput::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 17);
+        assert_eq!(descriptor.len(), 21);
         for (index, input) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(input),

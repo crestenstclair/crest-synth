@@ -748,6 +748,10 @@ impl AppState {
                 self.select_context(context)?;
                 Ok(ReducerEffects::default())
             }
+            AppEvent::SelectPatch(direction) => {
+                self.select_patch(direction)?;
+                Ok(ReducerEffects::default())
+            }
             AppEvent::Navigate(direction) => {
                 match self.context() {
                     TopLevelContext::Mixer => self.navigate(direction)?,
@@ -970,6 +974,75 @@ impl AppState {
         }
         self.interaction
             .select_context(context)
+            .map_err(|_| EventRejection::InvalidSelection)?;
+        Ok(())
+    }
+
+    /// Moves the focused Patch one position along the installed order.
+    ///
+    /// This is the only path by which the focused Patch changes. The fixture
+    /// installs one Patch per MIDI part, so without it every instrument after
+    /// the first is unreachable from the controller.
+    ///
+    /// Focus is recovered against the destination Patch's own descriptor
+    /// schema: the same control is kept when that Patch offers it, otherwise
+    /// the first valid control is taken. A control identity the destination
+    /// cannot host is never carried across.
+    fn select_patch(&mut self, direction: Direction) -> Result<(), EventRejection> {
+        if self.context() != TopLevelContext::Patch {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        if self.interaction.mode() != crate::control::InteractionMode::Navigate {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        // Stepping through the installed order is a horizontal adjacent
+        // choice; vertical directions belong to control navigation.
+        let step: isize = match direction {
+            Direction::Left => -1,
+            Direction::Right => 1,
+            Direction::Up | Direction::Down => {
+                return Err(EventRejection::ActionUnavailableInContext)
+            }
+        };
+
+        let focused = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let current = self
+            .patches
+            .iter()
+            .position(|patch| patch.id() == focused)
+            .ok_or(EventRejection::UnknownPatch)?;
+
+        // No wrapping: at either end this is an unchanged rejection, exactly
+        // as an adjacent-choice parameter behaves at its boundary.
+        let target = isize::try_from(current)
+            .map_err(|_| EventRejection::UnknownPatch)?
+            .checked_add(step)
+            .ok_or(EventRejection::ParameterAtBoundary)?;
+        let target = usize::try_from(target).map_err(|_| EventRejection::ParameterAtBoundary)?;
+        let target_id = self
+            .patches
+            .get(target)
+            .ok_or(EventRejection::ParameterAtBoundary)?
+            .id();
+
+        let held = self.interaction.patch_control_focus();
+        let resolver = SemanticResolver::new(self);
+        let candidates = resolver.patch_main_paths(target_id)?;
+        let recovered = held
+            .and_then(|control| {
+                candidates
+                    .iter()
+                    .find(|path| path.control_id() == &SemanticControlId::Patch(control.clone()))
+            })
+            .or_else(|| candidates.first())
+            .ok_or(EventRejection::NoPatchesInstalled)?
+            .clone();
+
+        self.interaction
+            .set_active_main(recovered)
             .map_err(|_| EventRejection::InvalidSelection)?;
         Ok(())
     }
@@ -2803,6 +2876,90 @@ mod tests {
             Err(EventRejection::ParameterAtBoundary)
         );
         assert_eq!(state, boundary);
+    }
+
+    /// The fixture installs one Patch per MIDI part, so without a selection
+    /// gesture every instrument after the first is unreachable. This proves
+    /// the focused Patch actually moves through the production reducer.
+    #[test]
+    fn select_patch_moves_the_focused_patch_through_the_reducer_without_wrapping() {
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+
+        let first = state.interaction.patch_focus().unwrap();
+        assert_eq!(first, PatchId::new(1).unwrap());
+
+        // Left at the first position is an unchanged rejection, not a wrap
+        // onto the last Patch.
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Left)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state.interaction.patch_focus().unwrap(), first);
+
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+        let second = state.interaction.patch_focus().unwrap();
+        assert_eq!(second, PatchId::new(2).unwrap());
+        assert_ne!(second, first);
+
+        // ...and the active focus followed, not just the remembered path.
+        assert_eq!(
+            state.interaction.active_focus.patch_id(),
+            Some(PatchId::new(2).unwrap())
+        );
+
+        // Right at the last position is likewise unchanged.
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Right)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state.interaction.patch_focus().unwrap(), second);
+
+        state.apply(AppEvent::SelectPatch(Direction::Left)).unwrap();
+        assert_eq!(state.interaction.patch_focus().unwrap(), first);
+    }
+
+    /// Stepping between Patches is a horizontal adjacent choice and belongs to
+    /// the Patch context in Navigate mode only.
+    #[test]
+    fn select_patch_is_refused_outside_its_context_mode_and_axis() {
+        let mut state = installed_state();
+
+        // MIXER context: the action does not exist here.
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+            .unwrap();
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Right)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+
+        // Vertical directions belong to control navigation, not Patch order.
+        for direction in [Direction::Up, Direction::Down] {
+            assert_eq!(
+                state.apply(AppEvent::SelectPatch(direction)),
+                Err(EventRejection::ActionUnavailableInContext)
+            );
+        }
+
+        // Adjust mode is editing a value, not moving between instruments.
+        state
+            .apply(AppEvent::SetInteractionMode(
+                crate::control::InteractionMode::Adjust,
+            ))
+            .unwrap();
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Right)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
     }
 
     #[test]

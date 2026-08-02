@@ -60,6 +60,9 @@ pub enum AppEventSurfaceDescriptor {
     SelectContext {
         context: TopLevelContext,
     },
+    SelectPatch {
+        direction: Direction,
+    },
     Navigate {
         direction: Direction,
     },
@@ -131,12 +134,18 @@ pub enum AppEventSurfaceDescriptor {
     },
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 24] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 26] = [
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Mixer,
+    },
+    AppEventSurfaceDescriptor::SelectPatch {
+        direction: Direction::Left,
+    },
+    AppEventSurfaceDescriptor::SelectPatch {
+        direction: Direction::Right,
     },
     AppEventSurfaceDescriptor::Navigate {
         direction: Direction::Up,
@@ -241,6 +250,12 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 24] = [
 pub enum AppEvent {
     /// Select one of the two reducer-owned top-level contexts directly.
     SelectContext(TopLevelContext),
+    /// Move the focused Patch one position along the installed order.
+    ///
+    /// This is the only event that changes which Patch is focused. At either
+    /// end of the installed order it is a typed unchanged rejection rather
+    /// than a clamp or a wrap, exactly like every other adjacent choice.
+    SelectPatch(Direction),
     /// Move the current selection without changing a synth parameter.
     Navigate(Direction),
     /// Adjust exactly the currently selected bounded parameter.
@@ -329,6 +344,7 @@ impl AppEvent {
     pub fn from_semantic_action(action: SemanticAction) -> Self {
         match action {
             SemanticAction::SelectContext(context) => Self::SelectContext(context),
+            SemanticAction::SelectPatch(direction) => Self::SelectPatch(direction),
             SemanticAction::Navigate(direction) => Self::Navigate(direction),
             SemanticAction::Adjust(direction) => Self::Adjust(direction),
             SemanticAction::SetInteractionMode(mode) => Self::SetInteractionMode(mode),
@@ -380,6 +396,9 @@ impl AppEvent {
             Self::SelectContext(context) => {
                 AppEventSurfaceDescriptor::SelectContext { context: *context }
             }
+            Self::SelectPatch(direction) => AppEventSurfaceDescriptor::SelectPatch {
+                direction: *direction,
+            },
             Self::Navigate(direction) => AppEventSurfaceDescriptor::Navigate {
                 direction: *direction,
             },
@@ -504,7 +523,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 24);
+        assert_eq!(descriptor.len(), 26);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),

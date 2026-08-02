@@ -565,6 +565,30 @@ fn build_steps(
     // Both rejected actions leave its page and generation unchanged, and the
     // direct MIXER key proves the next semantic event is still accepted.
     push_key_press(&mut steps, WindowKey::Digit2);
+
+    // Step to the next installed Patch and back. The fixture installs one
+    // Patch per MIDI part, so this gesture is the only way any instrument
+    // after the first is reachable at all. The round trip is deliberate: it
+    // proves the move in both directions and leaves the focused Patch exactly
+    // where the rest of the scene expects it.
+    push_key_press(&mut steps, WindowKey::E);
+    push_checkpoint(&mut steps, DemoCheckpoint::new("context.patch.nextPatch"));
+    push_key_press(&mut steps, WindowKey::Q);
+    push_checkpoint(
+        &mut steps,
+        DemoCheckpoint::new("context.patch.previousPatch"),
+    );
+    // At the first position there is nowhere further left: an unchanged
+    // rejection, never a wrap onto the last Patch.
+    push_key_press(&mut steps, WindowKey::Q);
+    push_checkpoint(
+        &mut steps,
+        DemoCheckpoint::after_rejection(
+            "context.patch.previousPatchRejected",
+            EventRejection::ParameterAtBoundary,
+        ),
+    );
+
     push_key_press(&mut steps, WindowKey::W);
     push_checkpoint(
         &mut steps,
@@ -2071,6 +2095,10 @@ fn build_expected_coverage(
                 expected.push("event.selectContext".to_owned());
                 expected.push(format!("context.{}", context.label().to_ascii_lowercase()));
             }
+            crate::control::app_event::AppEventSurfaceDescriptor::SelectPatch { direction } => {
+                expected.push("event.selectPatch".to_owned());
+                expected.push(format!("direction.{}", direction_identifier(*direction)));
+            }
             crate::control::app_event::AppEventSurfaceDescriptor::Navigate { direction } => {
                 expected.push("event.navigate".to_owned());
                 expected.push(format!("direction.{}", direction_identifier(*direction)));
@@ -2581,6 +2609,8 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
     match (input.kind(), input.key()) {
         (WindowInputKind::KeyDown, WindowKey::Digit1) => "keyDown.digit1",
         (WindowInputKind::KeyDown, WindowKey::Digit2) => "keyDown.digit2",
+        (WindowInputKind::KeyDown, WindowKey::Q) => "keyDown.q",
+        (WindowInputKind::KeyDown, WindowKey::E) => "keyDown.e",
         (WindowInputKind::KeyDown, WindowKey::W) => "keyDown.w",
         (WindowInputKind::KeyDown, WindowKey::S) => "keyDown.s",
         (WindowInputKind::KeyDown, WindowKey::A) => "keyDown.a",
@@ -2589,6 +2619,8 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyDown, WindowKey::Other) => "keyDown.other",
         (WindowInputKind::KeyUp, WindowKey::Digit1) => "keyUp.digit1",
         (WindowInputKind::KeyUp, WindowKey::Digit2) => "keyUp.digit2",
+        (WindowInputKind::KeyUp, WindowKey::Q) => "keyUp.q",
+        (WindowInputKind::KeyUp, WindowKey::E) => "keyUp.e",
         (WindowInputKind::KeyUp, WindowKey::W) => "keyUp.w",
         (WindowInputKind::KeyUp, WindowKey::S) => "keyUp.s",
         (WindowInputKind::KeyUp, WindowKey::A) => "keyUp.a",
@@ -2729,10 +2761,10 @@ mod tests {
             .expected_coverage()
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
-        assert_eq!(WindowInput::surface_descriptor().len(), 17);
+        assert_eq!(WindowInput::surface_descriptor().len(), 21);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            24
+            26
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),
@@ -2824,7 +2856,11 @@ mod tests {
                 .count()
             + 2
             + GlobalParameters::surface_descriptor().len();
-        assert_eq!(boundary_rejections, bounded_parameter_count * 2);
+        // Every bounded parameter contributes a rejection at each of its two
+        // ends. The one extra is the patch-order boundary: stepping left from
+        // the first installed Patch is refused rather than wrapping, and that
+        // order is not a bounded parameter.
+        assert_eq!(boundary_rejections, bounded_parameter_count * 2 + 1);
         assert_eq!(
             checkpoints
                 .iter()
