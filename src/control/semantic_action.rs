@@ -1,4 +1,8 @@
 use crate::control::{Direction, SurfaceId, TopLevelContext};
+use crate::kernel::patch_id::PatchId;
+use crate::mixer::bus_id::BusId;
+use crate::synth::effect_slot_id::EffectSlotIndex;
+use crate::synth::EffectCapabilityId;
 use serde::{Deserialize, Serialize};
 
 /// The explicit reducer-owned interpretation of directional input.
@@ -34,37 +38,68 @@ impl InteractionMode {
     }
 }
 
-/// The six semantic user-intent variants accepted at passive input boundaries.
+/// The semantic user-intent variants accepted at passive input boundaries.
+///
+/// The two occupancy variants are structural topology edits: each names one
+/// exact position (a Patch effect slot or a bus return) and carries an
+/// optional registry entry, where `None` clears the position. The vocabulary
+/// stays generic — positions and registry identities, never effect names.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(tag = "kind", content = "payload", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    content = "payload",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SemanticAction {
     SelectContext(TopLevelContext),
+    /// Moves the focused Patch one position along the installed order. This is
+    /// the only way the focused Patch changes: every installed instrument is
+    /// reached through the same physical input → semantic action → reducer
+    /// path as any other edit, never by a UI-local selection or a backstage
+    /// lookup.
+    SelectPatch(Direction),
     Navigate(Direction),
     Adjust(Direction),
     SetInteractionMode(InteractionMode),
     EnterSurface(SurfaceId),
     Return,
+    SetSlotOccupancy {
+        patch_id: PatchId,
+        slot: EffectSlotIndex,
+        entry: Option<EffectCapabilityId>,
+    },
+    SetReturnOccupancy {
+        bus: BusId,
+        entry: Option<EffectCapabilityId>,
+    },
 }
 
 /// The variant-level descriptor for the closed semantic action union.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SemanticActionKind {
     SelectContext,
+    SelectPatch,
     Navigate,
     Adjust,
     SetInteractionMode,
     EnterSurface,
     Return,
+    SetSlotOccupancy,
+    SetReturnOccupancy,
 }
 
 impl SemanticActionKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::SelectContext,
+        Self::SelectPatch,
         Self::Navigate,
         Self::Adjust,
         Self::SetInteractionMode,
         Self::EnterSurface,
         Self::Return,
+        Self::SetSlotOccupancy,
+        Self::SetReturnOccupancy,
     ];
 
     pub const fn surface_descriptor() -> &'static [Self] {
@@ -72,9 +107,13 @@ impl SemanticActionKind {
     }
 }
 
-const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 15] = [
+const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 17] = [
     SemanticAction::SelectContext(TopLevelContext::Patch),
     SemanticAction::SelectContext(TopLevelContext::Mixer),
+    // Only the horizontal pair: moving along the installed Patch order is an
+    // adjacent choice, exactly like every other adjacent-choice surface.
+    SemanticAction::SelectPatch(Direction::Left),
+    SemanticAction::SelectPatch(Direction::Right),
     SemanticAction::Navigate(Direction::Up),
     SemanticAction::Navigate(Direction::Down),
     SemanticAction::Navigate(Direction::Left),
@@ -91,7 +130,12 @@ const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 15] = [
 ];
 
 impl SemanticAction {
-    /// Returns every concrete user action admitted in Phase 2 exactly once.
+    /// Returns the closed Phase 2 directional/navigation surface exactly once.
+    ///
+    /// The occupancy actions are deliberately outside this const descriptor:
+    /// their registry-entry payload is an open identity, so no finite list of
+    /// concrete instances exists. Their availability is proved through the
+    /// reducer, like every other action.
     pub const fn surface_descriptor() -> &'static [Self] {
         &SEMANTIC_ACTION_SURFACE_DESCRIPTOR
     }
@@ -99,11 +143,14 @@ impl SemanticAction {
     pub const fn kind(&self) -> SemanticActionKind {
         match self {
             Self::SelectContext(_) => SemanticActionKind::SelectContext,
+            Self::SelectPatch(_) => SemanticActionKind::SelectPatch,
             Self::Navigate(_) => SemanticActionKind::Navigate,
             Self::Adjust(_) => SemanticActionKind::Adjust,
             Self::SetInteractionMode(_) => SemanticActionKind::SetInteractionMode,
             Self::EnterSurface(_) => SemanticActionKind::EnterSurface,
             Self::Return => SemanticActionKind::Return,
+            Self::SetSlotOccupancy { .. } => SemanticActionKind::SetSlotOccupancy,
+            Self::SetReturnOccupancy { .. } => SemanticActionKind::SetReturnOccupancy,
         }
     }
 
@@ -160,7 +207,7 @@ mod tests {
 
     #[test]
     fn semantic_action_descriptors_are_closed_unique_and_phase_two_safe() {
-        assert_eq!(SemanticActionKind::surface_descriptor().len(), 6);
+        assert_eq!(SemanticActionKind::surface_descriptor().len(), 9);
         assert_eq!(InteractionMode::surface_descriptor().len(), 4);
         assert_eq!(InteractionMode::PHASE_TWO.len(), 2);
         assert!(SemanticAction::surface_descriptor()

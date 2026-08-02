@@ -163,7 +163,7 @@ impl InstrumentPreparer for CountingPreparer {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(-6.0, 0.61, 0.39, 0.0, 321.0, 0.0, 0.0).unwrap()
+    GlobalParameters::new(-6.0).unwrap()
 }
 
 fn soundfont_config() -> InstrumentConfig {
@@ -438,10 +438,10 @@ fn prove_patch_lifecycle_visibility() {
     state
         .apply(AppEvent::EnginePreparationFailed {
             request_id: failed_correlation.request_id(),
-            patch_id: failed_correlation.patch_id(),
+            patch_id: failed_correlation.patch_id().unwrap(),
             intent: failed_correlation.intent().clone(),
-            source_capability_id: failed_correlation.source_capability_id().clone(),
-            target_capability_id: failed_correlation.target_capability_id().clone(),
+            source_capability_id: failed_correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: failed_correlation.target_capability_id().unwrap().clone(),
             source_graph_revision: failed_correlation.source_graph_revision(),
             target_graph_revision: target_revision,
             failure: EngineSelectionFailure::AssetUnavailable,
@@ -473,10 +473,10 @@ fn prove_patch_lifecycle_visibility() {
     state
         .apply(AppEvent::EnginePrepared {
             request_id: correlation.request_id(),
-            patch_id: correlation.patch_id(),
+            patch_id: correlation.patch_id().unwrap(),
             intent: correlation.intent().clone(),
-            source_capability_id: correlation.source_capability_id().clone(),
-            target_capability_id: correlation.target_capability_id().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
             source_graph_revision: correlation.source_graph_revision(),
             target_graph_revision: target_revision,
             candidate_config: BraidsCapability::new().unwrap().default_config().unwrap(),

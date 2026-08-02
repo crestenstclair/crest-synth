@@ -5,7 +5,7 @@ use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_loop::{AppLoop, StructuralAdvanceError};
 use crate::control::app_state::{AppState, EventRejection};
 use crate::control::event_log::EventLog;
-use crate::control::event_record::{EventInput, EventSource};
+use crate::control::event_record::{EventInput, EventSource, PatchInput};
 use crate::control::state_projector::{StateProjectionError, StateProjector};
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -38,6 +38,7 @@ use crate::shell::audio_output::{
     AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
     AudioOutputError, AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
 };
+use crate::synth::effect_slot_id::EffectSlotIndex;
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::instrument_composition::{
@@ -47,7 +48,7 @@ use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPr
 use crate::synth::patch::Patch;
 use crate::synth::{
     compose_effect_registry, DescriptorDefaultConfigFactory, EffectCapabilityProvider,
-    EffectCapabilityRegistry, EffectCompositionError, EffectPreparer, VoicePolicy,
+    EffectCapabilityRegistry, EffectCompositionError, EffectPreparer, EffectSlotId, VoicePolicy,
 };
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::demo_scene::{DemoScene, DemoSceneError};
@@ -113,7 +114,7 @@ impl Default for ApplicationConfig {
         Self::new(
             48_000.0,
             1_024,
-            GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5)
+            GlobalParameters::new(0.0)
                 .expect("the standalone defaults satisfy every global parameter bound"),
         )
     }
@@ -164,7 +165,7 @@ pub struct SmokeObservation {
 }
 
 /// Measured Phase One shell and teardown evidence emitted after live ownership ends.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GraphicalShellLiveObservation {
     context_line_visible: bool,
     identity_header_visible: bool,
@@ -175,6 +176,7 @@ pub struct GraphicalShellLiveObservation {
     mixer_context_observed: bool,
     #[serde(flatten)]
     mixer_routing: LiveMixerRoutingEvidence,
+    effects_and_buses: Option<crate::testing::LiveEffectsAndBusesEvidence>,
     physical_audio_nonzero: bool,
     active_notes_after_cleanup: u32,
     window_closed: bool,
@@ -198,6 +200,7 @@ impl GraphicalShellLiveObservation {
             patch_context_observed: shell.patch_context_observed(),
             mixer_context_observed: shell.mixer_context_observed(),
             mixer_routing: report.mixer_routing().with_callback_safety(callback_safety),
+            effects_and_buses: report.effects_and_buses().cloned(),
             physical_audio_nonzero: shell.physical_audio_nonzero(),
             active_notes_after_cleanup: report.final_audio_observation().active_notes(),
             window_closed: true,
@@ -206,7 +209,7 @@ impl GraphicalShellLiveObservation {
         }
     }
 
-    pub const fn complete(&self) -> bool {
+    pub fn complete(&self) -> bool {
         self.context_line_visible
             && self.identity_header_visible
             && self.main_workspace_visible
@@ -215,6 +218,10 @@ impl GraphicalShellLiveObservation {
             && self.patch_context_observed
             && self.mixer_context_observed
             && self.mixer_routing.is_complete()
+            && self
+                .effects_and_buses
+                .as_ref()
+                .is_none_or(crate::testing::LiveEffectsAndBusesEvidence::is_complete)
             && self.physical_audio_nonzero
             && self.active_notes_after_cleanup == 0
             && self.window_closed
@@ -232,6 +239,42 @@ impl GraphicalShellLiveObservation {
             self.owned_graphs_remaining,
         )
     }
+
+    /// The retained effects-and-buses teardown projection: the cumulative
+    /// sixteen-track evidence plus the topology, responsiveness, and
+    /// eight-destination measurements.
+    pub fn effects_and_buses(&self) -> Option<EffectsAndBusesLiveObservation> {
+        self.effects_and_buses
+            .as_ref()
+            .map(|evidence| EffectsAndBusesLiveObservation {
+                routing: self.sixteen_track_mixer_routing(),
+                effects_and_buses: evidence.clone(),
+            })
+    }
+}
+
+/// Final effects-and-buses witness emitted after physical teardown.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EffectsAndBusesLiveObservation {
+    #[serde(flatten)]
+    routing: SixteenTrackMixerRoutingObservation,
+    #[serde(flatten)]
+    effects_and_buses: crate::testing::LiveEffectsAndBusesEvidence,
+}
+
+impl EffectsAndBusesLiveObservation {
+    pub fn is_complete(&self) -> bool {
+        self.routing.is_complete() && self.effects_and_buses.is_complete()
+    }
+}
+
+/// The retained live scene selected by the binary's stable flags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LiveSceneKind {
+    /// The retained sixteen-track mixer-routing scene.
+    SixteenTrackMixerRouting,
+    /// The retained cumulative effects-and-buses scene.
+    EffectsAndBuses,
 }
 
 /// A startup, control, fixture, device, or window failure.
@@ -240,6 +283,10 @@ pub enum ApplicationError {
     Capability(CapabilityError),
     InstrumentComposition(InstrumentCompositionError),
     EffectComposition(EffectCompositionError),
+    /// The declared default bus-return occupancy failed to compose at the
+    /// production root; startup aborts instead of substituting silent
+    /// returns.
+    DefaultBusReturns(crate::adapter::production_effects::ProductionEffectCompositionError),
     Instrument(InstrumentPreparationError),
     Graph(GraphPreparationError),
     GraphWorker(ThreadedGraphPreparationWorkerError),
@@ -262,6 +309,12 @@ pub enum ApplicationError {
     ObservationOverflow,
     ObservationUnavailable,
     FixtureUnavailable,
+    /// A recorded install carries an effect whose instance identity names no
+    /// bounded chain position, so its recorded placement cannot be rebuilt.
+    RecordedEffectPosition {
+        patch_id: u32,
+        slot_id: EffectSlotId,
+    },
 }
 
 impl fmt::Display for ApplicationError {
@@ -273,6 +326,12 @@ impl fmt::Display for ApplicationError {
             }
             Self::EffectComposition(error) => {
                 write!(formatter, "effect composition failed: {error}")
+            }
+            Self::DefaultBusReturns(error) => {
+                write!(
+                    formatter,
+                    "default bus-return composition failed at startup: {error}"
+                )
             }
             Self::Instrument(error) => write!(formatter, "instrument preparation failed: {error}"),
             Self::Graph(error) => write!(formatter, "prepared graph setup failed: {error}"),
@@ -315,6 +374,11 @@ impl fmt::Display for ApplicationError {
             Self::FixtureUnavailable => {
                 formatter.write_str("the accepted automatic fixture Patch set is unavailable")
             }
+            Self::RecordedEffectPosition { patch_id, slot_id } => write!(
+                formatter,
+                "the recorded install for patch {patch_id} cannot place effect instance \
+                 {slot_id} at its declared chain position"
+            ),
         }
     }
 }
@@ -325,6 +389,7 @@ impl std::error::Error for ApplicationError {
             Self::Capability(error) => Some(error),
             Self::InstrumentComposition(error) => Some(error),
             Self::EffectComposition(error) => Some(error),
+            Self::DefaultBusReturns(error) => Some(error),
             Self::Instrument(error) => Some(error),
             Self::Graph(error) => Some(error),
             Self::GraphWorker(error) => Some(error),
@@ -346,7 +411,8 @@ impl std::error::Error for ApplicationError {
             | Self::LiveEventLogCapacity
             | Self::ObservationOverflow
             | Self::ObservationUnavailable
-            | Self::FixtureUnavailable => None,
+            | Self::FixtureUnavailable
+            | Self::RecordedEffectPosition { .. } => None,
         }
     }
 }
@@ -664,12 +730,19 @@ where
     } = instruments;
     let revision = GraphRevision::INITIAL;
     let (control_boundary, audio_boundary) = boundary.into_handles();
+    // The production root propagates a failed default bus-return
+    // composition as a typed startup error; the permissive test-registry
+    // variant (`startup_bus_returns`) is never consumed here.
+    let startup_returns =
+        crate::adapter::production_effects::production_startup_bus_returns(&effects)
+            .map_err(ApplicationError::DefaultBusReturns)?;
     let state = AppState::for_graph_with_effects(
         capabilities.clone(),
         effects.clone(),
         config.global_parameters(),
         revision,
-    );
+    )
+    .with_initial_returns(startup_returns);
     let projector = StateProjector::for_graph(revision);
     let mut app_loop = match plan.event_log {
         Some(event_log) => AppLoop::with_event_log(state, projector, control_boundary, event_log)?,
@@ -684,6 +757,7 @@ where
         .sum();
     let initial_graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
         .with_effects(app_loop.effects(), &effect_preparers)
+        .with_returns(app_loop.bus_returns())
         .build(
             revision,
             app_loop.patches(),
@@ -853,6 +927,25 @@ where
         OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
         OnComplete: FnOnce(&LiveDemoReport) + 'static,
     {
+        self.run_live_demo_scene(
+            LiveSceneKind::SixteenTrackMixerRouting,
+            on_checkpoint,
+            on_complete,
+        )
+    }
+
+    /// Runs the selected retained scene through the normal physical audio and
+    /// native-window lifetime. The callbacks execute only on the control side.
+    pub fn run_live_demo_scene<OnCheckpoint, OnComplete>(
+        self,
+        scene_kind: LiveSceneKind,
+        on_checkpoint: OnCheckpoint,
+        on_complete: OnComplete,
+    ) -> Result<GraphicalShellLiveObservation, ApplicationError>
+    where
+        OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
+        OnComplete: FnOnce(&LiveDemoReport) + 'static,
+    {
         let Self {
             boundary,
             instruments,
@@ -889,7 +982,16 @@ where
                 worker: StartupWorker::Threaded,
             },
         )?;
-        let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())?;
+        let scene = match scene_kind {
+            LiveSceneKind::SixteenTrackMixerRouting => {
+                LiveDemoScene::from_installed_state(&app_loop.current_state_tree())?
+            }
+            LiveSceneKind::EffectsAndBuses => {
+                crate::testing::live_effects_and_buses_scene::from_installed_state(
+                    &app_loop.current_state_tree(),
+                )?
+            }
+        };
         if app_loop.event_log().capacity()
             < scene.required_event_log_capacity(LIVE_FIXTURE_EVENT_ALLOWANCE)
         {
@@ -1053,6 +1155,7 @@ where
             app_loop.effects(),
             &installed_patches,
             &global_parameters,
+            app_loop.bus_returns(),
         )?;
         if degenerate != Some(DegenerateMode::Audio) {
             queue_demo_notes(&installed_patches, &mut app_loop)?;
@@ -1365,7 +1468,19 @@ where
     }
 }
 
-fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, ApplicationError> {
+/// Rebuilds the startup-installed Patch set from the accepted installation
+/// record in the event log — the composition-root round trip the demo scene
+/// composes its fixture Patches through.
+///
+/// The record stores the chain in the frozen serialized vocabulary: the
+/// occupied `postEffects` entries in position order, each carrying its
+/// `slotId` instance identity. Positions map one-to-one onto instance
+/// identities ([`EffectSlotIndex::instance_identity`]), so every recorded
+/// entry is placed back at exactly the position its identity names. A gapped
+/// chain — an empty position before an occupied one — survives the round
+/// trip per position, never compacted down. A recorded identity that names
+/// no bounded position is a corrupted record and fails loudly.
+pub fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, ApplicationError> {
     let patches = event_log
         .records()
         .iter()
@@ -1379,10 +1494,10 @@ fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, Applic
         })
         .ok_or(ApplicationError::FixtureUnavailable)?;
 
-    Ok(patches
+    patches
         .iter()
         .map(|patch| {
-            Patch::new(
+            let mut rebuilt = Patch::new(
                 PatchId::new(patch.id())
                     .expect("an accepted fixture record contains a valid PatchId"),
                 patch.name().to_owned(),
@@ -1391,10 +1506,28 @@ fn installed_patches_from_log(event_log: &EventLog) -> Result<Vec<Patch>, Applic
                     .expect("an accepted fixture record contains a valid MIDI channel"),
                 patch.output(),
             )
-            .with_envelope(*patch.envelope())
-            .with_post_effects(patch.post_effects().to_vec())
+            .with_envelope(*patch.envelope());
+            // The read is fully qualified: this is the record's frozen
+            // serialized chain (retained evidence vocabulary), not the Patch
+            // aggregate's retired compacting accessor that shares its name.
+            for config in PatchInput::post_effects(patch) {
+                let position = EffectSlotIndex::ALL
+                    .into_iter()
+                    .find(|position| position.instance_identity() == config.slot_id())
+                    .ok_or(ApplicationError::RecordedEffectPosition {
+                        patch_id: patch.id(),
+                        slot_id: config.slot_id(),
+                    })?;
+                rebuilt
+                    .set_slot_occupancy(position, Some(config.clone()))
+                    .map_err(|_| ApplicationError::RecordedEffectPosition {
+                        patch_id: patch.id(),
+                        slot_id: config.slot_id(),
+                    })?;
+            }
+            Ok(rebuilt)
         })
-        .collect())
+        .collect()
 }
 
 fn queue_demo_notes<Boundary>(
@@ -1512,8 +1645,7 @@ fn exactly_target_level_changed(
         if before_values.pan() != after_values.pan()
             || before_values.mute() != after_values.mute()
             || before_values.solo() != after_values.solo()
-            || before_values.reverb_send() != after_values.reverb_send()
-            || before_values.delay_send() != after_values.delay_send()
+            || before_values.sends() != after_values.sends()
         {
             return false;
         }
@@ -2891,7 +3023,9 @@ mod tests {
         assert_eq!(observation.callback_allocations, 0);
         assert_eq!(observation.callback_destructions, 0);
         assert_eq!(observation.patch_rows, 2);
-        assert_eq!(observation.channel_separators, 16);
+        // Fifteen separators between the sixteen tracks plus one before the
+        // RETURNS section and one before the GLOBAL section.
+        assert_eq!(observation.channel_separators, 17);
         assert!(observation.round_robin_channels);
         assert!(observation.distinct_patch_channels);
         assert!(observation.distinct_patch_stems);

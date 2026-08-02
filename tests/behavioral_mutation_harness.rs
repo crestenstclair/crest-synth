@@ -93,6 +93,56 @@ fn expected_schema(case: BehavioralMutationCase) -> BTreeSet<String> {
             "render_peak",
             "finite_audio",
         ],
+        BehavioralMutationCase::SlotOrderSwap => &[
+            "case",
+            "forward_energy",
+            "reversed_energy",
+            "order_difference_energy",
+            "order_sensitive",
+            "finite_audio",
+        ],
+        BehavioralMutationCase::EmptyReturnPassthrough => &[
+            "case",
+            "accumulated_send_energy",
+            "unoccupied_wet_energy",
+            "output_matches_dry_exactly",
+            "unoccupied_return_silent",
+            "finite_audio",
+        ],
+        BehavioralMutationCase::PreGateSend => &[
+            "case",
+            "post_fader_reference_energy",
+            "measured_send_energy",
+            "pre_fader_reference_energy",
+            "send_taken_post_fader",
+            "finite_audio",
+        ],
+        BehavioralMutationCase::MutedSendLeak => &[
+            "case",
+            "sounding_send_energy",
+            "muted_send_energy",
+            "muted_wet_energy",
+            "mute_gates_sends",
+            "finite_audio",
+        ],
+        BehavioralMutationCase::PermissiveStructuralMatch => &[
+            "case",
+            "attested_wet_energy",
+            "mismatched_wet_energy",
+            "strict_matching_enforced",
+            "finite_audio",
+        ],
+        BehavioralMutationCase::RefusedTopology => &[
+            "case",
+            "refusal_recorded",
+            "rejection_reason",
+            "rejection_reason_attributable",
+            "active_graph_preserved",
+            "canonical_state_preserved",
+            "render_preserved_exactly",
+            "post_rejection_valid_change_accepted",
+            "finite_audio",
+        ],
     };
     fields.iter().map(|field| (*field).to_owned()).collect()
 }
@@ -214,6 +264,85 @@ fn every_named_mutant_falsifies_its_measured_healthy_predicate() {
                 assert!(mutant.renderer_called);
                 assert!(!mutant.renderer_nonzero);
                 assert!(mutant.render_peak.abs() < 1.0e-12);
+            }
+            (
+                BehavioralMutationObservation::SlotOrderSwap(healthy),
+                BehavioralMutationObservation::SlotOrderSwap(mutant),
+            ) => {
+                assert!(healthy.forward_energy > 0.0);
+                assert!(healthy.reversed_energy > 0.0);
+                assert!(healthy.order_difference_energy > 0.0);
+                assert!(healthy.order_sensitive);
+                assert!(mutant.order_difference_energy.abs() < 1.0e-12);
+                assert!(!mutant.order_sensitive);
+            }
+            (
+                BehavioralMutationObservation::EmptyReturnPassthrough(healthy),
+                BehavioralMutationObservation::EmptyReturnPassthrough(mutant),
+            ) => {
+                assert!(healthy.accumulated_send_energy > 0.0);
+                assert!(healthy.unoccupied_wet_energy.abs() < 1.0e-12);
+                assert!(healthy.output_matches_dry_exactly);
+                assert!(healthy.unoccupied_return_silent);
+                assert!(mutant.unoccupied_wet_energy > 0.0);
+                assert!(!mutant.output_matches_dry_exactly);
+                assert!(!mutant.unoccupied_return_silent);
+            }
+            (
+                BehavioralMutationObservation::PreGateSend(healthy),
+                BehavioralMutationObservation::PreGateSend(mutant),
+            ) => {
+                assert!(healthy.send_taken_post_fader);
+                assert!(!measurements_differ(
+                    healthy.measured_send_energy,
+                    healthy.post_fader_reference_energy,
+                ));
+                assert!(healthy.pre_fader_reference_energy > healthy.post_fader_reference_energy);
+                assert!(!mutant.send_taken_post_fader);
+                assert!(measurements_differ(
+                    mutant.measured_send_energy,
+                    mutant.post_fader_reference_energy,
+                ));
+            }
+            (
+                BehavioralMutationObservation::MutedSendLeak(healthy),
+                BehavioralMutationObservation::MutedSendLeak(mutant),
+            ) => {
+                assert!(healthy.sounding_send_energy > 0.0);
+                assert!(healthy.muted_send_energy.abs() < 1.0e-12);
+                assert!(healthy.muted_wet_energy.abs() < 1.0e-12);
+                assert!(healthy.mute_gates_sends);
+                assert!(mutant.muted_send_energy > 0.0);
+                assert!(mutant.muted_wet_energy > 0.0);
+                assert!(!mutant.mute_gates_sends);
+            }
+            (
+                BehavioralMutationObservation::PermissiveStructuralMatch(healthy),
+                BehavioralMutationObservation::PermissiveStructuralMatch(mutant),
+            ) => {
+                assert!(healthy.attested_wet_energy > 0.0);
+                assert!(healthy.mismatched_wet_energy.abs() < 1.0e-12);
+                assert!(healthy.strict_matching_enforced);
+                assert!(mutant.mismatched_wet_energy > 0.0);
+                assert!(!mutant.strict_matching_enforced);
+            }
+            (
+                BehavioralMutationObservation::RefusedTopology(healthy),
+                BehavioralMutationObservation::RefusedTopology(mutant),
+            ) => {
+                assert!(healthy.refusal_recorded);
+                assert_eq!(healthy.rejection_reason, "preparationFailed");
+                assert!(healthy.rejection_reason_attributable);
+                assert!(healthy.active_graph_preserved);
+                assert!(healthy.canonical_state_preserved);
+                assert!(healthy.render_preserved_exactly);
+                assert!(healthy.post_rejection_valid_change_accepted);
+                // The published-anyway mutant collapses every preservation
+                // predicate: the refused change went live.
+                assert!(!mutant.refusal_recorded);
+                assert!(!mutant.rejection_reason_attributable);
+                assert!(!mutant.active_graph_preserved);
+                assert!(!mutant.canonical_state_preserved);
             }
             (healthy, mutant) => {
                 panic!("case returned mismatched schemas: {healthy:?} / {mutant:?}");

@@ -1,66 +1,119 @@
-use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
+use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
+use crate::mixer::bus_return::EffectError;
 use crate::mixer::mix_observation::MixObservation;
 use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::mixer::track_meter::TrackMeter;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::patch_audio_block::PatchAudioBlock;
+use crate::real_time::prepared_bus_return_rack::PreparedBusReturnRack;
+use crate::real_time::RtPostEffectParameters;
+use crate::synth::PreparedPostEffect;
 
-const MAX_DELAY_MILLISECONDS: f32 = 2000.0;
-
-/// Combines identity-preserving Patch stems and the two shared global effect returns.
-pub struct MixEngine<E> {
-    effects: E,
+/// Combines identity-preserving Patch stems, eight indexed bus returns, and
+/// the master stage.
+///
+/// Sends are taken post-fader and post-gate and are indexed by `BusId`; the
+/// send stage did not move when the destination count generalized from two to
+/// eight (FR-011, C-BR-1). Each occupied return sums into the mix before
+/// master gain; an unoccupied return contributes silence (C-BR-6).
+///
+/// There is no named shared-effects port: every shared return renders through
+/// the bus-return rack, with live scalar values and levels read from the
+/// snapshot's indexed return entries, and the measurement harnesses probe the
+/// per-bus sends through [`MixObservation`] and installed returns.
+pub struct MixEngine {
+    returns: PreparedBusReturnRack,
     track_scratch: [Vec<f32>; MixerTrackId::COUNT],
-    reverb_input: Vec<f32>,
-    delay_input: Vec<f32>,
+    bus_inputs: [Vec<f32>; MAX_BUS_RETURNS],
+    wet_scratch: Vec<f32>,
     dry_output: Vec<f32>,
     max_frames: usize,
     prepared: bool,
 }
 
-impl<E> MixEngine<E>
-where
-    E: GlobalEffectsProcessor,
-{
+impl Default for MixEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MixEngine {
     /// Creates an unprepared mixer without allocating callback storage.
     #[must_use]
-    pub fn new(effects: E) -> Self {
+    pub fn new() -> Self {
         Self {
-            effects,
+            returns: PreparedBusReturnRack::empty(),
             track_scratch: std::array::from_fn(|_| Vec::new()),
-            reverb_input: Vec::new(),
-            delay_input: Vec::new(),
+            bus_inputs: std::array::from_fn(|_| Vec::new()),
+            wet_scratch: Vec::new(),
             dry_output: Vec::new(),
             max_frames: 0,
             prepared: false,
         }
     }
 
-    /// Allocates every scratch buffer and prepares the global effects.
-    pub fn prepare(&mut self, sample_rate: f32, max_frames: usize) -> Result<(), EffectError> {
+    /// Allocates every scratch buffer and prepares the effect stages.
+    ///
+    /// Re-preparation empties the bus-return rack; occupancy is installed
+    /// afterward through [`Self::install_bus_return`].
+    pub fn prepare(&mut self, _sample_rate: f32, max_frames: usize) -> Result<(), EffectError> {
         self.prepared = false;
 
         let sample_capacity = max_frames
             .checked_mul(2)
             .ok_or(EffectError::StorageAllocationFailed)?;
-        let reverb_input = allocate_zeros(sample_capacity)?;
-        let delay_input = allocate_zeros(sample_capacity)?;
+        let mut bus_inputs = std::array::from_fn(|_| Vec::new());
+        for bus_input in &mut bus_inputs {
+            *bus_input = allocate_zeros(sample_capacity)?;
+        }
+        let wet_scratch = allocate_zeros(sample_capacity)?;
         let dry_output = allocate_zeros(sample_capacity)?;
         let mut track_scratch = std::array::from_fn(|_| Vec::new());
         for track in &mut track_scratch {
             *track = allocate_zeros(sample_capacity)?;
         }
+        let returns = PreparedBusReturnRack::new(max_frames)?;
 
-        self.effects
-            .prepare(sample_rate, max_frames, MAX_DELAY_MILLISECONDS)?;
-
-        self.reverb_input = reverb_input;
-        self.delay_input = delay_input;
+        self.bus_inputs = bus_inputs;
+        self.wet_scratch = wet_scratch;
         self.dry_output = dry_output;
         self.track_scratch = track_scratch;
+        self.returns = returns;
         self.max_frames = max_frames;
         self.prepared = true;
         Ok(())
+    }
+
+    /// Prepare-time only: occupies one bus return with a prepared registry
+    /// effect, its install-time structural attestation (instance identity and
+    /// scalar layout), and the install-time return level. Live values arrive
+    /// per block from the snapshot's indexed return entries.
+    pub fn install_bus_return(
+        &mut self,
+        bus: BusId,
+        effect: Box<dyn PreparedPostEffect>,
+        parameters: RtPostEffectParameters,
+        return_level: f32,
+    ) -> Result<(), EffectError> {
+        self.returns.install(bus, effect, parameters, return_level)
+    }
+
+    /// Prepare-time only: empties one bus return.
+    pub fn clear_bus_return(&mut self, bus: BusId) {
+        self.returns.clear(bus);
+    }
+
+    pub const fn bus_returns(&self) -> &PreparedBusReturnRack {
+        &self.returns
+    }
+
+    /// Mutable access for the graph-owned voice carry-over exchange:
+    /// `PreparedGraph::carry_live_state_from` swaps still-live return
+    /// instances between two complete graphs at block-boundary activation.
+    /// The rack's own carry operation is callback-safe; this accessor adds no
+    /// behavior of its own.
+    pub(crate) fn bus_returns_mut(&mut self) -> &mut PreparedBusReturnRack {
+        &mut self.returns
     }
 
     /// Mixes one prepared stereo stem per active Patch into the stereo output.
@@ -99,8 +152,9 @@ where
             }
         }
 
-        self.reverb_input[..sample_count].fill(0.0);
-        self.delay_input[..sample_count].fill(0.0);
+        for bus_input in &mut self.bus_inputs {
+            bus_input[..sample_count].fill(0.0);
+        }
         for track in &mut self.track_scratch {
             track[..sample_count].fill(0.0);
         }
@@ -129,6 +183,10 @@ where
         let mut non_finite_samples = 0_u64;
 
         // Track level/pan, pre-gate meters, gates, dry sum, and post-gate sends.
+        // The stage order is FR-011 and C-BR-1/C-BR-2 and must not move:
+        // fader and pan first, the meter next (pre-gate, so muted tracks stay
+        // diagnosable), then the mute/solo gate, and only for audible tracks
+        // the dry sum and the eight indexed sends.
         for track_id in MixerTrackId::ALL {
             let track_parameters = *parameters.mixer_track(track_id);
             let gain = db_to_linear(track_parameters.level_db());
@@ -136,6 +194,7 @@ where
             let left_gain = gain * left_pan;
             let right_gain = gain * right_pan;
             let audible = !track_parameters.mute() && (!any_solo || track_parameters.solo());
+            let sends = track_parameters.sends();
             let track = &mut self.track_scratch[track_id.index()];
             let mut left_peak = 0.0_f32;
             let mut right_peak = 0.0_f32;
@@ -161,10 +220,10 @@ where
                 if audible {
                     output[left] += mixed_left;
                     output[right] += mixed_right;
-                    self.reverb_input[left] += mixed_left * track_parameters.reverb_send();
-                    self.reverb_input[right] += mixed_right * track_parameters.reverb_send();
-                    self.delay_input[left] += mixed_left * track_parameters.delay_send();
-                    self.delay_input[right] += mixed_right * track_parameters.delay_send();
+                    for (bus_input, send) in self.bus_inputs.iter_mut().zip(sends) {
+                        bus_input[left] += mixed_left * send;
+                        bus_input[right] += mixed_right * send;
+                    }
                 }
             }
             track_meters[track_id.index()] =
@@ -174,12 +233,33 @@ where
 
         self.dry_output[..sample_count].copy_from_slice(&output[..sample_count]);
 
-        self.effects.process(
-            &self.reverb_input[..sample_count],
-            &self.delay_input[..sample_count],
-            &mut output[..sample_count],
-            parameters.global(),
-        );
+        // Bus returns: each occupied return derives its wet signal only from
+        // its own accumulated send input. Returns accumulate into one zeroed
+        // wet buffer that is summed into the mix exactly once before master
+        // gain — the same `output + (wet_a + wet_b)` association the retired
+        // port used, so occupying returns 0 and 1 with the registry reverb
+        // and delay reproduces today's arithmetic bit for bit. Unoccupied
+        // returns contribute silence, never their input. Live scalar values
+        // and the live return level come from the snapshot's indexed return
+        // entries — the latest-value transport, exactly as every other scalar.
+        let mut bus_output_rms = [0.0_f32; MAX_BUS_RETURNS];
+        self.wet_scratch[..sample_count].fill(0.0);
+        for bus in BusId::ALL {
+            bus_output_rms[bus.index()] = self.returns.process_return(
+                bus,
+                &self.bus_inputs[bus.index()][..sample_count],
+                &mut self.wet_scratch[..sample_count],
+                parameters.bus_return(bus),
+            );
+        }
+        if self.returns.occupied_count() > 0 {
+            for (output_sample, wet_sample) in output[..sample_count]
+                .iter_mut()
+                .zip(&self.wet_scratch[..sample_count])
+            {
+                *output_sample += wet_sample;
+            }
+        }
 
         let master_gain = db_to_linear(parameters.global().master_gain_db());
         for sample in &mut output[..sample_count] {
@@ -189,8 +269,9 @@ where
         observe_mix(
             track_meters,
             non_finite_samples,
-            &self.reverb_input[..sample_count],
-            &self.delay_input[..sample_count],
+            &self.bus_inputs,
+            sample_count,
+            bus_output_rms,
             &self.dry_output[..sample_count],
             &output[..sample_count],
             master_gain,
@@ -198,11 +279,13 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn observe_mix(
     tracks: [TrackMeter; MixerTrackId::COUNT],
     prior_non_finite_samples: u64,
-    reverb_input: &[f32],
-    delay_input: &[f32],
+    bus_inputs: &[Vec<f32>; MAX_BUS_RETURNS],
+    sample_count: usize,
+    bus_output_rms: [f32; MAX_BUS_RETURNS],
     dry_output: &[f32],
     output: &[f32],
     master_gain: f32,
@@ -210,19 +293,11 @@ fn observe_mix(
     let mut left_peak = 0.0_f32;
     let mut right_peak = 0.0_f32;
     let mut output_energy = 0.0_f64;
-    let mut reverb_energy = 0.0_f64;
-    let mut delay_energy = 0.0_f64;
     let mut wet_energy = 0.0_f64;
     let mut non_finite_samples = prior_non_finite_samples;
     let mut clipped_samples = 0_u64;
 
-    for (index, (((output_sample, dry_sample), reverb_sample), delay_sample)) in output
-        .iter()
-        .zip(dry_output)
-        .zip(reverb_input)
-        .zip(delay_input)
-        .enumerate()
-    {
+    for (index, (output_sample, dry_sample)) in output.iter().zip(dry_output).enumerate() {
         let finite_output = if output_sample.is_finite() {
             *output_sample
         } else {
@@ -238,8 +313,6 @@ fn observe_mix(
             right_peak = right_peak.max(finite_output.abs());
         }
 
-        let finite_reverb = finite_or_zero(*reverb_sample);
-        let finite_delay = finite_or_zero(*delay_sample);
         let wet_before_master = if master_gain.is_finite() && master_gain > 0.0 {
             finite_output / master_gain - finite_or_zero(*dry_sample)
         } else {
@@ -247,18 +320,26 @@ fn observe_mix(
         };
 
         output_energy += f64::from(finite_output) * f64::from(finite_output);
-        reverb_energy += f64::from(finite_reverb) * f64::from(finite_reverb);
-        delay_energy += f64::from(finite_delay) * f64::from(finite_delay);
         wet_energy += f64::from(wet_before_master) * f64::from(wet_before_master);
     }
 
-    MixObservation::new(
+    let mut bus_input_rms = [0.0_f32; MAX_BUS_RETURNS];
+    for (bus_rms, bus_input) in bus_input_rms.iter_mut().zip(bus_inputs) {
+        let mut bus_energy = 0.0_f64;
+        for sample in &bus_input[..sample_count] {
+            let finite_sample = finite_or_zero(*sample);
+            bus_energy += f64::from(finite_sample) * f64::from(finite_sample);
+        }
+        *bus_rms = rms(bus_energy, sample_count);
+    }
+
+    MixObservation::measured(
         tracks,
         left_peak,
         right_peak,
         rms(output_energy, output.len()),
-        rms(reverb_energy, reverb_input.len()),
-        rms(delay_energy, delay_input.len()),
+        bus_input_rms,
+        bus_output_rms,
         rms(wet_energy, output.len()),
         non_finite_samples,
         clipped_samples,
@@ -306,64 +387,86 @@ fn allocate_zeros(length: usize) -> Result<Vec<f32>, EffectError> {
 mod tests {
     use super::MixEngine;
     use crate::kernel::patch_id::PatchId;
-    use crate::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
+    use crate::mixer::bus_id::BusId;
+    use crate::mixer::bus_id::MAX_BUS_RETURNS;
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mixer_state::MixerState;
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::mixer::mixer_track_parameters::MixerTrackParameters;
     use crate::mixer::patch_output::PatchOutput;
-    use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
+    use crate::real_time::parameter_snapshot::{
+        ParameterSnapshot, RtBusReturnParameters, RtPatchParameters, RtPostEffectParameters,
+    };
     use crate::real_time::patch_audio_block::PatchAudioBlock;
+    use crate::synth::{EffectSlotId, PreparedEffectError, PreparedPostEffect};
 
-    #[derive(Default)]
-    struct TestEffects {
-        prepared: bool,
-    }
+    /// A prepared "effect" that returns its input unchanged (100% wet copy),
+    /// making return arithmetic sample-exact in proofs.
+    struct UnityReturn;
 
-    impl GlobalEffectsProcessor for TestEffects {
-        fn prepare(
-            &mut self,
-            _sample_rate: f32,
-            _max_frames: usize,
-            _max_delay_milliseconds: f32,
-        ) -> Result<(), EffectError> {
-            self.prepared = true;
-            Ok(())
+    impl PreparedPostEffect for UnityReturn {
+        fn patch_id(&self) -> PatchId {
+            PatchId::new(u32::MAX).unwrap()
+        }
+
+        fn slot_id(&self) -> EffectSlotId {
+            EffectSlotId::new(1).unwrap()
         }
 
         fn process(
             &mut self,
-            reverb_input: &[f32],
-            delay_input: &[f32],
-            output: &mut [f32],
-            parameters: &GlobalParameters,
-        ) {
-            assert!(self.prepared);
-            for ((output_sample, reverb_sample), delay_sample) in
-                output.iter_mut().zip(reverb_input).zip(delay_input)
-            {
-                *output_sample += reverb_sample * parameters.reverb_return()
-                    + delay_sample * parameters.delay_return();
-            }
+            _interleaved_stereo: &mut [f32],
+            _frame_count: usize,
+            _parameters: &RtPostEffectParameters,
+        ) -> Result<(), PreparedEffectError> {
+            Ok(())
         }
     }
 
-    fn track(level_db: f32, pan: f32, reverb_send: f32, delay_send: f32) -> MixerTrackParameters {
-        MixerTrackParameters::new(level_db, pan, false, false, reverb_send, delay_send)
+    fn unity_parameters() -> RtPostEffectParameters {
+        RtPostEffectParameters::new(EffectSlotId::new(1).unwrap(), &[]).unwrap()
+    }
+
+    /// Overlays live snapshot entries attesting installed unity returns at
+    /// the given buses with per-bus live return levels.
+    fn with_leveled_returns(
+        snapshot: ParameterSnapshot,
+        buses_and_levels: &[(BusId, f32)],
+    ) -> ParameterSnapshot {
+        let mut returns = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+        for (bus, level) in buses_and_levels {
+            returns[bus.index()] =
+                RtBusReturnParameters::new(EffectSlotId::new(1).unwrap(), &[], *level).unwrap();
+        }
+        snapshot.with_returns(returns)
+    }
+
+    /// Overlays live snapshot entries attesting installed unity returns at
+    /// the given buses (level 1.0).
+    fn with_unity_returns(snapshot: ParameterSnapshot, buses: &[BusId]) -> ParameterSnapshot {
+        let pairs = buses.iter().map(|bus| (*bus, 1.0)).collect::<Vec<_>>();
+        with_leveled_returns(snapshot, &pairs)
+    }
+
+    /// Installs sample-exact unity returns at the given buses at prepare time.
+    fn install_unity_returns(mixer: &mut MixEngine, buses: &[BusId]) {
+        for bus in buses {
+            mixer
+                .install_bus_return(*bus, Box::new(UnityReturn), unity_parameters(), 1.0)
+                .unwrap();
+        }
+    }
+
+    fn track(level_db: f32, pan: f32, bus0_send: f32, bus1_send: f32) -> MixerTrackParameters {
+        let mut sends = [0.0; MAX_BUS_RETURNS];
+        sends[0] = bus0_send;
+        sends[1] = bus1_send;
+        MixerTrackParameters::from_values(level_db, pan, false, false, sends)
             .expect("test track values satisfy their bounds")
     }
 
-    fn globals(master_gain_db: f32, reverb_return: f32, delay_return: f32) -> GlobalParameters {
-        GlobalParameters::new(
-            master_gain_db,
-            0.5,
-            0.5,
-            reverb_return,
-            250.0,
-            0.5,
-            delay_return,
-        )
-        .expect("test global values satisfy their bounds")
+    fn globals(master_gain_db: f32) -> GlobalParameters {
+        GlobalParameters::new(master_gain_db).expect("test global values satisfy their bounds")
     }
 
     fn snapshot(
@@ -399,14 +502,14 @@ mod tests {
 
     #[test]
     fn global_mix_applies_gain_and_pan_independently() {
-        let mut mixer = MixEngine::new(TestEffects::default());
+        let mut mixer = MixEngine::new();
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
         let parameters = snapshot(
             &[
                 (11, track(-6.020_600_3, -1.0, 0.0, 0.0)),
                 (22, track(-6.020_600_3, 1.0, 0.0, 0.0)),
             ],
-            globals(0.0, 0.0, 0.0),
+            globals(0.0),
         );
         let left_patch = [1.0, 1.0];
         let right_patch = [1.0, 1.0];
@@ -421,9 +524,14 @@ mod tests {
 
     #[test]
     fn global_mix_routes_both_sends_through_both_returns() {
-        let mut mixer = MixEngine::new(TestEffects::default());
+        let buses = [BusId::new(0).unwrap(), BusId::new(1).unwrap()];
+        let mut mixer = MixEngine::new();
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
-        let parameters = snapshot(&[(7, track(0.0, 0.0, 0.25, 0.5))], globals(0.0, 0.4, 0.6));
+        install_unity_returns(&mut mixer, &buses);
+        let parameters = with_leveled_returns(
+            snapshot(&[(7, track(0.0, 0.0, 0.25, 0.5))], globals(0.0)),
+            &[(buses[0], 0.4), (buses[1], 0.6)],
+        );
         let patch = [1.0, 1.0];
         let block = audio_block(&parameters, &[&patch]);
         let mut output = [0.0; 2];
@@ -436,11 +544,13 @@ mod tests {
 
     #[test]
     fn global_mix_applies_master_gain_after_effect_returns() {
-        let mut mixer = MixEngine::new(TestEffects::default());
+        let bus = BusId::new(0).unwrap();
+        let mut mixer = MixEngine::new();
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
-        let parameters = snapshot(
-            &[(3, track(0.0, 0.0, 1.0, 0.0))],
-            globals(-6.020_600_3, 1.0, 0.0),
+        install_unity_returns(&mut mixer, &[bus]);
+        let parameters = with_unity_returns(
+            snapshot(&[(3, track(0.0, 0.0, 1.0, 0.0))], globals(-6.020_600_3)),
+            &[bus],
         );
         let patch = [1.0, 1.0];
         let block = audio_block(&parameters, &[&patch]);
@@ -454,21 +564,21 @@ mod tests {
 
     #[test]
     fn global_mix_silences_mismatched_patch_identity() {
-        let mut mixer = MixEngine::new(TestEffects::default());
+        let mut mixer = MixEngine::new();
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
         let rendered_parameters = snapshot(
             &[
                 (1, track(0.0, 0.0, 0.0, 0.0)),
                 (2, track(0.0, 0.0, 0.0, 0.0)),
             ],
-            globals(0.0, 0.0, 0.0),
+            globals(0.0),
         );
         let current_parameters = snapshot(
             &[
                 (1, track(0.0, 0.0, 0.0, 0.0)),
                 (3, track(0.0, 0.0, 0.0, 0.0)),
             ],
-            globals(0.0, 0.0, 0.0),
+            globals(0.0),
         );
         let first = [1.0, 0.0];
         let second = [0.0, 1.0];
@@ -482,29 +592,43 @@ mod tests {
 
     #[test]
     fn global_mix_uses_only_preallocated_bounded_storage() {
-        let mut mixer = MixEngine::new(TestEffects::default());
+        let buses = [BusId::new(0).unwrap(), BusId::new(1).unwrap()];
+        let mut mixer = MixEngine::new();
         mixer.prepare(48_000.0, 2).expect("mixer prepares");
-        let reverb_capacity = mixer.reverb_input.capacity();
-        let delay_capacity = mixer.delay_input.capacity();
+        install_unity_returns(&mut mixer, &buses);
+        let bus_capacities: Vec<usize> = mixer
+            .bus_inputs
+            .iter()
+            .map(|bus_input| bus_input.capacity())
+            .collect();
         let dry_capacity = mixer.dry_output.capacity();
-        let parameters = snapshot(&[(9, track(0.0, 0.0, 0.5, 0.5))], globals(0.0, 1.0, 1.0));
+        let parameters = with_unity_returns(
+            snapshot(&[(9, track(0.0, 0.0, 0.5, 0.5))], globals(0.0)),
+            &buses,
+        );
         let patch = [1.0; 4];
         let block = audio_block(&parameters, &[&patch]);
         let mut output = [1.0; 8];
 
         mixer.mix(&block, &parameters, &mut output);
 
-        assert_eq!(mixer.reverb_input.capacity(), reverb_capacity);
-        assert_eq!(mixer.delay_input.capacity(), delay_capacity);
+        for (bus_input, capacity) in mixer.bus_inputs.iter().zip(bus_capacities) {
+            assert_eq!(bus_input.capacity(), capacity);
+        }
         assert_eq!(mixer.dry_output.capacity(), dry_capacity);
         assert_eq!(output[4..], [0.0; 4]);
     }
 
     #[test]
     fn mix_observation_measures_owned_stages_without_changing_output() {
-        let mut mixer = MixEngine::new(TestEffects::default());
+        let buses = [BusId::new(0).unwrap(), BusId::new(1).unwrap()];
+        let mut mixer = MixEngine::new();
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
-        let parameters = snapshot(&[(7, track(0.0, 0.0, 0.5, 0.25))], globals(0.0, 0.4, 0.8));
+        install_unity_returns(&mut mixer, &buses);
+        let parameters = with_leveled_returns(
+            snapshot(&[(7, track(0.0, 0.0, 0.5, 0.25))], globals(0.0)),
+            &[(buses[0], 0.4), (buses[1], 0.8)],
+        );
         let patch = [1.0, 1.0];
         let block = audio_block(&parameters, &[&patch]);
         let mut output = [0.0; 2];
@@ -526,9 +650,9 @@ mod tests {
 
     #[test]
     fn mix_observation_counts_non_finite_output_without_non_finite_metrics() {
-        let mut mixer = MixEngine::new(TestEffects::default());
+        let mut mixer = MixEngine::new();
         mixer.prepare(48_000.0, 1).expect("mixer prepares");
-        let parameters = snapshot(&[(7, track(0.0, 0.0, 0.0, 0.0))], globals(0.0, 0.0, 0.0));
+        let parameters = snapshot(&[(7, track(0.0, 0.0, 0.0, 0.0))], globals(0.0));
         let patch = [f32::NAN, f32::INFINITY];
         let block = audio_block(&parameters, &[&patch]);
         let mut output = [0.0; 2];
@@ -540,5 +664,216 @@ mod tests {
         assert_eq!(observation.right_peak(), 0.0);
         assert_eq!(observation.output_rms(), 0.0);
         assert!(observation.wet_output_rms().is_finite());
+    }
+
+    // ---- T025: the seven routing proofs -----------------------------------
+
+    /// C-BR-1: the send is taken after the fader, sample-exactly.
+    ///
+    /// A 0.5x fader with a 0.8 send toward bus 3 must place exactly
+    /// 0.5 * 0.8 = 0.4 on the bus, and a unity return at level 1.0 must make
+    /// the final output exactly dry + wet = 0.5 + 0.4.
+    #[test]
+    fn send_position_is_post_fader_sample_exact() {
+        let bus = BusId::new(3).unwrap();
+        let mut mixer = MixEngine::new();
+        mixer.prepare(48_000.0, 1).expect("mixer prepares");
+        mixer
+            .install_bus_return(bus, Box::new(UnityReturn), unity_parameters(), 1.0)
+            .unwrap();
+        let sends_track = track(-6.020_600_3, 0.0, 0.0, 0.0)
+            .with_send(bus, 0.8)
+            .unwrap();
+        let parameters = with_unity_returns(snapshot(&[(7, sends_track)], globals(0.0)), &[bus]);
+        let patch = [1.0, 1.0];
+        let block = audio_block(&parameters, &[&patch]);
+        let mut output = [0.0; 2];
+
+        let observation = mixer.mix(&block, &parameters, &mut output);
+
+        assert!((observation.bus_input_rms(bus) - 0.4).abs() < 0.000_001);
+        assert!((output[0] - 0.9).abs() < 0.000_001);
+        assert!((output[1] - 0.9).abs() < 0.000_001);
+    }
+
+    /// C-BR-2: mute always wins — a muted track contributes no dry signal and
+    /// no send, while its meter stays pre-gate and diagnosable.
+    #[test]
+    fn muted_track_contributes_nothing_to_any_send() {
+        let bus = BusId::new(6).unwrap();
+        let mut mixer = MixEngine::new();
+        mixer.prepare(48_000.0, 1).expect("mixer prepares");
+        mixer
+            .install_bus_return(bus, Box::new(UnityReturn), unity_parameters(), 1.0)
+            .unwrap();
+        let muted = MixerTrackParameters::from_values(
+            0.0,
+            0.0,
+            true,
+            false,
+            [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        .unwrap()
+        .with_send(bus, 1.0)
+        .unwrap();
+        let parameters = with_unity_returns(snapshot(&[(7, muted)], globals(0.0)), &[bus]);
+        let patch = [1.0, 1.0];
+        let block = audio_block(&parameters, &[&patch]);
+        let mut output = [0.0; 2];
+
+        let observation = mixer.mix(&block, &parameters, &mut output);
+
+        assert_eq!(output, [0.0; 2]);
+        for bus in BusId::ALL {
+            assert_eq!(observation.bus_input_rms(bus), 0.0);
+            assert_eq!(observation.bus_output_rms(bus), 0.0);
+        }
+        // Meters stay pre-gate: the muted track remains diagnosable.
+        assert!(observation.track(MixerTrackId::default()).left_peak() > 0.0);
+    }
+
+    /// C-BR-2: when any track is soloed, non-soloed tracks contribute neither
+    /// dry signal nor sends.
+    #[test]
+    fn solo_excluded_track_contributes_nothing_to_any_send() {
+        let bus = BusId::new(2).unwrap();
+        let mut mixer = MixEngine::new();
+        mixer.prepare(48_000.0, 1).expect("mixer prepares");
+        mixer
+            .install_bus_return(bus, Box::new(UnityReturn), unity_parameters(), 1.0)
+            .unwrap();
+        let soloed =
+            MixerTrackParameters::from_values(0.0, 0.0, false, true, [0.0; MAX_BUS_RETURNS])
+                .unwrap();
+        let excluded = track(0.0, 0.0, 0.0, 0.0).with_send(bus, 1.0).unwrap();
+        let parameters = with_unity_returns(
+            snapshot(&[(11, soloed), (22, excluded)], globals(0.0)),
+            &[bus],
+        );
+        let soloed_patch = [0.5, 0.5];
+        let excluded_patch = [1.0, 1.0];
+        let block = audio_block(&parameters, &[&soloed_patch, &excluded_patch]);
+        let mut output = [0.0; 2];
+
+        let observation = mixer.mix(&block, &parameters, &mut output);
+
+        // Only the soloed track's dry signal remains; the excluded track's
+        // send never reached the bus.
+        assert!((output[0] - 0.5).abs() < 0.000_001);
+        assert!((output[1] - 0.5).abs() < 0.000_001);
+        assert_eq!(observation.bus_input_rms(bus), 0.0);
+        assert_eq!(observation.bus_output_rms(bus), 0.0);
+    }
+
+    /// C-BR-3 / C-BR-5 / NFR-007: raising one send toward one bus leaves the
+    /// other seven destinations below -60 dBFS from that source.
+    #[test]
+    fn raised_send_is_isolated_to_its_own_destination() {
+        let bus = BusId::new(2).unwrap();
+        let mut mixer = MixEngine::new();
+        mixer.prepare(48_000.0, 1).expect("mixer prepares");
+        for destination in BusId::ALL {
+            mixer
+                .install_bus_return(destination, Box::new(UnityReturn), unity_parameters(), 1.0)
+                .unwrap();
+        }
+        let sends_track = track(0.0, 0.0, 0.0, 0.0).with_send(bus, 0.8).unwrap();
+        let parameters =
+            with_unity_returns(snapshot(&[(7, sends_track)], globals(0.0)), &BusId::ALL);
+        let patch = [1.0, 1.0];
+        let block = audio_block(&parameters, &[&patch]);
+        let mut output = [0.0; 2];
+
+        let observation = mixer.mix(&block, &parameters, &mut output);
+
+        let minus_sixty_dbfs = 0.8 * 0.001;
+        assert!((observation.bus_input_rms(bus) - 0.8).abs() < 0.000_001);
+        for other in BusId::ALL {
+            if other != bus {
+                assert!(observation.bus_input_rms(other) < minus_sixty_dbfs);
+                assert!(observation.bus_output_rms(other) < minus_sixty_dbfs);
+                assert_eq!(observation.bus_input_rms(other), 0.0);
+            }
+        }
+    }
+
+    /// C-BR-4: two tracks sending to one bus sum there, and each send scales
+    /// only its own contribution.
+    #[test]
+    fn sends_from_two_tracks_accumulate_at_one_bus() {
+        let bus = BusId::new(1).unwrap();
+        let mut mixer = MixEngine::new();
+        mixer.prepare(48_000.0, 1).expect("mixer prepares");
+        mixer
+            .install_bus_return(bus, Box::new(UnityReturn), unity_parameters(), 1.0)
+            .unwrap();
+        let first = track(0.0, 0.0, 0.0, 0.0).with_send(bus, 0.5).unwrap();
+        let second = track(0.0, 0.0, 0.0, 0.0).with_send(bus, 0.25).unwrap();
+        let parameters =
+            with_unity_returns(snapshot(&[(11, first), (22, second)], globals(0.0)), &[bus]);
+        let first_patch = [1.0, 1.0];
+        let second_patch = [1.0, 1.0];
+        let block = audio_block(&parameters, &[&first_patch, &second_patch]);
+        let mut output = [0.0; 2];
+
+        let observation = mixer.mix(&block, &parameters, &mut output);
+
+        // Dry 2.0 plus the summed sends 0.5 + 0.25 through a unity return.
+        assert!((observation.bus_input_rms(bus) - 0.75).abs() < 0.000_001);
+        assert!((output[0] - 2.75).abs() < 0.000_001);
+        assert!((output[1] - 2.75).abs() < 0.000_001);
+    }
+
+    /// C-BR-6: an unoccupied return contributes silence — not its input.
+    #[test]
+    fn unoccupied_return_contributes_silence_not_its_accumulated_input() {
+        let bus = BusId::new(4).unwrap();
+        let mut mixer = MixEngine::new();
+        mixer.prepare(48_000.0, 1).expect("mixer prepares");
+        let sends_track = track(0.0, 0.0, 0.0, 0.0).with_send(bus, 1.0).unwrap();
+        let parameters = snapshot(&[(7, sends_track)], globals(0.0));
+        let patch = [1.0, 1.0];
+        let block = audio_block(&parameters, &[&patch]);
+        let mut output = [0.0; 2];
+
+        let observation = mixer.mix(&block, &parameters, &mut output);
+
+        // The send accumulated at the bus, but the empty return added nothing:
+        // the output is exactly the dry signal.
+        assert!((observation.bus_input_rms(bus) - 1.0).abs() < 0.000_001);
+        assert_eq!(observation.bus_output_rms(bus), 0.0);
+        assert!((output[0] - 1.0).abs() < 0.000_001);
+        assert!((output[1] - 1.0).abs() < 0.000_001);
+    }
+
+    /// C-BR-9: a return sums into the dry mix and cannot feed another return;
+    /// no return-to-send edge exists.
+    #[test]
+    fn return_output_cannot_feed_another_return() {
+        let fed = BusId::new(0).unwrap();
+        let idle = BusId::new(1).unwrap();
+        let mut mixer = MixEngine::new();
+        mixer.prepare(48_000.0, 1).expect("mixer prepares");
+        for destination in [fed, idle] {
+            mixer
+                .install_bus_return(destination, Box::new(UnityReturn), unity_parameters(), 1.0)
+                .unwrap();
+        }
+        let sends_track = track(0.0, 0.0, 0.0, 0.0).with_send(fed, 1.0).unwrap();
+        let parameters =
+            with_unity_returns(snapshot(&[(7, sends_track)], globals(0.0)), &[fed, idle]);
+        let patch = [1.0, 1.0];
+        let block = audio_block(&parameters, &[&patch]);
+        let mut output = [0.0; 2];
+
+        let observation = mixer.mix(&block, &parameters, &mut output);
+
+        // The fed return produced wet signal, and that wet signal excited no
+        // other return: output is exactly dry + one return's wet.
+        assert!(observation.bus_output_rms(fed) > 0.0);
+        assert_eq!(observation.bus_input_rms(idle), 0.0);
+        assert_eq!(observation.bus_output_rms(idle), 0.0);
+        assert!((output[0] - 2.0).abs() < 0.000_001);
+        assert!((output[1] - 2.0).abs() < 0.000_001);
     }
 }

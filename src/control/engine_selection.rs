@@ -1,7 +1,9 @@
 use crate::kernel::patch_id::PatchId;
+use crate::mixer::bus_id::BusId;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::synth::capability_id::CapabilityId;
-use crate::synth::ParameterId;
+use crate::synth::effect_slot_id::EffectSlotIndex;
+use crate::synth::{EffectCapabilityId, ParameterId};
 use core::fmt;
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
@@ -121,6 +123,12 @@ impl EngineSelectionFailure {
 }
 
 /// The complete permitted config delta for one shared structural request.
+///
+/// The two occupancy variants are the topology deltas of this mission: they
+/// change what exists at one exact position — a Patch effect slot or a bus
+/// return — carrying an optional registry entry where `None` clears. The
+/// vocabulary stays generic: positions and registry identities, never effect
+/// names.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(
     tag = "kind",
@@ -136,39 +144,83 @@ pub enum StructuralEditIntent {
         parameter_id: ParameterId,
         choice_id: String,
     },
+    SetSlotOccupancy {
+        patch_id: PatchId,
+        slot: EffectSlotIndex,
+        entry: Option<EffectCapabilityId>,
+    },
+    SetReturnOccupancy {
+        bus: BusId,
+        entry: Option<EffectCapabilityId>,
+    },
 }
 
 impl StructuralEditIntent {
-    pub const fn target_capability_id(&self) -> &CapabilityId {
+    pub const fn target_capability_id(&self) -> Option<&CapabilityId> {
         match self {
             Self::ReplaceCapability {
                 target_capability_id,
-            } => target_capability_id,
-            Self::ReplaceParameterChoice { capability_id, .. } => capability_id,
+            } => Some(target_capability_id),
+            Self::ReplaceParameterChoice { capability_id, .. } => Some(capability_id),
+            Self::SetSlotOccupancy { .. } | Self::SetReturnOccupancy { .. } => None,
         }
     }
 
     pub const fn parameter_id(&self) -> Option<&ParameterId> {
         match self {
-            Self::ReplaceCapability { .. } => None,
             Self::ReplaceParameterChoice { parameter_id, .. } => Some(parameter_id),
+            _ => None,
         }
     }
 
     pub fn choice_id(&self) -> Option<&str> {
         match self {
-            Self::ReplaceCapability { .. } => None,
             Self::ReplaceParameterChoice { choice_id, .. } => Some(choice_id),
+            _ => None,
         }
     }
 
-    fn matches_capabilities(&self, source: &CapabilityId, target: &CapabilityId) -> bool {
+    /// Reports whether this intent is a slot or return occupancy change.
+    pub const fn is_occupancy(&self) -> bool {
+        matches!(
+            self,
+            Self::SetSlotOccupancy { .. } | Self::SetReturnOccupancy { .. }
+        )
+    }
+
+    /// Validates one correlation's Patch and capability context against this
+    /// intent. Instrument intents require the full capability pair; occupancy
+    /// intents carry their position themselves and require exactly the Patch
+    /// context they name — nothing weaker and nothing fabricated.
+    pub(crate) fn matches_context(
+        &self,
+        patch_id: Option<PatchId>,
+        source: Option<&CapabilityId>,
+        target: Option<&CapabilityId>,
+    ) -> bool {
         match self {
             Self::ReplaceCapability {
                 target_capability_id,
-            } => source != target && target_capability_id == target,
+            } => match (patch_id, source, target) {
+                (Some(_), Some(source), Some(target)) => {
+                    source != target && target_capability_id == target
+                }
+                _ => false,
+            },
             Self::ReplaceParameterChoice { capability_id, .. } => {
-                source == target && capability_id == source
+                match (patch_id, source, target) {
+                    (Some(_), Some(source), Some(target)) => {
+                        source == target && capability_id == source
+                    }
+                    _ => false,
+                }
+            }
+            Self::SetSlotOccupancy {
+                patch_id: intent_patch_id,
+                ..
+            } => patch_id == Some(*intent_patch_id) && source.is_none() && target.is_none(),
+            Self::SetReturnOccupancy { .. } => {
+                patch_id.is_none() && source.is_none() && target.is_none()
             }
         }
     }
@@ -237,14 +289,18 @@ impl EngineSelectionStatusKind {
 }
 
 /// Stable control metadata shared by preparation, activation, and evidence.
+///
+/// Instrument intents carry the full Patch and capability context; occupancy
+/// intents carry their position in the intent itself — a return edit has no
+/// Patch, so its context fields stay absent rather than fabricated.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineSelectionCorrelation {
     request_id: EngineSelectionRequestId,
-    patch_id: PatchId,
+    patch_id: Option<PatchId>,
     intent: StructuralEditIntent,
-    source_capability_id: CapabilityId,
-    target_capability_id: CapabilityId,
+    source_capability_id: Option<CapabilityId>,
+    target_capability_id: Option<CapabilityId>,
     source_graph_revision: GraphRevision,
     target_graph_revision: Option<GraphRevision>,
 }
@@ -254,7 +310,7 @@ impl EngineSelectionCorrelation {
         self.request_id
     }
 
-    pub const fn patch_id(&self) -> PatchId {
+    pub const fn patch_id(&self) -> Option<PatchId> {
         self.patch_id
     }
 
@@ -262,12 +318,12 @@ impl EngineSelectionCorrelation {
         &self.intent
     }
 
-    pub const fn source_capability_id(&self) -> &CapabilityId {
-        &self.source_capability_id
+    pub const fn source_capability_id(&self) -> Option<&CapabilityId> {
+        self.source_capability_id.as_ref()
     }
 
-    pub const fn target_capability_id(&self) -> &CapabilityId {
-        &self.target_capability_id
+    pub const fn target_capability_id(&self) -> Option<&CapabilityId> {
+        self.target_capability_id.as_ref()
     }
 
     pub const fn source_graph_revision(&self) -> GraphRevision {
@@ -285,10 +341,10 @@ impl EngineSelectionCorrelation {
 pub struct EngineSelectionEffect {
     kind: EngineSelectionEffectKind,
     request_id: EngineSelectionRequestId,
-    patch_id: PatchId,
+    patch_id: Option<PatchId>,
     intent: StructuralEditIntent,
-    source_capability_id: CapabilityId,
-    target_capability_id: CapabilityId,
+    source_capability_id: Option<CapabilityId>,
+    target_capability_id: Option<CapabilityId>,
     source_graph_revision: GraphRevision,
     target_graph_revision: Option<GraphRevision>,
 }
@@ -314,8 +370,8 @@ impl EngineSelectionEffect {
             request_id: correlation.request_id(),
             patch_id: correlation.patch_id(),
             intent: correlation.intent().clone(),
-            source_capability_id: correlation.source_capability_id().clone(),
-            target_capability_id: correlation.target_capability_id().clone(),
+            source_capability_id: correlation.source_capability_id().cloned(),
+            target_capability_id: correlation.target_capability_id().cloned(),
             source_graph_revision: correlation.source_graph_revision(),
             target_graph_revision,
         })
@@ -329,7 +385,7 @@ impl EngineSelectionEffect {
         self.request_id
     }
 
-    pub const fn patch_id(&self) -> PatchId {
+    pub const fn patch_id(&self) -> Option<PatchId> {
         self.patch_id
     }
 
@@ -337,12 +393,12 @@ impl EngineSelectionEffect {
         &self.intent
     }
 
-    pub const fn source_capability_id(&self) -> &CapabilityId {
-        &self.source_capability_id
+    pub const fn source_capability_id(&self) -> Option<&CapabilityId> {
+        self.source_capability_id.as_ref()
     }
 
-    pub const fn target_capability_id(&self) -> &CapabilityId {
-        &self.target_capability_id
+    pub const fn target_capability_id(&self) -> Option<&CapabilityId> {
+        self.target_capability_id.as_ref()
     }
 
     pub const fn source_graph_revision(&self) -> GraphRevision {
@@ -404,10 +460,57 @@ impl EngineSelectionStatus {
         source_capability_id: CapabilityId,
         target_capability_id: CapabilityId,
     ) -> Result<Self, EngineSelectionStatusError> {
+        Self::preparing_with_context(
+            active_graph_revision,
+            request_id,
+            Some(patch_id),
+            intent,
+            Some(source_capability_id),
+            Some(target_capability_id),
+        )
+    }
+
+    /// Enters Preparing for one occupancy intent, deriving the Patch context
+    /// the intent itself declares.
+    pub fn preparing_for_occupancy(
+        active_graph_revision: GraphRevision,
+        request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
+    ) -> Result<Self, EngineSelectionStatusError> {
+        let patch_id = match &intent {
+            StructuralEditIntent::SetSlotOccupancy { patch_id, .. } => Some(*patch_id),
+            StructuralEditIntent::SetReturnOccupancy { .. } => None,
+            StructuralEditIntent::ReplaceCapability { .. }
+            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+                return Err(EngineSelectionStatusError::IntentMismatch)
+            }
+        };
+        Self::preparing_with_context(
+            active_graph_revision,
+            request_id,
+            patch_id,
+            intent,
+            None,
+            None,
+        )
+    }
+
+    fn preparing_with_context(
+        active_graph_revision: GraphRevision,
+        request_id: EngineSelectionRequestId,
+        patch_id: Option<PatchId>,
+        intent: StructuralEditIntent,
+        source_capability_id: Option<CapabilityId>,
+        target_capability_id: Option<CapabilityId>,
+    ) -> Result<Self, EngineSelectionStatusError> {
         if request_id.is_none() {
             return Err(EngineSelectionStatusError::MissingRequestIdentity);
         }
-        if !intent.matches_capabilities(&source_capability_id, &target_capability_id) {
+        if !intent.matches_context(
+            patch_id,
+            source_capability_id.as_ref(),
+            target_capability_id.as_ref(),
+        ) {
             return Err(EngineSelectionStatusError::IntentMismatch);
         }
         Ok(Self {
@@ -525,9 +628,10 @@ impl EngineSelectionStatus {
         let correlation_valid = self.correlation.as_ref().is_none_or(|correlation| {
             !correlation.request_id.is_none()
                 && correlation.source_graph_revision == self.active_graph_revision
-                && correlation.intent.matches_capabilities(
-                    &correlation.source_capability_id,
-                    &correlation.target_capability_id,
+                && correlation.intent.matches_context(
+                    correlation.patch_id,
+                    correlation.source_capability_id.as_ref(),
+                    correlation.target_capability_id.as_ref(),
                 )
         });
         if !correlation_valid {

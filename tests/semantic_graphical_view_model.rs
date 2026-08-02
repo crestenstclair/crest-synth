@@ -16,7 +16,6 @@ use crest_synth::control::{
 use crest_synth::kernel::{MidiChannel, PatchId};
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
-use crest_synth::mixer::mixer_track_parameters::MixerTrackParameter;
 use crest_synth::mixer::patch_output::{PatchOutput, PatchOutputParameter};
 use crest_synth::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crest_synth::real_time::{AudioCommand, GraphRevision, ParameterSnapshot};
@@ -24,6 +23,7 @@ use crest_synth::shell::app_window::{
     AppInputCallback, FrameObservationCallback, ProjectionCallback, TickCallback,
 };
 use crest_synth::shell::{ShellFrameObservation, ShellRegionId};
+use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{EffectSlotId, InstrumentConfig, Patch};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
@@ -55,7 +55,7 @@ impl ControlAudioBoundary for ProbeBoundary {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(-3.0, 0.63, 0.41, 0.22, 317.0, 0.28, 0.19).unwrap()
+    GlobalParameters::new(-3.0).unwrap()
 }
 
 fn soundfont_config() -> InstrumentConfig {
@@ -87,10 +87,10 @@ fn installed_state(soundfont_first: bool) -> AppState {
                     .unwrap(),
             );
             if index == 0 && soundfont_first {
-                patch.with_post_effects(vec![production_chorus_config(
-                    EffectSlotId::new(1).unwrap(),
+                patch.with_effect_slot(
+                    EffectSlotIndex::ALL[0],
+                    production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap(),
                 )
-                .unwrap()])
             } else {
                 patch
             }
@@ -156,28 +156,48 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     assert!(initial.surface(SurfaceId::MixerMain).is_some());
     assert!(initial.surface(SurfaceId::MixerInspector).is_some());
     let inspector = initial.surface(SurfaceId::MixerInspector).unwrap();
+    // Eight indexed sends for the selected track, each empty return's
+    // occupancy and level rows, then master gain alone.
+    let bus_count = crest_synth::mixer::bus_id::BusId::COUNT;
     assert_eq!(
         inspector.controls().len(),
-        2 + GlobalParameters::surface_descriptor().len()
+        bus_count + bus_count * 2 + GlobalParameters::surface_descriptor().len()
     );
-    assert!(matches!(
-        inspector.controls()[0].path().control_id(),
-        SemanticControlId::Mixer(MixerControlId::Track {
-            track_id,
-            parameter: MixerTrackParameter::ReverbSend,
-        }) if *track_id == MixerTrackId::new(0).unwrap()
-    ));
-    assert!(matches!(
-        inspector.controls()[1].path().control_id(),
-        SemanticControlId::Mixer(MixerControlId::Track {
-            track_id,
-            parameter: MixerTrackParameter::DelaySend,
-        }) if *track_id == MixerTrackId::new(0).unwrap()
-    ));
-    assert!(inspector.controls()[2..].iter().all(|control| matches!(
-        control.path().control_id(),
-        SemanticControlId::Mixer(MixerControlId::Global { .. })
-    )));
+    for (index, bus) in crest_synth::mixer::bus_id::BusId::ALL
+        .into_iter()
+        .enumerate()
+    {
+        assert!(matches!(
+            inspector.controls()[index].path().control_id(),
+            SemanticControlId::Mixer(MixerControlId::Send {
+                track_id,
+                bus: control_bus,
+            }) if *track_id == MixerTrackId::new(0).unwrap() && *control_bus == bus
+        ));
+    }
+    for (pair, bus) in crest_synth::mixer::bus_id::BusId::ALL
+        .into_iter()
+        .enumerate()
+    {
+        let occupancy = &inspector.controls()[bus_count + pair * 2];
+        let level = &inspector.controls()[bus_count + pair * 2 + 1];
+        assert!(matches!(
+            occupancy.path().control_id(),
+            SemanticControlId::Mixer(MixerControlId::ReturnOccupancy { bus: control_bus })
+                if *control_bus == bus
+        ));
+        assert!(matches!(
+            level.path().control_id(),
+            SemanticControlId::Mixer(MixerControlId::ReturnLevel { bus: control_bus })
+                if *control_bus == bus
+        ));
+    }
+    assert!(inspector.controls()[bus_count * 3..]
+        .iter()
+        .all(|control| matches!(
+            control.path().control_id(),
+            SemanticControlId::Mixer(MixerControlId::Global { .. })
+        )));
     match inspector.summary() {
         SemanticSurfaceSummary::MixerInspector {
             focused_track,
@@ -349,10 +369,10 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     failed
         .apply(AppEvent::EnginePreparationFailed {
             request_id: failed_correlation.request_id(),
-            patch_id: failed_correlation.patch_id(),
+            patch_id: failed_correlation.patch_id().unwrap(),
             intent: failed_correlation.intent().clone(),
-            source_capability_id: failed_correlation.source_capability_id().clone(),
-            target_capability_id: failed_correlation.target_capability_id().clone(),
+            source_capability_id: failed_correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: failed_correlation.target_capability_id().unwrap().clone(),
             source_graph_revision: failed_correlation.source_graph_revision(),
             target_graph_revision: GraphRevision::new(2).unwrap(),
             failure: EngineSelectionFailure::AssetUnavailable,
@@ -388,10 +408,10 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     recovering
         .apply(AppEvent::EnginePrepared {
             request_id: correlation.request_id(),
-            patch_id: correlation.patch_id(),
+            patch_id: correlation.patch_id().unwrap(),
             intent: correlation.intent().clone(),
-            source_capability_id: correlation.source_capability_id().clone(),
-            target_capability_id: correlation.target_capability_id().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
             source_graph_revision: correlation.source_graph_revision(),
             target_graph_revision: target_revision,
             candidate_config: BraidsCapability::new().unwrap().default_config().unwrap(),

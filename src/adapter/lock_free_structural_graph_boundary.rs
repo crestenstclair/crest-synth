@@ -310,7 +310,7 @@ mod tests {
         let parameters = ParameterSnapshot::for_graph(
             revision.value(),
             revision,
-            GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap(),
+            GlobalParameters::new(0.0).unwrap(),
             MixerState::default(),
             &[RtPatchParameters::new(patch.id(), PatchOutput::default())],
         )

@@ -2,15 +2,25 @@ use crate::kernel::midi_message::MidiMessageKind;
 use crate::synth::{
     AssetAssignment, AssetReference, AssetRequirement, CapabilityDescriptor, CapabilityError,
     CapabilityId, CapabilitySection, EffectCapabilityId, EffectSlotId, ParameterAssignment,
-    ParameterKind, ParameterSpec, ParameterUpdate, ParameterValue, VoicePolicy,
+    ParameterDefault, ParameterKind, ParameterSpec, ParameterUpdate, ParameterValue, VoicePolicy,
 };
 use core::fmt;
 use serde::{Deserialize, Serialize};
 
-pub const MAX_POST_EFFECTS_PER_PATCH: usize = 1;
+/// One Patch accepts as many post effects as it has ordered slot positions.
+///
+/// This cap, the per-position `ParameterSnapshot` layout, and the
+/// `PreparedGraphLayout` positions are one width and must change together: a
+/// partially widened transport is otherwise constructible.
+pub const MAX_POST_EFFECTS_PER_PATCH: usize = crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 pub const MAX_EFFECT_SCALAR_PARAMETERS: usize = 8;
 
-/// Immutable ordered control-side schema for one post-effect capability.
+/// Immutable ordered control-side schema for one installed effect capability.
+///
+/// An entry declares identity, visible parameters, bounds, units, and
+/// preparation requirements. It does not declare whether it may occupy a
+/// Patch effect slot or a bus return; role admissibility is decided by the
+/// caller, never by the entry.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectCapabilityDescriptor {
@@ -100,6 +110,37 @@ impl EffectCapabilityDescriptor {
         })
     }
 
+    /// Builds this entry's complete descriptor-default configuration.
+    ///
+    /// The result carries no role hint: the same default config may be
+    /// prepared into a Patch effect slot or into a bus return, and each
+    /// preparation yields an independent instance.
+    pub fn default_config(
+        &self,
+        slot_id: EffectSlotId,
+    ) -> Result<PostEffectConfig, EffectCapabilityError> {
+        let mut values = Vec::new();
+        let mut asset_references = Vec::new();
+        for parameter in self.parameters() {
+            match parameter.default_value() {
+                ParameterDefault::Value(value) if parameter.kind() != ParameterKind::Asset => {
+                    values.push(ParameterAssignment::new(
+                        parameter.id().clone(),
+                        value.clone(),
+                    ));
+                }
+                ParameterDefault::Asset(reference) if parameter.kind() == ParameterKind::Asset => {
+                    asset_references.push(AssetAssignment::new(
+                        parameter.id().clone(),
+                        reference.clone(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        self.create_config(slot_id, &values, &asset_references)
+    }
+
     fn validation_descriptor(&self) -> Result<CapabilityDescriptor, EffectCapabilityError> {
         if self.scalar_parameter_count() > MAX_EFFECT_SCALAR_PARAMETERS {
             return Err(EffectCapabilityError::TooManyScalarParameters {
@@ -121,7 +162,10 @@ impl EffectCapabilityDescriptor {
     }
 }
 
-/// One canonical Patch-owned post-effect slot configuration.
+/// One canonical validated effect instance configuration.
+///
+/// The same configuration shape serves a Patch effect slot and a bus return;
+/// nothing in the value records which role it occupies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostEffectConfig {
@@ -204,7 +248,11 @@ impl PostEffectConfig {
     }
 }
 
-/// Immutable ordered registry of installed post-effect descriptors.
+/// Immutable ordered registry of installed effect descriptors.
+///
+/// One registry serves Patch effect slots and bus returns alike. The same
+/// entry may be prepared into either role, producing independent instances;
+/// no entry, provider, or preparer is partitioned by role.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectCapabilityRegistry {

@@ -58,6 +58,11 @@ pub enum LiveEditableParameter {
         track_id: MixerTrackId,
         parameter: MixerTrackParameter,
     },
+    Send {
+        #[serde(rename = "trackId")]
+        track_id: MixerTrackId,
+        bus: crate::mixer::bus_id::BusId,
+    },
     Global {
         parameter: GlobalParameter,
     },
@@ -84,6 +89,10 @@ impl LiveEditableParameter {
             track_id,
             parameter,
         }
+    }
+
+    pub const fn send(track_id: MixerTrackId, bus: crate::mixer::bus_id::BusId) -> Self {
+        Self::Send { track_id, bus }
     }
 
     pub fn patch_target(patch_id: PatchId, target: PatchEditableTarget) -> Self {
@@ -116,6 +125,9 @@ impl LiveEditableParameter {
                 track_id,
                 parameter,
             } => format!("track.{track_id}.{parameter}"),
+            Self::Send { track_id, bus } => {
+                format!("track.{track_id}.sends[{}]", bus.index())
+            }
             Self::Global { parameter } => format!("global.{parameter}"),
             Self::Effect {
                 patch_id,
@@ -154,33 +166,36 @@ impl LiveEditableParameter {
             } => LiveAudioPredicate::TrackPreGateMeter {
                 track_id: *track_id,
             },
-            Self::Track {
-                track_id,
-                parameter: MixerTrackParameter::ReverbSend,
-            } => LiveAudioPredicate::TrackReverbInput {
-                track_id: *track_id,
-            },
-            Self::Track {
-                track_id,
-                parameter: MixerTrackParameter::DelaySend,
-            } => LiveAudioPredicate::TrackDelayInput {
-                track_id: *track_id,
+            // The production composition occupies returns 0 and 1 with the
+            // default reverb and delay entries, so sends toward those buses
+            // are measurable at the matching effect inputs. Other buses fall
+            // back to the track-output witness.
+            Self::Send { track_id, bus } => match bus.index() {
+                0 => LiveAudioPredicate::TrackReverbInput {
+                    track_id: *track_id,
+                },
+                1 => LiveAudioPredicate::TrackDelayInput {
+                    track_id: *track_id,
+                },
+                _ => LiveAudioPredicate::TrackOutput {
+                    track_id: *track_id,
+                },
             },
             Self::Patch { .. } => LiveAudioPredicate::OutputLevel,
-            Self::Global { .. } => LiveAudioPredicate::WetOutput,
             Self::Effect { patch_id, .. } => LiveAudioPredicate::PatchEffect {
                 patch_id: *patch_id,
             },
         }
     }
 
-    pub fn field_name(&self) -> &str {
+    pub fn field_name(&self) -> String {
         match self {
-            Self::Patch { target, .. } => target.name(),
-            Self::PatchOutput { parameter, .. } => parameter.name(),
-            Self::Track { parameter, .. } => parameter.name(),
-            Self::Global { parameter } => parameter.name(),
-            Self::Effect { parameter_id, .. } => parameter_id.as_str(),
+            Self::Patch { target, .. } => target.name().to_owned(),
+            Self::PatchOutput { parameter, .. } => parameter.name().to_owned(),
+            Self::Track { parameter, .. } => parameter.name().to_owned(),
+            Self::Send { bus, .. } => format!("sends[{}]", bus.index()),
+            Self::Global { parameter } => parameter.name().to_owned(),
+            Self::Effect { parameter_id, .. } => parameter_id.as_str().to_owned(),
         }
     }
 }
@@ -569,10 +584,13 @@ impl LiveDemoStep {
 pub struct LiveDemoScene {
     name: String,
     minimum_parameter_dwell: Duration,
+    total_timeout: Duration,
     steps: Vec<LiveDemoStep>,
     scalar_step_count: usize,
     expected_editable_parameters: Vec<LiveEditableParameter>,
     expected_engine_transitions: Vec<LiveEngineTransition>,
+    expected_topology_transitions:
+        Vec<crate::testing::live_effects_and_buses_scene::LiveTopologyTransition>,
     patches: Vec<LivePatch>,
 }
 
@@ -598,7 +616,7 @@ impl LiveDemoScene {
         }
         let expected_chorus = crate::adapter::chorus_capability::CHORUS_CAPABILITY_ID;
         let expected_slot = crate::adapter::chorus_capability::CHORUS_EFFECT_SLOT_ID;
-        if state.effects.descriptors().len() != 1
+        if state.effects.descriptors().len() != 3
             || state.effects.descriptors()[0].id().as_str() != expected_chorus
             || state.patches[0].post_effects.len() != 1
             || state.patches[0].post_effects[0].capability_id().as_str() != expected_chorus
@@ -685,9 +703,19 @@ impl LiveDemoScene {
             }
         }
         expected.extend(MixerTrackId::ALL.into_iter().flat_map(|track_id| {
-            MixerTrackParameter::ALL
+            MixerTrackParameter::MAIN
                 .into_iter()
                 .map(move |parameter| LiveEditableParameter::track(track_id, parameter))
+        }));
+        // The frozen live scene exercises each track's two production-audible
+        // indexed sends (the buses whose returns are occupied by default).
+        expected.extend(MixerTrackId::ALL.into_iter().flat_map(|track_id| {
+            [
+                crate::mixer::bus_id::BusId::new(0).expect("bus 0 is always valid"),
+                crate::mixer::bus_id::BusId::new(1).expect("bus 1 is always valid"),
+            ]
+            .into_iter()
+            .map(move |bus| LiveEditableParameter::send(track_id, bus))
         }));
         expected.extend(
             GlobalParameters::surface_descriptor()
@@ -802,12 +830,30 @@ impl LiveDemoScene {
         Ok(Self {
             name: "sixteen-track-mixer-routing-live-demo".to_owned(),
             minimum_parameter_dwell: Self::MINIMUM_PARAMETER_DWELL,
+            total_timeout: crate::testing::live_demo_runner::LIVE_DEMO_TOTAL_TIMEOUT,
             steps,
             scalar_step_count,
             expected_editable_parameters: expected,
             expected_engine_transitions,
+            expected_topology_transitions: Vec::new(),
             patches,
         })
+    }
+
+    /// Extends one frozen base scene into the retained cumulative
+    /// effects-and-buses scene by appending the ordered topology transitions
+    /// the runner drives after the engine phase. The scalar steps, engine
+    /// transitions, and teardown contract are inherited unchanged.
+    pub(crate) fn with_topology_extension(
+        mut self,
+        name: impl Into<String>,
+        transitions: Vec<crate::testing::live_effects_and_buses_scene::LiveTopologyTransition>,
+        total_timeout: Duration,
+    ) -> Self {
+        self.name = name.into();
+        self.expected_topology_transitions = transitions;
+        self.total_timeout = total_timeout;
+        self
     }
 
     pub fn name(&self) -> &str {
@@ -834,6 +880,18 @@ impl LiveDemoScene {
         &self.expected_engine_transitions
     }
 
+    pub fn expected_topology_transitions(
+        &self,
+    ) -> &[crate::testing::live_effects_and_buses_scene::LiveTopologyTransition] {
+        &self.expected_topology_transitions
+    }
+
+    /// Maximum elapsed control time for this scene; the cumulative retained
+    /// scene declares a wider bound than the base scene.
+    pub const fn total_timeout(&self) -> Duration {
+        self.total_timeout
+    }
+
     pub(crate) const fn scalar_step_count(&self) -> usize {
         self.scalar_step_count
     }
@@ -846,6 +904,12 @@ impl LiveDemoScene {
         1usize
             .saturating_add(self.steps.len())
             .saturating_add(self.expected_engine_transitions.len().saturating_mul(6))
+            .saturating_add(
+                self.expected_topology_transitions
+                    .iter()
+                    .map(crate::testing::live_effects_and_buses_scene::LiveTopologyTransition::event_budget)
+                    .sum::<usize>(),
+            )
             .saturating_add(2)
             .saturating_add(fixture_allowance)
     }
@@ -966,6 +1030,10 @@ impl LiveEngineTransition {
             StructuralEditIntent::ReplaceCapability { .. } => PatchControlId::Engine,
             StructuralEditIntent::ReplaceParameterChoice { parameter_id, .. } => {
                 PatchControlId::Capability(parameter_id.clone())
+            }
+            StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetReturnOccupancy { .. } => {
+                unreachable!("live demo engine transitions carry instrument intents")
             }
         }
     }
@@ -1164,14 +1232,19 @@ fn build_mixer_track_steps(
             }
         }
 
+        // The Inspector's first rows are the selected track's indexed sends;
+        // the frozen scene exercises the two production-audible ones (the
+        // buses whose returns the composition occupies by default).
         steps.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
             SurfaceId::MixerInspector,
         )));
-        for parameter in MixerTrackParameter::INSPECTOR {
-            let descriptor = parameter.descriptor();
-            let before = values
-                .scalar_value(parameter)
-                .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
+        let audible_sends = [
+            crate::mixer::bus_id::BusId::new(0).expect("bus 0 is always valid"),
+            crate::mixer::bus_id::BusId::new(1).expect("bus 1 is always valid"),
+        ];
+        for (send_index, bus) in audible_sends.into_iter().enumerate() {
+            let descriptor = crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
+            let before = values.send(bus);
             let direction = if before < descriptor.maximum() {
                 Direction::Right
             } else {
@@ -1190,13 +1263,13 @@ fn build_mixer_track_steps(
                 probe_patch,
                 LiveDemoStep::adjustment(
                     AppEvent::Adjust(direction),
-                    LiveEditableParameter::track(track_id, parameter),
+                    LiveEditableParameter::send(track_id, bus),
                     before,
                     after,
-                    track_selected_text(parameter, after),
+                    scalar_selected_text(&format!("send[{}]", bus.index()), after),
                 ),
             );
-            if parameter != MixerTrackParameter::DelaySend {
+            if send_index + 1 < audible_sends.len() {
                 steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
                     Direction::Down,
                 )));
@@ -1220,12 +1293,37 @@ fn build_mixer_track_steps(
     steps.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
         SurfaceId::MixerInspector,
     )));
-    steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
-        Direction::Down,
-    )));
-    steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
-        Direction::Down,
-    )));
+    // Walk from the first send row past every return row (occupancy, level,
+    // and the occupant's visible ScalarEdit rows) to the one distinct global
+    // row, master gain.
+    let mut return_rows = 0_usize;
+    for entry in &state.returns {
+        return_rows += 2;
+        if let Some(config) = entry.effect.as_ref() {
+            let descriptor = state
+                .effects
+                .descriptor(config.capability_id())
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
+                predicate.is_none_or(|predicate| {
+                    config.value(predicate.parameter_id()) == Some(predicate.equals())
+                })
+            };
+            return_rows += descriptor
+                .parameters()
+                .filter(|spec| {
+                    spec.patch_interaction() == PatchInteraction::ScalarEdit
+                        && predicate_satisfied(spec.visible_when())
+                        && predicate_satisfied(spec.enabled_when())
+                })
+                .count();
+        }
+    }
+    for _ in 0..(crate::mixer::bus_id::BusId::COUNT + return_rows) {
+        steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+            Direction::Down,
+        )));
+    }
     Ok(())
 }
 
@@ -1380,11 +1478,20 @@ fn build_focused_patch_effect_steps(
         .capabilities
         .descriptor(decoded.instrument.capability_id())
         .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+    // The serialized compact effect list occupies positions 0..len in order,
+    // exactly as fixture installation does; pad the remaining positions.
+    let mut effect_slots = decoded
+        .post_effects
+        .iter()
+        .cloned()
+        .map(Some)
+        .collect::<Vec<_>>();
+    effect_slots.resize(crate::synth::effect_slot_id::MAX_EFFECT_SLOTS, None);
     let controls = PatchControlId::resolve(
         instrument_descriptor,
         &decoded.instrument,
         &state.effects,
-        &decoded.post_effects,
+        &effect_slots,
     );
     let configs = decoded.post_effects.clone();
 
@@ -1500,7 +1607,9 @@ fn build_global_steps(
 ) -> Result<(), LiveDemoSceneError> {
     for (index, descriptor) in GlobalParameters::surface_descriptor().iter().enumerate() {
         let editable = LiveEditableParameter::global(descriptor.parameter());
-        let value = state.global.value(descriptor.parameter());
+        let value = state
+            .global_row_value(descriptor.parameter())
+            .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
         let direction = if value < descriptor.maximum() {
             Direction::Right
         } else {
@@ -1781,6 +1890,19 @@ pub(crate) fn selected_parameter_value(
                 })
                 .ok_or(LiveDemoSceneError::SelectedParameterMismatch)
         }
+        LiveEditableParameter::Send { track_id, bus } => {
+            if patch_control_id.is_some()
+                || state.interaction.active_focus.context() != TopLevelContext::Mixer
+                || state.interaction.active_focus.control_id()
+                    != &SemanticControlId::Mixer(MixerControlId::Send {
+                        track_id: *track_id,
+                        bus: *bus,
+                    })
+            {
+                return Err(LiveDemoSceneError::SelectedParameterMismatch);
+            }
+            Ok(state.mixer.track(*track_id).send(*bus))
+        }
         LiveEditableParameter::Global { parameter } => {
             if patch_control_id.is_some()
                 || state.interaction.active_focus.context() != TopLevelContext::Mixer
@@ -1791,7 +1913,9 @@ pub(crate) fn selected_parameter_value(
             {
                 return Err(LiveDemoSceneError::SelectedParameterMismatch);
             }
-            Ok(state.global.value(*parameter))
+            state
+                .global_row_value(*parameter)
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)
         }
         LiveEditableParameter::Effect {
             patch_id,
@@ -1918,9 +2042,18 @@ pub(crate) fn projected_parameter_values(
                 .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
             Ok((state_value, projected_value))
         }
+        LiveEditableParameter::Send { track_id, bus } => Ok((
+            state.mixer.track(*track_id).send(*bus),
+            state.parameters.mixer_tracks[track_id.index()].send(*bus),
+        )),
         LiveEditableParameter::Global { parameter } => Ok((
-            state.global.value(*parameter),
-            state.parameters.global.value(*parameter),
+            state
+                .global_row_value(*parameter)
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?,
+            state
+                .parameters
+                .projected_global_value(*parameter)
+                .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?,
         )),
         LiveEditableParameter::Effect {
             patch_id,
@@ -1960,15 +2093,17 @@ pub(crate) fn projected_parameter_values(
                 .iter()
                 .find(|patch| patch.patch_id == patch_id.value())
                 .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
-            if !projected.effect.active
-                || projected.effect.slot_id != Some(*slot_id)
-                || projected.effect.scalar_count != descriptor.scalar_parameter_count()
-                || projected.effect.scalars.len() != projected.effect.scalar_count
+            let entry = projected
+                .effects
+                .iter()
+                .find(|entry| entry.active && entry.slot_id == Some(*slot_id))
+                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+            if entry.scalar_count != descriptor.scalar_parameter_count()
+                || entry.scalars.len() != entry.scalar_count
             {
                 return Err(LiveDemoSceneError::InvalidEffectConfig);
             }
-            let projected_value = *projected
-                .effect
+            let projected_value = *entry
                 .scalars
                 .get(scalar_index)
                 .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
@@ -1979,15 +2114,39 @@ pub(crate) fn projected_parameter_values(
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DecodedStateTree {
-    capabilities: CapabilityRegistry,
+pub(crate) struct DecodedStateTree {
+    pub(crate) capabilities: CapabilityRegistry,
     #[serde(default)]
-    effects: EffectCapabilityRegistry,
-    patches: Vec<DecodedPatch>,
+    pub(crate) effects: EffectCapabilityRegistry,
+    pub(crate) patches: Vec<DecodedPatch>,
     mixer: MixerState,
     global: DecodedGlobal,
+    #[serde(default)]
+    returns: Vec<DecodedSerializedReturn>,
     interaction: DecodedInteraction,
     parameters: DecodedParameterSnapshot,
+}
+
+/// One serialized return: the occupying configuration plus the return-owned
+/// level, decoded from the tree's canonical `returns` section.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecodedSerializedReturn {
+    #[serde(default)]
+    effect: Option<crate::synth::PostEffectConfig>,
+    /// Part of the serialized return shape, decoded so a missing or renamed
+    /// key fails here; row counting itself needs only the occupancy shape.
+    #[allow(dead_code)]
+    return_level: f32,
+}
+
+impl DecodedStateTree {
+    /// Resolves one MIXER global row's state-side value: master gain alone.
+    fn global_row_value(&self, parameter: GlobalParameter) -> Option<f32> {
+        match parameter {
+            GlobalParameter::MasterGainDb => Some(self.global.master_gain_db),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1998,40 +2157,20 @@ struct DecodedInteraction {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DecodedPatch {
-    id: u32,
-    channel: u8,
-    instrument: InstrumentConfig,
+pub(crate) struct DecodedPatch {
+    pub(crate) id: u32,
+    pub(crate) channel: u8,
+    pub(crate) instrument: InstrumentConfig,
     #[serde(default)]
-    post_effects: Vec<PostEffectConfig>,
+    pub(crate) post_effects: Vec<PostEffectConfig>,
     envelope: VoiceEnvelope,
-    output: PatchOutput,
+    pub(crate) output: PatchOutput,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecodedGlobal {
     master_gain_db: f32,
-    reverb_room_size: f32,
-    reverb_damping: f32,
-    reverb_return: f32,
-    delay_milliseconds: f32,
-    delay_feedback: f32,
-    delay_return: f32,
-}
-
-impl DecodedGlobal {
-    const fn value(self, parameter: GlobalParameter) -> f32 {
-        match parameter {
-            GlobalParameter::MasterGainDb => self.master_gain_db,
-            GlobalParameter::ReverbRoomSize => self.reverb_room_size,
-            GlobalParameter::ReverbDamping => self.reverb_damping,
-            GlobalParameter::ReverbReturn => self.reverb_return,
-            GlobalParameter::DelayMilliseconds => self.delay_milliseconds,
-            GlobalParameter::DelayFeedback => self.delay_feedback,
-            GlobalParameter::DelayReturn => self.delay_return,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2040,7 +2179,31 @@ struct DecodedParameterSnapshot {
     graph_revision: GraphRevision,
     patches: Vec<DecodedParameterPatch>,
     mixer_tracks: [MixerTrackParameters; MixerTrackId::COUNT],
-    global: DecodedGlobal,
+    /// Part of the serialized snapshot shape, decoded so the return section
+    /// must be present and well-formed even where this scene's assertions
+    /// read only the patch and track sections.
+    #[allow(dead_code)]
+    returns: Vec<DecodedReturnParameters>,
+    global: DecodedParameterGlobal,
+}
+
+/// The snapshot's global object keeps only master gain: return-owned values
+/// travel as the indexed `returns` entries.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecodedParameterGlobal {
+    master_gain_db: f32,
+}
+
+impl DecodedParameterSnapshot {
+    /// Reads the projected value for one global surface parameter: master
+    /// gain alone. Return-owned values travel as the indexed `returns`
+    /// entries and are addressed by `BusId`, never through a global row.
+    fn projected_global_value(&self, parameter: GlobalParameter) -> Option<f32> {
+        match parameter {
+            GlobalParameter::MasterGainDb => Some(self.global.master_gain_db),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2049,7 +2212,8 @@ struct DecodedParameterPatch {
     patch_id: u32,
     envelope: VoiceEnvelope,
     instrument: DecodedInstrumentParameters,
-    effect: DecodedEffectParameters,
+    /// One live entry per ordered effect position.
+    effects: Vec<DecodedEffectParameters>,
     output: PatchOutput,
 }
 
@@ -2062,13 +2226,26 @@ struct DecodedEffectParameters {
     scalars: Vec<f32>,
 }
 
+/// One live bus-return entry: the occupying instance's scalars plus the
+/// return-owned level.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct DecodedReturnParameters {
+    active: bool,
+    slot_id: Option<EffectSlotId>,
+    scalar_count: usize,
+    scalars: Vec<f32>,
+    return_level: f32,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct DecodedInstrumentParameters {
     count: usize,
     values: Vec<f32>,
 }
 
-fn decode_state_tree(tree: &StateTree) -> Result<DecodedStateTree, LiveDemoSceneError> {
+pub(crate) fn decode_state_tree(tree: &StateTree) -> Result<DecodedStateTree, LiveDemoSceneError> {
     serde_json::from_str(tree.json()).map_err(|_| LiveDemoSceneError::StateTreeDeserialization)
 }
 

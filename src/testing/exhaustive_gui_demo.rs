@@ -496,12 +496,12 @@ where
             run.baseline_patches
                 .iter()
                 .find(|baseline| baseline.id() == patch.id())
-                .is_some_and(|baseline| baseline.post_effects() == patch.post_effects())
+                .is_some_and(|baseline| baseline.effect_slots() == patch.effect_slots())
         });
         let effect_stage_required = run
             .baseline_patches
             .iter()
-            .any(|patch| !patch.post_effects().is_empty());
+            .any(|patch| patch.effect_slots().iter().any(Option::is_some));
         if effect_stage_required && structural_effects_preserved {
             run.observed
                 .insert("effect.patchEffect.structuralPreservation".to_owned());
@@ -561,10 +561,28 @@ where
                 (
                     AppEvent::EnginePreparationFailed {
                         request_id: stale_request,
-                        patch_id: correlation.patch_id(),
+                        patch_id: correlation.patch_id().ok_or_else(|| {
+                            ExhaustiveGuiDemoError::Structural(
+                                "engine correlation carries a Patch".to_owned(),
+                            )
+                        })?,
                         intent: correlation.intent().clone(),
-                        source_capability_id: correlation.source_capability_id().clone(),
-                        target_capability_id: correlation.target_capability_id().clone(),
+                        source_capability_id: correlation
+                            .source_capability_id()
+                            .ok_or_else(|| {
+                                ExhaustiveGuiDemoError::Structural(
+                                    "engine correlation carries a source capability".to_owned(),
+                                )
+                            })?
+                            .clone(),
+                        target_capability_id: correlation
+                            .target_capability_id()
+                            .ok_or_else(|| {
+                                ExhaustiveGuiDemoError::Structural(
+                                    "engine correlation carries a target capability".to_owned(),
+                                )
+                            })?
+                            .clone(),
                         source_graph_revision: correlation.source_graph_revision(),
                         target_graph_revision: target_revision,
                         failure: EngineSelectionFailure::PreparationFailed,
@@ -1295,7 +1313,7 @@ where
             .app_loop
             .patches()
             .iter()
-            .filter(|patch| !patch.post_effects().is_empty())
+            .filter(|patch| patch.effect_slots().iter().any(Option::is_some))
             .collect::<Vec<_>>();
         if configured.is_empty() {
             return Ok(());
@@ -1347,7 +1365,7 @@ where
             .patches()
             .iter()
             .enumerate()
-            .filter(|(_, patch)| patch.post_effects().is_empty())
+            .filter(|(_, patch)| patch.effect_slots().iter().all(Option::is_none))
             .any(|(index, patch)| {
                 effect.patch_id() != Some(patch.id())
                     && self
@@ -1530,6 +1548,10 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
                 observed.insert("event.selectContext".to_owned());
                 observed.insert(format!("context.{}", context.label().to_ascii_lowercase()));
             }
+            EventInput::SelectPatch { direction } => {
+                observed.insert("event.selectPatch".to_owned());
+                observed.insert(format!("direction.{}", direction_identifier(*direction)));
+            }
             EventInput::Navigate { direction } => {
                 observed.insert("event.navigate".to_owned());
                 observed.insert(format!("direction.{}", direction_identifier(*direction)));
@@ -1567,6 +1589,18 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
             }
             EventInput::EngineActivationAcknowledged { .. } => {
                 observed.insert("event.engineActivationAcknowledged".to_owned());
+            }
+            EventInput::SetSlotOccupancy { .. } => {
+                observed.insert("event.setSlotOccupancy".to_owned());
+            }
+            EventInput::SetReturnOccupancy { .. } => {
+                observed.insert("event.setReturnOccupancy".to_owned());
+            }
+            EventInput::TopologyPrepared { .. } => {
+                observed.insert("event.topologyPrepared".to_owned());
+            }
+            EventInput::TopologyPreparationFailed { .. } => {
+                observed.insert("event.topologyPreparationFailed".to_owned());
             }
         }
 
@@ -1649,6 +1683,16 @@ fn property_present(
     if let Some(rest) = property.strip_prefix("stateTree.parameters.patch.") {
         return dynamic_patch_property(tree, rest, true);
     }
+    if let Some(path) = property.strip_prefix("stateTree.returns.") {
+        // The canonical serialized returns section: the property must exist
+        // on every entry of the eight-return array.
+        return tree
+            .get("returns")
+            .and_then(Value::as_array)
+            .is_some_and(|entries| {
+                !entries.is_empty() && entries.iter().all(|entry| entry.get(path).is_some())
+            });
+    }
     if let Some(path) = property.strip_prefix("stateTree.") {
         return json_path_exists(tree, path);
     }
@@ -1704,9 +1748,18 @@ fn dynamic_patch_property(tree: &Value, rest: &str, parameter_projection: bool) 
     };
 
     if parameter_projection {
+        if let Some(rest) = path.strip_prefix("effect.") {
+            // One live entry per ordered position — the property must
+            // exist on every entry of the per-position `effects` array.
+            return patch
+                .get("effects")
+                .and_then(Value::as_array)
+                .is_some_and(|entries| {
+                    !entries.is_empty() && entries.iter().all(|entry| entry.get(rest).is_some())
+                });
+        }
         if path.starts_with("envelope.")
             || path.starts_with("instrument.")
-            || path.starts_with("effect.")
             || path.starts_with("output.")
         {
             json_path_exists(patch, path)
@@ -1978,30 +2031,72 @@ fn changed_parameter_identifier(before: &StateTree, after: &StateTree) -> Option
         .into_iter()
         .zip(before_tracks.iter().zip(after_tracks))
     {
-        for parameter in ["levelDb", "pan", "mute", "solo", "reverbSend", "delaySend"] {
+        for parameter in ["levelDb", "pan", "mute", "solo"] {
             if before_track.get(parameter)? != after_track.get(parameter)? {
                 changes.push(format!("parameter.track.{track_id}.{parameter}"));
             }
         }
+        // All eight sends are one indexed array addressed by BusId.
+        let before_sends = before_track.get("sends")?.as_array()?;
+        let after_sends = after_track.get("sends")?.as_array()?;
+        if before_sends.len() != after_sends.len() {
+            return None;
+        }
+        for (send_index, (before_send, after_send)) in
+            before_sends.iter().zip(after_sends).enumerate()
+        {
+            if before_send != after_send {
+                changes.push(format!("parameter.track.{track_id}.sends[{send_index}]"));
+            }
+        }
     }
 
-    for parameter in [
-        "masterGainDb",
-        "reverbRoomSize",
-        "reverbDamping",
-        "reverbReturn",
-        "delayMilliseconds",
-        "delayFeedback",
-        "delayReturn",
-    ] {
-        let before_value = before
-            .get("global")
-            .and_then(|global| global.get(parameter))?;
-        let after_value = after
-            .get("global")
-            .and_then(|global| global.get(parameter))?;
+    {
+        let before_value = before.pointer("/global/masterGainDb")?;
+        let after_value = after.pointer("/global/masterGainDb")?;
         if before_value != after_value {
-            changes.push(format!("parameter.global.{parameter}"));
+            changes.push("parameter.global.masterGainDb".to_owned());
+        }
+    }
+    // Return-owned state: the return level plus the occupying registry
+    // entry's values, addressed positionally by BusId. Occupancy identity
+    // changes are structural, never a single scalar adjustment.
+    let before_returns = before.pointer("/returns")?.as_array()?;
+    let after_returns = after.pointer("/returns")?.as_array()?;
+    if before_returns.len() != after_returns.len() {
+        return None;
+    }
+    for (bus_index, (before_return, after_return)) in
+        before_returns.iter().zip(after_returns).enumerate()
+    {
+        if before_return.get("returnLevel")? != after_return.get("returnLevel")? {
+            changes.push(format!("parameter.return.B{bus_index}.returnLevel"));
+        }
+        let before_effect = before_return.get("effect")?;
+        let after_effect = after_return.get("effect")?;
+        match (before_effect.is_null(), after_effect.is_null()) {
+            (true, true) => continue,
+            (false, false) => {}
+            _ => return None,
+        }
+        for property in ["slotId", "capabilityId", "assetReferences"] {
+            if before_effect.get(property) != after_effect.get(property) {
+                return None;
+            }
+        }
+        let before_values = before_effect.get("values")?.as_array()?;
+        let after_values = after_effect.get("values")?.as_array()?;
+        if before_values.len() != after_values.len() {
+            return None;
+        }
+        for (before_value, after_value) in before_values.iter().zip(after_values) {
+            let parameter_id = after_value.get("parameterId")?.as_str()?;
+            if before_value.get("parameterId") != after_value.get("parameterId") {
+                return None;
+            }
+            if before_value.get("value") != after_value.get("value") {
+                changes.push(format!("parameter.return.B{bus_index}.{parameter_id}"));
+            }
         }
     }
 
@@ -2059,6 +2154,8 @@ const fn window_input_identifier(input: WindowInput) -> &'static str {
     match (input.kind(), input.key()) {
         (WindowInputKind::KeyDown, WindowKey::Digit1) => "keyDown.digit1",
         (WindowInputKind::KeyDown, WindowKey::Digit2) => "keyDown.digit2",
+        (WindowInputKind::KeyDown, WindowKey::Q) => "keyDown.q",
+        (WindowInputKind::KeyDown, WindowKey::E) => "keyDown.e",
         (WindowInputKind::KeyDown, WindowKey::W) => "keyDown.w",
         (WindowInputKind::KeyDown, WindowKey::S) => "keyDown.s",
         (WindowInputKind::KeyDown, WindowKey::A) => "keyDown.a",
@@ -2067,6 +2164,8 @@ const fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyDown, WindowKey::Other) => "keyDown.other",
         (WindowInputKind::KeyUp, WindowKey::Digit1) => "keyUp.digit1",
         (WindowInputKind::KeyUp, WindowKey::Digit2) => "keyUp.digit2",
+        (WindowInputKind::KeyUp, WindowKey::Q) => "keyUp.q",
+        (WindowInputKind::KeyUp, WindowKey::E) => "keyUp.e",
         (WindowInputKind::KeyUp, WindowKey::W) => "keyUp.w",
         (WindowInputKind::KeyUp, WindowKey::S) => "keyUp.s",
         (WindowInputKind::KeyUp, WindowKey::A) => "keyUp.a",
@@ -2112,7 +2211,7 @@ mod tests {
     use crate::testing::DeterministicGraphPreparationWorker;
 
     fn globals() -> GlobalParameters {
-        GlobalParameters::new(0.0, 0.5, 0.4, 0.35, 250.0, 0.3, 0.25).unwrap()
+        GlobalParameters::new(0.0).unwrap()
     }
 
     #[test]
@@ -2142,7 +2241,16 @@ mod tests {
                 PatchOutput::to_track(MixerTrackId::new(9).unwrap()),
             ),
         ];
-        let scene = DemoScene::exhaustive(&registry, &patches, &globals()).unwrap();
+        let effects = crate::adapter::production_effects::production_effect_registry().unwrap();
+        let startup_returns = crate::adapter::production_effects::startup_bus_returns(&effects);
+        let scene = DemoScene::exhaustive_with_effects(
+            &registry,
+            &effects,
+            &patches,
+            &globals(),
+            &startup_returns,
+        )
+        .unwrap();
         let initial_parameters =
             ParameterSnapshot::new(0, globals(), MixerState::default(), &[]).unwrap();
         let boundary = LockFreeAudioBoundary::new(64, initial_parameters);
@@ -2150,7 +2258,8 @@ mod tests {
 
         let event_log = EventLog::new(scene.event_log_capacity().saturating_add(2)).unwrap();
         let mut app_loop = AppLoop::with_event_log(
-            AppState::new(registry.clone(), globals()),
+            AppState::new_with_effects(registry.clone(), effects.clone(), globals())
+                .with_initial_returns(startup_returns),
             StateProjector::new(),
             control,
             event_log,
@@ -2164,7 +2273,11 @@ mod tests {
             .unwrap();
 
         let preparers = production_instrument_preparers().unwrap();
+        let effect_preparers =
+            crate::adapter::production_effects::production_effect_preparers().unwrap();
         let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
+            .with_effects(app_loop.effects(), &effect_preparers)
+            .with_returns(app_loop.bus_returns())
             .build(
                 crate::real_time::GraphRevision::INITIAL,
                 app_loop.patches(),
@@ -2182,9 +2295,11 @@ mod tests {
         let (structural_control, structural_audio) = structural.into_handles();
         let audio_config =
             AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 512).unwrap();
-        let worker = DeterministicGraphPreparationWorker::new(
+        let worker = DeterministicGraphPreparationWorker::new_with_effects(
             registry.clone(),
             production_instrument_preparers().unwrap(),
+            effects.clone(),
+            crate::adapter::production_effects::production_effect_preparers().unwrap(),
             audio_config,
         );
         let worker_handle = worker.advance_handle();

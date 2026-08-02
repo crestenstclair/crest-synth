@@ -41,7 +41,7 @@ impl ControlAudioBoundary for NoopBoundary {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap()
+    GlobalParameters::new(0.0).unwrap()
 }
 
 fn installed_state() -> AppState {

@@ -144,7 +144,7 @@ struct PresetObservation {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(0.0, 0.5, 0.4, 0.0, 250.0, 0.3, 0.0).unwrap()
+    GlobalParameters::new(0.0).unwrap()
 }
 
 fn note(patch_id: PatchId, channel: MidiChannel) -> AppEvent {
@@ -469,8 +469,8 @@ fn soundfont_preset_selection() {
             request_id: first_correlation.request_id().checked_next().unwrap(),
             patch_id,
             intent: first_correlation.intent().clone(),
-            source_capability_id: first_correlation.source_capability_id().clone(),
-            target_capability_id: first_correlation.target_capability_id().clone(),
+            source_capability_id: first_correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: first_correlation.target_capability_id().unwrap().clone(),
             source_graph_revision: first_correlation.source_graph_revision(),
             target_graph_revision: GraphRevision::new(2).unwrap(),
             failure: EngineSelectionFailure::PresetUnavailable,

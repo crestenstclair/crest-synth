@@ -1,5 +1,15 @@
 use crate::kernel::PatchId;
+use crate::real_time::MAX_PATCHES;
+use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use serde::Serialize;
+
+/// Fixed callback-local measurement covering every ordered effect position:
+/// one `PatchEffectObservation` per grid position rather than one per Patch.
+///
+/// Unoccupied positions stay `PatchEffectObservation::EMPTY`. Because slots
+/// process the stem in place in ascending index order, an occupied position's
+/// input measurement is exactly the preceding occupied position's output.
+pub type PatchEffectSlotObservations = [[PatchEffectObservation; MAX_EFFECT_SLOTS]; MAX_PATCHES];
 
 /// Fixed callback-local measurement around one Patch's post-effect stage.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]

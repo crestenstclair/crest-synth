@@ -14,6 +14,7 @@ use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::GraphRevision;
+use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
     CapabilityId, EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry,
@@ -76,13 +77,32 @@ fn configured_state(first: InstrumentConfig, second: InstrumentConfig) -> AppSta
             )
             .with_envelope(VoiceEnvelope::new(12.0, 34.0, 0.56, 78.0).unwrap());
             if index == 0 {
-                patch.with_post_effects(vec![chorus.clone()])
+                patch.with_effect_slot(EffectSlotIndex::ALL[0], chorus.clone())
             } else {
-                patch.with_post_effects(vec![schema_effect_config.clone()])
+                patch.with_effect_slot(EffectSlotIndex::ALL[0], schema_effect_config.clone())
             }
         })
         .collect();
-    let mut state = AppState::new_with_effects(capabilities, effects, support::globals());
+    // Occupy two returns so the canonical serialized `returns` section and
+    // the live `parameters.returns` entries expose their complete leaf shape:
+    // a scalar-bearing occupant on bus 0 and an asset-bearing one on bus 1.
+    let mut returns = crest_synth::mixer::bus_return::BusReturnBank::default();
+    returns
+        .set_return_occupancy(
+            &effects,
+            crest_synth::mixer::bus_id::BusId::new(0).unwrap(),
+            Some(&EffectCapabilityId::new("effect.chorus").unwrap()),
+        )
+        .unwrap();
+    returns
+        .set_return_occupancy(
+            &effects,
+            crest_synth::mixer::bus_id::BusId::new(1).unwrap(),
+            Some(&EffectCapabilityId::new("effect.schema-fixture").unwrap()),
+        )
+        .unwrap();
+    let mut state = AppState::new_with_effects(capabilities, effects, support::globals())
+        .with_initial_returns(returns);
     state.apply(AppEvent::InstallPatches(patches)).unwrap();
     state
 }
@@ -210,6 +230,33 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             false,
         ),
     ];
+    // Occupancy correlations expose the position-bearing intent leaves
+    // (patchId/slot/bus/entry) of the shared structural lifecycle.
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::SetReturnOccupancy {
+                    bus: crest_synth::mixer::bus_id::BusId::new(4).unwrap(),
+                    entry: Some(EffectCapabilityId::new("effect.chorus").unwrap()),
+                })
+                .unwrap();
+        },
+    ));
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::SetSlotOccupancy {
+                    patch_id: PatchId::new(1).unwrap(),
+                    slot: crest_synth::synth::effect_slot_id::EffectSlotIndex::new(2).unwrap(),
+                    entry: Some(EffectCapabilityId::new("effect.chorus").unwrap()),
+                })
+                .unwrap();
+        },
+    ));
     trees.push(state_tree_after(
         soundfont_config.clone(),
         braids_config.clone(),
@@ -288,10 +335,10 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
         state
             .apply(AppEvent::EnginePreparationFailed {
                 request_id: correlation.request_id(),
-                patch_id: correlation.patch_id(),
+                patch_id: correlation.patch_id().unwrap(),
                 intent: correlation.intent().clone(),
-                source_capability_id: correlation.source_capability_id().clone(),
-                target_capability_id: correlation.target_capability_id().clone(),
+                source_capability_id: correlation.source_capability_id().unwrap().clone(),
+                target_capability_id: correlation.target_capability_id().unwrap().clone(),
                 source_graph_revision: correlation.source_graph_revision(),
                 target_graph_revision: GraphRevision::new(2).unwrap(),
                 failure: EngineSelectionFailure::AssetUnavailable,
@@ -335,7 +382,7 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
 #[test]
 fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact() {
     let discovered = assert_state_tree_leaf_surface_exact();
-    assert_eq!(StateTree::SCHEMA_VERSION, 11);
+    assert_eq!(StateTree::SCHEMA_VERSION, 12);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

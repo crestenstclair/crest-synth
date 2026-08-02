@@ -372,7 +372,7 @@ fn source_hashes_match() -> bool {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(-6.0, 0.5, 0.5, 0.2, 250.0, 0.3, 0.2).unwrap()
+    GlobalParameters::new(-6.0).unwrap()
 }
 
 fn braids_patch(id: u32, channel: u8) -> Patch {

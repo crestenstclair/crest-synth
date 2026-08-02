@@ -32,8 +32,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.25)
-        .expect("fixture global parameters are valid")
+    GlobalParameters::new(-3.0).expect("fixture global parameters are valid")
 }
 
 fn patch(id: u32, channel: u8, output: PatchOutput) -> Patch {
@@ -446,7 +445,10 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
             EmittedEvent::EngineSelection { effect } => {
                 assert_eq!(effect.kind(), EngineSelectionEffectKind::PrepareRequested);
                 assert_eq!(effect.request_id(), EngineSelectionRequestId::FIRST);
-                assert_eq!(effect.target_capability_id().as_str(), BRAIDS_CAPABILITY_ID);
+                assert_eq!(
+                    effect.target_capability_id().unwrap().as_str(),
+                    BRAIDS_CAPABILITY_ID
+                );
                 assert_eq!(effect.target_graph_revision(), None);
             }
             other => panic!("expected correlated preparation effect, got {other:?}"),

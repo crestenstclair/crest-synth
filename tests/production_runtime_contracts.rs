@@ -1,8 +1,17 @@
 use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
+use crest_synth::adapter::chorus_capability::ChorusCapability;
+use crest_synth::adapter::chorus_preparer::ChorusPreparer;
 use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
+use crest_synth::adapter::production_effects::ProductionEffectCompositionError;
+use crest_synth::control::app_event::AppEvent;
+use crest_synth::control::app_loop::AppLoop;
+use crest_synth::control::app_state::AppState;
+use crest_synth::control::event_log::EventLog;
+use crest_synth::control::event_record::EventSource;
+use crest_synth::control::state_projector::StateProjector;
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
@@ -34,12 +43,14 @@ use crest_synth::shell::audio_output::{
     AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
     AudioOutputError, AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
 };
+use crest_synth::shell::standalone_application::installed_patches_from_log;
 use crest_synth::shell::{ApplicationConfig, ApplicationError, StandaloneApplication};
+use crest_synth::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityId, InstrumentCapabilityProvider, InstrumentCompositionError,
-    InstrumentPreparationError, InstrumentPreparer, Patch, PreparedInstrument,
-    PreparedInstrumentError,
+    CapabilityId, EffectCapabilityId, EffectCapabilityProvider, EffectPreparer,
+    InstrumentCapabilityProvider, InstrumentCompositionError, InstrumentPreparationError,
+    InstrumentPreparer, Patch, PreparedInstrument, PreparedInstrumentError,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use crest_synth::testing::instrument_part::InstrumentPart;
@@ -749,6 +760,200 @@ fn audio_observation_realtime_contract() {
     assert!(output.iter().all(|sample| sample.abs() > 0.000_001));
     assert_eq!(fixture.patch.id(), PatchId::new(1).unwrap());
     println!("CREST_RT_VALIDATION audio_observation_realtime_contract passed");
+}
+
+fn runtime_application_with_effects(
+    effect_providers: Vec<Box<dyn EffectCapabilityProvider>>,
+    effect_preparers: Vec<Box<dyn EffectPreparer>>,
+    device_config: AudioDeviceConfig,
+    preparation_probe: &Arc<PreparationProbe>,
+    output_probe: &Arc<OutputProbe>,
+) -> Result<RuntimeApplication, ApplicationError> {
+    StandaloneApplication::new_with_effects(
+        initial_audio_boundary(),
+        vec![hidef_provider()],
+        vec![TonePreparer::boxed(HIDEF_CAPABILITY_ID, preparation_probe)],
+        effect_providers,
+        effect_preparers,
+        ReplaceableStructuralBoundary {
+            probe: Arc::new(StructuralProbe::default()),
+        },
+        ProbeObservation {
+            probe: Arc::new(ObservationProbe::default()),
+        },
+        FixtureMidiSource,
+        OneTickWindow {
+            close_requested: Arc::new(AtomicBool::new(false)),
+        },
+        ProbeAudioOutput {
+            config: Some(device_config),
+            runtime_error: None,
+            probe: Arc::clone(output_probe),
+        },
+        ApplicationConfig::default(),
+    )
+}
+
+/// An effect registry that installs entries but cannot compose the declared
+/// production default occupancy (reverb on return 0, delay on return 1)
+/// must abort production startup with the error naming the default
+/// bus-return composition — never boot on silently unoccupied returns.
+#[test]
+fn defective_default_return_composition_aborts_startup_with_the_named_error() {
+    let preparation = Arc::new(PreparationProbe::default());
+    let output = Arc::new(OutputProbe::default());
+    let application = runtime_application_with_effects(
+        vec![Box::new(ChorusCapability::new().unwrap())],
+        vec![Box::new(ChorusPreparer::new().unwrap())],
+        supported_config(),
+        &preparation,
+        &output,
+    )
+    .unwrap();
+
+    let error = application.run().unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ApplicationError::DefaultBusReturns(ProductionEffectCompositionError::ReturnOccupancy(
+                _
+            ))
+        ),
+        "startup must name the default bus-return composition failure, got: {error}"
+    );
+    assert!(!output.started.load(Ordering::Acquire));
+    assert_eq!(preparation.prepared.load(Ordering::Relaxed), 0);
+    println!(
+        "CREST_RT_VALIDATION defective_default_return_composition_aborts_startup_with_the_named_error passed"
+    );
+}
+
+/// The same production root boots when the composed registry can satisfy the
+/// declared default occupancy exactly.
+#[test]
+fn declared_default_return_composition_boots_the_production_root() {
+    let preparation = Arc::new(PreparationProbe::default());
+    let output = Arc::new(OutputProbe::default());
+    // The production chorus prepares at exactly 48 kHz, so the healthy boot
+    // negotiates the production sample rate.
+    let device_config =
+        AudioDeviceConfig::new(48_000.0, 6, AudioSampleFormat::I16, TEST_MAX_FRAMES).unwrap();
+    let application = runtime_application_with_effects(
+        crest_synth::adapter::production_effects::production_effect_providers().unwrap(),
+        crest_synth::adapter::production_effects::production_effect_preparers().unwrap(),
+        device_config,
+        &preparation,
+        &output,
+    )
+    .unwrap();
+
+    application.run().unwrap();
+    assert!(output.started.load(Ordering::Acquire));
+    println!(
+        "CREST_RT_VALIDATION declared_default_return_composition_boots_the_production_root passed"
+    );
+}
+
+/// Drives one accepted occupancy request through TopologyPrepared and the
+/// activation acknowledgement, exactly as the production orchestration does.
+fn commit_pending_topology(state: &mut AppState) {
+    let correlation = state
+        .engine_selection()
+        .correlation()
+        .expect("an accepted occupancy request owns its correlation")
+        .clone();
+    let source = correlation.source_graph_revision();
+    let target = source
+        .checked_next()
+        .expect("the fixture revision space is not exhausted");
+    state
+        .apply(AppEvent::TopologyPrepared {
+            request_id: correlation.request_id(),
+            intent: correlation.intent().clone(),
+            source_graph_revision: source,
+            target_graph_revision: target,
+        })
+        .unwrap();
+    state
+        .apply(AppEvent::EngineActivationAcknowledged {
+            request_id: correlation.request_id(),
+            intent: correlation.intent().clone(),
+            target_graph_revision: target,
+            retired_graph_revision: source,
+            collected: true,
+        })
+        .unwrap();
+}
+
+/// A chain with slot 0 empty and slot 1 occupied must come back from the
+/// composition-root round trip (event-log install record -> reconstructed
+/// Patch) with the occupant still at slot 1 and slot 0 still empty — the
+/// never-compacted per-position contract of the Patch effect chain.
+#[test]
+fn gapped_chain_survives_the_composition_root_round_trip() {
+    let registry =
+        crest_synth::adapter::production_instruments::production_capability_registry().unwrap();
+    let effects = crest_synth::adapter::production_effects::production_effect_registry().unwrap();
+    let provider =
+        crest_synth::adapter::production_instruments::production_soundfont_capability().unwrap();
+    let patch = Patch::new(
+        PatchId::new(1).unwrap(),
+        "Gapped chain".to_owned(),
+        create_soundfont_config(&provider, SoundFontInstrument::new(0, 0, false).unwrap()).unwrap(),
+        MidiChannel::new(0).unwrap(),
+        PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
+    );
+
+    // Build the gapped chain through the production reducer: install the
+    // chain-less Patch, then occupy position 1 through the structural
+    // occupancy handshake. Slot 0 stays empty by construction.
+    let mut state = AppState::new_with_effects(registry.clone(), effects.clone(), globals());
+    state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+    state
+        .apply(AppEvent::SetSlotOccupancy {
+            patch_id: PatchId::new(1).unwrap(),
+            slot: EffectSlotIndex::ALL[1],
+            entry: Some(EffectCapabilityId::new("effect.chorus").unwrap()),
+        })
+        .unwrap();
+    commit_pending_topology(&mut state);
+    let gapped = state.patches()[0].clone();
+    assert!(gapped.effect_slots()[0].is_none());
+    assert!(gapped.effect_slots()[1].is_some());
+    assert!(gapped.effect_slots()[2].is_none());
+
+    // Record the gapped Patch's installation through the production event
+    // log, exactly as the composition root records the startup fixture.
+    let initial = ParameterSnapshot::new(0, globals(), MixerState::default(), &[]).unwrap();
+    let (control, _audio) = LockFreeAudioBoundary::new(16, initial).into_handles();
+    let mut app_loop = AppLoop::with_event_log(
+        AppState::new_with_effects(registry, effects, globals()),
+        StateProjector::for_graph(GraphRevision::INITIAL),
+        control,
+        EventLog::new(8).unwrap(),
+    )
+    .unwrap();
+    app_loop
+        .dispatch_from(
+            AppEvent::InstallPatches(vec![gapped.clone()]),
+            EventSource::Startup,
+        )
+        .unwrap();
+
+    let rebuilt = installed_patches_from_log(&app_loop.event_log()).unwrap();
+    assert_eq!(rebuilt.len(), 1);
+    for position in 0..MAX_EFFECT_SLOTS {
+        assert_eq!(
+            rebuilt[0].effect_slots()[position],
+            gapped.effect_slots()[position],
+            "position {position} occupancy must survive the composition-root round trip exactly"
+        );
+    }
+    assert_eq!(
+        rebuilt[0], gapped,
+        "the reconstructed Patch must equal the installed Patch"
+    );
+    println!("CREST_RT_VALIDATION gapped_chain_survives_the_composition_root_round_trip passed");
 }
 
 #[test]

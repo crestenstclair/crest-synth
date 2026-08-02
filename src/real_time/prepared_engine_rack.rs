@@ -2,12 +2,17 @@ use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters, MAX_PATCHES};
 use crate::real_time::patch_audio_block::PatchAudioBlock;
+use crate::real_time::prepared_graph::PositionCapabilityIdentity;
 use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
 use core::fmt;
 
 pub(crate) struct PreparedEngineSlot {
     patch_id: PatchId,
     scalar_count: usize,
+    /// The engine capability identity this position was prepared from,
+    /// recorded at build time from the validated candidate configuration.
+    /// Fixed-size and copyable; compared only at carry-over decision time.
+    capability_identity: Option<PositionCapabilityIdentity>,
     instrument: Box<dyn PreparedInstrument>,
 }
 
@@ -20,6 +25,7 @@ impl PreparedEngineSlot {
         Self {
             patch_id,
             scalar_count,
+            capability_identity: None,
             instrument,
         }
     }
@@ -62,6 +68,36 @@ impl PreparedEngineRack {
             .get(index)
             .and_then(Option::as_ref)
             .map(|slot| slot.scalar_count)
+    }
+
+    /// Returns the recorded engine capability identity at one slot index.
+    pub fn capability_identity(&self, index: usize) -> Option<PositionCapabilityIdentity> {
+        self.slots
+            .get(index)
+            .and_then(Option::as_ref)
+            .and_then(|slot| slot.capability_identity)
+    }
+
+    /// Records the validated engine capability identity prepared at one slot.
+    ///
+    /// Prepare-time only: the graph builder stamps every position from the
+    /// validated candidate configuration right after rack preparation.
+    /// Returns whether the position is active and carries the exact Patch
+    /// identity; a disagreeing position is left untouched.
+    pub(crate) fn record_capability_identity(
+        &mut self,
+        index: usize,
+        patch_id: PatchId,
+        identity: PositionCapabilityIdentity,
+    ) -> bool {
+        let Some(slot) = self.slots.get_mut(index).and_then(Option::as_mut) else {
+            return false;
+        };
+        if slot.patch_id != patch_id {
+            return false;
+        }
+        slot.capability_identity = Some(identity);
+        true
     }
 
     /// Returns whether a parameter snapshot has the exact rack revision and
@@ -168,6 +204,47 @@ impl PreparedEngineRack {
             .flatten()
             .find(|slot| slot.patch_id == patch_id)
     }
+
+    /// Exchanges the still-live prepared instrument from the superseded rack
+    /// into this replacement at every slot the structural delta leaves
+    /// unchanged, so sounding voices survive block-boundary activation.
+    ///
+    /// Callback-safe: the work is bounded by `MAX_PATCHES` pointer-sized
+    /// `mem::swap`s with no allocation, deallocation, locking, blocking, or
+    /// destruction. The freshly prepared (never sounded) instruments ride
+    /// into the superseded rack, which retires off-callback as before.
+    ///
+    /// `exclude` names the one Patch whose engine identity the delta changed;
+    /// that slot keeps its fresh instrument (the permitted local restart).
+    /// Every exchange requires exact PatchId, scalar-layout, and recorded
+    /// engine capability-identity agreement at the same index — a
+    /// non-matching position keeps its fresh instrument rather than
+    /// substituting anything. The identity check is a fixed-size comparison
+    /// made once at this carry-over decision, never per render block.
+    pub(crate) fn carry_live_instruments_from(
+        &mut self,
+        superseded: &mut Self,
+        exclude: Option<PatchId>,
+    ) {
+        if self.patch_count != superseded.patch_count {
+            return;
+        }
+        for index in 0..self.patch_count {
+            let (Some(target), Some(source)) =
+                (self.slots[index].as_mut(), superseded.slots[index].as_mut())
+            else {
+                continue;
+            };
+            if target.patch_id != source.patch_id
+                || Some(target.patch_id) == exclude
+                || target.scalar_count != source.scalar_count
+                || target.capability_identity != source.capability_identity
+            {
+                continue;
+            }
+            core::mem::swap(&mut target.instrument, &mut source.instrument);
+        }
+    }
 }
 
 impl fmt::Debug for PreparedEngineRack {
@@ -272,7 +349,109 @@ impl std::error::Error for RackRenderError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{RackDispatchError, RackRenderError};
+    use super::{PreparedEngineRack, PreparedEngineSlot, RackDispatchError, RackRenderError};
+    use crate::kernel::midi_message::MidiMessage;
+    use crate::kernel::patch_id::PatchId;
+    use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::mixer_state::MixerState;
+    use crate::mixer::patch_output::PatchOutput;
+    use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters, MAX_PATCHES};
+    use crate::real_time::patch_audio_block::PatchAudioBlock;
+    use crate::real_time::prepared_graph::PositionCapabilityIdentity;
+    use crate::synth::capability_id::CapabilityId;
+    use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
+
+    const FRAMES: usize = 8;
+
+    struct MarkerInstrument {
+        patch_id: PatchId,
+        fill: f32,
+    }
+
+    impl PreparedInstrument for MarkerInstrument {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn dispatch(
+            &mut self,
+            _message: MidiMessage,
+            _parameters: &RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
+            Ok(())
+        }
+
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &RtPatchParameters,
+        ) {
+            output.fill(self.fill);
+        }
+
+        fn all_notes_off(&mut self) {}
+    }
+
+    fn identity(value: &str) -> PositionCapabilityIdentity {
+        PositionCapabilityIdentity::from_capability_id(&CapabilityId::new(value).unwrap()).unwrap()
+    }
+
+    fn rack(fill: f32, capability: &str) -> PreparedEngineRack {
+        let patch_id = PatchId::new(1).unwrap();
+        let mut slots: [Option<PreparedEngineSlot>; MAX_PATCHES] = std::array::from_fn(|_| None);
+        slots[0] = Some(PreparedEngineSlot::new(
+            patch_id,
+            0,
+            Box::new(MarkerInstrument { patch_id, fill }),
+        ));
+        let mut rack = PreparedEngineRack::from_slots(1, slots);
+        assert!(rack.record_capability_identity(0, patch_id, identity(capability)));
+        rack
+    }
+
+    fn rendered_fill(rack: &mut PreparedEngineRack) -> f32 {
+        let patch_id = PatchId::new(1).unwrap();
+        let parameters = ParameterSnapshot::new(
+            1,
+            GlobalParameters::new(0.0).unwrap(),
+            MixerState::default(),
+            &[RtPatchParameters::new(patch_id, PatchOutput::default())],
+        )
+        .unwrap();
+        let mut block = PatchAudioBlock::prepare(FRAMES).unwrap();
+        block.begin_render(&parameters, FRAMES).unwrap();
+        rack.render(&mut block, &parameters).unwrap();
+        block.stem(0, patch_id).unwrap().samples()[0]
+    }
+
+    /// A candidate agreeing on Patch identity and scalar layout but carrying
+    /// a different recorded engine capability identity is refused: the
+    /// freshly prepared instrument stays, nothing panics, and the live
+    /// instance never crosses the capability boundary.
+    #[test]
+    fn carry_over_capability_identity_mismatch_keeps_the_fresh_engine_instance() {
+        let mut fresh = rack(0.25, "instrument.alpha");
+        let mut superseded = rack(0.75, "instrument.beta");
+
+        fresh.carry_live_instruments_from(&mut superseded, None);
+
+        assert_eq!(rendered_fill(&mut fresh), 0.25);
+        assert_eq!(rendered_fill(&mut superseded), 0.75);
+    }
+
+    /// Exact per-position agreement — Patch, scalar layout, and recorded
+    /// capability identity — still carries the live instrument over.
+    #[test]
+    fn carry_over_capability_identity_agreement_still_carries_the_live_engine() {
+        let mut fresh = rack(0.25, "instrument.alpha");
+        let mut superseded = rack(0.75, "instrument.alpha");
+
+        fresh.carry_live_instruments_from(&mut superseded, None);
+
+        assert_eq!(rendered_fill(&mut fresh), 0.75);
+        assert_eq!(rendered_fill(&mut superseded), 0.25);
+    }
 
     #[test]
     fn callback_statuses_are_copyable_and_have_no_destructors() {

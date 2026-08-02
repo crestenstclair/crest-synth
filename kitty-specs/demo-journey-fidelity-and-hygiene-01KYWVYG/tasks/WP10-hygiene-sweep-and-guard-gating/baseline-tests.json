@@ -1,0 +1,19 @@
+{
+  "wp_id": "WP10",
+  "captured_at": "2026-08-01T00:12:20Z",
+  "base_branch": "feat/expandable-effects-and-bus-topology",
+  "base_commit": "2ae6a637d2327ce7424466a17feeb961dd6b4a29",
+  "test_runner": "custom",
+  "total": 1,
+  "passed": 0,
+  "failed": 1,
+  "skipped": 0,
+  "failures": [
+    {
+      "test": "<declared-command>",
+      "error": "For more information, try '--help'.",
+      "file": "unknown"
+    }
+  ],
+  "source_identity": "DeclaredCommandScopeSource/text"
+}

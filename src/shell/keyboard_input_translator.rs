@@ -50,6 +50,11 @@ impl KeyboardInputTranslator {
             WindowKey::Digit2 => {
                 return Some(SemanticAction::SelectContext(TopLevelContext::Patch))
             }
+            // Stepping through the installed Patch order is its own gesture,
+            // never a modifier on navigation: holding K must not turn a patch
+            // step into a parameter edit.
+            WindowKey::Q => return Some(SemanticAction::SelectPatch(Direction::Left)),
+            WindowKey::E => return Some(SemanticAction::SelectPatch(Direction::Right)),
             _ => {}
         }
         if key == WindowKey::K {
@@ -62,7 +67,12 @@ impl KeyboardInputTranslator {
             WindowKey::S => Direction::Down,
             WindowKey::A => Direction::Left,
             WindowKey::D => Direction::Right,
-            WindowKey::Digit1 | WindowKey::Digit2 | WindowKey::K | WindowKey::Other => return None,
+            WindowKey::Digit1
+            | WindowKey::Digit2
+            | WindowKey::Q
+            | WindowKey::E
+            | WindowKey::K
+            | WindowKey::Other => return None,
         };
 
         Some(if self.k_held {

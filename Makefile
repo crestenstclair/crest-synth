@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell semantic-graphical-view-model-acceptance clean
+.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-effects-and-buses demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell semantic-graphical-view-model-acceptance clean
 
 help: ## Show the available project commands
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -41,7 +41,10 @@ observe: ## Print the structured headless behavioral observation
 demo: ## Run the exhaustive GUI demo and structured trace
 	cargo run --bin crest-synth -- --smoke --observe --demo-scene
 
-demo-live: demo-live-sixteen-track-mixer-routing ## Run the newest optimized graphical live demo
+demo-live: demo-live-effects-and-buses ## Run the newest optimized graphical live demo
+
+demo-live-effects-and-buses: ## Run the cumulative effects-and-buses demo with a real window and physical audio
+	cargo run --release --bin crest-synth -- --demo-live-effects-and-buses
 
 demo-live-sixteen-track-mixer-routing: ## Run the cumulative sixteen-track mixer-routing demo with a real window and physical audio
 	cargo run --release --bin crest-synth -- --demo-live-sixteen-track-mixer-routing

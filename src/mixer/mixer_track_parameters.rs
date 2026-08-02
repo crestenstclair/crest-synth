@@ -1,7 +1,15 @@
+use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
 use core::fmt;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Stable identity of one configurable mixer-track field.
+///
+/// The genuine fader controls are `Level`, `Pan`, `Mute`, and `Solo` (`MAIN`).
+/// Sends are not named fields: they are one indexed array on
+/// [`MixerTrackParameters`], addressed by `(MixerTrackId, BusId)`. This enum
+/// therefore holds exactly the four `MAIN` variants; a destination-named
+/// send variant here would close the open bus topology.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MixerTrackParameter {
@@ -9,21 +17,10 @@ pub enum MixerTrackParameter {
     Pan,
     Mute,
     Solo,
-    ReverbSend,
-    DelaySend,
 }
 
 impl MixerTrackParameter {
-    pub const ALL: [Self; 6] = [
-        Self::Level,
-        Self::Pan,
-        Self::Mute,
-        Self::Solo,
-        Self::ReverbSend,
-        Self::DelaySend,
-    ];
     pub const MAIN: [Self; 4] = [Self::Level, Self::Pan, Self::Mute, Self::Solo];
-    pub const INSPECTOR: [Self; 2] = [Self::ReverbSend, Self::DelaySend];
 
     pub const fn name(self) -> &'static str {
         match self {
@@ -31,8 +28,6 @@ impl MixerTrackParameter {
             Self::Pan => "pan",
             Self::Mute => "mute",
             Self::Solo => "solo",
-            Self::ReverbSend => "reverbSend",
-            Self::DelaySend => "delaySend",
         }
     }
 
@@ -42,8 +37,6 @@ impl MixerTrackParameter {
             Self::Pan => &MIXER_TRACK_SURFACE_DESCRIPTOR[1],
             Self::Mute => &MIXER_TRACK_SURFACE_DESCRIPTOR[2],
             Self::Solo => &MIXER_TRACK_SURFACE_DESCRIPTOR[3],
-            Self::ReverbSend => &MIXER_TRACK_SURFACE_DESCRIPTOR[4],
-            Self::DelaySend => &MIXER_TRACK_SURFACE_DESCRIPTOR[5],
         }
     }
 }
@@ -59,6 +52,55 @@ pub enum MixerTrackParameterKind {
     Continuous,
     Toggle,
 }
+
+/// Bounds and edit steps shared by every indexed bus send.
+///
+/// All eight sends share this one descriptor; its values are copied exactly
+/// from the retired per-name send descriptors so the generalization changes no
+/// bound: 0.0..=1.0, default 0.0, fine 0.01, coarse 0.1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BusSendDescriptor {
+    minimum: f32,
+    maximum: f32,
+    default: f32,
+    fine_step: f32,
+    coarse_step: f32,
+}
+
+impl BusSendDescriptor {
+    pub const fn minimum(self) -> f32 {
+        self.minimum
+    }
+
+    pub const fn maximum(self) -> f32 {
+        self.maximum
+    }
+
+    pub const fn default(self) -> f32 {
+        self.default
+    }
+
+    pub const fn fine_step(self) -> f32 {
+        self.fine_step
+    }
+
+    pub const fn coarse_step(self) -> f32 {
+        self.coarse_step
+    }
+
+    pub fn contains(self, value: f32) -> bool {
+        value.is_finite() && (self.minimum..=self.maximum).contains(&value)
+    }
+}
+
+/// The one shared descriptor for all eight indexed sends.
+pub const BUS_SEND_DESCRIPTOR: BusSendDescriptor = BusSendDescriptor {
+    minimum: 0.0,
+    maximum: 1.0,
+    default: 0.0,
+    fine_step: 0.01,
+    coarse_step: 0.1,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MixerTrackParameterDescriptor {
@@ -154,7 +196,7 @@ impl MixerTrackParameterDescriptor {
     }
 }
 
-const MIXER_TRACK_SURFACE_DESCRIPTOR: [MixerTrackParameterDescriptor; 6] = [
+const MIXER_TRACK_SURFACE_DESCRIPTOR: [MixerTrackParameterDescriptor; 4] = [
     MixerTrackParameterDescriptor::continuous(
         MixerTrackParameter::Level,
         "Level",
@@ -173,56 +215,44 @@ const MIXER_TRACK_SURFACE_DESCRIPTOR: [MixerTrackParameterDescriptor; 6] = [
     ),
     MixerTrackParameterDescriptor::toggle(MixerTrackParameter::Mute, "Mute"),
     MixerTrackParameterDescriptor::toggle(MixerTrackParameter::Solo, "Solo"),
-    MixerTrackParameterDescriptor::continuous(
-        MixerTrackParameter::ReverbSend,
-        "Reverb Send",
-        (0.0, 1.0),
-        0.0,
-        (0.01, 0.1),
-        None,
-    ),
-    MixerTrackParameterDescriptor::continuous(
-        MixerTrackParameter::DelaySend,
-        "Delay Send",
-        (0.0, 1.0),
-        0.0,
-        (0.01, 0.1),
-        None,
-    ),
 ];
 
 /// Canonical scalar and toggle state owned by one persistent mixer track.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// Sends are one indexed array over the eight bus returns: a send is a level
+/// pointed at a `BusId`, never a named field, so adding a registry entry to a
+/// return changes no field of this value. All eight sends share
+/// [`BUS_SEND_DESCRIPTOR`].
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MixerTrackParameters {
     level_db: f32,
     pan: f32,
     mute: bool,
     solo: bool,
-    reverb_send: f32,
-    delay_send: f32,
+    sends: [f32; MAX_BUS_RETURNS],
 }
 
 impl MixerTrackParameters {
-    pub fn new(
+    /// Creates one validated track value from the complete indexed send bank.
+    pub fn from_values(
         level_db: f32,
         pan: f32,
         mute: bool,
         solo: bool,
-        reverb_send: f32,
-        delay_send: f32,
+        sends: [f32; MAX_BUS_RETURNS],
     ) -> Result<Self, MixerTrackParametersError> {
         validate(MixerTrackParameter::Level, level_db)?;
         validate(MixerTrackParameter::Pan, pan)?;
-        validate(MixerTrackParameter::ReverbSend, reverb_send)?;
-        validate(MixerTrackParameter::DelaySend, delay_send)?;
+        for (index, send) in sends.iter().enumerate() {
+            let bus = BusId::new(index as u8).expect("send storage is indexed by valid BusId");
+            validate_send(bus, *send)?;
+        }
         Ok(Self {
             level_db,
             pan,
             mute,
             solo,
-            reverb_send,
-            delay_send,
+            sends,
         })
     }
 
@@ -246,20 +276,27 @@ impl MixerTrackParameters {
         self.solo
     }
 
-    pub const fn reverb_send(self) -> f32 {
-        self.reverb_send
+    /// Returns the send level directed at one bus return.
+    pub const fn send(self, bus: BusId) -> f32 {
+        self.sends[bus.index()]
     }
 
-    pub const fn delay_send(self) -> f32 {
-        self.delay_send
+    /// Returns every send level in ascending `BusId` order.
+    pub const fn sends(self) -> [f32; MAX_BUS_RETURNS] {
+        self.sends
+    }
+
+    /// Replaces one send level after validating it against the shared descriptor.
+    pub fn with_send(mut self, bus: BusId, value: f32) -> Result<Self, MixerTrackParametersError> {
+        validate_send(bus, value)?;
+        self.sends[bus.index()] = value;
+        Ok(self)
     }
 
     pub const fn scalar_value(self, parameter: MixerTrackParameter) -> Option<f32> {
         match parameter {
             MixerTrackParameter::Level => Some(self.level_db),
             MixerTrackParameter::Pan => Some(self.pan),
-            MixerTrackParameter::ReverbSend => Some(self.reverb_send),
-            MixerTrackParameter::DelaySend => Some(self.delay_send),
             MixerTrackParameter::Mute | MixerTrackParameter::Solo => None,
         }
     }
@@ -268,10 +305,7 @@ impl MixerTrackParameters {
         match parameter {
             MixerTrackParameter::Mute => Some(self.mute),
             MixerTrackParameter::Solo => Some(self.solo),
-            MixerTrackParameter::Level
-            | MixerTrackParameter::Pan
-            | MixerTrackParameter::ReverbSend
-            | MixerTrackParameter::DelaySend => None,
+            MixerTrackParameter::Level | MixerTrackParameter::Pan => None,
         }
     }
 
@@ -287,8 +321,6 @@ impl MixerTrackParameters {
         match parameter {
             MixerTrackParameter::Level => self.level_db = value,
             MixerTrackParameter::Pan => self.pan = value,
-            MixerTrackParameter::ReverbSend => self.reverb_send = value,
-            MixerTrackParameter::DelaySend => self.delay_send = value,
             MixerTrackParameter::Mute | MixerTrackParameter::Solo => unreachable!(),
         }
         Ok(self)
@@ -301,10 +333,7 @@ impl MixerTrackParameters {
         match parameter {
             MixerTrackParameter::Mute => self.mute = !self.mute,
             MixerTrackParameter::Solo => self.solo = !self.solo,
-            MixerTrackParameter::Level
-            | MixerTrackParameter::Pan
-            | MixerTrackParameter::ReverbSend
-            | MixerTrackParameter::DelaySend => {
+            MixerTrackParameter::Level | MixerTrackParameter::Pan => {
                 return Err(MixerTrackParametersError::WrongValueKind { parameter });
             }
         }
@@ -319,9 +348,28 @@ impl Default for MixerTrackParameters {
             pan: 0.0,
             mute: false,
             solo: false,
-            reverb_send: 0.0,
-            delay_send: 0.0,
+            sends: [BUS_SEND_DESCRIPTOR.default(); MAX_BUS_RETURNS],
         }
+    }
+}
+
+/// The serialized send surface is the one indexed `sends` array, never a key
+/// per destination. It must stay in step with the
+/// `ParameterSnapshot`/`StateTree` `SERIALIZED_LEAF_DESCRIPTOR` tables: the
+/// shape and its declarations move in one change. These keys have no
+/// persisted documents and no external consumers.
+impl Serialize for MixerTrackParameters {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("MixerTrackParameters", 5)?;
+        state.serialize_field("levelDb", &self.level_db)?;
+        state.serialize_field("pan", &self.pan)?;
+        state.serialize_field("mute", &self.mute)?;
+        state.serialize_field("solo", &self.solo)?;
+        state.serialize_field("sends", &self.sends)?;
+        state.end()
     }
 }
 
@@ -337,18 +385,18 @@ impl<'de> Deserialize<'de> for MixerTrackParameters {
             pan: f32,
             mute: bool,
             solo: bool,
-            reverb_send: f32,
-            delay_send: f32,
+            sends: [f32; MAX_BUS_RETURNS],
         }
 
+        // Deliberately routes through `from_values` so validation cannot be
+        // bypassed.
         let value = Value::deserialize(deserializer)?;
-        Self::new(
+        Self::from_values(
             value.level_db,
             value.pan,
             value.mute,
             value.solo,
-            value.reverb_send,
-            value.delay_send,
+            value.sends,
         )
         .map_err(serde::de::Error::custom)
     }
@@ -365,6 +413,13 @@ pub enum MixerTrackParametersError {
     },
     WrongValueKind {
         parameter: MixerTrackParameter,
+    },
+    NonFiniteSend {
+        bus: BusId,
+    },
+    OutOfRangeSend {
+        bus: BusId,
+        value: f32,
     },
 }
 
@@ -384,6 +439,15 @@ impl fmt::Display for MixerTrackParametersError {
             Self::WrongValueKind { parameter } => {
                 write!(formatter, "{parameter} does not accept that value kind")
             }
+            Self::NonFiniteSend { bus } => {
+                write!(formatter, "send to {bus} must be finite")
+            }
+            Self::OutOfRangeSend { bus, value } => write!(
+                formatter,
+                "send to {bus} must be in {}..={}, got {value}",
+                BUS_SEND_DESCRIPTOR.minimum(),
+                BUS_SEND_DESCRIPTOR.maximum()
+            ),
         }
     }
 }
@@ -400,22 +464,31 @@ fn validate(parameter: MixerTrackParameter, value: f32) -> Result<(), MixerTrack
     Ok(())
 }
 
+fn validate_send(bus: BusId, value: f32) -> Result<(), MixerTrackParametersError> {
+    if !value.is_finite() {
+        return Err(MixerTrackParametersError::NonFiniteSend { bus });
+    }
+    if !BUS_SEND_DESCRIPTOR.contains(value) {
+        return Err(MixerTrackParametersError::OutOfRangeSend { bus, value });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         MixerTrackParameter, MixerTrackParameterKind, MixerTrackParameters,
-        MixerTrackParametersError,
+        MixerTrackParametersError, BUS_SEND_DESCRIPTOR,
     };
+    use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
 
     #[test]
-    fn descriptor_has_all_six_fields_in_main_then_inspector_order() {
+    fn descriptor_has_exactly_the_four_main_fields() {
         let parameters = MixerTrackParameters::surface_descriptor()
             .iter()
             .map(|descriptor| descriptor.parameter())
             .collect::<Vec<_>>();
-        assert_eq!(parameters, MixerTrackParameter::ALL);
-        assert_eq!(&parameters[..4], MixerTrackParameter::MAIN);
-        assert_eq!(&parameters[4..], MixerTrackParameter::INSPECTOR);
+        assert_eq!(parameters, MixerTrackParameter::MAIN);
         assert_eq!(
             MixerTrackParameter::Mute.descriptor().kind(),
             MixerTrackParameterKind::Toggle
@@ -423,9 +496,22 @@ mod tests {
     }
 
     #[test]
+    fn all_eight_sends_share_the_one_bus_send_descriptor_exactly() {
+        assert_eq!(BUS_SEND_DESCRIPTOR.minimum(), 0.0);
+        assert_eq!(BUS_SEND_DESCRIPTOR.maximum(), 1.0);
+        assert_eq!(BUS_SEND_DESCRIPTOR.default(), 0.0);
+        assert_eq!(BUS_SEND_DESCRIPTOR.fine_step(), 0.01);
+        assert_eq!(BUS_SEND_DESCRIPTOR.coarse_step(), 0.1);
+    }
+
+    #[test]
     fn every_continuous_inclusive_boundary_is_valid() {
-        let minimums = MixerTrackParameters::new(-60.0, -1.0, false, false, 0.0, 0.0).unwrap();
-        let maximums = MixerTrackParameters::new(6.0, 1.0, true, true, 1.0, 1.0).unwrap();
+        let minimums =
+            MixerTrackParameters::from_values(-60.0, -1.0, false, false, [0.0; MAX_BUS_RETURNS])
+                .unwrap();
+        let maximums =
+            MixerTrackParameters::from_values(6.0, 1.0, true, true, [1.0; MAX_BUS_RETURNS])
+                .unwrap();
         assert_eq!(minimums.level_db(), -60.0);
         assert_eq!(maximums.level_db(), 6.0);
         assert!(maximums.mute());
@@ -435,7 +521,7 @@ mod tests {
     #[test]
     fn each_invalid_numeric_class_is_rejected() {
         assert!(matches!(
-            MixerTrackParameters::new(f32::NAN, 0.0, false, false, 0.0, 0.0),
+            MixerTrackParameters::from_values(f32::NAN, 0.0, false, false, [0.0; MAX_BUS_RETURNS]),
             Err(MixerTrackParametersError::NonFinite {
                 parameter: MixerTrackParameter::Level
             })
@@ -443,14 +529,61 @@ mod tests {
         for (parameter, value) in [
             (MixerTrackParameter::Level, 6.1),
             (MixerTrackParameter::Pan, -1.1),
-            (MixerTrackParameter::ReverbSend, 1.1),
-            (MixerTrackParameter::DelaySend, -0.1),
         ] {
             assert!(matches!(
                 MixerTrackParameters::default().with_scalar_value(parameter, value),
                 Err(MixerTrackParametersError::OutOfRange { .. })
             ));
         }
+        for (bus, value) in [
+            (BusId::new(0).unwrap(), 1.1),
+            (BusId::new(1).unwrap(), -0.1),
+        ] {
+            assert!(matches!(
+                MixerTrackParameters::default().with_send(bus, value),
+                Err(MixerTrackParametersError::OutOfRangeSend { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn every_one_of_eight_sends_validates_its_range() {
+        let parameters = MixerTrackParameters::default();
+        for bus in BusId::ALL {
+            let raised = parameters.with_send(bus, 1.0).unwrap();
+            assert_eq!(raised.send(bus), 1.0);
+            for other in BusId::ALL {
+                if other != bus {
+                    assert_eq!(raised.send(other), 0.0);
+                }
+            }
+            assert_eq!(
+                parameters.with_send(bus, 1.1),
+                Err(MixerTrackParametersError::OutOfRangeSend { bus, value: 1.1 })
+            );
+            assert_eq!(
+                parameters.with_send(bus, -0.1),
+                Err(MixerTrackParametersError::OutOfRangeSend { bus, value: -0.1 })
+            );
+            assert_eq!(
+                parameters.with_send(bus, f32::NAN),
+                Err(MixerTrackParametersError::NonFiniteSend { bus })
+            );
+        }
+    }
+
+    #[test]
+    fn from_values_validates_the_complete_send_bank() {
+        let mut sends = [0.5; MAX_BUS_RETURNS];
+        assert!(MixerTrackParameters::from_values(0.0, 0.0, false, false, sends).is_ok());
+        sends[7] = 1.5;
+        assert_eq!(
+            MixerTrackParameters::from_values(0.0, 0.0, false, false, sends),
+            Err(MixerTrackParametersError::OutOfRangeSend {
+                bus: BusId::new(7).unwrap(),
+                value: 1.5
+            })
+        );
     }
 
     #[test]
@@ -469,9 +602,30 @@ mod tests {
     }
 
     #[test]
+    fn serialized_shape_stays_byte_identical_to_the_declared_leaves() {
+        // The pinned shape is the one indexed sends array, matching the
+        // SERIALIZED_LEAF_DESCRIPTOR tables.
+        let json = serde_json::to_string(&MixerTrackParameters::default()).unwrap();
+        assert_eq!(
+            json,
+            r#"{"levelDb":0.0,"pan":0.0,"mute":false,"solo":false,"sends":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]}"#
+        );
+        let round_tripped = serde_json::from_str::<MixerTrackParameters>(&json).unwrap();
+        assert_eq!(round_tripped, MixerTrackParameters::default());
+    }
+
+    #[test]
     fn serde_cannot_bypass_numeric_validation() {
         assert!(serde_json::from_str::<MixerTrackParameters>(
-            r#"{"levelDb":0.0,"pan":2.0,"mute":false,"solo":false,"reverbSend":0.0,"delaySend":0.0}"#
+            r#"{"levelDb":0.0,"pan":2.0,"mute":false,"solo":false,"sends":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<MixerTrackParameters>(
+            r#"{"levelDb":0.0,"pan":0.0,"mute":false,"solo":false,"sends":[1.5,0.0,0.0,0.0,0.0,0.0,0.0,0.0]}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<MixerTrackParameters>(
+            r#"{"levelDb":0.0,"pan":0.0,"mute":false,"solo":false,"sends":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,-0.5]}"#
         )
         .is_err());
     }

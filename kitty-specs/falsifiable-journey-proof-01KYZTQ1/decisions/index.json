@@ -1,0 +1,100 @@
+{
+  "entries": [
+    {
+      "created_at": "2026-08-01T23:32:12.566715Z",
+      "decision_id": "01KYZTQGMP4YA38KSA6Z636VZ7",
+      "final_answer": "Stamp from position: set_slot_occupancy derives the occupant's slot_id from index.instance_identity() rather than accepting one, making the mismatch inexpressible at the sole chokepoint. Serialized slotId vocabulary and the real-time path stay untouched.",
+      "input_key": "risk1_closure_shape",
+      "mission_id": "01KYZTQ118MXZGD4MBCR99A978",
+      "mission_slug": "falsifiable-journey-proof-01KYZTQ1",
+      "opened_by": "cli",
+      "options": [
+        "Stamp from position",
+        "Validate and reject",
+        "Remove slot_id entirely"
+      ],
+      "origin_flow": "specify",
+      "other_answer": false,
+      "question": "How should RISK-1 be closed - binding an effect's slot_id to its position?",
+      "rationale": null,
+      "resolved_at": "2026-08-01T23:32:13.346030Z",
+      "resolved_by": null,
+      "slot_key": "specify.risk1.closure-shape",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-08-01T23:32:23.444277Z",
+      "decision_id": "01KYZTQV8MSZXP5S604GM9QFHW",
+      "final_answer": "Declared validation gate: a crest-spec validation fails acceptance when a mission acceptance matrix lacks NFR and constraint rows, so the omission that occurred in both this mission line's prior missions cannot recur. Precedent: asset.ValidationScripts declared by the parent mission.",
+      "input_key": "acceptance_matrix_omission_fix",
+      "mission_id": "01KYZTQ118MXZGD4MBCR99A978",
+      "mission_slug": "falsifiable-journey-proof-01KYZTQ1",
+      "opened_by": "cli",
+      "options": [
+        "Declared validation gate",
+        "Fix the template only"
+      ],
+      "origin_flow": "specify",
+      "other_answer": false,
+      "question": "How should the acceptance-matrix NFR/constraint omission be fixed?",
+      "rationale": null,
+      "resolved_at": "2026-08-01T23:32:24.194401Z",
+      "resolved_by": null,
+      "slot_key": "specify.acceptance-matrix.omission-fix",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-08-01T23:46:23.059960Z",
+      "decision_id": "01KYZVHF6K8XYS4GV882W5Q35M",
+      "final_answer": "Current mission only: the coverage gate grades the mission being accepted, preventing recurrence going forward without reopening archived history or forcing a backfill of the parent's constraint rows. Scope stays exactly the spec's 'so the omission is not repeatable'; the prior gaps remain documented in the parent review.",
+      "input_key": "coverage_gate_scan_scope",
+      "mission_id": "01KYZTQ118MXZGD4MBCR99A978",
+      "mission_slug": "falsifiable-journey-proof-01KYZTQ1",
+      "opened_by": "cli",
+      "options": [
+        "Current mission only",
+        "All non-archived missions with backfill",
+        "All missions, grandfather existing"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "Which missions should the acceptance-matrix coverage gate scan?",
+      "rationale": null,
+      "resolved_at": "2026-08-01T23:56:42.874453Z",
+      "resolved_by": null,
+      "slot_key": "plan.coverage-gate.scan-scope",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-08-01T23:46:24.098268Z",
+      "decision_id": "01KYZVHG72JKFSB1NCWE5Y58Z7",
+      "final_answer": "Committed artifact per guard under evidence/falsification/: each records the mutation applied, the observed failure with command and exit code, the restoration, and the observed pass. Makes 'a guard with only one recorded outcome is unproven' independently checkable rather than self-reported prose.",
+      "input_key": "falsification_evidence_form",
+      "mission_id": "01KYZTQ118MXZGD4MBCR99A978",
+      "mission_slug": "falsifiable-journey-proof-01KYZTQ1",
+      "opened_by": "cli",
+      "options": [
+        "Committed artifact per guard",
+        "WP notes only"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "How should falsification evidence be recorded?",
+      "rationale": null,
+      "resolved_at": "2026-08-01T23:56:43.751362Z",
+      "resolved_by": null,
+      "slot_key": "plan.falsification.evidence-form",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    }
+  ],
+  "mission_id": "01KYZTQ118MXZGD4MBCR99A978",
+  "version": 1
+}

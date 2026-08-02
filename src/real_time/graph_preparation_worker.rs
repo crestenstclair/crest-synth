@@ -1,26 +1,58 @@
 use crate::control::{EngineSelectionFailure, EngineSelectionRequestId, StructuralEditIntent};
 use crate::kernel::PatchId;
+use crate::mixer::bus_return::BusReturnBank;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_state::MixerState;
 use crate::real_time::{
     GraphPreparationError, GraphRevision, ParameterSnapshot, PreparedGraph, PreparedGraphBuilder,
 };
 use crate::shell::audio_output::AudioDeviceConfig;
+use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::{
-    CapabilityId, CapabilityRegistry, EffectCapabilityRegistry, EffectPreparer, InstrumentConfig,
-    InstrumentPreparationError, InstrumentPreparer, Patch, RackPreparationError,
+    CapabilityId, CapabilityRegistry, EffectCapabilityError, EffectCapabilityRegistry,
+    EffectPreparer, InstrumentConfig, InstrumentPreparationError, InstrumentPreparer, Patch,
+    PostEffectConfig, RackPreparationError,
 };
 use core::fmt;
 
+/// Validates one Patch's canonical per-position effect chain directly against
+/// the installed registry: every occupied position must satisfy its
+/// descriptor, and no two positions may claim the same instance identity.
+/// Position-direct — the gapped view is never compacted into a transitional
+/// list, so an empty position stays a validated gap.
+fn validate_patch_effect_slots(
+    effects: &EffectCapabilityRegistry,
+    slots: &[Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
+) -> Result<(), EffectCapabilityError> {
+    for (position, occupant) in slots.iter().enumerate() {
+        let Some(config) = occupant else {
+            continue;
+        };
+        if slots[..position]
+            .iter()
+            .flatten()
+            .any(|prior| prior.slot_id() == config.slot_id())
+        {
+            return Err(EffectCapabilityError::DuplicateSlot(config.slot_id()));
+        }
+        effects.validate_config(config)?;
+    }
+    Ok(())
+}
+
 /// Complete immutable correlation shared by one worker request and result.
+///
+/// Instrument intents carry the full Patch and capability context; occupancy
+/// intents carry their position in the intent, so a return edit has no Patch
+/// context and nothing is fabricated to stand in for one.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphPreparationCorrelation {
     request_id: EngineSelectionRequestId,
-    patch_id: PatchId,
+    patch_id: Option<PatchId>,
     intent: StructuralEditIntent,
-    source_capability_id: CapabilityId,
-    target_capability_id: CapabilityId,
+    source_capability_id: Option<CapabilityId>,
+    target_capability_id: Option<CapabilityId>,
     source_graph_revision: GraphRevision,
     target_graph_revision: GraphRevision,
 }
@@ -62,10 +94,59 @@ impl GraphPreparationCorrelation {
         source_graph_revision: GraphRevision,
         target_graph_revision: GraphRevision,
     ) -> Result<Self, GraphPreparationRequestError> {
+        Self::new_with_context(
+            request_id,
+            Some(patch_id),
+            intent,
+            Some(source_capability_id),
+            Some(target_capability_id),
+            source_graph_revision,
+            target_graph_revision,
+        )
+    }
+
+    /// Creates one occupancy-change correlation; the intent itself names the
+    /// position (and, for a slot change, the Patch).
+    pub fn for_occupancy(
+        request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+    ) -> Result<Self, GraphPreparationRequestError> {
+        let patch_id = match &intent {
+            StructuralEditIntent::SetSlotOccupancy { patch_id, .. } => Some(*patch_id),
+            StructuralEditIntent::SetReturnOccupancy { .. } => None,
+            _ => return Err(GraphPreparationRequestError::IntentMismatch),
+        };
+        Self::new_with_context(
+            request_id,
+            patch_id,
+            intent,
+            None,
+            None,
+            source_graph_revision,
+            target_graph_revision,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_context(
+        request_id: EngineSelectionRequestId,
+        patch_id: Option<PatchId>,
+        intent: StructuralEditIntent,
+        source_capability_id: Option<CapabilityId>,
+        target_capability_id: Option<CapabilityId>,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+    ) -> Result<Self, GraphPreparationRequestError> {
         if request_id.is_none() {
             return Err(GraphPreparationRequestError::MissingRequestIdentity);
         }
-        if !intent_matches_capabilities(&intent, &source_capability_id, &target_capability_id) {
+        if !intent.matches_context(
+            patch_id,
+            source_capability_id.as_ref(),
+            target_capability_id.as_ref(),
+        ) {
             return Err(GraphPreparationRequestError::IntentMismatch);
         }
         if target_graph_revision <= source_graph_revision {
@@ -86,7 +167,7 @@ impl GraphPreparationCorrelation {
         self.request_id
     }
 
-    pub const fn patch_id(&self) -> PatchId {
+    pub const fn patch_id(&self) -> Option<PatchId> {
         self.patch_id
     }
 
@@ -94,12 +175,12 @@ impl GraphPreparationCorrelation {
         &self.intent
     }
 
-    pub const fn source_capability_id(&self) -> &CapabilityId {
-        &self.source_capability_id
+    pub const fn source_capability_id(&self) -> Option<&CapabilityId> {
+        self.source_capability_id.as_ref()
     }
 
-    pub const fn target_capability_id(&self) -> &CapabilityId {
-        &self.target_capability_id
+    pub const fn target_capability_id(&self) -> Option<&CapabilityId> {
+        self.target_capability_id.as_ref()
     }
 
     pub const fn source_graph_revision(&self) -> GraphRevision {
@@ -109,13 +190,40 @@ impl GraphPreparationCorrelation {
     pub const fn target_graph_revision(&self) -> GraphRevision {
         self.target_graph_revision
     }
+
+    /// Derives the one scoped delta this correlation declares — the same
+    /// vocabulary the coordinator admits and the renderer's voice carry-over
+    /// honors, derived in exactly one place so admission and carry-over can
+    /// never disagree.
+    pub fn replacement_scope(&self) -> Option<crate::real_time::GraphReplacementScope> {
+        match &self.intent {
+            StructuralEditIntent::ReplaceCapability { .. }
+            | StructuralEditIntent::ReplaceParameterChoice { .. } => Some(
+                crate::real_time::GraphReplacementScope::SelectedEngine(self.patch_id?),
+            ),
+            StructuralEditIntent::SetSlotOccupancy { patch_id, slot, .. } => {
+                Some(crate::real_time::GraphReplacementScope::PatchSlot {
+                    patch_id: *patch_id,
+                    slot: *slot,
+                })
+            }
+            StructuralEditIntent::SetReturnOccupancy { bus, .. } => {
+                Some(crate::real_time::GraphReplacementScope::BusReturn(*bus))
+            }
+        }
+    }
 }
 
 /// One frozen off-callback request for a complete replacement graph.
+///
+/// The request carries the complete candidate topology — every Patch with its
+/// ordered effect slots plus the complete bus-return bank — never a partial
+/// delta, so the worker always builds and exchanges a whole graph (FR-012).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GraphPreparationRequest {
     correlation: GraphPreparationCorrelation,
     candidate_patches: Vec<Patch>,
+    candidate_returns: BusReturnBank,
     candidate_parameters: ParameterSnapshot,
     audio_config: AudioDeviceConfig,
 }
@@ -144,16 +252,99 @@ impl GraphPreparationRequest {
             audio_config,
             registry,
             &effects,
+            &BusReturnBank::default(),
         )
     }
 
     /// Replaces exactly one instrument config while preserving and validating
-    /// every Patch-local post-effect config and fixed scalar layout.
+    /// every Patch-local post-effect config, the complete bus-return bank,
+    /// and the fixed scalar layout.
     #[allow(clippy::too_many_arguments)]
     pub fn replacement_with_effects(
         correlation: GraphPreparationCorrelation,
         active_patches: &[Patch],
         candidate_config: InstrumentConfig,
+        generation: u64,
+        global: GlobalParameters,
+        mixer: MixerState,
+        audio_config: AudioDeviceConfig,
+        registry: &CapabilityRegistry,
+        effects: &EffectCapabilityRegistry,
+        returns: &BusReturnBank,
+    ) -> Result<Self, GraphPreparationRequestError> {
+        if active_patches.len() > crate::real_time::MAX_PATCHES {
+            return Err(GraphPreparationRequestError::PatchCapacityExceeded);
+        }
+        for (index, patch) in active_patches.iter().enumerate() {
+            if active_patches[..index]
+                .iter()
+                .any(|prior| prior.id() == patch.id())
+            {
+                return Err(GraphPreparationRequestError::DuplicatePatchId);
+            }
+            registry
+                .validate_config(patch.instrument_config())
+                .map_err(|_| GraphPreparationRequestError::InvalidActiveConfig)?;
+            validate_patch_effect_slots(effects, patch.effect_slots())
+                .map_err(|_| GraphPreparationRequestError::InvalidActiveEffectConfig)?;
+        }
+        let selected_index = active_patches
+            .iter()
+            .position(|patch| Some(patch.id()) == correlation.patch_id())
+            .ok_or(GraphPreparationRequestError::UnknownPatch)?;
+        if Some(
+            active_patches[selected_index]
+                .instrument_config()
+                .capability_id(),
+        ) != correlation.source_capability_id()
+        {
+            return Err(GraphPreparationRequestError::SourceCapabilityMismatch);
+        }
+        if Some(candidate_config.capability_id()) != correlation.target_capability_id() {
+            return Err(GraphPreparationRequestError::TargetCapabilityMismatch);
+        }
+        registry
+            .validate_config(&candidate_config)
+            .map_err(|_| GraphPreparationRequestError::InvalidCandidateConfig)?;
+        validate_candidate_delta(
+            active_patches[selected_index].instrument_config(),
+            &candidate_config,
+            correlation.intent(),
+        )?;
+
+        let mut candidate_patches = active_patches.to_vec();
+        candidate_patches[selected_index].set_instrument_config(candidate_config);
+        let candidate_parameters = ParameterSnapshot::project_patches_with_effects_and_returns(
+            generation,
+            correlation.target_graph_revision(),
+            global,
+            mixer,
+            &candidate_patches,
+            registry,
+            effects,
+            returns,
+        )
+        .map_err(|_| GraphPreparationRequestError::InvalidCandidateConfig)?;
+
+        Ok(Self {
+            correlation,
+            candidate_patches,
+            candidate_returns: returns.clone(),
+            candidate_parameters,
+            audio_config,
+        })
+    }
+
+    /// Applies exactly one occupancy delta — a Patch effect slot or a bus
+    /// return — to the complete active topology, validating everything before
+    /// anything can be published (FR-013). The unresolvable and the invalid
+    /// are refused, never substituted; every other Patch, slot, and return is
+    /// copied unchanged so the worker prepares one complete candidate graph.
+    #[allow(clippy::too_many_arguments)]
+    pub fn occupancy(
+        correlation: GraphPreparationCorrelation,
+        active_patches: &[Patch],
+        active_returns: &BusReturnBank,
         generation: u64,
         global: GlobalParameters,
         mixer: MixerState,
@@ -174,36 +365,44 @@ impl GraphPreparationRequest {
             registry
                 .validate_config(patch.instrument_config())
                 .map_err(|_| GraphPreparationRequestError::InvalidActiveConfig)?;
-            effects
-                .validate_patch_effects(patch.post_effects())
+            validate_patch_effect_slots(effects, patch.effect_slots())
                 .map_err(|_| GraphPreparationRequestError::InvalidActiveEffectConfig)?;
         }
-        let selected_index = active_patches
-            .iter()
-            .position(|patch| patch.id() == correlation.patch_id())
-            .ok_or(GraphPreparationRequestError::UnknownPatch)?;
-        if active_patches[selected_index]
-            .instrument_config()
-            .capability_id()
-            != correlation.source_capability_id()
-        {
-            return Err(GraphPreparationRequestError::SourceCapabilityMismatch);
-        }
-        if candidate_config.capability_id() != correlation.target_capability_id() {
-            return Err(GraphPreparationRequestError::TargetCapabilityMismatch);
-        }
-        registry
-            .validate_config(&candidate_config)
-            .map_err(|_| GraphPreparationRequestError::InvalidCandidateConfig)?;
-        validate_candidate_delta(
-            active_patches[selected_index].instrument_config(),
-            &candidate_config,
-            correlation.intent(),
-        )?;
 
         let mut candidate_patches = active_patches.to_vec();
-        candidate_patches[selected_index].set_instrument_config(candidate_config);
-        let candidate_parameters = ParameterSnapshot::project_patches_with_effects(
+        let mut candidate_returns = active_returns.clone();
+        match correlation.intent() {
+            StructuralEditIntent::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            } => {
+                let selected_index = candidate_patches
+                    .iter()
+                    .position(|patch| patch.id() == *patch_id)
+                    .ok_or(GraphPreparationRequestError::UnknownPatch)?;
+                let occupant = build_slot_occupant(effects, *slot, entry.as_ref())?;
+                candidate_patches[selected_index]
+                    .set_slot_occupancy(*slot, occupant)
+                    .map_err(|_| GraphPreparationRequestError::InvalidOccupancy)?;
+            }
+            StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
+                candidate_returns
+                    .set_return_occupancy(effects, *bus, entry.as_ref())
+                    .map_err(|error| match error {
+                        crate::mixer::bus_return::BusReturnError::UnknownRegistryEntry {
+                            ..
+                        } => GraphPreparationRequestError::UnknownEffectEntry,
+                        _ => GraphPreparationRequestError::InvalidOccupancy,
+                    })?;
+            }
+            StructuralEditIntent::ReplaceCapability { .. }
+            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+                return Err(GraphPreparationRequestError::IntentMismatch)
+            }
+        }
+
+        let candidate_parameters = ParameterSnapshot::project_patches_with_effects_and_returns(
             generation,
             correlation.target_graph_revision(),
             global,
@@ -211,12 +410,14 @@ impl GraphPreparationRequest {
             &candidate_patches,
             registry,
             effects,
+            &candidate_returns,
         )
         .map_err(|_| GraphPreparationRequestError::InvalidCandidateConfig)?;
 
         Ok(Self {
             correlation,
             candidate_patches,
+            candidate_returns,
             candidate_parameters,
             audio_config,
         })
@@ -230,6 +431,11 @@ impl GraphPreparationRequest {
         &self.candidate_patches
     }
 
+    /// Returns the complete candidate bus-return bank this request prepares.
+    pub const fn candidate_returns(&self) -> &BusReturnBank {
+        &self.candidate_returns
+    }
+
     pub const fn candidate_parameters(&self) -> &ParameterSnapshot {
         &self.candidate_parameters
     }
@@ -238,12 +444,16 @@ impl GraphPreparationRequest {
         self.audio_config
     }
 
-    pub fn candidate_config(&self) -> &InstrumentConfig {
+    /// Returns the selected candidate instrument config for instrument
+    /// intents; occupancy intents change no instrument config.
+    pub fn candidate_config(&self) -> Option<&InstrumentConfig> {
+        if self.correlation.intent().is_occupancy() {
+            return None;
+        }
         self.candidate_patches
             .iter()
-            .find(|patch| patch.id() == self.correlation.patch_id())
-            .expect("validated requests contain the selected Patch")
-            .instrument_config()
+            .find(|patch| Some(patch.id()) == self.correlation.patch_id())
+            .map(Patch::instrument_config)
     }
 
     fn validate_for_worker(
@@ -255,13 +465,18 @@ impl GraphPreparationRequest {
         if self.audio_config != audio_config {
             return Err(EngineSelectionFailure::UnsupportedAudioConfig);
         }
-        let selected = self
-            .candidate_patches
-            .iter()
-            .find(|patch| patch.id() == self.correlation.patch_id())
-            .ok_or(EngineSelectionFailure::GraphIncompatible)?;
-        if selected.instrument_config().capability_id() != self.correlation.target_capability_id() {
-            return Err(EngineSelectionFailure::ProviderMismatch);
+        if let Some(patch_id) = self.correlation.patch_id() {
+            let selected = self
+                .candidate_patches
+                .iter()
+                .find(|patch| patch.id() == patch_id)
+                .ok_or(EngineSelectionFailure::GraphIncompatible)?;
+            if !self.correlation.intent().is_occupancy()
+                && Some(selected.instrument_config().capability_id())
+                    != self.correlation.target_capability_id()
+            {
+                return Err(EngineSelectionFailure::ProviderMismatch);
+            }
         }
         if self
             .candidate_patches
@@ -270,14 +485,14 @@ impl GraphPreparationRequest {
         {
             return Err(EngineSelectionFailure::InvalidDefaultConfig);
         }
-        if self.candidate_patches.iter().any(|patch| {
-            effects
-                .validate_patch_effects(patch.post_effects())
-                .is_err()
-        }) {
+        if self
+            .candidate_patches
+            .iter()
+            .any(|patch| validate_patch_effect_slots(effects, patch.effect_slots()).is_err())
+        {
             return Err(EngineSelectionFailure::InvalidDefaultConfig);
         }
-        let expected = ParameterSnapshot::project_patches_with_effects(
+        let expected = ParameterSnapshot::project_patches_with_effects_and_returns(
             self.candidate_parameters.generation(),
             self.correlation.target_graph_revision(),
             *self.candidate_parameters.global(),
@@ -285,6 +500,7 @@ impl GraphPreparationRequest {
             &self.candidate_patches,
             registry,
             effects,
+            &self.candidate_returns,
         )
         .map_err(|_| EngineSelectionFailure::InvalidDefaultConfig)?;
         if expected != self.candidate_parameters {
@@ -299,7 +515,9 @@ impl GraphPreparationRequest {
 pub enum GraphPreparationResult {
     Prepared {
         correlation: GraphPreparationCorrelation,
-        candidate_config: InstrumentConfig,
+        /// The committed candidate instrument config for instrument intents;
+        /// occupancy intents change no instrument config.
+        candidate_config: Option<InstrumentConfig>,
         prepared_graph: PreparedGraph,
     },
     Failed {
@@ -413,6 +631,8 @@ pub enum GraphPreparationRequestError {
     InvalidActiveConfig,
     InvalidActiveEffectConfig,
     InvalidCandidateConfig,
+    UnknownEffectEntry,
+    InvalidOccupancy,
 }
 
 impl fmt::Display for GraphPreparationRequestError {
@@ -439,23 +659,29 @@ impl fmt::Display for GraphPreparationRequestError {
             Self::InvalidActiveConfig => "an active Patch config is invalid",
             Self::InvalidActiveEffectConfig => "an active Patch effect config is invalid",
             Self::InvalidCandidateConfig => "the candidate Patch config is invalid",
+            Self::UnknownEffectEntry => {
+                "the requested registry entry is not installed in the effect registry"
+            }
+            Self::InvalidOccupancy => "the requested occupancy change is invalid at its position",
         })
     }
 }
 
-fn intent_matches_capabilities(
-    intent: &StructuralEditIntent,
-    source: &CapabilityId,
-    target: &CapabilityId,
-) -> bool {
-    match intent {
-        StructuralEditIntent::ReplaceCapability {
-            target_capability_id,
-        } => source != target && target_capability_id == target,
-        StructuralEditIntent::ReplaceParameterChoice { capability_id, .. } => {
-            source == target && capability_id == source
-        }
-    }
+fn build_slot_occupant(
+    effects: &EffectCapabilityRegistry,
+    slot: crate::synth::effect_slot_id::EffectSlotIndex,
+    entry: Option<&crate::synth::EffectCapabilityId>,
+) -> Result<Option<crate::synth::PostEffectConfig>, GraphPreparationRequestError> {
+    let Some(entry_id) = entry else {
+        return Ok(None);
+    };
+    let descriptor = effects
+        .descriptor(entry_id)
+        .ok_or(GraphPreparationRequestError::UnknownEffectEntry)?;
+    descriptor
+        .default_config(slot.instance_identity())
+        .map(Some)
+        .map_err(|_| GraphPreparationRequestError::InvalidOccupancy)
 }
 
 fn validate_candidate_delta(
@@ -498,6 +724,10 @@ fn validate_candidate_delta(
                 return Err(GraphPreparationRequestError::ConfigDeltaMismatch);
             }
         }
+        StructuralEditIntent::SetSlotOccupancy { .. }
+        | StructuralEditIntent::SetReturnOccupancy { .. } => {
+            return Err(GraphPreparationRequestError::IntentMismatch);
+        }
     }
     Ok(())
 }
@@ -520,9 +750,10 @@ pub(crate) fn prepare_graph_request_with_effects(
             failure,
         };
     }
-    let candidate_config = request.candidate_config().clone();
+    let candidate_config = request.candidate_config().cloned();
     let result = PreparedGraphBuilder::new(registry, preparers)
         .with_effects(effects, effect_preparers)
+        .with_returns(request.candidate_returns())
         .build(
             correlation.target_graph_revision(),
             request.candidate_patches(),
@@ -531,11 +762,20 @@ pub(crate) fn prepare_graph_request_with_effects(
             audio_config.render_capacity_frames(),
         );
     match result {
-        Ok(prepared_graph) => GraphPreparationResult::Prepared {
-            correlation,
-            candidate_config,
-            prepared_graph,
-        },
+        Ok(mut prepared_graph) => {
+            // The replacement declares its exact correlated delta so
+            // block-boundary activation can carry every live instance the
+            // delta leaves unchanged. Set on worker ownership, never on the
+            // callback.
+            if let Some(scope) = correlation.replacement_scope() {
+                prepared_graph.set_carry_over_scope(scope);
+            }
+            GraphPreparationResult::Prepared {
+                correlation,
+                candidate_config,
+                prepared_graph,
+            }
+        }
         Err(error) => GraphPreparationResult::Failed {
             correlation,
             failure: map_graph_preparation_failure(&error),
@@ -551,6 +791,9 @@ fn map_graph_preparation_failure(error: &GraphPreparationError) -> EngineSelecti
         GraphPreparationError::RevisionMismatch { .. }
         | GraphPreparationError::ParameterLayoutMismatch => {
             EngineSelectionFailure::GraphIncompatible
+        }
+        GraphPreparationError::UnrecordableCapabilityIdentity => {
+            EngineSelectionFailure::InvalidDefaultConfig
         }
         GraphPreparationError::Rack(error) => match error {
             RackPreparationError::MissingPreparer { .. } => EngineSelectionFailure::PreparerMissing,
@@ -596,6 +839,19 @@ fn map_graph_preparation_failure(error: &GraphPreparationError) -> EngineSelecti
         GraphPreparationError::PatchAudio(_) | GraphPreparationError::Effects(_) => {
             EngineSelectionFailure::PreparationFailed
         }
+        GraphPreparationError::BusReturn { source, .. } => match source {
+            crate::real_time::prepared_graph_builder::BusReturnPreparationError::UnknownRegistryEntry
+            | crate::real_time::prepared_graph_builder::BusReturnPreparationError::InvalidConfiguration => {
+                EngineSelectionFailure::InvalidDefaultConfig
+            }
+            crate::real_time::prepared_graph_builder::BusReturnPreparationError::MissingPreparer => {
+                EngineSelectionFailure::PreparerMissing
+            }
+            crate::real_time::prepared_graph_builder::BusReturnPreparationError::Preparation(_)
+            | crate::real_time::prepared_graph_builder::BusReturnPreparationError::Install(_) => {
+                EngineSelectionFailure::PreparationFailed
+            }
+        },
         GraphPreparationError::EffectRack(error) => match error {
             crate::synth::EffectRackPreparationError::InvalidSampleRate
             | crate::synth::EffectRackPreparationError::InvalidFrameCapacity => {
@@ -625,7 +881,8 @@ fn map_graph_preparation_failure(error: &GraphPreparationError) -> EngineSelecti
 #[cfg(test)]
 mod tests {
     use super::{
-        GraphPreparationCorrelation, GraphPreparationRequest, GraphPreparationRequestError,
+        map_graph_preparation_failure, EngineSelectionFailure, GraphPreparationCorrelation,
+        GraphPreparationError, GraphPreparationRequest, GraphPreparationRequestError,
     };
     use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
     use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
@@ -661,11 +918,24 @@ mod tests {
     }
 
     fn globals() -> GlobalParameters {
-        GlobalParameters::new(-3.0, 0.7, 0.4, 0.2, 375.0, 0.3, 0.2).unwrap()
+        GlobalParameters::new(-3.0).unwrap()
     }
 
     fn audio_config() -> AudioDeviceConfig {
         AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 64).unwrap()
+    }
+
+    /// A per-position capability identity the graph cannot record exactly is
+    /// a candidate-configuration refusal, and the worker reports it as one:
+    /// the selection fails visibly with `InvalidDefaultConfig` rather than
+    /// being reported as an incompatible graph — or, worse, succeeding with a
+    /// truncated identity.
+    #[test]
+    fn carry_over_capability_identity_refusal_reports_an_invalid_candidate_config() {
+        assert_eq!(
+            map_graph_preparation_failure(&GraphPreparationError::UnrecordableCapabilityIdentity),
+            EngineSelectionFailure::InvalidDefaultConfig
+        );
     }
 
     #[test]
@@ -711,7 +981,7 @@ mod tests {
             active[0].envelope()
         );
         assert_eq!(
-            request.candidate_config().capability_id().as_str(),
+            request.candidate_config().unwrap().capability_id().as_str(),
             BRAIDS_CAPABILITY_ID
         );
         assert_eq!(request.candidate_parameters().generation(), 9);

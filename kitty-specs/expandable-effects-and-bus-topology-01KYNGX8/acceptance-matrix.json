@@ -1,0 +1,439 @@
+{
+  "mission_slug": "expandable-effects-and-bus-topology-01KYNGX8",
+  "mission_number": "",
+  "mission_type": "software-dev",
+  "overall_verdict": "pass",
+  "criteria": [
+    {
+      "criterion_id": "FR-001",
+      "description": "Three ordered effect slots per Patch, no fourth reachable",
+      "proof_type": "automated_test",
+      "evidence": "cargo test --release --test expandable_effects_and_bus_topology (lane-a 7ec0d69): exit 0, 'CREST_ACCEPTANCE expandable_effects_and_bus_topology passed', observation orderedSlotCasesExercised=3; full lane-a suite 492 passed / 0 failed across 27 targets; WP03 review approved 2026-07-31 (16x3 matches_parameters verified line-by-line with negative tests at every position)",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-002",
+      "description": "Slot occupancy cycled with the same gesture as engine selection (no second vocabulary, no modal)",
+      "proof_type": "automated_test",
+      "evidence": "WP07 review approved: adjacent-choice occupancy via existing Adjust vocabulary through request_topology_change (no modal, C-008); tests/semantic_focus_and_projection.rs green in fresh 492-test lane-a run; live scene exercised slot_fills_exercised=3 and startup_occupant_cleared=true (wp10-t059-live-run.log)",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-003",
+      "description": "Each configured effect presents descriptor-driven parameters with no bespoke screen logic",
+      "proof_type": "automated_test",
+      "evidence": "WP02 review approved: descriptors match retired global surface value-for-value via live comparison test; capability_schema and schema_surface suites green in fresh 492-test run; live CREST_LIVE_COVERAGE reports 105/105 editable parameters including per-slot effect parameters",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-004",
+      "description": "Effects applied in slot order; exchanging positions changes the rendered output",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: observation slotOrderExchangeDistinct=true; live runs exercised slot_order_exchange_exercised=true (t052-run.log and wp10-t059-live-run.log); WP03 review: process_slots_in_place proven in-place/ordered/sample-exact",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-005",
+      "description": "Each effect instance owns independent internal state (same-entry twins do not share tails)",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: sameEntryInstancesIndependent=true; live same_entry_twin_exercised=true in both recorded runs",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-006",
+      "description": "Buses, sends, and returns are explicit validated identities, not name-enumerated fields",
+      "proof_type": "automated_test",
+      "evidence": "WP04 review approved: BusId bounded/validated with no named constructors, indexed [f32;8] sends; fresh run of scripts/check_no_name_enumerated_identity.sh exit 0 with 'CREST_STATIC_VALIDATION no_name_enumerated_identity passed'; tests/no_name_enumeration_guard.rs green in fresh 492-test run",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-007",
+      "description": "Eight individually addressable bus returns",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: addressableReturns=8; live observation empty_return_occupied_and_restored=true and sends_raised_toward_destinations=true across the eight-return bank",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-008",
+      "description": "Each track send names the bus it feeds; destinations change without changing the send",
+      "proof_type": "automated_test",
+      "evidence": "WP04 review approved: indexed [f32;8] sends addressed by BusId with one shared descriptor and pinned legacy serde; fresh guard run confirms ReverbSend/DelaySend identifiers absent; declared-proof observation returnContentChangeDryUninterrupted=true shows destination contents changing under unchanged sends",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-009",
+      "description": "Reverb and delay are ordinary registry effects occupying the first two returns",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: defaultReturnOccupancyExact=true; WP02 review approved: DSP moved token-identically with sample-exact A/B over 4 parameter sets x 16 noise blocks; guard confirms GlobalReverbDelay/GlobalEffectsProcessor retired",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-010",
+      "description": "Return contents configurable with the same gesture as a Patch slot",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: returnContentChangeDryUninterrupted=true; live runs: return_content_changes=2 with empty_return_occupied_and_restored=true; WP07 review: slot and return focus rows share the occupancy vocabulary",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-011",
+      "description": "Sends remain post-fader and post-mute/solo-gate; silenced tracks feed no wet destination",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: mutedOrSoloExcludedWetContribution=0.0; live observation mute_wins=true, post_gate_sends_exact=true, gated_wet_contribution=0.0; WP04 review: send stage unmoved (post-fader post-gate, pre-gate meters)",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-012",
+      "description": "Every topology change prepared off the audio path and exchanged complete; render path never assembles or grows a graph",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: partiallyAppliedTopologyBlocks=0, callbackAllocations=0, callbackDeallocations=0; tests/topology_change_lifecycle.rs (10 tests) green in fresh 492-test run; WP05/WP06 reviews approved (widened snapshot exact; one correlated structural-edit lifecycle)",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-013",
+      "description": "Invalid topology changes are refused outright; running configuration never left partly applied",
+      "proof_type": "negative_invariant",
+      "evidence": "Fresh witness pair on lane-a 7ec0d69: healthy 'crest-synth-witness --case refused-topology --mutant none' exit 0 with refusal_recorded=true, active_graph_preserved=true, canonical_state_preserved=true; mutant 'refused-topology-published' exit 1 (declared negativeExpectedExitCode) with refusal_recorded=false and active_graph_preserved=false observed, proving the witness detects the violation; declared-proof observation topologyRejectionsExercised=4, rejectionPreservedActiveGraph=true",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": "Both witness directions executed fresh during the accept gate"
+    },
+    {
+      "criterion_id": "FR-014",
+      "description": "Pending, accepted, and refused topology changes visible with their reason",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: rejectionReasonAttributable=true; live observation controlled_rejection_observed=true with rejection_reason='invalidEffectConfig'; WP06 review: validated per-class refusal without mutation, visible StructuralEditBusy refusal plus stale-ack discard",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-015",
+      "description": "A valid change succeeds immediately after a refused one",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: postRejectionValidChangeAccepted=true; fresh healthy witness observation post_rejection_valid_change_accepted=true; live post_rejection_recovery_observed=true in both recorded runs",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-016",
+      "description": "Superseded topologies disposed of away from the audio path; nothing destroyed in the callback or leaked at exit",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: retiredGraphsCollectedOffCallback=8, callbackDestructions=0, activeNotesAtExit=0; live observation owned_graphs_remaining=0, stream_released=true in both recorded runs",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-017",
+      "description": "Focus survives topology change; a cleared slot's focus resolves deterministically",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: clearedSlotFocusRecovered=true; tests/semantic_focus_and_projection.rs green in fresh 492-test run; WP07 review: deterministic focus recovery proven via shared SemanticResolver::recover; live stable_focus_exact=true",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-018",
+      "description": "A Patch's effect chain follows the Patch across rerouting",
+      "proof_type": "automated_test",
+      "evidence": "Live observation reroute_chain_followed=true and patch_reroute_isolated=true in both recorded runs; reroute transition exercised inside the deterministic declared-proof scene (green in fresh run); WP10 review approved",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-019",
+      "description": "Retained named live demo scene for this phase (make demo-live-effects-and-buses)",
+      "proof_type": "manual_qa",
+      "evidence": "Recorded physical runs of 'cargo run --release --bin crest-synth -- --demo-live-effects-and-buses' with real window and physical audio: t052-run.log (2026-07-31, 131 checkpoints, CREST_LIVE_SUMMARY complete) and wp10-t059-live-run.log (2026-07-31, 131/131 checkpoints, physical_audio_nonzero=true, window_closed=true); scene retained as its own named target per WP08 review approval",
+      "pass_fail": "pass",
+      "verified_by": "cresten (recorded physical live runs, approved at WP08/WP10 review)",
+      "verified_at": "2026-07-31T17:18:00Z",
+      "notes": "Accept gate cites the recorded 2026-07-31 physical runs and their WP08/WP10 review approval; no fresh hardware run was performed at accept time"
+    },
+    {
+      "criterion_id": "NFR-001",
+      "description": "Zero allocation/lock/blocking/IO/logging/panic/destructor work on the render path, including during topology change",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: callbackAllocations=0, callbackDeallocations=0, callbackDestructions=0; live runs report callback_allocations=0 and callback_destructions=0 across the full physical scene",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "NFR-002",
+      "description": "Capacity for 3 slots x active Patches and 8 returns reserved ahead of rendering; zero dynamic growth at render time",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run exercises all-slots-filled and all-returns-addressable cases with callbackAllocations=0 (any render-time growth would allocate); WP03/WP04 reviews: preallocated scratch and provable index bounds in PreparedPostEffectRack/PreparedBusReturnRack",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "NFR-003",
+      "description": "Topology changes take effect exactly at a block boundary; zero partially applied blocks",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: partiallyAppliedTopologyBlocks=0; block-boundary activation asserted in tests/expandable_effects_and_bus_topology.rs (target > source revision at boundary); WP08 review: deterministic activation gap == 1 block",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "NFR-004",
+      "description": "Zero dropouts/underruns/discontinuities attributable to topology change across the full live scene",
+      "proof_type": "manual_qa",
+      "evidence": "Recorded physical runs: droppedRecords=0 in both CREST_LIVE_EVENT_LOG_SUMMARY lines; zero checkpoints with audio_uninterrupted=false in t052-run.log and wp10-t059-live-run.log (grep verified at accept time); all 131 checkpoints green in both runs",
+      "pass_fail": "pass",
+      "verified_by": "cresten (recorded physical live runs, approved at WP08/WP10 review)",
+      "verified_at": "2026-07-31T17:18:00Z",
+      "notes": "Log-field verification performed fresh at accept time against the recorded runs"
+    },
+    {
+      "criterion_id": "NFR-005",
+      "description": "Two runs of the deterministic scene produce logically identical observations",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: observation twoRunTraceEqual=true (the test itself replays the scene twice and compares traces); exit 0 with CREST_ACCEPTANCE marker",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "NFR-006",
+      "description": "Clean teardown at scene end: 0 active notes, 0 retained topology owners, 0 leaked resources, normal exit",
+      "proof_type": "manual_qa",
+      "evidence": "Recorded physical runs end with cleanup=true, activeNotes=0, window_closed=true, stream_released=true, owned_graphs_remaining=0, active_notes_after_cleanup=0 (both logs); fresh deterministic declared-proof run confirms activeNotesAtExit=0 and retiredGraphsCollectedOffCallback=8",
+      "pass_fail": "pass",
+      "verified_by": "cresten (recorded physical live runs, approved at WP08/WP10 review)",
+      "verified_at": "2026-07-31T17:18:00Z",
+      "notes": "Deterministic half re-verified fresh at accept time; physical teardown cited from the recorded runs"
+    },
+    {
+      "criterion_id": "NFR-007",
+      "description": "With one send raised, every non-target destination measures below -60 dBFS from that source",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: maxOffTargetBusDbfs=-200.0 (floor value, well below -60); live observation max_off_target_bus_dbfs=-200.0 with send_isolation_exact=true in both recorded runs",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "NFR-008",
+      "description": "Accepted edit visible within 1 frame of acceptance and audible within 1 render block of activation",
+      "proof_type": "automated_test",
+      "evidence": "Live observation frames_to_projection_max=1 and all_audible_on_activated_graph=true (first observed block on the activated graph satisfies the audible witness) in both recorded runs; WP08 review: deterministic scene proves projection==1 frame and activation gap==1 block",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": "Live render_blocks_to_audible_max (46/100) measures the sampled distance from note dispatch to the full audible-witness threshold, not activation-to-first-effect; the activation-relative claim is carried by audible_on_activated_graph=true on every checkpoint and the deterministic gap==1 assertion"
+    },
+    {
+      "criterion_id": "SC-001",
+      "description": "Three ordered effects configurable with 0 dropouts and 0 torn blocks; clearing a slot leaves held notes uninterrupted (operator 2026-07-31 narrowing: note preservation required for clearing and value edits only)",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: clearedSlotPreservedHeldNotes=true, partiallyAppliedTopologyBlocks=0; WP10 live run: heldNoteCarriedAcrossActivation=true on the held-note transition, droppedRecords=0; WP10 review: carry mechanism verified callback-safe, CLEAR proof byte-exact vs never-installed reference, mutation check confirms proofs fail with carry disabled",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": "Judged against the operator's 2026-07-31 narrowed contract recorded in spec.md SC-001"
+    },
+    {
+      "criterion_id": "SC-002",
+      "description": "Exchanging two different effects' positions produces measurably different output in 100% of trials",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: slotOrderExchangeDistinct=true across all exercised order-exchange cases; live slot_order_exchange_exercised=true",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-003",
+      "description": "Two instances of the same effect produce independent tails",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: sameEntryInstancesIndependent=true; live same_entry_twin_exercised=true in both recorded runs",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-004",
+      "description": "Eight destinations individually addressable; one raised send leaves the other seven below -60 dBFS",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: addressableReturns=8, maxOffTargetBusDbfs=-200.0; live max_off_target_bus_dbfs=-200.0, send_isolation_exact=true, accumulation_exact=true",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-005",
+      "description": "A muted or solo-excluded track contributes 0 measurable wet signal",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: mutedOrSoloExcludedWetContribution=0.0; live gated_wet_contribution=0.0 with mute_wins=true and any_solo_exact=true in both recorded runs",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-006",
+      "description": "100% of refused topology changes leave audio uninterrupted and prior configuration intact; a valid change immediately afterwards succeeds",
+      "proof_type": "negative_invariant",
+      "evidence": "Fresh declared-proof run: topologyRejectionsExercised=4 with rejectionPreservedActiveGraph=true and postRejectionValidChangeAccepted=true (4/4); fresh witness pair: healthy exit 0 / refused-topology-published mutant exit 1; live controlled_rejection_observed=true with post_rejection_recovery_observed=true and zero audio_uninterrupted=false checkpoints",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-007",
+      "description": "Retained live scene completes with every declared behavior demonstrated, 0 active notes, released resources, normal exit",
+      "proof_type": "manual_qa",
+      "evidence": "Recorded physical runs (t052-run.log 2026-07-31 and wp10-t059-live-run.log 2026-07-31): CREST_LIVE_SUMMARY 'live demo complete: 105/105 editable parameters, 3/3 engine transitions, 131 checkpoints, 0 dropped, cleanup=true, activeNotes=0'; CREST_EFFECTS_AND_BUSES_LIVE_OBSERVATION carries zero false keys in both runs (topology_checkpoints=17, window_closed=true, stream_released=true, owned_graphs_remaining=0)",
+      "pass_fail": "pass",
+      "verified_by": "cresten (recorded physical live runs, approved at WP08/WP10 review)",
+      "verified_at": "2026-07-31T17:18:00Z",
+      "notes": "Zero-false-key verification of both observation JSONs performed fresh at accept time; the physical runs themselves are the recorded 2026-07-31 evidence, not re-run at accept"
+    },
+    {
+      "criterion_id": "SC-008",
+      "description": "Adding a further registry effect requires 0 changes to slot, routing, preparation, projection, or render structure",
+      "proof_type": "automated_test",
+      "evidence": "Fresh declared-proof run: registryEntryAdditionStructuralChanges=0 (the test scans the declared realtime structural leaf schema and finds zero leaves naming any registry entry, so adding an entry changes zero structure); WP01 review: C-011 airtight via universal any-further-effect-type clause; WP02 review: role-independent registry with no role markers",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (accept gate, fresh run)",
+      "verified_at": "2026-07-31T18:06:41Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-019-AMEND-01KYWVYG",
+      "description": "Retained live demo scene demonstrates the on-screen PATCH/MIXER player journey on hardware (resolves the DRIFT-6 supersession of the FR-019 grading)",
+      "proof_type": "manual_qa",
+      "evidence": "Physical run of 'make demo-live-effects-and-buses' (cargo run --release --bin crest-synth -- --demo-live-effects-and-buses) on the fully merged demo-journey-fidelity-and-hygiene-01KYWVYG lane; process exit 0. Complete log committed at kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log (evidence commit 5238020, 2026-08-01). CREST_LIVE_SUMMARY verbatim: 'live demo complete: 105/105 editable parameters, 3/3 engine transitions, 7718 qualifying shell frames, 144 checkpoints, 17462 events, 0 dropped, banks=1, instruments=15, soundfontPatches=8, braidsPatches=7, alternatingCapabilities=true, initialGraphRevision=1, graphRevision=30, engineSwitches=3, fallbacks=0, callbackAllocations=0, callbackDestructions=0, cleanup=true, activeNotes=0'. Every effect-slot and bus-return occupancy change travelled the focus-verified adjacent-choice journey on screen; the only remaining direct injection is the documented rejection (controlled_rejection_observed=true, rejection_reason='invalidEffectConfig', post_rejection_recovery_observed=true). Exactly three product effects appeared (effect.chorus, effect.delay, effect.reverb); the test-only fourth entry 'witness-tilt' occurs 0 times in the log, confirming it is absent from the production registry on hardware.",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "Amends, does not replace, the FR-019 row above; that row's grade and evidence stay as recorded history. The parent's cited logs (t052-run.log, wp10-t059-live-run.log) were never committed to this repository, so this amendment commits its log rather than citing a filename. SCOPE BOUND: the retained scene demonstrates the effect-slot and bus-return journey for ONE instrument only (the scene's subject is patches.first()); recorded as LIMIT-1 in mission-review.md Addendum 2 and escalated to a Phase 5 entry condition in ROADMAP.md."
+    },
+    {
+      "criterion_id": "C-010-AMEND-01KYWVYG",
+      "description": "Live demo gate \u2014 the phase's retained live scene has been run with a real window, physical audio, and the real MIDI fixture, showing the player journey",
+      "proof_type": "manual_qa",
+      "evidence": "Same run and committed log as FR-019-AMEND-01KYWVYG (kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log). CREST_EFFECTS_AND_BUSES_LIVE_OBSERVATION carries 45 keys and zero false values, including physical_audio_nonzero=true, window_closed=true, stream_released=true, owned_graphs_remaining=0, active_notes_after_cleanup=0. Measurement fields are MEASURED, not defaulted: frames_to_projection_max=1, activation_sequence_gap_max=3, render_blocks_to_audible_max=46 (a defaulted zero would be a WP06 regression; none is present).",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "Constraints C-001..C-011 were never enumerated as rows in the parent record (see mission-review.md, 'Minor matrix bookkeeping'); this amendment ADDS the C-010 row rather than altering any existing row. The DRIFT-6 supersession of the C-010 grading is resolved by this evidence."
+    },
+    {
+      "criterion_id": "SC-003-AMEND-01KYWVYG",
+      "description": "Add-only checkpoint-identity contract proven by comparing the physical run's emitted topology identities against the frozen pre-journey baseline",
+      "proof_type": "manual_qa",
+      "evidence": "T045 comparison. BASELINE: FROZEN_TOPOLOGY_IDENTITY_BASELINE, 17 identities, tests/effects_and_buses.rs:59 \u2014 the exact topology checkpoint identity sequence the phase gate emitted pre-rework; corroborated by this matrix's own SC-007 row, which records topology_checkpoints=17 for the parent's physical runs. METHOD (reproducible against the committed log): extract lines beginning 'CREST_LIVE_CHECKPOINT ', strip that marker, parse each remainder as JSON, select records where .kind == \"topology\", project .checkpoint.transition in emission order; then (a) filter that sequence to baseline members and diff it against the frozen constant, and (b) take the complement as the addition set. RESULT: 17/17 baseline identities preserved byte-identically and in order; 0 modified; 0 removed; 13 added; 30 topology checkpoints total. The 13 additions, in emission order: SlotOccupant.scalarEdited, SlotFill.secondCycle1, SlotFill.thirdCycle1, SlotFill.thirdCycle2, Return.contentChangedCycle1, Return.emptyOccupiedCycle1, Return.emptyOccupiedCycle2, Topology.recoveredAfterRefusalCycle1, Slot.startupOccupantRestoredCycle1, Slot.thirdClearedCycle1, Slot.thirdClearedCycle2, Return.emptyRestoredCycle1, Return.emptyRestoredCycle2.",
+      "pass_fail": "pass",
+      "verified_by": "implementer-ivan (WP11/T045, reproduced against the committed log)",
+      "verified_at": "2026-08-01",
+      "notes": "This id carries demo-journey-fidelity-and-hygiene-01KYWVYG's SC-003 (byte-level checkpoint-identity comparison), NOT the parent's SC-003 (independent same-entry tails), whose row above is untouched. HONEST GAP: a byte-diff against the parent's own run logs was impossible \u2014 t052-run.log and wp10-t059-live-run.log were cited by filename in the rows above and were never committed to any branch of this repository. The frozen constant is the durable substitute. The deterministic twin of this comparison is asserted at tests/effects_and_buses.rs:161-171 (declared surface) and :341-347 (emitted surface), both green on the merged lane."
+    },
+    {
+      "criterion_id": "NFR-004-AMEND-01KYWVYG",
+      "description": "Zero dropouts/underruns/discontinuities across the reworked live scene",
+      "proof_type": "manual_qa",
+      "evidence": "From the committed log (kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log), CREST_LIVE_EVENT_LOG_SUMMARY verbatim: {\"schemaVersion\":3,\"eventLogSchemaVersion\":5,\"totalObserved\":17462,\"retainedRecords\":17462,\"droppedRecords\":0,\"firstSequence\":0,\"lastSequence\":17461,\"generationBefore\":0,\"generationAfter\":17460,\"stateHashBefore\":\"4c7040327492fad0\",\"stateHashAfter\":\"933ecdc044fbb8a4\",\"activeGraphRevision\":30,\"lossless\":true}. Checkpoints carrying audio_uninterrupted=false: 0. Checkpoint completeness 144/144; 105/105 editable parameters; 3/3 engine transitions; 7718 qualifying shell frames.",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "Amends, does not replace, the NFR-004 row above."
+    },
+    {
+      "criterion_id": "NFR-006-AMEND-01KYWVYG",
+      "description": "Clean teardown at scene end after the journey rework",
+      "proof_type": "manual_qa",
+      "evidence": "From the committed log: cleanup=true, activeNotes=0, callbackAllocations=0, callbackDestructions=0; observation window_closed=true, stream_released=true, owned_graphs_remaining=0, active_notes_after_cleanup=0; process exit 0. Deterministic half re-measured on the merged lane: activeNotesAtExit=0 and retiredGraphsCollectedOffCallback=15.",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "MOVED NUMBER: the NFR-006 row above cites retiredGraphsCollectedOffCallback=8. That value moved 8 -> 15 under demo-journey WP09, which drives seven further structural changes; the predicate is 'gt 0', so the grade is unaffected. This is the ONLY pre-existing numeric in this matrix that changed. The parent's row and its recorded 8 stay as recorded history."
+    },
+    {
+      "criterion_id": "SC-007-AMEND-01KYWVYG",
+      "description": "Reworked live scene completes with every declared behavior demonstrated, 0 active notes, released resources, normal exit",
+      "proof_type": "manual_qa",
+      "evidence": "CREST_LIVE_SUMMARY verbatim: 'live demo complete: 105/105 editable parameters, 3/3 engine transitions, 7718 qualifying shell frames, 144 checkpoints, 17462 events, 0 dropped, banks=1, instruments=15, soundfontPatches=8, braidsPatches=7, alternatingCapabilities=true, initialGraphRevision=1, graphRevision=30, engineSwitches=3, fallbacks=0, callbackAllocations=0, callbackDestructions=0, cleanup=true, activeNotes=0'. CREST_EFFECTS_AND_BUSES_LIVE_OBSERVATION carries 45 keys and ZERO false values, including topology_checkpoints=30 (the parent recorded 17), slot_fills_exercised=6, startup_occupant_cleared=true, slot_order_exchange_exercised=true, same_entry_twin_exercised=true, sends_raised_toward_destinations=true, return_content_changes=4, empty_return_occupied_and_restored=true, reroute_chain_followed=true, all_audible_on_activated_graph=true, send_isolation_exact=true, max_off_target_bus_dbfs=-200.0, accumulation_exact=true, gated_wet_contribution=0.0, unoccupied_return_silent=true. graphRevision advanced 1 -> 30. Process exit 0.",
+      "pass_fail": "pass",
+      "verified_by": "cresten (operator at the physical rig; run performed for WP11/T044 of demo-journey-fidelity-and-hygiene-01KYWVYG)",
+      "verified_at": "2026-08-01",
+      "notes": "All seven of the post-merge review's open items are CLOSED, none deferred \u2014 per-item proof pointers are in mission-review.md Addendum 2 (2026-08-01). SC-007's deferral allowance for the two optional items (4 and 6) was not needed; both were delivered. Amends, does not replace, the SC-007 row above."
+    },
+    {
+      "criterion_id": "SC-008-AMEND-01KYWVYG",
+      "description": "Adding a further registry effect is graded on end-to-end demonstration rather than structural inference",
+      "proof_type": "automated_test",
+      "evidence": "Merged-lane release run of 'cargo test --release --test expandable_effects_and_bus_topology': observation schemaVersion 2 with fourthEntryEndToEndExercised=true and registryEntryAdditionStructuralChanges=0, satisfying the crest-spec open_effect_registry step-1 'observes' clause verbatim. The fourth entry ('witness-tilt') is test-only, living solely in tests/expandable_effects_and_bus_topology.rs; the production composition root still builds the three-entry registry, so the diff to production is zero. Corroborated on hardware: 'witness-tilt' occurs 0 times in the committed live-run log, and exactly three product effects (effect.chorus, effect.delay, effect.reverb) appear.",
+      "pass_fail": "pass",
+      "verified_by": "implementer-ivan (WP11 preflight and hardware corroboration, merged lane)",
+      "verified_at": "2026-08-01",
+      "notes": "Regrades the post-merge review's PARTIAL adequacy note for SC-008 to a demonstration; closes open item 4. The SC-008 row above (pass, by structural absence) is untouched."
+    },
+    {
+      "criterion_id": "FR-006-AMEND-01KYWVYG",
+      "description": "Parent acceptance record amended append-only with the refreshed evidence (demo-journey-fidelity-and-hygiene-01KYWVYG FR-006 / C-008)",
+      "proof_type": "manual_qa",
+      "evidence": "This amendment ADDS rows only. No existing criterion object's criterion_id, description, proof_type, evidence, pass_fail, verified_by, verified_at, or notes was altered or removed; overall_verdict stays 'pass'; negative_invariants stays []. Verified mechanically by parsing the pre-amendment file out of git and deep-comparing all 35 original criterion objects against their post-amendment counterparts \u2014 all identical. The only non-addition visible in 'git diff' is the JSON separator comma appended to the previously-last row's closing brace, which is required container syntax. Deterministic gates re-run on the merged lane at amendment time: cargo test --all-targets exit 0; cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --all -- --check exit 0.",
+      "pass_fail": "pass",
+      "verified_by": "implementer-ivan (WP11/T046)",
+      "verified_at": "2026-08-01",
+      "notes": "MOVED NUMBERS, recorded once for the whole amendment: (1) the deterministic observation is now schemaVersion 2, adding the fields fourthEntryEndToEndExercised and carryOverWrongEngineIdentityRefused, both true; (2) retiredGraphsCollectedOffCallback moved 8 -> 15, the ONLY pre-existing numeric in this matrix that changed, with its 'gt 0' predicate still satisfied. Every other pre-existing numeric is unchanged. Out-of-map rationale for this edit: FR-006 amendment of parent acceptance record; kitty-specs paths are non-declarable by rule (INVALID_WP_OWNED_FILES_KITTY_SPECS)."
+    }
+  ],
+  "negative_invariants": []
+}

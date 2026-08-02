@@ -108,7 +108,7 @@ mod tests {
     fn parameters(generation: u64) -> ParameterSnapshot {
         ParameterSnapshot::new(
             generation,
-            GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap(),
+            GlobalParameters::new(0.0).unwrap(),
             crate::mixer::mixer_state::MixerState::default(),
             &[],
         )

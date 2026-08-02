@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn projection_keeps_one_snapshot_body_selection_and_hash_together() {
         let body = format!(
-            "{HEADER}\nPATCH id=lead name=Lead channel=1 bank=0 program=80 percussion=false\n> gainDb=-6 pan=0 reverbSend=0.2 delaySend=0.1\n{SEPARATOR}\nGLOBAL\n masterGainDb=-3 reverbRoomSize=0.5 reverbDamping=0.4 reverbReturn=0.2 delayMilliseconds=250 delayFeedback=0.3 delayReturn=0.1"
+            "{HEADER}\nTRACK T00 routedPatches=[01:Lead]\n> levelDb=-6 pan=0 sends[0]=0.2 sends[1]=0.1\n{SEPARATOR}\nRETURNS\nRETURN B0 occupancy=empty\n returnLevel=0.5\n{SEPARATOR}\nGLOBAL\n masterGainDb=-3"
         );
         let projection = TextProjection::for_context(
             TopLevelContext::Mixer,
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(projection.selected_line(), 2);
         assert_eq!(
             projection.body().lines().nth(2),
-            Some("> gainDb=-6 pan=0 reverbSend=0.2 delaySend=0.1")
+            Some("> levelDb=-6 pan=0 sends[0]=0.2 sends[1]=0.1")
         );
         assert_eq!(projection.state_hash(), "accepted-state-hash");
     }

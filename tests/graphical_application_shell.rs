@@ -1,5 +1,4 @@
 use crest_synth::adapter::eframe_graphical_window::EframeGraphicalApplication;
-use crest_synth::adapter::global_reverb_delay::GlobalReverbDelay;
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_soundfont_capability,
 };
@@ -62,7 +61,7 @@ impl ControlAudioBoundary for ProbeBoundary {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.25).unwrap()
+    GlobalParameters::new(-3.0).unwrap()
 }
 
 fn installed_state() -> AppState {
@@ -331,14 +330,38 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
                     .semantic_model()
                     .surface(SurfaceId::MixerInspector)
                     .unwrap();
+                // Eight indexed sends, then each unoccupied return's
+                // occupancy and level rows, then master gain alone.
+                let bus_count = crest_synth::mixer::bus_id::BusId::COUNT;
                 assert_eq!(
                     inspector.controls().len(),
-                    2 + GlobalParameters::surface_descriptor().len()
+                    bus_count + bus_count * 2 + GlobalParameters::surface_descriptor().len()
                 );
-                assert!(inspector.controls()[2..].iter().all(|control| matches!(
-                    control.path().control_id(),
-                    SemanticControlId::Mixer(crest_synth::control::MixerControlId::Global { .. })
-                )));
+                assert!(inspector.controls()[..bus_count].iter().all(|control| {
+                    matches!(
+                        control.path().control_id(),
+                        SemanticControlId::Mixer(crest_synth::control::MixerControlId::Send { .. })
+                    )
+                }));
+                assert!(inspector.controls()[bus_count..bus_count * 3]
+                    .iter()
+                    .all(|control| {
+                        matches!(
+                            control.path().control_id(),
+                            SemanticControlId::Mixer(
+                                crest_synth::control::MixerControlId::ReturnOccupancy { .. }
+                                    | crest_synth::control::MixerControlId::ReturnLevel { .. }
+                            )
+                        )
+                    }));
+                assert!(inspector.controls()[bus_count * 3..]
+                    .iter()
+                    .all(|control| matches!(
+                        control.path().control_id(),
+                        SemanticControlId::Mixer(
+                            crest_synth::control::MixerControlId::Global { .. }
+                        )
+                    )));
             }
             TopLevelContext::Patch => {
                 assert!(output_contains_text(&output, "Trim Gain"));
@@ -401,7 +424,7 @@ fn mixer_frame_reads_one_compatible_immutable_audio_observation() {
         .stem_mut(0, patch_id)
         .unwrap()
         .copy_from_slice(&[0.5, 0.5, 0.5, 0.5]);
-    let mut mixer = MixEngine::new(GlobalReverbDelay::new());
+    let mut mixer = MixEngine::new();
     mixer.prepare(48_000.0, 2).unwrap();
     let mut output = [0.0_f32; 4];
     let mix = mixer.mix(&patch_audio, &parameters, &mut output);

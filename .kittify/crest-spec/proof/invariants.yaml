@@ -1,0 +1,72 @@
+invariantGroups:
+- group: core
+  invariants:
+  - text: AppState.apply is the only control-state mutation path
+    meta:
+      rationale: every input follows one reducer path
+  - text: input and view adapters emit AppEvents and never mutate application or engine state
+    meta:
+      rationale: adapters remain replaceable
+  - text: PATCH and MIXER are the only top-level contexts; InteractionState owns context and stable PATCH
+      focus resolved as Engine, canonical ADSR, instrument StructuralChoice controls, then ordered effect
+      ScalarEdit controls, while the graphical window renders only immutable GraphicalShellProjection
+      data and the retained TextProjection remains diagnostic
+    meta:
+      rationale: page selection remains semantic, deterministic, capability-driven, and independent from
+        UI state
+  - text: after an event is accepted, the application commits AppState before deriving serialized state,
+      text, parameter snapshots, or audio commands
+    meta:
+      rationale: effects always describe accepted state
+  - text: engine and structural parameter selection share one app-wide, one-in-flight reducer-owned lifecycle;
+      a capacity-one worker prepares off callback, PreparedGraph stays outside AppState, only the intended
+      config assignment commits before target-revision projection/publication, and Ready requires block-boundary
+      activation plus off-callback retirement collection
+    meta:
+      rationale: structural edits preserve one-way mutation and hard-real-time ownership
+  - text: the audio callback never allocates, locks, blocks, performs file or device discovery I/O, logs,
+      or destroys owned state
+    meta:
+      rationale: the callback has a hard deadline
+  - text: AudioBoundary carries discrete MIDI commands and latest scalar values, while StructuralGraphBoundary
+      uses distinct bounded queues for prepared and retired graph ownership plus fixed-size acknowledgement
+    meta:
+      rationale: each real-time datum uses its required delivery semantics
+  - text: Patch and instrument config are capability-polymorphic and PreparedEngineRack hosts exactly
+      the HiDef SoundFont and pinned Braids preparers; one SoundFont parse yields a string-bearing control
+      catalog and separate numeric callback bank, SoundFont uses one EngineManaged synthesizer per Patch,
+      every Braids Patch owns FixedPerPatch(16), both use the common per-note envelope, and unknown capabilities
+      or presets fail without fallback
+    meta:
+      rationale: two materially different voice policies and one metadata-safe structural choice let the
+        Patch page prove schema projection without engine branches
+  - text: Patch-local processing is up to three ordered descriptor-driven effect slots per Patch, applied
+      in ascending slot index order between synthesis and MixEngine; shared processing is eight bounded
+      bus returns fed by indexed post-gate track sends; both roles draw from one role-independent effect
+      registry whose current installed entries are exactly Chorus, Reverb, and Delay, and the mixer owns
+      no effect processor of its own
+    meta:
+      rationale: capacity and generality grow to the declared product ceiling while the effect-type roster
+        stays deferred
+  - text: 'no name-enumerated effect or routing identity: no type in Synth, Mixer, RealTime, or Control
+      may enumerate a variant, field, or descriptor entry named after a specific effect or bus; effects,
+      slots, sends, and returns are addressed by index into descriptor-driven arrays, and adding a registry
+      entry must require no change to any of these types. The single exception is MasterGainDb: master
+      gain is genuinely global, a property of the master stage rather than of any effect'
+    meta:
+      rationale: the closed enumerated design shipped despite DESIGN.md declaring the expansion in advance,
+        so a prose constraint is a demonstrably insufficient control here; the executable check is validation.no_name_enumerated_identity,
+        a static source-tree check over the four named contexts seeded with the retired concrete identifiers
+  - text: the Start control remains reserved for the deferred Phase 7 sample-preview hold gesture; no
+      current phase binds Start to any WindowInput, SemanticAction, or reducer behavior
+    meta:
+      rationale: DESIGN.md reserves Start elsewhere now, in Phases 1-6, so the input vocabulary must not
+        consume it before the Sample Browser workflow owns it
+  - text: AppState owns exactly sixteen persistent MixerTracks; each Patch owns only one validated output
+      track and trim, MixEngine sums post-effect Patch stems into fixed track scratch before applying
+      track level/pan/mute/solo/sends, and meters observe tracks before the audibility gate
+    meta:
+      rationale: Patch identity and mixer-channel identity are distinct product concepts
+  - text: the MIDI-file module is an automatic test input adapter, not a sequencer or product transport
+    meta:
+      rationale: crest-synth remains an instrument

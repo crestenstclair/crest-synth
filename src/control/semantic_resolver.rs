@@ -3,10 +3,12 @@ use crate::control::{
     SemanticAction, SemanticControlId, SurfaceId, ValidAction,
 };
 use crate::kernel::PatchId;
+use crate::mixer::bus_id::BusId;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_track_id::{MixerTrackId, MixerTrackId as TrackId};
 use crate::mixer::mixer_track_parameters::MixerTrackParameter;
 use crate::mixer::patch_output::PatchOutputParameter;
+use crate::synth::PatchInteraction;
 use std::collections::HashSet;
 
 /// Pure descriptor-backed authority for semantic focus order and recovery.
@@ -40,13 +42,16 @@ impl<'a> SemanticResolver<'a> {
             descriptor,
             patch.instrument_config(),
             self.state.effects(),
-            patch.post_effects(),
+            patch.effect_slots(),
         );
         let mut paths = Vec::with_capacity(controls.len());
         for control in controls {
             let capability_id = match &control {
-                // Engine and common ADSR identities survive an instrument swap.
-                PatchControlId::Engine | PatchControlId::Envelope(_) => None,
+                // Engine, common ADSR, and positional occupancy identities
+                // survive an instrument or occupancy swap.
+                PatchControlId::Engine
+                | PatchControlId::Envelope(_)
+                | PatchControlId::EffectSlot(_) => None,
                 PatchControlId::Output(_) => {
                     return Err(EventRejection::InvalidSelection);
                 }
@@ -54,9 +59,13 @@ impl<'a> SemanticResolver<'a> {
                     patch.instrument_config().capability_id().clone(),
                 )),
                 PatchControlId::Effect(slot_id, _) => {
+                    // The occupant is found by stable instance identity over
+                    // the per-position chain; empty positions stay in place
+                    // and are simply skipped.
                     let effect = patch
-                        .post_effects()
+                        .effect_slots()
                         .iter()
+                        .flatten()
                         .find(|effect| effect.slot_id() == *slot_id)
                         .ok_or(EventRejection::InvalidEffectConfig)?;
                     Some(FocusCapabilityId::Effect(effect.capability_id().clone()))
@@ -103,14 +112,49 @@ impl<'a> SemanticResolver<'a> {
         Ok(paths)
     }
 
+    /// Returns MIXER Inspector's canonical focus order: the selected track's
+    /// eight indexed sends in ascending `BusId` order, then each of the eight
+    /// bus returns' occupancy row, return level, and — when occupied — the
+    /// occupying registry entry's visible enabled `ScalarEdit` rows, then the
+    /// distinct global controls (master gain alone).
     pub fn mixer_inspector_paths(
         &self,
         track_id: TrackId,
     ) -> Result<Vec<FocusPath>, EventRejection> {
-        let mut paths = MixerTrackParameter::INSPECTOR
+        let mut paths = BusId::ALL
             .into_iter()
-            .map(|parameter| FocusPath::mixer_inspector(track_id, parameter))
+            .map(|bus| FocusPath::mixer_send(track_id, bus))
             .collect::<Vec<_>>();
+        for bus in BusId::ALL {
+            paths.push(FocusPath::mixer_return_occupancy(bus));
+            paths.push(FocusPath::mixer_return_level(bus));
+            let bus_return = self.state.bus_returns().bus_return(bus);
+            let Some(config) = bus_return.effect() else {
+                continue;
+            };
+            let descriptor = self
+                .state
+                .effects()
+                .descriptor(config.capability_id())
+                .ok_or(EventRejection::InvalidEffectConfig)?;
+            for spec in descriptor.parameters() {
+                let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
+                    predicate.is_none_or(|predicate| {
+                        config.value(predicate.parameter_id()) == Some(predicate.equals())
+                    })
+                };
+                if spec.patch_interaction() == PatchInteraction::ScalarEdit
+                    && predicate_satisfied(spec.visible_when())
+                    && predicate_satisfied(spec.enabled_when())
+                {
+                    paths.push(FocusPath::mixer_return_effect(
+                        bus,
+                        spec.id().clone(),
+                        config.capability_id().clone(),
+                    ));
+                }
+            }
+        }
         paths.extend(
             GlobalParameters::surface_descriptor()
                 .iter()
@@ -196,7 +240,11 @@ impl<'a> SemanticResolver<'a> {
                     .position(|candidate| candidate == path)?;
                 Some((section, parameter))
             }
-            MixerControlId::Global { .. } => None,
+            MixerControlId::Send { .. }
+            | MixerControlId::ReturnOccupancy { .. }
+            | MixerControlId::ReturnLevel { .. }
+            | MixerControlId::ReturnEffect { .. }
+            | MixerControlId::Global { .. } => None,
         }
     }
 
@@ -245,6 +293,10 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
     match action {
         SemanticAction::SelectContext(TopLevelContext::Mixer) => ("Open MIXER", Some("1")),
         SemanticAction::SelectContext(TopLevelContext::Patch) => ("Open PATCH", Some("2")),
+        SemanticAction::SelectPatch(Direction::Left) => ("Previous patch", Some("Q")),
+        SemanticAction::SelectPatch(Direction::Right) => ("Next patch", Some("E")),
+        SemanticAction::SelectPatch(Direction::Up)
+        | SemanticAction::SelectPatch(Direction::Down) => ("Unavailable patch step", None),
         SemanticAction::Navigate(Direction::Up) => ("Move up", Some("W")),
         SemanticAction::Navigate(Direction::Down) => ("Move down", Some("S")),
         SemanticAction::Navigate(Direction::Left) => ("Move left", Some("A")),
@@ -263,6 +315,8 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         | SemanticAction::SetInteractionMode(InteractionMode::MultiSelect) => {
             ("Unavailable mode", None)
         }
+        SemanticAction::SetSlotOccupancy { .. } => ("Set slot occupancy", None),
+        SemanticAction::SetReturnOccupancy { .. } => ("Set return occupancy", None),
         SemanticAction::EnterSurface(SurfaceId::PatchUtility) => ("Open Utility", Some("D")),
         SemanticAction::EnterSurface(SurfaceId::MixerInspector) => ("Open Inspector", None),
         SemanticAction::EnterSurface(SurfaceId::PatchMain)
@@ -276,6 +330,78 @@ mod tests {
     use super::SemanticResolver;
     use crate::control::{FocusPath, PatchControlId};
     use crate::kernel::PatchId;
+
+    #[test]
+    fn gapped_chain_resolves_slot_rows_per_position_and_the_occupant_by_identity() {
+        // Slot 0 empty, slot 1 occupied: the shape a compacting view would
+        // silently squeeze down to position 0.
+        let mut state = crate::control::AppState::new_with_effects(
+            crate::adapter::production_instruments::production_capability_registry().unwrap(),
+            crate::adapter::production_effects::production_effect_registry().unwrap(),
+            crate::mixer::global_parameters::GlobalParameters::new(0.0).unwrap(),
+        );
+        let mut patch = crate::synth::Patch::new(
+            PatchId::new(7).unwrap(),
+            "Gapped".to_owned(),
+            crate::adapter::braids_capability::BraidsCapability::new()
+                .unwrap()
+                .default_config()
+                .unwrap(),
+            crate::kernel::MidiChannel::new(3).unwrap(),
+            crate::mixer::patch_output::PatchOutput::to_track(
+                crate::mixer::mixer_track_id::MixerTrackId::new(3).unwrap(),
+            ),
+        );
+        patch
+            .set_slot_occupancy(
+                crate::synth::effect_slot_id::EffectSlotIndex::new(1).unwrap(),
+                Some(
+                    crate::adapter::production_effects::production_chorus_config(
+                        crate::synth::EffectSlotId::new(2).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        state
+            .apply(crate::control::AppEvent::InstallPatches(vec![patch]))
+            .unwrap();
+
+        let patch_id = PatchId::new(7).unwrap();
+        let paths = SemanticResolver::new(&state)
+            .patch_main_paths(patch_id)
+            .unwrap();
+
+        // Every position contributes its occupancy row, occupied or empty.
+        for index in crate::synth::effect_slot_id::EffectSlotIndex::ALL {
+            assert!(
+                paths.contains(&FocusPath::patch_main(
+                    patch_id,
+                    None,
+                    PatchControlId::EffectSlot(index),
+                )),
+                "position {index} must keep its occupancy row"
+            );
+        }
+        // The occupant's parameter row resolves by stable identity at its
+        // true position, with slot 0 still empty around it.
+        assert!(paths.contains(&FocusPath::patch_main(
+            patch_id,
+            Some(crate::control::FocusCapabilityId::Effect(
+                crate::synth::EffectCapabilityId::new(
+                    crate::adapter::chorus_capability::CHORUS_CAPABILITY_ID,
+                )
+                .unwrap(),
+            )),
+            PatchControlId::Effect(
+                crate::synth::EffectSlotId::new(2).unwrap(),
+                crate::synth::ParameterId::new(
+                    crate::adapter::chorus_capability::CHORUS_AMOUNT_PARAMETER_ID,
+                )
+                .unwrap(),
+            ),
+        )));
+    }
 
     #[test]
     fn recovery_is_exact_then_next_before_previous() {

@@ -97,7 +97,9 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         production_effect_providers().expect("production effect providers are valid");
     let effects = production_effect_registry().expect("production effect registry is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new_with_effects(registry.clone(), effects.clone(), global),
+        AppState::new_with_effects(registry.clone(), effects.clone(), global).with_initial_returns(
+            crest_synth::adapter::production_effects::startup_bus_returns(&effects),
+        ),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         event_log,
@@ -127,7 +129,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
             .patches()
             .first()
             .into_iter()
-            .flat_map(|patch| patch.post_effects())
+            .flat_map(|patch| patch.effect_slots().iter().flatten())
             .map(|config| {
                 app_loop
                     .effects()
@@ -136,7 +138,9 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
                     .scalar_parameter_count()
             })
             .sum::<usize>()
-        + MixerTrackId::COUNT * MixerTrackParameter::ALL.len()
+        // The four MAIN classes plus the two production-audible indexed
+        // sends (buses 0 and 1, whose returns are occupied by default).
+        + MixerTrackId::COUNT * (MixerTrackParameter::MAIN.len() + 2)
         + GlobalParameters::surface_descriptor().len();
     assert_eq!(scene.expected_editable_parameters().len(), expected_count);
     assert_eq!(scene.minimum_parameter_dwell(), Duration::from_millis(500));
@@ -181,7 +185,8 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
                 patch_id,
                 ..
             } => *patch_id,
-            crest_synth::testing::live_demo_scene::LiveEditableParameter::Track { .. } => {
+            crest_synth::testing::live_demo_scene::LiveEditableParameter::Track { .. }
+            | crest_synth::testing::live_demo_scene::LiveEditableParameter::Send { .. } => {
                 focused_patch_id
             }
             crest_synth::testing::live_demo_scene::LiveEditableParameter::Global { .. } => {
@@ -285,6 +290,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         .expect("live test audio configuration is valid");
     let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
         .with_effects(app_loop.effects(), &effect_preparers)
+        .with_returns(app_loop.bus_returns())
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
@@ -675,7 +681,9 @@ fn live_demo_early_close_uses_semantic_cleanup_without_success_report() {
     let registry = production_capability_registry().unwrap();
     let effects = production_effect_registry().unwrap();
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new_with_effects(registry, effects, global),
+        AppState::new_with_effects(registry, effects.clone(), global).with_initial_returns(
+            crest_synth::adapter::production_effects::startup_bus_returns(&effects),
+        ),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         EventLog::new(256).unwrap(),
@@ -696,6 +704,7 @@ fn live_demo_early_close_uses_semantic_cleanup_without_success_report() {
     let effect_preparers = production_effect_preparers().unwrap();
     let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
         .with_effects(app_loop.effects(), &effect_preparers)
+        .with_returns(app_loop.bus_returns())
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),

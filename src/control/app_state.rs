@@ -9,23 +9,57 @@ use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
     FocusPath, MixerControlId, SemanticAction, SemanticControlId, SemanticResolver, SurfaceId,
 };
+use crate::mixer::bus_id::BusId;
+use crate::mixer::bus_return::{BusReturnBank, RETURN_LEVEL_DESCRIPTOR};
 use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
 use crate::mixer::mixer_state::MixerState;
 use crate::mixer::mixer_track_id::MixerTrackId;
-use crate::mixer::mixer_track_parameters::{MixerTrackParameter, MixerTrackParameterKind};
+use crate::mixer::mixer_track_parameters::{
+    MixerTrackParameter, MixerTrackParameterKind, BUS_SEND_DESCRIPTOR,
+};
 use crate::mixer::patch_output::PatchOutput;
 use crate::mixer::patch_output::PatchOutputParameter;
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::GraphRevision;
+use crate::synth::effect_slot_id::EffectSlotIndex;
 use crate::synth::instrument_capability::{
     CapabilityError, CapabilityRegistry, ParameterAdjustment, ParameterKind, ParameterValue,
     PatchInteraction,
 };
 use crate::synth::patch::{Patch, PatchEditableTarget};
-use crate::synth::{EffectCapabilityRegistry, EffectSlotId, ParameterId, VoiceEnvelopeParameter};
+use crate::synth::{
+    EffectCapabilityError, EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, ParameterId,
+    PostEffectConfig, VoiceEnvelopeParameter,
+};
 use core::fmt;
 
 const MAX_PATCH_COUNT: usize = 16;
+
+/// Validates one Patch's per-position effect chain against the registry.
+///
+/// Every occupied position must hold a registry-canonical configuration and
+/// no stable slot identity may occupy two positions. Empty positions are
+/// legal anywhere in the chain; validation walks positions as stored and
+/// never builds a compacted intermediate.
+pub(crate) fn validate_effect_slots(
+    effects: &EffectCapabilityRegistry,
+    slots: &[Option<PostEffectConfig>],
+) -> Result<(), EffectCapabilityError> {
+    for (position, slot) in slots.iter().enumerate() {
+        let Some(config) = slot.as_ref() else {
+            continue;
+        };
+        if slots[..position]
+            .iter()
+            .flatten()
+            .any(|prior| prior.slot_id() == config.slot_id())
+        {
+            return Err(EffectCapabilityError::DuplicateSlot(config.slot_id()));
+        }
+        effects.validate_config(config)?;
+    }
+    Ok(())
+}
 
 /// The domain event emitted after an AppEvent has been accepted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -316,8 +350,7 @@ pub(crate) fn exercise_reducer_table_rejections(
         )
     }
 
-    let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5)
-        .expect("reducer probe globals are valid");
+    let global = GlobalParameters::new(0.0).expect("reducer probe globals are valid");
 
     let mut oversized = AppState::new(capabilities.clone(), global);
     let too_many = oversized
@@ -358,14 +391,16 @@ pub(crate) fn exercise_reducer_table_rejections(
         Vec::new(),
         Vec::new(),
     );
+    let mut invalid_effect_probe = probe_patch(1, 0, instrument_config);
+    invalid_effect_probe
+        .set_slot_occupancy(
+            EffectSlotIndex::new(0).expect("probe slot position is valid"),
+            Some(invalid_effect_config),
+        )
+        .expect("probe occupancy uses a unique slot identity");
     let mut invalid_effect = AppState::new(capabilities.clone(), global);
     let invalid_effect = invalid_effect
-        .apply(AppEvent::InstallPatches(vec![probe_patch(
-            1,
-            0,
-            instrument_config,
-        )
-        .with_post_effects(vec![invalid_effect_config])]))
+        .apply(AppEvent::InstallPatches(vec![invalid_effect_probe]))
         .expect_err("unknown effect config violates registry installation");
 
     let mut no_patches = AppState::new(capabilities.clone(), global);
@@ -379,6 +414,7 @@ pub(crate) fn exercise_reducer_table_rejections(
         patches: vec![probe_patch(1, 0, instrument_config)],
         mixer: MixerState::default(),
         global,
+        returns: BusReturnBank::default(),
         interaction: {
             let mut interaction = InteractionState::new();
             interaction
@@ -453,6 +489,7 @@ pub struct AppState {
     patches: Vec<Patch>,
     mixer: MixerState,
     global: GlobalParameters,
+    returns: BusReturnBank,
     interaction: InteractionState,
     engine_selection: EngineSelectionStatus,
     last_engine_selection_request_id: EngineSelectionRequestId,
@@ -501,6 +538,7 @@ impl AppState {
             patches: Vec::new(),
             mixer: MixerState::default(),
             global,
+            returns: BusReturnBank::default(),
             interaction: InteractionState::new(),
             engine_selection: EngineSelectionStatus::ready(active_graph_revision),
             last_engine_selection_request_id: EngineSelectionRequestId::NONE,
@@ -512,6 +550,14 @@ impl AppState {
     /// deterministic state. The bank's type guarantees exactly sixteen tracks.
     pub fn with_initial_mixer(mut self, mixer: MixerState) -> Self {
         self.mixer = mixer;
+        self
+    }
+
+    /// Supplies the canonical startup bus-return bank chosen by the
+    /// composition root. Occupancy is composition, not identity: the reducer
+    /// itself installs nothing by default.
+    pub fn with_initial_returns(mut self, returns: BusReturnBank) -> Self {
+        self.returns = returns;
         self
     }
 
@@ -533,6 +579,18 @@ impl AppState {
 
     pub const fn mixer(&self) -> &MixerState {
         &self.mixer
+    }
+
+    /// Returns the canonical eight-return bank in ascending `BusId` order.
+    pub const fn bus_returns(&self) -> &BusReturnBank {
+        &self.returns
+    }
+
+    /// Resolves one MIXER global row's current value: master gain alone.
+    pub fn global_row_value(&self, parameter: GlobalParameter) -> f32 {
+        match parameter {
+            GlobalParameter::MasterGainDb => self.global.master_gain_db(),
+        }
     }
 
     pub fn selection(&self) -> Selection {
@@ -646,7 +704,7 @@ impl AppState {
             descriptor,
             patch.instrument_config(),
             &self.effects,
-            patch.post_effects(),
+            patch.effect_slots(),
         ))
     }
 
@@ -690,6 +748,10 @@ impl AppState {
                 self.select_context(context)?;
                 Ok(ReducerEffects::default())
             }
+            AppEvent::SelectPatch(direction) => {
+                self.select_patch(direction)?;
+                Ok(ReducerEffects::default())
+            }
             AppEvent::Navigate(direction) => {
                 match self.context() {
                     TopLevelContext::Mixer => self.navigate(direction)?,
@@ -698,10 +760,7 @@ impl AppState {
                 Ok(ReducerEffects::default())
             }
             AppEvent::Adjust(direction) => match self.context() {
-                TopLevelContext::Mixer => {
-                    self.adjust(direction)?;
-                    Ok(ReducerEffects::default())
-                }
+                TopLevelContext::Mixer => self.adjust(direction),
                 TopLevelContext::Patch => self.adjust_patch_control(direction),
             },
             AppEvent::SetInteractionMode(mode) => {
@@ -793,6 +852,66 @@ impl AppState {
                     engine_selection_effect: Some(engine_selection_effect),
                 })
             }
+            AppEvent::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            } => {
+                let effect =
+                    self.request_topology_change(StructuralEditIntent::SetSlotOccupancy {
+                        patch_id,
+                        slot,
+                        entry,
+                    })?;
+                Ok(ReducerEffects {
+                    audio_command: None,
+                    engine_selection_effect: Some(effect),
+                })
+            }
+            AppEvent::SetReturnOccupancy { bus, entry } => {
+                let effect =
+                    self.request_topology_change(StructuralEditIntent::SetReturnOccupancy {
+                        bus,
+                        entry,
+                    })?;
+                Ok(ReducerEffects {
+                    audio_command: None,
+                    engine_selection_effect: Some(effect),
+                })
+            }
+            AppEvent::TopologyPrepared {
+                request_id,
+                intent,
+                source_graph_revision,
+                target_graph_revision,
+            } => {
+                let effect = self.topology_prepared(
+                    request_id,
+                    intent,
+                    source_graph_revision,
+                    target_graph_revision,
+                )?;
+                Ok(ReducerEffects {
+                    audio_command: None,
+                    engine_selection_effect: Some(effect),
+                })
+            }
+            AppEvent::TopologyPreparationFailed {
+                request_id,
+                intent,
+                source_graph_revision,
+                target_graph_revision,
+                failure,
+            } => {
+                self.topology_preparation_failed(
+                    request_id,
+                    &intent,
+                    source_graph_revision,
+                    target_graph_revision,
+                    failure,
+                )?;
+                Ok(ReducerEffects::default())
+            }
         }
     }
 
@@ -810,11 +929,10 @@ impl AppState {
         }) {
             return Err(EventRejection::InvalidInstrumentConfig);
         }
-        if patches.iter().any(|patch| {
-            self.effects
-                .validate_patch_effects(patch.post_effects())
-                .is_err()
-        }) {
+        if patches
+            .iter()
+            .any(|patch| validate_effect_slots(&self.effects, patch.effect_slots()).is_err())
+        {
             return Err(EventRejection::InvalidEffectConfig);
         }
         for (index, patch) in patches.iter().enumerate() {
@@ -856,6 +974,75 @@ impl AppState {
         }
         self.interaction
             .select_context(context)
+            .map_err(|_| EventRejection::InvalidSelection)?;
+        Ok(())
+    }
+
+    /// Moves the focused Patch one position along the installed order.
+    ///
+    /// This is the only path by which the focused Patch changes. The fixture
+    /// installs one Patch per MIDI part, so without it every instrument after
+    /// the first is unreachable from the controller.
+    ///
+    /// Focus is recovered against the destination Patch's own descriptor
+    /// schema: the same control is kept when that Patch offers it, otherwise
+    /// the first valid control is taken. A control identity the destination
+    /// cannot host is never carried across.
+    fn select_patch(&mut self, direction: Direction) -> Result<(), EventRejection> {
+        if self.context() != TopLevelContext::Patch {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        if self.interaction.mode() != crate::control::InteractionMode::Navigate {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        // Stepping through the installed order is a horizontal adjacent
+        // choice; vertical directions belong to control navigation.
+        let step: isize = match direction {
+            Direction::Left => -1,
+            Direction::Right => 1,
+            Direction::Up | Direction::Down => {
+                return Err(EventRejection::ActionUnavailableInContext)
+            }
+        };
+
+        let focused = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let current = self
+            .patches
+            .iter()
+            .position(|patch| patch.id() == focused)
+            .ok_or(EventRejection::UnknownPatch)?;
+
+        // No wrapping: at either end this is an unchanged rejection, exactly
+        // as an adjacent-choice parameter behaves at its boundary.
+        let target = isize::try_from(current)
+            .map_err(|_| EventRejection::UnknownPatch)?
+            .checked_add(step)
+            .ok_or(EventRejection::ParameterAtBoundary)?;
+        let target = usize::try_from(target).map_err(|_| EventRejection::ParameterAtBoundary)?;
+        let target_id = self
+            .patches
+            .get(target)
+            .ok_or(EventRejection::ParameterAtBoundary)?
+            .id();
+
+        let held = self.interaction.patch_control_focus();
+        let resolver = SemanticResolver::new(self);
+        let candidates = resolver.patch_main_paths(target_id)?;
+        let recovered = held
+            .and_then(|control| {
+                candidates
+                    .iter()
+                    .find(|path| path.control_id() == &SemanticControlId::Patch(control.clone()))
+            })
+            .or_else(|| candidates.first())
+            .ok_or(EventRejection::NoPatchesInstalled)?
+            .clone();
+
+        self.interaction
+            .set_active_main(recovered)
             .map_err(|_| EventRejection::InvalidSelection)?;
         Ok(())
     }
@@ -944,10 +1131,10 @@ impl AppState {
         let old_patch_order = SemanticResolver::new(self).patch_main_paths(patch_id)?;
         let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
         let correlation = self.pending_correlation(request_id)?.clone();
-        if correlation.patch_id() != patch_id
+        if correlation.patch_id() != Some(patch_id)
             || correlation.intent() != &intent
-            || correlation.source_capability_id() != &source_capability_id
-            || correlation.target_capability_id() != &target_capability_id
+            || correlation.source_capability_id() != Some(&source_capability_id)
+            || correlation.target_capability_id() != Some(&target_capability_id)
             || correlation.source_graph_revision() != source_graph_revision
             || target_graph_revision <= source_graph_revision
             || candidate_config.capability_id() != &target_capability_id
@@ -998,10 +1185,10 @@ impl AppState {
         failure: EngineSelectionFailure,
     ) -> Result<(), EventRejection> {
         let correlation = self.pending_correlation(request_id)?;
-        if correlation.patch_id() != patch_id
+        if correlation.patch_id() != Some(patch_id)
             || correlation.intent() != intent
-            || correlation.source_capability_id() != source_capability_id
-            || correlation.target_capability_id() != target_capability_id
+            || correlation.source_capability_id() != Some(source_capability_id)
+            || correlation.target_capability_id() != Some(target_capability_id)
             || correlation.source_graph_revision() != source_graph_revision
             || target_graph_revision <= source_graph_revision
         {
@@ -1041,12 +1228,7 @@ impl AppState {
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
-        let patch = self
-            .patches
-            .iter()
-            .find(|patch| patch.id() == correlation.patch_id())
-            .ok_or(EventRejection::MismatchedEngineSelection)?;
-        if !config_matches_committed_intent(patch.instrument_config(), correlation.intent()) {
+        if !self.committed_intent_matches_state(correlation) {
             return Err(EventRejection::MismatchedEngineSelection);
         }
         let effect = EngineSelectionEffect::from_correlation(
@@ -1059,6 +1241,238 @@ impl AppState {
             .acknowledged()
             .map_err(|_| EventRejection::MismatchedEngineSelection)?;
         Ok(effect)
+    }
+
+    /// Enters the shared correlated structural lifecycle for one occupancy
+    /// change. Everything is validated before any state mutates or anything
+    /// can be published (FR-013): the position is in range by construction,
+    /// the target Patch must exist, and the registry entry must resolve and
+    /// yield a valid default configuration — refused, never substituted.
+    fn request_topology_change(
+        &mut self,
+        intent: StructuralEditIntent,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        match &intent {
+            StructuralEditIntent::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            } => {
+                let patch = self
+                    .patches
+                    .iter()
+                    .find(|patch| patch.id() == *patch_id)
+                    .ok_or(EventRejection::UnknownPatch)?;
+                if let Some(entry_id) = entry {
+                    let descriptor = self
+                        .effects
+                        .descriptor(entry_id)
+                        .ok_or(EventRejection::InvalidEffectConfig)?;
+                    let occupant = descriptor
+                        .default_config(slot.instance_identity())
+                        .map_err(|_| EventRejection::InvalidEffectConfig)?;
+                    // Dry-run the domain transition on a clone so a rejected
+                    // occupancy (duplicate instance identity) refuses the
+                    // request without mutating anything.
+                    let mut probe = patch.clone();
+                    probe
+                        .set_slot_occupancy(*slot, Some(occupant))
+                        .map_err(|_| EventRejection::InvalidEffectConfig)?;
+                }
+            }
+            StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
+                if let Some(entry_id) = entry {
+                    if self.effects.descriptor(entry_id).is_none() {
+                        return Err(EventRejection::InvalidEffectConfig);
+                    }
+                    let mut probe = self.returns.clone();
+                    probe
+                        .set_return_occupancy(&self.effects, *bus, Some(entry_id))
+                        .map_err(|_| EventRejection::InvalidEffectConfig)?;
+                }
+            }
+            StructuralEditIntent::ReplaceCapability { .. }
+            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+                return Err(EventRejection::InvalidSelection)
+            }
+        }
+        let request_id = self
+            .last_engine_selection_request_id
+            .checked_next()
+            .map_err(|_| EventRejection::RequestIdOverflow)?;
+        let status = EngineSelectionStatus::preparing_for_occupancy(
+            self.engine_selection.active_graph_revision(),
+            request_id,
+            intent,
+        )
+        .map_err(|_| EventRejection::InvalidSelection)?;
+        let effect = EngineSelectionEffect::from_correlation(
+            EngineSelectionEffectKind::PrepareRequested,
+            status
+                .correlation()
+                .expect("Preparing status always owns correlation"),
+        )
+        .expect("Preparing correlation has no target revision");
+        self.engine_selection = status;
+        self.last_engine_selection_request_id = request_id;
+        Ok(effect)
+    }
+
+    /// Commits one prepared occupancy change to canonical state and enters
+    /// Activating, exactly as `engine_prepared` commits a candidate config.
+    fn topology_prepared(
+        &mut self,
+        request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        let correlation = self.pending_correlation(request_id)?;
+        if correlation.intent() != &intent
+            || correlation.source_graph_revision() != source_graph_revision
+            || target_graph_revision <= source_graph_revision
+        {
+            return Err(EventRejection::MismatchedEngineSelection);
+        }
+        match &intent {
+            StructuralEditIntent::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            } => {
+                let old_patch_order = SemanticResolver::new(self).patch_main_paths(*patch_id)?;
+                let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
+                let occupant = match entry {
+                    None => None,
+                    Some(entry_id) => Some(
+                        self.effects
+                            .descriptor(entry_id)
+                            .ok_or(EventRejection::MismatchedEngineSelection)?
+                            .default_config(slot.instance_identity())
+                            .map_err(|_| EventRejection::MismatchedEngineSelection)?,
+                    ),
+                };
+                let patch = self
+                    .patches
+                    .iter_mut()
+                    .find(|patch| patch.id() == *patch_id)
+                    .ok_or(EventRejection::MismatchedEngineSelection)?;
+                patch
+                    .set_slot_occupancy(*slot, occupant)
+                    .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+                let status = self
+                    .engine_selection
+                    .activating(target_graph_revision)
+                    .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+                let effect = EngineSelectionEffect::from_correlation(
+                    EngineSelectionEffectKind::CandidateCommitted,
+                    status
+                        .correlation()
+                        .expect("Activating status always owns correlation"),
+                )
+                .expect("Activating correlation owns a target revision");
+                self.engine_selection = status;
+                self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
+                Ok(effect)
+            }
+            StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
+                let old_inspector_order = self.mixer_inspector_order();
+                self.returns
+                    .set_return_occupancy(&self.effects, *bus, entry.as_ref())
+                    .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+                let status = self
+                    .engine_selection
+                    .activating(target_graph_revision)
+                    .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+                let effect = EngineSelectionEffect::from_correlation(
+                    EngineSelectionEffectKind::CandidateCommitted,
+                    status
+                        .correlation()
+                        .expect("Activating status always owns correlation"),
+                )
+                .expect("Activating correlation owns a target revision");
+                self.engine_selection = status;
+                self.repair_inspector_focus(old_inspector_order.as_deref())?;
+                Ok(effect)
+            }
+            StructuralEditIntent::ReplaceCapability { .. }
+            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+                Err(EventRejection::MismatchedEngineSelection)
+            }
+        }
+    }
+
+    /// Records one correlated occupancy refusal: the lifecycle enters Failed
+    /// with its reason and position while every canonical value stays intact.
+    fn topology_preparation_failed(
+        &mut self,
+        request_id: EngineSelectionRequestId,
+        intent: &StructuralEditIntent,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+        failure: EngineSelectionFailure,
+    ) -> Result<(), EventRejection> {
+        let correlation = self.pending_correlation(request_id)?;
+        if correlation.intent() != intent
+            || correlation.source_graph_revision() != source_graph_revision
+            || target_graph_revision <= source_graph_revision
+            || !intent.is_occupancy()
+        {
+            return Err(EventRejection::MismatchedEngineSelection);
+        }
+        self.engine_selection = self
+            .engine_selection
+            .failed(failure)
+            .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+        Ok(())
+    }
+
+    /// Verifies acknowledged structure against canonical state: the committed
+    /// instrument config for instrument intents, the committed occupancy for
+    /// slot and return intents.
+    fn committed_intent_matches_state(
+        &self,
+        correlation: &crate::control::EngineSelectionCorrelation,
+    ) -> bool {
+        match correlation.intent() {
+            StructuralEditIntent::ReplaceCapability { .. }
+            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+                let Some(patch_id) = correlation.patch_id() else {
+                    return false;
+                };
+                let Some(patch) = self.patches.iter().find(|patch| patch.id() == patch_id) else {
+                    return false;
+                };
+                config_matches_committed_intent(patch.instrument_config(), correlation.intent())
+            }
+            StructuralEditIntent::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            } => {
+                let Some(patch) = self.patches.iter().find(|patch| patch.id() == *patch_id) else {
+                    return false;
+                };
+                match (patch.effect_slot(*slot), entry) {
+                    (None, None) => true,
+                    (Some(config), Some(entry_id)) => {
+                        config.capability_id() == entry_id
+                            && config.slot_id() == slot.instance_identity()
+                    }
+                    _ => false,
+                }
+            }
+            StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
+                match (self.returns.bus_return(*bus).effect(), entry) {
+                    (None, None) => true,
+                    (Some(config), Some(entry_id)) => config.capability_id() == entry_id,
+                    _ => false,
+                }
+            }
+        }
     }
 
     fn pending_correlation(
@@ -1223,6 +1637,13 @@ impl AppState {
                     engine_selection_effect: Some(structural_effect),
                 })
             }
+            Some(crate::control::PatchControlId::EffectSlot(slot)) => {
+                let structural_effect = self.request_slot_occupancy_choice(slot, direction)?;
+                Ok(ReducerEffects {
+                    audio_command: None,
+                    engine_selection_effect: Some(structural_effect),
+                })
+            }
             Some(crate::control::PatchControlId::Effect(slot_id, parameter_id)) => {
                 self.adjust_patch_effect(slot_id, &parameter_id, direction)?;
                 Ok(ReducerEffects::default())
@@ -1300,12 +1721,18 @@ impl AppState {
             .iter()
             .position(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::NoPatchesInstalled)?;
-        let effect_index = self.patches[patch_index]
-            .post_effects()
+        let slot_index = self.patches[patch_index]
+            .effect_slots()
             .iter()
-            .position(|effect| effect.slot_id() == slot_id)
+            .position(|slot| {
+                slot.as_ref()
+                    .is_some_and(|effect| effect.slot_id() == slot_id)
+            })
+            .and_then(|position| EffectSlotIndex::new(position).ok())
             .ok_or(EventRejection::InvalidSelection)?;
-        let config = &self.patches[patch_index].post_effects()[effect_index];
+        let config = self.patches[patch_index]
+            .effect_slot(slot_index)
+            .ok_or(EventRejection::InvalidSelection)?;
         let descriptor = self
             .effects
             .descriptor(config.capability_id())
@@ -1332,7 +1759,12 @@ impl AppState {
                 }
                 _ => EventRejection::InvalidEffectConfig,
             })?;
-        self.patches[patch_index].set_post_effect_config(effect_index, candidate);
+        // Replacing an occupant's configuration at its own validated position
+        // keeps the identity and every other position untouched; the identity
+        // duplicate check cannot fire because the slot id already lives here.
+        self.patches[patch_index]
+            .set_slot_occupancy(slot_index, Some(candidate))
+            .map_err(|_| EventRejection::InvalidEffectConfig)?;
         Ok(())
     }
 
@@ -1467,7 +1899,7 @@ impl AppState {
         Ok(())
     }
 
-    fn adjust(&mut self, direction: Direction) -> Result<(), EventRejection> {
+    fn adjust(&mut self, direction: Direction) -> Result<ReducerEffects, EventRejection> {
         if !matches!(
             self.interaction.active_surface(),
             SurfaceId::MixerMain | SurfaceId::MixerInspector
@@ -1481,9 +1913,219 @@ impl AppState {
             MixerControlId::Track {
                 track_id,
                 parameter,
-            } => self.adjust_track(track_id, parameter, direction),
-            MixerControlId::Global { parameter } => self.adjust_global(parameter, direction),
+            } => {
+                self.adjust_track(track_id, parameter, direction)?;
+                Ok(ReducerEffects::default())
+            }
+            MixerControlId::Send { track_id, bus } => {
+                self.adjust_send(track_id, bus, direction)?;
+                Ok(ReducerEffects::default())
+            }
+            MixerControlId::ReturnOccupancy { bus } => {
+                let effect = self.request_return_occupancy_choice(bus, direction)?;
+                Ok(ReducerEffects {
+                    audio_command: None,
+                    engine_selection_effect: Some(effect),
+                })
+            }
+            MixerControlId::ReturnLevel { bus } => {
+                self.adjust_return_level(bus, direction)?;
+                Ok(ReducerEffects::default())
+            }
+            MixerControlId::ReturnEffect { bus, parameter } => {
+                self.adjust_return_effect(bus, &parameter, direction)?;
+                Ok(ReducerEffects::default())
+            }
+            MixerControlId::Global { parameter } => {
+                self.adjust_global(parameter, direction)?;
+                Ok(ReducerEffects::default())
+            }
         }
+    }
+
+    /// Fine/coarse edit of one indexed send `(track, bus)` through the one
+    /// shared send descriptor.
+    fn adjust_send(
+        &mut self,
+        track_id: MixerTrackId,
+        bus: BusId,
+        direction: Direction,
+    ) -> Result<(), EventRejection> {
+        let current = *self.mixer.track(track_id);
+        let value = adjusted_value(
+            current.send(bus),
+            BUS_SEND_DESCRIPTOR.minimum(),
+            BUS_SEND_DESCRIPTOR.maximum(),
+            direction,
+            BUS_SEND_DESCRIPTOR.fine_step(),
+            BUS_SEND_DESCRIPTOR.coarse_step(),
+        )?;
+        let updated = current
+            .with_send(bus, value)
+            .map_err(|_| EventRejection::InvalidParameterValue)?;
+        self.mixer.set_track(track_id, updated);
+        Ok(())
+    }
+
+    /// Fine/coarse edit of one return-owned level through the shared
+    /// return-level descriptor.
+    fn adjust_return_level(
+        &mut self,
+        bus: BusId,
+        direction: Direction,
+    ) -> Result<(), EventRejection> {
+        let value = adjusted_value(
+            self.returns.bus_return(bus).return_level(),
+            RETURN_LEVEL_DESCRIPTOR.minimum(),
+            RETURN_LEVEL_DESCRIPTOR.maximum(),
+            direction,
+            RETURN_LEVEL_DESCRIPTOR.fine_step(),
+            RETURN_LEVEL_DESCRIPTOR.coarse_step(),
+        )?;
+        self.returns
+            .set_return_level(bus, value)
+            .map_err(|_| EventRejection::InvalidParameterValue)
+    }
+
+    /// Fine/coarse edit of one occupying registry entry's descriptor scalar.
+    fn adjust_return_effect(
+        &mut self,
+        bus: BusId,
+        parameter_id: &ParameterId,
+        direction: Direction,
+    ) -> Result<(), EventRejection> {
+        let config = self
+            .returns
+            .bus_return(bus)
+            .effect()
+            .ok_or(EventRejection::InvalidSelection)?
+            .clone();
+        let descriptor = self
+            .effects
+            .descriptor(config.capability_id())
+            .ok_or(EventRejection::InvalidEffectConfig)?;
+        let spec = descriptor
+            .parameter(parameter_id)
+            .ok_or(EventRejection::InvalidSelection)?;
+        if spec.patch_interaction() != PatchInteraction::ScalarEdit
+            || spec.update() != crate::synth::ParameterUpdate::Scalar
+        {
+            return Err(EventRejection::InvalidSelection);
+        }
+        let current = config
+            .value(parameter_id)
+            .ok_or(EventRejection::InvalidEffectConfig)?;
+        let value = spec
+            .adjusted_scalar_value(current, parameter_adjustment(direction))
+            .map_err(map_scalar_adjustment_error)?;
+        let candidate = config
+            .with_scalar_value(descriptor, parameter_id, value)
+            .map_err(|error| match error {
+                crate::synth::EffectCapabilityError::Capability(error) => {
+                    map_scalar_adjustment_error(error)
+                }
+                _ => EventRejection::InvalidEffectConfig,
+            })?;
+        self.returns
+            .replace_occupant_values(bus, candidate)
+            .map_err(|_| EventRejection::InvalidParameterValue)
+    }
+
+    /// Resolves the adjacent nonwrapping occupancy choice — empty, then each
+    /// installed registry entry in declared order — shared by Patch effect
+    /// slots and bus returns. Edit+Up/Down is unavailable on occupancy rows,
+    /// exactly as on the engine row, and a choice endpoint is a boundary.
+    fn adjacent_occupancy_entry(
+        &self,
+        current: Option<&EffectCapabilityId>,
+        direction: Direction,
+    ) -> Result<Option<EffectCapabilityId>, EventRejection> {
+        if matches!(direction, Direction::Up | Direction::Down) {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        let entries = self.effects.descriptors();
+        // Choice index 0 is empty; entry N sits at index N + 1.
+        let current_index = match current {
+            None => 0,
+            Some(entry_id) => {
+                entries
+                    .iter()
+                    .position(|descriptor| descriptor.id() == entry_id)
+                    .ok_or(EventRejection::InvalidEffectConfig)?
+                    + 1
+            }
+        };
+        let target_index = match direction {
+            Direction::Left => current_index.checked_sub(1),
+            Direction::Right => current_index
+                .checked_add(1)
+                .filter(|index| *index <= entries.len()),
+            Direction::Up | Direction::Down => unreachable!("vertical edits were rejected"),
+        }
+        .ok_or(EventRejection::ParameterAtBoundary)?;
+        Ok(match target_index {
+            0 => None,
+            index => Some(entries[index - 1].id().clone()),
+        })
+    }
+
+    /// Adjacent-choice occupancy edit on one bus return's occupancy row,
+    /// entering the same correlated one-in-flight lifecycle as every other
+    /// structural edit.
+    fn request_return_occupancy_choice(
+        &mut self,
+        bus: BusId,
+        direction: Direction,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        if matches!(direction, Direction::Up | Direction::Down) {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        let entry = self.adjacent_occupancy_entry(
+            self.returns
+                .bus_return(bus)
+                .effect()
+                .map(crate::synth::PostEffectConfig::capability_id),
+            direction,
+        )?;
+        self.request_topology_change(StructuralEditIntent::SetReturnOccupancy { bus, entry })
+    }
+
+    /// Adjacent-choice occupancy edit on one Patch effect slot's occupancy
+    /// row, entering the same correlated one-in-flight lifecycle.
+    fn request_slot_occupancy_choice(
+        &mut self,
+        slot: EffectSlotIndex,
+        direction: Direction,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        if matches!(direction, Direction::Up | Direction::Down) {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let entry = self.adjacent_occupancy_entry(
+            patch
+                .effect_slot(slot)
+                .map(crate::synth::PostEffectConfig::capability_id),
+            direction,
+        )?;
+        self.request_topology_change(StructuralEditIntent::SetSlotOccupancy {
+            patch_id,
+            slot,
+            entry,
+        })
     }
 
     fn adjust_track(
@@ -1551,7 +2193,7 @@ impl AppState {
     ) -> Result<(), EventRejection> {
         let descriptor = parameter.descriptor();
         let value = adjusted_value(
-            self.global.value(parameter),
+            self.global.master_gain_db(),
             descriptor.minimum(),
             descriptor.maximum(),
             direction,
@@ -1560,7 +2202,7 @@ impl AppState {
         )?;
         self.global = self
             .global
-            .with_value(parameter, value)
+            .with_master_gain_db(value)
             .map_err(|_| EventRejection::InvalidParameterValue)?;
         Ok(())
     }
@@ -1615,6 +2257,49 @@ impl AppState {
         }
         Ok(())
     }
+
+    /// Captures the current MIXER Inspector focus order for the selected
+    /// track, or `None` when no track selection resolves yet.
+    fn mixer_inspector_order(&self) -> Option<Vec<FocusPath>> {
+        let track_id = self
+            .interaction
+            .remembered_mixer_main()
+            .control_id()
+            .as_mixer_track_id()?;
+        SemanticResolver::new(self)
+            .mixer_inspector_paths(track_id)
+            .ok()
+    }
+
+    /// Repairs an active MIXER Inspector focus after a committed return
+    /// occupancy change through the one deterministic next-before-previous
+    /// recovery rule. Rows on every other surface are unaffected by return
+    /// occupancy and keep their exact identity.
+    fn repair_inspector_focus(
+        &mut self,
+        old_order: Option<&[FocusPath]>,
+    ) -> Result<(), EventRejection> {
+        if self.interaction.active_surface() != SurfaceId::MixerInspector {
+            return Ok(());
+        }
+        let resolver = SemanticResolver::new(self);
+        if resolver.resolves(self.interaction.focus_path()) {
+            return Ok(());
+        }
+        let old_order = old_order.ok_or(EventRejection::InvalidSelection)?;
+        let track_id = self
+            .interaction
+            .remembered_mixer_main()
+            .control_id()
+            .as_mixer_track_id()
+            .ok_or(EventRejection::InvalidSelection)?;
+        let new_order = resolver.mixer_inspector_paths(track_id)?;
+        let repaired =
+            SemanticResolver::recover(self.interaction.focus_path(), old_order, &new_order)
+                .ok_or(EventRejection::InvalidSelection)?;
+        self.interaction.active_focus = repaired;
+        Ok(())
+    }
 }
 
 fn parameter_adjustment(direction: Direction) -> ParameterAdjustment {
@@ -1665,6 +2350,8 @@ fn candidate_matches_intent(
     intent: &StructuralEditIntent,
 ) -> bool {
     match intent {
+        StructuralEditIntent::SetSlotOccupancy { .. }
+        | StructuralEditIntent::SetReturnOccupancy { .. } => false,
         StructuralEditIntent::ReplaceCapability {
             target_capability_id,
         } => {
@@ -1705,6 +2392,8 @@ fn config_matches_committed_intent(
     intent: &StructuralEditIntent,
 ) -> bool {
     match intent {
+        StructuralEditIntent::SetSlotOccupancy { .. }
+        | StructuralEditIntent::SetReturnOccupancy { .. } => false,
         StructuralEditIntent::ReplaceCapability {
             target_capability_id,
         } => config.capability_id() == target_capability_id,
@@ -1753,7 +2442,7 @@ mod tests {
     }
 
     fn global_parameters() -> GlobalParameters {
-        GlobalParameters::new(0.0, 0.5, 0.5, 0.5, 250.0, 0.5, 0.5).unwrap()
+        GlobalParameters::new(0.0).unwrap()
     }
 
     fn patch(id: u32, gain_db: f32) -> Patch {
@@ -1783,6 +2472,91 @@ mod tests {
             ]))
             .unwrap();
         state
+    }
+
+    /// One installed patch whose chain occupies only slot 1: slot 0 is empty
+    /// and stays empty. This is exactly the shape a compacting view would
+    /// silently squeeze down to position 0.
+    fn gapped_effects_state() -> AppState {
+        let mut state = AppState::new_with_effects(
+            registry(),
+            crate::adapter::production_effects::production_effect_registry().unwrap(),
+            global_parameters(),
+        );
+        let mut gapped = patch(1, 0.0);
+        gapped
+            .set_slot_occupancy(
+                EffectSlotIndex::new(1).unwrap(),
+                Some(
+                    crate::adapter::production_effects::production_chorus_config(
+                        EffectSlotId::new(2).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        state.apply(AppEvent::InstallPatches(vec![gapped])).unwrap();
+        state
+    }
+
+    #[test]
+    fn install_accepts_a_gapped_chain_and_keeps_every_position() {
+        let state = gapped_effects_state();
+        let slots = state.patches()[0].effect_slots();
+        assert!(slots[0].is_none(), "slot 0 must stay empty after install");
+        assert_eq!(
+            slots[1].as_ref().map(|config| config.slot_id().value()),
+            Some(2),
+            "the occupant must keep its position and stable identity"
+        );
+        assert!(slots[2].is_none());
+    }
+
+    #[test]
+    fn adjust_edits_a_gapped_occupant_at_its_true_position() {
+        let mut state = gapped_effects_state();
+        let amount =
+            ParameterId::new(crate::adapter::chorus_capability::CHORUS_AMOUNT_PARAMETER_ID)
+                .unwrap();
+        let before = state.patches()[0].effect_slots()[1]
+            .as_ref()
+            .and_then(|config| config.value(&amount))
+            .cloned()
+            .expect("chorus declares an amount value");
+
+        state
+            .adjust_patch_effect(EffectSlotId::new(2).unwrap(), &amount, Direction::Up)
+            .unwrap();
+
+        let slots = state.patches()[0].effect_slots();
+        assert!(
+            slots[0].is_none(),
+            "a scalar edit must never compact the occupant into slot 0"
+        );
+        let occupant = slots[1]
+            .as_ref()
+            .expect("the occupant stays at position 1 after the edit");
+        assert_eq!(occupant.slot_id().value(), 2);
+        assert_ne!(occupant.value(&amount), Some(&before));
+        assert!(slots[2].is_none());
+    }
+
+    #[test]
+    fn validate_effect_slots_accepts_gaps_and_rejects_duplicate_identities() {
+        let effects = crate::adapter::production_effects::production_effect_registry().unwrap();
+        let occupant = |slot: u16| {
+            crate::adapter::production_effects::production_chorus_config(
+                EffectSlotId::new(slot).unwrap(),
+            )
+            .unwrap()
+        };
+
+        validate_effect_slots(&effects, &[Some(occupant(1)), None, Some(occupant(3))])
+            .expect("an interior gap is a legal chain shape");
+        assert!(matches!(
+            validate_effect_slots(&effects, &[Some(occupant(1)), None, Some(occupant(1))]),
+            Err(crate::synth::EffectCapabilityError::DuplicateSlot(_))
+        ));
     }
 
     fn mixed_registry() -> CapabilityRegistry {
@@ -1836,10 +2610,10 @@ mod tests {
         let correlation = state.engine_selection().correlation().unwrap();
         AppEvent::EnginePrepared {
             request_id: correlation.request_id(),
-            patch_id: correlation.patch_id(),
+            patch_id: correlation.patch_id().unwrap(),
             intent: correlation.intent().clone(),
-            source_capability_id: correlation.source_capability_id().clone(),
-            target_capability_id: correlation.target_capability_id().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
             source_graph_revision: correlation.source_graph_revision(),
             target_graph_revision,
             candidate_config,
@@ -1854,10 +2628,10 @@ mod tests {
         let correlation = state.engine_selection().correlation().unwrap();
         AppEvent::EnginePreparationFailed {
             request_id: correlation.request_id(),
-            patch_id: correlation.patch_id(),
+            patch_id: correlation.patch_id().unwrap(),
             intent: correlation.intent().clone(),
-            source_capability_id: correlation.source_capability_id().clone(),
-            target_capability_id: correlation.target_capability_id().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
             source_graph_revision: correlation.source_graph_revision(),
             target_graph_revision,
             failure,
@@ -2104,13 +2878,105 @@ mod tests {
         assert_eq!(state, boundary);
     }
 
+    /// The fixture installs one Patch per MIDI part, so without a selection
+    /// gesture every instrument after the first is unreachable. This proves
+    /// the focused Patch actually moves through the production reducer.
+    #[test]
+    fn select_patch_moves_the_focused_patch_through_the_reducer_without_wrapping() {
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+
+        let first = state.interaction.patch_focus().unwrap();
+        assert_eq!(first, PatchId::new(1).unwrap());
+
+        // Left at the first position is an unchanged rejection, not a wrap
+        // onto the last Patch.
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Left)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state.interaction.patch_focus().unwrap(), first);
+
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+        let second = state.interaction.patch_focus().unwrap();
+        assert_eq!(second, PatchId::new(2).unwrap());
+        assert_ne!(second, first);
+
+        // ...and the active focus followed, not just the remembered path.
+        assert_eq!(
+            state.interaction.active_focus.patch_id(),
+            Some(PatchId::new(2).unwrap())
+        );
+
+        // Right at the last position is likewise unchanged.
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Right)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state.interaction.patch_focus().unwrap(), second);
+
+        state.apply(AppEvent::SelectPatch(Direction::Left)).unwrap();
+        assert_eq!(state.interaction.patch_focus().unwrap(), first);
+    }
+
+    /// Stepping between Patches is a horizontal adjacent choice and belongs to
+    /// the Patch context in Navigate mode only.
+    #[test]
+    fn select_patch_is_refused_outside_its_context_mode_and_axis() {
+        let mut state = installed_state();
+
+        // MIXER context: the action does not exist here.
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+            .unwrap();
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Right)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+
+        // Vertical directions belong to control navigation, not Patch order.
+        for direction in [Direction::Up, Direction::Down] {
+            assert_eq!(
+                state.apply(AppEvent::SelectPatch(direction)),
+                Err(EventRejection::ActionUnavailableInContext)
+            );
+        }
+
+        // Adjust mode is editing a value, not moving between instruments.
+        state
+            .apply(AppEvent::SetInteractionMode(
+                crate::control::InteractionMode::Adjust,
+            ))
+            .unwrap();
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Right)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+    }
+
     #[test]
     fn patch_focus_reducer_covers_every_control_edge_and_direction_without_wrapping() {
         let controls = mixed_state().focused_patch_controls().unwrap();
+        // After the instrument's StructuralChoice rows, every one of the
+        // three slots contributes its occupancy row whether occupied or
+        // empty, so the surface always ends on the last occupancy row here.
+        assert!(
+            controls.contains(&crate::control::PatchControlId::Capability(
+                ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()
+            ))
+        );
         assert_eq!(
             controls.last(),
-            Some(&crate::control::PatchControlId::Capability(
-                ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()
+            Some(&crate::control::PatchControlId::EffectSlot(
+                crate::synth::effect_slot_id::EffectSlotIndex::new(2).unwrap()
             ))
         );
         for (index, expected) in controls.iter().cloned().enumerate() {
@@ -2619,9 +3485,15 @@ mod tests {
         let effect = outcome.engine_selection_effect().unwrap();
         assert_eq!(effect.kind(), EngineSelectionEffectKind::PrepareRequested);
         assert_eq!(effect.request_id(), EngineSelectionRequestId::FIRST);
-        assert_eq!(effect.patch_id(), PatchId::new(1).unwrap());
-        assert_eq!(effect.source_capability_id().as_str(), HIDEF_CAPABILITY_ID);
-        assert_eq!(effect.target_capability_id().as_str(), BRAIDS_CAPABILITY_ID);
+        assert_eq!(effect.patch_id(), PatchId::new(1).ok());
+        assert_eq!(
+            effect.source_capability_id().unwrap().as_str(),
+            HIDEF_CAPABILITY_ID
+        );
+        assert_eq!(
+            effect.target_capability_id().unwrap().as_str(),
+            BRAIDS_CAPABILITY_ID
+        );
         assert_eq!(effect.source_graph_revision(), source_revision);
         assert_eq!(effect.target_graph_revision(), None);
         assert_eq!(
@@ -2680,6 +3552,7 @@ mod tests {
                 .correlation()
                 .unwrap()
                 .target_capability_id()
+                .unwrap()
                 .clone(),
             Vec::new(),
             Vec::new(),
@@ -2728,8 +3601,8 @@ mod tests {
             request_id: correlation.request_id(),
             patch_id: PatchId::new(99).unwrap(),
             intent: correlation.intent().clone(),
-            source_capability_id: correlation.source_capability_id().clone(),
-            target_capability_id: correlation.target_capability_id().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
             source_graph_revision: correlation.source_graph_revision(),
             target_graph_revision: target_revision,
             failure: EngineSelectionFailure::PreparationFailed,

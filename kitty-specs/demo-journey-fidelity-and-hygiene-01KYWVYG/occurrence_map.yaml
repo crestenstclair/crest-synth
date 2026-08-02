@@ -1,0 +1,150 @@
+# Occurrence map for demo-journey-fidelity-and-hygiene (DIRECTIVE_035).
+#
+# This mission is a bulk edit because it retires the transitional compacting
+# accessor surface of the Patch effect chain in favor of the canonical
+# never-compacted per-position view:
+#
+#   post_effects() / with_post_effects()  ->  effect_slots() surface
+#     ~36 occurrences across 15 files (src/synth, src/control, src/real_time,
+#     src/shell, src/testing, src/bin mirrors, 2 test targets)
+#
+# Two small companion term cleanups ride along (enumerated in plan.md
+# "Bulk Edit Classification"):
+#   reverbSend   — 2 leftover fixture literals in src/control/state_tree.rs
+#                  (removed); the deliberate detection fixture in
+#                  tests/no_name_enumeration_guard.rs is preserved (exception)
+#   "aux buses"  — DESIGN.md:204 wording corrected to the canonical
+#                  bus-return vocabulary
+#
+# The migration is semantic, not mechanical: effect_slots() returns the
+# per-position (gapped) view, so every caller adapts its shape handling and
+# gaps must survive — hence manual_review on code_symbols rather than rename.
+#
+# Approved by operator: decision DM-01KYWXHFPMFT3P092AW1H7E56C (2026-07-31).
+
+target:
+  term: post_effects
+  replacement: effect_slots
+  operation: rename
+
+categories:
+  code_symbols:
+    action: manual_review
+    reason: >-
+      Each of the 36 call sites adapts to the per-position view individually:
+      the compacted Vec shape becomes the gapped per-slot shape, and the
+      composition-root round-trip must rebuild without re-compacting. After
+      migration the compacting accessors (post_effects, with_post_effects)
+      are deleted outright; a mechanical rename would silently preserve the
+      compacting semantics this mission exists to remove.
+
+  import_paths:
+    action: rename
+    reason: >-
+      No module or import path carries the term (the accessor lives on the
+      Patch aggregate in src/synth/patch.rs); symbol-level migration only.
+      Action recorded as rename so any path that did track the symbol would
+      follow it.
+
+  filesystem_paths:
+    action: manual_review
+    reason: >-
+      No filesystem path carries either term today and none may be invented;
+      any occurrence that appears in a path literal is a defect to review,
+      not to rename.
+
+  serialized_keys:
+    action: do_not_change
+    reason: >-
+      The StateTree / live-report / observation vocabulary (postEffects
+      leaves, preparedPostEffects counts, CREST_* observation keys) is
+      retained evidence vocabulary. The mission's add-only checkpoint
+      constraint (spec C-001) forbids touching it: existing checkpoint
+      identities must remain byte-identical, and the crest-spec still
+      declares postEffects as the Patch aggregate's state field. Only the
+      compacting *accessor* is retired, never the stored/serialized name.
+
+  cli_commands:
+    action: do_not_change
+    reason: >-
+      make demo-live-effects-and-buses and every other phase target stay
+      runnable under their recorded names (ROADMAP retained-scene contract);
+      witness --case selectors are frozen vocabulary.
+
+  user_facing_strings:
+    action: rename_if_user_visible
+    reason: >-
+      Covers the DESIGN.md:204 "aux buses" wording, corrected to the
+      canonical bus-return vocabulary. No UI label carries post_effects or
+      reverbSend; projection labels are serialized vocabulary and fall under
+      serialized_keys above.
+
+  tests_fixtures:
+    action: manual_review
+    reason: >-
+      Test callers of post_effects() migrate to the per-position view with
+      per-slot assertions (gaps asserted, not compacted). The two leftover
+      reverbSend fixture literals in src/control/state_tree.rs:1389,1593 are
+      replaced with canonical vocabulary. The reverbSend literal in
+      tests/no_name_enumeration_guard.rs is a deliberate positive-detection
+      fixture and is preserved (see exceptions).
+
+  logs_telemetry:
+    action: do_not_change
+    reason: >-
+      CREST_LIVE_CHECKPOINT / CREST_EFFECTS_AND_BUSES_OBSERVATION /
+      CREST_STATIC_VALIDATION markers and observation field names are frozen
+      proof vocabulary consumed by declared validations and recorded
+      evidence; the witness schema evolution (schemaVersion 2, added fields)
+      is declared in the crest-spec, not performed as a rename.
+
+exceptions:
+  - path: "src/bin/crest_synth.rs"
+    action: manual_review
+    reason: >-
+      The cli_commands do_not_change ruling protects command/target/scene
+      NAMES (make targets, witness --case selectors), not this file. WP01
+      owns src/bin/crest_synth.rs for its demo-observation mirror checks
+      (T007); the path heuristic classifies any src/bin/* file as
+      cli_commands, which is too coarse here. Command surfaces and scene
+      names remain unchanged — reviewers verify that manually.
+
+  - path: "tests/no_name_enumeration_guard.rs"
+    action: manual_review
+    reason: >-
+      Narrowed from do_not_change (2026-07-31): the intent was always "the
+      deliberate reverbSend detection fixture must survive", but a
+      whole-file do_not_change also forbade FR-014's required extension —
+      WP10 must add cases here proving the guard script fails loudly when a
+      required tool is missing. Reviewers verify the detection fixture is
+      still present and still asserted; other changes to this file are
+      reviewed on their merits.
+
+  - path: "scripts/*"
+    action: manual_review
+    reason: >-
+      FR-014 requires editing scripts/check_no_name_enumerated_identity.sh to
+      gate on its tool dependencies. The path is declared in the crest-spec
+      as asset.ValidationScripts (assetKind validation-script) but carries no
+      bulk-edit term, so the heuristic leaves it unclassified. Reviewed on
+      merits; the healthy-path contract (exit 0 plus the declared marker)
+      must stay byte-compatible.
+
+  - path: "kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/**"
+    action: manual_review
+    reason: >-
+      Parent-mission history is amended add/append-only (acceptance-matrix
+      and review-addendum amendments required by FR-006); recorded history is
+      never term-scrubbed.
+
+  - path: ".kittify/crest-spec/**"
+    action: do_not_change
+    reason: >-
+      The crest-spec was authored during the crest-spec phase (commit
+      0328311); postEffects remains the declared aggregate state field — only
+      the compacting accessor is retired. Planning and implementation never
+      edit the crest-spec.
+
+  - path: "archive/**"
+    action: do_not_change
+    reason: "Immutable legacy snapshots per CLAUDE.md."

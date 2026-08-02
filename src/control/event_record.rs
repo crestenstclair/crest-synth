@@ -180,6 +180,13 @@ impl PatchInput {
         &self.instrument
     }
 
+    /// Returns the recorded occupied effect configurations.
+    ///
+    /// The record's `postEffects` payload is frozen serialized vocabulary — a
+    /// dense list of the occupied configurations in position order, each
+    /// carrying its stable slot identity — and this accessor keeps that
+    /// vocabulary name. It is an output shape, never an addressable chain:
+    /// positions are recovered from slot identities, not from list indices.
     pub fn post_effects(&self) -> &[PostEffectConfig] {
         &self.post_effects
     }
@@ -200,7 +207,11 @@ impl From<&Patch> for PatchInput {
             name: patch.name().to_owned(),
             channel: patch.channel().value(),
             instrument: patch.instrument_config().clone(),
-            post_effects: patch.post_effects().to_vec(),
+            // The frozen `postEffects` payload shape: occupied positions of
+            // the per-position chain in position order, identified by their
+            // stable slot ids. Derived once for output; never indexed back
+            // into by dense position.
+            post_effects: patch.effect_slots().iter().flatten().cloned().collect(),
             envelope: *patch.envelope(),
             output: patch.output(),
         }
@@ -213,6 +224,9 @@ impl From<&Patch> for PatchInput {
 pub enum EventInput {
     SelectContext {
         context: TopLevelContext,
+    },
+    SelectPatch {
+        direction: EventDirection,
     },
     Navigate {
         direction: EventDirection,
@@ -278,12 +292,44 @@ pub enum EventInput {
         retired_graph_revision: GraphRevision,
         collected: bool,
     },
+    SetSlotOccupancy {
+        #[serde(rename = "patchId")]
+        patch_id: u32,
+        slot: crate::synth::effect_slot_id::EffectSlotIndex,
+        entry: Option<crate::synth::EffectCapabilityId>,
+    },
+    SetReturnOccupancy {
+        bus: crate::mixer::bus_id::BusId,
+        entry: Option<crate::synth::EffectCapabilityId>,
+    },
+    TopologyPrepared {
+        #[serde(rename = "requestId")]
+        request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
+        #[serde(rename = "sourceGraphRevision")]
+        source_graph_revision: GraphRevision,
+        #[serde(rename = "targetGraphRevision")]
+        target_graph_revision: GraphRevision,
+    },
+    TopologyPreparationFailed {
+        #[serde(rename = "requestId")]
+        request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
+        #[serde(rename = "sourceGraphRevision")]
+        source_graph_revision: GraphRevision,
+        #[serde(rename = "targetGraphRevision")]
+        target_graph_revision: GraphRevision,
+        failure: EngineSelectionFailure,
+    },
 }
 
 impl From<&AppEvent> for EventInput {
     fn from(event: &AppEvent) -> Self {
         match event {
             AppEvent::SelectContext(context) => Self::SelectContext { context: *context },
+            AppEvent::SelectPatch(direction) => Self::SelectPatch {
+                direction: (*direction).into(),
+            },
             AppEvent::Navigate(direction) => Self::Navigate {
                 direction: (*direction).into(),
             },
@@ -350,6 +396,43 @@ impl From<&AppEvent> for EventInput {
                 target_graph_revision: *target_graph_revision,
                 retired_graph_revision: *retired_graph_revision,
                 collected: *collected,
+            },
+            AppEvent::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            } => Self::SetSlotOccupancy {
+                patch_id: patch_id.value(),
+                slot: *slot,
+                entry: entry.clone(),
+            },
+            AppEvent::SetReturnOccupancy { bus, entry } => Self::SetReturnOccupancy {
+                bus: *bus,
+                entry: entry.clone(),
+            },
+            AppEvent::TopologyPrepared {
+                request_id,
+                intent,
+                source_graph_revision,
+                target_graph_revision,
+            } => Self::TopologyPrepared {
+                request_id: *request_id,
+                intent: intent.clone(),
+                source_graph_revision: *source_graph_revision,
+                target_graph_revision: *target_graph_revision,
+            },
+            AppEvent::TopologyPreparationFailed {
+                request_id,
+                intent,
+                source_graph_revision,
+                target_graph_revision,
+                failure,
+            } => Self::TopologyPreparationFailed {
+                request_id: *request_id,
+                intent: intent.clone(),
+                source_graph_revision: *source_graph_revision,
+                target_graph_revision: *target_graph_revision,
+                failure: *failure,
             },
         }
     }
@@ -877,7 +960,7 @@ mod tests {
             crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let mut state = AppState::new(
             provider.registry().unwrap(),
-            GlobalParameters::new(-3.0, 0.5, 0.4, 0.25, 250.0, 0.3, 0.2).unwrap(),
+            GlobalParameters::new(-3.0).unwrap(),
         );
         state
             .apply(AppEvent::InstallPatches(vec![patch(1)]))
@@ -1365,7 +1448,39 @@ mod tests {
         );
         assert_eq!(installed.output().trim_gain_db(), -6.0);
         assert_eq!(installed.output().track_id().value(), 2);
-        assert!(installed.post_effects().is_empty());
+        // The recorded payload field is read directly: the same-module test
+        // asserts the stored dense payload, not an accessor round-trip.
+        assert!(installed.post_effects.is_empty());
+    }
+
+    #[test]
+    fn install_input_preserves_slot_identities_of_a_gapped_chain() {
+        // Slot 0 empty, slot 1 occupied: the shape a compacting accessor
+        // used to silently squeeze down to position 0.
+        let mut gapped = patch(1);
+        gapped
+            .set_slot_occupancy(
+                crate::synth::effect_slot_id::EffectSlotIndex::new(1).unwrap(),
+                Some(
+                    crate::adapter::production_effects::production_chorus_config(
+                        crate::synth::EffectSlotId::new(2).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        assert!(gapped.effect_slots()[0].is_none());
+
+        let input = PatchInput::from(&gapped);
+
+        // The frozen dense payload carries exactly the occupied
+        // configuration, and its stable slot identity still names position
+        // 1 — an identity of 1 here would mean the record renumbered the
+        // chain.
+        assert_eq!(input.post_effects.len(), 1);
+        assert_eq!(input.post_effects[0].slot_id().value(), 2);
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["postEffects"].as_array().unwrap().len(), 1);
     }
 
     #[test]

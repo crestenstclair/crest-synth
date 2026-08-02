@@ -34,7 +34,7 @@ use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(-3.0, 0.7, 0.4, 0.25, 375.0, 0.35, 0.2).unwrap()
+    GlobalParameters::new(-3.0).unwrap()
 }
 
 fn parameter_id(value: &str) -> ParameterId {
@@ -203,7 +203,7 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         )
         .unwrap();
     let tree: Value = serde_json::from_str(installed.current_state_tree().json()).unwrap();
-    assert_eq!(tree["schemaVersion"], 11);
+    assert_eq!(tree["schemaVersion"], 12);
     assert_eq!(tree["parameters"]["graphRevision"], 1);
     assert_eq!(
         tree["capabilities"]["descriptors"]

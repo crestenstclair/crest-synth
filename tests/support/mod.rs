@@ -27,11 +27,12 @@ use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
 use crest_synth::real_time::{GraphHandoffStatus, StructuralGraphBoundary};
 use crest_synth::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
+use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::patch::Patch;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityId, DescriptorDefaultConfigFactory, EffectSlotId, InstrumentPreparationError,
-    InstrumentPreparer, PreparedInstrument, PreparedInstrumentError,
+    CapabilityId, DescriptorDefaultConfigFactory, InstrumentPreparationError, InstrumentPreparer,
+    PreparedInstrument, PreparedInstrumentError,
 };
 use crest_synth::testing::automatic_midi_test::{create_soundfont_config, AutomaticMidiTest};
 use crest_synth::testing::demo_scene::DemoScene;
@@ -56,8 +57,7 @@ pub struct DemoRun {
 }
 
 pub fn globals() -> GlobalParameters {
-    GlobalParameters::new(0.0, 0.5, 0.4, 0.35, 250.0, 0.3, 0.25)
-        .expect("fixture global parameters are valid")
+    GlobalParameters::new(0.0).expect("fixture global parameters are valid")
 }
 
 fn parts() -> Vec<InstrumentPart> {
@@ -102,10 +102,15 @@ fn scene_patches() -> Vec<Patch> {
                 ),
             );
             if index == 0 {
-                patch = patch.with_post_effects(vec![production_chorus_config(
-                    EffectSlotId::new(1).expect("fixture effect slot is valid"),
-                )
-                .expect("fixture Chorus config is valid")]);
+                // Position-explicit: the fixture states the address it
+                // occupies, and the occupant's identity is the one that
+                // address derives, so a round trip lands it back in place.
+                let address = EffectSlotIndex::ALL[0];
+                patch = patch.with_effect_slot(
+                    address,
+                    production_chorus_config(address.instance_identity())
+                        .expect("fixture Chorus config is valid"),
+                );
             }
             patch
         })
@@ -273,9 +278,15 @@ pub fn run_demo() -> DemoRun {
     let effects = production_effect_registry().expect("production effect registry is valid");
     let patches = scene_patches();
     let global_parameters = globals();
-    let scene =
-        DemoScene::exhaustive_with_effects(&registry, &effects, &patches, &global_parameters)
-            .expect("the fixture contains two discriminating Patches");
+    let startup_returns = crest_synth::adapter::production_effects::startup_bus_returns(&effects);
+    let scene = DemoScene::exhaustive_with_effects(
+        &registry,
+        &effects,
+        &patches,
+        &global_parameters,
+        &startup_returns,
+    )
+    .expect("the fixture contains two discriminating Patches");
     let expected_coverage = scene.expected_coverage().to_vec();
     let initial_parameters =
         ParameterSnapshot::new(0, global_parameters, MixerState::default(), &[])
@@ -285,7 +296,8 @@ pub fn run_demo() -> DemoRun {
     let event_log = EventLog::new(scene.event_log_capacity().saturating_add(16))
         .expect("fixture EventLog capacity is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new_with_effects(registry.clone(), effects.clone(), global_parameters),
+        AppState::new_with_effects(registry.clone(), effects.clone(), global_parameters)
+            .with_initial_returns(startup_returns.clone()),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         event_log,
@@ -304,6 +316,7 @@ pub fn run_demo() -> DemoRun {
         production_effect_preparers().expect("production effect preparers are valid");
     let graph = PreparedGraphBuilder::new(app_loop.capabilities(), &preparers)
         .with_effects(app_loop.effects(), &effect_preparers)
+        .with_returns(app_loop.bus_returns())
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),

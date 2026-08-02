@@ -17,5 +17,7 @@ review:
   # junit path is fixed by .config/nextest.toml's ci profile, so the command
   # copies it to wherever the gate asked while preserving the runner's exit
   # status (the gate parses JUnit even on test failures).
-  test_command: 'cargo nextest run --profile ci; rc=$?; cp -f target/nextest/ci/junit.xml {output_file} 2>/dev/null; exit $rc'
+  test_command: 'cargo nextest run --profile ci; rc=$?; cp -f target/nextest/ci/junit.xml
+    {output_file} 2>/dev/null; exit $rc'
   test_output_format: junit_xml
+charter: .kittify/charter/charter.yaml

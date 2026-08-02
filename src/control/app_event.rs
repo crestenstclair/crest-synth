@@ -5,8 +5,10 @@ use crate::control::{
 };
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
+use crate::mixer::bus_id::BusId;
 use crate::real_time::GraphRevision;
-use crate::synth::{CapabilityId, InstrumentConfig, Patch};
+use crate::synth::effect_slot_id::EffectSlotIndex;
+use crate::synth::{CapabilityId, EffectCapabilityId, InstrumentConfig, Patch};
 use serde::{Deserialize, Serialize};
 
 /// A semantic direction emitted by an input adapter.
@@ -44,6 +46,9 @@ pub enum AppEventPayloadShape {
     StructuralEditIntent,
     InteractionMode,
     SurfaceId,
+    EffectSlotIndex,
+    BusId,
+    OptionalEffectEntry,
 }
 
 /// One typed entry in the exhaustive application-event surface.
@@ -54,6 +59,9 @@ pub enum AppEventPayloadShape {
 pub enum AppEventSurfaceDescriptor {
     SelectContext {
         context: TopLevelContext,
+    },
+    SelectPatch {
+        direction: Direction,
     },
     Navigate {
         direction: Direction,
@@ -102,14 +110,42 @@ pub enum AppEventSurfaceDescriptor {
         retired_graph_revision: AppEventPayloadShape,
         collected: AppEventPayloadShape,
     },
+    SetSlotOccupancy {
+        patch_id: AppEventPayloadShape,
+        slot: AppEventPayloadShape,
+        entry: AppEventPayloadShape,
+    },
+    SetReturnOccupancy {
+        bus: AppEventPayloadShape,
+        entry: AppEventPayloadShape,
+    },
+    TopologyPrepared {
+        request_id: AppEventPayloadShape,
+        intent: AppEventPayloadShape,
+        source_graph_revision: AppEventPayloadShape,
+        target_graph_revision: AppEventPayloadShape,
+    },
+    TopologyPreparationFailed {
+        request_id: AppEventPayloadShape,
+        intent: AppEventPayloadShape,
+        source_graph_revision: AppEventPayloadShape,
+        target_graph_revision: AppEventPayloadShape,
+        failure: AppEventPayloadShape,
+    },
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 20] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 26] = [
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Mixer,
+    },
+    AppEventSurfaceDescriptor::SelectPatch {
+        direction: Direction::Left,
+    },
+    AppEventSurfaceDescriptor::SelectPatch {
+        direction: Direction::Right,
     },
     AppEventSurfaceDescriptor::Navigate {
         direction: Direction::Up,
@@ -182,6 +218,28 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 20] = [
         retired_graph_revision: AppEventPayloadShape::GraphRevision,
         collected: AppEventPayloadShape::Boolean,
     },
+    AppEventSurfaceDescriptor::SetSlotOccupancy {
+        patch_id: AppEventPayloadShape::PatchId,
+        slot: AppEventPayloadShape::EffectSlotIndex,
+        entry: AppEventPayloadShape::OptionalEffectEntry,
+    },
+    AppEventSurfaceDescriptor::SetReturnOccupancy {
+        bus: AppEventPayloadShape::BusId,
+        entry: AppEventPayloadShape::OptionalEffectEntry,
+    },
+    AppEventSurfaceDescriptor::TopologyPrepared {
+        request_id: AppEventPayloadShape::EngineSelectionRequestId,
+        intent: AppEventPayloadShape::StructuralEditIntent,
+        source_graph_revision: AppEventPayloadShape::GraphRevision,
+        target_graph_revision: AppEventPayloadShape::GraphRevision,
+    },
+    AppEventSurfaceDescriptor::TopologyPreparationFailed {
+        request_id: AppEventPayloadShape::EngineSelectionRequestId,
+        intent: AppEventPayloadShape::StructuralEditIntent,
+        source_graph_revision: AppEventPayloadShape::GraphRevision,
+        target_graph_revision: AppEventPayloadShape::GraphRevision,
+        failure: AppEventPayloadShape::EngineSelectionFailure,
+    },
 ];
 /// The closed semantic input union accepted by the application reducer.
 ///
@@ -192,6 +250,12 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 20] = [
 pub enum AppEvent {
     /// Select one of the two reducer-owned top-level contexts directly.
     SelectContext(TopLevelContext),
+    /// Move the focused Patch one position along the installed order.
+    ///
+    /// This is the only event that changes which Patch is focused. At either
+    /// end of the installed order it is a typed unchanged rejection rather
+    /// than a clamp or a wrap, exactly like every other adjacent choice.
+    SelectPatch(Direction),
     /// Move the current selection without changing a synth parameter.
     Navigate(Direction),
     /// Adjust exactly the currently selected bounded parameter.
@@ -242,6 +306,37 @@ pub enum AppEvent {
         retired_graph_revision: GraphRevision,
         collected: bool,
     },
+    /// Requests one Patch effect-slot occupancy change: occupy or replace the
+    /// validated position with a registry entry, or clear it with `None`.
+    /// Structural: the change enters the prepared-graph lifecycle, never the
+    /// scalar snapshot path.
+    SetSlotOccupancy {
+        patch_id: PatchId,
+        slot: EffectSlotIndex,
+        entry: Option<EffectCapabilityId>,
+    },
+    /// Requests one bus-return occupancy change: occupy or replace the
+    /// validated bus with a registry entry, or clear it with `None`.
+    /// Structural, exactly like a slot change.
+    SetReturnOccupancy {
+        bus: BusId,
+        entry: Option<EffectCapabilityId>,
+    },
+    /// Commits one prepared occupancy change after off-callback preparation.
+    TopologyPrepared {
+        request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+    },
+    /// Records one correlated typed occupancy refusal without adapter detail.
+    TopologyPreparationFailed {
+        request_id: EngineSelectionRequestId,
+        intent: StructuralEditIntent,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+        failure: EngineSelectionFailure,
+    },
 }
 
 impl AppEvent {
@@ -249,11 +344,24 @@ impl AppEvent {
     pub fn from_semantic_action(action: SemanticAction) -> Self {
         match action {
             SemanticAction::SelectContext(context) => Self::SelectContext(context),
+            SemanticAction::SelectPatch(direction) => Self::SelectPatch(direction),
             SemanticAction::Navigate(direction) => Self::Navigate(direction),
             SemanticAction::Adjust(direction) => Self::Adjust(direction),
             SemanticAction::SetInteractionMode(mode) => Self::SetInteractionMode(mode),
             SemanticAction::EnterSurface(surface) => Self::EnterSurface(surface),
             SemanticAction::Return => Self::Return,
+            SemanticAction::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            } => Self::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            },
+            SemanticAction::SetReturnOccupancy { bus, entry } => {
+                Self::SetReturnOccupancy { bus, entry }
+            }
         }
     }
 
@@ -288,6 +396,9 @@ impl AppEvent {
             Self::SelectContext(context) => {
                 AppEventSurfaceDescriptor::SelectContext { context: *context }
             }
+            Self::SelectPatch(direction) => AppEventSurfaceDescriptor::SelectPatch {
+                direction: *direction,
+            },
             Self::Navigate(direction) => AppEventSurfaceDescriptor::Navigate {
                 direction: *direction,
             },
@@ -339,6 +450,30 @@ impl AppEvent {
                     collected: AppEventPayloadShape::Boolean,
                 }
             }
+            Self::SetSlotOccupancy { .. } => AppEventSurfaceDescriptor::SetSlotOccupancy {
+                patch_id: AppEventPayloadShape::PatchId,
+                slot: AppEventPayloadShape::EffectSlotIndex,
+                entry: AppEventPayloadShape::OptionalEffectEntry,
+            },
+            Self::SetReturnOccupancy { .. } => AppEventSurfaceDescriptor::SetReturnOccupancy {
+                bus: AppEventPayloadShape::BusId,
+                entry: AppEventPayloadShape::OptionalEffectEntry,
+            },
+            Self::TopologyPrepared { .. } => AppEventSurfaceDescriptor::TopologyPrepared {
+                request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                intent: AppEventPayloadShape::StructuralEditIntent,
+                source_graph_revision: AppEventPayloadShape::GraphRevision,
+                target_graph_revision: AppEventPayloadShape::GraphRevision,
+            },
+            Self::TopologyPreparationFailed { .. } => {
+                AppEventSurfaceDescriptor::TopologyPreparationFailed {
+                    request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                    intent: AppEventPayloadShape::StructuralEditIntent,
+                    source_graph_revision: AppEventPayloadShape::GraphRevision,
+                    target_graph_revision: AppEventPayloadShape::GraphRevision,
+                    failure: AppEventPayloadShape::EngineSelectionFailure,
+                }
+            }
         }
     }
 }
@@ -388,7 +523,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 20);
+        assert_eq!(descriptor.len(), 26);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),

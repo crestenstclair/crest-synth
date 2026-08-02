@@ -23,17 +23,19 @@ pub mod graph_handoff_status;
 pub use graph_handoff_status::GraphHandoffStatus;
 pub mod parameter_snapshot;
 pub use parameter_snapshot::{
-    ParameterSnapshot, ParameterSnapshotError, RtInstrumentParameters, RtPatchParameters,
-    RtPostEffectParameters, MAX_PATCHES,
+    ParameterSnapshot, ParameterSnapshotError, RtBusReturnParameters, RtInstrumentParameters,
+    RtPatchParameters, RtPostEffectParameters, MAX_PATCHES,
 };
 pub mod patch_audio_block;
 pub use patch_audio_block::{PatchAudioBlock, PatchAudioBlockError, PatchStereoStem};
 pub mod patch_effect_observation;
 pub use patch_effect_observation::PatchEffectObservation;
+pub mod prepared_bus_return_rack;
+pub use prepared_bus_return_rack::PreparedBusReturnRack;
 pub mod prepared_engine_rack;
 pub use prepared_engine_rack::{PreparedEngineRack, RackDispatchError, RackRenderError};
 pub mod prepared_graph;
-pub use prepared_graph::{PreparedGraph, PreparedGraphRefreshError};
+pub use prepared_graph::{GraphReplacementScope, PreparedGraph, PreparedGraphRefreshError};
 pub mod prepared_post_effect_rack;
 pub(crate) use prepared_post_effect_rack::PreparedPostEffectSlot;
 pub use prepared_post_effect_rack::{EffectRackProcessError, PreparedPostEffectRack};

@@ -401,6 +401,7 @@ impl SemanticGraphicalViewModel {
         "focusPath.capabilityId.kind",
         "focusPath.context",
         "focusPath.controlId.id",
+        "focusPath.controlId.id.bus",
         "focusPath.controlId.id.kind",
         "focusPath.controlId.id.parameter",
         "focusPath.controlId.id.track_id",
@@ -457,6 +458,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].path.capabilityId.kind",
         "surfaces[].controls[].path.context",
         "surfaces[].controls[].path.controlId.id",
+        "surfaces[].controls[].path.controlId.id.bus",
         "surfaces[].controls[].path.controlId.id.kind",
         "surfaces[].controls[].path.controlId.id.parameter",
         "surfaces[].controls[].path.controlId.id.track_id",
@@ -482,6 +484,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].role",
         "surfaces[].summary.capability_id",
         "surfaces[].summary.effect_count",
+        "surfaces[].summary.focused_control.bus",
         "surfaces[].summary.focused_control.kind",
         "surfaces[].summary.focused_control.parameter",
         "surfaces[].summary.focused_control.track_id",
@@ -848,23 +851,44 @@ fn project_errors(
         .engine_selection()
         .correlation()
         .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?;
-    let source_path = resolver
-        .patch_main_paths(correlation.patch_id())
-        .map_err(map_resolver_error)?
-        .into_iter()
-        .find(|path| match (path.control_id(), correlation.intent()) {
-            (
-                crate::control::SemanticControlId::Patch(PatchControlId::Engine),
-                crate::control::StructuralEditIntent::ReplaceCapability { .. },
-            ) => true,
-            (
-                crate::control::SemanticControlId::Patch(PatchControlId::Capability(path_id)),
-                crate::control::StructuralEditIntent::ReplaceParameterChoice {
-                    parameter_id, ..
-                },
-            ) => path_id == parameter_id,
-            _ => false,
-        });
+    // Occupancy refusals carry their position in the intent and stay
+    // attributable to that exact slot or return row; instrument intents
+    // anchor a PATCH-surface source path through the resolver.
+    let source_path = match correlation.intent() {
+        crate::control::StructuralEditIntent::SetSlotOccupancy { patch_id, slot, .. } => Some(
+            FocusPath::patch_main(*patch_id, None, PatchControlId::EffectSlot(*slot)),
+        ),
+        crate::control::StructuralEditIntent::SetReturnOccupancy { bus, .. } => {
+            Some(FocusPath::mixer_return_occupancy(*bus))
+        }
+        crate::control::StructuralEditIntent::ReplaceCapability { .. }
+        | crate::control::StructuralEditIntent::ReplaceParameterChoice { .. } => {
+            let source_paths = match correlation.patch_id() {
+                Some(patch_id) => resolver
+                    .patch_main_paths(patch_id)
+                    .map_err(map_resolver_error)?,
+                None => Vec::new(),
+            };
+            source_paths
+                .into_iter()
+                .find(|path| match (path.control_id(), correlation.intent()) {
+                    (
+                        crate::control::SemanticControlId::Patch(PatchControlId::Engine),
+                        crate::control::StructuralEditIntent::ReplaceCapability { .. },
+                    ) => true,
+                    (
+                        crate::control::SemanticControlId::Patch(PatchControlId::Capability(
+                            path_id,
+                        )),
+                        crate::control::StructuralEditIntent::ReplaceParameterChoice {
+                            parameter_id,
+                            ..
+                        },
+                    ) => path_id == parameter_id,
+                    _ => false,
+                })
+        }
+    };
     Ok(vec![SemanticError {
         code: SemanticErrorCode::EngineSelection(failure),
         label: failure.name().to_owned(),
@@ -957,7 +981,7 @@ fn project_patch_surfaces(
             .engine_selection()
             .correlation()
             .is_some_and(|correlation| {
-                correlation.patch_id() == patch_id
+                correlation.patch_id() == Some(patch_id)
                     && correlation.intent().parameter_id() == Some(spec.id())
             });
         controls.push(control_from_parameter(
@@ -978,7 +1002,52 @@ fn project_patch_surfaces(
         ));
     }
 
-    for effect in patch.post_effects() {
+    for slot_index in crate::synth::effect_slot_id::EffectSlotIndex::ALL {
+        let occupant = patch.effect_slot(slot_index);
+        let occupancy_path =
+            FocusPath::patch_main(patch_id, None, PatchControlId::EffectSlot(slot_index));
+        let occupancy_label = format!("Slot {}", slot_index.index() + 1);
+        let occupancy_value = match occupant {
+            None => "Empty".to_owned(),
+            Some(effect) => state
+                .effects()
+                .descriptor(effect.capability_id())
+                .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?
+                .label()
+                .to_owned(),
+        };
+        let targeted = state
+            .engine_selection()
+            .correlation()
+            .is_some_and(|correlation| {
+                matches!(
+                    correlation.intent(),
+                    crate::control::StructuralEditIntent::SetSlotOccupancy {
+                        patch_id: target_patch,
+                        slot,
+                        ..
+                    } if *target_patch == patch_id && *slot == slot_index
+                )
+            });
+        controls.push(SemanticControlViewModel {
+            path: occupancy_path.clone(),
+            label: occupancy_label,
+            kind: SemanticControlKind::Choice,
+            value: SemanticControlValue::Identity(occupancy_value),
+            numeric_range: None,
+            unit: None,
+            enabled: true,
+            visible: true,
+            focusable: true,
+            editable: lifecycle_editable && !state.effects().descriptors().is_empty(),
+            focused: active == &occupancy_path,
+            status: targeted.then(|| status.clone()),
+            error: error_for_path(errors, &occupancy_path),
+        });
+
+        let Some(effect) = occupant else {
+            continue;
+        };
         let effect_descriptor = state
             .effects()
             .descriptor(effect.capability_id())
@@ -1008,16 +1077,19 @@ fn project_patch_surfaces(
         }
     }
 
+    // The summary counts configured effects: occupied positions of the
+    // per-position chain, wherever they sit. Empty positions never count.
+    let configured_effect_count = patch.effect_slots().iter().flatten().count();
     let summary = SemanticSurfaceSummary::Patch {
         patch_id,
         patch_name: patch.name().to_owned(),
         capability_id: descriptor.id().clone(),
-        effect_count: patch.post_effects().len(),
+        effect_count: configured_effect_count,
     };
     let side_summary = SemanticSurfaceSummary::PatchUtility {
         patch_id,
         capability_id: descriptor.id().clone(),
-        effect_count: patch.post_effects().len(),
+        effect_count: configured_effect_count,
     };
     let utility_paths = resolver
         .patch_utility_paths(patch_id)
@@ -1088,8 +1160,8 @@ fn project_patch_surfaces(
 fn project_mixer_surfaces(
     state: &AppState,
     resolver: &SemanticResolver<'_>,
-    _status: &SemanticLifecycleStatus,
-    _errors: &[SemanticError],
+    status: &SemanticLifecycleStatus,
+    errors: &[SemanticError],
 ) -> Result<Vec<SemanticSurfaceViewModel>, SemanticGraphicalViewModelError> {
     let active = state.interaction().focus_path();
     let mut controls = Vec::with_capacity(MixerTrackId::COUNT * MixerTrackParameter::MAIN.len());
@@ -1109,23 +1181,144 @@ fn project_mixer_surfaces(
     let inspector_paths = resolver
         .mixer_inspector_paths(focused_track)
         .map_err(map_resolver_error)?;
+    let lifecycle_editable = matches!(
+        status.kind(),
+        EngineSelectionStatusKind::Ready | EngineSelectionStatusKind::Failed
+    );
     let mut inspector_controls = Vec::with_capacity(inspector_paths.len());
     for path in inspector_paths {
         let crate::control::SemanticControlId::Mixer(control) = path.control_id() else {
             return Err(SemanticGraphicalViewModelError::InvalidFocusPath);
         };
-        let control_view = match *control {
+        let control_view = match control.clone() {
             MixerControlId::Track {
                 track_id,
                 parameter,
             } => track_control(track_id, parameter, *state.mixer().track(track_id), active),
+            MixerControlId::Send { track_id, bus } => {
+                let descriptor = crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
+                SemanticControlViewModel {
+                    focused: active == &path,
+                    path: path.clone(),
+                    label: format!("{track_id} Send {bus}"),
+                    kind: SemanticControlKind::Continuous,
+                    value: SemanticControlValue::Scalar(
+                        state.mixer().track(track_id).send(bus) as f64
+                    ),
+                    numeric_range: Some(SemanticNumericRange::new(
+                        descriptor.minimum() as f64,
+                        descriptor.maximum() as f64,
+                        descriptor.fine_step() as f64,
+                        descriptor.coarse_step() as f64,
+                    )),
+                    unit: None,
+                    enabled: true,
+                    visible: true,
+                    focusable: true,
+                    editable: true,
+                    status: None,
+                    error: None,
+                }
+            }
+            MixerControlId::ReturnOccupancy { bus } => {
+                let occupancy_value = match state.bus_returns().bus_return(bus).effect() {
+                    None => "Empty".to_owned(),
+                    Some(config) => state
+                        .effects()
+                        .descriptor(config.capability_id())
+                        .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?
+                        .label()
+                        .to_owned(),
+                };
+                let targeted = state
+                    .engine_selection()
+                    .correlation()
+                    .is_some_and(|correlation| {
+                        matches!(
+                            correlation.intent(),
+                            crate::control::StructuralEditIntent::SetReturnOccupancy {
+                                bus: target_bus,
+                                ..
+                            } if *target_bus == bus
+                        )
+                    });
+                SemanticControlViewModel {
+                    focused: active == &path,
+                    path: path.clone(),
+                    label: format!("Return {bus}"),
+                    kind: SemanticControlKind::Choice,
+                    value: SemanticControlValue::Identity(occupancy_value),
+                    numeric_range: None,
+                    unit: None,
+                    enabled: true,
+                    visible: true,
+                    focusable: true,
+                    editable: lifecycle_editable && !state.effects().descriptors().is_empty(),
+                    status: targeted.then(|| status.clone()),
+                    error: error_for_path(errors, &path),
+                }
+            }
+            MixerControlId::ReturnLevel { bus } => {
+                let descriptor = crate::mixer::bus_return::RETURN_LEVEL_DESCRIPTOR;
+                SemanticControlViewModel {
+                    focused: active == &path,
+                    path: path.clone(),
+                    label: format!("Return {bus} Level"),
+                    kind: SemanticControlKind::Continuous,
+                    value: SemanticControlValue::Scalar(
+                        state.bus_returns().bus_return(bus).return_level() as f64,
+                    ),
+                    numeric_range: Some(SemanticNumericRange::new(
+                        descriptor.minimum() as f64,
+                        descriptor.maximum() as f64,
+                        descriptor.fine_step() as f64,
+                        descriptor.coarse_step() as f64,
+                    )),
+                    unit: None,
+                    enabled: true,
+                    visible: true,
+                    focusable: true,
+                    editable: true,
+                    status: None,
+                    error: None,
+                }
+            }
+            MixerControlId::ReturnEffect { bus, parameter } => {
+                let config = state
+                    .bus_returns()
+                    .bus_return(bus)
+                    .effect()
+                    .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
+                let descriptor = state
+                    .effects()
+                    .descriptor(config.capability_id())
+                    .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
+                let spec = descriptor
+                    .parameter(&parameter)
+                    .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
+                let (enabled, visible) = effect_parameter_availability(spec, config);
+                control_from_parameter(
+                    path.clone(),
+                    spec,
+                    effect_parameter_value(spec, config)?,
+                    ParameterControlProjection {
+                        enabled,
+                        visible,
+                        focusable: true,
+                        editable: spec.patch_interaction() == PatchInteraction::ScalarEdit,
+                        active,
+                        status: None,
+                        errors,
+                    },
+                )
+            }
             MixerControlId::Global { parameter } => {
                 let descriptor = parameter.descriptor();
                 SemanticControlViewModel {
                     path: path.clone(),
                     label: descriptor.name().to_owned(),
                     kind: SemanticControlKind::Continuous,
-                    value: SemanticControlValue::Scalar(state.global().value(parameter) as f64),
+                    value: SemanticControlValue::Scalar(state.global_row_value(parameter) as f64),
                     numeric_range: Some(SemanticNumericRange::new(
                         descriptor.minimum() as f64,
                         descriptor.maximum() as f64,
@@ -1188,11 +1381,7 @@ fn track_control(
     active: &FocusPath,
 ) -> SemanticControlViewModel {
     let descriptor = parameter.descriptor();
-    let path = if MixerTrackParameter::MAIN.contains(&parameter) {
-        FocusPath::mixer_track(track_id, parameter)
-    } else {
-        FocusPath::mixer_inspector(track_id, parameter)
-    };
+    let path = FocusPath::mixer_track(track_id, parameter);
     let is_toggle = descriptor.kind() == MixerTrackParameterKind::Toggle;
     SemanticControlViewModel {
         focused: active == &path,
@@ -1435,4 +1624,96 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
         return Err(SemanticGraphicalViewModelError::DuplicateValidAction);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::AppEvent;
+
+    /// One installed patch whose chain occupies only slot 1: slot 0 is empty
+    /// and stays empty. This is exactly the shape a compacting view would
+    /// silently squeeze down to position 0.
+    fn gapped_patch_state() -> AppState {
+        let mut state = AppState::new_with_effects(
+            crate::adapter::production_instruments::production_capability_registry().unwrap(),
+            crate::adapter::production_effects::production_effect_registry().unwrap(),
+            crate::mixer::global_parameters::GlobalParameters::new(0.0).unwrap(),
+        );
+        let mut patch = crate::synth::Patch::new(
+            PatchId::new(7).unwrap(),
+            "Gapped".to_owned(),
+            crate::adapter::braids_capability::BraidsCapability::new()
+                .unwrap()
+                .default_config()
+                .unwrap(),
+            crate::kernel::MidiChannel::new(3).unwrap(),
+            crate::mixer::patch_output::PatchOutput::to_track(
+                crate::mixer::mixer_track_id::MixerTrackId::new(3).unwrap(),
+            ),
+        );
+        patch
+            .set_slot_occupancy(
+                crate::synth::effect_slot_id::EffectSlotIndex::new(1).unwrap(),
+                Some(
+                    crate::adapter::production_effects::production_chorus_config(
+                        crate::synth::EffectSlotId::new(2).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+    }
+
+    #[test]
+    fn gapped_chain_counts_occupants_and_projects_rows_per_position() {
+        let state = gapped_patch_state();
+        let model = SemanticGraphicalViewModel::project(&state, "gapped-state-hash").unwrap();
+        let patch_surface = model
+            .surfaces()
+            .iter()
+            .find(|surface| surface.id() == SurfaceId::PatchMain)
+            .expect("PATCH Main projects for the focused patch");
+
+        let SemanticSurfaceSummary::Patch { effect_count, .. } = patch_surface.summary() else {
+            panic!("PATCH Main carries a Patch summary");
+        };
+        assert_eq!(
+            *effect_count, 1,
+            "only occupied positions count as configured effects"
+        );
+
+        let slot_value = |position: usize| {
+            patch_surface
+                .controls()
+                .iter()
+                .find(|control| {
+                    matches!(
+                        control.path().control_id(),
+                        crate::control::SemanticControlId::Patch(PatchControlId::EffectSlot(slot))
+                            if slot.index() == position
+                    )
+                })
+                .map(|control| control.value().clone())
+        };
+        assert_eq!(
+            slot_value(0),
+            Some(SemanticControlValue::Identity("Empty".to_owned())),
+            "slot 0 must project as empty, never receive the squeezed occupant"
+        );
+        assert_eq!(
+            slot_value(1),
+            Some(SemanticControlValue::Identity("Chorus".to_owned())),
+            "the occupant must project at its true position"
+        );
+        assert_eq!(
+            slot_value(2),
+            Some(SemanticControlValue::Identity("Empty".to_owned()))
+        );
+    }
 }

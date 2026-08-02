@@ -149,7 +149,7 @@ Different data has different delivery semantics:
 | structural changes | ownership-transfer queue of prepared graphs/assets | swap only at block boundaries; retire off-thread |
 | meters and RT health | atomics or latest-value `MeterSnapshot` | decimated; UI polls |
 
-`ParameterSnapshot` is fixed-size and copyable. Instrument scalars and the zero-or-one Patch-effect scalar slot occupy separate fixed sections so an effect layout cannot alias an engine layout. It contains no `Vec`, `String`, path, mutex, decoder, or reference whose final drop could happen in the callback.
+`ParameterSnapshot` is fixed-size and copyable. Instrument scalars, the three ordered Patch-effect scalar slots, the indexed track sends, and the bus-return scalars occupy separate fixed sections so an effect layout cannot alias an engine layout. It contains no `Vec`, `String`, path, mutex, decoder, or reference whose final drop could happen in the callback.
 
 A worker builds a complete `PreparedGraph`: engines, effect state, sample zones, delay memory, routing, and scratch capacities are all ready before publication. The callback swaps it at a block boundary and moves the old graph into a bounded return queue for worker destruction. If the return queue is full, the callback retains the graph in a bounded retirement slot and retries; it never drops it.
 
@@ -170,7 +170,7 @@ Before audio starts, preallocate:
 - stereo buses and per-block scratch;
 - effect delay/convolution working memory;
 - maximum events consumed per block;
-- active patch, effect, mixer, and aux slots;
+- active patch, effect, mixer track, and bus-return slots;
 - graph handoff and retirement capacity.
 
 The standalone binary is the production composition root. It selects and
@@ -201,7 +201,7 @@ the control tick consumes it, retains the visible application error, and asks
 the disposable window to close. Formatting, logging, recovery policy, and UI
 behavior never run in the device callback.
 
-Render complexity is bounded by explicit limits for active patches, voices, post-FX slots, tracks, aux buses, events, and frames. The product-level maxima are three ordered post-FX slots per Patch and eight bus returns; a current executable slice may impose narrower limits.
+Render complexity is bounded by explicit limits for active patches, voices, post-FX slots, tracks, bus returns, events, and frames. The product-level maxima are three ordered post-FX slots per Patch and eight bus returns; a current executable slice may impose narrower limits.
 
 ### Overflow and recovery
 
@@ -306,7 +306,7 @@ Every admitted engine applies the Patch-owned ADSR independently inside each nat
 
 Braids is built from the official Mutable Instruments source pinned at `pichenettes/eurorack@08460a69a7e1f7a81c5a2abcc7189c9a6b7208d4` and `stmlib@e3bd7c9cc00e4364166f9905c0509b6ffd0535ec`. Crest vendors only the audited DSP subset and license/provenance files, compiles it behind a small exception-free opaque C ABI, and owns exactly sixteen fully initialized `MacroOscillator` instances per prepared Braids Patch. The descriptor exposes the 47 named playable upstream models plus scalar Timbre and Color. Braids retains its 96 kHz, 24-sample internal contract; the first admitted host format is exactly 48 kHz and uses a bounded 2:1 adapter. Unsupported rates fail during preparation and never select another engine.
 
-Scalar capability parameters use descriptor order within the immutable active graph revision. Control projection encodes at most sixteen instrument scalar values and, separately, at most eight values for the current zero-or-one effect slot into fixed destructor-free real-time storage; choices use their descriptor index. PATCH has one reducer-owned ordered focus surface resolved from both registries: Engine, Attack, Decay, Sustain, Release, visible instrument parameters classified `StructuralChoice`, then each configured ordered effect's visible parameters classified `ScalarEdit`. Bare Up/Down moves through that nonwrapping order; bare Left/Right remains unavailable until sibling-Patch navigation is introduced. On the engine row, Edit+Left/Right requests the adjacent installed capability without wrapping and Edit+Up/Down is unavailable. On ADSR and effect-scalar rows, Edit+Left/Right applies the canonical fine decrement/increment and Edit+Down/Up applies the canonical coarse decrement/increment. On a descriptor-declared structural-choice row, Edit+Left/Right requests the adjacent declared choice without wrapping and Edit+Up/Down is unavailable. Engine targets are rebuilt from the selected descriptor's ordered defaults and required assets; structural-choice targets replace exactly one assignment in the active config. Both paths use the same correlated structural-edit lifecycle, keep no inactive-config cache, and never translate or substitute values. The HiDef SoundFont surface therefore adds Preset after Release while its asset stays visible and locked; Braids instrument Scalar values remain descriptor-projected and read-only on PATCH in this slice; the configured first Patch appends read-only Chorus identity followed by editable Amount and Depth. MIXER contains only the sixteen track-owned controls and distinct globals.
+Scalar capability parameters use descriptor order within the immutable active graph revision. Control projection encodes at most sixteen instrument scalar values and, separately, at most eight values for each of the three ordered effect slots into fixed destructor-free real-time storage; choices use their descriptor index. PATCH has one reducer-owned ordered focus surface resolved from both registries: Engine, Attack, Decay, Sustain, Release, visible instrument parameters classified `StructuralChoice`, then each configured ordered effect's visible parameters classified `ScalarEdit`. Bare Up/Down moves through that nonwrapping order; bare Left/Right remains unavailable until sibling-Patch navigation is introduced. On the engine row, Edit+Left/Right requests the adjacent installed capability without wrapping and Edit+Up/Down is unavailable. On ADSR and effect-scalar rows, Edit+Left/Right applies the canonical fine decrement/increment and Edit+Down/Up applies the canonical coarse decrement/increment. On a descriptor-declared structural-choice row, Edit+Left/Right requests the adjacent declared choice without wrapping and Edit+Up/Down is unavailable. Engine targets are rebuilt from the selected descriptor's ordered defaults and required assets; structural-choice targets replace exactly one assignment in the active config. Both paths use the same correlated structural-edit lifecycle, keep no inactive-config cache, and never translate or substitute values. The HiDef SoundFont surface therefore adds Preset after Release while its asset stays visible and locked; Braids instrument Scalar values remain descriptor-projected and read-only on PATCH in this slice; each of the three ordered effect slots appends one occupancy choice row — cycling empty and every installed registry entry through the same adjacent-choice gesture as the engine row — followed by the configured effect's editable parameters, so the first fixture Patch shows Chorus with editable Amount and Depth in its first slot by default. MIXER contains the sixteen track-owned controls with sends addressed by bus, the eight bus returns with their occupancy, parameters, and return levels, and master gain as the only distinct global.
 
 Only one structural request is in flight application-wide, regardless of whether
 its intent selects an engine or a capability-owned structural choice. MIDI, context
@@ -406,16 +406,16 @@ track level / pan
   ├──→ pre-gate track meter
   ↓
 track mute / solo gate
-  ├──→ post-fader sends → shared aux FX ─┐
-  ↓                                      │
-16-track dry mix ←──────────────────────────────┘
+  ├──→ post-gate sends[0..7] ──→ bus returns[0..7] ──┐
+  ↓                                                  │
+16-track dry mix ←──────────────────────────────────┘
   ↓
 master gain / safety limiter
   ↓
 stereo device output
 ```
 
-The fixed Phase 4 callback seam is `PreparedEngineRack → PatchAudioBlock → PreparedPostEffectRack → MixEngine`. The effect rack is Patch-aligned with the engine rack and fixed parameter snapshot; it mutates only the matching interleaved stereo stem in place. `MixEngine` applies Patch trim, accumulates each stem into the selected fixed track scratch buffer, and then applies that track's parameters. The current production bound is zero or one effect per Patch, with one Chorus on the first fixture Patch only; Phase 3 may expand this only up to the product maximum of three ordered effect slots per Patch and eight bus returns. Focused tests may configure two Chorus instances to prove their delay, LFO, and tail ownership is independent.
+The fixed Phase 4 callback seam is `PreparedEngineRack → PatchAudioBlock → PreparedPostEffectRack → MixEngine`. The effect rack is Patch-aligned with the engine rack and fixed parameter snapshot; it mutates only the matching interleaved stereo stem in place. `MixEngine` applies Patch trim, accumulates each stem into the selected fixed track scratch buffer, and then applies that track's parameters. The production bound is the product maximum itself: three ordered effect slots per Patch and eight bus returns, with one Chorus configured on the first fixture Patch by default. Focused tests may configure two Chorus instances to prove their delay, LFO, and tail ownership is independent.
 
 Meters observe each post-level/pan track before the mute/solo audibility gate so muted tracks remain diagnosable. Mute always wins. When any track is soloed, only soloed, non-muted tracks contribute dry signal or sends. Sends are post-fader and post-gate, so a muted or solo-excluded track cannot continue feeding a wet return. Effects run in declared order. Feedback exists only inside bounded effect implementations, never as an arbitrary graph cycle.
 
@@ -686,9 +686,9 @@ An architecture change must preserve the one-way state path and callback contrac
 - SoundFont is the first concrete engine, not a reason to couple the domain to one library.
 - Braids is the second concrete engine; its C++ DSP remains behind the generic capability and prepared-renderer boundaries.
 - Instruments and effects have separate descriptor/registry/provider/preparer families while sharing canonical parameter ids, specs, assignments, values, and asset references; effect descriptors never inherit instrument voice or MIDI semantics.
-- Chorus is the first concrete Patch effect. It uses the pinned MIT-licensed Mutable Instruments Rings Chorus subset, is admitted only at exactly 48 kHz in this slice, and owns an independent 2,048-sample 16-bit delay buffer plus LFO/tail state per prepared instance.
+- Chorus, Reverb, and Delay are the three installed registry effects, peers in one role-independent registry whose entries may occupy a Patch effect slot or a bus return; the formerly mixer-owned reverb and delay join that registry as ordinary entries occupying the first two bus returns by default. Chorus uses the pinned MIT-licensed Mutable Instruments Rings Chorus subset, is admitted only at exactly 48 kHz in this slice, and owns an independent 2,048-sample 16-bit delay buffer plus LFO/tail state per prepared instance.
 - The product topology is capped at three ordered post-effect slots per Patch and eight bus returns. A bounded implementation slice may support fewer but may not exceed these limits without updating this design.
-- The production topology is statically bounded to zero or one post effect per Patch and configures one Chorus on the first fixture Patch only: `PreparedEngineRack → PatchAudioBlock → PreparedPostEffectRack → MixEngine`. There is no selector, bypass, reorder, placeholder, or dynamic graph editing yet.
+- The production topology provides three ordered post-effect slots per Patch, each independently empty or occupied from the registry, with occupancy selected through the correlated prepared structural lifecycle: `PreparedEngineRack → PatchAudioBlock → PreparedPostEffectRack → MixEngine`. Slot order is render order; slots may be emptied, filled, or exchanged through that lifecycle, and the first fixture Patch holds one Chorus by default. There is no bypass control and no dynamic render-time graph editing — every topology change is prepared off the audio path and exchanged complete.
 - The mixer is one fixed bank of exactly sixteen persistent tracks. A Patch owns only its output `MixerTrackId` and pre-track trim; a track owns level, pan, mute, solo, sends, and its meter. Multiple Patches may share a track, and no Patch-owned mixer-fader state exists.
 - The detailed Sample capability contract is intentionally deferred until Phase 7 planning and is not inferred from Figma fixtures or treated as a prerequisite for earlier phases.
 - In the Sample Browser, holding Start while a sample row is focused previews that sample; releasing Start or leaving the row stops preview, and Start remains reserved elsewhere.

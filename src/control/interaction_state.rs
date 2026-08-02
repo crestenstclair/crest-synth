@@ -204,7 +204,8 @@ impl InteractionState {
                 else {
                     return Err(FocusPathError::ControlSurfaceMismatch);
                 };
-                FocusPath::mixer_inspector(*track_id, MixerTrackParameter::ReverbSend)
+                // The selected track's first send: Send(trackId, BusId 0).
+                FocusPath::mixer_send(*track_id, crate::mixer::bus_id::BusId::default())
             }
             SurfaceId::PatchMain | SurfaceId::MixerMain => {
                 return Err(FocusPathError::ControlSurfaceMismatch)

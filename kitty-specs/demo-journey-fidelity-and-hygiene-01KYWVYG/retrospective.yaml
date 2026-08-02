@@ -1,0 +1,386 @@
+schema_version: 1
+mission_id: 01KYWVYGQMTRFY314AP78KZJPY
+mission_slug: demo-journey-fidelity-and-hygiene-01KYWVYG
+mission_number:
+friendly_name: Phase 3 Demo Journey Fidelity and Hygiene
+mission_type: software-dev
+target_branch: feat/expandable-effects-and-bus-topology
+created_at: '2026-08-01T20:54:54.789911+00:00'
+created_by:
+  kind: runtime
+  id: spec-kitty-generator
+  display: Spec Kitty Generator
+provenance:
+  kind: runtime_post_completion
+  invoked_at: '2026-08-01T20:54:54.789911+00:00'
+  policy_resolved_from:
+    enabled: <default>
+    timing: <default>
+    failure_policy: <default>
+    write_record: <default>
+    generate_proposals: <default>
+    apply_proposals: <default>
+    permissions.write_record: <default>
+    permissions.inspect_mission_artifacts: <default>
+    permissions.propose_glossary_changes: <default>
+    permissions.propose_drg_changes: <default>
+    permissions.propose_doctrine_changes: <default>
+    permissions.apply_low_risk_changes: <default>
+    permissions.apply_structural_changes: <default>
+    precedence: <default>
+    generator: <default>
+policy_source:
+  enabled: <default>
+  timing: <default>
+  failure_policy: <default>
+  write_record: <default>
+  generate_proposals: <default>
+  apply_proposals: <default>
+  permissions.write_record: <default>
+  permissions.inspect_mission_artifacts: <default>
+  permissions.propose_glossary_changes: <default>
+  permissions.propose_drg_changes: <default>
+  permissions.propose_doctrine_changes: <default>
+  permissions.apply_low_risk_changes: <default>
+  permissions.apply_structural_changes: <default>
+  precedence: <default>
+  generator: <default>
+findings_status: has_findings
+helped:
+- id: h-001
+  category: implementation
+  summary: WP01 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-002
+  category: implementation
+  summary: WP02 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-003
+  category: implementation
+  summary: WP03 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-004
+  category: implementation
+  summary: WP04 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-005
+  category: implementation
+  summary: WP05 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-006
+  category: implementation
+  summary: WP06 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-007
+  category: implementation
+  summary: WP07 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-008
+  category: implementation
+  summary: WP09 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-009
+  category: implementation
+  summary: WP10 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-010
+  category: implementation
+  summary: WP11 completed without rejection cycles
+  evidence_refs:
+  - e-016
+- id: h-011
+  category: process
+  summary: Falsification-by-execution found a proof gap that eleven work-package reviews missed
+  evidence_refs:
+  - e-021
+  details: >-
+    During the post-merge review the orchestrator reverted
+    src/testing/live_demo_runner.rs:959-964 to unconditional
+    AppEvent::from_semantic_action — literally reintroducing DRIFT-6, the defect
+    this mission exists to close — and ran cargo test --test effects_and_buses.
+    It returned exit 0, 1 passed, 0 failed. The runner was restored from backup
+    and re-verified green. No amount of reading the guard source revealed this;
+    executing the defect did, in one command. Adopt as standing practice: a
+    proof that is claimed to prevent a regression must be tested by performing
+    that regression.
+- id: h-012
+  category: process
+  summary: Running the physical demo directly (rather than delegating it) produced the first
+    committed live-run evidence in this mission line
+  evidence_refs:
+  - e-022
+  details: >-
+    WP11's log was captured and committed at
+    kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log
+    (493KB). The parent mission cited two live-run logs (t052-run.log,
+    wp10-t059-live-run.log) that are committed in no branch and do not exist on
+    this host — its physical claims are unauditable today. Referencing evidence
+    is not retaining it; commit the artifact or the claim decays to hearsay.
+- id: h-013
+  category: process
+  summary: Building the merged tree before declaring done caught a break invisible to every
+    lane reviewer
+  evidence_refs:
+  - e-015
+  details: >-
+    WP09 (branched from WP08) called Patch::with_post_effects, which WP05
+    deleted in a sibling lane. Both lanes reviewed clean because neither
+    reviewer could observe the other. Only compiling the integrated tree
+    surfaced it. See n-006 for the structural cause.
+not_helpful:
+- id: n-004
+  category: doc
+  summary: analysis-report.md present with findings
+  evidence_refs:
+  - e-020
+  details: An analysis-report.md artifact is present for this mission. Review its findings to understand documented 
+    issues and decisions.
+- id: n-003
+  category: implementation
+  summary: WP08 needed 2 implementation cycles
+  evidence_refs:
+  - e-019
+  details: WP WP08 entered in_progress 2 times. Multiple implementation cycles suggest rework not captured as a 
+    documented review rejection; the WP scope or contract may need refinement.
+- id: n-002
+  category: process
+  summary: WP11 required 2 --force override(s) during workflow
+  evidence_refs:
+  - e-018
+  details: WP WP11 required 2 operator-driven --force lane transition(s). Force overrides typically indicate the runtime
+    guard failed or the operator routed around it; investigate the underlying cause.
+- id: n-001
+  category: review_loop
+  summary: WP08 required 1 rejection cycle(s) before approval
+  evidence_refs:
+  - e-017
+  details: WP WP08 was sent back from review to planning 1 time(s).
+- id: n-005
+  category: spec_quality
+  summary: The mission graded its own fix with acceptance criteria that cannot fail — the
+    exact defect class it was chartered to close, one level up
+  evidence_refs:
+  - e-021
+  details: >-
+    This mission exists because a demo claim outran its demonstration. It fixed
+    the claim, then proved the fix with two assertions that hold whether or not
+    the behavior occurs. (1) The journey guard asserts over the scene's
+    declaration (transition.adjust(), support_before()), never over the
+    dispatched event; LiveTopologyCheckpoint has no dispatched-event field, so
+    reverting the runner leaves every checkpoint, the live report, and the
+    hardware evidence byte-identical. (2) FR-002's three assertions — Accepted,
+    audible_on_activated_graph(), active_notes() > 0 — are satisfied by the
+    ambient probe note on the already-sounding chain with the parameter edit
+    removed entirely. The post-merge verdict is FAIL on proof adequacy for this
+    reason. The orchestrator authored the acceptance-matrix row that cited the
+    vacuous FR-002 evidence; the error is the reviewer's own.
+- id: n-006
+  category: process
+  summary: Lane isolation let a deleted API survive review in a sibling lane and broke the
+    merged build
+  evidence_refs:
+  - e-015
+  details: >-
+    Per-WP lane worktrees give each reviewer a view that excludes concurrent
+    lanes. WP05 deleted Patch::with_post_effects; WP09, branched from WP08,
+    still called it. Both lanes passed review; the merged tree did not compile.
+    Two reviewers also filed deletion claims that proved wrong post-merge, same
+    root cause. Lane-local green is not integration green — nothing in the
+    workflow compiled the union before the merge gate.
+- id: n-007
+  category: doc
+  summary: This mission's acceptance matrix graded functional requirements only; the parent
+    under-graded constraints but did grade its NFRs
+  evidence_refs:
+  - e-021
+  - e-025
+  details: >-
+    CORRECTED 2026-08-01, during the successor mission's planning. The original
+    text of this finding claimed both missions "produced acceptance matrices
+    covering functional requirements only" and concluded that a repeat across
+    two authors "indicts the artifact template, not the author". Counting the
+    graded rows shows that is false for the parent.
+
+    Measured: expandable-effects-and-bus-topology-01KYNGX8 grades 43 rows — FR
+    21, NFR 10, SC 11, C 1. demo-journey-fidelity-and-hygiene-01KYWVYG grades 16
+    rows, all FR, with zero NFR and zero constraint rows against 4 declared NFRs
+    and 8 declared constraints.
+
+    So the NFR omission is this mission's alone and belongs to its author, not
+    to the template. What genuinely recurs is constraint under-grading: the
+    parent graded 1 constraint row against roughly eleven declared, and its own
+    review recorded that gap. The declared-validation remediation stands on the
+    corrected facts — 12 of 28 declared rows went ungraded here and nothing
+    caught it — but it is justified by that, not by a two-mission pattern that
+    did not exist.
+
+    Filing a claim of recurrence without counting the parent's rows is the same
+    error class this mission's review was written to name.
+- id: n-008
+  category: tooling
+  summary: 'spec-kitty retrospect summary enumerates mission *types* instead of missions and
+    reports every real record as missing'
+  evidence_refs:
+  - e-023
+  details: >-
+    The command documents itself as reading kitty-specs/*/retrospective.yaml but
+    enumerates .kittify/missions/*, which on this project contains exactly one
+    entry — software-dev, the mission TYPE. Observed output: mission_count 1,
+    mission_id "software-dev", mission_slug "", findings_status "missing",
+    aggregate missing=1 has_findings=0. On disk both records are well-formed and
+    both carry findings_status: has_findings. The classifier
+    (retrospective/summary.py:630 classify_mission_record) is correct; its
+    caller passes the wrong directory. spec-kitty agent retrospect synthesize
+    resolves the same mission correctly, so only the summary path is affected.
+    Cross-mission learning is invisible in this project until it is fixed.
+    Upstream defect in spec-kitty v3.2.6 — not fixable in this repository.
+gaps:
+- id: g-001
+  category: doc
+  summary: data-model.md absent
+  evidence_refs:
+  - e-002
+  details: spec.md declares domain entities but data-model.md is missing. A data model document clarifies domain entity
+    relationships.
+- id: g-002
+  category: spec_quality
+  summary: No checkpoint field records which input kind was dispatched, so no gate can tell a
+    journey-driven change from an injected one
+  evidence_refs:
+  - e-021
+  details: >-
+    LiveTopologyCheckpoint carries the scene's declared intent but not the event
+    the runner actually emitted. Direct cause of HIGH finding DRIFT-1 and of
+    n-005 (1). Remediation: pin the dispatched input kind on the topology
+    checkpoint so the guard asserts over what happened, not over what was
+    declared.
+- id: g-003
+  category: spec_quality
+  summary: No checkpoint field records an occupant scalar's before/after value, so no gate
+    can prove a parameter edit took effect
+  evidence_refs:
+  - e-021
+  details: >-
+    FR-002 can only assert acceptance and audibility, both of which the ambient
+    probe note supplies unaided. Direct cause of HIGH finding DRIFT-2 and of
+    n-005 (2). Remediation: assert the occupant scalar's before and after values
+    on the edit checkpoint.
+- id: g-004
+  category: design
+  summary: SemanticAction has no patch-selection gesture, bounding every live demo to a
+    single instrument
+  evidence_refs:
+  - e-021
+  details: >-
+    The 8-variant SemanticAction union contains no SelectPatch or NextPatch, so
+    the player journey cannot reach a second patch and every scene demonstrates
+    all channels of exactly one instrument. Recorded as LIMIT-1 in the parent
+    mission's review Addendum 2 and promoted to an explicit Phase 5 entry
+    condition in ROADMAP.md by operator direction (2026-08-01), requiring both a
+    patch-selection semantic gesture and a multi-instrument
+    demo-live-patch-editor.
+- id: g-005
+  category: tooling
+  summary: 'Correction: g-001 above is a false finding — this project forbids data-model.md
+    by doctrine'
+  evidence_refs:
+  - e-024
+  details: >-
+    CLAUDE.md states verbatim that the mission must "never produce
+    data-model.md/contracts/ (they fork the canonical resources and fail
+    acceptance)"; the canonical resources live in the crest-spec at
+    .kittify/crest-spec/. The generator's absent-artifact heuristic is unaware of
+    project-level doctrine and will emit this false gap on every future crest-synth
+    mission. g-001 is left byte-intact as generated and corrected here rather
+    than quietly deleted. Acting on g-001 would fail acceptance.
+proposals: []
+evidence_refs:
+- id: e-001
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/meta.json
+- id: e-002
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/spec.md
+- id: e-003
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/plan.md
+- id: e-004
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks.md
+- id: e-005
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP01-scene-journey-rework.md
+- id: e-006
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP02-migrate-control-surfaces.md
+- id: e-007
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP03-migrate-testing-snapshot-surfaces.md
+- id: e-008
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP04-composition-root-gaps-and-loud-defaults.md
+- id: e-009
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP05-retire-compact-view.md
+- id: e-010
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP06-live-report-absent-vs-zero.md
+- id: e-011
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP07-return-clear-continuity-twin.md
+- id: e-012
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP08-per-position-capability-identity.md
+- id: e-013
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP09-fourth-entry-fixture-observation-v2.md
+- id: e-014
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP10-hygiene-sweep-and-guard-gating.md
+- id: e-015
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/tasks/WP11-physical-rerun-amended-artifacts.md
+- id: e-016
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/status.events.jsonl
+- id: e-017
+  kind: event_range
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/status.events.jsonl
+  range: 01KYX6353YJ13ZFAP7ECTZTHV7
+- id: e-018
+  kind: event_range
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/status.events.jsonl
+  range: 01KYZGAMWA9QJV4JZVVDVGGGR0..01KYZH1TXB7TEY5D0AKK3X20A7
+- id: e-019
+  kind: event_range
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/status.events.jsonl
+  range: implementation_cycles
+- id: e-020
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/analysis-report.md
+- id: e-021
+  kind: file
+  path: kitty-specs/demo-journey-fidelity-and-hygiene-01KYWVYG/mission-review.md
+- id: e-022
+  kind: file
+  path: kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log
+- id: e-023
+  kind: file
+  path: kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/retrospective.yaml
+- id: e-024
+  kind: file
+  path: CLAUDE.md
+- id: e-025
+  kind: file
+  path: kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/acceptance-matrix.json
+generator_version: '1.0'
+provenance_history: []

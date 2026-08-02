@@ -13,7 +13,6 @@ use crest_synth::control::{
 };
 use crest_synth::kernel::midi_message::MidiMessage;
 use crest_synth::kernel::{MidiChannel, PatchId};
-use crest_synth::mixer::global_effects_processor::{EffectError, GlobalEffectsProcessor};
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::mixer::mix_engine::MixEngine;
 use crest_synth::mixer::mix_observation::MixObservation;
@@ -36,7 +35,6 @@ use crest_synth::synth::{
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use std::alloc::System;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -109,7 +107,7 @@ fn finish_memory_count() -> (usize, usize) {
 }
 
 fn globals() -> GlobalParameters {
-    GlobalParameters::new(0.0, 0.5, 0.4, 0.0, 250.0, 0.3, 0.0).unwrap()
+    GlobalParameters::new(0.0).unwrap()
 }
 
 fn track(index: u8) -> MixerTrackId {
@@ -170,6 +168,14 @@ fn approximately(actual: f32, expected: f32) -> bool {
     (actual - expected).abs() <= 1.0e-6
 }
 
+fn sample_rms(samples: &[f32]) -> f32 {
+    let energy: f64 = samples
+        .iter()
+        .map(|sample| f64::from(*sample) * f64::from(*sample))
+        .sum();
+    (energy / samples.len() as f64).sqrt() as f32
+}
+
 fn assert_samples(actual: &[f32], expected: &[f32]) {
     assert_eq!(actual.len(), expected.len());
     for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
@@ -180,54 +186,41 @@ fn assert_samples(actual: &[f32], expected: &[f32]) {
     }
 }
 
-#[derive(Default)]
-struct EffectProbe {
-    reverb_input: Cell<[f32; SAMPLE_COUNT]>,
-    delay_input: Cell<[f32; SAMPLE_COUNT]>,
+/// A drop-counting unity return: proves `mix` never destroys its prepared
+/// effects (the guarantee the retired port probe carried) while the per-bus
+/// send evidence now comes from `MixObservation`'s indexed measurements.
+struct DropProbeReturn {
+    drops: Arc<AtomicUsize>,
 }
 
-struct ProbeEffects {
-    probe: Rc<EffectProbe>,
-    drops: Rc<Cell<usize>>,
-}
-
-impl Drop for ProbeEffects {
+impl Drop for DropProbeReturn {
     fn drop(&mut self) {
-        self.drops.set(self.drops.get() + 1);
+        self.drops.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-impl GlobalEffectsProcessor for ProbeEffects {
-    fn prepare(
-        &mut self,
-        _sample_rate: f32,
-        _max_frames: usize,
-        _max_delay_milliseconds: f32,
-    ) -> Result<(), EffectError> {
-        Ok(())
+impl crest_synth::synth::PreparedPostEffect for DropProbeReturn {
+    fn patch_id(&self) -> PatchId {
+        PatchId::new(u32::MAX).unwrap()
+    }
+
+    fn slot_id(&self) -> crest_synth::synth::EffectSlotId {
+        crest_synth::synth::EffectSlotId::new(1).unwrap()
     }
 
     fn process(
         &mut self,
-        reverb_input: &[f32],
-        delay_input: &[f32],
-        _output: &mut [f32],
-        _parameters: &GlobalParameters,
-    ) {
-        let mut reverb = [0.0; SAMPLE_COUNT];
-        let mut delay = [0.0; SAMPLE_COUNT];
-        reverb.copy_from_slice(reverb_input);
-        delay.copy_from_slice(delay_input);
-        self.probe.reverb_input.set(reverb);
-        self.probe.delay_input.set(delay);
+        _interleaved_stereo: &mut [f32],
+        _frame_count: usize,
+        _parameters: &crest_synth::real_time::RtPostEffectParameters,
+    ) -> Result<(), crest_synth::synth::PreparedEffectError> {
+        Ok(())
     }
 }
 
 struct MixRun {
     output: [f32; SAMPLE_COUNT],
     observation: MixObservation,
-    reverb_input: [f32; SAMPLE_COUNT],
-    delay_input: [f32; SAMPLE_COUNT],
 }
 
 fn parameter_snapshot(
@@ -269,22 +262,34 @@ fn run_mix(
             .copy_from_slice(stem);
     }
 
-    let probe = Rc::new(EffectProbe::default());
-    let drops = Rc::new(Cell::new(0));
-    let mut mixer = MixEngine::new(ProbeEffects {
-        probe: Rc::clone(&probe),
-        drops: Rc::clone(&drops),
-    });
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut mixer = MixEngine::new();
     mixer.prepare(SAMPLE_RATE, FRAME_COUNT).unwrap();
+    mixer
+        .install_bus_return(
+            crest_synth::mixer::bus_id::BusId::ALL[7],
+            Box::new(DropProbeReturn {
+                drops: Arc::clone(&drops),
+            }),
+            crest_synth::real_time::RtPostEffectParameters::new(
+                crest_synth::synth::EffectSlotId::new(1).unwrap(),
+                &[],
+            )
+            .unwrap(),
+            1.0,
+        )
+        .unwrap();
     let mut output = [0.0; SAMPLE_COUNT];
     let observation = mixer.mix(&patch_audio, &parameters, &mut output);
-    assert_eq!(drops.get(), 0, "mix must not destroy its prepared effects");
+    assert_eq!(
+        drops.load(Ordering::Relaxed),
+        0,
+        "mix must not destroy its prepared effects"
+    );
 
     MixRun {
         output,
         observation,
-        reverb_input: probe.reverb_input.get(),
-        delay_input: probe.delay_input.get(),
     }
 }
 
@@ -363,13 +368,21 @@ fn production_path_proves_canonical_sixteen_track_routing() {
         let index = track_id.index() as f32;
         distinctive_mixer.set_track(
             track_id,
-            MixerTrackParameters::new(
+            MixerTrackParameters::from_values(
                 -index,
                 (index - 7.5) / 10.0,
                 track_id.index() % 3 == 0,
                 track_id.index() % 5 == 0,
-                index / 30.0,
-                (15.0 - index) / 30.0,
+                [
+                    index / 30.0,
+                    (15.0 - index) / 30.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
             )
             .unwrap(),
         );
@@ -484,13 +497,18 @@ fn production_path_proves_canonical_sixteen_track_routing() {
     control_state
         .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::MixerInspector))
         .unwrap();
-    for (index, _) in MixerTrackParameter::INSPECTOR.into_iter().enumerate() {
+    // The Inspector's first region is the eight indexed sends of the selected
+    // track, in ascending BusId order; each accepts the same fine edit.
+    for (index, _) in crest_synth::mixer::bus_id::BusId::ALL
+        .into_iter()
+        .enumerate()
+    {
         set_mode(&mut control_state, InteractionMode::Adjust);
         control_state
             .apply_semantic_action(SemanticAction::Adjust(Direction::Right))
             .unwrap();
         set_mode(&mut control_state, InteractionMode::Navigate);
-        if index + 1 < MixerTrackParameter::INSPECTOR.len() {
+        if index + 1 < crest_synth::mixer::bus_id::BusId::COUNT {
             control_state
                 .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
                 .unwrap();
@@ -499,7 +517,14 @@ fn production_path_proves_canonical_sixteen_track_routing() {
     let edited_track = *control_state.mixer().track(track(0));
     assert_eq!(
         edited_track,
-        MixerTrackParameters::new(1.0, 0.01, true, true, 0.01, 0.01).unwrap()
+        MixerTrackParameters::from_values(
+            1.0,
+            0.01,
+            true,
+            true,
+            [0.01; crest_synth::mixer::bus_id::MAX_BUS_RETURNS]
+        )
+        .unwrap()
     );
     assert!(
         MixerTrackId::ALL[1..]
@@ -507,7 +532,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
             .all(|track_id| control_state.mixer().track(*track_id)
                 == &MixerTrackParameters::default())
     );
-    assert_eq!(MixerTrackParameter::ALL.len(), 6);
+    assert_eq!(MixerTrackParameter::MAIN.len(), 4);
     let projected_controls = projector.project_with_shell_tree(&control_state).unwrap();
     assert_eq!(projected_controls.4.mixer_track(track(0)), &edited_track);
 
@@ -618,7 +643,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
 
     let half_level = MixerState::default().with_track(
         track(3),
-        MixerTrackParameters::new(HALF_GAIN_DB, 0.0, false, false, 0.0, 0.0).unwrap(),
+        MixerTrackParameters::from_values(HALF_GAIN_DB, 0.0, false, false, [0.0; 8]).unwrap(),
     );
     let shared_half = run_mix(&default_outputs, half_level, &[first_stem, second_stem]);
     assert_samples(&shared_half.output, &[0.25, 0.25, 0.25, 0.25]);
@@ -659,19 +684,35 @@ fn production_path_proves_canonical_sixteen_track_routing() {
 
     let pan_state = MixerState::default().with_track(
         track(3),
-        MixerTrackParameters::new(0.0, 0.5, false, false, 0.0, 0.0).unwrap(),
+        MixerTrackParameters::from_values(0.0, 0.5, false, false, [0.0; 8]).unwrap(),
     );
     let panned = run_mix(&[PatchOutput::to_track(track(3))], pan_state, &[first_stem]);
     assert_samples(&panned.output, &[0.1, 0.4, 0.1, 0.4]);
 
-    let send_parameters =
-        MixerTrackParameters::new(HALF_GAIN_DB, 0.0, false, false, 0.25, 0.5).unwrap();
+    let send_parameters = MixerTrackParameters::from_values(
+        HALF_GAIN_DB,
+        0.0,
+        false,
+        false,
+        [0.25, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    )
+    .unwrap();
     let send_state = MixerState::default().with_track(track(3), send_parameters);
     let send_stem = [0.4, 0.2, 0.4, 0.2];
     let sends = run_mix(&[PatchOutput::to_track(track(3))], send_state, &[send_stem]);
     assert_samples(&sends.output, &[0.2, 0.1, 0.2, 0.1]);
-    assert_samples(&sends.reverb_input, &[0.05, 0.025, 0.05, 0.025]);
-    assert_samples(&sends.delay_input, &[0.1, 0.05, 0.1, 0.05]);
+    assert!(approximately(
+        sends
+            .observation
+            .bus_input_rms(crest_synth::mixer::bus_id::BusId::ALL[0]),
+        sample_rms(&[0.05, 0.025, 0.05, 0.025]),
+    ));
+    assert!(approximately(
+        sends
+            .observation
+            .bus_input_rms(crest_synth::mixer::bus_id::BusId::ALL[1]),
+        sample_rms(&[0.1, 0.05, 0.1, 0.05]),
+    ));
     let sounding_meter = sends.observation.track(track(3));
     assert!(approximately(sounding_meter.left_peak(), 0.2));
     assert!(approximately(sounding_meter.right_peak(), 0.1));
@@ -679,7 +720,14 @@ fn production_path_proves_canonical_sixteen_track_routing() {
 
     let muted_state = MixerState::default().with_track(
         track(3),
-        MixerTrackParameters::new(HALF_GAIN_DB, 0.0, true, false, 0.25, 0.5).unwrap(),
+        MixerTrackParameters::from_values(
+            HALF_GAIN_DB,
+            0.0,
+            true,
+            false,
+            [0.25, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        .unwrap(),
     );
     let muted = run_mix(
         &[PatchOutput::to_track(track(3))],
@@ -687,20 +735,22 @@ fn production_path_proves_canonical_sixteen_track_routing() {
         &[send_stem],
     );
     assert_samples(&muted.output, &[0.0; SAMPLE_COUNT]);
-    assert_samples(&muted.reverb_input, &[0.0; SAMPLE_COUNT]);
-    assert_samples(&muted.delay_input, &[0.0; SAMPLE_COUNT]);
+    for bus in crest_synth::mixer::bus_id::BusId::ALL {
+        assert_eq!(muted.observation.bus_input_rms(bus), 0.0);
+        assert_eq!(muted.observation.bus_output_rms(bus), 0.0);
+    }
     assert_eq!(muted.observation.track(track(3)), sounding_meter);
 
     let solo_state = MixerState::default().with_track(
         track(3),
-        MixerTrackParameters::new(0.0, 0.0, false, true, 0.0, 0.0).unwrap(),
+        MixerTrackParameters::from_values(0.0, 0.0, false, true, [0.0; 8]).unwrap(),
     );
     let soloed = run_mix(&rerouted_outputs, solo_state, &[first_stem, second_stem]);
     assert_samples(&soloed.output, &first_stem);
 
     let muted_solo_state = MixerState::default().with_track(
         track(3),
-        MixerTrackParameters::new(0.0, 0.0, true, true, 0.5, 0.5).unwrap(),
+        MixerTrackParameters::from_values(0.0, 0.0, true, true, [0.5; 8]).unwrap(),
     );
     let muted_solo = run_mix(
         &rerouted_outputs,

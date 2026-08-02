@@ -1,0 +1,122 @@
+{
+  "entries": [
+    {
+      "created_at": "2026-07-31T19:57:56.024061Z",
+      "decision_id": "01KYWW2EDRF9BQV7KE2S956Q6C",
+      "final_answer": "Confirmed \u2014 proceed (title 'Phase 3 Demo Journey Fidelity and Hygiene', slug demo-journey-fidelity-and-hygiene, software-dev, bulk-edit classified, landing on feat/expandable-effects-and-bus-topology)",
+      "input_key": "intent_summary_confirmed",
+      "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+      "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
+      "opened_by": "cli",
+      "options": [
+        "Confirmed \u2014 proceed",
+        "Confirmed, but adjust identity",
+        "Needs scope changes"
+      ],
+      "origin_flow": "specify",
+      "other_answer": false,
+      "question": "Does the Intent Summary (actor, outcome, invariants, bulk-edit classification, optional stretch items) and the proposed mission identity match what you want for this corrective gate?",
+      "rationale": null,
+      "resolved_at": "2026-07-31T19:58:07.948752Z",
+      "resolved_by": null,
+      "slot_key": "specify.intent.summary-confirmation",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-07-31T20:07:39.913148Z",
+      "decision_id": "01KYWWM8M963DE79XAZE7EZXC9",
+      "final_answer": "Include \u2014 declare the fourth-entry end-to-end fixture as a required gate",
+      "input_key": "include_fourth_entry_fixture",
+      "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+      "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
+      "opened_by": "cli",
+      "options": [
+        "Include",
+        "Defer"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "Declare the end-to-end register-a-fourth-effect fixture (FR-015) in the crest-spec now, making it a required acceptance gate?",
+      "rationale": null,
+      "resolved_at": "2026-07-31T20:09:29.235957Z",
+      "resolved_by": null,
+      "slot_key": "plan.crest-spec-scope.fourth-entry-fixture",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-07-31T20:07:40.669418Z",
+      "decision_id": "01KYWWM9BXV6CRCYXHDEHY9VTJ",
+      "final_answer": "Include \u2014 declare per-position engine-capability identity in the prepared-graph carry-over attestation as a required gate",
+      "input_key": "include_per_position_engine_identity",
+      "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+      "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
+      "opened_by": "cli",
+      "options": [
+        "Include",
+        "Defer"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "Declare per-position engine-capability identity in the prepared-graph layout attestation (FR-016) in the crest-spec now, making it a required acceptance gate?",
+      "rationale": null,
+      "resolved_at": "2026-07-31T20:09:29.959713Z",
+      "resolved_by": null,
+      "slot_key": "plan.crest-spec-scope.per-position-engine-identity",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-07-31T20:23:36.653765Z",
+      "decision_id": "01KYWXHEYD6ZY8RF4GHHBDNYH1",
+      "final_answer": "Confirmed",
+      "input_key": "engineering_alignment_confirmed",
+      "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+      "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
+      "opened_by": "cli",
+      "options": [
+        "Confirmed",
+        "Needs changes"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "Confirm the Engineering Alignment: scene journeys via the existing support-script vocabulary (add-only checkpoint identities), 36-call-site effect_slots() migration with compact-view deletion, error propagation at the production root, twin test, absent-vs-zero measurements, cleanups, guard tool gating, fourth-entry fixture + per-position identity in witness schema v2, physical re-run with amended artifacts?",
+      "rationale": null,
+      "resolved_at": "2026-07-31T20:25:15.507939Z",
+      "resolved_by": null,
+      "slot_key": "plan.alignment.engineering-alignment",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-07-31T20:23:37.428509Z",
+      "decision_id": "01KYWXHFPMFT3P092AW1H7E56C",
+      "final_answer": "Approved as drafted (manual_review call sites; serialized/cli/logs untouched; guard-fixture, parent-mission-history, and crest-spec exceptions)",
+      "input_key": "occurrence_map_approved",
+      "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+      "mission_slug": "demo-journey-fidelity-and-hygiene-01KYWVYG",
+      "opened_by": "cli",
+      "options": [
+        "Approve",
+        "Adjust"
+      ],
+      "origin_flow": "plan",
+      "other_answer": false,
+      "question": "Approve the occurrence map for the post_effects() -> effect_slots() retirement (code_symbols manual_review; serialized keys, CLI, logs do_not_change; guard-fixture reverbSend exception)?",
+      "rationale": null,
+      "resolved_at": "2026-07-31T20:25:16.276621Z",
+      "resolved_by": null,
+      "slot_key": "plan.bulk-edit.occurrence-map-approval",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    }
+  ],
+  "mission_id": "01KYWVYGQMTRFY314AP78KZJPY",
+  "version": 1
+}

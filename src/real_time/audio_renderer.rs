@@ -99,7 +99,11 @@ where
         let latest = self.boundary.read_latest_parameters();
         let compatible = latest.graph_revision() == self.active_graph.revision()
             && self.active_graph.engine_rack().matches_parameters(&latest)
-            && self.active_graph.effect_rack().matches_parameters(&latest);
+            && self.active_graph.effect_rack().matches_parameters(&latest)
+            && self
+                .active_graph
+                .bus_return_rack()
+                .matches_parameters(&latest);
         if compatible {
             self.parameters = latest;
         } else {
@@ -251,17 +255,38 @@ where
             }
         }
 
-        let Some(replacement) = self.structural.take_prepared_on_audio() else {
+        let Some(mut replacement) = self.structural.take_prepared_on_audio() else {
             self.structural.publish_status_on_audio(self.handoff_status);
             return;
         };
 
         let replacement_revision = replacement.revision();
         let replacement_parameters = *replacement.initial_parameters();
+        // Voice carry-over: before the graphs exchange, move every
+        // still-live prepared instance the declared delta leaves unchanged
+        // from the active graph into the replacement — bounded pointer swaps,
+        // no allocation, no destruction. The fresh never-sounded instances
+        // ride into the superseded graph and retire off-callback as before.
+        let carry_over = replacement.carry_over_scope();
+        replacement.carry_live_state_from(&mut self.active_graph);
         let retired = core::mem::replace(&mut self.active_graph, replacement);
         let retired_revision = retired.revision();
         self.parameters = replacement_parameters;
-        self.active_notes.clear_all();
+        match carry_over {
+            // No declared delta: the full-reset swap semantics remain.
+            None => self.active_notes.clear_all(),
+            // Only the selected Patch's engine restarted; every other
+            // sounding voice carried over with its engine.
+            Some(crate::real_time::GraphReplacementScope::SelectedEngine(patch_id)) => {
+                self.active_notes.clear_patch(patch_id);
+            }
+            // Occupancy deltas leave every engine identity unchanged: every
+            // sounding voice carried over.
+            Some(
+                crate::real_time::GraphReplacementScope::PatchSlot { .. }
+                | crate::real_time::GraphReplacementScope::BusReturn(_),
+            ) => {}
+        }
         self.handoff_status.record_swap(replacement_revision);
 
         match self.structural.return_retired_on_audio(retired) {
@@ -379,6 +404,14 @@ impl ActiveNoteObservation {
 
     fn clear_all(&mut self) {
         for patch in &mut self.patches {
+            patch.clear_all();
+        }
+    }
+
+    /// Clears only one Patch's observed notes with bounded work — the
+    /// carry-over swap path uses this when exactly one engine restarted.
+    fn clear_patch(&mut self, patch_id: PatchId) {
+        if let Some(patch) = self.patch_mut(patch_id, false) {
             patch.clear_all();
         }
     }
@@ -751,7 +784,7 @@ mod tests {
             ParameterSnapshot::for_graph(
                 generation,
                 GraphRevision::new(revision).unwrap(),
-                GlobalParameters::new(0.0, 0.5, 0.5, 0.0, 250.0, 0.5, 0.0).unwrap(),
+                GlobalParameters::new(0.0).unwrap(),
                 MixerState::default(),
                 &self
                     .patches
@@ -938,7 +971,7 @@ mod tests {
             MidiChannel::new(0).unwrap(),
             PatchOutput::default(),
         );
-        let global = GlobalParameters::new(0.0, 0.5, 0.5, 0.0, 250.0, 0.5, 0.0).unwrap();
+        let global = GlobalParameters::new(0.0).unwrap();
         let preparers = production_instrument_preparers().unwrap();
         let builder = PreparedGraphBuilder::new(&registry, &preparers);
         let source_parameters = ParameterSnapshot::project_patches(
@@ -1075,6 +1108,261 @@ mod tests {
         assert!(output.iter().all(|sample| sample.is_finite()));
     }
 
+    // ---- Voice carry-over across topology activation ----------------------
+
+    /// Preparer whose instruments render a distinct serial-numbered level, so
+    /// a test can observe which prepared instance (live or fresh) is sounding
+    /// after an activation without any engine-identity branch.
+    struct SerialPreparer {
+        capability_id: CapabilityId,
+        serials: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl InstrumentPreparer for SerialPreparer {
+        fn capability_id(&self) -> &CapabilityId {
+            &self.capability_id
+        }
+
+        fn prepare(
+            &self,
+            patch: &Patch,
+            _sample_rate: f32,
+            _max_frames: usize,
+        ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
+            let serial = self.serials.fetch_add(1, Ordering::Relaxed) + 1;
+            Ok(Box::new(SerialInstrument {
+                patch_id: patch.id(),
+                level: serial as f32 * 0.125,
+                drops: Arc::clone(&self.drops),
+            }))
+        }
+    }
+
+    struct SerialInstrument {
+        patch_id: PatchId,
+        level: f32,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl PreparedInstrument for SerialInstrument {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn dispatch(
+            &mut self,
+            _message: MidiMessage,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
+            Ok(())
+        }
+
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) {
+            output.fill(self.level);
+        }
+
+        fn all_notes_off(&mut self) {}
+    }
+
+    impl Drop for SerialInstrument {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct CarryOverFixture {
+        patch: Patch,
+        provider: HiDefSoundFontCapability,
+        serials: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl CarryOverFixture {
+        fn new() -> Self {
+            let provider =
+                crate::adapter::production_instruments::production_soundfont_capability().unwrap();
+            let patch = Patch::new(
+                PatchId::new(1).unwrap(),
+                "Carry-over Patch".to_owned(),
+                create_soundfont_config(&provider, SoundFontInstrument::new(0, 0, false).unwrap())
+                    .unwrap(),
+                MidiChannel::new(0).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
+            );
+            Self {
+                patch,
+                provider,
+                serials: Arc::new(AtomicUsize::new(0)),
+                drops: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn parameters(&self, revision: u64, generation: u64) -> ParameterSnapshot {
+            ParameterSnapshot::for_graph(
+                generation,
+                GraphRevision::new(revision).unwrap(),
+                GlobalParameters::new(0.0).unwrap(),
+                MixerState::default(),
+                &[RtPatchParameters::new(self.patch.id(), self.patch.output())],
+            )
+            .unwrap()
+        }
+
+        /// Builds one graph whose single instrument sounds the next serial
+        /// level, so instance movement is audible.
+        fn graph(&self, revision: u64, generation: u64) -> PreparedGraph {
+            let registry = self.provider.registry().unwrap();
+            let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(SerialPreparer {
+                capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+                serials: Arc::clone(&self.serials),
+                drops: Arc::clone(&self.drops),
+            })];
+            PreparedGraphBuilder::new(&registry, &preparers)
+                .build(
+                    GraphRevision::new(revision).unwrap(),
+                    std::slice::from_ref(&self.patch),
+                    self.parameters(revision, generation),
+                    48_000.0,
+                    4,
+                )
+                .unwrap()
+        }
+    }
+
+    /// An occupancy-scoped activation exchanges the live prepared
+    /// instrument into the replacement — the sounding instance survives, the
+    /// observed notes survive, and the callback allocates, deallocates, and
+    /// destroys nothing.
+    #[test]
+    fn occupancy_scoped_activation_carries_the_live_instrument_and_held_notes() {
+        let fixture = CarryOverFixture::new();
+        let source = fixture.graph(1, 10);
+        let mut target = fixture.graph(2, 20);
+        target.set_carry_over_scope(crate::real_time::GraphReplacementScope::PatchSlot {
+            patch_id: fixture.patch.id(),
+            slot: crate::synth::effect_slot_id::EffectSlotIndex::ALL[0],
+        });
+
+        let boundary = TestBoundary {
+            commands: [
+                Some(AudioCommand::patch_midi(
+                    fixture.patch.id(),
+                    midi(MidiMessageKind::NoteOn),
+                )),
+                None,
+                None,
+                None,
+            ],
+            next_command: 0,
+            latest: fixture.parameters(2, 20),
+            parameter_reads: 0,
+        };
+        let structural = TestStructural::new();
+        let mut renderer = AudioRenderer::with_observation(
+            boundary,
+            structural,
+            source,
+            TestObservation::default(),
+        );
+        let mut output = [0.0_f32; 8];
+
+        // The live instrument (serial 1) sounds before activation.
+        renderer.render(&mut output);
+        let live_block = output;
+        assert_eq!(renderer.observation.latest.active_notes(), 1);
+
+        renderer.structural.prepared[0] = Some(target);
+        begin_memory_count();
+        renderer.render(&mut output);
+        let (allocations, deallocations) = finish_memory_count();
+
+        assert_eq!(allocations, 0, "carry-over activation must not allocate");
+        assert_eq!(
+            deallocations, 0,
+            "carry-over activation must not deallocate"
+        );
+        assert_eq!(
+            fixture.drops.load(Ordering::Relaxed),
+            0,
+            "no prepared instrument may be destroyed by the callback"
+        );
+        assert_eq!(renderer.active_revision(), GraphRevision::new(2).unwrap());
+        assert_eq!(
+            output[..],
+            live_block[..],
+            "the live instance carried across the swap — no restart, no fresh instance"
+        );
+        assert_eq!(
+            renderer.observation.latest.active_notes(),
+            1,
+            "held notes survive an occupancy-scoped activation"
+        );
+        // The superseded graph carries the fresh never-sounded instance and
+        // retires off-callback intact.
+        assert_eq!(renderer.structural.retired_count, 1);
+    }
+
+    /// Negative space: a `SelectedEngine` scope restarts exactly the
+    /// selected Patch — the fresh instance sounds and its observed notes
+    /// clear — and an unscoped replacement keeps the full-reset semantics.
+    #[test]
+    fn selected_engine_scope_restarts_only_the_selected_patch() {
+        let fixture = CarryOverFixture::new();
+        let source = fixture.graph(1, 10);
+        let mut target = fixture.graph(2, 20);
+        target.set_carry_over_scope(crate::real_time::GraphReplacementScope::SelectedEngine(
+            fixture.patch.id(),
+        ));
+
+        let boundary = TestBoundary {
+            commands: [
+                Some(AudioCommand::patch_midi(
+                    fixture.patch.id(),
+                    midi(MidiMessageKind::NoteOn),
+                )),
+                None,
+                None,
+                None,
+            ],
+            next_command: 0,
+            latest: fixture.parameters(2, 20),
+            parameter_reads: 0,
+        };
+        let structural = TestStructural::new();
+        let mut renderer = AudioRenderer::with_observation(
+            boundary,
+            structural,
+            source,
+            TestObservation::default(),
+        );
+        let mut output = [0.0_f32; 8];
+
+        renderer.render(&mut output);
+        let live_block = output;
+        assert_eq!(renderer.observation.latest.active_notes(), 1);
+
+        renderer.structural.prepared[0] = Some(target);
+        renderer.render(&mut output);
+
+        assert_eq!(renderer.active_revision(), GraphRevision::new(2).unwrap());
+        assert_ne!(
+            output[..],
+            live_block[..],
+            "the selected Patch's engine restarted with its fresh instance"
+        );
+        assert_eq!(
+            renderer.observation.latest.active_notes(),
+            0,
+            "the restarted Patch's observed notes clear"
+        );
+    }
+
     #[test]
     fn active_note_observation_tracks_patch_lifecycle_with_bounded_bits() {
         let mut notes = ActiveNoteObservation::new();
@@ -1098,5 +1386,423 @@ mod tests {
 
         assert!(stems.is_empty());
         assert_eq!(graph.patch_audio().storage().len(), MAX_PATCHES);
+    }
+
+    // ---- Full-occupancy measurements (C-RT-1/3/7, NFR-001/002/003) --------
+
+    mod full_occupancy {
+        use super::{
+            begin_memory_count, finish_memory_count, midi, AudioCommand, AudioRenderer,
+            MidiMessageKind, TestBoundary, TestStructural,
+        };
+        use crate::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+        use crate::adapter::production_effects::{
+            production_effect_preparers, production_effect_registry,
+        };
+        use crate::kernel::midi_channel::MidiChannel;
+        use crate::kernel::midi_message::MidiMessage;
+        use crate::kernel::patch_id::PatchId;
+        use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
+        use crate::mixer::global_parameters::GlobalParameters;
+        use crate::mixer::mixer_state::MixerState;
+        use crate::mixer::mixer_track_id::MixerTrackId;
+        use crate::mixer::mixer_track_parameters::MixerTrackParameters;
+        use crate::mixer::patch_output::PatchOutput;
+        use crate::real_time::audio_boundary::{
+            AudioBoundary, AudioThreadBoundary, ControlAudioBoundary,
+        };
+        use crate::real_time::graph_revision::GraphRevision;
+        use crate::real_time::parameter_snapshot::{ParameterSnapshot, MAX_PATCHES};
+        use crate::real_time::prepared_graph::PreparedGraph;
+        use crate::real_time::prepared_graph_builder::PreparedGraphBuilder;
+        use crate::synth::capability_id::CapabilityId;
+        use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
+        use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
+        use crate::synth::patch::Patch;
+        use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
+        use crate::synth::sound_font_instrument::SoundFontInstrument;
+        use crate::synth::{
+            EffectCapabilityRegistry, EffectPreparer, EffectSlotId, PostEffectConfig,
+        };
+        use crate::testing::automatic_midi_test::create_soundfont_config;
+        use std::hint::black_box;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        const SAMPLE_RATE: f32 = 48_000.0;
+        const MAX_FRAMES: usize = 64;
+
+        struct CountingPreparer {
+            capability_id: CapabilityId,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl InstrumentPreparer for CountingPreparer {
+            fn capability_id(&self) -> &CapabilityId {
+                &self.capability_id
+            }
+
+            fn prepare(
+                &self,
+                patch: &Patch,
+                _sample_rate: f32,
+                _max_frames: usize,
+            ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
+                Ok(Box::new(CountingInstrument {
+                    patch_id: patch.id(),
+                    drops: Arc::clone(&self.drops),
+                }))
+            }
+        }
+
+        struct CountingInstrument {
+            patch_id: PatchId,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl PreparedInstrument for CountingInstrument {
+            fn patch_id(&self) -> PatchId {
+                self.patch_id
+            }
+
+            fn dispatch(
+                &mut self,
+                _message: MidiMessage,
+                _parameters: &crate::real_time::RtPatchParameters,
+            ) -> Result<(), PreparedInstrumentError> {
+                Ok(())
+            }
+
+            fn render(
+                &mut self,
+                output: &mut [f32],
+                _frame_count: usize,
+                _parameters: &crate::real_time::RtPatchParameters,
+            ) {
+                output.fill(0.05);
+            }
+
+            fn all_notes_off(&mut self) {}
+        }
+
+        impl Drop for CountingInstrument {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        /// The complete fully occupied configuration this mission must carry:
+        /// 16 Patches x 3 occupied effect positions, 16 tracks x 8 non-zero
+        /// sends, and all 8 bus returns occupied.
+        struct FullOccupancyFixture {
+            provider: crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability,
+            patches: Vec<Patch>,
+            effect_registry: EffectCapabilityRegistry,
+            effect_preparers: Vec<Box<dyn EffectPreparer>>,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl FullOccupancyFixture {
+            fn new() -> Self {
+                let provider =
+                    crate::adapter::production_instruments::production_soundfont_capability()
+                        .unwrap();
+                let effect_registry = production_effect_registry().unwrap();
+                let capabilities = ["effect.chorus", "effect.reverb", "effect.delay"];
+                let patches = (1..=MAX_PATCHES as u32)
+                    .map(|id| {
+                        let occupants: Vec<(EffectSlotIndex, PostEffectConfig)> =
+                            EffectSlotIndex::ALL
+                                .into_iter()
+                                .map(|address| {
+                                    let position = address.index();
+                                    let slot = EffectSlotId::new(
+                                        ((id - 1) as u16) * MAX_EFFECT_SLOTS as u16
+                                            + position as u16
+                                            + 1,
+                                    )
+                                    .unwrap();
+                                    let config = effect_registry
+                                        .descriptors()
+                                        .iter()
+                                        .find(|descriptor| {
+                                            descriptor.id().as_str() == capabilities[position]
+                                        })
+                                        .unwrap()
+                                        .default_config(slot)
+                                        .unwrap();
+                                    (address, config)
+                                })
+                                .collect();
+                        let patch = Patch::new(
+                            PatchId::new(id).unwrap(),
+                            format!("Full {id}"),
+                            create_soundfont_config(
+                                &provider,
+                                SoundFontInstrument::new(0, (id - 1) as u8, false).unwrap(),
+                            )
+                            .unwrap(),
+                            MidiChannel::new((id - 1) as u8).unwrap(),
+                            PatchOutput::to_track(MixerTrackId::new((id - 1) as u8).unwrap()),
+                        );
+                        occupants
+                            .into_iter()
+                            .fold(patch, |patch, (address, config)| {
+                                patch.with_effect_slot(address, config)
+                            })
+                    })
+                    .collect();
+                Self {
+                    provider,
+                    patches,
+                    effect_registry,
+                    effect_preparers: production_effect_preparers().unwrap(),
+                    drops: Arc::new(AtomicUsize::new(0)),
+                }
+            }
+
+            fn mixer_state(&self) -> MixerState {
+                let mut mixer = MixerState::default();
+                for track_id in MixerTrackId::ALL {
+                    let mut sends = [0.0; MAX_BUS_RETURNS];
+                    for (index, send) in sends.iter_mut().enumerate() {
+                        *send = 0.1 + index as f32 * 0.05;
+                    }
+                    mixer.set_track(
+                        track_id,
+                        MixerTrackParameters::from_values(-6.0, 0.0, false, false, sends).unwrap(),
+                    );
+                }
+                mixer
+            }
+
+            fn global() -> GlobalParameters {
+                GlobalParameters::new(0.0).unwrap()
+            }
+
+            /// The canonical fully occupied bank: the production defaults on
+            /// buses 0 and 1 plus a chorus occupant on every remaining bus.
+            fn full_bank(&self) -> crate::mixer::bus_return::BusReturnBank {
+                let chorus = crate::synth::EffectCapabilityId::new("effect.chorus").unwrap();
+                let mut bank = crate::adapter::production_effects::production_default_bus_returns(
+                    &self.effect_registry,
+                )
+                .unwrap();
+                for bus_value in 2..MAX_BUS_RETURNS as u8 {
+                    let bus = BusId::new(bus_value).unwrap();
+                    bank.set_return_occupancy(&self.effect_registry, bus, Some(&chorus))
+                        .unwrap();
+                    bank.set_return_level(bus, 0.4).unwrap();
+                }
+                bank
+            }
+
+            /// Projects the complete fully occupied snapshot: every effect
+            /// position live, every send non-zero, all eight returns active.
+            fn full_snapshot(&self, revision: u64, generation: u64) -> ParameterSnapshot {
+                let registry = self.provider.registry().unwrap();
+                ParameterSnapshot::project_patches_with_effects_and_returns(
+                    generation,
+                    GraphRevision::new(revision).unwrap(),
+                    Self::global(),
+                    self.mixer_state(),
+                    &self.patches,
+                    &registry,
+                    &self.effect_registry,
+                    &self.full_bank(),
+                )
+                .unwrap()
+            }
+
+            /// Builds one callback-ready graph whose racks occupy the complete
+            /// widened capacity, with its initial parameters refreshed to the
+            /// matching fully occupied snapshot.
+            fn full_graph(
+                &self,
+                revision: u64,
+                generation: u64,
+            ) -> (PreparedGraph, ParameterSnapshot) {
+                let registry = self.provider.registry().unwrap();
+                let preparers: Vec<Box<dyn InstrumentPreparer>> =
+                    vec![Box::new(CountingPreparer {
+                        capability_id: CapabilityId::new(
+                            crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
+                        )
+                        .unwrap(),
+                        drops: Arc::clone(&self.drops),
+                    })];
+                let snapshot = self.full_snapshot(revision, generation);
+                let bank = self.full_bank();
+                let graph = PreparedGraphBuilder::new(&registry, &preparers)
+                    .with_effects(&self.effect_registry, &self.effect_preparers)
+                    .with_returns(&bank)
+                    .build(
+                        GraphRevision::new(revision).unwrap(),
+                        &self.patches,
+                        snapshot,
+                        SAMPLE_RATE,
+                        MAX_FRAMES,
+                    )
+                    .unwrap();
+                (graph, snapshot)
+            }
+        }
+
+        fn assert_fully_occupied(snapshot: &ParameterSnapshot) {
+            assert_eq!(snapshot.patch_count(), MAX_PATCHES);
+            assert!(snapshot
+                .patches()
+                .iter()
+                .all(|patch| patch.effects().iter().all(|effect| effect.is_active())));
+            assert!(snapshot
+                .mixer_tracks()
+                .iter()
+                .all(|track| track.sends().iter().all(|send| *send > 0.0)));
+            assert!(snapshot.returns().iter().all(|entry| entry.is_active()));
+        }
+
+        /// C-RT-3/NFR-002: a steady-state block and a topology-activation
+        /// block at the complete widened occupancy perform zero allocation,
+        /// zero deallocation, and zero destruction; the superseded graph is
+        /// returned off-callback intact; activation is atomic at block start.
+        #[test]
+        fn fully_occupied_render_and_activation_stay_allocation_and_destruction_free() {
+            let fixture = FullOccupancyFixture::new();
+            let (source, source_snapshot) = fixture.full_graph(1, 10);
+            let (target, target_snapshot) = fixture.full_graph(2, 20);
+            assert_fully_occupied(&source_snapshot);
+            assert_fully_occupied(&target_snapshot);
+            assert_eq!(source.effect_rack().patch_count(), MAX_PATCHES);
+            for index in 0..MAX_PATCHES {
+                assert_eq!(
+                    source.effect_rack().occupied_slot_count(index),
+                    MAX_EFFECT_SLOTS
+                );
+            }
+            assert_eq!(source.bus_return_rack().occupied_count(), MAX_BUS_RETURNS);
+
+            let patch_id = fixture.patches[0].id();
+            let boundary = TestBoundary {
+                commands: [
+                    Some(AudioCommand::patch_midi(
+                        patch_id,
+                        midi(MidiMessageKind::NoteOn),
+                    )),
+                    None,
+                    None,
+                    None,
+                ],
+                next_command: 0,
+                latest: target_snapshot,
+                parameter_reads: 0,
+            };
+            let structural = TestStructural::new();
+            let mut renderer = AudioRenderer::new(boundary, structural, source);
+            let mut output = [0.0_f32; MAX_FRAMES * 2];
+
+            // Steady state at full occupancy: enough blocks for the wet-only
+            // delay stage (250 ms) to reach the output, all measured.
+            begin_memory_count();
+            let mut any_audible = false;
+            for _ in 0..256 {
+                renderer.render(&mut output);
+                assert!(output.iter().all(|sample| sample.is_finite()));
+                any_audible |= output.iter().any(|sample| sample.abs() > 0.0);
+            }
+            let (allocations, deallocations) = finish_memory_count();
+            assert_eq!(allocations, 0, "steady-state blocks must not allocate");
+            assert_eq!(deallocations, 0, "steady-state blocks must not deallocate");
+            assert!(any_audible, "the fully occupied graph must produce audio");
+            assert_eq!(renderer.parameters().generation(), 10);
+
+            // Topology activation at full occupancy, exactly at block start.
+            renderer.structural.prepared[0] = Some(target);
+            begin_memory_count();
+            renderer.render(&mut output);
+            let (allocations, deallocations) = finish_memory_count();
+            assert_eq!(allocations, 0, "activation block must not allocate");
+            assert_eq!(deallocations, 0, "activation block must not deallocate");
+            assert_eq!(
+                fixture.drops.load(Ordering::Relaxed),
+                0,
+                "no prepared instrument may be destroyed by the callback"
+            );
+            assert_eq!(renderer.active_revision(), GraphRevision::new(2).unwrap());
+            // The rendered block observes the replacement's complete snapshot:
+            // no partially applied topology is observable (NFR-003, C-RT-9).
+            assert_eq!(renderer.parameters().generation(), 20);
+            assert!(renderer
+                .parameters()
+                .audio_values_equal(&fixture.full_snapshot(2, 20)));
+            assert_eq!(renderer.structural.retired_count, 1);
+            assert_eq!(
+                renderer.structural.retired[0].as_ref().unwrap().revision(),
+                GraphRevision::new(1).unwrap()
+            );
+            // The replacement graph starts with empty wet stages, so the
+            // activation block is finite but may legitimately be silent.
+            assert!(output.iter().all(|sample| sample.is_finite()));
+        }
+
+        /// C-RT-7: the publish cost of the widened snapshot through the
+        /// production triple-buffer transport is measured — not assumed — at
+        /// the complete fully occupied configuration, and the publish path is
+        /// allocation- and destruction-free.
+        #[test]
+        fn snapshot_publish_cost_is_measured_and_bounded_at_full_occupancy() {
+            let fixture = FullOccupancyFixture::new();
+            let snapshot = fixture.full_snapshot(1, 1);
+            assert_fully_occupied(&snapshot);
+
+            let size = core::mem::size_of::<ParameterSnapshot>();
+            assert!(!core::mem::needs_drop::<ParameterSnapshot>());
+
+            let boundary = LockFreeAudioBoundary::new(4, snapshot);
+            let (mut control, mut audio) = boundary.into_handles();
+            const ITERATIONS: u32 = 10_000;
+
+            begin_memory_count();
+            let publish_start = Instant::now();
+            for _ in 0..ITERATIONS {
+                control.publish_parameters(snapshot);
+            }
+            let publish_nanos = publish_start.elapsed().as_nanos() / u128::from(ITERATIONS);
+            let read_start = Instant::now();
+            let mut checksum = 0_u64;
+            for _ in 0..ITERATIONS {
+                checksum =
+                    checksum.wrapping_add(black_box(audio.read_latest_parameters()).generation());
+            }
+            let read_nanos = read_start.elapsed().as_nanos() / u128::from(ITERATIONS);
+            let (allocations, deallocations) = finish_memory_count();
+
+            assert_eq!(checksum, u64::from(ITERATIONS));
+            assert_eq!(allocations, 0, "publishing must not allocate");
+            assert_eq!(
+                deallocations, 0,
+                "publishing must not deallocate or destroy"
+            );
+
+            // The measured record (C-RT-7): visible with `--nocapture`, and
+            // bounded by generous ceilings that fail loudly on regression.
+            eprintln!(
+                "C-RT-7 publish cost at full occupancy: snapshot = {size} bytes, \
+                 publish mean = {publish_nanos} ns, read mean = {read_nanos} ns \
+                 over {ITERATIONS} iterations"
+            );
+            assert!(
+                size <= 16 * 1024,
+                "snapshot is {size} bytes; budget is 16 KiB"
+            );
+            assert!(
+                publish_nanos < 100_000,
+                "mean publish cost {publish_nanos} ns exceeded the 100 microsecond ceiling"
+            );
+            assert!(
+                read_nanos < 100_000,
+                "mean read cost {read_nanos} ns exceeded the 100 microsecond ceiling"
+            );
+        }
     }
 }
