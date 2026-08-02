@@ -1,4 +1,5 @@
 {
+  "baseline_merge_commit": "61c5f90c052a6231e37c8389e32e7759ece7ca3d",
   "coordination_branch": "kitty/mission-crest-component-foundations-01KZ02H2",
   "created_at": "2026-08-02T01:48:30.071306+00:00",
   "crest_spec_impact": "structural",
@@ -13,6 +14,7 @@
   "purpose_tldr": "Give Crest Synth one shared source for every color, font, and measurement so the real screen finally matches the approved design.",
   "slug": "crest-component-foundations-01KZ02H2",
   "source_description": "Phase 4 (ROADMAP.md:170-184), first of two missions. Vocabulary, primitives, gallery scene, and production-shell repaint; controls, compositions, and demo-live-component-library deferred to the follow-on mission.",
+  "status_phase": "1",
   "target_branch": "feat/crest-component-foundations",
   "topology": "coord",
   "vcs": "git"
