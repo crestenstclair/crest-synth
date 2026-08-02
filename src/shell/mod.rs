@@ -4,6 +4,7 @@ pub mod audio_output;
 pub mod keyboard_input_translator;
 pub mod shell_frame_observation;
 pub mod standalone_application;
+pub mod visual;
 pub mod window_input;
 
 pub use keyboard_input_translator::KeyboardInputTranslator;

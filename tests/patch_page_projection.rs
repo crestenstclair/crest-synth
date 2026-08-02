@@ -1,5 +1,7 @@
 use crest_synth::adapter::braids_capability::BraidsCapability;
-use crest_synth::adapter::eframe_graphical_window::EframeGraphicalApplication;
+use crest_synth::adapter::eframe_graphical_window::{
+    install_authored_typeface, EframeGraphicalApplication,
+};
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::adapter::production_instruments::{
@@ -595,6 +597,8 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     let mut application =
         EframeGraphicalApplication::new(on_input, projection, on_tick, Box::new(|_| {}));
     let context = egui::Context::default();
+    install_authored_typeface(&context)
+        .expect("the authored typeface installs into the test context");
     let mut frame = eframe::Frame::_new_kittest();
 
     run_frame(

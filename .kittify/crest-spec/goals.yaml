@@ -299,3 +299,25 @@ goals:
     - widened_bounded_realtime_topology
     - no_name_enumerated_effect_identity
     - expandable_effects_behavioral_proof
+  build_from_component_vocabulary:
+    description: The player sees the authored visual design in the running instrument, and a maintainer
+      assembling a later surface resolves every color, type style, spacing step, geometry value, and state
+      visualization from one shared vocabulary instead of re-deriving it
+    priority: required
+    actors:
+    - player
+    - maintainer
+    dependsOn:
+    - goal.use_semantic_graphical_view_model
+    capabilities:
+    - component_vocabulary
+    - graphical_application_shell
+    requirements:
+    - semantic_visual_vocabulary
+    - authored_typeface_installation
+    - viewport_density_policy
+    - reusable_shell_primitives
+    - explicit_state_rendering
+    - component_state_ownership_boundary
+    - browsable_component_gallery
+    - component_vocabulary_behavioral_proof

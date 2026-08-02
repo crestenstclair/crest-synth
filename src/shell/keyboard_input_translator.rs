@@ -67,8 +67,20 @@ impl KeyboardInputTranslator {
             WindowKey::S => Direction::Down,
             WindowKey::A => Direction::Left,
             WindowKey::D => Direction::Right,
+            // `Digit3` through `Digit8` are normalized at the window boundary
+            // and bound nowhere here. A scene that pages a gallery binds them
+            // itself, scene-locally; routing them through the translator would
+            // make paging a semantic action, which it is not. An unbound digit
+            // therefore produces no action at all rather than an approximate
+            // one.
             WindowKey::Digit1
             | WindowKey::Digit2
+            | WindowKey::Digit3
+            | WindowKey::Digit4
+            | WindowKey::Digit5
+            | WindowKey::Digit6
+            | WindowKey::Digit7
+            | WindowKey::Digit8
             | WindowKey::Q
             | WindowKey::E
             | WindowKey::K
@@ -96,6 +108,16 @@ mod tests {
         (WindowKey::S, Direction::Down),
         (WindowKey::A, Direction::Left),
         (WindowKey::D, Direction::Right),
+    ];
+
+    /// The digits the window normalizes and this translator binds to nothing.
+    const UNBOUND_DIGITS: [WindowKey; 6] = [
+        WindowKey::Digit3,
+        WindowKey::Digit4,
+        WindowKey::Digit5,
+        WindowKey::Digit6,
+        WindowKey::Digit7,
+        WindowKey::Digit8,
     ];
 
     #[test]
@@ -202,6 +224,68 @@ mod tests {
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::D)),
             Some(SemanticAction::Navigate(Direction::Right))
+        );
+    }
+
+    /// The digits the gallery pages with normalize at the window boundary and
+    /// translate to nothing. If one of them ever produced a `SemanticAction`,
+    /// scene-local paging would have leaked into the application's semantic
+    /// vocabulary.
+    #[test]
+    fn keyboard_input_translator_leaves_every_unbound_digit_unbound() {
+        let mut translator = KeyboardInputTranslator::new();
+
+        for key in UNBOUND_DIGITS {
+            assert_eq!(
+                translator.translate(WindowInput::key_down(key)),
+                None,
+                "{key:?} produced a semantic action"
+            );
+            assert_eq!(
+                translator.translate(WindowInput::key_up(key)),
+                None,
+                "releasing {key:?} produced a semantic action"
+            );
+        }
+    }
+
+    /// The unbound digits stay unbound while the adjust modifier is held, so
+    /// they cannot become a modified gesture either.
+    #[test]
+    fn keyboard_input_translator_leaves_unbound_digits_unbound_under_the_modifier() {
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::K)),
+            Some(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
+        );
+
+        for key in UNBOUND_DIGITS {
+            assert_eq!(
+                translator.translate(WindowInput::key_down(key)),
+                None,
+                "{key:?} produced a semantic action while K was held"
+            );
+        }
+
+        // The modifier survives: an unbound digit is ignored, not swallowed
+        // along with the state it was pressed in.
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::W)),
+            Some(SemanticAction::Adjust(Direction::Up))
+        );
+    }
+
+    /// The two bound digits keep their existing context bindings.
+    #[test]
+    fn keyboard_input_translator_keeps_the_two_bound_context_digits() {
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Digit1)),
+            Some(SemanticAction::SelectContext(TopLevelContext::Mixer))
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Digit2)),
+            Some(SemanticAction::SelectContext(TopLevelContext::Patch))
         );
     }
 

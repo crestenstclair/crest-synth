@@ -9,7 +9,10 @@
 .superpowers/
 /.agents/
 /.codex/
-/sf2/
+
+# The playable SoundFonts are tracked through Git LFS; see .gitattributes.
+# The 4 GB upstream file rustysynth cannot parse is not worth versioning.
+/sf2/*.rustysynth-incompatible
 
 # autopilot validation artifact (regenerated each run)
 autopilot.png

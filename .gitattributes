@@ -21,3 +21,4 @@ kitty-specs/**/canary-evidence/** linguist-generated=true
 .kittify/workspaces/** -diff
 .kittify/migrations/** linguist-generated=true
 .kittify/migrations/** -diff
+sf2/*.sf2 filter=lfs diff=lfs merge=lfs -text

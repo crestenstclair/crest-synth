@@ -1105,3 +1105,83 @@ requirements:
     - expand_effects_and_buses
     capabilities:
     - expandable_effects_and_bus_topology
+  semantic_visual_vocabulary:
+    kind: functional
+    description: One closed vocabulary declares every semantic color, type style, spacing step, radius,
+      keyline width, minimum interactive target, and focus-halo geometry; every rendered surface resolves
+      through it, raw values stay private to it, and no adapter, view, scene, or test outside it constructs
+      a literal color, type size, or spacing constant
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - graphical_application_shell
+  authored_typeface_installation:
+    kind: functional
+    description: The vendored authored monospace family is registered once before the first painted frame
+      in its four authored weights and bound to the eight declared type styles; an unavailable face is
+      a typed visible failure rather than a substituted or synthesized fallback
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+  viewport_density_policy:
+    kind: functional
+    description: The authored desktop and Steam Deck viewports are each resolved by a declared density
+      policy carrying bands, split, inset, row height, row pitch, and control geometry; surfaces compose
+      from the policy and no surface reads a viewport size directly to select a layout
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - graphical_application_shell
+  reusable_shell_primitives:
+    kind: functional
+    description: Text roles, hairlines, keylines, focus frames, value displays, status marks, and action
+      hints exist as shared primitives that accept immutable view data plus an explicit ComponentState
+      and paint through the declared vocabulary, so later surfaces compose rather than repaint
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+  explicit_state_rendering:
+    kind: functional
+    description: Focus, adjustment, disabled, loading, error, mute, solo, and selection each render with
+      text or shape in addition to color; the state set is closed and exhaustively matched so an added
+      state names every rendering site that must change
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - semantic_graphical_view_model
+  component_state_ownership_boundary:
+    kind: nonfunctional
+    description: Components accept immutable props and view data and return typed semantic UI intent;
+      no component owns or caches Patch values, focus, navigation, reducer state, or audio state, and
+      none reaches AppState directly
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - one_way_parameter_control
+  browsable_component_gallery:
+    kind: functional
+    description: One command opens a real browsable window whose locally bound digit keys select among
+      the declared gallery pages, rendering every declared ComponentState with representative content
+      at both authored viewports; page selection is scene-local and never becomes a SemanticAction or
+      reaches AppState
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - observable_demo_scene
+  component_vocabulary_behavioral_proof:
+    kind: nonfunctional
+    description: Authored-value fidelity, literal absence, state coverage, page reachability, viewport
+      integrity, and typeface resolution are proven by measured comparison through the production render
+      path and a live gallery observation; construction-only tests, success-token logs, and pre-render
+      plans are not evidence
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary

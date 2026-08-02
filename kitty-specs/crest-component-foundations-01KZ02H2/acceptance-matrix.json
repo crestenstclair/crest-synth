@@ -1,0 +1,239 @@
+{
+  "mission_slug": "crest-component-foundations-01KZ02H2",
+  "mission_number": "",
+  "mission_type": "software-dev",
+  "overall_verdict": "pass",
+  "criteria": [
+    {
+      "criterion_id": "FR-001",
+      "description": "Single semantic visual vocabulary: one source declares every semantic color, type style, spacing step, radius, keyline width, and minimum interactive target, and no visual value is defined twice.",
+      "proof_type": "automated_test",
+      "evidence": "cargo test --test component_vocabulary -- --nocapture -> exit=0, CREST_ACCEPTANCE component_vocabulary passed. every_declared_value_equals_its_authored_counterpart transcribes the table from DESIGN.md rather than reading it back from token.rs, and asserts both directions plus counts. Observation: colors=17 type_styles=8 spacing_steps=6 radii=3. src/shell/visual/token.rs carries 9 further unit tests.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "Independence matters here and was checked: expected colors are the #rrggbb strings DESIGN.md publishes, parsed by a hex parser local to the test, so they share no derivation with the vocabulary's Color32::from_rgb form. surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)"
+    },
+    {
+      "criterion_id": "FR-002",
+      "description": "Azeret Mono installed and mapped: the interface is set in the authored typeface at all four authored weights, at the authored size, weight, line height, and letter spacing for each style.",
+      "proof_type": "automated_test",
+      "evidence": "src/shell/visual/typeface.rs: 10 unit tests including all_four_authored_weights_register, every_type_style_resolves_to_a_registered_family, the_default_families_resolve_to_the_authored_face. Measured through the production render path by component_vocabulary::the_production_render_path_paints_only_authored_values: 334 glyph runs, every run matching exactly one authored style's family, size, line height, and tracking. Live gallery observation typeface_resolved=true over 1908 painted text runs.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)"
+    },
+    {
+      "criterion_id": "FR-003",
+      "description": "Declared viewport density policies: the desktop (1920x1080) and compact (1280x800) viewports resolve from declared policies rather than resolution-specific constants.",
+      "proof_type": "automated_test",
+      "evidence": "src/shell/visual/density.rs: 11 unit tests. component_vocabulary::both_authored_viewports_render_intact drives the real EframeGraphicalApplication at both sizes in both PATCH and MIXER (4 frames). Observation: density_policies=2 frames=4. Live gallery page 8 (SHELL BANDS) shows both policies resolved side by side: Desktop bands total 1080 px / split 1920 px, SteamDeck bands total 800 px / split 1280 px with persistentSideRegion 320x644.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)"
+    },
+    {
+      "criterion_id": "FR-004",
+      "description": "Reusable primitives: text roles, hairlines, keylines, focus frames, value displays, status marks, and action hints exist as shared pieces later screens compose from.",
+      "proof_type": "automated_test",
+      "evidence": "src/shell/visual/primitives/ ships 7 modules with 49 unit tests (focus 9, hint 7, mod 6, rules 4, status 13, text 6, value 4), all passing under make test. mod.rs enforces the boundary itself: no_primitive_imports_anything_outside_the_vocabulary_egui_and_std, no_primitive_names_a_path_outside_the_visual_vocabulary, no_primitive_walks_out_of_the_vocabulary_by_a_relative_path, and the_scan_covers_every_primitive_source so the check cannot pass vacuously.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)"
+    },
+    {
+      "criterion_id": "FR-005",
+      "description": "Explicit state rendering: focus, adjustment, disabled, loading, error, mute, solo, and selection each carry text or shape in addition to color.",
+      "proof_type": "automated_test",
+      "evidence": "src/shell/visual/state.rs: 11 unit tests including no_two_states_are_distinguishable_by_color_alone and every_state_other_than_resting_reads_without_color. component_vocabulary::the_state_vocabulary_is_closed_exhaustive_and_legible_without_color passes (states=9). Measured live: states_distinguishable_without_color=true with per-state non-color evidence recorded, e.g. Focused 'keyline 3 px / halo / cursor >', Disabled 'keyline 1 px / mark Locked', Error 'keyline 3 px / mark PRESET MISSING'.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "The shipped vocabulary carries nine states; DESIGN.md:575 still names six. That widening is recorded as analysis finding A10 and is a documentation follow-up, not a behavioural gap. surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)"
+    },
+    {
+      "criterion_id": "FR-006",
+      "description": "Production shell renders through the vocabulary: the real application, not only a demo, is painted through the shared vocabulary.",
+      "proof_type": "automated_test",
+      "evidence": "component_vocabulary::the_production_render_path_paints_only_authored_values drives the real EframeGraphicalApplication through a real egui::Context with install_authored_typeface at 1920x1080 and 1280x800 in both PATCH and MIXER, and reads the emitted epaint shapes. Every painted fill, stroke, glyph, and halo resolves through the authored table with zero exceptions. no_interactive_target_is_below_the_authored_minimum also passes.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "Measuring rather than declaring found and fixed six production defects during WP06 (sub-48px interactive targets, four unauthored grays from default visuals, a mixer row laid out horizontally, and a meter bar shorter than its own text). surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)"
+    },
+    {
+      "criterion_id": "FR-007",
+      "description": "Live gallery demo scene and launch target: one command opens a real, browsable window showing every meaningful state at both authored sizes.",
+      "proof_type": "manual_qa",
+      "evidence": "make demo-live-component-library / ./target/release/crest-synth --demo-live-component-library run twice on 2026-08-02 from the lane-f worktree; window opened at 1280x856, screenshots captured (gallery-page1.png shows PAGE 1/8 COLORS with the Desktop and SteamDeck columns side by side; gallery-after-unbound9.png shows PAGE 8/8 SHELL BANDS). Second run walked digits 1-8 then the unbound 9 and closed the window; exit=0. CREST_COMPONENT_GALLERY_OBSERVATION satisfied all fifteen witness.component_gallery predicates: pages_declared=8 pages_painted=8 pages_reachable_by_digit=8 states_declared=9 states_painted=9 states_distinguishable_without_color=true desktop_viewport_painted=true steam_deck_viewport_painted=true bands_retained_both_viewports=true clipped_or_overlapping_text=0 token_source_exact=true typeface_resolved=true app_state_generation_delta=0 unbound_digit_retained_page=true window_closed=true; text_runs_painted=1908, text_defects=[].",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "Run independently at this gate rather than carried over from the WP05 review, which had recorded its own two operator runs. Known open design question, not a defect and not asserted as one: at 1280x800 the production footer hints and mixer strip sit inside declared scroll regions and are reachable only by scrolling."
+    },
+    {
+      "criterion_id": "FR-008",
+      "description": "Number-key page selection in the gallery: number keys change the page, an unbound digit retains the current page, and no page selection reaches application state.",
+      "proof_type": "automated_test",
+      "evidence": "component_vocabulary::every_gallery_page_has_exactly_one_digit_binding passes. src/testing/component_gallery_scene.rs carries 24 unit tests including every_page_has_exactly_one_digit_and_every_bound_digit_has_one_page, a_bound_digit_changes_the_page_and_anything_else_retains_it, an_unbound_digit_retains_the_current_page, a_digit_request_alone_does_not_make_a_page_reachable, and the_translator_leaves_the_paging_digits_unbound. Confirmed live: 8/8 pages reachable by digit, unbound_key_presses=1 with unbound_digit_retained_page=true, and the screenshot after pressing 9 still reads PAGE 8 / 8.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)"
+    },
+    {
+      "criterion_id": "FR-009",
+      "description": "Components own no application state: every component accepts immutable view data and returns typed semantic intent, owning no Patch values, focus, navigation, reducer state, or audio state.",
+      "proof_type": "automated_test",
+      "evidence": "src/shell/visual/primitives/mod.rs proves the boundary by import scan: no_primitive_imports_anything_outside_the_vocabulary_egui_and_std and no_primitive_names_a_path_outside_the_visual_vocabulary, with every_source_that_imports_at_all_is_seen_by_the_import_check guarding against a vacuous scan. component_gallery_scene::a_full_page_walk_never_advances_the_production_reducer passes, and its companion the_reducer_the_delta_is_measured_against_does_advance_when_an_event_reaches_it proves the delta is not measured against a dead reducer. Measured live: app_state_generation_delta=0 across a full eight-page walk.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)"
+    },
+    {
+      "criterion_id": "FR-010",
+      "description": "Typed failure when the typeface is unavailable: an unloadable authored typeface is a visible typed error, never a silent system-font fallback.",
+      "proof_type": "automated_test",
+      "evidence": "component_vocabulary::an_unavailable_typeface_is_a_typed_visible_failure passes. src/shell/visual/typeface.rs adds an_unavailable_face_is_a_typed_error_naming_it, an_unavailable_face_names_the_family_in_its_message, and an_empty_face_is_unreadable_rather_than_silently_accepted.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)"
+    },
+    {
+      "criterion_id": "NFR-001",
+      "description": "Exact authored-value fidelity: all 17 declared colors and all 8 type styles match their authored family, weight, size, line height, and letter spacing exactly, with zero tolerated deviations.",
+      "proof_type": "automated_test",
+      "evidence": "component_vocabulary asserts both directions (every authored entry has a declaration and every declaration has an authored entry) plus the counts 17/8/6/3, so a dropped token fails rather than passing by absence. Through the production render path, every painted fill, stroke, glyph, and halo resolved to an authored value with zero exceptions across 334 glyph runs and 4 frames.",
+      "pass_fail": "pass",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z"
+    },
+    {
+      "criterion_id": "NFR-002",
+      "description": "No visual literals outside the vocabulary: zero literal colors, type sizes, or spacing constants in any adapter, view, or scene file outside the vocabulary module, enforced by an automated check.",
+      "proof_type": "automated_test",
+      "evidence": "component_vocabulary::the_literal_guard_reads_the_delivered_tree scans 59 sources / 40990 lines and asserts that footprint before asserting emptiness, so it cannot pass vacuously. The guard is shown failing as well as passing: the_literal_guard_reports_a_planted_literal covers all four families and the_literal_guard_allows_what_the_vocabulary_permits covers the legitimate cases. Falsified against the real tree during WP06: a planted Color32::from_rgb in src/adapter/production_effects.rs was reported with file, line, and kind, and the file restored clean.",
+      "pass_fail": "pass",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z"
+    },
+    {
+      "criterion_id": "NFR-003",
+      "description": "Both authored viewports render intact: at 1920x1080 and 1280x800 all five structural bands and the persistent side region remain visible, with zero clipped or overlapping text runs and every interactive target at or above the authored 48 px minimum.",
+      "proof_type": "automated_test",
+      "evidence": "component_vocabulary::both_authored_viewports_render_intact and no_interactive_target_is_below_the_authored_minimum both pass; after the WP06 fixes buttons and the diagnostic header measure 48 px and semantic control rows 50 px resting / 54 px focused. Live gallery: bands_retained_both_viewports=true, clipped_or_overlapping_text=0 over 1908 painted text runs.",
+      "pass_fail": "pass",
+      "notes": "Two scoped limitations are recorded rather than downgraded, both in the test module docs and the WP06 log: spacing steps emit no shape so they are measured at the band arithmetic plus declared step values, and containment is asserted only for the two bands with no scroll region inside them (the other 14 runs that left their container are counted and reported as runs_scrolled_out_of_view, since a shape stream cannot tell 'scrolled' from 'cut'). surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z"
+    },
+    {
+      "criterion_id": "NFR-004",
+      "description": "No real-time or control-path regression: the audio callback contract is unchanged and the 512-event control-path fixture stays within its declared 50 ms ceiling.",
+      "proof_type": "automated_test",
+      "evidence": "cargo test --test control_dispatch_performance -- --nocapture -> exit=0: CREST_ACCEPTANCE control_dispatch_performance passed patches=15 events=512 elapsed_ms=3 budget_ms=50 events_per_second=142835.5. The fixture asserts elapsed <= MAX_DISPATCH_DURATION through the complete production control path. tests/production_runtime_contracts.rs (10 tests) and the full make test run both pass unchanged.",
+      "pass_fail": "pass",
+      "notes": "Analysis finding A8 had judged this ceiling asserted rather than measured. Checked directly at this gate: tests/control_dispatch_performance.rs declares DISPATCH_COUNT=512 and MAX_DISPATCH_DURATION=50ms and asserts against them, so A8 is discharged with a measured 3 ms. surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z"
+    },
+    {
+      "criterion_id": "NFR-005",
+      "description": "Complete gallery state coverage: every state in the closed vocabulary has a specimen at both authored sizes, and every declared page is reachable by its bound number key.",
+      "proof_type": "automated_test",
+      "evidence": "component_gallery_scene tests walking_every_page_paints_every_declared_page_and_state_at_both_authored_sizes, every_reported_state_names_both_authored_compositions, every_page_paints_both_authored_viewport_compositions, and a_state_painted_in_only_one_composition_is_not_counted_as_covered (which proves the count reports a shortfall when one composition's record is removed). Measured live: states_painted=9/9 with states_rendered naming both Desktop and SteamDeck for all nine, pages_reachable_by_digit=8/8.",
+      "pass_fail": "pass",
+      "notes": "The per-policy indexing that makes the 'at both authored sizes' clause measurable rather than asserted was added during the WP05 rework in response to analysis finding A18, which is therefore discharged. surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z"
+    },
+    {
+      "criterion_id": "NFR-006",
+      "description": "Vendored typeface provenance: the typeface ships with its verbatim license, upstream revision, a byte-exact hash manifest, and a reproducible derivation procedure.",
+      "proof_type": "automated_test",
+      "evidence": "src/shell/visual/typeface.rs: every_vendored_file_matches_its_recorded_hash, the_manifest_covers_every_vendored_file, the_open_font_license_ships_verbatim, and the_provenance_record_names_the_upstream_source_and_derivation all pass. vendor/azeret-mono/ is present with all four authored weights.",
+      "pass_fail": "pass",
+      "notes": "Landed under WP01 review R1 (commit db34bb2, 'assert the vendored typeface provenance'). Satisfies C-007 (SIL OFL 1.1 retained verbatim). surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06); make fmt-check exit=0, make lint exit=0, make test exit=0 (587 lib tests + every integration target, 0 failures)",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:46:52Z"
+    },
+    {
+      "criterion_id": "C-001",
+      "description": "eframe/egui stack only: the UI remains eframe/egui with egui_extras, with no alternate GUI runtime and no third-party component system; Crest owns the component API, behavior, and visual contract.",
+      "proof_type": "automated_test",
+      "evidence": "Cargo.toml declares eframe 0.32.3 and egui_extras 0.32.3 and no other GUI runtime or component library. The boundary is enforced by test rather than review: primitives/mod.rs::no_primitive_imports_anything_outside_the_vocabulary_egui_and_std restricts every primitive source to the vocabulary, egui, and std, with every_source_that_imports_at_all_is_seen_by_the_import_check guarding the scan.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:55:14Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06)"
+    },
+    {
+      "criterion_id": "C-002",
+      "description": "Bounded scope: configurable controls and reusable compositions are deferred to the follow-on mission; this mission ships the vocabulary, primitives, gallery, production repaint, and the gallery's make demo-live-component-library target.",
+      "proof_type": "automated_test",
+      "evidence": "The declared scope is delivered: src/shell/visual/{token,typeface,density,state}.rs plus primitives/ (7 modules), src/testing/component_gallery_scene.rs, the repainted src/adapter/eframe_graphical_window.rs, and the Makefile target demo-live-component-library (Makefile:60), which was run live at this gate and exited 0. No configurable-control or composition module was added, so the deferral held in both directions.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:55:14Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06)"
+    },
+    {
+      "criterion_id": "C-003",
+      "description": "Crest-spec authored before planning: the new vocabulary, density policy, state descriptor, and gallery resources are declared before plan derives from them, and spec-kitty crest-spec doctor stays green.",
+      "proof_type": "automated_test",
+      "evidence": "spec-kitty crest-spec doctor -> 'Crest-spec OK': 7 contexts / 128 resources, 14 goals, 20 capabilities, 97 requirements, 30 project validations (30 completion checks), 19 witnesses, 3632 relationships. plan.md carries its Crest-Spec Derivation section and no data-model.md or contracts/ directory exists to fork the canonical resources.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:55:14Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06)"
+    },
+    {
+      "criterion_id": "C-004",
+      "description": "Two top-level contexts preserved: PATCH and MIXER remain the only top-level contexts; the gallery is a scene, its page selection is scene-local, never becomes a SemanticAction, and never enters canonical application state.",
+      "proof_type": "automated_test",
+      "evidence": "component_gallery_scene::a_full_page_walk_never_advances_the_production_reducer and the_translator_leaves_the_paging_digits_unbound both pass, with the_reducer_the_delta_is_measured_against_does_advance_when_an_event_reaches_it proving the delta is not measured against a dead reducer. Measured live at this gate: app_state_generation_delta=0 across an eight-page walk plus an unbound digit.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:55:14Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06)"
+    },
+    {
+      "criterion_id": "C-005",
+      "description": "Gallery input isolation is one-way: the gallery accepts input by design and makes no exact-generation claim, and it does not weaken the autonomous demo-live-* witness contract, which stays input-isolated.",
+      "proof_type": "automated_test",
+      "evidence": "Makefile:44 keeps demo-live aliased to demo-live-effects-and-buses alone; demo-live-component-library is a separate target and was deliberately not added to the alias group, so the gallery never became the witness. The gallery emits CREST_COMPONENT_GALLERY_OBSERVATION and asserts no generation correlation; the autonomous witness scenes are untouched and tests/live_demo_scene.rs (5 tests) and tests/effects_and_buses.rs pass unchanged under make test.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:55:14Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06)"
+    },
+    {
+      "criterion_id": "C-006",
+      "description": "Deterministic proof discipline: visual claims are proven by measured comparison against authored values through the production render path; construction-only tests, success-token logs, and pre-render layout plans are not evidence.",
+      "proof_type": "automated_test",
+      "evidence": "component_vocabulary::the_production_render_path_paints_only_authored_values drives the real EframeGraphicalApplication through a real egui::Context and reads the emitted epaint shapes \u2014 334 glyph runs across 4 frames, not a layout plan. The literal guard is shown failing as well as passing (the_literal_guard_reports_a_planted_literal) and was falsified against the real tree. The acceptance marker prints strictly after every check returns, so a failing check panics before the token. Scope limits are stated rather than downgraded: spacing steps and corner radii are compared at the declaration because they reach no shape, and containment is asserted only where nothing scrolls, with the 14 scrolled runs counted and reported.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:55:14Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06)"
+    },
+    {
+      "criterion_id": "C-007",
+      "description": "Typeface licensing: Azeret Mono ships under SIL Open Font License 1.1 with its license text retained verbatim.",
+      "proof_type": "automated_test",
+      "evidence": "src/shell/visual/typeface.rs::the_open_font_license_ships_verbatim passes, alongside every_vendored_file_matches_its_recorded_hash, the_manifest_covers_every_vendored_file, and the_provenance_record_names_the_upstream_source_and_derivation. vendor/azeret-mono/ carries the license and all four authored weights.",
+      "pass_fail": "pass",
+      "verified_by": "claude (accept gate, mission crest-component-foundations-01KZ02H2)",
+      "verified_at": "2026-08-02T19:55:14Z",
+      "notes": "surface: .worktrees/crest-component-foundations-01KZ02H2-lane-f @ 59fe6c1 (mission tip carrying WP01-WP06)"
+    }
+  ],
+  "negative_invariants": []
+}

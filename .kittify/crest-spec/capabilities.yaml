@@ -672,3 +672,54 @@ capabilities:
             lost while the checkpoints, the report, and the recorded evidence stay byte-identical
         evidence:
         - evidence.expandable_effects_and_bus_topology_contract
+  component_vocabulary:
+    description: Resolve every rendered color, type style, spacing step, geometry value, and behavioral
+      state through one shared authored vocabulary, render it in the production shell, and make every
+      declared state judgable in a browsable gallery scene at both authored viewports
+    goals:
+    - build_from_component_vocabulary
+    acceptance:
+      authored_values_reach_the_screen:
+        description: the running instrument paints the authored design rather than adapter-owned constants,
+          and the authored values are proven equal rather than asserted
+        actor: player
+        steps:
+        - action: launch the normal standalone application
+          observes: every painted color, type style, spacing step, and geometry value resolves through
+            SemanticVisualToken and equals its authored value exactly; every text run resolves to the
+            authored family at its declared weight
+        - action: compare the declared vocabulary against the authored design table
+          observes: all seventeen colors, all eight type styles, the six spacing steps, and the focus
+            halo radius/spread/opacity match exactly, measured through the production render path rather
+            than a constructed table
+        - action: search every adapter, view, scene, and test outside the vocabulary for a literal color,
+            type size, or spacing constant
+          observes: none exists, and the guard fails loudly when one is reintroduced rather than passing
+            on convention
+        - action: remove the vendored typeface and launch
+          observes: a typed, visible startup failure names the unavailable face; no default or synthesized
+            face is substituted and no frame claims the authored design
+        evidence:
+        - evidence.component_vocabulary_contract
+      every_state_is_judgable:
+        description: the browsable gallery scene renders every declared state at both authored viewports
+          and is driven by hand rather than replayed
+        actor: maintainer
+        steps:
+        - action: run make demo-live-component-library and press each bound digit key
+          observes: the real window shows the matching ComponentGalleryPage, its identity is visible on
+            screen, and no application state, focus, Patch value, graph revision, or audio behavior changes
+        - action: press a digit with no page bound
+          observes: the current page is retained and nothing changes; no page is invented
+        - action: inspect every page at the desktop and Steam Deck viewports
+          observes: every declared ComponentState appears with representative content, each legible from
+            text or shape without relying on color, with all structural bands and the persistent side
+            region retained and no clipped or overlapping text
+        - action: add a ComponentState or a ComponentGalleryPage without a specimen or a digit binding
+          observes: compilation or the declared coverage assertion fails and names the missing site,
+            rather than the gallery silently omitting it
+        - action: close the window
+          observes: the scene exits normally, releases every owned resource, and makes no exact-generation
+            claim, so the autonomous witness contract it deliberately does not share remains intact
+        evidence:
+        - evidence.component_vocabulary_contract

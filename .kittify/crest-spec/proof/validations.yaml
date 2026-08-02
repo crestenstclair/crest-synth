@@ -5,6 +5,42 @@ defaults:
     stdoutBytes: 8388608
     stderrBytes: 8388608
 projectValidations:
+  component_vocabulary:
+    scope: project
+    kind: integration
+    command:
+    - cargo
+    - test
+    - --test
+    - component_vocabulary
+    - --
+    - --nocapture
+    assertions:
+    - type: exit-code
+      equals: 0
+    - type: stdout-contains
+      value: CREST_ACCEPTANCE component_vocabulary passed
+    timeout: 180s
+    resources:
+    - SemanticVisualToken
+    - AuthoredTypeface
+    - ViewportDensityPolicy
+    - ComponentState
+    - ComponentGalleryPage
+    - GraphicalShellProjection
+    - EframeGraphicalWindow
+    - ComponentVocabularyAcceptanceTests
+    capabilities:
+    - component_vocabulary
+    - graphical_application_shell
+    goals:
+    - build_from_component_vocabulary
+    - use_graphical_shell
+    description: the production render path proves every authored color, type style, spacing step, and
+      geometry value equals its authored counterpart, that no literal survives outside the vocabulary,
+      that both density policies retain every band and the authored minimum target, that the state set
+      is exhaustively matched and never color-only, that every gallery page has exactly one digit binding,
+      and that an unavailable typeface fails typed rather than substituting a face
   engine_selection_workflow:
     scope: project
     kind: integration

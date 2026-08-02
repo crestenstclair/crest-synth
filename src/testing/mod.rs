@@ -63,3 +63,13 @@ pub mod live_demo_runner;
 pub use live_demo_runner::{
     LiveDemoError, LiveDemoRunner, LIVE_DEMO_NO_PROGRESS_TIMEOUT, LIVE_DEMO_TOTAL_TIMEOUT,
 };
+
+// Browsable rather than autonomous: it accepts input, makes no exact-generation
+// claim, and is not a `demo-live` alias. See the module documentation.
+pub mod component_gallery_scene;
+pub use component_gallery_scene::{
+    ComponentGalleryError, ComponentGalleryObservation, ComponentGalleryPage,
+    ComponentGalleryScene, GalleryPageSelection, PageSelection, PaintedStateRecord,
+    ALL_GALLERY_PAGES, COMPONENT_GALLERY_OBSERVATION_MARKER, COMPONENT_GALLERY_WINDOW_TITLE,
+    GALLERY_PAGE_COUNT,
+};

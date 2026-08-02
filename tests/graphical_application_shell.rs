@@ -1,4 +1,6 @@
-use crest_synth::adapter::eframe_graphical_window::EframeGraphicalApplication;
+use crest_synth::adapter::eframe_graphical_window::{
+    install_authored_typeface, EframeGraphicalApplication,
+};
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_soundfont_capability,
 };
@@ -23,6 +25,9 @@ use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::real_time::{AudioObservationSnapshot, PatchAudioBlock};
 use crest_synth::shell::app_window::{
     AppInputCallback, FrameObservationCallback, ProjectionCallback, TickCallback,
+};
+use crest_synth::shell::visual::{
+    SemanticColor, ViewportDensityPolicy, ALL_TYPE_STYLES, AUTHORED_FAMILY,
 };
 use crest_synth::shell::{ShellFrameObservation, ShellRegionId};
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
@@ -189,28 +194,35 @@ fn assert_frame(
         ShellRegionId::surface_descriptor()
     );
 
-    let workspace_bottom = viewport[1] - 64.0;
-    let side_width = if viewport[0] == 1_920.0 { 420.0 } else { 320.0 };
+    // Every band and split the shell paints resolves from the density policy
+    // for this viewport, so this asserts the authored geometry rather than a
+    // second copy of the constants the adapter used to carry.
+    let policy = ViewportDensityPolicy::resolve(viewport[0]);
+    let bands = policy.bands();
+    let context_bottom = bands.context_line_px;
+    let identity_bottom = context_bottom + bands.identity_header_px;
+    let workspace_bottom = viewport[1] - bands.footer_px;
+    let side_width = policy.split().side_px;
     let main_width = viewport[0] - side_width;
     assert_rect(
         observation,
         ShellRegionId::ContextLine,
-        [0.0, 0.0, viewport[0], 48.0],
+        [0.0, 0.0, viewport[0], context_bottom],
     );
     assert_rect(
         observation,
         ShellRegionId::IdentityHeader,
-        [0.0, 48.0, viewport[0], 120.0],
+        [0.0, context_bottom, viewport[0], identity_bottom],
     );
     assert_rect(
         observation,
         ShellRegionId::MainWorkspace,
-        [0.0, 120.0, main_width, workspace_bottom],
+        [0.0, identity_bottom, main_width, workspace_bottom],
     );
     assert_rect(
         observation,
         ShellRegionId::PersistentSideRegion,
-        [main_width, 120.0, viewport[0], workspace_bottom],
+        [main_width, identity_bottom, viewport[0], workspace_bottom],
     );
     assert_rect(
         observation,
@@ -265,6 +277,8 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
     });
     let mut application = EframeGraphicalApplication::new(on_input, projection, on_tick, on_frame);
     let context = egui::Context::default();
+    install_authored_typeface(&context)
+        .expect("the authored typeface installs into the test context");
     let mut frame = eframe::Frame::_new_kittest();
 
     let cases = [
@@ -409,6 +423,162 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
     println!("CREST_ACCEPTANCE graphical_application_shell passed");
 }
 
+/// Collects every color the frame puts on screen, as fill or as stroke.
+fn painted_colors(shape: &egui::Shape, into: &mut Vec<egui::Color32>) {
+    match shape {
+        egui::Shape::Rect(rect) => {
+            into.push(rect.fill);
+            into.push(rect.stroke.color);
+        }
+        egui::Shape::Text(text) => {
+            into.push(text.fallback_color);
+            for section in &text.galley.job.sections {
+                into.push(section.format.color);
+            }
+        }
+        egui::Shape::Circle(circle) => {
+            into.push(circle.fill);
+            into.push(circle.stroke.color);
+        }
+        egui::Shape::Path(path) => {
+            into.push(path.fill);
+            if let egui::epaint::ColorMode::Solid(color) = path.stroke.color {
+                into.push(color);
+            }
+        }
+        egui::Shape::LineSegment { stroke, .. } => into.push(stroke.color),
+        egui::Shape::Vec(children) => {
+            for child in children {
+                painted_colors(child, into);
+            }
+        }
+        // Meshes, callbacks, and ellipses carry no flat color this frame; a
+        // color that only reached the screen through one of them would be
+        // invisible to this scan, so nothing is asserted about them.
+        _ => {}
+    }
+}
+
+/// Collects the font family and size of every text run the frame paints.
+fn painted_fonts(shape: &egui::Shape, into: &mut Vec<(egui::FontFamily, f32)>) {
+    match shape {
+        egui::Shape::Text(text) => {
+            for section in &text.galley.job.sections {
+                into.push((
+                    section.format.font_id.family.clone(),
+                    section.format.font_id.size,
+                ));
+            }
+        }
+        egui::Shape::Vec(children) => {
+            for child in children {
+                painted_fonts(child, into);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The production render path paints the authored vocabulary and nothing else.
+///
+/// This is the mission's user-visible outcome, asserted on the shapes the real
+/// adapter emits through a real `egui::Context` rather than described. It
+/// falsifies three distinct regressions: the pre-mission palette surviving,
+/// the authored typeface silently failing to register, and an unauthored point
+/// size reaching a glyph run.
+#[test]
+fn production_render_paints_the_authored_palette_and_typeface() {
+    let app_loop = AppLoop::new(
+        installed_state(),
+        StateProjector::new(),
+        ProbeBoundary {
+            observations: Arc::new(Mutex::new(BoundaryObservations::default())),
+        },
+    )
+    .unwrap();
+    let shared = Rc::new(RefCell::new(app_loop));
+    let input_loop = Rc::clone(&shared);
+    let on_input: AppInputCallback = Box::new(move |event| {
+        let _ = input_loop.borrow_mut().dispatch_action(event);
+    });
+    let projection_loop = Rc::clone(&shared);
+    let projection: ProjectionCallback =
+        Box::new(move || projection_loop.borrow().current_graphical_shell());
+    let mut application =
+        EframeGraphicalApplication::new(on_input, projection, Box::new(|_| true), Box::new(|_| {}));
+    let context = egui::Context::default();
+    install_authored_typeface(&context)
+        .expect("the authored typeface installs into the test context");
+    let mut frame = eframe::Frame::_new_kittest();
+
+    // PATCH, so the frame carries focused parameter rows and their keylines.
+    let output = run_frame(
+        &mut application,
+        &context,
+        &mut frame,
+        [1_920.0, 1_080.0],
+        vec![key_event(egui::Key::Num2)],
+    );
+
+    let mut colors = Vec::new();
+    let mut fonts = Vec::new();
+    for shape in &output.shapes {
+        painted_colors(&shape.shape, &mut colors);
+        painted_fonts(&shape.shape, &mut fonts);
+    }
+    assert!(!colors.is_empty(), "the frame painted nothing");
+    assert!(!fonts.is_empty(), "the frame painted no text");
+
+    // The single most visible change in the mission: focus is cyan, and the
+    // green the adapter used to paint it in is gone from the whole frame.
+    let pre_mission_green = egui::Color32::from_rgb(110, 205, 174);
+    assert!(
+        !colors.contains(&pre_mission_green),
+        "the pre-mission focus green is still painted"
+    );
+    assert!(
+        colors.contains(&SemanticColor::AccentFocus.resolve()),
+        "the authored cyan focus accent is painted nowhere"
+    );
+    assert!(
+        colors.contains(&SemanticColor::BgCanvas.resolve()),
+        "the authored canvas background is painted nowhere"
+    );
+    for retired in [
+        egui::Color32::from_rgb(16, 18, 22),
+        egui::Color32::from_rgb(24, 27, 32),
+        egui::Color32::from_rgb(29, 33, 39),
+        egui::Color32::from_rgb(230, 234, 239),
+        egui::Color32::from_rgb(150, 158, 169),
+        egui::Color32::from_rgb(232, 174, 76),
+    ] {
+        assert!(
+            !colors.contains(&retired),
+            "the retired adapter constant {retired:?} is still painted"
+        );
+    }
+
+    // The typeface actually took. egui falls back silently on a family-name
+    // mismatch, so a run left on a default family means registration failed.
+    let authored_sizes: Vec<f32> = ALL_TYPE_STYLES
+        .iter()
+        .map(|style| style.metrics().size_px)
+        .collect();
+    for (family, size) in &fonts {
+        match family {
+            egui::FontFamily::Name(name) => assert!(
+                name.starts_with(AUTHORED_FAMILY),
+                "a run painted in {name}, which is not the authored family"
+            ),
+            other => panic!("a run fell back to {other:?} instead of an authored family"),
+        }
+        assert!(
+            authored_sizes.contains(size),
+            "a run painted at {size} px, which no authored type style declares"
+        );
+    }
+}
+
 #[test]
 fn mixer_frame_reads_one_compatible_immutable_audio_observation() {
     let state = installed_state();
@@ -456,6 +626,8 @@ fn mixer_frame_reads_one_compatible_immutable_audio_observation() {
         Box::new(|_| {}),
     );
     let context = egui::Context::default();
+    install_authored_typeface(&context)
+        .expect("the authored typeface installs into the test context");
     let mut frame = eframe::Frame::_new_kittest();
     let rendered = run_frame(
         &mut application,
@@ -501,6 +673,8 @@ fn patch_utility_controls_dispatch_through_the_same_semantic_callback() {
     let mut application =
         EframeGraphicalApplication::new(on_input, projection, Box::new(|_| true), Box::new(|_| {}));
     let context = egui::Context::default();
+    install_authored_typeface(&context)
+        .expect("the authored typeface installs into the test context");
     let mut frame = eframe::Frame::_new_kittest();
 
     run_frame(
@@ -641,6 +815,8 @@ fn false_tick_closes_once_without_projection_frame_or_repaint() {
     });
     let mut application = EframeGraphicalApplication::new(on_input, projection, on_tick, on_frame);
     let context = egui::Context::default();
+    install_authored_typeface(&context)
+        .expect("the authored typeface installs into the test context");
     let mut frame = eframe::Frame::_new_kittest();
 
     let first = run_frame(

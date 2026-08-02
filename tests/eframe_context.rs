@@ -1,5 +1,7 @@
 use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
-use crest_synth::adapter::eframe_graphical_window::EframeGraphicalApplication;
+use crest_synth::adapter::eframe_graphical_window::{
+    install_authored_typeface, EframeGraphicalApplication,
+};
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::production_instruments::production_capability_registry;
 use crest_synth::control::app_event::AppEvent;
@@ -184,6 +186,8 @@ fn real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection() 
     let mut application =
         EframeGraphicalApplication::new(on_input, projection, on_tick, Box::new(|_| {}));
     let context = egui::Context::default();
+    install_authored_typeface(&context)
+        .expect("the authored typeface installs into the test context");
     let mut frame = eframe::Frame::_new_kittest();
 
     let mut events = vec![key_event(egui::Key::D), key_event(egui::Key::D)];

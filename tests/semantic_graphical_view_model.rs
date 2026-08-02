@@ -1,5 +1,7 @@
 use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
-use crest_synth::adapter::eframe_graphical_window::EframeGraphicalApplication;
+use crest_synth::adapter::eframe_graphical_window::{
+    install_authored_typeface, EframeGraphicalApplication,
+};
 use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::production_effects::{
     production_chorus_config, production_effect_registry,
@@ -128,6 +130,8 @@ fn render(
     let mut application =
         EframeGraphicalApplication::new(on_input, projection_callback, tick, on_frame);
     let context = egui::Context::default();
+    install_authored_typeface(&context)
+        .expect("the authored typeface installs into the test context");
     let mut frame = eframe::Frame::_new_kittest();
     context.begin_pass(egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
