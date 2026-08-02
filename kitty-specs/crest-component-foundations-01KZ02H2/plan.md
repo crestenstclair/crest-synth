@@ -23,7 +23,7 @@ live*. That containment is why this mission can be measured for zero real-time a
 **Primary Dependencies**: eframe/egui 0.32.3, egui_extras 0.32.3 (image + svg features only)
 **Storage**: N/A — the vocabulary is compile-time declared; the typeface is a vendored binary asset loaded once at startup
 **Testing**: `cargo test --test component_vocabulary` for deterministic authored-value fidelity, literal absence, viewport integrity, state exhaustiveness, and ownership boundary; `make demo-live-component-library` for the browsable live gallery witness; existing `make test`, `make lint`, `make fmt-check` unchanged
-**Target Platform**: macOS and Linux desktop at 1920×1080, and the Steam Deck at 1280×800
+**Target Platform**: macOS and Linux desktop at 1920×1080, and a compact 1280×800 handheld target
 **Project Type**: single Rust workspace — hexagonal, one crate, contexts under `src/`
 **Performance Goals**: interactive rendering stays event-driven at the existing 16 ms idle cadence; token and policy resolution adds no per-frame allocation beyond what egui already owns; typeface registration happens once before the first painted frame
 **Constraints**: audio callback contract unchanged (zero allocation, locking, blocking, I/O, logging on the audio thread); the 512-event control-path acceptance fixture stays within its declared 50 ms ceiling; all five structural bands and the persistent side region retained at both authored viewports; no interactive target below 48 px
@@ -38,7 +38,7 @@ Charter present (`software-dev-default`, compact mode). Directives evaluated aga
 | Directive | Status | Note |
 |---|---|---|
 | DIRECTIVE_001 Architectural Integrity | **Pass** | The vocabulary is a new leaf resource in the Shell context. Nothing crosses a bounded-context boundary; `contextMap` is unchanged. |
-| DIRECTIVE_003 Decision Documentation | **Pass** | The color-set union, the authored-vs-measured Steam Deck distinction, and the loading/error reuse are recorded in `asset.ProductDesignAuthority` prompts and land in `DESIGN.md`. |
+| DIRECTIVE_003 Decision Documentation | **Pass** | The color-set union, the authored-vs-measured compact viewport distinction, and the loading/error reuse are recorded in `asset.ProductDesignAuthority` prompts and land in `DESIGN.md`. |
 | DIRECTIVE_010 Specification Fidelity | **Pass** | Every FR traces to a declared crest-spec requirement (see Crest-Spec Derivation). No FR exists without one. |
 | DIRECTIVE_024 Locality of Change | **Pass** | Additive in `src/shell` and `src/testing`; subtractive in one adapter file. No reducer, projection, transport, or render change. |
 | DIRECTIVE_025 Boy Scout Rule | **Applied** | The `WindowInput` 17-vs-21 drift was corrected in the crest-spec phase because this mission edits that exact resource. Domain-matched, not silently absorbed. |
@@ -84,7 +84,7 @@ doctor`: **OK** — 7 contexts / 128 resources, 14 goals, 20 capabilities, 97 re
 | `asset.ShellContextModules` | Gains targets and prompts for the vocabulary, typeface, policies, and primitives. |
 | `asset.TestingContextModules` | Gains targets and prompts for the gallery scene. |
 | `asset.BuildMakefile` | Declares `demo-live-component-library` as browsable, explicitly not an autonomous witness and not a `demo-live` alias. |
-| `asset.ProductDesignAuthority` | Gains the color-union, Steam-Deck-authored, and loading/error-reuse decisions. |
+| `asset.ProductDesignAuthority` | Gains the color-union, compact-viewport-authored, and loading/error-reuse decisions. |
 | `project.nonGoals.elaborate_ui`, `project.nonGoals.later_roadmap_phases`, `project.meta.avoid` | Narrowed deliberately from "no Phase 4 component library" to "no Phase 4 configurable controls or compositions"; extended to forbid visual literals outside the vocabulary. |
 | `project.completion` | `build_from_component_vocabulary` added to `requiredGoals`; `component_vocabulary` added to `projectChecks`. |
 
@@ -198,7 +198,7 @@ consumer of the vocabulary rather than a definer of values.
 - **Crest-spec**: `valueObject.Shell.ViewportDensityPolicy`, `requirement.viewport_density_policy`
 - **Affected surfaces**: `src/shell/density_policy.rs`, `src/adapter/eframe_graphical_window.rs`
 - **Sequencing/depends-on**: IC-01
-- **Risks**: Only the desktop viewport is authored in the design file. The Steam Deck policy is derived and needs the operator's eye, so it should reach a viewable state early rather than at the end. The existing adapter already proportionally scales the side region (`desired_side_width`, `eframe_graphical_window.rs:707`); that ad-hoc rule is what the policy replaces, and deleting it must not silently change desktop geometry.
+- **Risks**: Only the desktop viewport is authored in the design file. The compact policy is derived and needs the operator's eye, so it should reach a viewable state early rather than at the end. The existing adapter already proportionally scales the side region (`desired_side_width`, `eframe_graphical_window.rs:707`); that ad-hoc rule is what the policy replaces, and deleting it must not silently change desktop geometry.
 
 ### IC-04 — Component state vocabulary
 

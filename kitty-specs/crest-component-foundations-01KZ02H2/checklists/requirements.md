@@ -66,6 +66,6 @@ operator answers.
 directly from the Figma file on 2026-08-02, not estimated from an export or
 recalled from `DESIGN.md`. The two authored-viewport measurements, the 13 color
 variables, the 8 type styles, the focus halo, and the 6 spacing steps are
-measured inputs. Only the Steam Deck density policy and the loading/error
+measured inputs. Only the compact density policy and the loading/error
 appearances are authored rather than measured, and both are recorded as explicit
 assumptions with the operator's prior approval.

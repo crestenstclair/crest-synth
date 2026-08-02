@@ -17,7 +17,7 @@ Do not add another architecture, handoff, phase plan, or competing product desig
 
 ## Product intent
 
-Crest Synth is a standalone, controller-first MIDI instrument host for Steam Deck and desktop. A musician can navigate patches, edit an instrument and its post effects, mix sixteen output tracks, and perform without a pointer while the host produces stable, low-latency stereo audio.
+Crest Synth is a standalone, controller-first MIDI instrument host for desktop and compact handheld screens. A musician can navigate patches, edit an instrument and its post effects, mix sixteen output tracks, and perform without a pointer while the host produces stable, low-latency stereo audio.
 
 The first executable slice can be narrower than the architecture. The current implemented baseline alternates HiDef SoundFont and Braids instruments using repository fixtures and routes the first fixture Patch through one statically configured Chorus insert. New engines and effects enter through separate capability registries and must never be represented by silent fallbacks or effect bypasses.
 
@@ -447,7 +447,7 @@ At the 1920×1080 authored size:
 
 The shell is structural, not a collection of cards. Separators are hairlines. Waveforms are informative and omitted from the focus order.
 
-The layout must also be verified at the Steam Deck viewport. Preserve the header/footer bands, visible Utility/Inspector, minimum targets, and hierarchy using proportional widths and controlled density rather than hiding required context.
+The layout must also be verified at the compact viewport. Preserve the header/footer bands, visible Utility/Inspector, minimum targets, and hierarchy using proportional widths and controlled density rather than hiding required context.
 
 ### Patch
 
@@ -613,7 +613,7 @@ A completed behavior must be distinguishable from a no-op:
 - **DSP:** finite measured peak/RMS, stereo routing, mute/solo, synthesis → Patch effect → mix order, target-only Chorus difference and stereo side energy, independent effect instances/tails, `16 × N` Patch-local Braids scaling, deterministic Patch-local stealing, engine-managed SoundFont polyphony, and independent overlapping-note envelopes in both engines.
 - **RT:** allocator instrumentation, callback timing, overflow recovery, graph swap, off-thread destruction.
 - **Assets:** real SF2/sample fixtures, exact authored preset names, bank/program ordering, preset identity, malformed input, loop bounds, and atomic replacement.
-- **UI:** golden images at 1920×1080 and Steam Deck size, semantic tokens, single focus, complete controller navigation, modal return.
+- **UI:** golden images at 1920×1080 and 1280×800, semantic tokens, single focus, complete controller navigation, modal return.
 - **Integration:** standalone, fixture, and synthetic inputs use the production reducer and render path; the production fixture alternates SoundFont and Braids Patches and configures Chorus only on its first Patch. The deterministic demo modifies both focused-Patch output fields, all six parameters on every one of the sixteen tracks, every focused-Patch ADSR value, both Chorus scalars, and every global value through canonical navigation and adjustment; proves shared-track accumulation, trim/reroute isolation, exact pre/post-effect and gate/send/meter order, target isolation, independent instances, stereo output, and no fallback; selects adjacent SoundFont presets by exact catalog identity; then selects SoundFont → Braids → descriptor-default SoundFont through the same worker, reducer, complete graph handoff, and renderer while preserving Patch outputs, MixerState, and effect config/layout. It also proves catalog order/name fidelity, pending/busy/failure/stale handling, scalar/structural coexistence, block-boundary activation, off-callback retirement, target-only mutation, finite distinct output, and two-run logical determinism. The paced physical-device demo sounds two Patches through one track, exercises all sixteen track identities and both Patch-output controls with exact-generation observations, visibly and audibly edits both Chorus scalars before the structural sequence, waits for every acknowledged graph revision, restores descriptor-default SoundFont with Chorus still configured, performs semantic note cleanup, closes the window, releases the stream and worker, collects graph ownership, and exits normally; exhaustive negative-path, sample-exact routing, independent-instance, and two-run proof remains headless.
 
 Offline render is the deterministic audio proof. Device smoke tests separately validate negotiation and underruns. Construction-only tests, success-token logs, and silent output are not evidence.

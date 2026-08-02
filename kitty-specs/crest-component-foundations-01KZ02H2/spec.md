@@ -11,7 +11,7 @@ This mission derives from the crest-spec at `.kittify/crest-spec/`. It does not 
 
 | Cited declaration | Relationship |
 |---|---|
-| `goal.use_graphical_shell` | The goal this mission advances — controller-first shell at desktop and Steam Deck sizes, with no state or audio behavior in the UI. |
+| `goal.use_graphical_shell` | The goal this mission advances — controller-first shell at desktop and compact viewport sizes, with no state or audio behavior in the UI. |
 | `capability.graphical_application_shell` | The capability being deepened. Its `production_shell` acceptance already names Phase 2 as rendering *"without inventing the Phase 4 component library"* — this mission is that named successor. |
 | `requirement.authored_shell_composition` | Preserved unchanged. The five structural bands and the two-context rule still hold. |
 | `requirement.responsive_shell_blockout` | Extended from "renders at both viewports" to "resolves both viewports from declared policies rather than scattered constants". |
@@ -32,7 +32,7 @@ Figma variable names are canonical. Code and spec use the Figma name, never a re
 | `color/accent/positive`, `color/accent/warning` | Status accents | "green", "red", "error color" |
 | `Display/Screen`, `Heading/Section`, `Heading/Panel`, `Body/Default`, `Body/Compact`, `Label/Control`, `Code/Value`, `Instruction/Hint` | The eight authored type styles | "title font", "big text", ad-hoc point sizes |
 | `space/4` … `space/32` | The six spacing steps | arbitrary pixel gaps |
-| Desktop viewport / Steam Deck viewport | The two authored sizes (1920×1080, 1280×800) | "large screen", "small screen", "mobile" |
+| Desktop viewport / compact viewport | The two authored sizes (1920×1080, 1280×800) | "large screen", "small screen", "mobile" |
 
 `DESIGN.md` names the instrument accent `instrument`; Figma names it `color/accent/instrument/plates`. Both denote `#b894ff`. Figma's name wins in code, per the rule above.
 
@@ -57,7 +57,7 @@ The operator launches Crest Synth and sees the interface the design authorizes: 
 
 ### User Story 2 - A live gallery scene the operator can page through (Priority: P2)
 
-The operator runs one command and gets a real window showing off the components. Number keys change page — one page per group of pieces — and each page renders every meaningful behavioral state of that group: resting, focused, adjusting, disabled, loading, error, muted, soloed, selected. Both the desktop and Steam Deck sizes are shown.
+The operator runs one command and gets a real window showing off the components. Number keys change page — one page per group of pieces — and each page renders every meaningful behavioral state of that group: resting, focused, adjusting, disabled, loading, error, muted, soloed, selected. Both the desktop and compact viewport sizes are shown.
 
 **Why this priority**: Visual fidelity is the point of this phase, and a log cannot carry it. Without one browsable screen, judging correctness means driving the app into each state by hand, which is slow enough that it will not be done. Paging by number key makes it a thing the operator actually browses rather than a static contact sheet.
 
@@ -69,7 +69,7 @@ The operator runs one command and gets a real window showing off the components.
 
 1. **Given** the gallery scene is running, **When** the operator presses a number key bound to a page, **Then** that page is shown, its identity is visible on screen, and no application state, focus, Patch value, or audio behavior changes.
 2. **Given** the gallery scene is running, **When** the operator presses a number key with no page bound to it, **Then** the current page is retained and nothing changes.
-3. **Given** any page is shown, **When** it renders, **Then** every declared state of every primitive on that page appears with representative content, at both the desktop and Steam Deck viewport sizes.
+3. **Given** any page is shown, **When** it renders, **Then** every declared state of every primitive on that page appears with representative content, at both the desktop and compact viewport sizes.
 4. **Given** a new state is added to the closed state vocabulary, **When** the project is built, **Then** compilation or the coverage assertion fails until a gallery specimen exists for it.
 5. **Given** any specimen is shown, **When** it is inspected, **Then** its state is legible from text or shape alone, without relying on color.
 6. **Given** the operator is browsing the gallery, **When** they close the window, **Then** the scene exits normally and releases every resource it owns.
@@ -94,7 +94,7 @@ A maintainer assembling the real Patch or Mixer screen in a later phase reaches 
 ### Edge Cases
 
 - **The typeface fails to load.** The failure is typed and visible, consistent with the product's "unavailable means explicit" principle. Silently substituting a fallback font would misrepresent the design as satisfied.
-- **The window is smaller than the Steam Deck viewport.** The declared minimum is enforced; below it, structural bands and the persistent side region are still retained rather than hidden.
+- **The window is smaller than the compact viewport.** The declared minimum is enforced; below it, structural bands and the persistent side region are still retained rather than hidden.
 - **A behavioral state exists with no declared appearance.** The closed state vocabulary and its exhaustiveness assertion name every site that must change, the same mechanism that made `SelectPatch` safe to add.
 - **A viewport falls between the two authored sizes.** The density policy resolves it by declared rule; no third hard-coded layout is introduced.
 - **A color is needed that the vocabulary does not declare.** It is added to the vocabulary and to `DESIGN.md`, never introduced as a local literal.
@@ -109,7 +109,7 @@ A maintainer assembling the real Patch or Mixer screen in a later phase reaches 
 |----|-------|------------|----------|--------|
 | FR-001 | Single semantic visual vocabulary | As a maintainer, I want one source declaring every semantic color, type style, spacing step, radius, keyline width, and minimum interactive target, so that no visual value is defined twice. | High | Open |
 | FR-002 | Azeret Mono installed and mapped | As a player, I want the interface set in the authored typeface at all four authored weights, so that the product reads as designed rather than as a default system font. | High | Open |
-| FR-003 | Declared viewport density policies | As a player on either device, I want the desktop and Steam Deck sizes resolved from declared policies, so that no surface carries resolution-specific constants. | High | Open |
+| FR-003 | Declared viewport density policies | As a player on either device, I want the desktop and compact viewport sizes resolved from declared policies, so that no surface carries resolution-specific constants. | High | Open |
 | FR-004 | Reusable primitives | As a maintainer, I want text roles, hairlines, keylines, focus frames, value displays, status marks, and action hints available as shared pieces, so that later screens compose rather than repaint. | High | Open |
 | FR-005 | Explicit state rendering | As a player, I want focus, adjustment, disabled, loading, error, mute, solo, and selection each rendered with text or shape in addition to color, so that state is never conveyed by color alone. | High | Open |
 | FR-006 | Production shell renders through the vocabulary | As a player, I want the real application — not only a demo — painted through the shared vocabulary, so that launching the product shows the approved design. | High | Open |
@@ -144,7 +144,7 @@ A maintainer assembling the real Patch or Mixer screen in a later phase reaches 
 ### Key Entities
 
 - **Semantic visual vocabulary**: the closed set of named colors, type styles, spacing steps, radii, keyline widths, and interactive minimums. Names are the canonical Figma names. Raw values stay private to it.
-- **Viewport density policy**: the declared resolution of the vocabulary onto one authored viewport — band heights, workspace split, side-region width, row pitch, and inset. Two exist: desktop and Steam Deck.
+- **Viewport density policy**: the declared resolution of the vocabulary onto one authored viewport — band heights, workspace split, side-region width, row pitch, and inset. Two exist: desktop and compact.
 - **Primitive state**: the closed set of behavioral states a primitive can be handed — resting, focused, adjusting, disabled, loading, error, muted, soloed, selected. Closed so that adding one names every site that must change.
 - **Gallery page**: one named group of specimens, selected by a bound number key. The page vocabulary is closed, so a page without a binding — or a binding without a page — is a build failure rather than a dead key.
 - **Gallery specimen**: one primitive rendered in one state at one viewport with representative content, used only for visual judgment and coverage assertion.
@@ -153,7 +153,7 @@ A maintainer assembling the real Patch or Mixer screen in a later phase reaches 
 
 - **Figma and `DESIGN.md` agree** on all shared values. Verified directly against the Figma file on 2026-08-02: all 11 shared colors, all 8 type styles, the focus halo, and the six spacing steps match exactly.
 - **Two token-set differences are resolved by union.** Figma declares `color/bg/selected` (`#2a3745`) which `DESIGN.md` omits; `DESIGN.md` declares `elevated`, `border/strong`, `patch`, and `chorus` which Figma does not publish as variables. Both sets are kept, and `DESIGN.md` is updated to record the union as a durable decision.
-- **Steam Deck frames are not authored in Figma.** Only the 1920×1080 screens exist. The Steam Deck density policy is authored during this mission from the desktop frames and the declared minimums, then reviewed visually by the operator, per their explicit instruction.
+- **Compact-viewport frames are not authored in Figma.** Only the 1920×1080 screens exist. The compact density policy is authored during this mission from the desktop frames and the declared minimums, then reviewed visually by the operator, per their explicit instruction.
 - **Loading and error appearances are not authored in Figma.** They reuse the vocabulary already declared in `DESIGN.md` for structural edits — an adjustment-accent treatment with `Preparing`/`Activating` text for loading, and a warning-accent treatment with typed short text for error — so no new visual language is invented.
 - **Row geometry comes from measurement, not estimate.** Patch rows are 52 px tall on a 66 px pitch with a 24 px content inset; utility controls are 380×48 on a 60 px pitch with a 5 px slider bar. Read directly from the Figma file rather than eyeballed from an export.
 

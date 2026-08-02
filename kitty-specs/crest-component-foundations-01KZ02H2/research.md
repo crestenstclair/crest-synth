@@ -94,12 +94,12 @@ export.
 
 ---
 
-## R-05 — Where should the Steam Deck density policy come from?
+## R-05 — Where should the compact density policy come from?
 
 **Decision**: Author it from the desktop frames and the declared minimums, then have the operator review
 it visually. Record that it is authored rather than measured.
 
-**Rationale**: The design file contains only 1920×1080 frames. `DESIGN.md:450` requires Steam Deck
+**Rationale**: The design file contains only 1920×1080 frames. `DESIGN.md:450` requires compact viewport
 verification but supplies no authored small-viewport design, so there is nothing to measure. The operator
 explicitly approved authoring it.
 

@@ -32,7 +32,7 @@ asset file pattern; nothing here restates implementation intent the crest-spec a
 | T005 | Record the three durable decisions in `DESIGN.md` | WP01 | [P] |
 | T006 | Prove declared values equal the authored table | WP01 | |
 | T007 | Implement the Desktop density policy from measured geometry | WP02 | |
-| T008 | Author the Steam Deck density policy | WP02 | |
+| T008 | Author the compact density policy | WP02 | |
 | T009 | Expose the policy API the adapter will consume | WP02 | |
 | T010 | Declare the closed nine-value `ComponentState` | WP02 | [P] |
 | T011 | Map Loading and Error onto the structural-edit vocabulary | WP02 | |
@@ -103,12 +103,12 @@ side region, and the 48 px minimum target survive at 1920×1080 and 1280×800.
 
 **Included subtasks**: T007, T008, T009, T010, T011, T012
 
-**Implementation sketch**: Desktop policy from measured geometry → Steam Deck policy authored from it →
+**Implementation sketch**: Desktop policy from measured geometry → compact policy authored from it →
 consumer-facing API → closed `ComponentState` → Loading/Error mapping → viewport assertions.
 
 **Parallel opportunities**: T010 is independent of T007–T009.
 
-**Risks**: The Steam Deck policy is authored, not measured — it needs the operator's eye and should
+**Risks**: The compact policy is authored, not measured — it needs the operator's eye and should
 become viewable before the mission ends, not at the end. The desktop policy must reproduce today's
 geometry exactly; a silent shift there would be a regression disguised as a refactor.
 

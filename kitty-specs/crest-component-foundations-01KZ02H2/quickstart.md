@@ -59,7 +59,7 @@ regression, not a side effect.
 
 1. **`make run`, side by side with the design file.** The P1 story is visual. Everything else exists to
    serve it.
-2. **Page 8 at both sizes.** The Steam Deck density policy is authored rather than measured — there is no
+2. **Page 8 at both sizes.** The compact density policy is authored rather than measured — there is no
    authored small-viewport design to check it against, so your eye is the acceptance test. This is the
    one place the mission genuinely needs you.
 3. **Whether any state is legible only by color.** Every state must carry text or shape too.
