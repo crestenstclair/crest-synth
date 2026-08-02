@@ -3127,3 +3127,97 @@ witnesses:
       repairResources:
       - AppLoop
       - StateProjector
+  component_gallery:
+    scope: goal
+    goal: build_from_component_vocabulary
+    capability: component_vocabulary
+    resources:
+    - SemanticVisualToken
+    - AuthoredTypeface
+    - ViewportDensityPolicy
+    - ComponentState
+    - ComponentGalleryPage
+    - ComponentGalleryObservation
+    - EframeGraphicalWindow
+    - TestingContextModules
+    - BuildMakefile
+    repairResources:
+    - SemanticVisualToken
+    - AuthoredTypeface
+    - ViewportDensityPolicy
+    - ComponentState
+    - ComponentGalleryPage
+    - ComponentGalleryObservation
+    evidence:
+    - evidence.component_vocabulary_contract
+    command:
+    - make
+    - demo-live-component-library
+    timeout: 180s
+    artifacts:
+    - target/release/crest-synth
+    observation:
+      kind: json_stdout
+      marker: 'CREST_COMPONENT_GALLERY_OBSERVATION '
+      schema:
+        pages_declared: number
+        pages_painted: number
+        pages_reachable_by_digit: number
+        unbound_digit_retained_page: bool
+        states_declared: number
+        states_painted: number
+        states_distinguishable_without_color: bool
+        desktop_viewport_painted: bool
+        steam_deck_viewport_painted: bool
+        bands_retained_both_viewports: bool
+        clipped_or_overlapping_text: number
+        token_source_exact: bool
+        typeface_resolved: bool
+        app_state_generation_delta: number
+        window_closed: bool
+    predicates:
+    - field: pages_painted
+      op: eq
+      value: 8
+    - field: pages_declared
+      op: eq
+      value: 8
+    - field: pages_reachable_by_digit
+      op: eq
+      value: 8
+    - field: unbound_digit_retained_page
+      op: eq
+      value: true
+    - field: states_declared
+      op: eq
+      value: 9
+    - field: states_painted
+      op: eq
+      value: 9
+    - field: states_distinguishable_without_color
+      op: eq
+      value: true
+    - field: desktop_viewport_painted
+      op: eq
+      value: true
+    - field: steam_deck_viewport_painted
+      op: eq
+      value: true
+    - field: bands_retained_both_viewports
+      op: eq
+      value: true
+    - field: clipped_or_overlapping_text
+      op: eq
+      value: 0
+    - field: token_source_exact
+      op: eq
+      value: true
+    - field: typeface_resolved
+      op: eq
+      value: true
+    - field: app_state_generation_delta
+      op: eq
+      value: 0
+    - field: window_closed
+      op: eq
+      value: true

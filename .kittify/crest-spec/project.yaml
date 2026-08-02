@@ -23,9 +23,11 @@ nonGoals:
     return count beyond the declared product ceiling; the deferred roster arrives later strictly as registry
     entries requiring no structural change
   elaborate_ui: crest-synth now provides the Phase 1 graphical shell, Phase 2 host-neutral semantic graphical
-    contract, and the corrective canonical sixteen-track routing/control slice; it does not yet provide
-    the Phase 4 reusable component library, complete Phase 5 Patch editor, component-polished Phase 6
-    Mixer composition, browser workflows, multi-select, or final Figma polish
+    contract, the corrective canonical sixteen-track routing/control slice, and the Phase 4 component
+    foundations — authored visual vocabulary, typeface, viewport density policies, reusable primitives,
+    and the browsable gallery; it does not yet provide the Phase 4 configurable controls or reusable
+    compositions, the complete Phase 5 Patch editor, component-polished Phase 6 Mixer composition, browser
+    workflows, multi-select, or final Figma polish
   sound_library: crest-synth does not provide preset/session persistence, alternate SoundFont assets,
     a bank browser, sample-library management, or a patch browser; selecting a preset embedded in the
     fixed SoundFont is in scope
@@ -34,9 +36,13 @@ nonGoals:
   later_phase_three_increments: This increment does not introduce general PATCH Scalar editing, asset
     selection, an engine- or preset-choice modal, inactive-engine config caching, sibling-Patch navigation,
     or seamless voice/effect-tail migration
-  later_roadmap_phases: This increment does not introduce Phase 4 components, the complete Phase 5 Patch
-    editor or component-polished Phase 6 Mixer, asset workflows, Modal or MultiSelect behavior, modulation,
-    arbitrary graph editing, persistence, or final visual completion
+  later_roadmap_phases: This increment introduces the Phase 4 component foundations only — vocabulary,
+    typeface, density policies, primitives, gallery, and the production repaint. It does not introduce
+    the Phase 4 configurable controls (parameter rows, choice rows, toggles, compact sliders, faders,
+    meters, browser rows, modal options) or reusable compositions (application shell, context switch,
+    identity header, section, Patch strip row, Utility/Inspector panel, footer) as shared components,
+    nor the complete Phase 5 Patch editor or component-polished Phase 6 Mixer, asset workflows, Modal
+    or MultiSelect behavior, modulation, arbitrary graph editing, persistence, or final visual completion
 meta:
   language: rust
   style: idiomatic Rust; explicit domain types; small modules; ports at external and real-time boundaries
@@ -60,10 +66,14 @@ meta:
     remain bounded and validated — eight returns is a ceiling, not an invitation to arbitrary graph editing
     — and the ordered Patch effect slots, eight bus returns, and embedded SoundFont preset selection are
     permitted
-  - Phase 4 reusable component library, the complete Phase 5 Patch editor or component-polished Phase
-    6 Mixer, Modal or MultiSelect behavior before their owning workflows, asset browsers, final visual
-    polish, or UI-owned domain/navigation/audio state; the Phase 1 shell, Phase 2 semantic model, corrective
-    sixteen-track routing controls/meters, and retained diagnostic content are permitted
+  - Phase 4 configurable controls or reusable compositions, the complete Phase 5 Patch editor or component-polished
+    Phase 6 Mixer, Modal or MultiSelect behavior before their owning workflows, asset browsers, final
+    visual polish, or UI-owned domain/navigation/audio state; the Phase 1 shell, Phase 2 semantic model,
+    corrective sixteen-track routing controls/meters, retained diagnostic content, and the Phase 4 component
+    foundations (vocabulary, typeface, density policies, primitives, gallery) are permitted
+  - literal colors, type sizes, and spacing constants anywhere outside the declared visual vocabulary;
+    a substituted or synthesized typeface; a surface branching on a raw viewport size instead of asking
+    a declared density policy; or a component owning Patch, focus, navigation, reducer, or audio state
 layers:
 - domain
 - application
@@ -126,6 +136,7 @@ completion:
   - use_semantic_graphical_view_model
   - route_patches_through_sixteen_tracks
   - expand_effects_and_buses
+  - build_from_component_vocabulary
   projectChecks:
   - format
   - clippy
@@ -156,3 +167,4 @@ completion:
   - expandable_effects_and_bus_topology
   - no_name_enumerated_identity
   - acceptance_matrix_covers_all_requirement_kinds
+  - component_vocabulary

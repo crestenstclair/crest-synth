@@ -26,6 +26,9 @@ assetKinds:
   delivery-roadmap:
     description: The phase roadmap and its corrective gates
     filePattern: ROADMAP.md
+  vendored-typeface:
+    description: The vendored authored typeface, its license, provenance, and hash manifest
+    filePattern: vendor/azeret-mono/*
 assets:
   KernelContextModules:
     kind: rust-context-source
@@ -48,11 +51,62 @@ assets:
       resources
   ShellContextModules:
     kind: rust-context-source
-    description: src/shell — egui rendering of projected state realizing context.Shell resources
+    description: src/shell — egui rendering of projected state realizing context.Shell resources, including
+      the authored visual vocabulary, typeface installation, density policies, and reusable primitives
+      every surface paints through
+    targets:
+    - SemanticVisualToken
+    - AuthoredTypeface
+    - ViewportDensityPolicy
+    - ComponentState
+    - WindowInput
+    prompts:
+    - Declare the authored vocabulary once. Colors, type styles, spacing steps, and geometry are named
+      by their canonical authored names and carry the authored values exactly; raw values stay private
+      to this module and are reachable only through the named token.
+    - Install the vendored typeface into the rendering context once before the first painted frame, binding
+      each authored weight to the type styles that declare it. An unavailable face returns a typed error
+      the shell makes visible; never substitute or synthesize a face.
+    - Express both authored viewports as declared density policies carrying bands, split, inset, row height,
+      row pitch, and control geometry. Surfaces ask the policy; no surface branches on a raw viewport
+      size, and no third hard-coded layout is introduced.
+    - Provide the primitives — text roles, hairlines, keylines, focus frames, value displays, status marks,
+      and action hints — as functions over immutable view data plus an explicit ComponentState. A primitive
+      paints; it never owns Patch values, focus, navigation, reducer state, or audio state, and never
+      reaches AppState.
+    - Match ComponentState exhaustively at every rendering site so an added state fails compilation rather
+      than defaulting silently, and render every state with text or shape in addition to color.
+    - Repaint the existing eframe adapter through the vocabulary and delete the constants it previously
+      painted from. The production application, not only the gallery, must show the authored design.
+    contributesTo:
+      component_vocabulary: owns the vocabulary, typeface, policies, and primitives every surface resolves
+        through
+      graphical_application_shell: replaces adapter-owned visual constants without changing the shell's
+        structural bands or passivity
   TestingContextModules:
     kind: rust-context-source
     description: src/testing — retained scenes, deterministic workers, mutation harness, and measurements
-      realizing context.Testing resources
+      realizing context.Testing resources, including the browsable component gallery scene
+    targets:
+    - ComponentGalleryPage
+    - ComponentGalleryObservation
+    - ComponentState
+    - ViewportDensityPolicy
+    prompts:
+    - Add the browsable component gallery scene. It renders the declared pages through the shared primitives
+      and vocabulary, binds one digit key per page locally, and shows the active page identity on screen.
+    - Page selection is scene-local. It never becomes a SemanticAction, never reaches AppState, and never
+      changes focus, Patch values, graph revision, or audio behavior. A digit with no page bound retains
+      the current page.
+    - Render every declared ComponentState with representative content at both authored viewports, and
+      assert coverage from the closed page and state sets so a missing specimen or an unbound page fails
+      rather than being silently omitted.
+    - This scene is browsable by design and therefore makes no exact-generation claim. Do not give it
+      the autonomous witness contract, and do not weaken that contract in the scenes that hold it.
+    - Emit the gallery observation only after painting, copying the page, state, and viewport identity
+      actually rendered. A pre-render plan or a constructed specimen list must not be able to satisfy it.
+    contributesTo:
+      component_vocabulary: makes every declared value and state visually judgable and measurably covered
   AdapterModules:
     kind: rust-context-source
     description: src/adapter — thin capability, preparer, device, window, and asset adapters implementing
@@ -126,6 +180,10 @@ assets:
       of the newest sixteen-track routing scene, and clean (cargo clean).'
     - Provide play and ui as documented aliases for run because normal startup automatically plays the
       fixed MIDI fixture in the graphical window.
+    - 'Provide demo-live-component-library (cargo run --release --bin crest-synth --
+      --demo-live-component-library). Unlike every other demo-live target it is browsable rather than
+      autonomous: it opens the gallery, accepts digit keys to change page, and exits when the operator
+      closes the window. It makes no exact-generation claim and is not an alias target for demo-live.'
     - Keep demo exactly headless and deterministic. Retain demo-live-graphical-shell as the Phase 1 witness
       and demo-live-semantic-view-model as the Phase 2 witness. demo-live-sixteen-track-mixer-routing
       cumulatively opens the real graphical window and physical audio device, displays all sixteen tracks,
@@ -864,9 +922,19 @@ assets:
     - BusReturnBank
     - EffectSlotIndex
     - EffectCapabilityRegistry
+    - SemanticVisualToken
+    - ViewportDensityPolicy
+    - ComponentState
     prompts:
     - Never generate or rewrite this document from the crest-spec; it is the product authority and edits
       are deliberate authorial acts.
+    - Record the resolved authored color set as a durable decision. The visual reference publishes a selected-row
+      background this document previously omitted, and this document declares elevated, strong-border,
+      and two identity accents the reference does not publish as variables; the union of both is authoritative
+      and neither source is silently trimmed to match the other.
+    - Record that the Steam Deck density policy is authored from the desktop frames rather than measured
+      from an authored small-viewport design, and that loading and error appearances reuse the structural-edit
+      vocabulary this document already declares rather than inventing a second visual language.
     - Keep its vocabulary in agreement with the declared model — bus returns are named as returns, effect
       positions as ordered slots — and carry no retired term for a routing destination or effect.
     - When product intent here and the crest-spec disagree, resolve it during crest-spec authoring rather
@@ -908,3 +976,53 @@ assets:
     contributesTo:
       expandable_effects_and_bus_topology: keeps the no-name-enumeration and acceptance-coverage gates
         honest on machines missing their scanning tools
+  AzeretMonoTypeface:
+    kind: vendored-typeface
+    description: vendor/azeret-mono — the vendored authored monospace family in its four authored weights,
+      with verbatim license, upstream provenance, and a byte-exact hash manifest
+    profile:
+      kind: vendored_asset
+      license: SIL Open Font License 1.1
+    targets:
+    - AuthoredTypeface
+    prompts:
+    - Vendor only the files the product renders plus the verbatim license, the upstream source and revision,
+      and a hash manifest covering every vendored file.
+    - Upstream ships one variable font; the renderer resolves no variable axis and would paint every style
+      at the default instance. Derive the four authored static weights from it and record the exact reproducible
+      derivation rather than hand-editing outlines, metrics, or naming.
+    - Never generate or rewrite these binaries from the crest-spec. Replacing them is a deliberate authorial
+      act that updates the manifest and provenance in the same change.
+    contributesTo:
+      component_vocabulary: makes the authored type styles renderable rather than nominal
+  ComponentVocabularyAcceptanceTests:
+    kind: rust-integration-tests
+    description: tests/component_vocabulary.rs, the non-vacuous production-path acceptance for authored-value
+      fidelity, literal absence, state coverage, and ownership boundary
+    profile:
+      kind: verification_harness
+      witness: authored visual vocabulary reaches the production render path
+      failurePolicy: a drifted authored value, a reintroduced literal, an uncovered state, an unbound
+        page, a substituted typeface, or a component owning application state fails
+    targets:
+    - SemanticVisualToken
+    - AuthoredTypeface
+    - ViewportDensityPolicy
+    - ComponentState
+    - ComponentGalleryPage
+    prompts:
+    - Create tests/component_vocabulary.rs with ordinary assertion-bearing tests and emit CREST_ACCEPTANCE
+      component_vocabulary passed only after every declared check holds.
+    - Compare every declared color, type style, spacing step, and geometry value against the authored
+      table through the production render path. Compare values, not names; a test that only proves the
+      names exist is vacuous.
+    - Prove the absence of literal colors, type sizes, and spacing constants everywhere outside the vocabulary
+      module, and prove the guard fails when one is reintroduced.
+    - Prove both density policies retain every structural band, the persistent side region, and the authored
+      minimum interactive target at both authored viewports with no clipped or overlapping text.
+    - Prove the ComponentState set is exhaustively matched, that every state renders text or shape beyond
+      color, that every declared gallery page has exactly one digit binding, and that no component reads
+      or caches AppState.
+    - Prove an unavailable typeface produces the typed visible failure rather than a substituted face.
+    contributesTo:
+      component_vocabulary: is the deterministic half of the proof the live gallery completes

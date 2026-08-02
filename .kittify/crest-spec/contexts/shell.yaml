@@ -35,6 +35,14 @@ valueObjects:
       key:
       - Digit1
       - Digit2
+      - Digit3
+      - Digit4
+      - Digit5
+      - Digit6
+      - Digit7
+      - Digit8
+      - Q
+      - E
       - W
       - S
       - A
@@ -48,10 +56,14 @@ valueObjects:
     - WindowInput is shell data and never enters AppState or the audio boundary
     - the deterministic demo feeds the same values to the same translator as the real window
     - surfaceDescriptor is defined beside WindowInput and is the only GUI-input vocabulary consumed by
-      DemoScene and acceptance tests; no test owns a second list of Digit1/Digit2/W/S/A/D/K, key-up, focus-loss,
+      DemoScene and acceptance tests; no test owns a second list of normalized key names, key-up, focus-loss,
       or unrelated-input strings
-    - 'surfaceDescriptor contains exactly 17 unique valid values before any set conversion: KeyDown and
-      KeyUp for Digit1, Digit2, W, S, A, D, K, and Other plus FocusLost with no key payload'
+    - 'surfaceDescriptor contains exactly 33 unique valid values before any set conversion: KeyDown and
+      KeyUp for each of the sixteen normalized keys plus FocusLost with no key payload; the declared count
+      and the constructed descriptor are asserted equal so an added key cannot drift the two apart'
+    - Digit3 through Digit8 carry no application binding; they are normalized so a scene may bind them
+      locally, and an unbound digit reaching the translator produces no SemanticAction rather than a
+      substitute one
     - the Start control is reserved and unbound in every phase before the Phase 7 Sample Browser, where
       holding Start previews a focused sample; until that workflow owns complete hold/release behavior,
       no WindowInput key, translator mapping, SemanticAction, or reducer path may bind Start, and any
@@ -59,6 +71,139 @@ valueObjects:
     contributesTo:
       observable_demo_scene: lets automated scenes exercise the actual current GUI input vocabulary
       schema_driven_patch_page: normalizes the two direct page bindings before semantic translation
+      component_vocabulary: carries the digit keys a gallery scene binds locally to select a page
+  SemanticVisualToken:
+    description: the closed authored vocabulary of semantic colors, type styles, spacing steps, and geometry
+      that every rendered surface resolves through; raw values are private to it
+    from:
+    - Color
+    - TypeStyle
+    - SpacingStep
+    - Geometry
+    state:
+      color: the thirteen authored semantic colors addressed by their canonical authored names — background
+        canvas/surface/panel/elevated/selected, border default/strong, text primary/secondary/muted, and
+        accents focus/adjust/positive/warning plus the declared identity accents
+      typeStyle: the eight authored styles, each carrying family, weight, size, line height, and letter
+        spacing
+      spacingStep: the six authored steps
+      geometry: radii, resting and emphasis keyline widths, minimum interactive target, and the focus
+        halo radius/spread/opacity
+    invariants:
+    - every color, type style, spacing step, and geometry value equals its authored value exactly; the
+      declared set is compared against the authored table by a validation rather than by review
+    - no adapter, view, scene, or test outside this resource constructs a literal color, type size, or
+      spacing constant; a guard proves the absence rather than trusting convention
+    - the vocabulary is closed, so a surface needing an undeclared value adds it here and to the product
+      design authority instead of introducing a local literal
+    - resolving a token performs no allocation per frame beyond what egui already owns and never reads
+      the filesystem after startup
+    contributesTo:
+      component_vocabulary: is the single source every rendered value resolves through
+      graphical_application_shell: replaces the adapter-owned constants the shell previously painted from
+  AuthoredTypeface:
+    description: the vendored authored monospace typeface, registered once at startup in the four authored
+      weights and bound to the eight declared type styles
+    state:
+      family: the single authored family used for every text run
+      weights: the four authored weights, each a distinct registered face
+      registration: one startup-time installation into the rendering context, before the first frame
+    invariants:
+    - every declared type style resolves to the authored family at its declared weight; no style falls
+      back to a default or synthesized face
+    - an unavailable or unreadable face is a typed, visible startup failure — never a silent substitution,
+      because a substituted face would misrepresent the authored design as satisfied
+    - faces are registered once before the first painted frame and never loaded from the audio callback
+      or per frame
+    - the vendored files retain their upstream license, revision provenance, and a byte-exact hash manifest;
+      any weight derived rather than shipped upstream records its reproducible derivation
+    contributesTo:
+      component_vocabulary: makes the authored type styles renderable rather than nominal
+  ViewportDensityPolicy:
+    description: the declared resolution of the visual vocabulary onto one authored viewport, so surfaces
+      compose from a policy instead of carrying resolution-specific constants
+    from:
+    - Desktop
+    - SteamDeck
+    state:
+      viewport: the authored size this policy resolves
+      bands: context-line, identity-header, workspace, and footer heights
+      split: main-surface and persistent side-region widths
+      rhythm: content inset, row height, row pitch, and control geometry
+    invariants:
+    - both declared policies retain every structural band, the persistent side region, and the authored
+      minimum interactive target; neither hides a required region to fit
+    - no surface, adapter, or scene reads a viewport size directly to choose a layout; it asks the policy
+    - a viewport between or below the authored sizes resolves through the declared rule; no third hard-coded
+      layout is introduced
+    - the Desktop policy is measured from the authored design; the SteamDeck policy is authored from it
+      and reviewed visually, and that distinction is recorded rather than blurred
+    contributesTo:
+      component_vocabulary: makes the two authored sizes a declared policy rather than scattered constants
+      graphical_application_shell: supplies the band and split geometry the shell already renders
+  ComponentState:
+    description: the closed set of behavioral states a component may be handed, so adding one names every
+      site that must change
+    from:
+    - Resting
+    - Focused
+    - Adjusting
+    - Disabled
+    - Loading
+    - Error
+    - Muted
+    - Soloed
+    - Selected
+    invariants:
+    - every state renders with text or shape in addition to color; no state is distinguishable by color
+      alone
+    - the set is closed and exhaustively matched, so a new state fails compilation or the declared coverage
+      assertion at every rendering site rather than silently defaulting
+    - Loading and Error reuse the vocabulary already declared for structural edits — the adjustment accent
+      with its progress text, and the warning accent with typed short text — and invent no second visual
+      language
+    - a component receives its state as immutable input; it never derives, caches, or owns one
+    contributesTo:
+      component_vocabulary: is the axis the gallery proves exhaustively
+  ComponentGalleryPage:
+    description: one named group of component specimens in the browsable gallery scene, selected by a
+      locally bound digit key
+    from:
+    - Colors
+    - Type
+    - SpacingAndGeometry
+    - InteractionStates
+    - TextAndHairlines
+    - ValuesAndStatus
+    - ActionHints
+    - ShellBands
+    invariants:
+    - the page set and its digit bindings are closed and total; a page without a binding, or a binding
+      without a page, fails the declared coverage assertion rather than becoming a dead key
+    - page selection is scene-local — it never becomes a SemanticAction, never reaches AppState, and never
+      changes focus, Patch values, graph revision, or audio behavior
+    - a digit with no page bound retains the current page and changes nothing
+    - every declared ComponentState appears on at least one page at both authored viewports
+    contributesTo:
+      component_vocabulary: makes every declared state and value visually judgable in one place
+  ComponentGalleryObservation:
+    description: one immutable adapter-boundary observation of the gallery scene actually painted, for
+      live verification that the browsable scene rendered rather than merely constructed
+    state:
+      viewport: '{width: f32, height: f32}'
+      activePage: ComponentGalleryPage
+      pagesVisited: ordered ComponentGalleryPage identities actually painted
+      statesRendered: the ComponentState identities actually painted, with visible-label evidence
+      tokenSourceExact: bool asserting every painted value resolved through SemanticVisualToken
+      typefaceResolved: bool asserting every text run resolved to the authored family and weight
+    invariants:
+    - the adapter emits the observation only after painting, and copies the page, state, and viewport
+      identity of what it actually rendered
+    - expected page names, a pre-render plan, or a constructed specimen list alone cannot construct a
+      passing observation
+    - the observation is scene data and never becomes AppState, focus, Patch, graph, or audio state
+    contributesTo:
+      component_vocabulary: makes gallery coverage measurable instead of asserted
   AudioDeviceConfig:
     description: validated physical-device facts selected before any graph is prepared or stream callback
       starts

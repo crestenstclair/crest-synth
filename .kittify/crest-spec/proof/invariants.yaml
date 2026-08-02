@@ -70,3 +70,32 @@ invariantGroups:
   - text: the MIDI-file module is an automatic test input adapter, not a sequencer or product transport
     meta:
       rationale: crest-synth remains an instrument
+  - text: every rendered color, type style, spacing step, and geometry value resolves through
+      SemanticVisualToken and equals its authored value exactly; no adapter, view, scene, or test outside
+      that resource constructs a literal color, type size, or spacing constant
+    meta:
+      rationale: one authored source is what makes later screens composable instead of repainted
+  - text: the authored typeface is registered once before the first painted frame and every declared type
+      style resolves to it; an unavailable face is a typed visible failure and never a substituted or
+      synthesized fallback
+    meta:
+      rationale: a substituted face would let the product claim the authored design while not rendering it
+  - text: both authored viewports resolve through a declared ViewportDensityPolicy retaining every
+      structural band, the persistent side region, and the authored minimum interactive target; no surface
+      branches on a raw viewport size and no third hard-coded layout exists
+    meta:
+      rationale: resolution-specific constants scattered across surfaces is the failure this phase removes
+  - text: ComponentState is closed and exhaustively matched at every rendering site, and every state renders
+      with text or shape in addition to color
+    meta:
+      rationale: closed unions name every site that must change, and color alone is not an accessible signal
+  - text: components accept immutable view data plus explicit state and return typed semantic UI intent;
+      no component owns or caches Patch values, focus, navigation, reducer state, or audio state
+    meta:
+      rationale: the one-way state path survives only if the component layer stays passive
+  - text: component gallery page selection is scene-local and never becomes a SemanticAction, reaches
+      AppState, or changes focus, Patch values, graph revision, or audio behavior; the browsable gallery
+      makes no exact-generation claim and does not weaken the autonomous witness contract
+    meta:
+      rationale: a browsable scene and an autonomous witness have opposite input contracts and must not
+        be conflated in either direction
