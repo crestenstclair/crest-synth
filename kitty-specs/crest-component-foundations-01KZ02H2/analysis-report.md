@@ -4,165 +4,173 @@ artifact_type: spec-kitty.analysis-report
 command: /spec-kitty.analyze
 mission_slug: crest-component-foundations-01KZ02H2
 mission_id: 01KZ02H2FPKTV50BJP82MB4T5G
-generated_at: '2026-08-02T03:02:27.610098+00:00'
+generated_at: '2026-08-02T16:50:55.603888+00:00'
 analyzer_agent: unknown
 input_artifacts:
   spec.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/crest-component-foundations-01KZ02H2/spec.md
-    sha256: dc339b523f792752dca63e774acb2180d990272f28fe74554efe31fcfd9f8cfb
+    sha256: 0f77a2e3d3982533100e43d22aabfde6510506162ffe9d417ed81ba91ede0047
   plan.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/crest-component-foundations-01KZ02H2/plan.md
-    sha256: db3a1d020484cfa4024339d288311dfbb0ad9fb04e6b22d630c6793fe5b792f8
+    sha256: 7edfa99acf5f373f61e9d59bfd937b83b2de00d6838b2f21819ad465caf94d42
   tasks.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/crest-component-foundations-01KZ02H2/tasks.md
-    sha256: 478ef0f11ce590d9b3fb2c5220882202c28c2809f33e7925bbadc51d08c90636
+    sha256: 65a832ac84827eeab921d9a8d6127535f2e22e1a62455316d8606ea2979e664b
   charter:
     path: /Users/crestenstclair/workspace/crest-synth/.kittify/charter/charter.md
     sha256: 0b21a43cf5772d1308561d843239947e53247cc7d071c98c920023d23024672b
-verdict: blocked
+verdict: ready
 issue_counts:
+  high: 0
   critical: 0
-  high: 3
-  medium: 7
-  low: 5
+  medium: 9
+  low: 6
   info: 0
 findings:
-- id: A3
-  severity: high
-  category: coverage
-  summary: Adjusting and Disabled are specified color-only, contradicting FR-005, US1 AS-3, SC-005 and crest-spec requirement.explicit_state_rendering; Disabled has no gallery specimen at all.
-- id: A4
-  severity: high
-  category: underspecification
-  summary: US2 AS-2, its edge case, quickstart, and witness predicate unbound_digit_retained_page all rest on an unreachable branch — all eight normalized digits are bound to the eight declared pages.
-- id: A15
-  severity: high
-  category: conflict
-  summary: witness.component_gallery declares an automated 180 s command with predicates pages_painted=8, states_painted=9 and window_closed=true, while WP05 removes all timeouts and emits the observation after a single paint; no subtask defines the emission point, accumulation, or operator protocol.
 - id: A5
   severity: medium
   category: inconsistency
-  summary: plan.md Project Structure names flat modules (visual_token.rs, density_policy.rs, component_state.rs) that no WP creates; every WP and T001 use the src/shell/visual/ tree.
+  summary: plan.md's Project Structure names flat modules (visual_token.rs, authored_typeface.rs, density_policy.rs, component_state.rs, src/shell/primitives/) that no work package creates and that do not exist; every WP and the shipped tree use src/shell/visual/.
 - id: A6
   severity: medium
   category: terminology
-  summary: '"Witness" names two opposite input contracts — plan.md calls the gallery target a witness and declares witness.component_gallery, while C-005, WP05 and asset.BuildMakefile insist it is explicitly not one.'
+  summary: '"Witness" names two opposite input contracts — plan.md calls the gallery target a witness and declares witness.component_gallery, while C-005 and WP05 insist it is explicitly not one.'
 - id: A7
   severity: medium
   category: inconsistency
-  summary: spec.md's assumption still says 11 shared colors verified against the design file; research.md's corrected 13-published / 16-in-DESIGN.md tally makes the shared set 12 and the union 17.
+  summary: spec.md's assumption still says 11 shared colors were verified against the design file, while NFR-001 and the shipped vocabulary both carry 17 declared colors.
 - id: A8
   severity: medium
   category: coverage
-  summary: NFR-004 and SC-007 have no subtask naming tests/control_dispatch_performance.rs or recording its measured duration against the 50 ms ceiling; WP06, the measured-proof package, omits NFR-004 entirely.
-- id: A9
-  severity: medium
-  category: coverage
-  summary: The requirement-coverage table maps only FR and NFR items; none of the seven constraints C-001..C-007 appear, including the load-bearing C-004 and C-006.
+  summary: NFR-004 and SC-007 name a 512-event control-path fixture and a 50 ms ceiling, but no subtask names that fixture or records a measured duration against the ceiling.
 - id: A10
   severity: medium
   category: inconsistency
-  summary: DESIGN.md requires non-color treatment for six states; FR-005 and the crest-spec require eight, and this widening is not among the three durable decisions T005 records.
+  summary: DESIGN.md:575 requires non-color treatment for six states; FR-005 and the crest-spec require eight, and the shipped gallery renders all nine with non-color evidence. The widening is never recorded in the product authority.
+- id: A15
+  severity: medium
+  category: conflict
+  summary: witness.component_gallery caps make demo-live-component-library at 180 s, but the scene deliberately has no timeout and waits for a human page walk; no artifact states that the operator protocol must complete inside that budget.
 - id: A16
   severity: medium
   category: traceability
-  summary: WP06 frontmatter requirement_refs lists only NFR-001..003 while its subtasks explicitly prove NFR-005, FR-005, FR-010 and C-006, and tasks.md assigns those to other packages.
+  summary: WP06's requirement_refs list NFR-001, NFR-002 and NFR-003 only, while its own subtask T037 proves state exhaustiveness, non-color legibility and page totality — which is NFR-005.
+- id: A18
+  severity: medium
+  category: coverage
+  summary: "NFR-005's \"at both authored sizes\" clause is unmeasured: no subtask in WP05 or WP06, and no witness predicate, distinguishes a state painted in one viewport composition from a state painted in both."
+- id: A19
+  severity: medium
+  category: underspecification
+  summary: No artifact declares the gallery window's own minimum size. T030 requires both authored compositions inside one window without bounding that window, and the shipped scene's 1920x1080 floor puts its footer band off-screen on a 1920x1080 display.
+- id: A9
+  severity: low
+  category: coverage
+  summary: The Requirement coverage table maps FR-001..FR-010 and NFR-001..NFR-006 and omits all seven constraints, including C-004 and C-005, which WP05 is the only package positioned to honour.
 - id: A11
   severity: low
   category: ambiguity
-  summary: The descriptor transition reads 17 -> 33 in plan.md and 21 -> 33 in T023 without either stating whether it means the declared or the constructed count.
+  summary: The WindowInput descriptor transition reads "17 -> 33" in plan.md and "21 -> 33" in T023; both are correct against different baselines and neither says which.
 - id: A12
   severity: low
   category: inconsistency
-  summary: tasks.md claims every owned_files entry traces to a declared asset file pattern, but no asset in assets.yaml carries a files key and three assets share the non-discriminating pattern src/*/*.
+  summary: tasks.md asserts every owned_files entry traces to a declared asset file pattern, but the asset patterns are directory globs that cannot discriminate between the packages sharing them.
 - id: A13
   severity: low
   category: ambiguity
-  summary: 'spec.md still carries Status: Draft after plan, tasks, work packages and lanes were derived from it.'
+  summary: 'spec.md still reads Status: Draft after plan, tasks, work packages, lanes, and five implemented work packages were derived from it.'
 - id: A14
   severity: low
   category: inconsistency
-  summary: The dependency-graph diagram in tasks.md does not express the WP04 and WP05 fan-in that the prose beneath it states.
+  summary: The ASCII dependency graph draws one linear chain with an unlabeled return edge; the prose beneath it states the real fan-in correctly.
 - id: A17
   severity: low
   category: inconsistency
-  summary: plan.md cites proof/invariants.yaml, but no proof/ directory exists at the repository root; the six entries landed in .kittify/crest-spec/proof/invariants.yaml.
+  summary: plan.md cites "6 new entries in proof/invariants.yaml" with no root, which resolves to no path at the repository root; the entries live under .kittify/crest-spec/proof/.
 ---
 
 ## Specification Analysis Report
 
-**Mission**: `crest-component-foundations-01KZ02H2`
-**Artifacts**: spec.md (176 L), plan.md (246 L), tasks.md (242 L), 6 WP prompts, research.md, quickstart.md, `.kittify/crest-spec/`, `.kittify/charter/charter.md`
-
-**Resolved since the previous report**: A1 (the 13-vs-17 color count is now 17 at every site including `shell.yaml:84` and `capabilities.yaml:692`) and A2 (C-002 now defers only configurable controls and compositions, keeping `make demo-live-component-library` in scope). Finding IDs are carried forward unchanged for the items that remain, so this report can be diffed against the last one.
+Re-run after WP01–WP05 were implemented and WP05 was reviewed. The three HIGH findings from the
+2026-08-02T03:02 report were re-tested against current artifacts and against a live run of
+`make demo-live-component-library`; all three are discharged (see *Discharged findings* below).
+No CRITICAL or HIGH finding remains, so implementation may proceed.
 
 | ID | Category | Severity | Location(s) | Summary | Recommendation |
 |----|----------|----------|-------------|---------|----------------|
-| A3 | Coverage | HIGH | spec.md:53 (US1 AS-3), :114 (FR-005), :174 (SC-005) · `requirements.yaml` `explicit_state_rendering` · WP03:154,159,179,210 · WP05:142,191 · WP06:207-209 | FR-005 and the crest-spec require **adjustment** and **disabled** to render with text or shape in addition to color. Neither gets one. T015 paints a 3 px keyline for both `Focused` and `Adjusting` — the same shape, differing only in color — and supplies the `>` cursor as the non-color **focus** indication alone. T016 gives `Adjusting` `accent/adjust` and `Disabled` `text/muted`, colors only. T017's note states outright that `Resting`, `Focused`, `Adjusting`, and `Disabled` have no status mark. WP05's eight pages never declare a `Disabled` specimen. T037 then enumerates the non-color signals to assert — `>`, `M ON`, `S ON`, `PREPARING`/`ACTIVATING`, typed error text, a selected mark — and omits both states. The witness predicates `states_painted = 9` and `states_distinguishable_without_color = true` cannot pass as the work is written. | Give `Adjusting` and `Disabled` a non-color treatment in WP03 (T015/T016/T017), add a named specimen for each to WP05 T028/T029 and to T037's assertion list — or record a deliberate crest-spec narrowing of `explicit_state_rendering`. Resolves with A10. |
-| A4 | Underspecification | HIGH | spec.md:71 (US2 AS-2), :101 · quickstart.md:34 · WP05 T026 step 2, T027 step 2 · `shell.yaml:36-43` · `witnesses.yaml` `unbound_digit_retained_page` | "Presses a number key with no page bound to it" cannot occur. The normalized vocabulary carries exactly `Digit1`–`Digit8`; WP05 binds all eight to the eight declared pages; 9 and 0 normalize to `Other`. The acceptance scenario, the edge case, the quickstart line, and the witness predicate `unbound_digit_retained_page = true` therefore all sit on a branch that can never be taken — the vacuous guard C-006 exists to forbid. T027 step 2 does give a reachable formulation ("any other key, including an unbound digit"), so the behavior is implementable; only the criteria are unfalsifiable. | Restate AS-2, the edge case, the quickstart line, and the witness field in terms of any unbound normalized key including `Other`, and make T027's test drive `WindowKey::Other` explicitly. |
-| A15 | Conflict | HIGH | `witnesses.yaml:3130-3220` vs WP05 T031 steps 1-3, T032 step 3 · plan.md:113 | `witness.component_gallery` is declared as an automated witness: `command: make demo-live-component-library`, `timeout: 180s`, `observation.kind: json_stdout`, 15 predicates including `pages_painted = 8`, `states_painted = 9`, `pages_reachable_by_digit = 8`, and `window_closed = true`. WP05 T032 step 3 deliberately removes every timeout because "a browsable scene waits for the operator by design", and T031 step 1 emits the observation "**after** painting" — a single paint pass, with the window still open. A single paint cannot have painted 8 pages, and `window_closed` cannot be true while the window is open. The only reading that closes the gap — accumulate counters across the session and emit on window close, after an operator has visited all eight pages and pressed an unbound key — appears in no subtask, and nothing tells the operator that protocol. As written the witness fails or hangs on its first run. | Specify the emission point (on window close), the counter accumulation semantics, and the operator protocol in T031; state in T032 or the quickstart what the operator must do before closing. Reconcile the declared 180 s timeout with a human-attended scene, or mark the witness operator-attended in the crest-spec. |
-| A5 | Inconsistency | MEDIUM | plan.md:141-147 vs WP01:36-41,T001 · WP02:31-33 · WP03:33-35 · WP04:31-34 · WP05:33-37 | plan.md's Project Structure declares `src/shell/visual_token.rs`, `authored_typeface.rs`, `density_policy.rs`, `component_state.rs`, and `primitives/`. Every WP `owned_files` block and T001's module tree use `src/shell/visual/{mod,token,typeface,density,state,primitives}.rs`. plan.md also omits two files the WPs own: `src/shell/keyboard_input_translator.rs` (WP04) and `src/bin/crest_synth.rs` (WP05). Lane write-scope enforcement follows the WP paths, so the plan's tree is already stale. | Update plan.md:141-147 to the `src/shell/visual/` tree and add the two omitted files. |
-| A6 | Terminology | MEDIUM | plan.md:25,113 · `witnesses.yaml:3130` vs spec.md:64,140 (C-005) · research.md R-08 · `assets.yaml:183-186` | "Witness" carries two opposite contracts. plan.md:25 calls the target "the browsable live gallery **witness**" and the proof table declares `witness.component_gallery`, while C-005, R-08, WP05 and the `BuildMakefile` prompt all state this scene is explicitly *not* a witness and not a `demo-live` alias. R-08 names this exact conflation as the risk. | Say "measured observation" in plan.md:25 and add one line to the proof table distinguishing `witness.component_gallery` from the input-isolated autonomous `demo-live-*` contract. Resolves with A15. |
-| A7 | Inconsistency | MEDIUM | spec.md:154-155 vs research.md:32 vs DESIGN.md:534-551 | research.md is now correct — the design file publishes 13 variables and `DESIGN.md` lists 16 — which makes the shared set 12, plus one design-file-only (`bg/selected`) plus four `DESIGN.md`-only accents, union 17. spec.md's assumption still says "all **11** shared colors" were verified. Every count site now says 17, so nothing downstream breaks; the risk is that someone re-derives 11 + 1 + 4 = 16 and "corrects" the 17 back down. This arithmetic is what produced the previous report's CRITICAL. | Correct spec.md:154-155 to 12 shared / 1 design-file-only / 4 `DESIGN.md`-only / 17 union. |
-| A8 | Coverage | MEDIUM | spec.md:128 (NFR-004), :176 (SC-007) · tasks.md:240 · WP04 T025 steps 2-3 · WP06 frontmatter | NFR-004 names a specific ceiling — the 512-event control-path fixture within 50 ms — and SC-007 claims the instrument sounds and responds exactly as before. The only verification is T025's `make test` plus "run `make demo-live` and confirm the audio behavior is unchanged" by ear. `make test` is `cargo test --all-targets`, so `tests/control_dispatch_performance.rs` (DISPATCH_COUNT = 512) does execute — but no subtask names it, no subtask records the measured duration as evidence, and WP06, the package whose entire purpose is measured proof, does not list NFR-004 at all. | Add a step to T025 or a WP06 subtask running `cargo test --test control_dispatch_performance` and recording the measured dispatch duration in the Activity Log. |
-| A9 | Coverage | MEDIUM | tasks.md:235-243 | The Requirement coverage table maps FR-001..FR-010 and NFR-001..NFR-006 and omits all seven constraints. C-004 (two top-level contexts, gallery paging never a `SemanticAction`) and C-006 (deterministic proof discipline) are load-bearing and are enforced only implicitly, by T024/T027 and by WP06 respectively. | Add constraint rows: C-004 → T024/T027, C-005 → WP05, C-006 → WP06, C-007 → already landed. |
-| A10 | Inconsistency | MEDIUM | DESIGN.md:575 vs spec.md:114 · `requirements.yaml` `explicit_state_rendering` · WP01 T005 | `DESIGN.md:575` requires non-color treatment for six states — focus, mute, solo, loading, error, selection. FR-005 and the crest-spec require eight, adding adjustment and disabled. `DESIGN.md` is the product authority, and T005 records exactly three durable decisions (color union, authored Steam Deck policy, loading/error reuse); this widening is not one of them, and T005's only `DESIGN.md` table edit is adding `bg/selected`. | Add the state-list widening as a fourth durable decision in T005 and update `DESIGN.md:575`, or narrow FR-005 to the six. Resolves with A3. |
-| A16 | Traceability | MEDIUM | WP06:6-9 vs WP06:82,203,225 · tasks.md:237-242 | WP06's frontmatter `requirement_refs` lists NFR-001, NFR-002, NFR-003. Its own subtasks state otherwise: T037's purpose is "NFR-005 and FR-005", T038's is FR-010, and the Context block cites NFR-005 and C-006. tasks.md's coverage table assigns NFR-005 to WP05 and FR-010 to WP01 alone. Every requirement does have at least one task, so this is traceability drift rather than a gap — but a reviewer checking WP06 against its declared refs will not check the assertions that matter most. | Add NFR-005, FR-005, FR-010 to WP06's `requirement_refs` and mark the shared ownership in tasks.md's coverage table. |
-| A11 | Ambiguity | LOW | plan.md:83 vs tasks.md:50 (T023) · spec.md:22 | The descriptor transition reads "17 → 33" in the plan and "21 → 33" in T023. Both are right in different frames — 17 was the stale *declared* count, 21 is the current *constructed* count in `window_input.rs:42`, 33 is the new total (16 keys × 2 + `FocusLost`) — but neither states its frame. | Write "declared 17 → 33, constructed 21 → 33" once and use it in both places. |
-| A12 | Inconsistency | LOW | tasks.md:7-8,12-20 · `assets.yaml` | tasks.md asserts "Every `owned_files` entry traces to a declared asset file pattern", but no asset in `assets.yaml` carries a `files:` key — asset scope is expressed in prose. The table then gives three different assets the same non-discriminating pattern `src/*/*`, which does not match the three-level `src/shell/visual/token.rs` the WPs actually create. | Replace the File pattern column with the asset's declared surface prose, or soften the claim. |
-| A13 | Ambiguity | LOW | spec.md:5 | Header still reads `**Status**: Draft` after plan, tasks, work packages, and lanes were derived from it. | Set to the project's post-tasks value. |
-| A14 | Inconsistency | LOW | tasks.md:215-220 | The ASCII graph shows one linear chain with an unlabeled return edge; the prose beneath correctly states WP04 depends on WP01+WP02+WP03 and WP05 on WP03+WP04. The diagram does not carry that fan-in. | Redraw with explicit edges, or delete the diagram and keep the prose. |
-| A17 | Inconsistency | LOW | plan.md:116 | The proof table cites "6 new entries in `proof/invariants.yaml`". No `proof/` directory exists at the repository root; the six entries are present and correct in `.kittify/crest-spec/proof/invariants.yaml`. | Qualify the path. |
+| A5 | Inconsistency | MEDIUM | plan.md:141-147 vs tasks.md:28 (T001), WP01–WP05 prompts | plan.md's Project Structure declares `src/shell/visual_token.rs`, `authored_typeface.rs`, `density_policy.rs`, `component_state.rs`, and `src/shell/primitives/`. T001 creates `src/shell/visual/`, and the shipped tree is `src/shell/visual/{token,typeface,density,state}.rs` with `src/shell/visual/primitives/`. A reader trusting the plan looks for five files that were never created. | Update plan.md's Project Structure block to the `src/shell/visual/` tree the tasks and code actually use. Documentation-only; no code moves. |
+| A6 | Terminology | MEDIUM | plan.md:25,113 · `witnesses.yaml:3130` vs spec.md:64, spec.md:140 (C-005), WP05 | "Witness" carries two opposite contracts. plan.md:25 calls `make demo-live-component-library` "the browsable live gallery witness" and plan.md:113 cites `witness.component_gallery`, while spec.md:64 and C-005 define the gallery as the thing that is *not* a witness because it accepts input and asserts no generation. The word is doing contradictory work in one mission. | Keep `witness.component_gallery` as the crest-spec proof ID, and drop "witness" from prose that describes the *scene*. spec.md's own phrasing — browsable, operator-driven — is the term to standardize on. |
+| A7 | Inconsistency | MEDIUM | spec.md:154 vs spec.md:125 (NFR-001), research.md | The assumption block still says "all 11 shared colors ... match exactly", while NFR-001 asserts 17 declared colors and the shipped vocabulary carries 17 roles (I confirmed all 17 reach the screen in the live gallery). The 11 is a pre-union count that survived the union decision recorded two lines below it. | Correct the count in spec.md:154 to the verified shared set and leave the union arithmetic in the assumption immediately following. |
+| A8 | Coverage | MEDIUM | spec.md:128 (NFR-004), spec.md:176 (SC-007) · tasks.md:240 · WP04 T025 | NFR-004 names a specific, falsifiable ceiling — the 512-event control-path fixture within 50 ms — and SC-007 promises no audible change. tasks.md assigns NFR-004 to WP04, whose only related subtask is T025 "Confirm `make run` changed and existing shell tests still pass". No subtask names the fixture or records a measured duration, so the ceiling is asserted rather than measured. This is the one requirement in the mission with a number attached and no measurement behind it. | Add a subtask (WP04 or WP06) that runs the control-path fixture and records the measured duration against the 50 ms ceiling, the way `witness.component_gallery` records its predicates. |
+| A10 | Inconsistency | MEDIUM | DESIGN.md:575 vs spec.md:114 (FR-005) · `requirements.yaml` `explicit_state_rendering` · WP01 T005 | DESIGN.md:575 reads "Focus, mute, solo, loading, error, and selection always have text or shape in addition to color" — six states. FR-005 and the crest-spec require eight, adding adjustment and disabled, and the shipped gallery renders all nine with non-color evidence (measured: `Adjusting` → keyline 3 px + cursor, `Disabled` → keyline 1 px + `Locked` mark). DESIGN.md is the product authority and T005 recorded three durable decisions; this widening is not one of them. | Record the widened state list as a fourth durable decision and update DESIGN.md:575. Charter posture makes code/DESIGN.md fidelity the top gate, so this should not wait for the follow-on mission. |
+| A15 | Conflict | MEDIUM | `witnesses.yaml:3130` (`timeout: 180s`) vs WP05 T032 step 3 · plan.md:113 | `witness.component_gallery` runs `make demo-live-component-library` under a 180 s cap. The scene deliberately has no milestone and no total timeout because it waits for the operator. Those coexist only if a human completes an eight-page walk, an unbound-digit press, and a window close inside three minutes — which no artifact states. My own run satisfied all fifteen predicates, so the budget is achievable, but it is undeclared. *(Downgraded from HIGH: T031 and T032 now define the emission point, the accumulation across the session, and the operator protocol, which is what the prior finding said was missing.)* | State the operator budget in WP05's review guidance or in quickstart.md, or raise the witness timeout to a value that matches an unhurried human page walk. |
+| A16 | Traceability | MEDIUM | WP06 frontmatter `requirement_refs` vs tasks.md:64 (T037), tasks.md:242 | WP06's `requirement_refs` are NFR-001, NFR-002, NFR-003. Its own subtask T037 is "Prove state exhaustiveness, non-color legibility, page totality" — that is NFR-005 verbatim, and the coverage table credits NFR-005 to WP05 alone. WP06 therefore proves a requirement it does not claim, and the acceptance matrix cannot see it. | Add NFR-005 to WP06's `requirement_refs` and to its coverage row. Resolves alongside A18. |
+| A18 | Coverage | MEDIUM | spec.md:129 (NFR-005), spec.md:172 (SC-003) · WP05 T029/T030 · `witnesses.yaml` predicates | NFR-005 requires every state to have a specimen **at both authored sizes**, and SC-003 repeats it. Nothing measures the conjunction. The witness carries `states_painted` (a single count), `desktop_viewport_painted` and `steam_deck_viewport_painted` (each true if that column emitted any text at all) — so nine states painted in one column and none in the other satisfies every declared predicate. The shipped ledger mirrors this: `bands_painted` is indexed per policy, `states_painted` is flat. Behaviour is correct today (I confirmed both columns paint all nine labelled states), but the clause is asserted, not measured — which C-006 forbids. | Index state coverage per density policy, the way band coverage already is, and let the observation's `states_painted` mean "painted at every declared policy". Carried in the WP05 review feedback as issue 2. |
+| A19 | Underspecification | MEDIUM | WP05 T030 · spec.md:97 (edge case) · plan.md IC-07 | spec.md's window-size edge case bounds the *product* shell at the compact viewport. Nothing bounds the *gallery* window, yet T030 requires both authored compositions inside one window — which forces a minimum larger than either. The shipped scene resolves this by pinning its floor at 1920×1080; on a 1920×1080 display that pushes the 64 px footer band, which carries the only on-screen browsing affordance, below the screen edge, and the pinned minimum removes the operator's remedy. The paint pass reports zero clipped text because it measures against the egui surface, not the display. | Add an explicit minimum-window statement for the gallery that accounts for window chrome and available work area, and a measurement that would fail when the composed frame cannot fit. Carried in the WP05 review feedback as issue 1. |
+| A9 | Coverage | LOW | tasks.md:235-243 | The Requirement coverage table maps all ten FRs and all six NFRs and omits all seven constraints. C-004 (two top-level contexts, scene-local paging) and C-005 (one-way input isolation) are the two the gallery could most easily violate, and no package formally owns them — they survive on prose in the WP05 prompt. | Add a constraint column or a second table so C-001..C-007 name an owning package. |
+| A11 | Ambiguity | LOW | plan.md:83 vs tasks.md:50 (T023) · spec.md:22 | The descriptor transition reads "17 → 33" in plan.md and "21 → 33" in T023. Both are right — 17 is the declared count the crest-spec carried, 21 is what the code held — but neither says which baseline it uses. | State the baseline once: "declared 17, actual 21, corrected to 33." |
+| A12 | Inconsistency | LOW | tasks.md:7-8, 12-20 | tasks.md asserts "Every `owned_files` entry traces to a declared asset file pattern", but three of the listed patterns are the same `src/*/*` glob shared by WP01–WP05, so the trace does not discriminate. The claim is stronger than the table supports. | Soften the claim, or narrow the asset patterns so each package's ownership is derivable from them. |
+| A13 | Ambiguity | LOW | spec.md:5 | The header still reads `**Status**: Draft` after plan, tasks, six work packages, lanes, and five implemented packages were derived from it. | Set it to the project's post-tasks status value. |
+| A14 | Inconsistency | LOW | tasks.md:215-220 | The ASCII graph draws one linear chain plus an unlabeled return edge; the prose immediately beneath states the real fan-in (WP04 on WP01+WP02+WP03, WP05 on WP03+WP04) correctly. The picture is the part that is wrong. | Redraw as a DAG or delete it and keep the prose. |
+| A17 | Inconsistency | LOW | plan.md:116 | The proof table cites "6 new entries in `proof/invariants.yaml`". No `proof/` exists at the repository root; the entries live under `.kittify/crest-spec/proof/`. | Qualify the path. |
+
+### Discharged findings
+
+| Prior ID | Prior severity | Disposition |
+|---|---|---|
+| A3 | HIGH | **Resolved.** spec.md:53-54 now require a non-color indication for focus *and* adjustment, FR-005 names all eight, and Disabled has gallery specimens on pages 5 and 6. Measured live: `states_distinguishable_without_color: true`, with `Adjusting` → `keyline 3 px · cursor >` and `Disabled` → `keyline 1 px · mark Locked`. The residual DESIGN.md half of this finding is carried forward as A10. |
+| A4 | HIGH | **Resolved.** WP04's T024 left `Digit3`–`Digit8` unbound in the translator, and the gallery normalizes `Num9`/`Num0` to `WindowKey::Other` while tracking digit-ness scene-locally, so US2 AS-2 and the `unbound_digit_retained_page` predicate are reachable. Measured live: `unbound_key_presses: 1`, `unbound_digit_retained_page: true`. |
+| A15 | HIGH | **Downgraded to MEDIUM**, retained above. T031 steps 1-4 and T032 now define the emission point, the accumulation across the session, and the operator protocol — the three things the prior finding said no subtask defined. Only the undeclared 180 s operator budget remains. |
 
 **Coverage Summary Table:**
 
 | Requirement Key | Has Task? | Task IDs | Notes |
 |-----------------|-----------|----------|-------|
-| FR-001 single-semantic-visual-vocabulary | Yes | T001–T003, T006 | Count now consistently 17 everywhere — A1 resolved |
+| FR-001 single-semantic-visual-vocabulary | Yes | T001–T003, T006 | |
 | FR-002 azeret-mono-installed-and-mapped | Yes | T004, T021 | |
-| FR-003 declared-viewport-density-policies | Yes | T007–T009, T012 | |
+| FR-003 declared-viewport-density-policies | Yes | T007–T009, T022 | |
 | FR-004 reusable-primitives | Yes | T013–T018 | |
-| FR-005 explicit-state-rendering | Partial | T010, T011, T015, T017, T037 | Adjusting and Disabled color-only; no Disabled specimen — A3 |
+| FR-005 explicit-state-rendering | Yes | T010, T011, T017 | Widening beyond DESIGN.md unrecorded — A10 |
 | FR-006 production-shell-renders-through-vocabulary | Yes | T020–T022, T025 | |
-| FR-007 live-gallery-demo-scene-and-launch-target | Yes | T026–T032 | C-002 now keeps the target in scope — A2 resolved |
-| FR-008 number-key-page-selection | Partial | T027 | Unbound-digit branch unreachable — A4 |
+| FR-007 live-gallery-demo-scene-and-launch-target | Yes | T026, T028–T032 | |
+| FR-008 number-key-page-selection | Yes | T027, T023, T024 | |
 | FR-009 components-own-no-application-state | Yes | T019 | |
-| FR-010 typed-failure-when-typeface-unavailable | Yes | T004, T021, T038 | Not in WP06's declared refs — A16 |
-| NFR-001 exact-authored-value-fidelity | Yes | T006, T034 | Expected values written independently — good |
-| NFR-002 no-visual-literals-outside-vocabulary | Yes | T035 | Guard's own failure proof included — good |
+| FR-010 typed-failure-when-typeface-unavailable | Yes | T004, T038 | |
+| NFR-001 exact-authored-value-fidelity | Yes | T006, T034 | |
+| NFR-002 no-visual-literals-outside-vocabulary | Yes | T035 | |
 | NFR-003 both-authored-viewports-render-intact | Yes | T012, T036 | |
-| NFR-004 no-real-time-or-control-path-regression | Weak | T025 | Fixture runs under `make test` but is never named or measured — A8 |
-| NFR-005 complete-gallery-state-coverage | Partial | T031, T037 | Fails on Disabled as specified — A3; witness unsatisfiable — A15 |
-| NFR-006 vendored-typeface-provenance | Yes | already landed | `vendor/azeret-mono/` present with license, provenance, and hash manifest |
-| C-001 eframe/egui stack only | Implicit | — | No task introduces another stack |
-| C-002 bounded scope | Yes | T032 | Rewritten since the last report; launch target now explicitly in scope |
-| C-003 crest-spec authored before planning | Yes | — | Authored at commit `d02ad6b`; `crest-spec doctor` green |
-| C-004 two top-level contexts preserved | Implicit | T024, T027 | Not in the coverage table — A9 |
-| C-005 gallery input isolation is one-way | Implicit | T032 | Not in the coverage table — A9; see also A6, A15 |
-| C-006 deterministic proof discipline | Implicit | WP06 | Not in the coverage table — A9; A4 and A15 are the live threats to it |
-| C-007 typeface licensing | Yes | already landed | OFL 1.1 retained verbatim |
+| NFR-004 no-real-time-or-control-path-regression | Partial | T025 | No subtask names the 512-event fixture or the 50 ms ceiling — A8 |
+| NFR-005 complete-gallery-state-coverage | Partial | T029, T030, T037 | "At both authored sizes" unmeasured — A18; T037 uncredited — A16 |
+| NFR-006 vendored-typeface-provenance | Yes | T004 | |
+| C-001 … C-007 | Unmapped | — | No owning package in the coverage table — A9 |
 
-**Charter Alignment Issues:** None. The mission followed the full workflow (specify → crest-spec → plan → analyze → tasks), the crest-spec was authored first at `d02ad6b` and not retrofitted, no `data-model.md` or `contracts/` exists, and `DIRECTIVE_035` correctly stays unset — the adapter constants are deleted and replaced by new identifiers, not renamed. A3, A4, and A15 are proof-quality gaps of exactly the kind `DIRECTIVE_010` and C-006 exist to catch; they are findings for this gate to surface, not charter breaches.
+**Charter Alignment Issues:** None. The charter's stated priorities are code/crest-spec/DESIGN.md
+fidelity and measured, falsifiable proof. A10 (DESIGN.md narrower than shipped behaviour), A18
+(an NFR clause asserted rather than measured) and A8 (a numeric ceiling with no measurement) all
+press on those priorities, but none violates a MUST principle, and each has a named remedy inside
+the current mission.
 
-**Unmapped Tasks:** None. All 38 subtasks map to at least one requirement or constraint.
+**Unmapped Tasks:** None. All 38 subtasks map to at least one requirement.
 
 **Metrics:**
 
-- Total Requirements: 23 (10 FR, 6 NFR, 7 C)
+- Total Requirements: 16 (10 FR + 6 NFR), plus 7 constraints
 - Total Tasks: 38 subtasks across 6 work packages
-- Coverage: 16/16 FR+NFR have at least one task (100%); 3 are partial or weak (FR-005, FR-008, NFR-004, NFR-005). 4 of 7 constraints are covered only implicitly and appear in no coverage table.
+- Coverage: 16/16 FR+NFR have at least one subtask (100%); 2 of those are partial (NFR-004, NFR-005); 0/7 constraints appear in the coverage table
 - Ambiguity Count: 2
 - Duplication Count: 0
 - Critical Issues Count: 0
 
 ## Next Actions
 
-No CRITICAL issues. Three HIGH findings should be resolved before `/spec-kitty.implement` — each one makes a declared proof unfalsifiable, which is the specific failure C-006 and this mission's own WP06 risk table are written to prevent.
+No CRITICAL or HIGH findings — implementation may proceed.
 
-1. **A3** — edit `tasks/WP03-reusable-primitives.md` (T015, T016, T017) and `tasks/WP05-browsable-gallery-scene.md` (T028/T029 specimen list) to give `Adjusting` and `Disabled` a non-color treatment and a specimen, and add both to WP06 T037's assertion list. Resolve A10 in the same pass by adding the state-list widening as a fourth durable decision in WP01 T005.
-2. **A4** — restate spec.md:71 and :101, quickstart.md:34, and the `unbound_digit_retained_page` field in terms of any unbound normalized key including `Other`, and have WP05 T027's test drive `WindowKey::Other`.
-3. **A15** — specify the observation's emission point, accumulation semantics, and operator protocol in WP05 T031/T032, and reconcile the crest-spec's automated 180 s witness declaration with a human-attended browsable scene.
-
-The seven MEDIUM findings are worth a single editing pass but do not block: A5 and A17 are plan.md drift, A6 is a terminology fix, A7 is one sentence of arithmetic, A8 adds one command to T025, A9 adds four rows to a table, A16 adds three entries to WP06's frontmatter. The five LOW findings are cleanup.
-
-Because A15 touches `.kittify/crest-spec/proof/witnesses.yaml`, resolving it is a deliberate crest-spec amendment through `/spec-kitty.crest-spec`, not an edit made to let planned code pass. Re-run `/spec-kitty.analyze` after remediation — the current report's hashes will be stale.
+- A18 and A19 are already written up as issues 2 and 1 of the WP05 review feedback at
+  `kitty-specs/crest-component-foundations-01KZ02H2/tasks/WP05-browsable-gallery-scene/review-cycle-1.md`,
+  so they are fixed in code during the WP05 rework rather than by editing planning artifacts.
+- A16 wants one line in WP06's frontmatter (`requirement_refs`) and one cell in tasks.md:242 before
+  WP06 starts, so the acceptance matrix credits the proof it actually carries.
+- A10 wants a `DESIGN.md` edit recording the widened state list. WP01 owns `DESIGN.md` and is already
+  approved, so this needs either a WP01 follow-up or an explicit deferral.
+- A5, A6, A7, A9, A11, A12, A13, A14, A17 are documentation corrections in spec.md and plan.md with no
+  code consequence; batch them rather than interrupting the WP05 rework.
