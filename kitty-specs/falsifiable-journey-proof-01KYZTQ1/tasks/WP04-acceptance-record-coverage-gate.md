@@ -7,7 +7,7 @@ requirement_refs:
 - FR-008
 planning_base_branch: feat/expandable-effects-and-bus-topology
 merge_target_branch: feat/expandable-effects-and-bus-topology
-branch_strategy: Planning artifacts were generated on feat/expandable-effects-and-bus-topology, which is also the final merge target. During /spec-kitty.implement this WP branches from the lane the runtime computes from lanes.json; completed changes merge back into feat/expandable-effects-and-bus-topology unless the human explicitly redirects the landing branch.
+branch_strategy: Planning artifacts for this mission were generated on feat/expandable-effects-and-bus-topology. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/expandable-effects-and-bus-topology unless the human explicitly redirects the landing branch.
 subtasks:
 - T016
 - T017
