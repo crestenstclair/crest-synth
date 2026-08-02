@@ -1,0 +1,18 @@
+{
+  "coordination_branch": "kitty/mission-crest-component-foundations-01KZ02H2",
+  "created_at": "2026-08-02T01:48:30.071306+00:00",
+  "flattened": false,
+  "friendly_name": "Crest Component Foundations",
+  "mission_id": "01KZ02H2FPKTV50BJP82MB4T5G",
+  "mission_number": null,
+  "mission_slug": "crest-component-foundations-01KZ02H2",
+  "mission_type": "software-dev",
+  "pr_bound": true,
+  "purpose_context": "Crest Synth's interface is painted today by a single adapter file holding seven hand-entered colors that do not match the approved visual design, with no typeface loaded at all. This mission establishes the shared visual vocabulary taken directly from the Figma design system - semantic colors, type styles, spacing, and focus treatments - plus the small reusable pieces that the later Patch and Mixer screens are assembled from, and a gallery screen rendering every meaningful state at both desktop and Steam Deck sizes so the result can be judged by looking at it rather than by reading a log.",
+  "purpose_tldr": "Give Crest Synth one shared source for every color, font, and measurement so the real screen finally matches the approved design.",
+  "slug": "crest-component-foundations-01KZ02H2",
+  "source_description": "Phase 4 (ROADMAP.md:170-184), first of two missions. Vocabulary, primitives, gallery scene, and production-shell repaint; controls, compositions, and demo-live-component-library deferred to the follow-on mission.",
+  "target_branch": "main",
+  "topology": "coord",
+  "vcs": "git"
+}

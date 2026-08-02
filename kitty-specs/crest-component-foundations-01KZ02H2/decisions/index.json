@@ -1,0 +1,52 @@
+{
+  "entries": [
+    {
+      "created_at": "2026-08-02T01:48:42.046796Z",
+      "decision_id": "01KZ02HE5YA9DP842GGNEA3Z7G",
+      "final_answer": "Stay on main",
+      "input_key": "branch_strategy",
+      "mission_id": "01KZ02H2FPKTV50BJP82MB4T5G",
+      "mission_slug": "crest-component-foundations-01KZ02H2",
+      "opened_by": "cli",
+      "options": [
+        "feat/ branch",
+        "Stay on main"
+      ],
+      "origin_flow": "specify",
+      "other_answer": false,
+      "question": "Start on a feature branch, or stay on main?",
+      "rationale": null,
+      "resolved_at": "2026-08-02T01:48:42.812355Z",
+      "resolved_by": null,
+      "slot_key": "specify.branch.strategy",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-08-02T01:48:43.706960Z",
+      "decision_id": "01KZ02HFSTN5N693JE5K0KBG2W",
+      "final_answer": "First chunk only: tokens, primitives, gallery, and repainting the production shell. Controls, compositions, and demo-live-component-library defer to a second mission.",
+      "input_key": "phase4_scope",
+      "mission_id": "01KZ02H2FPKTV50BJP82MB4T5G",
+      "mission_slug": "crest-component-foundations-01KZ02H2",
+      "opened_by": "cli",
+      "options": [
+        "First chunk only",
+        "All of Phase 4"
+      ],
+      "origin_flow": "specify",
+      "other_answer": false,
+      "question": "How much of Phase 4 should this mission cover?",
+      "rationale": null,
+      "resolved_at": "2026-08-02T01:48:44.494444Z",
+      "resolved_by": null,
+      "slot_key": "specify.scope.phase4-split",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    }
+  ],
+  "mission_id": "01KZ02H2FPKTV50BJP82MB4T5G",
+  "version": 1
+}
