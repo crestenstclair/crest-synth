@@ -5,8 +5,15 @@ dependencies:
 - WP06
 - WP07
 requirement_refs:
+- C-003
+- FR-001
+- FR-005
+- FR-006
+- FR-009
+- FR-010
 - FR-013
 - FR-014
+- NFR-004
 planning_base_branch: feat/crest-component-controls-and-compositions
 merge_target_branch: feat/crest-component-controls-and-compositions
 branch_strategy: Planning artifacts for this mission were generated on feat/crest-component-controls-and-compositions. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/crest-component-controls-and-compositions unless the human explicitly redirects the landing branch.
@@ -23,7 +30,6 @@ history:
 - at: '2026-08-02T21:46:28Z'
   actor: system
   action: Prompt generated via /spec-kitty.tasks
-agent: claude
 agent_profile: reviewer-renata
 authoritative_surface: tests/
 create_intent:
@@ -142,6 +148,7 @@ Every assertion drives the **production render path** with real projected view d
 1. Render the production shell through its real path and assert **every region** in the emitted `ShellFrameObservation` was produced by a declared `ShellComposition`.
 2. Assert every control within those regions was produced by a declared `ComponentControl` — not by adapter-local painting.
 3. Assert the render adapter holds no paint, layout, band-height, or state-visualization decision. A source-level guard over `src/adapter/eframe_graphical_window.rs` is the practical form: no color literal, no type size, no spacing constant, no band height.
+   **Then widen that same guard to every source file outside `src/shell/visual/`, which is the scope NFR-004 and SC-004 actually state.** The adapter is the loudest case, not the only one — `src/testing/component_gallery_scene.rs`, the other adapters, and every view file are inside the requirement and must be inside the guard. Walk the source tree, exclude `src/shell/visual/` and its descendants, and report every hit with its file and line. A guard scoped to one file passes while the requirement it claims to enforce is being violated two directories away.
 4. **Prove the guard fails when a decision is reintroduced.** Add one locally, watch the guard fail, remove it. A guard never observed failing is not known to work.
 5. Assert the adapter is at or below the declared line threshold, so the reduction cannot silently regress.
 
@@ -149,6 +156,7 @@ Every assertion drives the **production render path** with real projected view d
 
 **Validation**:
 - Reintroducing a literal into the adapter fails the test.
+- Reintroducing a literal into any other file outside `src/shell/visual/` — the gallery scene is the convenient one to try — also fails the test. If only the adapter case fails, the guard is still scoped to one file and NFR-004 is unproven.
 - A region painted outside a composition fails the test.
 
 ---
