@@ -24,6 +24,7 @@ history:
 - at: '2026-08-02T21:46:28Z'
   actor: system
   action: Prompt generated via /spec-kitty.tasks
+agent: claude
 agent_profile: paula-patterns
 authoritative_surface: src/adapter/
 create_intent: []

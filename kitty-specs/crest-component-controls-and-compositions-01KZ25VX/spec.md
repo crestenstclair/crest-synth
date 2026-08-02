@@ -52,11 +52,11 @@ A maintainer building any screen reaches for a parameter row, choice row, toggle
 
 **Acceptance Scenarios**:
 
-1. **Given** any of the seven `SemanticControlKind` values, **When** a maintainer needs to render it, **Then** a control exists for it that accepts a `SemanticControlViewModel` and returns typed semantic intent.
+1. **Given** any declared pairing of a `SemanticControlKind` value with a presentation role, **When** a maintainer needs to render it, **Then** exactly one control resolves for that pair, accepts a `SemanticControlViewModel`, and returns typed semantic intent — and every control in the family is reachable by at least one declared pair. A kind alone does not select a shape: the same kind reads as a parameter row in one region and a fader in another, so selection is total over the pair, not over the kind.
 2. **Given** any control and any of the nine `ComponentState` values, **When** it is rendered in that state, **Then** it carries that state's authored color treatment and its authored `NonColorSignal`, and the state is legible from text or shape alone.
 3. **Given** a control is rendered, **When** its source is inspected, **Then** it holds no Patch value, no focus, no navigation, no reducer state, and no audio state, and it reads every value it paints from immutable view data passed in.
 4. **Given** a control renders at the desktop viewport and at the compact viewport, **When** both frames are compared, **Then** every size difference resolves from a declared density policy and no control carries a resolution-specific constant.
-5. **Given** a new value is added to `SemanticControlKind` or `ComponentState`, **When** the project is built, **Then** compilation or an exhaustiveness assertion fails until every control names the new value.
+5. **Given** a new value is added to `SemanticControlKind`, to the presentation-role vocabulary, or to `ComponentState`, **When** the project is built, **Then** compilation or an exhaustiveness assertion fails until every control names the new value.
 
 ---
 
@@ -131,7 +131,7 @@ A maintainer starting the Phase 5 Patch editor writes screen-specific assembly o
 
 | ID | Title | User Story | Priority | Status |
 |----|-------|------------|----------|--------|
-| FR-001 | Configurable control family | As a maintainer, I want one shared control for each `SemanticControlKind`, so that no screen re-derives how a parameter, choice, toggle, or asset is drawn. | High | Open |
+| FR-001 | Configurable control family | As a maintainer, I want every declared pairing of a `SemanticControlKind` with a presentation role to resolve to exactly one shared control, with every control reachable by at least one pair, so that no screen re-derives how a parameter, choice, toggle, or asset is drawn. | High | Open |
 | FR-002 | Product control shapes | As a player, I want parameter rows, choice rows, toggles, compact sliders, faders, meters, browser rows, and modal options to look like their designed shapes, so that the interface reads as designed rather than as uniform label-and-value rows. | High | Open |
 | FR-003 | Nine-state rendering per control | As a player, I want every control to render all of its applicable states from the closed `ComponentState` vocabulary with both color and a non-color signal, so that state is never conveyed by color alone. | High | Open |
 | FR-004 | Reusable composition family | As a maintainer, I want the application shell, context switch, identity header, section, Patch strip row, Utility/Inspector panel, and footer available as shared compositions, so that later screens assemble rather than re-lay-out. | High | Open |
@@ -150,8 +150,10 @@ A maintainer starting the Phase 5 Patch editor writes screen-specific assembly o
 
 | ID | Title | Requirement | Category | Priority | Status |
 |----|-------|-------------|----------|----------|--------|
-| NFR-001 | Gallery opens promptly | The gallery window presents its first painted page within 3 seconds of the command being issued on the development rig. | Performance | Medium | Open |
-| NFR-002 | Page changes feel immediate | A bound digit key changes the shown page within 100 ms of the keypress. | Performance | Medium | Open |
+| NFR-001 | Gallery opens promptly | The gallery window presents its first painted page promptly enough that the operator running `make demo-live-component-library` does not wait on it — under 3 seconds on the machine they run it from. **Operator-judged in this slice, not machine-enforced** (see below). | Performance | Medium | Open |
+| NFR-002 | Page changes feel immediate | A bound digit or stepping key changes the shown page with no perceptible lag — under 100 ms. **Operator-judged in this slice, not machine-enforced** (see below). | Performance | Medium | Open |
+
+**Why NFR-001 and NFR-002 are operator-judged rather than measured.** Both describe a live window the operator already looks at, and instrumenting them would mean adding duration fields to `valueObject.Shell.ComponentGalleryObservation`, which is a structural crest-spec change made after crest-spec authoring closed, to serve two numbers on a demo scene. C-007 bounds this mission to the library and the scene, with no acceptance tooling of its own. So these two are stated as the standard the scene is judged against when it is run, and no subtask asserts them. If either is ever missed, it becomes a measured requirement in the mission that fixes it — not a retrofit here. Every other NFR in this table is machine-enforced.
 | NFR-003 | Render adapter size reduction | `src/adapter/eframe_graphical_window.rs` ends at no more than 40% of its current 1,282 lines, with the removed content relocated into compositions rather than deleted. | Maintainability | High | Open |
 | NFR-004 | No visual literals outside the module | A repository guard reports zero literal colors, type sizes, spacing constants, and band heights in any file outside `src/shell/visual/`. | Maintainability | High | Open |
 | NFR-005 | Existing suite unbroken | The full test suite passes with zero failures, and no existing shell, projection, or focus test is modified to accommodate this mission. | Reliability | High | Open |
