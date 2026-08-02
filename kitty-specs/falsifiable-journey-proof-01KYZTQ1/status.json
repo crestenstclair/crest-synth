@@ -72,7 +72,10 @@
       "force_count": 0,
       "lane": "canceled",
       "last_event_id": "01KZ24RE0Y8ATPZDBMH5X16FNG",
-      "last_transition_at": "2026-08-02T21:05:57.278395+00:00"
+      "last_transition_at": "2026-08-02T21:05:57.278395+00:00",
+      "notes": [
+        "Parked before implementation per PARKED.md; delivers no synth. WP04 superseded by scripts/check_acceptance_matrix_coverage.sh"
+      ]
     }
   }
 }

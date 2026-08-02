@@ -1,15 +1,15 @@
 {
   "created_at": "2026-08-01T23:31:56.585328+00:00",
   "crest_spec_impact": "structural",
-  "flattened": false,
+  "flattened": true,
   "friendly_name": "Falsifiable Journey Proof",
   "mission_id": "01KYZTQ118MXZGD4MBCR99A978",
   "mission_number": null,
   "mission_slug": "falsifiable-journey-proof-01KYZTQ1",
   "mission_type": "software-dev",
-  "purpose_context": "The previous mission reworked the demo so effect-slot changes travel the player's on-screen PATCH and MIXER journey, and proved it on physical hardware. But its guards assert over what the scene declared rather than what the application actually dispatched, so reverting the fix leaves every test passing and every recorded artifact byte-identical. This mission makes those guards falsifiable — each is accepted only after its failure has been observed — so the demonstrated journey cannot regress unnoticed.",
+  "purpose_context": "The previous mission reworked the demo so effect-slot changes travel the player's on-screen PATCH and MIXER journey, and proved it on physical hardware. But its guards assert over what the scene declared rather than what the application actually dispatched, so reverting the fix leaves every test passing and every recorded artifact byte-identical. This mission makes those guards falsifiable \u2014 each is accepted only after its failure has been observed \u2014 so the demonstrated journey cannot regress unnoticed.",
   "purpose_tldr": "Make the live-demo guards able to fail, so a silently-lost player journey is caught instead of shipped green.",
   "slug": "falsifiable-journey-proof-01KYZTQ1",
-  "target_branch": "feat/expandable-effects-and-bus-topology",
+  "target_branch": "feat/crest-component-foundations",
   "topology": "single_branch"
 }
