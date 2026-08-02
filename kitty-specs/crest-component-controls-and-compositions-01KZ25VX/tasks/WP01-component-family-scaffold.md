@@ -21,6 +21,7 @@ history:
 - at: '2026-08-02T21:46:28Z'
   actor: system
   action: Prompt generated via /spec-kitty.tasks
+agent: claude
 agent_profile: architect-alphonso
 authoritative_surface: src/shell/visual/controls/
 create_intent:
