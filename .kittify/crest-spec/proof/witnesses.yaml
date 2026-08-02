@@ -600,7 +600,6 @@ witnesses:
         state_tree_schema_version: number
         state_tree_patch_count: number
         window_input_cases_exercised: number
-        semantic_action_variants_exercised: number
         app_event_variants_exercised: number
         top_level_contexts_exercised: number
         semantic_surfaces_exercised: number
@@ -761,17 +760,9 @@ witnesses:
       - KeyboardInputTranslator
       - DemoScene
       - ExhaustiveGuiDemo
-    - field: semantic_action_variants_exercised
-      op: eq
-      value: 6
-      repairResources:
-      - SemanticAction
-      - KeyboardInputTranslator
-      - DemoScene
-      - AppLoop
     - field: app_event_variants_exercised
       op: eq
-      value: 11
+      value: 16
       repairResources:
       - AppEvent
       - DemoScene

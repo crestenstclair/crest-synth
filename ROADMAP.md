@@ -200,11 +200,21 @@ path is precisely what exposed the missing selector.
 
 Phase 5 does not close until both of these hold:
 
-- **A patch-selection gesture exists in the semantic vocabulary** — a semantic
-  action that changes the focused Patch, travelling the normal physical input →
-  semantic action → `AppState::apply` → projection path, with focus recovery
-  proven across the switch. It is not a UI-local selection or a backstage
-  lookup.
+- ~~**A patch-selection gesture exists in the semantic vocabulary**~~ —
+  **CLOSED 2026-08-02.** `SemanticAction::SelectPatch(Direction)` moves the
+  focused Patch one position along the installed order, reduced by
+  `AppState::select_patch`. It travels the production physical input → semantic
+  action → `AppState::apply` → projection path (Q/E through the egui window and
+  the keyboard translator), refuses rather than wraps at either end, is
+  available only in the Patch context in Navigate mode, and recovers focus
+  against the destination Patch's own descriptor schema. Declared first in the
+  crest-spec (`SemanticAction`, `InteractionState` invariants). Falsified: the
+  reducer test fails when the move is defeated.
+
+  This mattered more than "a demo bound" made it sound. The fixture installs
+  one Patch per MIDI part — the last hardware run loaded **15** (8 SoundFont,
+  7 Braids), all rendering — and the controller could reach exactly one. The
+  gesture is what makes the other fourteen playable.
 - **`make demo-live-patch-editor` demonstrates the effect-slot journey on more
   than one instrument** — the scene navigates from one Patch to another *through
   that gesture on screen*, then performs a full focus-verified effect-slot
