@@ -1,6 +1,8 @@
 {
+  "accept_commit": "6979fe98b52ab0ad84bdc01f8537bc86aff2fe1e",
   "acceptance_history": [
     {
+      "accept_commit": "6979fe98b52ab0ad84bdc01f8537bc86aff2fe1e",
       "acceptance_mode": "pr",
       "accepted_at": "2026-08-02T21:05:07.405124+00:00",
       "accepted_by": "cresten",
