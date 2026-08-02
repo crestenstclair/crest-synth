@@ -1,7 +1,7 @@
 {
-  "event_count": 2,
-  "last_event_id": "01KYZXC5YJZRS0Y8HS07NV5PHY",
-  "materialized_at": "2026-08-02T00:18:26.898619+00:00",
+  "event_count": 3,
+  "last_event_id": "01KYZXC6XW08HFKFVR1N6JNAX1",
+  "materialized_at": "2026-08-02T00:18:27.900601+00:00",
   "mission_number": "",
   "mission_slug": "falsifiable-journey-proof-01KYZTQ1",
   "mission_type": "software-dev",
@@ -14,7 +14,7 @@
     "for_review": 0,
     "in_progress": 0,
     "in_review": 0,
-    "planned": 2
+    "planned": 3
   },
   "work_packages": {
     "WP01": {
@@ -30,6 +30,13 @@
       "lane": "planned",
       "last_event_id": "01KYZXC5YJZRS0Y8HS07NV5PHY",
       "last_transition_at": "2026-08-02T00:18:26.898619+00:00"
+    },
+    "WP03": {
+      "actor": "finalize-tasks",
+      "force_count": 0,
+      "lane": "planned",
+      "last_event_id": "01KYZXC6XW08HFKFVR1N6JNAX1",
+      "last_transition_at": "2026-08-02T00:18:27.900601+00:00"
     }
   }
 }
