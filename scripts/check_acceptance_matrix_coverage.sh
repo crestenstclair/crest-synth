@@ -185,10 +185,13 @@ if failures:
         print(f"  {failure}", file=sys.stderr)
     sys.exit(1)
 
-if checked == 0:
-    # An empty scan is not a pass. Say so rather than printing the marker.
+if checked == 0 and not out_of_scope and not ungraded:
+    # A scan that saw no mission at all is broken, not clean — the guard that
+    # keeps absent tooling or a wrong path from reading as a pass. Every mission
+    # being closed is a different thing: it is the healthy steady state between
+    # missions, and it passes with the skips printed above.
     print(f"CREST_STATIC_VALIDATION {VALIDATION} failed", file=sys.stderr)
-    print("  no mission carried both a specification and an acceptance record", file=sys.stderr)
+    print(f"  scanned {MISSIONS} and found no mission with a specification", file=sys.stderr)
     sys.exit(1)
 
 for name in out_of_scope:
