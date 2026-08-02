@@ -52,13 +52,15 @@ assets:
   ShellContextModules:
     kind: rust-context-source
     description: src/shell — egui rendering of projected state realizing context.Shell resources, including
-      the authored visual vocabulary, typeface installation, density policies, and reusable primitives
-      every surface paints through
+      the authored visual vocabulary, typeface installation, density policies, reusable primitives, the
+      configurable control family, and the shell compositions every surface paints through
     targets:
     - SemanticVisualToken
     - AuthoredTypeface
     - ViewportDensityPolicy
     - ComponentState
+    - ComponentControl
+    - ShellComposition
     - WindowInput
     prompts:
     - Declare the authored vocabulary once. Colors, type styles, spacing steps, and geometry are named
@@ -78,11 +80,31 @@ assets:
       than defaulting silently, and render every state with text or shape in addition to color.
     - Repaint the existing eframe adapter through the vocabulary and delete the constants it previously
       painted from. The production application, not only the gallery, must show the authored design.
+    - Provide one control per declared ComponentControl variant, and resolve every SemanticControlKind
+      to exactly one of them exhaustively. A control takes an immutable SemanticControlViewModel plus
+      an explicit ComponentState and returns typed semantic intent; it dispatches nothing, owns nothing,
+      and reaches AppState never.
+    - Declare per control which ComponentStates apply to it. Non-applicability is declared, not silently
+      omitted, so the coverage assertion checks declared applicability rather than the full cross product.
+    - Take each control's geometry, spacing, and state treatment from the visual design reference the
+      way the tokens were taken, not from what the shell happens to render today. This is the phase where
+      visual fidelity begins to matter.
+    - Provide one composition per declared ShellComposition variant. A composition arranges primitives
+      and controls, resolves bands, split, inset, row height, and row pitch from ViewportDensityPolicy,
+      and declares no color, type style, spacing step, or geometry value of its own.
+    - Where a composition's designed structure has no view data behind it, omit that structure or mark
+      it explicitly unavailable. Never paint an invented or representative value in the production shell;
+      representative content belongs to the gallery.
+    - Add no SemanticAction variant, no focus target, and no reducer behavior. This changes how state
+      is rendered, never what state exists; the existing shell, projection, and focus verification must
+      pass unchanged.
     contributesTo:
-      component_vocabulary: owns the vocabulary, typeface, policies, and primitives every surface resolves
-        through
-      graphical_application_shell: replaces adapter-owned visual constants without changing the shell's
-        structural bands or passivity
+      component_vocabulary: owns the vocabulary, typeface, policies, primitives, controls, and compositions
+        every surface resolves through
+      graphical_application_shell: replaces adapter-owned visual constants and adapter-local region painting
+        without changing the shell's structural bands or passivity
+      semantic_graphical_view_model: renders the projected control view model without introducing a second
+        model of it
   TestingContextModules:
     kind: rust-context-source
     description: src/testing — retained scenes, deterministic workers, mutation harness, and measurements
@@ -91,6 +113,8 @@ assets:
     - ComponentGalleryPage
     - ComponentGalleryObservation
     - ComponentState
+    - ComponentControl
+    - ShellComposition
     - ViewportDensityPolicy
     prompts:
     - Add the browsable component gallery scene. It renders the declared pages through the shared primitives
@@ -105,12 +129,38 @@ assets:
       the autonomous witness contract, and do not weaken that contract in the scenes that hold it.
     - Emit the gallery observation only after painting, copying the page, state, and viewport identity
       actually rendered. A pre-render plan or a constructed specimen list must not be able to satisfy it.
+    - Add the control and composition pages. Every declared ComponentControl appears in every state it
+      declares applicable, and every declared ShellComposition appears filled with representative content,
+      both at the desktop and Steam Deck viewports.
+    - The declared page count now exceeds the available digits. Keep the ten digit bindings in declared
+      order — the eight that existed before keep exactly the pages they had — and add bidirectional stepping
+      over the full order so no page is reachable by neither route. Stepping does not wrap past an end.
+    - Construct no audio output and no MIDI event source. Report that as a measured field in the emitted
+      observation so the gallery's silence is falsifiable rather than claimed.
     contributesTo:
-      component_vocabulary: makes every declared value and state visually judgable and measurably covered
+      component_vocabulary: makes every declared value, state, control, and composition visually judgable
+        and measurably covered
   AdapterModules:
     kind: rust-context-source
     description: src/adapter — thin capability, preparer, device, window, and asset adapters implementing
       the declared ports
+    targets:
+    - AppWindow
+    - ShellComposition
+    - ComponentControl
+    prompts:
+    - Reduce the eframe window adapter to window plumbing and event translation. Every region it shows
+      is painted by a declared ShellComposition and every control within one by a declared ComponentControl;
+      the adapter decides no paint, layout, band height, or state visualization.
+    - Move the region and control painting the adapter currently owns into the shell's composition and
+      control modules rather than deleting it. The adapter's remaining size is the measure of whether
+      that move actually happened.
+    - Keep the window passive and the observation contract intact. It still emits one immutable ShellFrameObservation
+      after painting and still stores no canonical state.
+    contributesTo:
+      component_vocabulary: proves the composition family by leaving the adapter with nothing visual to
+        decide
+      graphical_application_shell: keeps the production window boundary while removing its visual authority
   CargoManifest:
     kind: cargo-manifest
     description: Cargo.toml and build.rs for the capability-configured standalone synth with Rust SoundFont
@@ -925,9 +975,18 @@ assets:
     - SemanticVisualToken
     - ViewportDensityPolicy
     - ComponentState
+    - ComponentControl
+    - ShellComposition
     prompts:
     - Never generate or rewrite this document from the crest-spec; it is the product authority and edits
       are deliberate authorial acts.
+    - Correct the always-non-color state list to the full declared ComponentState set. This document names
+      six states; the declared and shipped vocabulary holds nine, adding resting, adjustment, and disabled.
+      The widening was a deliberate authorial decision made during the vocabulary's authoring and is recorded
+      here rather than left contradicting the code.
+    - Name the control and composition families as the pieces later surfaces assemble from, in the product's
+      own register — parameter rows, choice rows, toggles, compact sliders, faders, meters, browser rows,
+      modal options, and the seven shell regions — without restating the declared model.
     - Record the resolved authored color set as a durable decision. The visual reference publishes a selected-row
       background this document previously omitted, and this document declares elevated, strong-border,
       and two identity accents the reference does not publish as variables; the union of both is authoritative
@@ -948,13 +1007,19 @@ assets:
     targets:
     - BusReturnBank
     - EffectSlotIndex
+    - ComponentGalleryPage
     prompts:
     - Record each phase's completion condition and any corrective gate that blocks later phases, including
       the evidence that closes it.
     - A gate is closed only by recorded evidence, never by assertion; keep closed gates in place as history
       rather than deleting them.
+    - Amend the component-library demo bullet in place. It describes a scene playing the real MIDI fixture
+      and exercising controls through semantic actions; the delivered component-library demo is browsable
+      and silent by deliberate scope decision, and the roadmap must state what was actually delivered
+      rather than leaving an unmet bullet standing. Record it as an amendment, not a deletion.
     contributesTo:
       live_observable_demo: carries the retained-scene phase gates and their closure conditions
+      component_vocabulary: records what the component-library phase actually delivered and on what terms
   ValidationScripts:
     kind: validation-script
     description: deterministic guard scripts under scripts/ that declared validations invoke; each script
@@ -1023,8 +1088,46 @@ assets:
     - Prove both density policies retain every structural band, the persistent side region, and the authored
       minimum interactive target at both authored viewports with no clipped or overlapping text.
     - Prove the ComponentState set is exhaustively matched, that every state renders text or shape beyond
-      color, that every declared gallery page has exactly one digit binding, and that no component reads
-      or caches AppState.
+      color, that every declared gallery page is reachable by its digit binding or by stepping, and that
+      no component reads or caches AppState.
     - Prove an unavailable typeface produces the typed visible failure rather than a substituted face.
     contributesTo:
       component_vocabulary: is the deterministic half of the proof the live gallery completes
+  ComponentCompositionAcceptanceTests:
+    kind: rust-integration-tests
+    description: tests/component_composition.rs, the non-vacuous production-path acceptance for the control
+      family, the composition family, and the recomposed production shell
+    profile:
+      kind: verification_harness
+      witness: every control kind and every shell region resolves to a declared component on the production
+        render path
+      failurePolicy: an unmapped control kind, an uncovered applicable state, a region the adapter still
+        paints, a visual decision left in the adapter, a placeholder value in the production shell, or
+        a component owning application state fails
+    targets:
+    - ComponentControl
+    - ShellComposition
+    - ComponentGalleryPage
+    - AppWindow
+    - ViewportDensityPolicy
+    prompts:
+    - Create tests/component_composition.rs with ordinary assertion-bearing tests and emit CREST_ACCEPTANCE
+      component_composition passed only after every declared check holds.
+    - Prove every SemanticControlKind resolves to exactly one declared ComponentControl, and that the
+      mapping is exhaustive rather than defaulted. A test that only proves the controls exist is vacuous;
+      drive them through the production render path with real projected view data.
+    - Prove each control renders every state it declares applicable with text or shape beyond color, and
+      that a state it declares non-applicable is declared rather than merely absent.
+    - Prove every region the production window shows is produced by a declared ShellComposition and every
+      control within one by a declared ComponentControl, and that the render adapter holds no paint, layout,
+      band-height, or state-visualization decision. Prove the guard fails when one is reintroduced.
+    - Prove that a composition handed a projection slice with no data for part of its designed structure
+      omits it or marks it explicitly unavailable, and never paints a value that was not in the view data.
+    - Prove no control or composition owns, caches, or derives Patch values, focus, navigation, reducer
+      state, or audio state, and that none dispatches a SemanticAction.
+    - Prove both authored viewports still retain every structural band, the persistent side region, and
+      the authored minimum interactive target after recomposition, with no clipped or overlapping text.
+    contributesTo:
+      component_vocabulary: is the deterministic proof that the controls and compositions exist and that
+        the shipped shell actually uses them
+      graphical_application_shell: proves the recomposition preserved the shell's structure and passivity

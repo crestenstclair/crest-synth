@@ -41,6 +41,10 @@ valueObjects:
       - Digit6
       - Digit7
       - Digit8
+      - Digit9
+      - Digit0
+      - BracketLeft
+      - BracketRight
       - Q
       - E
       - W
@@ -58,12 +62,12 @@ valueObjects:
     - surfaceDescriptor is defined beside WindowInput and is the only GUI-input vocabulary consumed by
       DemoScene and acceptance tests; no test owns a second list of normalized key names, key-up, focus-loss,
       or unrelated-input strings
-    - 'surfaceDescriptor contains exactly 33 unique valid values before any set conversion: KeyDown and
-      KeyUp for each of the sixteen normalized keys plus FocusLost with no key payload; the declared count
+    - 'surfaceDescriptor contains exactly 41 unique valid values before any set conversion: KeyDown and
+      KeyUp for each of the twenty normalized keys plus FocusLost with no key payload; the declared count
       and the constructed descriptor are asserted equal so an added key cannot drift the two apart'
-    - Digit3 through Digit8 carry no application binding; they are normalized so a scene may bind them
-      locally, and an unbound digit reaching the translator produces no SemanticAction rather than a
-      substitute one
+    - Digit3 through Digit9, Digit0, and the two bracket keys carry no application binding; they are
+      normalized so a scene may bind them locally, and an unbound key reaching the translator produces
+      no SemanticAction rather than a substitute one
     - the Start control is reserved and unbound in every phase before the Phase 7 Sample Browser, where
       holding Start previews a focused sample; until that workflow owns complete hold/release behavior,
       no WindowInput key, translator mapping, SemanticAction, or reducer path may bind Start, and any
@@ -165,9 +169,81 @@ valueObjects:
     - a component receives its state as immutable input; it never derives, caches, or owns one
     contributesTo:
       component_vocabulary: is the axis the gallery proves exhaustively
+  ComponentControl:
+    description: the closed family of configurable controls, each presenting one SemanticControlViewModel
+      in one ComponentState and returning typed semantic intent rather than acting
+    from:
+    - ParameterRow
+    - ChoiceRow
+    - Toggle
+    - CompactSlider
+    - Fader
+    - Meter
+    - BrowserRow
+    - ModalOption
+    state:
+      viewData: the immutable SemanticControlViewModel a control paints — kind, value, numeric range,
+        lifecycle status, and typed error
+      componentState: the explicit ComponentState the control is handed
+      applicableStates: the declared subset of ComponentState this control can be handed, so a control
+        that can never be muted or soloed declares that rather than silently omitting a specimen
+      intent: the typed semantic intent a control returns; it dispatches nothing itself
+    invariants:
+    - every SemanticControlKind resolves to exactly one declared control, and the mapping is exhaustive,
+      so an added kind fails compilation or the declared coverage assertion rather than falling back to
+      a generic row
+    - a control paints every value it shows from the immutable view data handed to it; it owns, caches,
+      and derives no Patch value, focus, navigation, reducer state, or audio state, and never reaches
+      AppState
+    - a control renders every state in its declared applicableStates with text or shape in addition to
+      color, and declares non-applicability explicitly rather than omitting a specimen
+    - every color, type style, spacing step, and geometry value a control paints resolves through SemanticVisualToken,
+      and every size difference between the authored viewports resolves through ViewportDensityPolicy;
+      a control declares no literal and reads no viewport size
+    - a control returns intent; it never dispatches a SemanticAction, mutates state, or performs I/O
+    - Meter presents whatever level the view data reports, including a resting one; it neither reads the
+      audio boundary nor invents a signal
+    contributesTo:
+      component_vocabulary: is the configurable half of the vocabulary later surfaces assemble from
+      graphical_application_shell: replaces the adapter-local control painting the shell previously owned
+      semantic_graphical_view_model: renders the projected control view model without adding a second
+        model of it
+  ShellComposition:
+    description: the closed family of reusable compositions, each filling one named shell region by arranging
+      primitives and controls and owning no value of its own
+    from:
+    - ApplicationShell
+    - ContextSwitch
+    - IdentityHeader
+    - Section
+    - PatchStripRow
+    - UtilityInspectorPanel
+    - Footer
+    state:
+      region: the named shell region this composition fills
+      viewData: the immutable projection slice the composition arranges
+      geometry: the bands, split, inset, row height, and row pitch it resolves from ViewportDensityPolicy
+      intent: the typed semantic intent it returns, aggregated from the controls it arranges
+    invariants:
+    - every region the production shell paints is produced by a declared composition; the render adapter
+      contributes window plumbing and event translation and decides no paint, layout, or state visualization
+    - a composition arranges primitives and controls and declares no color, type style, spacing step,
+      or geometry value of its own; it resolves all of them through SemanticVisualToken and ViewportDensityPolicy
+    - a composition owns no Patch value, focus, navigation, reducer state, or audio state, and returns
+      typed intent rather than dispatching
+    - where a composition's designed structure has no view data behind it, the composition omits that
+      structure or marks it explicitly unavailable; it never paints an invented or representative value
+      in the production shell, because a placeholder would misrepresent absent state as present
+    - both authored viewports retain every structural band, the persistent side region, and the authored
+      minimum interactive target; no composition is hidden to fit and no third hard-coded layout appears
+    contributesTo:
+      component_vocabulary: is the assembly half of the vocabulary, so later surfaces compose rather than
+        re-lay-out
+      graphical_application_shell: owns the region arrangement the adapter previously carried, without
+        changing the structural bands or the shell's passivity
   ComponentGalleryPage:
     description: one named group of component specimens in the browsable gallery scene, selected by a
-      locally bound digit key
+      locally bound digit key or reached by stepping
     from:
     - Colors
     - Type
@@ -177,15 +253,31 @@ valueObjects:
     - ValuesAndStatus
     - ActionHints
     - ShellBands
+    - ParameterAndChoiceRows
+    - TogglesAndSliders
+    - FadersAndMeters
+    - BrowserAndModalOptions
+    - ShellAndContextSwitch
+    - HeadersAndSections
+    - StripPanelAndFooter
     invariants:
-    - the page set and its digit bindings are closed and total; a page without a binding, or a binding
-      without a page, fails the declared coverage assertion rather than becoming a dead key
+    - the page set is closed and every page is reachable — by its bound digit where one exists, and by
+      stepping in every case; a page reachable by neither, or a binding without a page, fails the declared
+      coverage assertion rather than becoming a dead key
+    - the first ten pages carry the ten digit bindings in declared order; the eight bindings that existed
+      before the control and composition pages were added keep the exact pages they had, so a binding
+      an operator already knows never moves
+    - stepping is bidirectional over the full declared order and does not wrap past an end, so no page
+      becomes unreachable once the page count exceeds the available digits
     - page selection is scene-local — it never becomes a SemanticAction, never reaches AppState, and never
       changes focus, Patch values, graph revision, or audio behavior
     - a digit with no page bound retains the current page and changes nothing
-    - every declared ComponentState appears on at least one page at both authored viewports
+    - every declared ComponentState appears on at least one page at both authored viewports, and every
+      declared ComponentControl and ShellComposition appears on at least one page with representative
+      content
     contributesTo:
-      component_vocabulary: makes every declared state and value visually judgable in one place
+      component_vocabulary: makes every declared state, control, and composition visually judgable in
+        one place
   ComponentGalleryObservation:
     description: one immutable adapter-boundary observation of the gallery scene actually painted, for
       live verification that the browsable scene rendered rather than merely constructed
@@ -194,14 +286,20 @@ valueObjects:
       activePage: ComponentGalleryPage
       pagesVisited: ordered ComponentGalleryPage identities actually painted
       statesRendered: the ComponentState identities actually painted, with visible-label evidence
+      controlsRendered: the ComponentControl identities actually painted, with visible-label evidence
+      compositionsRendered: the ShellComposition identities actually painted, with visible-label evidence
       tokenSourceExact: bool asserting every painted value resolved through SemanticVisualToken
       typefaceResolved: bool asserting every text run resolved to the authored family and weight
+      audioOrMidiConstructed: bool asserting whether the scene constructed an audio output or a MIDI event
+        source, so silence is measured rather than assumed
     invariants:
     - the adapter emits the observation only after painting, and copies the page, state, and viewport
       identity of what it actually rendered
     - expected page names, a pre-render plan, or a constructed specimen list alone cannot construct a
       passing observation
     - the observation is scene data and never becomes AppState, focus, Patch, graph, or audio state
+    - audioOrMidiConstructed is measured from what the scene actually constructed, so the gallery's declared
+      silence is falsifiable rather than a claim in prose
     contributesTo:
       component_vocabulary: makes gallery coverage measurable instead of asserted
   AudioDeviceConfig:
@@ -270,6 +368,9 @@ ports:
       callback; it does not infer checkpoint completion, edit a report, or retain canonical state
     - layout class and pixel geometry are adapter-local responses to viewport size and never become canonical
       application or navigation state
+    - every region the window shows is painted by a declared ShellComposition and every control within
+      it by a declared ComponentControl; the window itself decides no paint, layout, band height, or
+      state visualization, so a later surface cannot be assembled by copying it
     - 'a false tick result closes the disposable window only after application control ownership has retained
       a terminal outcome: either the completed live report or a typed fatal runtime error'
     contributesTo:

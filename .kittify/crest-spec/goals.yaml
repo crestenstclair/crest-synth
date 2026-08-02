@@ -319,5 +319,10 @@ goals:
     - reusable_shell_primitives
     - explicit_state_rendering
     - component_state_ownership_boundary
+    - configurable_control_family
+    - reusable_shell_compositions
+    - shell_composed_from_components
+    - no_placeholder_values_in_production
     - browsable_component_gallery
+    - silent_component_gallery
     - component_vocabulary_behavioral_proof

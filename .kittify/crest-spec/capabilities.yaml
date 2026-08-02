@@ -674,8 +674,9 @@ capabilities:
         - evidence.expandable_effects_and_bus_topology_contract
   component_vocabulary:
     description: Resolve every rendered color, type style, spacing step, geometry value, and behavioral
-      state through one shared authored vocabulary, render it in the production shell, and make every
-      declared state judgable in a browsable gallery scene at both authored viewports
+      state through one shared authored vocabulary, assemble every control and every shell region from
+      one closed component family, render the production shell entirely through it, and make every declared
+      state, control, and composition judgable in a browsable gallery scene at both authored viewports
     goals:
     - build_from_component_vocabulary
     acceptance:
@@ -721,5 +722,50 @@ capabilities:
         - action: close the window
           observes: the scene exits normally, releases every owned resource, and makes no exact-generation
             claim, so the autonomous witness contract it deliberately does not share remains intact
+        - action: inspect what the gallery scene constructed while it ran
+          observes: no audio output and no MIDI event source were constructed and nothing sounded; the
+            emitted observation carries that as a measured field rather than the scene claiming silence
+        evidence:
+        - evidence.component_vocabulary_contract
+      every_control_shape_exists:
+        description: every control kind the projection can carry has one declared shape, correct in every
+          state that applies to it, and owns nothing
+        actor: maintainer
+        steps:
+        - action: enumerate SemanticControlKind and resolve each to its rendering
+          observes: each kind resolves to exactly one declared ComponentControl; adding a kind fails compilation
+            or the declared coverage assertion rather than falling back to a generic label-and-value row
+        - action: render each control across its declared applicableStates at both authored viewports
+          observes: every applicable state carries text or shape in addition to color and is legible without
+            it; a state a control cannot be handed is declared non-applicable rather than silently absent
+        - action: inspect any control's source and the values it paints
+          observes: it reads every value from the immutable view data handed to it, resolves every color,
+            type style, spacing step, and geometry value through the declared vocabulary and density policy,
+            declares no literal, reads no viewport size, and returns typed intent without dispatching
+        - action: run the instrument with no audio signal and look at a meter
+          observes: the meter presents the resting level the view data reports and invents no signal
+        evidence:
+        - evidence.component_vocabulary_contract
+      every_region_is_a_composition:
+        description: the shipped shell is assembled from the same pieces a later surface would use, so
+          the completion condition is proven by the product rather than by a gallery alone
+        actor: player
+        steps:
+        - action: launch the normal standalone application and look at every region on screen
+          observes: the context line, identity header, main workspace, persistent side region, and footer
+            are each painted by a declared ShellComposition, and every control within them by a declared
+            ComponentControl
+        - action: inspect the render adapter
+          observes: it carries window plumbing and event translation only; it decides no paint, layout,
+            band height, or state visualization, and the guard fails loudly when one is reintroduced
+        - action: run the existing shell, projection, and focus verification against the recomposed shell
+          observes: it passes unchanged, because this is a re-composition and no semantic action, focus
+            target, or reducer behavior was added
+        - action: look for a part of the designed structure that no view data drives
+          observes: it is omitted or marked explicitly unavailable; no invented or representative value
+            is painted in the shipped application
+        - action: assemble one new representative surface from the shared pieces
+          observes: only surface-specific arrangement is written — no paint, no layout, no focus visualization,
+            no state visualization is re-derived
         evidence:
         - evidence.component_vocabulary_contract

@@ -3136,6 +3136,8 @@ witnesses:
     - AuthoredTypeface
     - ViewportDensityPolicy
     - ComponentState
+    - ComponentControl
+    - ShellComposition
     - ComponentGalleryPage
     - ComponentGalleryObservation
     - EframeGraphicalWindow
@@ -3146,6 +3148,8 @@ witnesses:
     - AuthoredTypeface
     - ViewportDensityPolicy
     - ComponentState
+    - ComponentControl
+    - ShellComposition
     - ComponentGalleryPage
     - ComponentGalleryObservation
     evidence:
@@ -3163,28 +3167,38 @@ witnesses:
         pages_declared: number
         pages_painted: number
         pages_reachable_by_digit: number
+        pages_reachable_by_step: number
         unbound_digit_retained_page: bool
         states_declared: number
         states_painted: number
         states_distinguishable_without_color: bool
+        controls_declared: number
+        controls_painted: number
+        control_kinds_unmapped: number
+        compositions_declared: number
+        compositions_painted: number
         desktop_viewport_painted: bool
         steam_deck_viewport_painted: bool
         bands_retained_both_viewports: bool
         clipped_or_overlapping_text: number
         token_source_exact: bool
         typeface_resolved: bool
+        audio_or_midi_constructed: bool
         app_state_generation_delta: number
         window_closed: bool
     predicates:
     - field: pages_painted
       op: eq
-      value: 8
+      value: 15
     - field: pages_declared
       op: eq
-      value: 8
+      value: 15
     - field: pages_reachable_by_digit
       op: eq
-      value: 8
+      value: 10
+    - field: pages_reachable_by_step
+      op: eq
+      value: 15
     - field: unbound_digit_retained_page
       op: eq
       value: true
@@ -3197,6 +3211,21 @@ witnesses:
     - field: states_distinguishable_without_color
       op: eq
       value: true
+    - field: controls_declared
+      op: eq
+      value: 8
+    - field: controls_painted
+      op: eq
+      value: 8
+    - field: control_kinds_unmapped
+      op: eq
+      value: 0
+    - field: compositions_declared
+      op: eq
+      value: 7
+    - field: compositions_painted
+      op: eq
+      value: 7
     - field: desktop_viewport_painted
       op: eq
       value: true
@@ -3215,6 +3244,9 @@ witnesses:
     - field: typeface_resolved
       op: eq
       value: true
+    - field: audio_or_midi_constructed
+      op: eq
+      value: false
     - field: app_state_generation_delta
       op: eq
       value: 0
