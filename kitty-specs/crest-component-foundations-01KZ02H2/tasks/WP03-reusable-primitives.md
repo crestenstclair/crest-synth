@@ -280,3 +280,91 @@ Tests are required for T019 — FR-009 is a measured claim.
 > **CRITICAL**: Activity log entries MUST be in chronological order (oldest first, newest last). Append at the END.
 
 - 2026-08-02T02:26:18Z – system – Prompt created.
+- 2026-08-02T05:10:13Z – claude (implementer-ivan) – Implemented T013–T019. Promoted
+  `src/shell/visual/primitives.rs` to `primitives/mod.rs` with six submodules; no re-export line was
+  needed in `src/shell/visual/mod.rs`, so that shared surface is untouched (WP01 review note N3 — WP02
+  and WP03 use full `crate::shell::visual::…` paths).
+- 2026-08-02T05:10:13Z – claude (implementer-ivan) – Design decisions and deliberate deviations, for the
+  reviewer:
+  1. **`rules.rs` keyline width.** The vocabulary declares exactly two widths, resting 1 px and emphasis
+     3 px, and the emphasis width means focus/adjustment. A structural keyline at 3 px would read as a
+     focused element, so hairline and keyline are both 1 px and differ by color — `border/default` versus
+     `border/strong`, which is what `border/strong` is declared for.
+  2. **`focus.rs` frames every emphasis state, not only focus.** WP02 declared `Loading` and `Error` at
+     the 3 px emphasis width too. The frame paints wherever the declared width is emphasis and paints
+     nothing where it is the resting hairline, so `Resting` is an absence (T014's job) rather than a
+     suppressed frame, and WP02's Loading/Error emphasis is not silently dropped. A test ties `frames()`
+     to `appearance().keyline_px` so the two cannot drift.
+  3. **`focus.rs` halo.** egui has no drop-shadow matching radius/spread/opacity directly;
+     `epaint::Shadow` is the faithful mapping (blur 8 = penumbra width, spread 1 = caster expansion,
+     alpha 71 = 0.28 × 255, the `0x47` the design file carries). Recorded in a doc comment, not omitted.
+     The test unmultiplies the stored premultiplied color back to the authored accent, tolerating the one
+     level that 8-bit premultiplication costs and nothing wider.
+  4. **`status.rs` paints `Disabled`.** The prompt's T017 note grouped `Disabled` with the unmarked
+     states, but WP02 declared its signal as the word `Locked`, and FR-005 names disabled among the
+     states that must read without color. Skipping it would have left disabled as muted color alone.
+     Deliberate deviation, recorded in the module doc.
+  5. **`status.rs` never renders a state as color alone.** `Loading` with no phase falls back to the
+     first authored word and `Error` with no typed text falls back to `Failed`, so the mark is never
+     absent. `Selected` pairs the `bg/selected` fill with a filled mark in `text/primary` — a mark in the
+     fill color would be invisible on it.
+  6. **`value.rs` formats nothing.** It takes a finished string and right-aligns it to a caller-supplied
+     edge; the design file's x=1442 is a layout number and does not appear here.
+  7. **API shaped against a real call site.** `text.rs`'s module doc carries the `paint_context_line`
+     conversion (`src/adapter/eframe_graphical_window.rs:287`) that WP04 lands first.
+- 2026-08-02T05:10:13Z – claude (implementer-ivan) – Verification. `cargo test --lib shell::visual`
+  88/88; `make test` 555 lib + every integration target, 0 failures; `make lint` and `make fmt-check`
+  clean. The T019 guards are mutation-verified — each was shown to fail when deliberately broken and
+  then restored: (a) adding `use crate::control::AppState;` to `value.rs` fails the import check;
+  (b) collapsing a `ComponentState` match into `_ =>` fails the wildcard check; (c) removing `rules.rs`
+  fails the scan-coverage check; (d) painting `Selected`'s mark in its own fill fails both
+  `selection_is_a_fill_plus_a_mark_and_never_the_fill_alone` and the module-wide non-color assertion.
+  Note for the reviewer: `sf2/` is gitignored and absent from a fresh lane worktree, so every
+  SoundFont-backed test fails there with `Asset(FileOpen)` until the directory is symlinked in from the
+  repository root. That is an environment gap, not a WP03 regression; the 555/555 run above was made
+  with the symlink in place, and the symlink is gitignored and not committed.
+- 2026-08-02 – claude (implementer-ivan) – Review cycle 1, R1 fixed (commit `48261a4`, `mod.rs` only).
+  Took the reviewer's preferred path 1 and tightened the guard rather than narrowing the claim, then made
+  the doc match anyway. `no_primitive_names_a_path_outside_the_visual_vocabulary` scans the whole source
+  text of every primitive for the seven non-visual crate roots in `src/lib.rs` — `adapter`, `control`,
+  `kernel`, `mixer`, `real_time`, `synth`, `testing` — in both the `crate::` and `crest_synth::`
+  spellings. Needles are assembled at runtime, exactly as the wildcard test already did, so `mod.rs` does
+  not match itself; the first version failed on its own doc comment, which is why the comment now spells
+  the example in two pieces. The `use`-line check stays alongside it and its doc now says why: a fixed
+  forbidden-path list can never name a third-party crate the module has no business importing, so the two
+  catch different things.
+- 2026-08-02 – claude (implementer-ivan) – Scope judgement on R1, for the reviewer. Added a second guard
+  the review did not ask for: `no_primitive_walks_out_of_the_vocabulary_by_a_relative_path` rejects a
+  `super::` chain three or more steps deep. The inline-path hole has a relative twin — from a primitive,
+  four `super::` steps reach `crate::control` with the word `crate` never appearing — and closing the
+  absolute spelling while leaving the relative one open would have reproduced R1's actual defect, a guard
+  documented as stronger than it is. Two steps is the deepest the module uses (out of a `#[cfg(test)]`
+  module into a sibling) and the vocabulary is named absolutely everywhere else, so nothing legitimate is
+  forbidden.
+- 2026-08-02 – claude (implementer-ivan) – R1 mutation evidence, against the inline form this time rather
+  than a `use` line. (a) The reviewer's exact snippet appended to `value.rs` — `peek_at_app_state`
+  reaching `AppState` through `size_of::<crate::control::AppState>()` with no import — fails
+  `no_primitive_names_a_path_outside_the_visual_vocabulary`; before this commit the same snippet left all
+  47 tests green. (b) The relative form
+  `size_of::<super::super::super::super::control::AppState>()` fails the new relative guard. Both
+  restored, `git diff` on `value.rs` empty afterwards. (c) The `crest_synth::` spelling is **not**
+  mutation-proven and is not claimed to be: the package name does not resolve inside its own lib
+  (`error[E0433]: cannot find module or crate crest_synth`), so it is carried against a future move of
+  these sources. The doc comment says so.
+- 2026-08-02 – claude (implementer-ivan) – Module doc rewritten to state exactly what is proven, replacing
+  the sentence the review quoted as false. It now enumerates the four checks and names the residual gap:
+  these are textual scans, so they prove these paths are not *named* here — application state arriving
+  through an argument type whose name is re-exported from the vocabulary is WP06's literal-absence proof,
+  not this module's claim. The same overstatement was in the old commit message; nothing in this commit
+  restates it.
+- 2026-08-02 – claude (implementer-ivan) – N2 deliberately not taken, per the review's "not required this
+  cycle". `#![deny(clippy::wildcard_enum_match_arm)]` is a restriction lint that fires on every
+  non-exhaustive match on every enum in the module, including egui's, so it is a wider change than a
+  rejection-fix cycle should carry. The named catch-all arm (`other => …`) remains undetected by the text
+  scan; recording it here so it reaches WP06 rather than dying in a review file. N1, N3, and N4 need no
+  action in this WP and carry forward as the review states.
+- 2026-08-02 – claude (implementer-ivan) – Verification after the fix. `cargo test --lib
+  shell::visual::primitives` 49/49 (47 before, plus the two new guards); `cargo test --lib shell::visual`
+  90/90; `make test` 557 lib plus every integration target, 0 failures; `make lint` (clippy
+  `--all-targets -D warnings`) and `make fmt-check` clean. The `sf2/` symlink note above still applies to
+  a fresh lane worktree.

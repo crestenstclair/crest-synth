@@ -16,5 +16,19 @@
     "in_review": 0,
     "planned": 0
   },
-  "work_packages": {}
+  "work_packages": {
+    "WP01": {
+      "actor": "operator",
+      "force_count": 0,
+      "lane": "uninitialized",
+      "last_event_id": null,
+      "last_transition_at": null,
+      "review": {
+        "actor": "operator",
+        "at": "2026-08-02T04:08:45Z",
+        "reason": "Cycle 3 review passed; cycle-2 rejection (R1) is resolved. NFR-006 is now test-enforced in typeface.rs — SHA256 manifest recompute, manifest/directory set equality, verbatim OFL 1.1, PROVENANCE upstream + varLib.instancer derivation naming wght 400/500/600/700. Mutation-verified: appending a byte to OFL.txt and adding an unlisted face each fail the suite. All 17 colors, 8 type styles, 6 spacing steps and geometry match DESIGN.md exactly; expected values are independent literals. Raw values private to token.rs. Missing/empty face returns typed TypefaceError. cargo test --lib shell::visual 19/19; make test 486 lib + all integration targets, 0 failures; make lint and make fmt-check clean. Carry-forward (non-blocking): N1 no production caller yet — WP04 must delete the 7 adapter constants at src/adapter/eframe_graphical_window.rs:28-34 and its reviewer must require a shell::visual grep hit; N2 owned_files still omits the density/state/primitives stubs that create_intent lists, so the commit guard logs ACTIVE_WP_SCOPE_VIOLATION; N3 mod.rs re-exports are a shared surface — WP02/WP03 should use full paths; N4 load() detects missing and empty faces but not a non-empty unparseable one, which panics inside epaint fonts.rs:215 at set_fonts instead of returning TypefaceError — the hash test guards the vendored files and ab_glyph is not a direct dependency, so the fix belongs with WP04's error surfacing.",
+        "wp_id": "WP01"
+      }
+    }
+  }
 }
