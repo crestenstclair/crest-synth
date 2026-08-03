@@ -192,6 +192,25 @@ It cannot stay in the adapter: the `AppWindow` port invariant (`shell.yaml:377`)
 3. Update `spec.md` FR-004 (it enumerates the seven by name) and SC-002 ("all seven named compositions").
 4. **No gallery-page change needed** — `StripPanelAndFooter` already exists and the coverage invariant is generic.
 
+### Authored — the eighth variant is `MixerStripBank`
+
+Declared in `.kittify/crest-spec/contexts/shell.yaml` before any implementing Rust exists. Doctor after the amendment: 130 resources, 102 requirements, 31/31 completion checks, OK.
+
+- `valueObject.Shell.ShellComposition.from` gains **`MixerStripBank`**, inserted after `PatchStripRow` so the `from` list stays grouped in region order. It binds to `MainWorkspace`, the third composition to do so, and five new invariants carry its rigor: the many-to-one binding, entries-are-groups, two-level titling, two-level unavailable-marking, and allocate-don't-consume.
+- **Name**: the crest-spec's own `presentationRole` vocabulary already spends "strip" on *one* column — *"a fader in a mixer strip"* (`shell.yaml:190`), role `VerticalStrip`. So the bank is named for a bank of strips, matching `BusReturnBank`'s established sense of a fixed set of N. F-09's prose above uses "strip" for the whole and "column" for the part; the declaration uses the crest-spec's sense, and both readings name the same structure.
+- `valueObject.Shell.ViewportDensityPolicy.state` gains **`mixerColumn`** — authored column width and pitch, the floor a column may not narrow past, and the overflow rule — plus three invariants. The rule is **uniform narrowing, never scrolling and never elision**, floored at the authored minimum interactive target (48 px), with each policy proven by validation to seat sixteen at or above that floor.
+
+### Correction — `MIXER_TRACK_MIN_WIDTH_PX = 176.0` is not an authored value
+
+F-09's arithmetic above (`16 × 176 = 2816` exceeds both surfaces) is right about the number and wrong about its provenance. The constant's own comment says so: *"sub-band splits the authored vocabulary does not declare… named rather than resolved because there is nothing yet to resolve them from"* (`eframe_graphical_window.rs:28-37`). It is an implementer's floor, not a measurement.
+
+**The design file was measured.** Figma `42:25` "16 Fader Grid" (inside `42:20` "Faders", 1500 × 896, inset 24 → 1452 content) holds sixteen `Fader / Txx` instances at **width 82, pitch 86**, x = 0, 86, 172 … 1290. So `15 × 86 + 82 = 1372 ≤ 1452`: **all sixteen seat at the authored width on Desktop with room to spare**, which is what `DESIGN.md:462` requires — *"All sixteen faders remain visible at 1920×1080."*
+
+Two consequences for WP06:
+
+1. **The shipped `egui::ScrollArea::horizontal` at `eframe_graphical_window.rs:512` is the divergence, not the baseline.** It exists only because 176 is more than double the authored 82. `MixerStripBank` retires the scroll along with the constant; it does not reproduce it.
+2. **The overflow rule bites at SteamDeck, not Desktop.** `15 × 86 + 82 = 1372 > 928` (960 main − 2 × 16 inset), so the SteamDeck policy narrows width and pitch together. The floor is reachable: sixteen columns at the 48 px minimum target with a 4 px gutter need `15 × 52 + 48 = 828 ≤ 928`.
+
 ### Urgent for WP06
 
 `Section::render` on MIXER resolves `main_for` → `MixerMain` and paints all sixteen tracks **flat at `ListedRow`**. Wiring it into `mainWorkspace` as-is regresses the operator from sixteen columns to one long vertical list.

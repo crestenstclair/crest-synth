@@ -3226,10 +3226,10 @@ witnesses:
       value: 0
     - field: compositions_declared
       op: eq
-      value: 7
+      value: 8
     - field: compositions_painted
       op: eq
-      value: 7
+      value: 8
     - field: desktop_viewport_painted
       op: eq
       value: true

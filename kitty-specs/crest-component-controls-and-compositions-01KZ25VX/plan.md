@@ -7,7 +7,7 @@
 
 Phase 4b finishes the component library. Phase 4a gave the project a closed visual vocabulary, a vendored typeface, two density policies, a nine-value state vocabulary, seven primitives, and a browsable gallery. What it did not give is anything a screen is actually assembled from: today `src/adapter/eframe_graphical_window.rs` paints all seven shell regions and every control as private free functions in one 1,282-line adapter, and `paint_semantic_control` (`:816`) renders all seven `SemanticControlKind` values as the same label-and-value row.
 
-This mission adds two closed families — `ComponentControl` (eight variants) and `ShellComposition` (seven variants) — authored against the Figma reference, moves the adapter's painting into them, extends the gallery from eight pages to fifteen so every control and composition is visible, and adds one deterministic acceptance target proving the shipped shell actually uses them. It is a re-composition: no `SemanticAction` variant, no focus target, no reducer behavior, and no MIDI or audio anywhere.
+This mission adds two closed families — `ComponentControl` (eight variants) and `ShellComposition` (eight variants, the eighth amended in mid-mission by F-09) — authored against the Figma reference, moves the adapter's painting into them, extends the gallery from eight pages to fifteen so every control and composition is visible, and adds one deterministic acceptance target proving the shipped shell actually uses them. It is a re-composition: no `SemanticAction` variant, no focus target, no reducer behavior, and no MIDI or audio anywhere.
 
 ## Technical Context
 
@@ -19,7 +19,7 @@ This mission adds two closed families — `ComponentControl` (eight variants) an
 **Project Type**: single Rust library plus one binary composition root
 **Performance Goals**: 60 fps interactive paint at both viewports; gallery first paint under 3 s; page change under 100 ms (NFR-001, NFR-002)
 **Constraints**: No MIDI, no audio, no audible behavior anywhere in this slice (C-001). No new semantic vocabulary (C-002). No placeholder values in the production shell (C-003). Closed unions stay exhaustively matched (C-004). `src/adapter/eframe_graphical_window.rs` ends at ≤ 40% of its current 1,282 lines, i.e. ≤ 512 lines (NFR-003). Zero visual literals outside `src/shell/visual/` (NFR-004). Existing suite passes unmodified (NFR-005)
-**Scale/Scope**: 8 controls × up to 9 states × 2 viewports; 7 compositions; 15 gallery pages; ~1,000 lines relocated out of the render adapter
+**Scale/Scope**: 8 controls × up to 9 states × 2 viewports; 8 compositions; 15 gallery pages; ~1,000 lines relocated out of the render adapter
 
 ## Charter Check
 
@@ -45,14 +45,16 @@ No violations. Complexity Tracking is therefore omitted.
 
 `crest_spec_impact: structural`. Authored in `/spec-kitty.crest-spec` before this plan, committed as `7562526` and corrected in `b8191b4`. Doctor: 130 resources, 102 requirements, 31/31 completion checks, OK.
 
+**Mid-mission structural amendment (F-09).** Implementation proved the declared composition family incomplete: `paint_mixer_workspace` landed in none of the seven. A `Section` at `VerticalStrip` is one track column; the sixteen columns side by side had no composition. The cheap alternative — a layout axis on `Section` — was tested and rejected, because `Section`'s entries are typed `&[SemanticControlViewModel]` (controls) while the bank's entries are columns, each itself a titled group: the gap is nesting, not direction. An eighth variant, `MixerStripBank`, and a `mixerColumn` member on `ViewportDensityPolicy` were therefore authored **before** the implementing code exists, not to permit code already written. The tables below carry that amendment; doctor after it: 130 resources, 102 requirements, 31/31 completion checks, OK.
+
 ### Resources this mission adds
 
 | Canonical ID | What it declares |
 |---|---|
 | `valueObject.Shell.ComponentControl` | The eight-variant closed control family, its presentation-role selector, its declared per-control state applicability, and its ownership boundary |
-| `valueObject.Shell.ShellComposition` | The seven-variant closed composition family, its region binding, and the no-placeholder rule |
+| `valueObject.Shell.ShellComposition` | The eight-variant closed composition family, its many-to-one region binding, and the no-placeholder rule. `MixerStripBank` (F-09) fills `MainWorkspace` alongside `Section` and `PatchStripRow`, arranges sixteen track columns rather than controls, titles and marks unavailability at two levels, and allocates the main surface instead of consuming it |
 | `requirement.configurable_control_family` | Selection total over kind × role |
-| `requirement.reusable_shell_compositions` | Compositions declare no visual value of their own |
+| `requirement.reusable_shell_compositions` | Compositions declare no visual value of their own; names all eight, including the mixer strip bank as a group of groups |
 | `requirement.shell_composed_from_components` | The adapter holds no visual decision |
 | `requirement.no_placeholder_values_in_production` | Omit or mark unavailable; never invent |
 | `requirement.silent_component_gallery` | Silence measured, not claimed |
@@ -63,7 +65,8 @@ No violations. Complexity Tracking is therefore omitted.
 
 | Canonical ID | Change |
 |---|---|
-| `valueObject.Shell.ComponentGalleryPage` | 8 → 15 variants; reachability replaces one-digit-per-page; the eight existing bindings are pinned |
+| `valueObject.Shell.ViewportDensityPolicy` | +`mixerColumn` (F-09): the authored mixer-column width and pitch, the floor a column may not narrow past, and the declared overflow rule — sixteen columns divide the main surface by uniform narrowing, never by scrolling, elision, or a third layout. Retires `MIXER_TRACK_MIN_WIDTH_PX` from the adapter |
+| `valueObject.Shell.ComponentGalleryPage` | 8 → 15 variants; reachability replaces one-digit-per-page; the eight existing bindings are pinned. Page set unchanged by F-09 — `StripPanelAndFooter` hosts the new composition and the coverage invariant is generic |
 | `valueObject.Shell.WindowInput` | +`Digit9`, `Digit0`, `BracketLeft`, `BracketRight`; surfaceDescriptor 33 → 41 |
 | `valueObject.Shell.ComponentGalleryObservation` | +controls, compositions, and `audioOrMidiConstructed` fields |
 | `port.Shell.AppWindow` | New invariant: every region painted by a composition, every control by a control |
@@ -71,7 +74,9 @@ No violations. Complexity Tracking is therefore omitted.
 | `requirement.browsable_component_gallery` | Widened to controls, compositions, and stepping |
 | `requirement.component_vocabulary_behavioral_proof` | Widened to control/composition coverage and silence |
 | `goal.build_from_component_vocabulary` | +5 requirement links |
-| `witness.component_gallery` | Predicates: 15 pages, 10 digit-reachable, 15 step-reachable, 8 controls, 7 compositions, silence false |
+| `witness.component_gallery` | Predicates: 15 pages, 10 digit-reachable, 15 step-reachable, 8 controls, 8 compositions, silence false |
+| `asset.ShellContextModules` | Prompts extended for the mixer-column geometry and for `MixerStripBank` arranging groups rather than controls |
+| `asset.ProductDesignAuthority` | Prompt corrected from "the seven shell regions" to "the eight shell compositions" — it was already miscounting regions against compositions |
 
 ### Resources this mission retires
 
@@ -93,7 +98,7 @@ None.
 
 - `validation.component_vocabulary` — extended for page reachability by binding or stepping.
 - `validation.component_composition` — new; the deterministic proof of kind×role totality, per-control state applicability, region-by-composition coverage, adapter emptiness, the no-placeholder rule, ownership, and viewport integrity.
-- `witness.component_gallery` — the live browsable proof, now covering 15 pages, 8 controls, 7 compositions, and measured silence.
+- `witness.component_gallery` — the live browsable proof, now covering 15 pages, 8 controls, 8 compositions, and measured silence.
 - `evidence.component_vocabulary_contract` — binds both validations and the witness.
 
 No `data-model.md` and no `contracts/` are produced: the crest-spec's `valueObjects` and `ports[].contract` are canonical and forking them is rejected at acceptance.
@@ -181,13 +186,14 @@ tests/
 - **Sequencing/depends-on**: IC-01
 - **Risks**: eight disjoint files over one shared `mod.rs` — parallelizable, but the shared selector registration is a contention point and should be registered by IC-01 up front rather than appended per control. Figma extraction is the slow part; controls whose Figma specimen is missing must raise it rather than approximate silently.
 
-### IC-03 — The seven compositions
+### IC-03 — The eight compositions
 
 - **Purpose**: build each shell region as a composition that arranges primitives and controls and declares no visual value of its own, including the omit-or-mark rule where view data is absent.
 - **Relevant requirements**: FR-004, FR-009, FR-010, FR-011, C-003
 - **Affected surfaces**: `src/shell/visual/compositions/*`
 - **Sequencing/depends-on**: IC-01, and each composition needs the controls it arranges from IC-02
 - **Risks**: compositions are where the placeholder temptation lives. The Figma layout shows structure the projection may not drive; C-003 requires omitting or marking, never inventing. Every such gap should be recorded as it is found, because the list of them is the real input to Phase 5.
+- **Amended by F-09**: `MixerStripBank` is the eighth. It is not shaped like the other seven — its entries are groups, it titles and marks unavailability at two levels, and it divides the main surface instead of consuming it, so it depends on `ViewportDensityPolicy.mixerColumn` landing with it rather than on IC-02 alone.
 
 ### IC-04 — Production shell recomposition and adapter reduction
 

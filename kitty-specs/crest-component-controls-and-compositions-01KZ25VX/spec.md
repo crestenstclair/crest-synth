@@ -62,7 +62,7 @@ A maintainer building any screen reaches for a parameter row, choice row, toggle
 
 ### User Story 2 - Every shell region is a reusable composition (Priority: P1)
 
-A maintainer assembling PATCH or MIXER composes the screen from an application shell, context switch, identity header, section, Patch strip row, Utility/Inspector panel, and footer, rather than re-deriving band heights and paint order. Today those regions are private free functions in one 1,282-line render adapter (`paint_context_line:357`, `paint_identity_header:418`, `paint_main_workspace:440`, `paint_patch_workspace:468`, `paint_mixer_workspace:488`, `paint_side_region:627`, `paint_footer:733`).
+A maintainer assembling PATCH or MIXER composes the screen from an application shell, context switch, identity header, section, Patch strip row, mixer strip bank, Utility/Inspector panel, and footer, rather than re-deriving band heights and paint order. Today those regions are private free functions in one 1,282-line render adapter (`paint_context_line:357`, `paint_identity_header:418`, `paint_main_workspace:440`, `paint_patch_workspace:468`, `paint_mixer_workspace:488`, `paint_side_region:627`, `paint_footer:733`).
 
 **Why this priority**: the controls alone do not satisfy `ROADMAP.md:184` — "layout" is named alongside "paint" in the completion condition. Compositions are how layout stops being copied.
 
@@ -70,7 +70,7 @@ A maintainer assembling PATCH or MIXER composes the screen from an application s
 
 **Acceptance Scenarios**:
 
-1. **Given** each of the seven named regions, **When** a maintainer needs it, **Then** a composition exists that accepts immutable view data and returns typed semantic intent.
+1. **Given** each of the eight named compositions, **When** a maintainer needs it, **Then** a composition exists that accepts immutable view data and returns typed semantic intent.
 2. **Given** a composition renders, **When** its source is inspected, **Then** it composes primitives and controls and defines no color, type size, spacing, or geometry value of its own.
 3. **Given** the production shell is launched, **When** it paints a frame, **Then** every region on screen is produced by a composition, and the render adapter contributes window plumbing and event translation only.
 4. **Given** the production shell before and after this mission, **When** the existing shell, projection, and focus tests are run, **Then** they pass unchanged — this is a re-composition, not a behavior change.
@@ -134,7 +134,7 @@ A maintainer starting the Phase 5 Patch editor writes screen-specific assembly o
 | FR-001 | Configurable control family | As a maintainer, I want every declared pairing of a `SemanticControlKind` with a presentation role to resolve to exactly one shared control, with every control reachable by at least one pair, so that no screen re-derives how a parameter, choice, toggle, or asset is drawn. | High | Open |
 | FR-002 | Product control shapes | As a player, I want parameter rows, choice rows, toggles, compact sliders, faders, meters, browser rows, and modal options to look like their designed shapes, so that the interface reads as designed rather than as uniform label-and-value rows. | High | Open |
 | FR-003 | Nine-state rendering per control | As a player, I want every control to render all of its applicable states from the closed `ComponentState` vocabulary with both color and a non-color signal, so that state is never conveyed by color alone. | High | Open |
-| FR-004 | Reusable composition family | As a maintainer, I want the application shell, context switch, identity header, section, Patch strip row, Utility/Inspector panel, and footer available as shared compositions, so that later screens assemble rather than re-lay-out. | High | Open |
+| FR-004 | Reusable composition family | As a maintainer, I want the application shell, context switch, identity header, section, Patch strip row, mixer strip bank, Utility/Inspector panel, and footer available as shared compositions, so that later screens assemble rather than re-lay-out. | High | Open |
 | FR-005 | Production shell composes from the library | As a player, I want the real application painted through the shared controls and compositions, so that the library is proven by the shipped product and not only by a gallery. | High | Open |
 | FR-006 | Render adapter holds no visual decisions | As a maintainer, I want the render adapter reduced to window plumbing and event translation, so that no paint, layout, or state-visualization logic lives outside the visual module. | High | Open |
 | FR-007 | Gallery covers controls and compositions | As an operator, I want gallery pages showing every control in every applicable state and every composition with representative content, so that visual correctness can be judged by looking. | High | Open |
@@ -197,7 +197,7 @@ A maintainer starting the Phase 5 Patch editor writes screen-specific assembly o
 ### Measurable Outcomes
 
 - **SC-001**: Every one of the seven control kinds and every one of the nine component states has at least one gallery specimen, enforced by an assertion that fails the build otherwise.
-- **SC-002**: The operator can see all eight named product control shapes and all seven named compositions by running one command and pressing number keys, with no other setup.
+- **SC-002**: The operator can see all eight named product control shapes and all eight named compositions by running one command and pressing number keys, with no other setup.
 - **SC-003**: The shipped application renders every on-screen region through a composition; no region is painted by the render adapter.
 - **SC-004**: No file outside the visual module contains a literal color, type size, spacing constant, or band height.
 - **SC-005**: Assembling a new representative screen requires writing screen-specific arrangement only — no paint, layout, focus-visualization, or state-visualization logic.

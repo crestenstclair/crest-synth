@@ -70,8 +70,12 @@ assets:
       each authored weight to the type styles that declare it. An unavailable face returns a typed error
       the shell makes visible; never substitute or synthesize a face.
     - Express both authored viewports as declared density policies carrying bands, split, inset, row height,
-      row pitch, and control geometry. Surfaces ask the policy; no surface branches on a raw viewport
-      size, and no third hard-coded layout is introduced.
+      row pitch, control geometry, and mixer-column geometry. Surfaces ask the policy; no surface branches
+      on a raw viewport size, and no third hard-coded layout is introduced.
+    - Measure the mixer column from the visual design reference rather than from the width the adapter
+      happens to carry, and declare its floor and its overflow rule beside it. Sixteen columns divide
+      the main surface; where they do not seat at the measured width the policy narrows width and pitch
+      together to the declared floor, and it neither scrolls nor elides a track to fit.
     - Provide the primitives — text roles, hairlines, keylines, focus frames, value displays, status marks,
       and action hints — as functions over immutable view data plus an explicit ComponentState. A primitive
       paints; it never owns Patch values, focus, navigation, reducer state, or audio state, and never
@@ -96,6 +100,11 @@ assets:
     - Provide one composition per declared ShellComposition variant. A composition arranges primitives
       and controls, resolves bands, split, inset, row height, and row pitch from ViewportDensityPolicy,
       and declares no color, type style, spacing step, or geometry value of its own.
+    - MixerStripBank arranges groups, not controls. Its entries are the sixteen track columns, each a
+      titled group of controls asked in the vertical-strip role, so it takes the bank's own legend plus
+      one title per column and marks unavailability per column and for the bank. It divides the main
+      surface through the policy's mixer-column geometry rather than stacking into it, and it is not
+      a section given a horizontal axis.
     - Where a composition's designed structure has no view data behind it, omit that structure or mark
       it explicitly unavailable. Never paint an invented or representative value in the production shell;
       representative content belongs to the gallery.
@@ -990,7 +999,7 @@ assets:
       here rather than left contradicting the code.
     - Name the control and composition families as the pieces later surfaces assemble from, in the product's
       own register — parameter rows, choice rows, toggles, compact sliders, faders, meters, browser rows,
-      modal options, and the seven shell regions — without restating the declared model.
+      modal options, and the eight shell compositions — without restating the declared model.
     - Record the resolved authored color set as a durable decision. The visual reference publishes a selected-row
       background this document previously omitted, and this document declares elevated, strong-border,
       and two identity accents the reference does not publish as variables; the union of both is authoritative

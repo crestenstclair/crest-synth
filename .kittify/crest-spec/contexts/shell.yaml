@@ -134,6 +134,8 @@ valueObjects:
       bands: context-line, identity-header, workspace, and footer heights
       split: main-surface and persistent side-region widths
       rhythm: content inset, row height, row pitch, and control geometry
+      mixerColumn: the authored width and pitch of one mixer track column, the floor a column may not
+        narrow past, and the rule resolving sixteen of them against the main-surface content width
     invariants:
     - both declared policies retain every structural band, the persistent side region, and the authored
       minimum interactive target; neither hides a required region to fit
@@ -142,6 +144,17 @@ valueObjects:
       layout is introduced
     - the Desktop policy is measured from the authored design; the SteamDeck policy is authored from it
       and reviewed visually, and that distinction is recorded rather than blurred
+    - mixerColumn resolves through this policy and nowhere else; the sixteen fixed track columns are the
+      one arrangement that divides the main surface rather than consuming it, so a surface-local column
+      width is a resolution constant outside the policy and is rejected on the same terms as any other
+    - the declared overflow rule is uniform narrowing, never scrolling and never elision; where sixteen
+      columns at the measured Desktop width exceed a policy's main-surface content width, that policy
+      narrows the column width and pitch together until sixteen seat, and where they already fit it keeps
+      the measured values rather than stretching them
+    - the narrowed width never falls below the authored minimum interactive target, and each declared
+      policy is proven to seat sixteen columns at or above that floor by a validation rather than by review;
+      a main surface too narrow to seat sixteen at the floor is a typed visible policy failure, not a
+      silent scroll, an elided track, or a third hard-coded layout
     contributesTo:
       component_vocabulary: makes the two authored sizes a declared policy rather than scattered constants
       graphical_application_shell: supplies the band and split geometry the shell already renders
@@ -223,6 +236,7 @@ valueObjects:
     - IdentityHeader
     - Section
     - PatchStripRow
+    - MixerStripBank
     - UtilityInspectorPanel
     - Footer
     state:
@@ -242,6 +256,27 @@ valueObjects:
       in the production shell, because a placeholder would misrepresent absent state as present
     - both authored viewports retain every structural band, the persistent side region, and the authored
       minimum interactive target; no composition is hidden to fit and no third hard-coded layout appears
+    - the region binding is many-to-one and remains so; Section, PatchStripRow, and MixerStripBank all
+      fill the main workspace, because what must hold is that every region the shell paints is produced
+      by a declared composition, not that every composition holds a region to itself
+    - a composition whose entries are themselves groups declares that nesting rather than flattening it;
+      MixerStripBank arranges the sixteen fixed mixer track columns side by side in the main workspace,
+      and each column is a titled group of controls asked in the vertical-strip role, so the bank arranges
+      groups where Section arranges controls and a bank painted as one flat run of every track's controls
+      does not satisfy it
+    - MixerStripBank titles at two levels — the bank's own authored legend and each column's track identity
+      — because a single header band can name the mixer or name a track but not both, and an operator
+      reading a column needs to know which track it is
+    - MixerStripBank carries the no-placeholder rule at both of those levels; a track whose designed row
+      has no view data behind it marks that row unavailable inside its own column, and a bank with no
+      track view data at all marks the bank unavailable, because a bank that could mark only itself would
+      report one empty track as an empty mixer and a column that could mark only itself would leave the
+      bank silent about which tracks it could not draw
+    - MixerStripBank allocates the main surface rather than consuming it; the sixteen columns divide the
+      surface width through ViewportDensityPolicy's declared mixer-column geometry, and no column is scrolled
+      out of view, elided, or narrowed past the declared floor in order to fit, because the product design
+      authority requires all sixteen tracks visible at the desktop viewport and a track hidden to save
+      width is a track an operator cannot see is empty
     contributesTo:
       component_vocabulary: is the assembly half of the vocabulary, so later surfaces compose rather than
         re-lay-out

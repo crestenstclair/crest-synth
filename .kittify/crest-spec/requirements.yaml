@@ -1178,9 +1178,11 @@ requirements:
     - semantic_graphical_view_model
   reusable_shell_compositions:
     kind: functional
-    description: The application shell, context switch, identity header, section, Patch strip row, Utility/Inspector
-      panel, and footer exist as declared ShellCompositions that arrange primitives and controls, resolve
-      their geometry from ViewportDensityPolicy, and declare no visual value of their own
+    description: The application shell, context switch, identity header, section, Patch strip row, mixer
+      strip bank, Utility/Inspector panel, and footer exist as declared ShellCompositions that arrange
+      primitives and controls, resolve their geometry from ViewportDensityPolicy, and declare no visual
+      value of their own; the mixer strip bank arranges sixteen track columns rather than controls, so
+      it is a group of groups and not a section laid out sideways
     goals:
     - build_from_component_vocabulary
     capabilities:
