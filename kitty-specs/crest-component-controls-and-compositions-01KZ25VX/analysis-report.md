@@ -4,7 +4,7 @@ artifact_type: spec-kitty.analysis-report
 command: /spec-kitty.analyze
 mission_slug: crest-component-controls-and-compositions-01KZ25VX
 mission_id: 01KZ25VXB55XTK6MS4Q4FH3V4C
-generated_at: '2026-08-03T04:20:11.454176+00:00'
+generated_at: '2026-08-03T18:08:07.556817+00:00'
 analyzer_agent: unknown
 input_artifacts:
   spec.md:
@@ -15,16 +15,16 @@ input_artifacts:
     sha256: 06bf382338d0c1deca22043263a2f7d884009a11c639ef29270df7a31e64fe5e
   tasks.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks.md
-    sha256: c02773e0b4f27472fcf1b4d9b8c31f92512ee4ec5103824f03594bd60ab4602e
+    sha256: 5f442bc5f33f159fc9ffb090e7e3e6de4c88ffe6b63aa17f492b178320849627
   charter:
     path: /Users/crestenstclair/workspace/crest-synth/.kittify/charter/charter.md
     sha256: 0b21a43cf5772d1308561d843239947e53247cc7d071c98c920023d23024672b
 verdict: ready
 issue_counts:
-  high: 0
-  low: 1
-  medium: 0
   critical: 0
+  low: 1
+  high: 0
+  medium: 0
   info: 0
 findings:
 - id: A6
@@ -36,7 +36,9 @@ findings:
 ## Specification Analysis Report
 
 **Mission**: `crest-component-controls-and-compositions-01KZ25VX`
-**Pass**: third — re-run because the artifacts changed mid-implementation. This report supersedes the second.
+**Pass**: fourth — re-run because the artifacts changed mid-implementation. This report supersedes the third.
+
+**Change since pass three**: ten `cargo test --release` commands across `quickstart.md`, `tasks.md`, and the WP06/WP08/WP09 prompts were corrected to the debug profile. The release profile **cannot compile this tree** — `tests/component_vocabulary.rs:625` reads `style.debug`, which egui gates behind `#[cfg(debug_assertions)]` (`E0609`), pre-existing since `589fa01`. Every work package told to baseline that way ran zero tests and received a compile error, which is the mechanism behind the unreliable baselines in risk 3 below. The **declared** validations in `.kittify/crest-spec/proof/validations.yaml` never used `--release`, so acceptance was unaffected; the drift was between what the tooling executes and what agents read.
 
 ### Why this pass exists
 
