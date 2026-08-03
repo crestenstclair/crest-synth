@@ -374,3 +374,33 @@ Two details worth carrying to whoever fixes this mission-wide:
 
 1. **A shape *count* is not sufficient.** `probe::Painted.shapes` would have caught "every hairline deleted" but **not** "every hairline moved onto the column edge" — the count stays at fifteen either way. Verified by mutation during review. `mixer_strip_bank`'s `fifteen_hairlines_sit_on_the_gutter_midpoints_at_both_viewports` asserts *positions* derived from the painted column extents, which catches both. If the shared probe is ever extended, extend it with geometry, not a counter.
 2. **Exact ordered equality is the form that works.** `a_marked_bank_paints_exactly_its_structure_names_and_nothing_else` asserts the empty-bank run list equals an expected sequence exactly, rather than asking whether each run is "explainable". That is what catches a fabricated `"0"`; substring explainability does not. The broader cross-context sweep still leans on `from_projection_or_vocabulary`, and that residual reliance is documented in the test rather than hidden.
+
+---
+
+## F-15 — DEFERRED: the gallery and shell need an event-injection path, not synthetic keystrokes
+
+**Raised by**: the operator, 2026-08-03
+**Owner**: the next Spec Kitty pass — **explicitly deferred, do not act on it in Phase 4b**
+
+To verify WP06's recomposition by eye, the orchestrator drove the running app with **synthesized OS keyboard events** (`osascript … keystroke "2"` via System Events) to change context, plus System Events calls to move and resize the window.
+
+**That is a crutch and it should not be necessary.** The architecture already has the right seam — physical input → semantic action/event → `AppState::apply` → view projection — so a verification pass should be able to **emit the semantic event directly** and observe the resulting frame. Driving the real OS input stack to reach an internal state transition tests the window manager as much as the shell, is fragile against focus and window ordering, and cannot run headless.
+
+What is wanted: a supported way to inject the event (or a scripted sequence of them) into a running or headless scene and read back the painted frame, without the operating system in the loop.
+
+Note the existing gallery scene already accepts input by design and makes no exact-generation claim, so this does not touch the `demo-live-*` witness contract.
+
+---
+
+## F-16 — FUTURE GOAL: pop-over modals
+
+**Raised by**: the operator, 2026-08-03
+**Owner**: a later phase — **not Phase 4b scope**
+
+The product will have **pop-over modals**, and the component vocabulary should cover them.
+
+The relevant asymmetry today: WP03 built the **`ModalOption` control** against Figma `48:173` / `48:207`, and `PresentationRole::ModalEntry` exists and is reachable — `(Toggle, ModalEntry)` resolves to `ModalOption`. So the *row inside* a modal is built. What does not exist is the **modal surface itself**: no `ShellComposition` variant presents a pop-over, and `ShellRegion` has no name for a layer above the five structural bands.
+
+A modal is not a sixth band. It is a layer over the frame, which means whatever composition owns it has to answer things the current family never had to: what it dims or blocks beneath, how it is dismissed, where focus goes while it is open and where it returns, and whether it participates in `ShellFrameObservation` at all.
+
+Worth noting for whoever scopes it: adding it is the same shape of change as `MixerStripBank` (F-09) — a crest-spec amendment to `valueObject.Shell.ShellComposition`, authored first, then a work package deriving from it.

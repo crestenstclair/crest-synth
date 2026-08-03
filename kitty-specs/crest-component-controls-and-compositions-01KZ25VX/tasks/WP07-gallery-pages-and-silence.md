@@ -14,6 +14,9 @@ requirement_refs:
 planning_base_branch: feat/crest-component-controls-and-compositions
 merge_target_branch: feat/crest-component-controls-and-compositions
 branch_strategy: Planning artifacts for this mission were generated on feat/crest-component-controls-and-compositions. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/crest-component-controls-and-compositions unless the human explicitly redirects the landing branch.
+base_branch: kitty/mission-crest-component-controls-and-compositions-01KZ25VX
+base_commit: e6e6adb32eaa4f809f82554dc704a5126161865f
+created_at: '2026-08-03T18:40:18.961669+00:00'
 subtasks:
 - T034
 - T035
@@ -22,11 +25,11 @@ subtasks:
 - T038
 - T039
 phase: Phase 5 - Gallery
+agent: claude
 history:
 - at: '2026-08-02T21:46:28Z'
   actor: system
   action: Prompt generated via /spec-kitty.tasks
-agent: claude
 agent_profile: implementer-ivan
 authoritative_surface: src/testing/
 create_intent: []
