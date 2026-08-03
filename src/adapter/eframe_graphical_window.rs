@@ -1,14 +1,18 @@
 use crate::control::{GraphicalShellProjection, SemanticAction};
+use crate::mixer::track_meter::TrackMeter;
 use crate::real_time::AudioObservationSnapshot;
 use crate::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
     ProjectionCallback, TickCallback, WindowError,
 };
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
-use crate::shell::visual::primitives::{focus, rules, text, value};
+use crate::shell::visual::compositions::application_shell::{
+    self, BandPlacement, FrameBand, ShellFrameIntent, FRAME_BAND_COUNT,
+};
+use crate::shell::visual::primitives::text;
 use crate::shell::visual::{
-    AuthoredTypeface, ComponentState, SemanticColor, SpacingStep, TypeStyle, TypefaceError,
-    ViewportDensityPolicy, KEYLINE_RESTING_PX, MIN_INTERACTIVE_TARGET_PX,
+    AuthoredTypeface, ComponentState, SemanticColor, TypeStyle, TypefaceError,
+    ViewportDensityPolicy,
 };
 use crate::shell::window_input::{WindowInput, WindowKey};
 use crate::shell::{
@@ -16,32 +20,11 @@ use crate::shell::{
     ShellRegionRect,
 };
 use eframe::egui;
-use egui_extras::{Size, StripBuilder};
 use std::time::{Duration, Instant};
 
 /// The idle repaint cadence. A separate declared decision from the visual
 /// vocabulary and not resolved through the density policy.
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
-
-/// The height of a workspace region's title row.
-///
-/// This and the two extents below are sub-band splits the authored vocabulary
-/// does not declare. They are named rather than resolved because there is
-/// nothing yet to resolve them from; the gap is recorded for the follow-on
-/// mission rather than papered over with an invented policy accessor. This one
-/// sits inside the workspace, which the policy sizes as the remainder, so it
-/// is not squeezed by the Steam Deck bands.
-const WORKSPACE_TITLE_ROW_PX: f32 = 42.0;
-
-/// The minimum width of one mixer track column.
-const MIXER_TRACK_MIN_WIDTH_PX: f32 = 176.0;
-
-/// How the context line divides horizontally: product, context, status.
-const CONTEXT_PRODUCT_FRACTION: f32 = 0.34;
-const CONTEXT_MODE_FRACTION: f32 = 0.32;
-
-/// How the footer divides horizontally: current path, then valid actions.
-const FOOTER_PATH_FRACTION: f32 = 0.38;
 
 /// Production eframe/egui adapter for Crest Synth's passive Phase One shell.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -197,83 +180,6 @@ impl EframeGraphicalApplication {
             context.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
-
-    fn paint_shell(
-        &mut self,
-        context: &egui::Context,
-        projection: &GraphicalShellProjection,
-        audio_observation: AudioObservationSnapshot,
-    ) -> Result<(ShellFrameObservation, Option<SemanticAction>), ShellFrameObservationError> {
-        install_authored_chrome(context);
-        // The one place this adapter reads the raw viewport to choose a
-        // layout. Every band and split below comes from the resolved policy,
-        // so no surface branches on the size itself.
-        let viewport = context.input(egui::InputState::screen_rect);
-        let policy = ViewportDensityPolicy::resolve(viewport.width());
-        let bands = policy.bands();
-
-        let context_panel = egui::TopBottomPanel::top("crest-context-line")
-            .exact_height(bands.context_line_px)
-            .frame(shell_frame(SemanticColor::BgElevated))
-            .show(context, |ui| paint_context_line(ui, projection));
-
-        let identity_panel = egui::TopBottomPanel::top("crest-identity-header")
-            .exact_height(bands.identity_header_px)
-            .frame(shell_frame(SemanticColor::BgPanel))
-            .show(context, |ui| paint_identity_header(ui, projection));
-
-        let mut passive_action = None;
-        let footer_panel = egui::TopBottomPanel::bottom("crest-footer")
-            .exact_height(bands.footer_px)
-            .frame(shell_frame(SemanticColor::BgElevated))
-            .show(context, |ui| passive_action = paint_footer(ui, projection));
-
-        let side_panel = egui::SidePanel::right("crest-persistent-side-region")
-            .exact_width(policy.split().side_px)
-            .frame(shell_frame(SemanticColor::BgPanel))
-            .show(context, |ui| paint_side_region(ui, projection));
-
-        let main_panel = egui::CentralPanel::default()
-            .frame(shell_frame(SemanticColor::BgCanvas))
-            .show(context, |ui| {
-                paint_main_workspace(ui, projection, audio_observation)
-            });
-
-        let relative = |rect: egui::Rect| relative_rect(rect.intersect(viewport), viewport.min);
-        let observation = ShellFrameObservation::try_new_semantic(
-            viewport.width(),
-            viewport.height(),
-            projection.semantic_model(),
-            [
-                ShellRegionObservation::new(
-                    ShellRegionId::ContextLine,
-                    relative(context_panel.response.rect),
-                    projection.context_line().context_label(),
-                ),
-                ShellRegionObservation::new(
-                    ShellRegionId::IdentityHeader,
-                    relative(identity_panel.response.rect),
-                    projection.identity_header().primary_label(),
-                ),
-                ShellRegionObservation::new(
-                    ShellRegionId::MainWorkspace,
-                    relative(main_panel.response.rect),
-                    projection.workspace().main_label(),
-                ),
-                ShellRegionObservation::new(
-                    ShellRegionId::PersistentSideRegion,
-                    relative(side_panel.response.rect),
-                    projection.workspace().side_label(),
-                ),
-                ShellRegionObservation::new(
-                    ShellRegionId::Footer,
-                    relative(footer_panel.response.rect),
-                    projection.footer().path_label(),
-                ),
-            ],
-        )?;
-        Ok((observation, passive_action))
-    }
 }
 
 impl eframe::App for EframeGraphicalApplication {
@@ -289,7 +195,7 @@ impl eframe::App for EframeGraphicalApplication {
 
         let projection = (self.projection)();
         let audio_observation = (self.audio_observation)();
-        match self.paint_shell(context, &projection, audio_observation) {
+        match paint_shell(context, &projection, audio_observation) {
             Ok((observation, passive_action)) => {
                 (self.on_frame)(observation);
                 if let Some(action) = passive_action {
@@ -306,667 +212,219 @@ impl eframe::App for EframeGraphicalApplication {
     }
 }
 
-/// Resolves the chrome the rendering stack paints for itself to authored roles.
+/// Builds the frame's panels, arranges each band's composition inside the panel
+/// it belongs to, and reports what was painted.
 ///
-/// Most of the shell names its own colors at the call site. A handful are
-/// drawn by the stack rather than by this adapter — the rule between two
-/// panels, the indent rule beside an expanded body, a disclosure triangle, the
-/// recessed track behind a meter — and those come from the stack's own default
-/// visuals, which are grays the vocabulary does not declare. Naming them once
-/// here is what makes "every color the shell paints resolves through the
-/// vocabulary" true of the whole frame rather than of the part this file
-/// happens to paint by hand.
-///
-/// Idempotent, and cheap on every frame but the first: the style is only
-/// rewritten when it does not already carry the authored rule.
-fn install_authored_chrome(context: &egui::Context) {
-    let rule = SemanticColor::BorderDefault.resolve();
-    if context
-        .style()
-        .visuals
-        .widgets
-        .noninteractive
-        .bg_stroke
-        .color
-        == rule
-    {
-        return;
-    }
-    context.style_mut(|style| {
-        let visuals = &mut style.visuals;
-        // The rule between two panels, and beside an indented body.
-        visuals.widgets.noninteractive.bg_stroke.color = rule;
-        // Glyph chrome the stack draws itself, at rest and under interaction.
-        visuals.widgets.noninteractive.fg_stroke.color = SemanticColor::TextSecondary.resolve();
-        visuals.widgets.inactive.fg_stroke.color = SemanticColor::TextSecondary.resolve();
-        visuals.widgets.open.fg_stroke.color = SemanticColor::TextSecondary.resolve();
-        visuals.widgets.hovered.fg_stroke.color = SemanticColor::TextPrimary.resolve();
-        visuals.widgets.active.fg_stroke.color = SemanticColor::AccentFocus.resolve();
-        // The recessed background behind a meter's filled portion.
-        visuals.extreme_bg_color = SemanticColor::BgCanvas.resolve();
-    });
-}
-
-fn shell_frame(fill: SemanticColor) -> egui::Frame {
-    egui::Frame::new()
-        .fill(fill.resolve())
-        .inner_margin(egui::Margin::ZERO)
-        .outer_margin(egui::Margin::ZERO)
-}
-
-fn paint_context_line(ui: &mut egui::Ui, projection: &GraphicalShellProjection) {
-    let mode_color = match projection.semantic_model().interaction_mode() {
-        crate::control::InteractionMode::Navigate => SemanticColor::TextPrimary,
-        crate::control::InteractionMode::Adjust => SemanticColor::AccentAdjust,
-        crate::control::InteractionMode::Modal | crate::control::InteractionMode::MultiSelect => {
-            SemanticColor::TextMuted
-        }
-    };
-    StripBuilder::new(ui)
-        .size(Size::relative(CONTEXT_PRODUCT_FRACTION))
-        .size(Size::relative(CONTEXT_MODE_FRACTION))
-        .size(Size::remainder())
-        .horizontal(|mut strip| {
-            strip.cell(|ui| {
-                padded_text(
-                    ui,
-                    projection.context_line().product_label(),
-                    TypeStyle::LabelControl,
-                    SemanticColor::TextPrimary,
-                );
-            });
-            strip.cell(|ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.horizontal(|ui| {
-                        chrome_text(
-                            ui,
-                            projection.context_line().context_label(),
-                            TypeStyle::LabelControl,
-                            mode_color,
-                        );
-                        chrome_text(
-                            ui,
-                            format!(
-                                "· {}",
-                                projection.semantic_model().interaction_mode().label()
-                            ),
-                            TypeStyle::LabelControl,
-                            mode_color,
-                        );
-                    });
-                });
-            });
-            strip.cell(|ui| {
-                trailing_text(
-                    ui,
-                    projection.context_line().status_label(),
-                    TypeStyle::InstructionHint,
-                    SemanticColor::TextMuted,
-                );
-            });
-        });
-}
-
-/// Paints the identity band's two labels.
-///
-/// The two rows are sized by the authored type they carry rather than by a
-/// fixed split: the identity band is 72 px on the desktop and 60 px on the
-/// Steam Deck, and a split tuned to the larger band overflows the smaller one.
-/// `Heading/Section` over `Body/Compact`, inset once at the top and separated
-/// by one authored step, fits inside the smaller band with the larger one to
-/// spare.
-fn paint_identity_header(ui: &mut egui::Ui, projection: &GraphicalShellProjection) {
-    ui.add_space(SpacingStep::S12.resolve());
-    ui.horizontal(|ui| {
-        ui.add_space(SpacingStep::S16.resolve());
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = SpacingStep::S4.resolve();
-            chrome_text(
-                ui,
-                projection.identity_header().primary_label(),
-                TypeStyle::HeadingSection,
-                SemanticColor::TextPrimary,
-            );
-            chrome_text(
-                ui,
-                projection.identity_header().secondary_label(),
-                TypeStyle::BodyCompact,
-                SemanticColor::TextSecondary,
-            );
-        });
-    });
-}
-
-fn paint_main_workspace(
-    ui: &mut egui::Ui,
+/// Nothing here is a visual decision. `frame_plan` supplies the bands in the
+/// order they claim space, each already carrying its placement, extent, surface,
+/// panel id, and composition; this only turns a placement into the panel that
+/// realizes it. The observation is built afterwards from the rectangles those
+/// panels actually produced, in the order `observed_bands` supplies, which is
+/// the order the observation demands rather than the order the panels claimed.
+fn paint_shell(
+    context: &egui::Context,
     projection: &GraphicalShellProjection,
     audio_observation: AudioObservationSnapshot,
-) {
-    StripBuilder::new(ui)
-        .size(Size::exact(WORKSPACE_TITLE_ROW_PX))
-        .size(Size::remainder())
-        .vertical(|mut strip| {
-            strip.cell(|ui| {
-                padded_text(
-                    ui,
-                    projection.workspace().main_label(),
-                    TypeStyle::HeadingPanel,
-                    SemanticColor::TextPrimary,
-                );
-            });
-            strip.cell(|ui| {
-                let semantic = projection.semantic_model();
-                if semantic.context() == crate::control::TopLevelContext::Mixer {
-                    paint_mixer_workspace(ui, projection, audio_observation);
-                } else {
-                    paint_patch_workspace(ui, projection);
-                }
-            });
-        });
-}
+) -> Result<(ShellFrameObservation, Option<SemanticAction>), ShellFrameObservationError> {
+    application_shell::install_authored_chrome(context);
+    // The one place this adapter reads the raw viewport, and it reads it to
+    // resolve the policy rather than to choose anything itself.
+    let viewport = context.input(egui::InputState::screen_rect);
+    let policy = ViewportDensityPolicy::resolve(viewport.width());
 
-fn paint_patch_workspace(ui: &mut egui::Ui, projection: &GraphicalShellProjection) {
-    egui::ScrollArea::vertical()
-        .animated(false)
-        .id_salt("crest-synth-patch-parameters")
-        .show(ui, |ui| {
-            ui.add_space(SpacingStep::S12.resolve());
-            let semantic = projection.semantic_model();
-            if let Some(surface) = semantic.surface(crate::control::SurfaceId::PatchMain) {
-                for control in surface
-                    .controls()
-                    .iter()
-                    .filter(|control| control.visible())
-                {
-                    paint_semantic_control(ui, control, semantic.interaction_mode());
-                }
+    let mut frame = ShellFrameIntent::none();
+    let mut claimed: Vec<(ShellRegionId, egui::Rect)> = Vec::with_capacity(FRAME_BAND_COUNT);
+    for band in application_shell::frame_plan_for(projection, &policy) {
+        let painted = show_band(context, band, |ui| {
+            // A band is the extent the plan declared. The panel reports the
+            // rectangle its *content* filled, so a composition that lays out
+            // more than fits would report a side region running through the
+            // footer, and the observation would describe a frame nobody
+            // painted. Arranging into a detached child claims the band and
+            // leaves the panel's own extent alone, which is what keeps the
+            // reported rectangle equal to the band the policy declared.
+            //
+            // The panel already clips to itself, so overflow is cut rather than
+            // reported. Nothing here decides an extent: `bounds` is whatever
+            // the plan's placement gave the panel.
+            let bounds = ui.max_rect();
+            ui.expand_to_include_rect(bounds);
+            let mut band_ui = ui.new_child(egui::UiBuilder::new().max_rect(bounds));
+            frame.absorb(application_shell::arrange_band(
+                &mut band_ui,
+                band,
+                projection,
+                &policy,
+            ));
+            // After the composition, and through a painter rather than the
+            // layout, so the residue cannot move or shorten what the band
+            // contains. See `paint_focused_track_meter`.
+            if band.observed_region_id() == ShellRegionId::MainWorkspace {
+                paint_focused_track_meter(&band_ui, bounds, projection, &audio_observation);
             }
-            paint_diagnostic(ui, projection);
         });
+        claimed.push((band.observed_region_id(), painted));
+    }
+
+    let observation = ShellFrameObservation::try_new_semantic(
+        viewport.width(),
+        viewport.height(),
+        projection.semantic_model(),
+        application_shell::observed_bands(&policy).map(|band| {
+            // A band the loop above did not paint has no rectangle, and
+            // `Rect::NOTHING` fails the observation's own bounds check rather
+            // than reporting a plausible zero for a region nothing produced.
+            let painted = claimed
+                .iter()
+                .find(|(id, _)| *id == band.observed_region_id())
+                .map_or(egui::Rect::NOTHING, |(_, rect)| *rect);
+            ShellRegionObservation::new(
+                band.observed_region_id(),
+                relative_rect(painted.intersect(viewport), viewport.min),
+                band.observed_label(projection),
+            )
+        }),
+    )?;
+
+    // Which valid action an addressed footer hint names is a lookup with no
+    // choice in it, and it happens here so the reducer's vocabulary stays out
+    // of the composition that painted the target.
+    let passive_action = frame
+        .activated_hint()
+        .and_then(|hint| hint.resolve(projection.semantic_model().valid_actions()))
+        .map(|valid| valid.action().clone());
+    Ok((observation, passive_action))
 }
 
-fn paint_mixer_workspace(
-    ui: &mut egui::Ui,
+/// Paints the focused track's meter reading — the one paint left in this file.
+///
+/// It is here because the level has a source, a declared painter, and no route
+/// between them. `AudioObservationSnapshot` is delivered to the *window*, and
+/// `adapters.yaml` assigns the track-to-observation pairing to this adapter; but
+/// `ShellComposition` declares that "a composition owns no ... audio state" and
+/// `CompositionRenderFn` has no argument one could arrive through, while the
+/// declared home for a level is view data — `Meter` "presents whatever level the
+/// view data reports" — which `SemanticControlViewModel` does not carry (F-10,
+/// item 9). Closing that needs a projection change C-002 forbids here.
+///
+/// The shipped adapter drove sixteen readings, one per column. This paints one,
+/// for the track the operator is on; the other fifteen are a recorded
+/// regression. Aligning sixteen would mean restating `MixerStripBank`'s own
+/// placement rule — inset, pitch, origin — in this file, which is both the
+/// layout the `AppWindow` port forbids the window to decide and a second copy
+/// that drifts the moment `ViewportDensityPolicy::mixer_column` changes.
+///
+/// The compatibility check is the shipped one, unrelaxed: a reading is shown
+/// only when the observation's generation and graph revision both match the
+/// projection being painted, so a stale observation reads zero rather than
+/// reporting a level belonging to a graph the operator is no longer looking at.
+///
+/// # It takes no space, and that is the point
+///
+/// A residue that *displaced* the composition would be worse than the one it
+/// replaced. An earlier form of this ran before `arrange_band` through
+/// `ui.label`, which advances the layout cursor — so `MixerStripBank`, which
+/// anchors on `available_rect_before_wrap()`, was handed a band one line shorter
+/// than the policy declared and divided sixteen columns into a rect the *window*
+/// had shrunk. Measured through the production paint path, that cost the bank
+/// **23 px at both authored viewports**: the first track header sat at y=190
+/// rather than y=167 at 1920×1080, and at y=158 rather than y=135 at 1280×800.
+/// Placement and extent are exactly what `shell.yaml:377` and FR-006 deny the
+/// window, and no composition-level proof can see it, because those call the
+/// composition directly with a full band.
+///
+/// So the reading is painted after the composition, through a painter over the
+/// band rectangle rather than into the band's layout. A painter allocates
+/// nothing, so there is no cursor to advance and no extent to take: the bank
+/// sees the whole band whether this paints or not.
+///
+/// The position is derived from the band and from the run's own authored line
+/// height — never from the bank's inset, pitch, or origin. Horizontally centred
+/// on the first line, which is the one region of the legend row neither the
+/// projected title (left) nor the focus annotation (right) occupies at either
+/// authored viewport.
+fn paint_focused_track_meter(
+    ui: &egui::Ui,
+    band: egui::Rect,
     projection: &GraphicalShellProjection,
-    audio_observation: AudioObservationSnapshot,
+    audio_observation: &AudioObservationSnapshot,
 ) {
     let semantic = projection.semantic_model();
-    let observation_matches = audio_observation.parameter_generation() == semantic.generation()
+    let Some(track) = semantic.focus_path().control_id().as_mixer_track_id() else {
+        return;
+    };
+    let compatible = audio_observation.parameter_generation() == semantic.generation()
         && audio_observation.active_graph_revision() == semantic.status().graph_revision();
-    if let Some(surface) = semantic.surface(crate::control::SurfaceId::MixerMain) {
-        egui::ScrollArea::vertical()
-            .animated(false)
-            .id_salt("crest-synth-mixer-workspace")
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for track_id in crate::mixer::mixer_track_id::MixerTrackId::ALL {
-                        chrome_text(
-                            ui,
-                            track_id.to_string(),
-                            TypeStyle::InstructionHint,
-                            SemanticColor::TextSecondary,
-                        );
-                    }
-                });
-                hairline_separator(ui);
-                egui::ScrollArea::horizontal()
-                    .animated(false)
-                    .id_salt("crest-synth-mixer-tracks")
-                    .show(ui, |ui| {
-                        ui.horizontal_top(|ui| {
-                            for track_id in crate::mixer::mixer_track_id::MixerTrackId::ALL {
-                                ui.push_id(track_id.index(), |ui| {
-                                    egui::Frame::new()
-                                        .fill(SemanticColor::BgPanel.resolve())
-                                        .stroke(egui::Stroke::new(
-                                            KEYLINE_RESTING_PX,
-                                            SemanticColor::BorderDefault.resolve(),
-                                        ))
-                                        .inner_margin(egui::Margin::same(margin(SpacingStep::S8)))
-                                        .show(ui, |ui| {
-                                            // A track is a column: its name,
-                                            // its meter, and its four controls
-                                            // stack. The frame inherits the
-                                            // strip's horizontal layout, so
-                                            // without this the six of them run
-                                            // left to right inside the column
-                                            // and each row's right-aligned
-                                            // value lands on top of its label.
-                                            ui.vertical(|ui| {
-                                                ui.set_width(MIXER_TRACK_MIN_WIDTH_PX);
-                                                chrome_text(
-                                                    ui,
-                                                    track_id.to_string(),
-                                                    TypeStyle::HeadingPanel,
-                                                    SemanticColor::TextPrimary,
-                                                );
-                                                let meter = if observation_matches {
-                                                    audio_observation.track(track_id)
-                                                } else {
-                                                    crate::mixer::track_meter::TrackMeter::ZERO
-                                                };
-                                                ui.add(
-                                                    egui::ProgressBar::new(
-                                                        meter.rms().clamp(0.0, 1.0),
-                                                    )
-                                                    .fill(SemanticColor::AccentPositive.resolve())
-                                                    // The bar carries a
-                                                    // `Code/Value` run, so it
-                                                    // is as tall as that style
-                                                    // sets. The stack's own
-                                                    // default is shorter than
-                                                    // the line it holds and
-                                                    // clips the reading.
-                                                    .desired_height(
-                                                        TypeStyle::CodeValue
-                                                            .metrics()
-                                                            .line_height_px,
-                                                    )
-                                                    .text(text::text_run(
-                                                        format!("METER {:.3}", meter.rms()),
-                                                        TypeStyle::CodeValue,
-                                                        SemanticColor::TextPrimary,
-                                                        ComponentState::Resting,
-                                                    ))
-                                                    .animate(false),
-                                                );
-                                                for control in
-                                                    surface.controls().iter().filter(|control| {
-                                                        control.visible()
-                                                            && control
-                                                                .path()
-                                                                .control_id()
-                                                                .as_mixer_track_id()
-                                                                == Some(track_id)
-                                                    })
-                                                {
-                                                    paint_semantic_control(
-                                                        ui,
-                                                        control,
-                                                        semantic.interaction_mode(),
-                                                    );
-                                                }
-                                            });
-                                        });
-                                });
-                            }
-                        });
-                    });
-                paint_diagnostic(ui, projection);
-            });
+    let meter = if compatible {
+        audio_observation.track(track)
     } else {
-        paint_diagnostic(ui, projection);
-    }
-}
-
-fn paint_diagnostic(ui: &mut egui::Ui, projection: &GraphicalShellProjection) {
-    ui.add_space(SpacingStep::S12.resolve());
-    hairline_separator(ui);
-    // The collapsing header is a click target whose height the rendering stack
-    // sizes from its own default interact size. Naming the authored minimum
-    // here is what holds it at or above the declared target height; its colors
-    // come from `install_authored_chrome`.
-    ui.spacing_mut().interact_size.y = MIN_INTERACTIVE_TARGET_PX;
-    egui::CollapsingHeader::new(text::text_run(
-        "DIAGNOSTIC",
-        TypeStyle::HeadingPanel,
-        SemanticColor::TextPrimary,
-        ComponentState::Resting,
-    ))
-    .default_open(true)
-    .show(ui, |ui| {
-        chrome_text(
-            ui,
-            projection.workspace().diagnostic().body(),
-            TypeStyle::BodyCompact,
-            SemanticColor::TextMuted,
-        );
-    });
-}
-
-fn paint_side_region(ui: &mut egui::Ui, projection: &GraphicalShellProjection) {
-    StripBuilder::new(ui)
-        .size(Size::exact(WORKSPACE_TITLE_ROW_PX))
-        .size(Size::remainder())
-        .vertical(|mut strip| {
-            strip.cell(|ui| {
-                padded_text(
-                    ui,
-                    projection.workspace().side_label(),
-                    TypeStyle::HeadingPanel,
-                    SemanticColor::TextPrimary,
-                );
-            });
-            strip.cell(|ui| {
-                egui::ScrollArea::vertical()
-                    .animated(false)
-                    .id_salt("crest-synth-side-controls")
-                    .show(ui, |ui| {
-                        ui.add_space(SpacingStep::S12.resolve());
-                        ui.horizontal(|ui| {
-                            ui.add_space(SpacingStep::S16.resolve());
-                            ui.vertical(|ui| {
-                                let semantic = projection.semantic_model();
-                                let side_id =
-                                    crate::control::SurfaceId::side_for(semantic.context());
-                                if let Some(surface) = semantic.surface(side_id) {
-                                    paint_surface_summary(ui, surface.summary());
-                                    for control in surface.controls() {
-                                        paint_semantic_control(
-                                            ui,
-                                            control,
-                                            semantic.interaction_mode(),
-                                        );
-                                    }
-                                }
-                                if semantic.errors().is_empty() {
-                                    chrome_text(
-                                        ui,
-                                        "NO ERRORS",
-                                        TypeStyle::LabelControl,
-                                        SemanticColor::AccentPositive,
-                                    );
-                                } else {
-                                    for error in semantic.errors() {
-                                        text::paint_text(
-                                            ui,
-                                            error.label(),
-                                            TypeStyle::LabelControl,
-                                            SemanticColor::AccentWarning,
-                                            ComponentState::Error,
-                                        );
-                                    }
-                                }
-                            });
-                        });
-                    });
-            });
-        });
-}
-
-fn paint_surface_summary(ui: &mut egui::Ui, summary: &crate::control::SemanticSurfaceSummary) {
-    match summary {
-        crate::control::SemanticSurfaceSummary::MixerInspector {
-            focused_track,
-            routed_patches,
-            ..
-        } => {
-            chrome_text(
-                ui,
-                format!("SELECTED {focused_track}"),
-                TypeStyle::CodeValue,
-                SemanticColor::TextPrimary,
-            );
-            if routed_patches.is_empty() {
-                chrome_text(
-                    ui,
-                    "ROUTED PATCHES · EMPTY",
-                    TypeStyle::BodyCompact,
-                    SemanticColor::TextMuted,
-                );
-            } else {
-                for patch in routed_patches {
-                    chrome_text(
-                        ui,
-                        format!(
-                            "PATCH {:02} · {}",
-                            patch.patch_id().value(),
-                            patch.patch_name()
-                        ),
-                        TypeStyle::BodyCompact,
-                        SemanticColor::TextMuted,
-                    );
-                }
-            }
-        }
-        _ => {
-            chrome_text(
-                ui,
-                format!("{summary:?}"),
-                TypeStyle::BodyCompact,
-                SemanticColor::TextMuted,
-            );
-        }
-    }
-}
-
-fn paint_footer(
-    ui: &mut egui::Ui,
-    projection: &GraphicalShellProjection,
-) -> Option<SemanticAction> {
-    let mut emitted = None;
-    StripBuilder::new(ui)
-        .size(Size::relative(FOOTER_PATH_FRACTION))
-        .size(Size::remainder())
-        .horizontal(|mut strip| {
-            strip.cell(|ui| {
-                padded_text(
-                    ui,
-                    projection.footer().path_label(),
-                    TypeStyle::InstructionHint,
-                    SemanticColor::TextPrimary,
-                );
-            });
-            strip.cell(|ui| {
-                egui::ScrollArea::horizontal()
-                    .id_salt("crest-valid-actions")
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for valid in projection.semantic_model().valid_actions() {
-                                let label = valid.hint().map_or_else(
-                                    || valid.label().to_owned(),
-                                    |hint| format!("{hint} · {}", valid.label()),
-                                );
-                                let button = egui::Button::new(text::text_run(
-                                    label,
-                                    TypeStyle::InstructionHint,
-                                    SemanticColor::TextSecondary,
-                                    ComponentState::Resting,
-                                ))
-                                .fill(SemanticColor::BgSurface.resolve())
-                                .stroke(egui::Stroke::new(
-                                    KEYLINE_RESTING_PX,
-                                    SemanticColor::BorderDefault.resolve(),
-                                ))
-                                // A valid-action button is pointer- and
-                                // touch-addressable, so it carries the
-                                // authored minimum target height. Width is
-                                // left to the label: the minimum binds the
-                                // dimension the text does not already set.
-                                .min_size(egui::vec2(0.0, MIN_INTERACTIVE_TARGET_PX));
-                                if ui.add(button).clicked() && emitted.is_none() {
-                                    emitted = Some(valid.action().clone());
-                                }
-                            }
-                        });
-                    });
-            });
-        });
-    emitted
-}
-
-/// Resolves the one state a control row is painted in.
-///
-/// Nothing is decided here. Every input is already in the projection; this
-/// only names which declared appearance renders it, so the row's keyline,
-/// halo, and text treatment all come from one place instead of three
-/// independent branches.
-///
-/// Focus outranks a typed failure because focus must stay visible while an
-/// error is being read; the failure text is painted alongside regardless.
-fn control_state(
-    control: &crate::control::SemanticControlViewModel,
-    mode: crate::control::InteractionMode,
-) -> ComponentState {
-    if !control.enabled() {
-        ComponentState::Disabled
-    } else if control.focused() {
-        if mode == crate::control::InteractionMode::Adjust {
-            ComponentState::Adjusting
-        } else {
-            ComponentState::Focused
-        }
-    } else if control.error().is_some() {
-        ComponentState::Error
-    } else {
-        ComponentState::Resting
-    }
-}
-
-fn paint_semantic_control(
-    ui: &mut egui::Ui,
-    control: &crate::control::SemanticControlViewModel,
-    mode: crate::control::InteractionMode,
-) {
-    let state = control_state(control, mode);
-    let appearance = state.appearance();
-    let mut frame = egui::Frame::new()
-        .stroke(egui::Stroke::new(
-            appearance.keyline_px,
-            appearance.accent.resolve(),
-        ))
-        // The left inset is the reserved cursor column: the `>` is painted
-        // into it below, and reserving it for every state is what keeps a
-        // row's text still when it gains focus.
-        .inner_margin(egui::Margin {
-            left: focus::LABEL_START_X_PX as i8,
-            right: margin(SpacingStep::S12),
-            top: margin(SpacingStep::S8),
-            bottom: margin(SpacingStep::S8),
-        });
-    if appearance.fills_row {
-        frame = frame.fill(appearance.accent.resolve());
-    }
-    if appearance.draws_halo {
-        frame = frame.shadow(focus::halo(appearance.accent));
-    }
-    let response = frame.show(ui, |ui| {
-        // A control row is a focus and adjustment target, so its painted
-        // height carries the authored minimum rather than whatever its
-        // content and margins happen to compose to. The margins are the
-        // frame's own, so the inner minimum is the target less both of them.
-        ui.set_min_height(MIN_INTERACTIVE_TARGET_PX - 2.0 * SpacingStep::S8.resolve());
-        ui.horizontal(|ui| {
-            text::paint_text(
-                ui,
-                control.label(),
-                TypeStyle::LabelControl,
-                SemanticColor::TextPrimary,
-                state,
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                text::paint_text(
-                    ui,
-                    semantic_value_label(control.value()),
-                    TypeStyle::CodeValue,
-                    value::value_color(state),
-                    state,
-                );
-                // Structural rows carry their reducer-owned lifecycle and
-                // any typed refusal as text, never colour alone; the
-                // adapter renders the projection without recomputing it.
-                if let Some(error) = control.error() {
-                    text::paint_text(
-                        ui,
-                        error.label(),
-                        TypeStyle::InstructionHint,
-                        SemanticColor::AccentWarning,
-                        ComponentState::Error,
-                    );
-                }
-                if let Some(status) = control.status().filter(|status| {
-                    status.kind() != crate::control::EngineSelectionStatusKind::Ready
-                }) {
-                    text::paint_text(
-                        ui,
-                        status.label(),
-                        TypeStyle::InstructionHint,
-                        SemanticColor::AccentAdjust,
-                        ComponentState::Loading,
-                    );
-                }
-            });
-        });
-    });
-    focus::cursor(ui.painter(), response.response.rect, state);
-    if control.focused() && !ui.clip_rect().contains(response.response.rect.center()) {
-        response.response.scroll_to_me(Some(egui::Align::Center));
-    }
-    ui.add_space(SpacingStep::S4.resolve());
-}
-
-fn semantic_value_label(value: &crate::control::SemanticControlValue) -> String {
-    match value {
-        crate::control::SemanticControlValue::Scalar(value) => format!("{value:.3}"),
-        crate::control::SemanticControlValue::Parameter(value) => match value {
-            crate::synth::ParameterValue::Continuous(value) => format!("{value:.3}"),
-            crate::synth::ParameterValue::Stepped(value) => value.to_string(),
-            crate::synth::ParameterValue::Choice(value) => value.clone(),
-            crate::synth::ParameterValue::Toggle(value) => {
-                if *value { "ON" } else { "OFF" }.to_owned()
-            }
-        },
-        crate::control::SemanticControlValue::Asset(reference) => reference.locator().to_owned(),
-        crate::control::SemanticControlValue::Identity(value)
-        | crate::control::SemanticControlValue::Summary(value) => value.clone(),
-    }
-}
-
-/// Paints one run of shell chrome.
-///
-/// Chrome is not a component: it carries no behavioral state, so it always
-/// paints at rest. Routing it through the text primitive anyway is what keeps
-/// a type style resolvable in exactly one place.
-fn chrome_text(
-    ui: &mut egui::Ui,
-    content: impl Into<String>,
-    style: TypeStyle,
-    color: SemanticColor,
-) {
-    text::paint_text(ui, content, style, color, ComponentState::Resting);
-}
-
-/// Paints a run of chrome inset from the top and left of its cell.
-fn padded_text(ui: &mut egui::Ui, label: &str, style: TypeStyle, color: SemanticColor) {
-    ui.add_space(SpacingStep::S12.resolve());
-    ui.horizontal(|ui| {
-        ui.add_space(SpacingStep::S16.resolve());
-        chrome_text(ui, label, style, color);
-    });
-}
-
-/// Paints a run of chrome against the right edge of its cell.
-fn trailing_text(ui: &mut egui::Ui, label: &str, style: TypeStyle, color: SemanticColor) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.add_space(SpacingStep::S16.resolve());
-        chrome_text(ui, label, style, color);
-    });
-}
-
-/// Separates two stacked regions with the authored resting hairline.
-///
-/// `egui::Ui::separator` would paint egui's own non-interactive stroke, which
-/// is neither the authored width nor the authored color.
-fn hairline_separator(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), SpacingStep::S8.resolve()),
-        egui::Sense::hover(),
+        TrackMeter::ZERO
+    };
+    let state = ComponentState::Resting;
+    let color = SemanticColor::TextSecondary;
+    let painter = ui.painter_at(band);
+    let run = text::layout(
+        &painter,
+        format!("METER {:.3}", meter.rms()),
+        TypeStyle::CodeValue,
+        color,
+        state,
     );
-    rules::hairline(
-        ui.painter(),
-        rules::RuleSpan::Horizontal {
-            y_px: rect.center().y,
-            from_x_px: rect.min.x,
-            to_x_px: rect.max.x,
-        },
+    let size = run.size();
+    let line = TypeStyle::CodeValue.metrics().line_height_px;
+    painter.galley(
+        egui::pos2(
+            band.center().x - size.x / 2.0,
+            band.min.y + (line - size.y) / 2.0,
+        ),
+        run,
+        text::resolved_color(color, state).resolve(),
     );
 }
 
-/// Resolves an authored spacing step to the integer margin `egui::Margin`
-/// carries. Every authored step is a whole number of pixels, so nothing is
-/// lost.
-const fn margin(step: SpacingStep) -> i8 {
-    step.resolve() as i8
+/// Builds the panel one band's placement names and arranges the band inside it.
+fn show_band(
+    context: &egui::Context,
+    band: FrameBand,
+    arrange: impl FnOnce(&mut egui::Ui),
+) -> egui::Rect {
+    let surface = egui::Frame::new()
+        .fill(band.surface().resolve())
+        .inner_margin(egui::Margin::ZERO)
+        .outer_margin(egui::Margin::ZERO);
+    match band.placement() {
+        BandPlacement::TopEdge { height_px } => {
+            egui::TopBottomPanel::top(band.panel_id())
+                .exact_height(height_px)
+                .frame(surface)
+                .show(context, arrange)
+                .response
+                .rect
+        }
+        BandPlacement::BottomEdge { height_px } => {
+            egui::TopBottomPanel::bottom(band.panel_id())
+                .exact_height(height_px)
+                .frame(surface)
+                .show(context, arrange)
+                .response
+                .rect
+        }
+        BandPlacement::TrailingEdge { width_px } => {
+            egui::SidePanel::right(band.panel_id())
+                .exact_width(width_px)
+                .frame(surface)
+                .show(context, arrange)
+                .response
+                .rect
+        }
+        BandPlacement::Remainder => {
+            egui::CentralPanel::default()
+                .frame(surface)
+                .show(context, arrange)
+                .response
+                .rect
+        }
+    }
 }
 
 /// Installs the authored typeface into `context`.

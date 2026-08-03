@@ -573,7 +573,13 @@ Use Azeret Mono throughout:
 - Focus: 3 px cyan keyline; halo radius 8, spread 1, opacity 0.28.
 - Adjustment: 3 px amber keyline.
 
-Focus, mute, solo, loading, error, and selection always have text or shape in addition to color. Keyboard and controller actions are behaviorally identical after normalization.
+Resting, focus, adjustment, disabled, loading, error, mute, solo, and selection always have text or shape in addition to color. Keyboard and controller actions are behaviorally identical after normalization.
+
+That list is nine, and it was six until Phase 4a. The widening is a decision, not a drift: a component is handed exactly one state, so the set has to be closed and cover every appearance a component can be in. Resting is what the other eight read against and carries no mark of its own — it earns a place on the list because "no mark" is the thing that must stay true of it. Adjustment and disabled were being drawn all along and were simply unnamed here; naming them is what puts them under the same obligation as the rest. No two of the nine may be told apart by color alone, which is the rule the list exists to state.
+
+### Controls and compositions
+
+Later surfaces are assembled from a shared vocabulary rather than re-drawn. The controls are parameter rows, choice rows, toggles, compact sliders, faders, meters, browser rows, and modal options. The compositions are the application shell, the context switch, the identity header, the section, the Patch strip row, the mixer strip bank, the Utility/Inspector panel, and the footer; between them they fill the context line, identity header, main workspace, persistent side region, and footer, and the application shell is the frame the others sit inside. Which control a surface gets is decided by what the value is together with the role the surface asks it in — a continuous parameter is a labelled row on PATCH and a fader in a mixer column — and a pairing the product does not have is refused rather than drawn as something generic. Components accept view data and return intent; they own no Patch value, focus, navigation, reducer state, or audio state.
 
 ## Library candidates
 

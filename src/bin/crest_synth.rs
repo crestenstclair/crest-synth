@@ -142,7 +142,7 @@ fn run(options: Options) -> Result<()> {
         // timeout, and no generation correlation. It finishes when the operator
         // closes the window.
         eprintln!(
-            "crest-synth component gallery: browsable and operator-driven. Press 1-8 to change page, press 9 for a digit that binds no page, then close the window to finish. Page selection is scene-local and changes no application state."
+            "crest-synth component gallery: browsable and operator-driven. Press 1-9 and 0 to select the first ten of fifteen pages. Then press [ until page 1 and ] fourteen times to step through all fifteen — the observation counts step reachability from what you actually visit, so a partial walk reports a partial count. Press any other key for one that binds no page, then close the window to finish. Page selection is scene-local and changes no application state."
         );
         let observation = crest_synth::testing::ComponentGalleryScene::new()
             .context("failed to construct the component gallery scene")?

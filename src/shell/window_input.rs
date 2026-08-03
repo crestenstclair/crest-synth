@@ -1,11 +1,16 @@
 /// A platform-independent key understood at the application window boundary.
 ///
-/// `Digit3` through `Digit8` are normalized here because the window sees them,
-/// not because anything at this boundary binds them. What a normalized key
-/// means is decided downstream: the translator binds `Digit1` and `Digit2` to
-/// the two top-level contexts and nothing else, and a scene that pages a
-/// gallery binds its own digits locally without those ever becoming a semantic
-/// action.
+/// `Digit3` through `Digit9`, `Digit0`, and the two bracket keys are normalized
+/// here because the window sees them, not because anything at this boundary
+/// binds them. What a normalized key means is decided downstream: the
+/// translator binds `Digit1` and `Digit2` to the two top-level contexts and
+/// nothing else, and a scene that pages a gallery binds its own digits and
+/// brackets locally without those ever becoming a semantic action.
+///
+/// The two bracket keys are here for the same reason the digits are. A gallery
+/// that declares more pages than there are digits needs a way to reach the
+/// remainder, and stepping is that way — but stepping is a *scene's* gesture,
+/// so the window normalizes the key and stops there.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WindowKey {
     Digit1,
@@ -16,6 +21,12 @@ pub enum WindowKey {
     Digit6,
     Digit7,
     Digit8,
+    Digit9,
+    Digit0,
+    /// `[` — bound to no application meaning.
+    BracketLeft,
+    /// `]` — bound to no application meaning.
+    BracketRight,
     /// Step to the previous installed Patch.
     Q,
     /// Step to the next installed Patch.
@@ -33,7 +44,7 @@ pub enum WindowKey {
 /// The descriptor below carries a key-down and a key-up for each of these plus
 /// the single focus-loss value, so this list and
 /// [`WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN`] move together.
-pub const ALL_WINDOW_KEYS: [WindowKey; 16] = [
+pub const ALL_WINDOW_KEYS: [WindowKey; 20] = [
     WindowKey::Digit1,
     WindowKey::Digit2,
     WindowKey::Digit3,
@@ -42,6 +53,10 @@ pub const ALL_WINDOW_KEYS: [WindowKey; 16] = [
     WindowKey::Digit6,
     WindowKey::Digit7,
     WindowKey::Digit8,
+    WindowKey::Digit9,
+    WindowKey::Digit0,
+    WindowKey::BracketLeft,
+    WindowKey::BracketRight,
     WindowKey::Q,
     WindowKey::E,
     WindowKey::W,
@@ -54,11 +69,11 @@ pub const ALL_WINDOW_KEYS: [WindowKey; 16] = [
 
 /// How many unique normalized inputs the window boundary accepts.
 ///
-/// Sixteen keys in each of two kinds, plus focus loss. Declared here and
+/// Twenty keys in each of two kinds, plus focus loss. Declared here and
 /// asserted equal to the constructed descriptor, so a key added to
 /// [`ALL_WINDOW_KEYS`] without a matching pair of descriptor entries fails
 /// rather than shipping a vocabulary the descriptor does not cover.
-pub const WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN: usize = 33;
+pub const WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN: usize = 41;
 
 /// The normalized kind of a window-boundary input.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -93,6 +108,10 @@ const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; WINDOW_INPUT_SURFACE_DESCRI
     WindowInput::key_down(WindowKey::Digit6),
     WindowInput::key_down(WindowKey::Digit7),
     WindowInput::key_down(WindowKey::Digit8),
+    WindowInput::key_down(WindowKey::Digit9),
+    WindowInput::key_down(WindowKey::Digit0),
+    WindowInput::key_down(WindowKey::BracketLeft),
+    WindowInput::key_down(WindowKey::BracketRight),
     WindowInput::key_down(WindowKey::Q),
     WindowInput::key_down(WindowKey::E),
     WindowInput::key_down(WindowKey::W),
@@ -109,6 +128,10 @@ const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; WINDOW_INPUT_SURFACE_DESCRI
     WindowInput::key_up(WindowKey::Digit6),
     WindowInput::key_up(WindowKey::Digit7),
     WindowInput::key_up(WindowKey::Digit8),
+    WindowInput::key_up(WindowKey::Digit9),
+    WindowInput::key_up(WindowKey::Digit0),
+    WindowInput::key_up(WindowKey::BracketLeft),
+    WindowInput::key_up(WindowKey::BracketRight),
     WindowInput::key_up(WindowKey::Q),
     WindowInput::key_up(WindowKey::E),
     WindowInput::key_up(WindowKey::W),
@@ -121,7 +144,7 @@ const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; WINDOW_INPUT_SURFACE_DESCRI
 ];
 
 impl WindowInput {
-    /// Returns all 33 unique valid normalized input values.
+    /// Returns all 41 unique valid normalized input values.
     ///
     /// This production-owned descriptor is the only exhaustive GUI-input
     /// vocabulary deterministic scenes and acceptance tests need to consume.
@@ -182,9 +205,9 @@ mod tests {
         // Exact equality, not a minimum: the point of this assertion is to
         // fail when the key vocabulary grows without the descriptor growing
         // with it, and a `>=` would pass through exactly that change.
-        assert_eq!(descriptor.len(), 33);
+        assert_eq!(descriptor.len(), 41);
         assert_eq!(descriptor.len(), WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN);
-        assert_eq!(ALL_WINDOW_KEYS.len() * 2 + 1, 33);
+        assert_eq!(ALL_WINDOW_KEYS.len() * 2 + 1, 41);
         for (index, input) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(input),
@@ -217,7 +240,7 @@ mod tests {
     /// key.
     #[test]
     fn the_declared_key_list_names_every_key_once() {
-        assert_eq!(ALL_WINDOW_KEYS.len(), 16);
+        assert_eq!(ALL_WINDOW_KEYS.len(), 20);
         for (index, key) in ALL_WINDOW_KEYS.iter().enumerate() {
             assert!(
                 !ALL_WINDOW_KEYS[..index].contains(key),
@@ -231,10 +254,43 @@ mod tests {
             WindowKey::Digit6,
             WindowKey::Digit7,
             WindowKey::Digit8,
+            WindowKey::Digit9,
+            WindowKey::Digit0,
+            WindowKey::BracketLeft,
+            WindowKey::BracketRight,
         ] {
             assert!(
                 ALL_WINDOW_KEYS.contains(&key),
                 "{key:?} is missing from the declared vocabulary"
+            );
+        }
+    }
+
+    /// The four keys added for the gallery carry no application binding.
+    ///
+    /// The invariant this holds is the crest-spec's: an unbound key reaching
+    /// the translator produces *no* `SemanticAction`, not a substitute one. It
+    /// is asserted here, beside the vocabulary that normalizes them, because
+    /// this is where a later change would add one.
+    #[test]
+    fn the_four_keys_added_for_the_gallery_reach_no_semantic_action() {
+        let mut translator =
+            crate::shell::keyboard_input_translator::KeyboardInputTranslator::new();
+        for key in [
+            WindowKey::Digit9,
+            WindowKey::Digit0,
+            WindowKey::BracketLeft,
+            WindowKey::BracketRight,
+        ] {
+            assert_eq!(
+                translator.translate(WindowInput::key_down(key)),
+                None,
+                "{key:?} became a semantic action"
+            );
+            assert_eq!(
+                translator.translate(WindowInput::key_up(key)),
+                None,
+                "releasing {key:?} became a semantic action"
             );
         }
     }

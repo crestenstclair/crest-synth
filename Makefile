@@ -57,7 +57,7 @@ demo-live-graphical-shell: ## Run the Phase One shell with a real window and phy
 
 # Browsable by hand, not autonomous: it waits for the operator and is
 # deliberately not part of the demo-live alias group above.
-demo-live-component-library: ## Browse the component gallery by hand — digit keys 1-8 change page, closing the window finishes
+demo-live-component-library: ## Browse the component gallery by hand — digits 1-9 and 0 select the first ten pages, [ and ] step through all fifteen, closing the window finishes
 	cargo run --release --bin crest-synth -- --demo-live-component-library
 
 semantic-graphical-view-model-acceptance: ## Prove the deterministic Phase Two semantic view model

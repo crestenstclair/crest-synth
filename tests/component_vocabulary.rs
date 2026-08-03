@@ -101,6 +101,25 @@
 //! - A mixer track's controls ran left to right inside the column instead of
 //!   stacking, which laid each row's right-aligned value on top of its label.
 //! - The meter's text was taller than the bar holding it.
+//!
+//! # The one deliberate modification, and why NFR-005 still stands
+//!
+//! `NFR-005` says no existing shell, projection, or focus test is modified to
+//! accommodate the component-controls-and-compositions mission. This file is the
+//! single exception, and it is an exception by declaration rather than by
+//! convenience: the crest-spec's `ComponentGalleryPage` grew from eight variants
+//! to fifteen against ten digit keys, so **the rule this target encoded — one
+//! digit binding per page — became false by design**, not inconvenient.
+//! [`check_every_gallery_page_is_reachable`] replaces it with the rule that
+//! survives: every declared page is reachable, by its binding where it has one
+//! and by stepping in every case.
+//!
+//! The replacement keeps every assertion that is still true, derives its counts
+//! from [`GALLERY_DIGIT_BINDING_COUNT`] and [`GALLERY_PAGE_COUNT`] rather than
+//! from restated numbers, and adds four: stepping reaches every page in declared
+//! order, stepping wraps at neither end, the two step keys select no page, and
+//! the union of both routes is exactly the declared page set. Nothing was
+//! weakened to fit. **No other test file in the repository was touched.**
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -142,7 +161,8 @@ use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::Patch;
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use crest_synth::testing::component_gallery_scene::{
-    ComponentGalleryPage, ALL_GALLERY_PAGES, GALLERY_PAGE_COUNT,
+    ComponentGalleryPage, PageStep, ALL_GALLERY_PAGES, GALLERY_DIGIT_BINDING_COUNT,
+    GALLERY_PAGE_COUNT,
 };
 use eframe::egui;
 use eframe::App;
@@ -1877,59 +1897,140 @@ fn check_every_state_is_legible_without_color() {
     }
 }
 
-/// Every gallery page has exactly one digit binding and every binding maps back
-/// to a declared page.
+/// Every gallery page is reachable — by its digit binding where one exists, and
+/// by stepping in every case.
 ///
-/// The mapping is asserted total in both directions: a page without a key and a
-/// key without a page both fail.
-fn check_gallery_pages_bind_exactly_one_digit_each() {
+/// This replaces the "exactly one digit binding per page" rule, which is now
+/// false by design: there are fifteen declared pages and ten digits, so five
+/// pages carry no binding and are reached by stepping. The rule that survives is
+/// reachability, and the two halves of it are asserted separately — a page
+/// reachable by neither would be a page nobody can see.
+///
+/// **This function is WP08 T045's, and it was written here by WP07 only because
+/// growing the page set is a compile-level change to it.** WP07 owns
+/// `src/testing/component_gallery_scene.rs` and `src/shell/window_input.rs`; the
+/// page count could not grow without this target failing to build, and a target
+/// that does not build takes the whole suite with it.
+///
+/// WP08 completed it by stating the disjunction directly. Stepping reaching all
+/// fifteen implies per-page reachability, but only to a reader who notices; the
+/// union below says it, with a denominator on each route, so a page reachable by
+/// neither is a named failure rather than an inference nobody draws.
+fn check_every_gallery_page_is_reachable() {
     assert_eq!(ALL_GALLERY_PAGES.len(), GALLERY_PAGE_COUNT);
-    assert_eq!(GALLERY_PAGE_COUNT, 8);
+    assert_eq!(GALLERY_PAGE_COUNT, 15);
+    assert_eq!(GALLERY_DIGIT_BINDING_COUNT, 10);
 
     let mut digits = BTreeSet::new();
     let mut labels = BTreeSet::new();
     let mut names = BTreeSet::new();
     for page in ALL_GALLERY_PAGES {
-        let digit = page.digit();
-        assert!(
-            digits.insert(format!("{digit:?}")),
-            "{} shares its digit with another page",
-            page.canonical_name()
-        );
-        assert_eq!(
-            ComponentGalleryPage::for_digit(digit),
-            Some(page),
-            "{}'s digit does not select it back",
-            page.canonical_name()
-        );
-        assert!(labels.insert(page.digit_label().to_owned()));
+        if let Some(digit) = page.digit() {
+            assert!(
+                digits.insert(format!("{digit:?}")),
+                "{} shares its digit with another page",
+                page.canonical_name()
+            );
+            assert_eq!(
+                ComponentGalleryPage::for_digit(digit),
+                Some(page),
+                "{}'s digit does not select it back",
+                page.canonical_name()
+            );
+            assert!(labels.insert(
+                page.digit_label()
+                    .expect("a page with a digit reads as one")
+                    .to_owned()
+            ));
+        } else {
+            assert!(
+                page.digit_label().is_none(),
+                "{} reads as a digit it does not bind",
+                page.canonical_name()
+            );
+        }
         assert!(names.insert(page.canonical_name()));
         assert!(!page.title().trim().is_empty());
         assert!(!page.index_label().trim().is_empty());
     }
-    assert_eq!(digits.len(), GALLERY_PAGE_COUNT, "a page lacks a key");
+    assert_eq!(
+        digits.len(),
+        GALLERY_DIGIT_BINDING_COUNT,
+        "a digit binds two pages"
+    );
     assert_eq!(
         labels.len(),
-        GALLERY_PAGE_COUNT,
+        GALLERY_DIGIT_BINDING_COUNT,
         "two pages read as one digit"
     );
     assert_eq!(names.len(), GALLERY_PAGE_COUNT);
 
-    // The digit labels are exactly 1..=8, so the on-screen index and the
+    // The digit labels are exactly 1..=9 then 0, so the on-screen index and the
     // binding cannot disagree.
+    let mut expected: Vec<String> = (1..=9).map(|digit| digit.to_string()).collect();
+    expected.push("0".to_owned());
+    expected.sort();
+    assert_eq!(labels.into_iter().collect::<Vec<_>>(), expected);
+
+    // Stepping alone reaches all fifteen, forwards from the first page.
+    let mut reached = vec![ALL_GALLERY_PAGES[0]];
+    while let Some(next) = PageStep::Next.apply(*reached.last().expect("a visited page")) {
+        reached.push(next);
+    }
     assert_eq!(
-        labels.into_iter().collect::<Vec<_>>(),
-        (1..=GALLERY_PAGE_COUNT)
-            .map(|digit| digit.to_string())
-            .collect::<Vec<_>>()
+        reached,
+        ALL_GALLERY_PAGES.to_vec(),
+        "stepping does not reach every declared page in declared order"
+    );
+    // And it does not wrap at either end.
+    assert_eq!(PageStep::Previous.apply(ALL_GALLERY_PAGES[0]), None);
+    assert_eq!(
+        PageStep::Next.apply(ALL_GALLERY_PAGES[GALLERY_PAGE_COUNT - 1]),
+        None
     );
 
-    // No key outside the declared bindings reaches a page: an unbound digit
-    // normalizes to `Other`, and a mapped semantic key binds nothing here.
+    // The rule itself, stated as a disjunction with a denominator on each
+    // route. A shape scan cannot tell a page that was culled from a page that
+    // was never declared, so what is counted is what each route *supplied*: ten
+    // pages carry a binding, fifteen are stepped to, and their union is exactly
+    // the declared set.
+    let by_digit: BTreeSet<&str> = ALL_GALLERY_PAGES
+        .into_iter()
+        .filter(|page| page.digit().is_some())
+        .map(ComponentGalleryPage::canonical_name)
+        .collect();
+    let by_stepping: BTreeSet<&str> = reached.iter().map(|page| page.canonical_name()).collect();
+    let declared: BTreeSet<&str> = ALL_GALLERY_PAGES
+        .into_iter()
+        .map(ComponentGalleryPage::canonical_name)
+        .collect();
+    assert_eq!(by_digit.len(), GALLERY_DIGIT_BINDING_COUNT);
+    assert_eq!(by_stepping.len(), GALLERY_PAGE_COUNT);
+    assert_eq!(declared.len(), GALLERY_PAGE_COUNT);
+    let unreachable: Vec<&str> = declared
+        .iter()
+        .filter(|name| !by_digit.contains(*name) && !by_stepping.contains(*name))
+        .copied()
+        .collect();
+    assert!(
+        unreachable.is_empty(),
+        "no route reaches: {}",
+        unreachable.join(", ")
+    );
+    assert!(
+        by_digit.is_subset(&declared) && by_stepping.is_subset(&declared),
+        "a route reaches a page the vocabulary does not declare"
+    );
+
+    // No key outside the declared bindings reaches a page: an unbound key
+    // normalizes to `Other`, a mapped semantic key binds nothing here, and the
+    // two step keys move rather than select.
     for key in [
         crest_synth::shell::window_input::WindowKey::Other,
         crest_synth::shell::window_input::WindowKey::Q,
         crest_synth::shell::window_input::WindowKey::K,
+        crest_synth::shell::window_input::WindowKey::BracketLeft,
+        crest_synth::shell::window_input::WindowKey::BracketRight,
     ] {
         assert_eq!(
             ComponentGalleryPage::for_digit(key),
@@ -2230,8 +2331,8 @@ fn the_state_vocabulary_is_closed_exhaustive_and_legible_without_color() {
 }
 
 #[test]
-fn every_gallery_page_has_exactly_one_digit_binding() {
-    check_gallery_pages_bind_exactly_one_digit_each();
+fn every_gallery_page_is_reachable_by_digit_or_by_stepping() {
+    check_every_gallery_page_is_reachable();
 }
 
 #[test]
@@ -2279,7 +2380,7 @@ fn component_vocabulary_acceptance() {
 
     check_state_set_is_closed_and_exhaustive();
     check_every_state_is_legible_without_color();
-    check_gallery_pages_bind_exactly_one_digit_each();
+    check_every_gallery_page_is_reachable();
 
     check_missing_typeface_is_a_typed_failure();
     check_the_authored_typeface_registers_completely();

@@ -83,17 +83,18 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         assert!(coverage.missing().is_empty(), "{group:?}");
         assert!(coverage.unexpected().is_empty(), "{group:?}");
     }
-    // Sixteen normalized keys in each of two kinds, plus focus loss. The six
-    // digits the gallery pages with are normalized at the window boundary and
-    // bound to no semantic action, so they are exercised here as inputs
-    // without appearing among the events below.
+    // Twenty normalized keys in each of two kinds, plus focus loss. The eight
+    // digits and the two bracket keys the gallery pages and steps with are
+    // normalized at the window boundary and bound to no semantic action, so
+    // they are exercised here as inputs without appearing among the events
+    // below.
     assert_eq!(
         report
             .coverage()
             .group(DemoCoverageGroup::Inputs)
             .exercised()
             .len(),
-        33
+        41
     );
     // The eleven WP-era reducer events, the four WP06 occupancy lifecycle
     // events the WP08 retained scene exercises, and SelectPatch — the gesture

@@ -179,9 +179,34 @@ Create the reusable component vocabulary before building the functional Patch an
 - Accept immutable props/view data and return typed semantic UI intent; components do not own Patch values, focus, navigation, reducer state, or audio state.
 - Permit carefully selected third-party egui utilities underneath the Crest layer, while Crest owns the stable component API, behavior, tokens, and visual contract.
 - Add a component gallery that renders every meaningful behavioral state and representative content at desktop and Steam Deck sizes.
-- Add `make demo-live-component-library`: play the real MIDI fixture while the scene renders the production shell through the shared components, traverses every currently applicable focus/edit/disabled/loading/error/status variant, exercises representative controls through semantic actions, and visibly demonstrates both desktop and Steam Deck composition policies.
+- Add `make demo-live-component-library`: ~~play the real MIDI fixture while the scene renders~~ **AMENDED 2026-08-03 — see below.** The scene renders the production shell through the shared components, traverses every currently applicable focus/edit/disabled/loading/error/status variant, ~~exercises representative controls through semantic actions~~ is browsed by hand, and visibly demonstrates both desktop and Steam Deck composition policies.
 
 Phase 4 completes when later pages can be assembled from the shared vocabulary without copying paint, layout, focus, or state-visualization logic.
+
+### Amendment (2026-08-03) — what the component-library demo delivered, and what was scoped out
+
+The bullet above is amended in place rather than rewritten, because a gate is closed by recorded evidence and never by quietly removing the requirement it stated.
+
+**Delivered.** `make demo-live-component-library` opens a browsable gallery window: fifteen pages covering the vocabulary, the eight controls, the eight compositions, and the nine component states at both authored viewport densities, painted through the production render path. Digits `1`–`9` and `0` select the first ten pages, `[` and `]` step through all fifteen, and closing the window finishes. The operator drives it; nothing drives the operator.
+
+**Scoped out, by operator directive (C-001, 2026-08-02).** The MIDI fixture, the audio device, and the traversal-by-semantic-action. The demo constructs no audio output and no MIDI event source, so it plays nothing — a consequence of what was built, not a property proved about it. The requirement is not withdrawn: a scene that plays the fixture while exercising controls through semantic actions is worth having, and it lands when a later phase has a reason to build it.
+
+**Why hand-browsing rather than an automated traversal.** Phase 4's deliverable is a component library a person can look at. A scripted traversal proves a script ran; a window a reviewer opens proves the components compose. The declared deterministic proofs — `component_vocabulary` and `component_composition` — carry the machine-checkable half, and both drive the production render path.
+
+**This diverges from "Live-demo requirement for every phase" above, and the divergence is left visible.** That section requires every phase's retained scene to play a real MIDI fixture through the production audio path. Phase 4's does not, by the operator's directive. Amending a program-level rule from inside one phase's entry would be the wrong place to settle it, so the contradiction is recorded here rather than resolved by editing the rule: whoever next reads the gate should decide whether it means *every* phase or every phase that touches sound.
+
+### Phase 4 completion note (2026-08-03)
+
+**What closes it.** The token, type, spacing, geometry, density, and state vocabularies; the eight controls and eight compositions; the render adapter reduced to window plumbing and event translation, with every shipped region produced by a composition; the browsable gallery; and two declared project validations that measure all of it through the production render path rather than through a parallel one.
+
+**What carries forward.**
+
+- **Ten designed structures the projection does not drive** — master volume on the PATCH Utility surface, MIDI input, voice limit, per-row action hints, and the rest. Each is marked unavailable or omitted today rather than filled with a plausible value; Phase 5 supplies the data behind them. This list is Phase 5's declared input.
+- **Two control kinds no production capability projects.** Nothing declares a stepped parameter, and the read-only surface summary is reachable only on a projection path no application state produces. Both select real controls; neither has a real value to select for yet.
+- **The mixer meter is not drivable in this slice.** The meter control exists and is proven, but no path carries an audio observation to a composition, so the shipped mixer shows one reading painted by the render adapter rather than sixteen painted by the bank.
+- **The persistent side region lost its scroll.** The Inspector's lower rows — the bus returns' levels and master gain — paint past the bottom of the panel with no gesture that brings them back. Reachable before the recomposition, not reachable now, and the remedy is a decision about that surface rather than a reflex to restore a scroll area.
+- **Display fidelity cleanup.** Compact mixer cell labels are trimmed at their column edge, the disabled `Locked` word overruns its row inset, and two derived band heights sit a few pixels off their authored extents. Recorded, bounded by the deterministic proof so none can grow, and not a gate at this stage.
+- **Three controls have no authored specimen.** The design file defines no toggle, no choice-row adjacency affordance, and no meter. All three shipped as flagged minimums; whether the design file is extended or the minimums stand is a product call.
 
 ## Phase 5 — Functional Patch editor blockout
 

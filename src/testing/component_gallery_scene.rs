@@ -68,8 +68,18 @@ use eframe::egui::{
 use serde::Serialize;
 
 use crate::control::app_state::AppState;
+use crate::control::{
+    GraphicalShellProjection, SemanticControlKind, SemanticControlViewModel, TopLevelContext,
+};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::shell::standalone_application::ApplicationConfig;
+use crate::shell::visual::compositions::{
+    ShellComposition, ShellRegion, ALL_SHELL_COMPOSITIONS, SHELL_COMPOSITION_COUNT,
+};
+use crate::shell::visual::controls::{
+    control_for, ComponentControl, PresentationRole, ALL_COMPONENT_CONTROLS,
+    ALL_PRESENTATION_ROLES, ALL_SEMANTIC_CONTROL_KINDS, COMPONENT_CONTROL_COUNT,
+};
 use crate::shell::visual::primitives::hint::{ActionHint, HintTone, ALL_HINT_TONES};
 use crate::shell::visual::primitives::status::{LoadingPhase, StatusDetail, StatusMark};
 use crate::shell::visual::primitives::{focus, hint, rules, status, text, value};
@@ -95,14 +105,26 @@ pub const COMPONENT_GALLERY_WINDOW_TITLE: &str = "crest-synth — component gall
 ///
 /// Surfaces that must cover every page assert against this rather than against a
 /// number they carry themselves.
-pub const GALLERY_PAGE_COUNT: usize = 8;
+pub const GALLERY_PAGE_COUNT: usize = 15;
 
-/// One named group of component specimens, selected by a locally bound digit.
+/// How many pages a digit key selects.
+///
+/// Ten, because there are ten digits. The remaining pages are reached by
+/// stepping, which is why stepping exists: a page count larger than the digit
+/// count would otherwise make a declared page unreachable.
+pub const GALLERY_DIGIT_BINDING_COUNT: usize = 10;
+
+/// One named group of component specimens, selected by a locally bound digit or
+/// reached by stepping.
 ///
 /// The set is closed and has no catch-all, for the same reason
-/// [`ComponentState`] is closed: a page added without a binding or a specimen
-/// fails compilation or the declared coverage assertion rather than becoming a
-/// dead key.
+/// [`ComponentState`] is closed: a page added without a specimen fails the
+/// declared coverage assertion rather than becoming a page nobody can see.
+///
+/// The seven control and composition pages are appended after the eight that
+/// existed before them, and nothing renumbers. An operator who knows `Digit4`
+/// is `InteractionStates` keeps finding it there; that is FR-012, and
+/// [`FROZEN_DIGIT_BINDING_BASELINE`] is what holds it.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ComponentGalleryPage {
     /// Every declared semantic color with its canonical name and hex.
@@ -121,9 +143,27 @@ pub enum ComponentGalleryPage {
     ActionHints,
     /// The five structural bands at both authored viewports.
     ShellBands,
+    /// The parameter row and the choice row, in every state they declare.
+    ParameterAndChoiceRows,
+    /// The toggle and the compact slider, in every state they declare.
+    TogglesAndSliders,
+    /// The fader and the meter, in every state they declare.
+    FadersAndMeters,
+    /// The browser row and the modal option, in every state they declare.
+    BrowserAndModalOptions,
+    /// The application shell and the context switch, with projected content.
+    ShellAndContextSwitch,
+    /// The identity header and the section, with projected content.
+    HeadersAndSections,
+    /// The Patch strip row, the mixer strip bank, the Utility/Inspector panel,
+    /// and the footer, with projected content.
+    StripPanelAndFooter,
 }
 
-/// Every declared page, in digit order.
+/// Every declared page, in declared order.
+///
+/// The first ten carry the ten digit bindings in this order; the last five are
+/// reached by stepping.
 pub const ALL_GALLERY_PAGES: [ComponentGalleryPage; GALLERY_PAGE_COUNT] = [
     ComponentGalleryPage::Colors,
     ComponentGalleryPage::Type,
@@ -133,24 +173,62 @@ pub const ALL_GALLERY_PAGES: [ComponentGalleryPage; GALLERY_PAGE_COUNT] = [
     ComponentGalleryPage::ValuesAndStatus,
     ComponentGalleryPage::ActionHints,
     ComponentGalleryPage::ShellBands,
+    ComponentGalleryPage::ParameterAndChoiceRows,
+    ComponentGalleryPage::TogglesAndSliders,
+    ComponentGalleryPage::FadersAndMeters,
+    ComponentGalleryPage::BrowserAndModalOptions,
+    ComponentGalleryPage::ShellAndContextSwitch,
+    ComponentGalleryPage::HeadersAndSections,
+    ComponentGalleryPage::StripPanelAndFooter,
+];
+
+/// The eight `(page identity, digit)` bindings as they stood before the control
+/// and composition pages were added.
+///
+/// Frozen as data, modelled on `FROZEN_TOPOLOGY_IDENTITY_BASELINE`
+/// (`tests/effects_and_buses.rs:59`), which the project already uses for
+/// exactly this kind of add-only contract. FR-012 exists because an operator
+/// feels a moved binding immediately, so this is a regression gate rather than
+/// a promise: reordering [`ALL_GALLERY_PAGES`], renaming a page, or handing an
+/// existing page a different digit fails the assertion that reads this.
+///
+/// New pages append. Nothing here moves.
+pub const FROZEN_DIGIT_BINDING_BASELINE: [(&str, WindowKey); 8] = [
+    ("Colors", WindowKey::Digit1),
+    ("Type", WindowKey::Digit2),
+    ("SpacingAndGeometry", WindowKey::Digit3),
+    ("InteractionStates", WindowKey::Digit4),
+    ("TextAndHairlines", WindowKey::Digit5),
+    ("ValuesAndStatus", WindowKey::Digit6),
+    ("ActionHints", WindowKey::Digit7),
+    ("ShellBands", WindowKey::Digit8),
 ];
 
 impl ComponentGalleryPage {
-    /// The digit that selects this page.
+    /// The digit that selects this page, or `None` when no digit does.
     ///
-    /// The mapping is total in both directions: [`Self::for_digit`] inverts it,
-    /// and the test in this module holds that no page lacks a key and no key
-    /// lacks a page.
-    pub const fn digit(self) -> WindowKey {
+    /// There are fifteen pages and ten digits, so five pages carry no binding.
+    /// They return `None` rather than a placeholder key: `WindowKey::Other` is
+    /// the catch-all for keys the window saw and could not name, and reusing it
+    /// here would make "this page has no digit" and "this key is not one we
+    /// recognize" the same value.
+    pub const fn digit(self) -> Option<WindowKey> {
         match self {
-            Self::Colors => WindowKey::Digit1,
-            Self::Type => WindowKey::Digit2,
-            Self::SpacingAndGeometry => WindowKey::Digit3,
-            Self::InteractionStates => WindowKey::Digit4,
-            Self::TextAndHairlines => WindowKey::Digit5,
-            Self::ValuesAndStatus => WindowKey::Digit6,
-            Self::ActionHints => WindowKey::Digit7,
-            Self::ShellBands => WindowKey::Digit8,
+            Self::Colors => Some(WindowKey::Digit1),
+            Self::Type => Some(WindowKey::Digit2),
+            Self::SpacingAndGeometry => Some(WindowKey::Digit3),
+            Self::InteractionStates => Some(WindowKey::Digit4),
+            Self::TextAndHairlines => Some(WindowKey::Digit5),
+            Self::ValuesAndStatus => Some(WindowKey::Digit6),
+            Self::ActionHints => Some(WindowKey::Digit7),
+            Self::ShellBands => Some(WindowKey::Digit8),
+            Self::ParameterAndChoiceRows => Some(WindowKey::Digit9),
+            Self::TogglesAndSliders => Some(WindowKey::Digit0),
+            Self::FadersAndMeters
+            | Self::BrowserAndModalOptions
+            | Self::ShellAndContextSwitch
+            | Self::HeadersAndSections
+            | Self::StripPanelAndFooter => None,
         }
     }
 
@@ -161,20 +239,27 @@ impl ComponentGalleryPage {
     pub fn for_digit(key: WindowKey) -> Option<Self> {
         ALL_GALLERY_PAGES
             .into_iter()
-            .find(|page| page.digit() == key)
+            .find(|page| page.digit() == Some(key))
     }
 
-    /// The digit as it reads on screen.
-    pub const fn digit_label(self) -> &'static str {
+    /// The digit as it reads on screen, where one selects this page.
+    pub const fn digit_label(self) -> Option<&'static str> {
         match self {
-            Self::Colors => "1",
-            Self::Type => "2",
-            Self::SpacingAndGeometry => "3",
-            Self::InteractionStates => "4",
-            Self::TextAndHairlines => "5",
-            Self::ValuesAndStatus => "6",
-            Self::ActionHints => "7",
-            Self::ShellBands => "8",
+            Self::Colors => Some("1"),
+            Self::Type => Some("2"),
+            Self::SpacingAndGeometry => Some("3"),
+            Self::InteractionStates => Some("4"),
+            Self::TextAndHairlines => Some("5"),
+            Self::ValuesAndStatus => Some("6"),
+            Self::ActionHints => Some("7"),
+            Self::ShellBands => Some("8"),
+            Self::ParameterAndChoiceRows => Some("9"),
+            Self::TogglesAndSliders => Some("0"),
+            Self::FadersAndMeters
+            | Self::BrowserAndModalOptions
+            | Self::ShellAndContextSwitch
+            | Self::HeadersAndSections
+            | Self::StripPanelAndFooter => None,
         }
     }
 
@@ -189,6 +274,13 @@ impl ComponentGalleryPage {
             Self::ValuesAndStatus => "ValuesAndStatus",
             Self::ActionHints => "ActionHints",
             Self::ShellBands => "ShellBands",
+            Self::ParameterAndChoiceRows => "ParameterAndChoiceRows",
+            Self::TogglesAndSliders => "TogglesAndSliders",
+            Self::FadersAndMeters => "FadersAndMeters",
+            Self::BrowserAndModalOptions => "BrowserAndModalOptions",
+            Self::ShellAndContextSwitch => "ShellAndContextSwitch",
+            Self::HeadersAndSections => "HeadersAndSections",
+            Self::StripPanelAndFooter => "StripPanelAndFooter",
         }
     }
 
@@ -203,6 +295,13 @@ impl ComponentGalleryPage {
             Self::ValuesAndStatus => "VALUES AND STATUS",
             Self::ActionHints => "ACTION HINTS",
             Self::ShellBands => "SHELL BANDS",
+            Self::ParameterAndChoiceRows => "PARAMETER AND CHOICE ROWS",
+            Self::TogglesAndSliders => "TOGGLES AND SLIDERS",
+            Self::FadersAndMeters => "FADERS AND METERS",
+            Self::BrowserAndModalOptions => "BROWSER AND MODAL OPTIONS",
+            Self::ShellAndContextSwitch => "SHELL AND CONTEXT SWITCH",
+            Self::HeadersAndSections => "HEADERS AND SECTIONS",
+            Self::StripPanelAndFooter => "STRIP, PANEL AND FOOTER",
         }
     }
 
@@ -217,6 +316,13 @@ impl ComponentGalleryPage {
             Self::ValuesAndStatus => "VALUES",
             Self::ActionHints => "HINTS",
             Self::ShellBands => "BANDS",
+            Self::ParameterAndChoiceRows => "ROWS",
+            Self::TogglesAndSliders => "TOGGLES",
+            Self::FadersAndMeters => "FADERS",
+            Self::BrowserAndModalOptions => "BROWSER",
+            Self::ShellAndContextSwitch => "SHELL",
+            Self::HeadersAndSections => "HEADERS",
+            Self::StripPanelAndFooter => "STRIP",
         }
     }
 
@@ -231,6 +337,77 @@ impl ComponentGalleryPage {
             Self::ValuesAndStatus => 5,
             Self::ActionHints => 6,
             Self::ShellBands => 7,
+            Self::ParameterAndChoiceRows => 8,
+            Self::TogglesAndSliders => 9,
+            Self::FadersAndMeters => 10,
+            Self::BrowserAndModalOptions => 11,
+            Self::ShellAndContextSwitch => 12,
+            Self::HeadersAndSections => 13,
+            Self::StripPanelAndFooter => 14,
+        }
+    }
+
+    /// The page one step before this one, or `None` at the first page.
+    ///
+    /// Non-wrapping, matching the nonwrapping movement the product uses
+    /// everywhere else (`DESIGN.md:309`). Returning `None` at the end rather
+    /// than the same page is what lets the caller report *retained* instead of
+    /// *changed*, so a step that did nothing is visible as a step that did
+    /// nothing.
+    pub fn previous(self) -> Option<Self> {
+        self.index()
+            .checked_sub(1)
+            .map(|index| ALL_GALLERY_PAGES[index])
+    }
+
+    /// The page one step after this one, or `None` at the last page.
+    pub fn next(self) -> Option<Self> {
+        ALL_GALLERY_PAGES.get(self.index() + 1).copied()
+    }
+}
+
+/// How the previous-page key reads on screen.
+pub const STEP_PREVIOUS_LABEL: &str = "[";
+
+/// How the next-page key reads on screen.
+pub const STEP_NEXT_LABEL: &str = "]";
+
+/// What the page index shows beside a page no digit selects.
+///
+/// The two bracket glyphs together, so the index line says how to reach the
+/// page rather than leaving a blank where the other ten carry a number.
+pub const STEP_ONLY_LABEL: &str = "[ ]";
+
+/// Which way a scene-local step moves through the declared page order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PageStep {
+    /// Toward the first page.
+    Previous,
+    /// Toward the last page.
+    Next,
+}
+
+impl PageStep {
+    /// The key that asks for this step.
+    pub const fn key(self) -> WindowKey {
+        match self {
+            Self::Previous => WindowKey::BracketLeft,
+            Self::Next => WindowKey::BracketRight,
+        }
+    }
+
+    /// The step a key asks for, or `None` when the key steps nothing.
+    pub fn for_key(key: WindowKey) -> Option<Self> {
+        [Self::Previous, Self::Next]
+            .into_iter()
+            .find(|step| step.key() == key)
+    }
+
+    /// Applies this step to `page`, or `None` at the end it points at.
+    pub fn apply(self, page: ComponentGalleryPage) -> Option<ComponentGalleryPage> {
+        match self {
+            Self::Previous => page.previous(),
+            Self::Next => page.next(),
         }
     }
 }
@@ -240,7 +417,10 @@ impl ComponentGalleryPage {
 pub enum PageSelection {
     /// A bound digit selected this page.
     Changed(ComponentGalleryPage),
-    /// The input bound no page, so the current one was kept.
+    /// A step key moved to this page.
+    Stepped(ComponentGalleryPage),
+    /// The input bound no page — an unbound key, or a step past an end — so the
+    /// current one was kept.
     Retained(ComponentGalleryPage),
 }
 
@@ -248,7 +428,7 @@ impl PageSelection {
     /// The page that is active after the input.
     pub const fn page(self) -> ComponentGalleryPage {
         match self {
-            Self::Changed(page) | Self::Retained(page) => page,
+            Self::Changed(page) | Self::Stepped(page) | Self::Retained(page) => page,
         }
     }
 }
@@ -279,17 +459,27 @@ impl GalleryPageSelection {
 
     /// Applies one normalized window input.
     ///
-    /// Only a key-*down* on a bound digit changes the page. A key-up, a focus
-    /// loss, and any key with no page bound — including an unbound digit —
-    /// retain the current page and change nothing else.
+    /// Only a key-*down* on a bound digit or a step key moves the page. A
+    /// key-up, a focus loss, and any key that binds neither retain the current
+    /// page and change nothing else.
+    ///
+    /// Stepping does not wrap. At the first page a previous-step retains the
+    /// first page, and at the last a next-step retains the last, which is the
+    /// nonwrapping movement the product uses everywhere else
+    /// (`DESIGN.md:309`). A wrapping step would let an operator holding one
+    /// bracket cycle forever without ever learning they had reached an end.
     pub fn apply(&mut self, input: WindowInput) -> PageSelection {
         if input.kind() != WindowInputKind::KeyDown {
             return PageSelection::Retained(self.active);
         }
-        match ComponentGalleryPage::for_digit(input.key()) {
+        if let Some(page) = ComponentGalleryPage::for_digit(input.key()) {
+            self.active = page;
+            return PageSelection::Changed(page);
+        }
+        match PageStep::for_key(input.key()).and_then(|step| step.apply(self.active)) {
             Some(page) => {
                 self.active = page;
-                PageSelection::Changed(page)
+                PageSelection::Stepped(page)
             }
             None => PageSelection::Retained(self.active),
         }
@@ -314,6 +504,97 @@ struct PaintedStateEvidence {
 struct PaintedState {
     evidence: PaintedStateEvidence,
     visible_label: String,
+}
+
+/// One control identity that reached the screen, with its visible evidence.
+///
+/// Built from the text runs the control's own render function emitted, read
+/// back out of the layer it painted into. There is no path here from a
+/// specimen list: a control that was constructed and not painted has no runs,
+/// so it has no record.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PaintedControlRecord {
+    control: &'static str,
+    kind: &'static str,
+    role: &'static str,
+    states_painted: usize,
+    states_declared: usize,
+    visible_label: String,
+    viewports: Vec<&'static str>,
+}
+
+impl PaintedControlRecord {
+    /// The canonical control name.
+    pub fn control(&self) -> &str {
+        self.control
+    }
+
+    /// The semantic control kind the specimen was asked as.
+    pub fn kind(&self) -> &str {
+        self.kind
+    }
+
+    /// The presentation role the specimen was asked in.
+    pub fn role(&self) -> &str {
+        self.role
+    }
+
+    /// How many of this control's declared states painted at every policy.
+    pub const fn states_painted(&self) -> usize {
+        self.states_painted
+    }
+
+    /// How many states this control declares applicable.
+    pub const fn states_declared(&self) -> usize {
+        self.states_declared
+    }
+
+    /// A label a reader actually sees on this control's specimen.
+    pub fn visible_label(&self) -> &str {
+        &self.visible_label
+    }
+
+    /// The density policies whose composition painted this control.
+    pub fn viewports(&self) -> &[&'static str] {
+        &self.viewports
+    }
+}
+
+/// One composition identity that reached the screen, with its visible evidence.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PaintedCompositionRecord {
+    composition: &'static str,
+    region: &'static str,
+    text_runs: usize,
+    visible_label: String,
+    viewports: Vec<&'static str>,
+}
+
+impl PaintedCompositionRecord {
+    /// The canonical composition name.
+    pub fn composition(&self) -> &str {
+        self.composition
+    }
+
+    /// The shell region this composition fills.
+    pub fn region(&self) -> &str {
+        self.region
+    }
+
+    /// How many text runs its arrangement emitted, summed over the policies.
+    pub const fn text_runs(&self) -> usize {
+        self.text_runs
+    }
+
+    /// A label a reader actually sees inside this composition's specimen.
+    pub fn visible_label(&self) -> &str {
+        &self.visible_label
+    }
+
+    /// The density policies whose composition painted it.
+    pub fn viewports(&self) -> &[&'static str] {
+        &self.viewports
+    }
 }
 
 /// One state identity that reached the screen, with its visible evidence.
@@ -357,7 +638,22 @@ struct GalleryPaintLedger {
     pages_visited: Vec<ComponentGalleryPage>,
     digit_requests: [bool; GALLERY_PAGE_COUNT],
     pages_reached_by_digit: [bool; GALLERY_PAGE_COUNT],
+    step_requests: [bool; GALLERY_PAGE_COUNT],
+    pages_reached_by_step: [bool; GALLERY_PAGE_COUNT],
     states_painted: [[Option<PaintedState>; COMPONENT_STATE_COUNT]; ALL_DENSITY_POLICIES.len()],
+    /// The visible label each control painted, per policy, per declared state.
+    ///
+    /// Indexed rather than tallied for the same reason the states are: a flat
+    /// count cannot tell a control painted in both compositions from one
+    /// painted twice in the roomier column, and it cannot tell seven states
+    /// from the same state seven times.
+    controls_painted: [[[Option<String>; COMPONENT_STATE_COUNT]; COMPONENT_CONTROL_COUNT];
+        ALL_DENSITY_POLICIES.len()],
+    /// The `(kind, role)` pair each control's specimen was asked as.
+    control_pairs: [Option<(&'static str, &'static str)>; COMPONENT_CONTROL_COUNT],
+    /// Every text run each composition's arrangement emitted, per policy.
+    compositions_painted:
+        [[Option<Vec<String>>; SHELL_COMPOSITION_COUNT]; ALL_DENSITY_POLICIES.len()],
     viewports_painted: [bool; ALL_DENSITY_POLICIES.len()],
     bands_painted: [[bool; ShellRegionId::ALL.len()]; ALL_DENSITY_POLICIES.len()],
     painted_colors: BTreeSet<[u8; 4]>,
@@ -377,7 +673,14 @@ impl Default for GalleryPaintLedger {
             pages_visited: Vec::new(),
             digit_requests: [false; GALLERY_PAGE_COUNT],
             pages_reached_by_digit: [false; GALLERY_PAGE_COUNT],
+            step_requests: [false; GALLERY_PAGE_COUNT],
+            pages_reached_by_step: [false; GALLERY_PAGE_COUNT],
             states_painted: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+            controls_painted: std::array::from_fn(|_| {
+                std::array::from_fn(|_| std::array::from_fn(|_| None))
+            }),
+            control_pairs: std::array::from_fn(|_| None),
+            compositions_painted: std::array::from_fn(|_| std::array::from_fn(|_| None)),
             viewports_painted: [false; ALL_DENSITY_POLICIES.len()],
             bands_painted: [[false; ShellRegionId::ALL.len()]; ALL_DENSITY_POLICIES.len()],
             painted_colors: BTreeSet::new(),
@@ -401,7 +704,22 @@ impl GalleryPaintLedger {
         self.digit_requests[page.index()] = true;
     }
 
+    /// Records that a step key asked for this page.
+    ///
+    /// Same contract as the digit: a step that landed on a page which then
+    /// failed to paint is not a page the operator reached.
+    fn record_step_request(&mut self, page: ComponentGalleryPage) {
+        self.step_requests[page.index()] = true;
+    }
+
     /// Records one key press that bound no page.
+    ///
+    /// With ten digits bound to ten pages there is no longer an unbound
+    /// *digit*, so what this counts is a key press that resolved to no page and
+    /// no step — which is the property the observation's
+    /// `unbound_digit_retained_page` field exists to establish. A step that ran
+    /// into an end is deliberately not counted here: it is a bound key that
+    /// correctly declined to move, not a key that binds nothing.
     fn record_unbound_key(&mut self, changed_page: bool) {
         self.unbound_key_presses += 1;
         if changed_page {
@@ -423,6 +741,9 @@ impl GalleryPaintLedger {
         if self.digit_requests[page.index()] {
             self.pages_reached_by_digit[page.index()] = true;
         }
+        if self.step_requests[page.index()] {
+            self.pages_reached_by_step[page.index()] = true;
+        }
     }
 
     fn painted_page_count(&self) -> usize {
@@ -437,6 +758,179 @@ impl GalleryPaintLedger {
             .iter()
             .filter(|reached| **reached)
             .count()
+    }
+
+    fn step_reached_page_count(&self) -> usize {
+        self.pages_reached_by_step
+            .iter()
+            .filter(|reached| **reached)
+            .count()
+    }
+
+    /// The visible label one control painted for one state at one policy.
+    fn control_painted_at(
+        &self,
+        policy: ViewportDensityPolicy,
+        control: ComponentControl,
+        state: ComponentState,
+    ) -> Option<&String> {
+        self.controls_painted[policy_index(policy)][control_index(control)][state_index(state)]
+            .as_ref()
+    }
+
+    /// Whether one control painted every state it declares, at every policy.
+    ///
+    /// The strong form on purpose. A control counted for painting one state
+    /// would let the gallery claim coverage it does not have, and F-01 —
+    /// three controls with no authored specimen — is exactly the case where an
+    /// operator needs the count to mean what it says.
+    fn control_fully_painted(&self, control: ComponentControl) -> bool {
+        ALL_DENSITY_POLICIES.into_iter().all(|policy| {
+            control
+                .applicable_states()
+                .iter()
+                .all(|state| self.control_painted_at(policy, control, *state).is_some())
+        })
+    }
+
+    fn painted_control_count(&self) -> usize {
+        ALL_COMPONENT_CONTROLS
+            .into_iter()
+            .filter(|control| self.control_fully_painted(*control))
+            .count()
+    }
+
+    /// Every text run one composition emitted at one policy.
+    fn composition_painted_at(
+        &self,
+        policy: ViewportDensityPolicy,
+        composition: ShellComposition,
+    ) -> Option<&Vec<String>> {
+        self.compositions_painted[policy_index(policy)][composition_index(composition)].as_ref()
+    }
+
+    /// Whether one composition emitted at least one text run at every policy.
+    fn composition_fully_painted(&self, composition: ShellComposition) -> bool {
+        ALL_DENSITY_POLICIES.into_iter().all(|policy| {
+            self.composition_painted_at(policy, composition)
+                .is_some_and(|runs| !runs.is_empty())
+        })
+    }
+
+    fn painted_composition_count(&self) -> usize {
+        ALL_SHELL_COMPOSITIONS
+            .into_iter()
+            .filter(|composition| self.composition_fully_painted(*composition))
+            .count()
+    }
+
+    /// How many `(kind, role)` pairs the gallery could not put on screen.
+    ///
+    /// A pair is mapped when it either resolves to a control whose specimen
+    /// this session actually painted, or is an explicit
+    /// `ControlSelection::NotAskableInRole` — which the control family
+    /// documents as a decision rather than a fall-through. A pair resolving to
+    /// a control with no painted specimen is the case this counts, because that
+    /// is a pair an operator cannot see the answer to.
+    ///
+    /// Measured against the paint ledger rather than against `control_for`
+    /// alone, because a count derived only from a total `match` is a count that
+    /// cannot fail.
+    fn unmapped_kind_role_pairs(&self) -> usize {
+        ALL_SEMANTIC_CONTROL_KINDS
+            .into_iter()
+            .flat_map(|kind| {
+                ALL_PRESENTATION_ROLES
+                    .into_iter()
+                    .map(move |role| (kind, role))
+            })
+            .filter(|(kind, role)| {
+                control_for(*kind, *role)
+                    .control()
+                    .is_some_and(|control| !self.control_fully_painted(control))
+            })
+            .count()
+    }
+
+    /// How many declared controls no `(kind, role)` pair resolves to.
+    ///
+    /// A control nothing can ask for is dead code the gallery would still
+    /// happily paint, so this is asked of the selection function rather than of
+    /// the ledger.
+    fn controls_unreachable_by_any_pair(&self) -> usize {
+        ALL_COMPONENT_CONTROLS
+            .into_iter()
+            .filter(|control| {
+                !ALL_SEMANTIC_CONTROL_KINDS.into_iter().any(|kind| {
+                    ALL_PRESENTATION_ROLES
+                        .into_iter()
+                        .any(|role| control_for(kind, role).control() == Some(*control))
+                })
+            })
+            .count()
+    }
+
+    /// The controls that painted every declared state at every policy.
+    fn controls_rendered(&self) -> Vec<PaintedControlRecord> {
+        ALL_COMPONENT_CONTROLS
+            .into_iter()
+            .filter_map(|control| {
+                if !self.control_fully_painted(control) {
+                    return None;
+                }
+                let (kind, role) = self.control_pairs[control_index(control)]?;
+                let states = control.applicable_states();
+                let visible_label = states
+                    .iter()
+                    .find_map(|state| {
+                        self.control_painted_at(ALL_DENSITY_POLICIES[0], control, *state)
+                    })
+                    .cloned()?;
+                Some(PaintedControlRecord {
+                    control: control.canonical_name(),
+                    kind,
+                    role,
+                    states_painted: states.len(),
+                    states_declared: states.len(),
+                    visible_label,
+                    viewports: ALL_DENSITY_POLICIES
+                        .into_iter()
+                        .map(ViewportDensityPolicy::canonical_name)
+                        .collect(),
+                })
+            })
+            .collect()
+    }
+
+    /// The compositions that emitted runs at every policy.
+    fn compositions_rendered(&self) -> Vec<PaintedCompositionRecord> {
+        ALL_SHELL_COMPOSITIONS
+            .into_iter()
+            .filter_map(|composition| {
+                if !self.composition_fully_painted(composition) {
+                    return None;
+                }
+                let text_runs = ALL_DENSITY_POLICIES
+                    .into_iter()
+                    .filter_map(|policy| self.composition_painted_at(policy, composition))
+                    .map(Vec::len)
+                    .sum();
+                let visible_label = self
+                    .composition_painted_at(ALL_DENSITY_POLICIES[0], composition)
+                    .and_then(|runs| runs.first())
+                    .cloned()?;
+                Some(PaintedCompositionRecord {
+                    composition: composition.canonical_name(),
+                    region: region_name(composition),
+                    text_runs,
+                    visible_label,
+                    viewports: ALL_DENSITY_POLICIES
+                        .into_iter()
+                        .map(ViewportDensityPolicy::canonical_name)
+                        .collect(),
+                })
+            })
+            .collect()
     }
 
     /// What one state's specimen emitted at one density policy.
@@ -580,6 +1074,65 @@ const fn policy_index(policy: ViewportDensityPolicy) -> usize {
     }
 }
 
+/// A control's position in [`ALL_COMPONENT_CONTROLS`].
+///
+/// Exhaustive with no wildcard, so a ninth control is a compile error naming
+/// this function rather than a specimen the ledger silently indexes past.
+const fn control_index(control: ComponentControl) -> usize {
+    match control {
+        ComponentControl::ParameterRow => 0,
+        ComponentControl::ChoiceRow => 1,
+        ComponentControl::Toggle => 2,
+        ComponentControl::CompactSlider => 3,
+        ComponentControl::Fader => 4,
+        ComponentControl::Meter => 5,
+        ComponentControl::BrowserRow => 6,
+        ComponentControl::ModalOption => 7,
+    }
+}
+
+/// A composition's position in [`ALL_SHELL_COMPOSITIONS`].
+const fn composition_index(composition: ShellComposition) -> usize {
+    match composition {
+        ShellComposition::ApplicationShell => 0,
+        ShellComposition::ContextSwitch => 1,
+        ShellComposition::IdentityHeader => 2,
+        ShellComposition::Section => 3,
+        ShellComposition::PatchStripRow => 4,
+        ShellComposition::MixerStripBank => 5,
+        ShellComposition::UtilityInspectorPanel => 6,
+        ShellComposition::Footer => 7,
+    }
+}
+
+/// The shell region a composition fills, named as the observation names it.
+const fn region_name(composition: ShellComposition) -> &'static str {
+    match composition.region() {
+        ShellRegion::WholeFrame => "wholeFrame",
+        ShellRegion::ContextLine => "contextLine",
+        ShellRegion::IdentityHeader => "identityHeader",
+        ShellRegion::MainWorkspace => "mainWorkspace",
+        ShellRegion::PersistentSideRegion => "persistentSideRegion",
+        ShellRegion::Footer => "footer",
+    }
+}
+
+/// The canonical name of one semantic control kind.
+///
+/// The kind vocabulary is owned by the control layer; this names it for the
+/// observation without the observation depending on a `Debug` format.
+const fn kind_name(kind: SemanticControlKind) -> &'static str {
+    match kind {
+        SemanticControlKind::Continuous => "Continuous",
+        SemanticControlKind::Stepped => "Stepped",
+        SemanticControlKind::Choice => "Choice",
+        SemanticControlKind::Toggle => "Toggle",
+        SemanticControlKind::Asset => "Asset",
+        SemanticControlKind::Identity => "Identity",
+        SemanticControlKind::Surface => "Surface",
+    }
+}
+
 /// A state's position in [`ALL_COMPONENT_STATES`].
 const fn state_index(state: ComponentState) -> usize {
     match state {
@@ -605,16 +1158,24 @@ pub struct ComponentGalleryObservation {
     pages_declared: usize,
     pages_painted: usize,
     pages_reachable_by_digit: usize,
+    pages_reachable_by_step: usize,
     unbound_digit_retained_page: bool,
     states_declared: usize,
     states_painted: usize,
     states_distinguishable_without_color: bool,
+    controls_declared: usize,
+    controls_painted: usize,
+    kind_role_pairs_unmapped: usize,
+    controls_unreachable_by_any_pair: usize,
+    compositions_declared: usize,
+    compositions_painted: usize,
     desktop_viewport_painted: bool,
     steam_deck_viewport_painted: bool,
     bands_retained_both_viewports: bool,
     clipped_or_overlapping_text: usize,
     token_source_exact: bool,
     typeface_resolved: bool,
+    audio_or_midi_constructed: bool,
     app_state_generation_delta: i64,
     window_closed: bool,
     viewport_width: f32,
@@ -622,6 +1183,8 @@ pub struct ComponentGalleryObservation {
     active_page: &'static str,
     pages_visited: Vec<&'static str>,
     states_rendered: Vec<PaintedStateRecord>,
+    controls_rendered: Vec<PaintedControlRecord>,
+    compositions_rendered: Vec<PaintedCompositionRecord>,
     text_runs_painted: usize,
     unbound_key_presses: usize,
     text_defects: Vec<String>,
@@ -638,17 +1201,25 @@ impl ComponentGalleryObservation {
             pages_declared: GALLERY_PAGE_COUNT,
             pages_painted: ledger.painted_page_count(),
             pages_reachable_by_digit: ledger.digit_reached_page_count(),
+            pages_reachable_by_step: ledger.step_reached_page_count(),
             unbound_digit_retained_page: ledger.unbound_key_presses > 0
                 && ledger.unbound_key_page_changes == 0,
             states_declared: COMPONENT_STATE_COUNT,
             states_painted: ledger.painted_state_count(),
             states_distinguishable_without_color: ledger.states_distinguishable_without_color(),
+            controls_declared: COMPONENT_CONTROL_COUNT,
+            controls_painted: ledger.painted_control_count(),
+            kind_role_pairs_unmapped: ledger.unmapped_kind_role_pairs(),
+            controls_unreachable_by_any_pair: ledger.controls_unreachable_by_any_pair(),
+            compositions_declared: SHELL_COMPOSITION_COUNT,
+            compositions_painted: ledger.painted_composition_count(),
             desktop_viewport_painted: ledger.viewport_painted(ViewportDensityPolicy::Desktop),
             steam_deck_viewport_painted: ledger.viewport_painted(ViewportDensityPolicy::SteamDeck),
             bands_retained_both_viewports: ledger.bands_retained_both_viewports(),
             clipped_or_overlapping_text: ledger.text_defects.len(),
             token_source_exact: ledger.token_source_exact(),
             typeface_resolved: ledger.typeface_resolved(),
+            audio_or_midi_constructed: audio_or_midi_constructed(),
             app_state_generation_delta,
             window_closed,
             viewport_width: ledger.viewport.x,
@@ -660,10 +1231,65 @@ impl ComponentGalleryObservation {
                 .map(|page| page.canonical_name())
                 .collect(),
             states_rendered: ledger.states_rendered(),
+            controls_rendered: ledger.controls_rendered(),
+            compositions_rendered: ledger.compositions_rendered(),
             text_runs_painted: ledger.text_runs,
             unbound_key_presses: ledger.unbound_key_presses,
             text_defects: ledger.text_defects.iter().cloned().collect(),
         }
+    }
+
+    /// How many pages a step key brought on screen.
+    pub const fn pages_reachable_by_step(&self) -> usize {
+        self.pages_reachable_by_step
+    }
+
+    /// How many controls the family declares.
+    pub const fn controls_declared(&self) -> usize {
+        self.controls_declared
+    }
+
+    /// How many controls painted every state they declare, at both policies.
+    pub const fn controls_painted(&self) -> usize {
+        self.controls_painted
+    }
+
+    /// How many `(kind, role)` pairs the gallery could not put on screen.
+    pub const fn kind_role_pairs_unmapped(&self) -> usize {
+        self.kind_role_pairs_unmapped
+    }
+
+    /// How many declared controls no pair resolves to.
+    pub const fn controls_unreachable_by_any_pair(&self) -> usize {
+        self.controls_unreachable_by_any_pair
+    }
+
+    /// How many compositions the family declares.
+    pub const fn compositions_declared(&self) -> usize {
+        self.compositions_declared
+    }
+
+    /// How many compositions emitted runs at both policies.
+    pub const fn compositions_painted(&self) -> usize {
+        self.compositions_painted
+    }
+
+    /// Whether the scene constructed an audio output or a MIDI event source.
+    ///
+    /// Derived from what the scene is built out of, never declared. See
+    /// [`audio_or_midi_constructed`].
+    pub const fn audio_or_midi_constructed(&self) -> bool {
+        self.audio_or_midi_constructed
+    }
+
+    /// The controls that reached the screen, with their visible evidence.
+    pub fn controls_rendered(&self) -> &[PaintedControlRecord] {
+        &self.controls_rendered
+    }
+
+    /// The compositions that reached the screen, with their visible evidence.
+    pub fn compositions_rendered(&self) -> &[PaintedCompositionRecord] {
+        &self.compositions_rendered
     }
 
     /// How many pages the vocabulary declares.
@@ -762,6 +1388,94 @@ impl ComponentGalleryObservation {
     }
 }
 
+// ===========================================================================
+// The silence is derived, not declared
+// ===========================================================================
+
+/// This module's own production source, embedded at compile time.
+///
+/// Embedded rather than read from disk so the derivation below works in a
+/// shipped binary and needs no filesystem at demo time — the same reason the
+/// authored typeface is vendored rather than looked up.
+const GALLERY_SCENE_SOURCE: &str = include_str!("component_gallery_scene.rs");
+
+/// Whether the gallery scene constructs an audio output or a MIDI event source.
+///
+/// **Derived, not declared.** A hard-coded `false` satisfies the witness
+/// predicate and proves nothing: it would keep reporting silence the day
+/// somebody wired a stream into this scene. So the answer is computed from what
+/// this module is actually built out of — its own production source is searched
+/// for any mention of the types that *are* the audio output and the MIDI event
+/// source in this product, and the flag is true if it finds one.
+///
+/// That makes it falsifiable in the only way that matters: adding an audio
+/// construction to this scene flips the flag to `true` and the predicate fails,
+/// which is exactly the report an operator would want. The test below proves
+/// the search is capable of returning `true`, so a scan that had quietly stopped
+/// matching anything cannot pass as silence.
+///
+/// Only the part of the file before the first test module is searched. A test
+/// that *names* an audio type — as the one proving this search works must —
+/// ships in no binary and constructs nothing at demo time.
+fn audio_or_midi_constructed() -> bool {
+    source_constructs_audio_or_midi(&production_source(GALLERY_SCENE_SOURCE))
+}
+
+/// The part of a source file that ships, with its prose removed.
+///
+/// Comments are stripped for the same reason the control family strips them
+/// before its own boundary scans: prose that *names* the boundary must not be
+/// mistaken for code that crosses it. This module's own explanation of why the
+/// gallery constructs no MIDI source has to be able to say "MIDI source".
+fn production_source(source: &str) -> String {
+    let marker = format!("#[cfg({})]", "test");
+    let shipping = match source.find(&marker) {
+        Some(offset) => &source[..offset],
+        None => source,
+    };
+    shipping
+        .lines()
+        .map(|line| match line.find("//") {
+            Some(offset) => &line[..offset],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether `source` names anything that makes sound or reads MIDI.
+///
+/// The needles are assembled at run time so that this function's own source
+/// does not match them; the project already uses that shape for its
+/// `SemanticAction` and visual-literal guards.
+///
+/// The split points are chosen so that **no fragment spelled here is itself one
+/// of the needles**. That is not cosmetic: the first version of this function
+/// spelled `"MidiEventSource"` as one half of `CorridorsMidiEventSource`, and
+/// the search duly found that literal in its own source and reported the gallery
+/// as constructing a MIDI source. The tests below are what caught it, and they
+/// are what will catch the next bad split — a scene that is genuinely silent
+/// reports `false`, so a self-match shows up as a failure rather than as
+/// caution.
+fn source_constructs_audio_or_midi(source: &str) -> bool {
+    let needles = [
+        // The two production ports the standalone application constructs.
+        format!("{}{}", "Cpal", "AudioOutput"),
+        format!("{}{}", "CorridorsMidi", "EventSource"),
+        // The port traits themselves, so a scene reaching for either through an
+        // abstraction is caught as well as one naming a concrete adapter.
+        format!("{}{}", "Audio", "OutputPort"),
+        format!("{}{}", "MidiEvent", "Source"),
+        // What a prepared stream, a renderer, and a note event are called here.
+        format!("{}{}", "Prepared", "Graph"),
+        format!("{}{}", "Audio", "Renderer"),
+        format!("{}{}", "Midi", "Message"),
+    ];
+    needles
+        .iter()
+        .any(|needle| source.contains(needle.as_str()))
+}
+
 /// A failure opening or running the gallery.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ComponentGalleryError {
@@ -772,6 +1486,11 @@ pub enum ComponentGalleryError {
     /// no reducer to measure the generation delta against.
     #[error("gallery reducer witness unavailable: {0}")]
     Capability(CapabilityError),
+    /// The production projector could not derive the content the control and
+    /// composition specimens read from, so the gallery would have nothing real
+    /// to show them with.
+    #[error("gallery specimen projection unavailable: {0}")]
+    Projection(String),
     /// The window itself failed.
     #[error("component gallery window failed: {0}")]
     Window(String),
@@ -842,6 +1561,53 @@ impl<'a> SpecimenPainter<'a> {
 
     fn record_color(&mut self, color: Color32) {
         self.ledger.painted_colors.insert(color.to_array());
+    }
+
+    /// Records the runs a control or composition emitted through its own
+    /// painter.
+    ///
+    /// They are counted and checked against the registered families the same
+    /// way this painter's own runs are, because a run the operator sees is a run
+    /// the observation must account for however it was emitted.
+    ///
+    /// They are deliberately *not* entered into the region's clipping and
+    /// overlap check. That check is the gallery asserting its own layout — its
+    /// bands, headings, captions, and the seats it allocates. What a control or
+    /// a composition does inside the seat it was given is the claim of the work
+    /// package that owns it, proved by its own tests and, at the two authored
+    /// viewports where the claim means something, by the deterministic
+    /// composition target. A gallery seat is neither authored viewport; it is
+    /// one of two compositions sharing one window. Asserting internal layout
+    /// here would be making a claim about a size the product never runs at, and
+    /// it would contradict rather than reinforce the claim made where it counts.
+    /// What the gallery *does* assert about them is that something the specimen
+    /// painted has positive area inside the seat it was given. That is the
+    /// gallery's own claim — it chose the rectangle — and a specimen whose
+    /// content all lands outside its seat is one the operator cannot see, which
+    /// is a gallery layout defect however correct the component's internal
+    /// arrangement is.
+    fn record_component_runs(&mut self, seat: Rect, name: &str, runs: &[PaintedRun]) {
+        let mut visible = false;
+        for run in runs {
+            self.ledger.text_runs += 1;
+            let resolved = run
+                .families
+                .iter()
+                .all(|family| self.registered_families.contains(family));
+            if !resolved {
+                self.ledger.unresolved_text_runs += 1;
+            }
+            let inside = seat.intersect(run.rect);
+            if inside.width() > 0.0 && inside.height() > 0.0 {
+                visible = true;
+            }
+        }
+        if !visible {
+            self.ledger.text_defects.insert(format!(
+                "nothing visible in its seat: {name} emitted {} runs, none inside {seat:?}",
+                runs.len()
+            ));
+        }
     }
 
     fn record_run(&mut self, rect: Rect, content: &str, font_id: &FontId) {
@@ -1189,6 +1955,57 @@ fn heading(painter: &mut SpecimenPainter<'_>, stack: &mut Stack, label: &str) {
     );
 }
 
+/// Paints prose across as many rows as it needs to fit the stack's width.
+///
+/// The gallery's own notes are sentences, not labels, and the two columns are
+/// different widths. A note that is one line in the desktop column and does not
+/// fit in the compact one would be reported as clipped — correctly, since the
+/// operator could not read it — so the note wraps rather than the column
+/// widening or the sentence being cut down until it fits the narrower of the
+/// two. Word-wrapped by measurement, which is the same layout the paint pass
+/// then checks.
+fn paint_wrapped(
+    painter: &mut SpecimenPainter<'_>,
+    stack: &mut Stack,
+    text: &str,
+    style: TypeStyle,
+    color: SemanticColor,
+) {
+    let width = stack.remaining().width();
+    let line_height = style.metrics().line_height_px;
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{line} {word}")
+        };
+        if !line.is_empty() && painter.measure_width(&candidate, style) > width {
+            let row = stack.row(line_height);
+            painter.text_left_center(
+                pos2(row.min.x, row.center().y),
+                &line,
+                style,
+                color,
+                ComponentState::Resting,
+            );
+            line = word.to_owned();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        let row = stack.row(line_height);
+        painter.text_left_center(
+            pos2(row.min.x, row.center().y),
+            &line,
+            style,
+            color,
+            ComponentState::Resting,
+        );
+    }
+}
+
 /// The gallery's own eframe application.
 ///
 /// It owns the page selection, the ledger, and nothing else. There is no
@@ -1212,21 +2029,27 @@ impl ComponentGalleryApplication {
     /// Nothing here reaches `KeyboardInputTranslator`, so no key press becomes a
     /// `SemanticAction` and nothing can reach `AppState`.
     fn handle_input(&mut self, context: &egui::Context) {
-        let inputs: Vec<(WindowInput, bool)> = context.input(|input| {
+        let inputs: Vec<WindowInput> = context.input(|input| {
             input
                 .events
                 .iter()
                 .filter_map(normalize_gallery_event)
                 .collect()
         });
-        for (input, was_digit) in inputs {
+        for input in inputs {
             let before = self.selection.active();
             let selection = self.selection.apply(input);
             let mut ledger = self.ledger.borrow_mut();
             match selection {
                 PageSelection::Changed(page) => ledger.record_digit_request(page),
+                PageSelection::Stepped(page) => ledger.record_step_request(page),
                 PageSelection::Retained(page) => {
-                    if was_digit && input.kind() == WindowInputKind::KeyDown {
+                    // A step that ran into an end is a bound key declining to
+                    // move, which is a different fact from a key that binds
+                    // nothing; only the latter is what the retention field
+                    // reports.
+                    let bound_nothing = PageStep::for_key(input.key()).is_none();
+                    if bound_nothing && input.kind() == WindowInputKind::KeyDown {
                         ledger.record_unbound_key(page != before);
                     }
                 }
@@ -1253,48 +2076,377 @@ impl eframe::App for ComponentGalleryApplication {
     }
 }
 
-/// Normalizes one egui event into the window vocabulary, reporting whether the
-/// physical key was a digit.
+/// Normalizes one egui event into the window vocabulary.
 ///
-/// The digit flag is what lets the scene tell "the operator pressed 9" from "the
-/// operator pressed a letter": [`WindowKey`] deliberately normalizes every key
-/// beyond the eight bound digits to [`WindowKey::Other`], and the unbound-digit
-/// retention the gallery must demonstrate needs that distinction. The adapter's
-/// equivalent mapping is private to it and carries no such flag, so the two
-/// stay separate rather than one growing a parameter it has no use for.
-fn normalize_gallery_event(event: &egui::Event) -> Option<(WindowInput, bool)> {
+/// The previous version of this function also reported whether the physical key
+/// was a digit, so the scene could tell "the operator pressed 9" — a digit that
+/// bound no page — from "the operator pressed a letter". That distinction is
+/// gone because its subject is: all ten digits now bind pages. What the scene
+/// still has to demonstrate is that a key binding *nothing* changes nothing,
+/// and every key beyond the twelve the gallery binds normalizes to
+/// [`WindowKey::Other`], which is exactly that key.
+fn normalize_gallery_event(event: &egui::Event) -> Option<WindowInput> {
     match event {
         egui::Event::Key { key, pressed, .. } => {
-            let (normalized, is_digit) = normalize_gallery_key(*key);
-            Some((
-                if *pressed {
-                    WindowInput::key_down(normalized)
-                } else {
-                    WindowInput::key_up(normalized)
-                },
-                is_digit,
-            ))
+            let normalized = normalize_gallery_key(*key);
+            Some(if *pressed {
+                WindowInput::key_down(normalized)
+            } else {
+                WindowInput::key_up(normalized)
+            })
         }
-        egui::Event::WindowFocused(false) => Some((WindowInput::focus_lost(), false)),
+        egui::Event::WindowFocused(false) => Some(WindowInput::focus_lost()),
         _ => None,
     }
 }
 
-/// Maps a physical key to the window vocabulary and reports whether it was a
-/// digit.
-fn normalize_gallery_key(key: egui::Key) -> (WindowKey, bool) {
+/// Maps a physical key to the window vocabulary.
+///
+/// The two bracket keys are normalized here for the same reason the digits are:
+/// the window sees them and the scene binds them locally. Neither reaches
+/// [`KeyboardInputTranslator`](crate::shell::keyboard_input_translator::KeyboardInputTranslator),
+/// so neither can become a `SemanticAction`.
+fn normalize_gallery_key(key: egui::Key) -> WindowKey {
     match key {
-        egui::Key::Num1 => (WindowKey::Digit1, true),
-        egui::Key::Num2 => (WindowKey::Digit2, true),
-        egui::Key::Num3 => (WindowKey::Digit3, true),
-        egui::Key::Num4 => (WindowKey::Digit4, true),
-        egui::Key::Num5 => (WindowKey::Digit5, true),
-        egui::Key::Num6 => (WindowKey::Digit6, true),
-        egui::Key::Num7 => (WindowKey::Digit7, true),
-        egui::Key::Num8 => (WindowKey::Digit8, true),
-        egui::Key::Num9 | egui::Key::Num0 => (WindowKey::Other, true),
-        _ => (WindowKey::Other, false),
+        egui::Key::Num1 => WindowKey::Digit1,
+        egui::Key::Num2 => WindowKey::Digit2,
+        egui::Key::Num3 => WindowKey::Digit3,
+        egui::Key::Num4 => WindowKey::Digit4,
+        egui::Key::Num5 => WindowKey::Digit5,
+        egui::Key::Num6 => WindowKey::Digit6,
+        egui::Key::Num7 => WindowKey::Digit7,
+        egui::Key::Num8 => WindowKey::Digit8,
+        egui::Key::Num9 => WindowKey::Digit9,
+        egui::Key::Num0 => WindowKey::Digit0,
+        egui::Key::OpenBracket => WindowKey::BracketLeft,
+        egui::Key::CloseBracket => WindowKey::BracketRight,
+        _ => WindowKey::Other,
     }
+}
+
+// ===========================================================================
+// Reading back what a control or a composition actually painted
+// ===========================================================================
+
+/// Every text run one closure appended to `ui`'s layer, in paint order.
+///
+/// The gallery's own [`SpecimenPainter`] records what it emits at the moment it
+/// emits it. A control and a composition paint through painters of their own,
+/// which that ledger never sees — so what they put on screen is read back out
+/// of the layer it landed in, bounded below by the shape index the layer stood
+/// at before the render call.
+///
+/// This is the difference between measuring and declaring. A control that was
+/// constructed and never painted appends no shapes and returns no runs, so
+/// there is no arrangement of specimen lists that produces coverage here.
+fn painted_runs(ui: &mut egui::Ui, render: impl FnOnce(&mut egui::Ui)) -> Vec<PaintedRun> {
+    let layer = ui.layer_id();
+    let context = ui.ctx().clone();
+    let before = context.graphics_mut(|layers| layers.entry(layer).all_entries().len());
+    render(ui);
+    context.graphics_mut(|layers| {
+        let mut runs = Vec::new();
+        for clipped in layers.entry(layer).all_entries().skip(before) {
+            collect_runs(&clipped.shape, clipped.clip_rect, &mut runs);
+        }
+        runs
+    })
+}
+
+/// One text run a control or composition put on screen.
+#[derive(Clone, Debug)]
+struct PaintedRun {
+    text: String,
+    rect: Rect,
+    families: Vec<FontFamily>,
+}
+
+/// Walks one emitted shape, collecting the text runs inside it.
+fn collect_runs(shape: &egui::epaint::Shape, clip: Rect, runs: &mut Vec<PaintedRun>) {
+    match shape {
+        egui::epaint::Shape::Text(text) => {
+            let content = text.galley.text().to_owned();
+            if content.is_empty() {
+                return;
+            }
+            let families = text
+                .galley
+                .job
+                .sections
+                .iter()
+                .map(|section| section.format.font_id.family.clone())
+                .collect();
+            // The painted rect is the galley placed at its anchor, intersected
+            // with the clip the painter was given: what is outside the clip did
+            // not reach the screen, so counting it as painted would report a
+            // run the operator cannot see.
+            let placed = Rect::from_min_size(text.pos, text.galley.size());
+            runs.push(PaintedRun {
+                text: content,
+                rect: placed.intersect(clip),
+                families,
+            });
+        }
+        egui::epaint::Shape::Vec(nested) => {
+            for shape in nested {
+                collect_runs(shape, clip, runs);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ===========================================================================
+// The projected content the control and composition specimens are drawn from
+// ===========================================================================
+
+/// The production projections the gallery's specimens read their content from.
+///
+/// Built once, from a real [`AppState`] through the production
+/// [`StateProjector`](crate::control::StateProjector) — never assembled.
+/// [`SemanticControlViewModel`]'s fields are private precisely so that no
+/// surface can invent one, and a gallery that fabricated its input would be
+/// showing the operator a control the product cannot actually produce.
+///
+/// This is where representative content belongs. The production shell is where
+/// it does not (C-003): a placeholder there would misrepresent absent state as
+/// present, whereas a gallery exists to show what a component looks like when
+/// it is given something to show.
+struct GallerySpecimenSource {
+    patch: GraphicalShellProjection,
+    mixer: GraphicalShellProjection,
+}
+
+impl GallerySpecimenSource {
+    /// Derives both projections, or reports why neither is available.
+    fn build() -> Result<Self, ComponentGalleryError> {
+        Ok(Self {
+            patch: gallery_projection(TopLevelContext::Patch)?,
+            mixer: gallery_projection(TopLevelContext::Mixer)?,
+        })
+    }
+
+    /// The projections, in the order specimens are searched.
+    fn projections(&self) -> [&GraphicalShellProjection; 2] {
+        [&self.patch, &self.mixer]
+    }
+
+    /// The first projected control of one semantic kind, or `None` when the
+    /// production projection carries none.
+    ///
+    /// `None` is a real answer and the page prints it. The alternative — handing
+    /// the control a view model of some other kind so the specimen is never
+    /// blank — would show the operator a shape the selection rule never
+    /// produces.
+    fn view_of_kind(&self, kind: SemanticControlKind) -> Option<&SemanticControlViewModel> {
+        self.projections().into_iter().find_map(|projection| {
+            projection
+                .semantic_model()
+                .surfaces()
+                .iter()
+                .flat_map(|surface| surface.controls())
+                .find(|control| control.kind() == kind)
+        })
+    }
+
+    /// The specimen for one declared control, or `None` when the projection
+    /// carries nothing of the kind that selects it.
+    fn specimen(&self, control: ComponentControl) -> Option<ControlSpecimen<'_>> {
+        let (kind, role) = selecting_pair(control)?;
+        Some(ControlSpecimen {
+            kind,
+            role,
+            view: self.view_of_kind(kind)?,
+        })
+    }
+
+    /// The projection a composition is shown with.
+    ///
+    /// The mixer strip bank is a MIXER structure and has nothing to arrange in
+    /// a PATCH projection, so it is shown in the context it belongs to. Every
+    /// other composition is shown on PATCH, which is the context the gallery
+    /// opens describing.
+    const fn projection_for(&self, composition: ShellComposition) -> &GraphicalShellProjection {
+        match composition {
+            ShellComposition::MixerStripBank => &self.mixer,
+            ShellComposition::ApplicationShell
+            | ShellComposition::ContextSwitch
+            | ShellComposition::IdentityHeader
+            | ShellComposition::Section
+            | ShellComposition::PatchStripRow
+            | ShellComposition::UtilityInspectorPanel
+            | ShellComposition::Footer => &self.patch,
+        }
+    }
+}
+
+/// The one specimen source the gallery derives, built on first use.
+///
+/// Derived once rather than per frame: the projection comes from a real
+/// [`AppState`] through the production projector, and rebuilding that sixty
+/// times a second would make the gallery's cost a property of its frame rate
+/// rather than of what it paints. The value is immutable once built, which is
+/// what makes sharing it safe.
+static GALLERY_SPECIMENS: std::sync::OnceLock<Option<GallerySpecimenSource>> =
+    std::sync::OnceLock::new();
+
+/// The specimen source, or `None` when the production projector could not
+/// derive one.
+///
+/// `None` is not a failure to open the window. The vocabulary pages need no
+/// projection at all, and a gallery that refused to start because the projector
+/// was unavailable would deny the operator the eight pages that still work. The
+/// control and composition pages say what is missing instead, and the
+/// observation's coverage counts fall short — which is the accurate report.
+fn gallery_specimen_source() -> Option<&'static GallerySpecimenSource> {
+    GALLERY_SPECIMENS
+        .get_or_init(|| GallerySpecimenSource::build().ok())
+        .as_ref()
+}
+
+/// One control specimen: the pair that selects the control, and what it paints.
+struct ControlSpecimen<'a> {
+    kind: SemanticControlKind,
+    role: PresentationRole,
+    view: &'a SemanticControlViewModel,
+}
+
+/// The first `(kind, role)` pair, in declared order, that selects `control`.
+///
+/// Derived from [`control_for`] rather than written out here. A gallery that
+/// hard-coded the pair would keep showing a control in a role the selection
+/// rule had stopped putting it in, which is precisely the drift the total
+/// `match` in the control family exists to catch.
+fn selecting_pair(control: ComponentControl) -> Option<(SemanticControlKind, PresentationRole)> {
+    ALL_SEMANTIC_CONTROL_KINDS
+        .into_iter()
+        .flat_map(|kind| {
+            ALL_PRESENTATION_ROLES
+                .into_iter()
+                .map(move |role| (kind, role))
+        })
+        .find(|(kind, role)| control_for(*kind, *role).control() == Some(control))
+}
+
+/// The production graphical shell projection for one top-level context.
+///
+/// # Why the SoundFont capability is here, and why it reads no file
+///
+/// The gallery paints; it does not sound. A visual scene that failed to start
+/// because a 247 MB SoundFont was missing would be coupling the two for no
+/// gain, so this loads nothing. But the *only* `ParameterKind::Asset` in the
+/// product belongs to the SoundFont capability, and the browser row is the
+/// control that `(Asset, ListedRow)` selects — so without that capability's
+/// descriptor there is no asset row to show, and the gallery would be silently
+/// one control short of the family it claims to cover.
+///
+/// The resolution is to build the *production* capability descriptor from a
+/// small in-memory preset list rather than from a parsed SF2. The descriptor
+/// shape, the parameter kinds, and the authored asset path are the product's
+/// own; only the preset names are representative. That is exactly what a
+/// gallery is for, and exactly what the production shell may not do (C-003).
+fn gallery_projection(
+    context: TopLevelContext,
+) -> Result<GraphicalShellProjection, ComponentGalleryError> {
+    use crate::control::app_event::AppEvent;
+
+    let braids = crate::adapter::braids_capability::BraidsCapability::new()
+        .map_err(ComponentGalleryError::Capability)?;
+    let soundfont = crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability::new(
+        std::sync::Arc::new(gallery_preset_catalog()?),
+    )
+    .map_err(ComponentGalleryError::Capability)?;
+    let registry = crate::synth::instrument_capability::CapabilityRegistry::new(vec![
+        soundfont.descriptor(),
+        braids.descriptor(),
+    ])
+    .map_err(ComponentGalleryError::Capability)?;
+    // The production default-config factory, so a specimen Patch is configured
+    // the way the application configures one rather than by this file deciding
+    // what a default is.
+    let factory = crate::synth::DescriptorDefaultConfigFactory::new(
+        registry.clone(),
+        vec![Box::new(soundfont.clone()), Box::new(braids.clone())],
+    );
+    let mut state = AppState::new(registry, gallery_global_parameters());
+    // Two Patches, so the projection carries both capabilities' parameter
+    // kinds: the SoundFont's choice and asset, and the envelope's continuous
+    // values that every Patch has.
+    let patches = vec![
+        gallery_patch(
+            1,
+            "Lead Pad",
+            &factory,
+            crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
+            3,
+            3,
+        )?,
+        gallery_patch(
+            2,
+            "Wavetable",
+            &factory,
+            crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID,
+            4,
+            4,
+        )?,
+    ];
+    state
+        .apply(AppEvent::InstallPatches(patches))
+        .map_err(|rejection| {
+            ComponentGalleryError::Projection(format!(
+                "the specimen Patches were rejected: {rejection:?}"
+            ))
+        })?;
+    state
+        .apply(AppEvent::SelectContext(context))
+        .map_err(|rejection| {
+            ComponentGalleryError::Projection(format!(
+                "the specimen context was rejected: {rejection:?}"
+            ))
+        })?;
+    let (_, _, _, shell, _) = crate::control::StateProjector::new()
+        .project_with_shell(&state)
+        .map_err(|error| ComponentGalleryError::Projection(format!("{error:?}")))?;
+    Ok(shell)
+}
+
+/// One installed specimen Patch, configured through the production factory.
+fn gallery_patch(
+    id: u32,
+    name: &str,
+    factory: &crate::synth::DescriptorDefaultConfigFactory,
+    capability_id: &str,
+    channel: u8,
+    track: u8,
+) -> Result<crate::synth::Patch, ComponentGalleryError> {
+    let capability = crate::synth::capability_id::CapabilityId::new(capability_id)
+        .map_err(|_| ComponentGalleryError::Projection(capability_id.to_owned()))?;
+    Ok(crate::synth::Patch::new(
+        crate::kernel::PatchId::new(id).expect("the gallery specimen PatchId is in range"),
+        name.to_owned(),
+        factory
+            .create(&capability)
+            .map_err(ComponentGalleryError::Capability)?,
+        crate::kernel::MidiChannel::new(channel)
+            .expect("the gallery specimen MIDI channel is in range"),
+        crate::mixer::patch_output::PatchOutput::to_track(
+            crate::mixer::mixer_track_id::MixerTrackId::new(track)
+                .expect("the gallery specimen track is in range"),
+        ),
+    ))
+}
+
+/// A small in-memory preset catalog, so the SoundFont descriptor exists without
+/// a SoundFont being read.
+///
+/// Two entries rather than one: a choice row with a single option cannot show
+/// what choosing looks like.
+fn gallery_preset_catalog() -> Result<crate::synth::SoundFontPresetCatalog, ComponentGalleryError> {
+    crate::synth::SoundFontPresetCatalog::from_sources([
+        crate::synth::SoundFontPresetSource::new(0, 0, 0, "Grand Piano", true),
+        crate::synth::SoundFontPresetSource::new(1, 0, 48, "String Ensemble", true),
+    ])
+    .map_err(|error| ComponentGalleryError::Projection(format!("{error:?}")))
 }
 
 /// Paints one complete gallery frame into `ui`.
@@ -1302,6 +2454,20 @@ fn normalize_gallery_key(key: egui::Key) -> (WindowKey, bool) {
 /// This is the whole render path. The tests below drive it in a headless
 /// `egui::Context`, so what they measure is what the window paints.
 fn paint_gallery(ui: &mut egui::Ui, active: ComponentGalleryPage, ledger: &mut GalleryPaintLedger) {
+    paint_gallery_with(ui, active, ledger, gallery_specimen_source());
+}
+
+/// Paints one frame against an explicitly supplied specimen source.
+///
+/// Split out so the tests below can drive the same production paint path with a
+/// source that failed to build, and see the page say so, rather than only ever
+/// seeing the happy path.
+fn paint_gallery_with(
+    ui: &mut egui::Ui,
+    active: ComponentGalleryPage,
+    ledger: &mut GalleryPaintLedger,
+    specimens: Option<&GallerySpecimenSource>,
+) {
     let window = ui.max_rect();
     let context = ui.ctx().clone();
     let families = context.fonts(|fonts| fonts.families());
@@ -1331,12 +2497,16 @@ fn paint_gallery(ui: &mut egui::Ui, active: ComponentGalleryPage, ledger: &mut G
 
     paint_composition(
         &mut specimen,
+        ui,
+        specimens,
         desktop_column,
         ViewportDensityPolicy::Desktop,
         active,
     );
     paint_composition(
         &mut specimen,
+        ui,
+        specimens,
         deck_column,
         ViewportDensityPolicy::SteamDeck,
         active,
@@ -1368,13 +2538,19 @@ fn paint_identity_band(
     let inset = ViewportDensityPolicy::Desktop.rhythm().inset_px;
     painter.text_left_center(
         pos2(band.min.x + inset, band.center().y),
-        // The digit and the position are the same number, so the identity
-        // names it once: `PAGE 3 / 8 · SPACING AND GEOMETRY` reads as both the
-        // key that got here and where "here" is.
+        // The position and the digit were once the same number and no longer
+        // are: fifteen pages, ten digits. So the identity names the position —
+        // which every page has — and then names the key that reaches it, which
+        // is the digit where one is bound and the brackets where none is. An
+        // operator on page 11 must be able to read how they got there.
         &format!(
-            "PAGE {} / {} · {}",
-            active.digit_label(),
+            "PAGE {} / {} · {} · {}",
+            active.index() + 1,
             GALLERY_PAGE_COUNT,
+            match active.digit_label() {
+                Some(digit) => format!("KEY {digit}"),
+                None => format!("KEY {} {}", STEP_PREVIOUS_LABEL, STEP_NEXT_LABEL),
+            },
             active.title()
         ),
         TypeStyle::HeadingSection,
@@ -1396,29 +2572,47 @@ fn paint_identity_band(
     painter.finish_region();
 }
 
-/// Paints the page index. Every binding is on screen, the active one accented.
+/// Paints the page index. Every page is on screen, the active one accented.
 fn paint_index_band(painter: &mut SpecimenPainter<'_>, band: Rect, active: ComponentGalleryPage) {
     painter.begin_region(band);
     painter.fill(band, SemanticColor::BgElevated, Radius::None);
-    let hints: Vec<ActionHint<'static>> = ALL_GALLERY_PAGES
+    // Every binding is on screen, and so is every page that has none: a page
+    // listed without a key is a page the operator learns to step to, and a page
+    // left off the index entirely is one they never learn exists.
+    //
+    // Fifteen entries no longer fit one line at this width, and a clipped index
+    // is an index that stops naming the last pages — the very ones without a
+    // digit, which are the ones an operator most needs it for. So the index is
+    // two lines: the ten digit-bound pages, then the five reached by stepping.
+    let hint = |page: ComponentGalleryPage| {
+        ActionHint::new(
+            page.digit_label().unwrap_or(STEP_ONLY_LABEL),
+            page.index_label(),
+            if page == active {
+                HintTone::Focus
+            } else {
+                HintTone::Neutral
+            },
+        )
+    };
+    let bound: Vec<ActionHint<'static>> = ALL_GALLERY_PAGES
         .into_iter()
-        .map(|page| {
-            ActionHint::new(
-                page.digit_label(),
-                page.index_label(),
-                if page == active {
-                    HintTone::Focus
-                } else {
-                    HintTone::Neutral
-                },
-            )
-        })
+        .filter(|page| page.digit().is_some())
+        .map(hint)
+        .collect();
+    let stepped: Vec<ActionHint<'static>> = ALL_GALLERY_PAGES
+        .into_iter()
+        .filter(|page| page.digit().is_none())
+        .map(hint)
         .collect();
     let inset = ViewportDensityPolicy::Desktop.rhythm().inset_px;
+    let line = TypeStyle::InstructionHint.metrics().line_height_px;
+    let first = band.center().y - line / 2.0;
+    painter.hint_line_at(pos2(band.min.x + inset, first), Align2::LEFT_CENTER, &bound);
     painter.hint_line_at(
-        pos2(band.min.x + inset, band.center().y),
+        pos2(band.min.x + inset, first + line),
         Align2::LEFT_CENTER,
-        &hints,
+        &stepped,
     );
     painter.hairline(rules::RuleSpan::Horizontal {
         y_px: band.max.y,
@@ -1437,8 +2631,16 @@ fn paint_footer_band(painter: &mut SpecimenPainter<'_>, band: Rect) {
         pos2(band.min.x + inset, band.center().y),
         Align2::LEFT_CENTER,
         &[
-            ActionHint::new("1-8", "PAGE", HintTone::Focus),
-            ActionHint::new("9", "UNBOUND DIGIT", HintTone::Adjust),
+            ActionHint::new("1-9 0", "PAGE", HintTone::Focus),
+            ActionHint::new(
+                &format!("{STEP_PREVIOUS_LABEL} {STEP_NEXT_LABEL}"),
+                "STEP",
+                HintTone::Focus,
+            ),
+            // Not "9" any more: with ten digits bound to ten pages there is no
+            // unbound digit left to press. What still binds nothing is every
+            // other key, and that is what this names.
+            ActionHint::new("ANY OTHER KEY", "BINDS NO PAGE", HintTone::Adjust),
             ActionHint::new("CLOSE WINDOW", "FINISH", HintTone::Back),
         ],
     );
@@ -1463,6 +2665,8 @@ fn paint_footer_band(painter: &mut SpecimenPainter<'_>, band: Rect) {
 /// and the page only after both compositions did.
 fn paint_composition(
     painter: &mut SpecimenPainter<'_>,
+    ui: &mut egui::Ui,
+    specimens: Option<&GallerySpecimenSource>,
     column: Rect,
     policy: ViewportDensityPolicy,
     active: ComponentGalleryPage,
@@ -1505,6 +2709,75 @@ fn paint_composition(
         }
         ComponentGalleryPage::ActionHints => paint_action_hints_page(painter, &mut stack),
         ComponentGalleryPage::ShellBands => paint_shell_bands_page(painter, &mut stack, policy),
+        ComponentGalleryPage::ParameterAndChoiceRows => paint_control_page(
+            painter,
+            ui,
+            specimens,
+            &mut stack,
+            policy,
+            &[ComponentControl::ParameterRow, ComponentControl::ChoiceRow],
+        ),
+        ComponentGalleryPage::TogglesAndSliders => paint_control_page(
+            painter,
+            ui,
+            specimens,
+            &mut stack,
+            policy,
+            &[ComponentControl::Toggle, ComponentControl::CompactSlider],
+        ),
+        ComponentGalleryPage::FadersAndMeters => paint_control_page(
+            painter,
+            ui,
+            specimens,
+            &mut stack,
+            policy,
+            &[ComponentControl::Fader, ComponentControl::Meter],
+        ),
+        ComponentGalleryPage::BrowserAndModalOptions => paint_control_page(
+            painter,
+            ui,
+            specimens,
+            &mut stack,
+            policy,
+            &[ComponentControl::BrowserRow, ComponentControl::ModalOption],
+        ),
+        ComponentGalleryPage::ShellAndContextSwitch => paint_composition_page(
+            painter,
+            ui,
+            specimens,
+            &mut stack,
+            policy,
+            &[
+                ShellComposition::ApplicationShell,
+                ShellComposition::ContextSwitch,
+            ],
+        ),
+        ComponentGalleryPage::HeadersAndSections => paint_composition_page(
+            painter,
+            ui,
+            specimens,
+            &mut stack,
+            policy,
+            &[ShellComposition::IdentityHeader, ShellComposition::Section],
+        ),
+        // Four compositions, because the eighth — the mixer strip bank — was
+        // authored into the family after the fifteen pages were declared, and
+        // the page set is closed. It belongs here rather than anywhere else:
+        // this is the page of main-surface and side-region structure, and the
+        // bank is main-surface structure. See F-09.
+        ComponentGalleryPage::StripPanelAndFooter => paint_composition_page(
+            painter,
+            ui,
+            specimens,
+            &mut stack,
+            policy,
+            &[
+                ShellComposition::PatchStripRow,
+                ShellComposition::MixerStripBank,
+                ShellComposition::UtilityInspectorPanel,
+                ShellComposition::Footer,
+            ],
+        ),
     }
 
     let painted_runs = painter.ledger.text_runs - runs_before;
@@ -1513,6 +2786,462 @@ fn paint_composition(
         painter.ledger.record_painted_page(active, painted_runs);
     }
     painter.finish_region();
+}
+
+/// The three controls the design file authors no specimen for.
+///
+/// Recorded as F-01: two independent node-type censuses of the whole Screens
+/// page found 202 frames, 188 text nodes, 104 rounded rectangles, 39 instances,
+/// six vectors — and zero ellipses, polygons, or boolean shapes. Every binary in
+/// the file is a text run, and the file defines exactly five component sets.
+///
+/// All three shipped as flagged minimums built from what the file *does* say.
+/// Whether Phase 4 keeps them or the design file is extended first is a product
+/// decision, and the operator makes it by looking at these pages — so the flag
+/// is painted beside the specimen rather than left in a source comment. Dressing
+/// them up, or letting them sit unremarked among the well-specified controls,
+/// would be hiding the very thing these pages exist to surface.
+const CONTROLS_WITHOUT_AN_AUTHORED_SPECIMEN: [(ComponentControl, &str); 3] = [
+    (
+        ComponentControl::ChoiceRow,
+        "NO AUTHORED SPECIMEN · the Compact Parameter Slider's twelve variants add no directional mark in any state, so this row ships without adjacency affordances",
+    ),
+    (
+        ComponentControl::Toggle,
+        "NO AUTHORED SPECIMEN · no toggle, switch, checkbox, or stepper set exists, so ON/OFF is taken from DESIGN.md:468 plus one filled/hollow shape channel",
+    ),
+    (
+        ComponentControl::Meter,
+        "NO AUTHORED SPECIMEN · the Mixer screen holds sixteen Faders and no level readout, ladder, or peak mark, so this is a read-only fader twin without the grab cap",
+    ),
+];
+
+/// The flag one control carries, where the design file authors no specimen.
+fn missing_specimen_note(control: ComponentControl) -> Option<&'static str> {
+    CONTROLS_WITHOUT_AN_AUTHORED_SPECIMEN
+        .into_iter()
+        .find_map(|(flagged, note)| (flagged == control).then_some(note))
+}
+
+/// Paints the controls named by `controls`, each in every state it declares.
+///
+/// The state list is the control's own `applicable_states`, so a control that
+/// declares nine shows nine and one that declares seven shows seven. The page
+/// does not carry a list of its own: a page-local list would keep showing seven
+/// states for a control that had grown to eight.
+fn paint_control_page(
+    painter: &mut SpecimenPainter<'_>,
+    ui: &mut egui::Ui,
+    specimens: Option<&GallerySpecimenSource>,
+    stack: &mut Stack,
+    policy: ViewportDensityPolicy,
+    controls: &[ComponentControl],
+) {
+    // Side by side rather than stacked. Two controls at up to nine states each
+    // is eighteen rows, and eighteen rows do not fit a column that is half a
+    // window tall — the specimens would run off the bottom, which the paint pass
+    // would report and an operator would simply not see.
+    let seats = split_columns(stack.remaining(), controls.len());
+    for (control, seat) in controls.iter().zip(seats) {
+        let control = *control;
+        let mut column = Stack::new(seat);
+        let specimen = specimens.and_then(|source| source.specimen(control));
+        paint_control_heading(painter, &mut column, control, specimen.as_ref());
+        match specimen {
+            Some(specimen) => match specimen.role {
+                // A strip control takes the column width the policy declares, so
+                // its states run across rather than down.
+                PresentationRole::VerticalStrip => {
+                    paint_strip_specimens(painter, ui, &mut column, policy, control, &specimen);
+                }
+                PresentationRole::ListedRow
+                | PresentationRole::PanelEntry
+                | PresentationRole::ModalEntry => {
+                    paint_row_specimens(painter, ui, &mut column, policy, control, &specimen);
+                }
+            },
+            None => mark_specimen_unavailable(painter, &mut column, control.canonical_name()),
+        }
+    }
+}
+
+/// Divides one rect into `count` equal columns with an authored gutter.
+fn split_columns(area: Rect, count: usize) -> Vec<Rect> {
+    let gutter = SpacingStep::S16.resolve();
+    let count = count.max(1);
+    let width = (area.width() - gutter * (count - 1) as f32) / count as f32;
+    (0..count)
+        .map(|index| {
+            let left = area.min.x + (width + gutter) * index as f32;
+            Rect::from_min_max(pos2(left, area.min.y), pos2(left + width, area.max.y))
+        })
+        .collect()
+}
+
+/// Names one control, the pair that selects it, how many states it declares,
+/// and — where there is one — the fact that the design file authors no specimen.
+fn paint_control_heading(
+    painter: &mut SpecimenPainter<'_>,
+    stack: &mut Stack,
+    control: ComponentControl,
+    specimen: Option<&ControlSpecimen<'_>>,
+) {
+    let pair = specimen.map_or_else(
+        || "no projected view data".to_owned(),
+        |specimen| {
+            format!(
+                "{} in {}",
+                kind_name(specimen.kind),
+                specimen.role.canonical_name()
+            )
+        },
+    );
+    heading(painter, stack, control.canonical_name());
+    paint_wrapped(
+        painter,
+        stack,
+        &format!("{pair} · {} STATES", control.applicable_states().len()),
+        TypeStyle::InstructionHint,
+        SemanticColor::TextMuted,
+    );
+    if let Some(note) = missing_specimen_note(control) {
+        paint_wrapped(
+            painter,
+            stack,
+            note,
+            TypeStyle::InstructionHint,
+            SemanticColor::AccentWarning,
+        );
+    }
+    stack.gap(SpacingStep::S4);
+}
+
+/// Paints one row-shaped control once per declared state, with the state named
+/// in a gutter beside it.
+///
+/// The control paints its own label from the view data; the gutter is what makes
+/// the *state* readable, because a reader who cannot name the state of a row
+/// cannot judge it.
+fn paint_row_specimens(
+    painter: &mut SpecimenPainter<'_>,
+    ui: &mut egui::Ui,
+    stack: &mut Stack,
+    policy: ViewportDensityPolicy,
+    control: ComponentControl,
+    specimen: &ControlSpecimen<'_>,
+) {
+    let gutter = ALL_COMPONENT_STATES
+        .into_iter()
+        .map(|state| painter.measure_width(state.canonical_name(), TypeStyle::LabelControl))
+        .fold(0.0_f32, f32::max)
+        + SpacingStep::S8.resolve();
+    paint_row_seat_note(painter, stack, policy, stack.remaining().width() - gutter);
+    for state in control.applicable_states() {
+        let row = stack.row(policy.rhythm().row_height_px);
+        painter.text_left_center(
+            pos2(row.min.x, row.center().y),
+            state.canonical_name(),
+            TypeStyle::LabelControl,
+            SemanticColor::TextMuted,
+            ComponentState::Resting,
+        );
+        let seat = Rect::from_min_max(pos2(row.min.x + gutter, row.min.y), row.max);
+        paint_control_specimen(painter, ui, seat, policy, control, specimen, *state);
+        stack.gap(SpacingStep::S4);
+    }
+}
+
+/// States how wide a row specimen's seat is against the narrowest width any
+/// authored surface renders a row control at.
+///
+/// The same honesty [`paint_bank_extent_note`] applies to the mixer strip bank,
+/// for the same reason and in the same words: a gallery column is not a product
+/// surface. Two controls share a page, each takes half of its policy's column,
+/// and the state name in the gutter takes more — so on the compact policy the
+/// seat lands under the authored control width, and a control laid out narrower
+/// than any surface renders it can collide with itself.
+///
+/// Naming the arithmetic is what makes that readable. Without it an operator
+/// sees a status word touching a value, cannot tell a squeezed seat from a
+/// broken control, and reports the wrong defect — which is precisely the
+/// mistake a gallery exists to prevent. Widening the window instead was
+/// measured and rejected: the full state names need 1958 px, and the gallery
+/// must fit the 1920 px display it is reviewed on, which
+/// `the_gallery_window_fits_on_the_authored_desktop_display_with_its_chrome`
+/// holds.
+fn paint_row_seat_note(
+    painter: &mut SpecimenPainter<'_>,
+    stack: &mut Stack,
+    policy: ViewportDensityPolicy,
+    seat_px: f32,
+) {
+    let authored = policy.utility_control().width_px;
+    if seat_px >= authored {
+        return;
+    }
+    paint_wrapped(
+        painter,
+        stack,
+        &format!(
+            "this specimen seat is {seat_px:.0} px against an authored control width of {authored:.0} px, so the control lays out narrower here than any product surface renders it"
+        ),
+        TypeStyle::InstructionHint,
+        SemanticColor::AccentWarning,
+    );
+}
+
+/// Paints one strip-shaped control once per declared state, laid out across the
+/// column on the policy's own mixer pitch and wrapped where the column ends.
+fn paint_strip_specimens(
+    painter: &mut SpecimenPainter<'_>,
+    ui: &mut egui::Ui,
+    stack: &mut Stack,
+    policy: ViewportDensityPolicy,
+    control: ComponentControl,
+    specimen: &ControlSpecimen<'_>,
+) {
+    let geometry = policy.mixer_column();
+    let area = stack.remaining();
+    let per_row = ((area.width() / geometry.pitch_px).floor() as usize).max(1);
+    let rows = control.applicable_states().len().div_ceil(per_row);
+    // The strips divide what is left of the column between them rather than
+    // taking a fixed height. A fixed height that fitted the desktop column would
+    // overrun the compact one, and the specimen an operator most needs to judge
+    // is the compact one.
+    let band = area.height() / rows as f32;
+    let strip_height =
+        (band - caption_height() - SpacingStep::S4.resolve()).max(MIN_INTERACTIVE_TARGET_PX);
+    for chunk in control.applicable_states().chunks(per_row) {
+        let captions = stack.row(caption_height());
+        let strips = stack.row(strip_height);
+        for (offset, state) in chunk.iter().enumerate() {
+            let left = strips.min.x + geometry.pitch_px * offset as f32;
+            // The state name is abbreviated to what an authored column is wide
+            // enough to carry. A column is 82 px on the desktop policy and 52 on
+            // the compact one, and "Adjusting" set in the authored control label
+            // does not fit either — so the caption is the initial, and the
+            // heading above names the full set. An overflowing caption would
+            // read as the neighbouring column's.
+            painter.text_left_center(
+                pos2(left, captions.center().y),
+                state_initial(*state),
+                TypeStyle::LabelControl,
+                SemanticColor::TextMuted,
+                ComponentState::Resting,
+            );
+            let seat = Rect::from_min_max(
+                pos2(left, strips.min.y),
+                pos2(left + geometry.width_px, strips.max.y),
+            );
+            paint_control_specimen(painter, ui, seat, policy, control, specimen, *state);
+        }
+        stack.gap(SpacingStep::S4);
+    }
+}
+
+/// The one-letter abbreviation a strip caption carries for each state.
+///
+/// Exhaustive with no wildcard, and every letter distinct, so a tenth state is a
+/// compile error here rather than two states reading as the same column.
+const fn state_initial(state: ComponentState) -> &'static str {
+    match state {
+        ComponentState::Resting => "R",
+        ComponentState::Focused => "F",
+        ComponentState::Adjusting => "A",
+        ComponentState::Disabled => "D",
+        ComponentState::Loading => "L",
+        ComponentState::Error => "E",
+        ComponentState::Muted => "M",
+        ComponentState::Soloed => "S",
+        ComponentState::Selected => "X",
+    }
+}
+
+/// Paints one control specimen through the production render path and records
+/// what it actually put on screen.
+///
+/// The control is asked through [`ComponentControl::render`] — the same entry
+/// the production surfaces use — so a control still resolving to a stub would
+/// emit nothing here and be counted as nothing.
+fn paint_control_specimen(
+    painter: &mut SpecimenPainter<'_>,
+    ui: &mut egui::Ui,
+    seat: Rect,
+    policy: ViewportDensityPolicy,
+    control: ComponentControl,
+    specimen: &ControlSpecimen<'_>,
+    state: ComponentState,
+) {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(seat)
+            .layout(egui::Layout::top_down(egui::Align::Min))
+            .id_salt((
+                control.canonical_name(),
+                state.canonical_name(),
+                policy.canonical_name(),
+            )),
+    );
+    // Clipped to its seat, so a specimen that wants more room than the gallery
+    // has is cut off at its own boundary rather than painted over the specimen
+    // beside it. Which of the two an operator is looking at must never be in
+    // doubt.
+    child.set_clip_rect(seat);
+    let view = specimen.view;
+    let role = specimen.role;
+    let runs = painted_runs(&mut child, |ui| {
+        control.render(ui, view, state, role, &policy);
+    });
+    painter.record_component_runs(seat, control.canonical_name(), &runs);
+    if let Some(first) = runs.first() {
+        painter.ledger.controls_painted[policy_index(policy)][control_index(control)]
+            [state_index(state)] = Some(first.text.clone());
+        painter.ledger.control_pairs[control_index(control)] =
+            Some((kind_name(specimen.kind), role.canonical_name()));
+    }
+}
+
+/// Paints the compositions named by `compositions`, each with projected content.
+fn paint_composition_page(
+    painter: &mut SpecimenPainter<'_>,
+    ui: &mut egui::Ui,
+    specimens: Option<&GallerySpecimenSource>,
+    stack: &mut Stack,
+    policy: ViewportDensityPolicy,
+    compositions: &[ShellComposition],
+) {
+    // The compositions on a page do not divide its height equally, because they
+    // are not equally tall structures. A footer is one band; a bank of sixteen
+    // titled columns is a whole workspace. Splitting evenly gives the bank the
+    // same room as the footer and its columns collapse into each other, which
+    // shows the operator a defect the composition does not have.
+    let total: f32 = compositions
+        .iter()
+        .map(|composition| composition_seat_weight(*composition))
+        .sum();
+    let available = stack.remaining().height();
+    for composition in compositions {
+        let composition = *composition;
+        let top = stack.remaining().min.y;
+        let share = available * composition_seat_weight(composition) / total;
+        heading(
+            painter,
+            stack,
+            &format!(
+                "{} · {}",
+                composition.canonical_name(),
+                region_name(composition)
+            ),
+        );
+        if composition == ShellComposition::MixerStripBank {
+            paint_bank_extent_note(painter, stack, policy);
+        }
+        match specimens {
+            Some(source) => {
+                let used = stack.remaining().min.y - top;
+                let seat = stack.row((share - used).max(policy.rhythm().row_height_px));
+                paint_composition_specimen(painter, ui, seat, policy, composition, source);
+            }
+            None => mark_specimen_unavailable(painter, stack, composition.canonical_name()),
+        }
+    }
+}
+
+/// How much of a page's height one composition's specimen is worth.
+///
+/// Exhaustive with no wildcard, so a ninth composition is a compile error naming
+/// this function rather than a specimen silently squeezed into whatever a
+/// division by the new count leaves. The numbers are a ratio between structures,
+/// not a geometry: nothing here is a size, and no surface resolves a layout from
+/// them — they only say that a bank of sixteen columns needs more of a gallery
+/// page than a one-band footer does.
+const fn composition_seat_weight(composition: ShellComposition) -> f32 {
+    match composition {
+        // A whole frame: four bands and a workspace split.
+        ShellComposition::ApplicationShell => 5.0,
+        // Sixteen titled columns, each a group of cells.
+        ShellComposition::MixerStripBank => 4.0,
+        // A titled group of rows, and a titled panel of entries.
+        ShellComposition::Section | ShellComposition::UtilityInspectorPanel => 3.0,
+        // One band each.
+        ShellComposition::ContextSwitch
+        | ShellComposition::IdentityHeader
+        | ShellComposition::PatchStripRow
+        | ShellComposition::Footer => 1.0,
+    }
+}
+
+/// States, in the gallery's own register, how much width the bank needs and how
+/// much this column has.
+///
+/// The bank allocates the main surface rather than consuming it, so it divides
+/// whatever width it is given into sixteen columns at the policy's authored
+/// pitch. A gallery column is not a main surface — it is one of two compositions
+/// sharing one window — so some of the sixteen fall outside it. Naming the
+/// arithmetic is the honest form of that: the alternative is a specimen that
+/// silently shows nine columns and lets a reader believe the bank has nine.
+fn paint_bank_extent_note(
+    painter: &mut SpecimenPainter<'_>,
+    stack: &mut Stack,
+    policy: ViewportDensityPolicy,
+) {
+    let geometry = policy.mixer_column();
+    let available = stack.remaining().width();
+    let seated = (available / geometry.pitch_px).floor().max(0.0);
+    paint_wrapped(
+        painter,
+        stack,
+        &format!(
+            "sixteen columns need {:.0} px at {:.0} px pitch; this gallery column is {available:.0} px, so {seated:.0} seat here and the rest fall outside it",
+            geometry.bank_width_px(),
+            geometry.pitch_px,
+        ),
+        TypeStyle::InstructionHint,
+        SemanticColor::AccentWarning,
+    );
+}
+
+/// Paints one composition through the production render path and records what
+/// it actually put on screen.
+fn paint_composition_specimen(
+    painter: &mut SpecimenPainter<'_>,
+    ui: &mut egui::Ui,
+    seat: Rect,
+    policy: ViewportDensityPolicy,
+    composition: ShellComposition,
+    specimens: &GallerySpecimenSource,
+) {
+    let projection = specimens.projection_for(composition);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(seat)
+            .layout(egui::Layout::top_down(egui::Align::Min))
+            .id_salt((composition.canonical_name(), policy.canonical_name())),
+    );
+    child.set_clip_rect(seat);
+    let runs = painted_runs(&mut child, |ui| {
+        composition.render(ui, projection, &policy);
+    });
+    painter.record_component_runs(seat, composition.canonical_name(), &runs);
+    painter.ledger.compositions_painted[policy_index(policy)][composition_index(composition)] =
+        Some(runs.iter().map(|run| run.text.clone()).collect());
+}
+
+/// Marks a specimen the gallery could not paint, naming what is missing.
+///
+/// An empty region reads as "there is nothing here", which is not what happened.
+/// The page says which specimen is absent so the shortfall the observation then
+/// reports is actionable rather than mysterious.
+fn mark_specimen_unavailable(painter: &mut SpecimenPainter<'_>, stack: &mut Stack, name: &str) {
+    paint_wrapped(
+        painter,
+        stack,
+        &format!(
+            "{name} · SPECIMEN UNAVAILABLE · the production projection carried nothing to paint it with"
+        ),
+        TypeStyle::InstructionHint,
+        SemanticColor::AccentWarning,
+    );
 }
 
 /// How a policy's numbers were arrived at, in the words the vocabulary uses.
@@ -2235,7 +3964,7 @@ const GALLERY_WINDOW_CHROME_PX: f32 = 96.0;
 ///
 /// Read off the paint pass rather than estimated, the way the row geometry in
 /// the density policies was: at 848 px the vertical separator on page 5 runs
-/// past the stage and the pass reports it clipped; at 856 px all eight pages
+/// past the stage and the pass reports it clipped; at 856 px all fifteen pages
 /// compose clean in both columns. The tests below hold both ends, so this
 /// cannot drift away from the layout it describes.
 const MINIMUM_GALLERY_HEIGHT_PX: f32 = 856.0;
@@ -2250,11 +3979,38 @@ const _: () = assert!(
     "the gallery window is taller than the authored desktop display it is reviewed on"
 );
 
+/// The narrowest window at which both columns seat two specimens side by side.
+///
+/// Derived, not chosen. A control page shows two controls at up to nine states
+/// each, which does not fit stacked, so each control takes half of its policy's
+/// column — and half a column narrower than the narrowest *authored* control
+/// extent shows the operator a control colliding with itself at a width the
+/// product never renders it at. So the floor is the width at which each policy's
+/// column seats two of its own authored control widths with a gutter between
+/// them, divided back out through the stage split.
+///
+/// The compact authored viewport width is the other floor, kept because the
+/// gallery was reviewed at it and nothing should shrink below it.
+fn minimum_gallery_width_px() -> f32 {
+    let required = |policy: ViewportDensityPolicy| {
+        let control = policy.utility_control().width_px;
+        let inset = policy.rhythm().inset_px;
+        2.0f32.mul_add(control + inset, SpacingStep::S16.resolve())
+    };
+    let desktop_fraction = desktop_stage_fraction();
+    let desktop = required(ViewportDensityPolicy::Desktop) / desktop_fraction;
+    let deck = required(ViewportDensityPolicy::SteamDeck) / (1.0 - desktop_fraction);
+    desktop.max(deck).max(
+        ViewportDensityPolicy::SteamDeck
+            .authored_viewport()
+            .width_px,
+    )
+}
+
 /// The smallest window the gallery composes without clipping a specimen.
 ///
-/// The width is the authored compact viewport width — a declared value, not a
-/// guess, and 16 px above the 1264 px the pass actually needs — and the height
-/// is [`MINIMUM_GALLERY_HEIGHT_PX`].
+/// The width comes from [`minimum_gallery_width_px`] and the height from
+/// [`MINIMUM_GALLERY_HEIGHT_PX`].
 ///
 /// This is deliberately *not* the desktop authored viewport. Both compositions
 /// share one window, which tempts the minimum upward toward the larger authored
@@ -2265,9 +4021,7 @@ const _: () = assert!(
 /// window, side by side, at their own densities.
 pub fn minimum_gallery_viewport() -> crate::shell::visual::AuthoredViewport {
     crate::shell::visual::AuthoredViewport {
-        width_px: ViewportDensityPolicy::SteamDeck
-            .authored_viewport()
-            .width_px,
+        width_px: minimum_gallery_width_px(),
         height_px: MINIMUM_GALLERY_HEIGHT_PX,
     }
 }
@@ -2424,8 +4178,8 @@ mod tests {
     }
 
     #[test]
-    fn the_gallery_declares_exactly_eight_pages() {
-        assert_eq!(GALLERY_PAGE_COUNT, 8);
+    fn the_gallery_declares_exactly_fifteen_pages() {
+        assert_eq!(GALLERY_PAGE_COUNT, 15);
         assert_eq!(ALL_GALLERY_PAGES.len(), GALLERY_PAGE_COUNT);
         let names: BTreeSet<&str> = ALL_GALLERY_PAGES
             .iter()
@@ -2436,24 +4190,73 @@ mod tests {
         assert_eq!(pages.len(), GALLERY_PAGE_COUNT, "a page appears twice");
     }
 
-    /// No page without a key, no key without a page.
+    /// T037 — FR-012 as a regression gate.
+    ///
+    /// The eight bindings that existed before the control and composition pages
+    /// were added are compared against the frozen baseline exactly and in
+    /// order. Reordering [`ALL_GALLERY_PAGES`], renaming one of the eight, or
+    /// handing one a different digit fails here.
     #[test]
-    fn every_page_has_exactly_one_digit_and_every_bound_digit_has_one_page() {
+    fn the_eight_pre_existing_digit_bindings_are_exactly_the_frozen_baseline() {
+        let current: Vec<(&str, WindowKey)> = ALL_GALLERY_PAGES
+            .into_iter()
+            .take(FROZEN_DIGIT_BINDING_BASELINE.len())
+            .map(|page| {
+                (
+                    page.canonical_name(),
+                    page.digit().expect("one of the first eight pages"),
+                )
+            })
+            .collect();
+        // Exact ordered equality, not a containment check: a containment check
+        // passes when two of the eight swap digits, and swapping two digits is
+        // exactly the change FR-012 exists to catch.
+        assert_eq!(
+            current,
+            FROZEN_DIGIT_BINDING_BASELINE.to_vec(),
+            "a pre-existing gallery binding moved; FR-012 forbids it"
+        );
+    }
+
+    /// Every page is reachable, the ten digit bindings are unique, and no key
+    /// outside them selects a page.
+    #[test]
+    fn ten_digits_bind_ten_pages_and_stepping_reaches_the_rest() {
         let mut digits = std::collections::HashSet::new();
+        let mut bound = 0;
         for page in ALL_GALLERY_PAGES {
-            assert!(
-                digits.insert(page.digit()),
-                "{} shares its digit with another page",
-                page.canonical_name()
-            );
-            assert_eq!(
-                ComponentGalleryPage::for_digit(page.digit()),
-                Some(page),
-                "{} is not reachable by its own digit",
-                page.canonical_name()
-            );
+            match page.digit() {
+                Some(digit) => {
+                    bound += 1;
+                    assert!(
+                        digits.insert(digit),
+                        "{} shares its digit with another page",
+                        page.canonical_name()
+                    );
+                    assert_eq!(
+                        ComponentGalleryPage::for_digit(digit),
+                        Some(page),
+                        "{} is not reachable by its own digit",
+                        page.canonical_name()
+                    );
+                    assert!(page.digit_label().is_some());
+                }
+                None => assert!(
+                    page.digit_label().is_none(),
+                    "{} reads as a digit it does not bind",
+                    page.canonical_name()
+                ),
+            }
         }
-        assert_eq!(digits.len(), GALLERY_PAGE_COUNT);
+        assert_eq!(bound, GALLERY_DIGIT_BINDING_COUNT);
+        assert_eq!(digits.len(), GALLERY_DIGIT_BINDING_COUNT, "a digit repeats");
+
+        // The ten bindings are the first ten pages in declared order.
+        for (index, page) in ALL_GALLERY_PAGES.into_iter().enumerate() {
+            assert_eq!(page.index(), index);
+            assert_eq!(page.digit().is_some(), index < GALLERY_DIGIT_BINDING_COUNT);
+        }
+
         for key in [
             WindowKey::Q,
             WindowKey::E,
@@ -2462,6 +4265,8 @@ mod tests {
             WindowKey::A,
             WindowKey::D,
             WindowKey::K,
+            WindowKey::BracketLeft,
+            WindowKey::BracketRight,
             WindowKey::Other,
         ] {
             assert_eq!(
@@ -2470,12 +4275,27 @@ mod tests {
                 "{key:?} binds a page it should not"
             );
         }
-        // Indices and digit labels agree with declaration order, so the on-screen
-        // identity cannot drift from the binding.
-        for (index, page) in ALL_GALLERY_PAGES.into_iter().enumerate() {
-            assert_eq!(page.index(), index);
-            assert_eq!(page.digit_label(), (index + 1).to_string());
-        }
+    }
+
+    /// The ninth and tenth pages in declared order carry the two new digits.
+    #[test]
+    fn the_two_added_digits_bind_the_ninth_and_tenth_pages() {
+        assert_eq!(
+            ComponentGalleryPage::for_digit(WindowKey::Digit9),
+            Some(ComponentGalleryPage::ParameterAndChoiceRows)
+        );
+        assert_eq!(
+            ComponentGalleryPage::for_digit(WindowKey::Digit0),
+            Some(ComponentGalleryPage::TogglesAndSliders)
+        );
+        assert_eq!(
+            ALL_GALLERY_PAGES[8],
+            ComponentGalleryPage::ParameterAndChoiceRows
+        );
+        assert_eq!(
+            ALL_GALLERY_PAGES[9],
+            ComponentGalleryPage::TogglesAndSliders
+        );
     }
 
     #[test]
@@ -2484,8 +4304,11 @@ mod tests {
         assert_eq!(selection.active(), ComponentGalleryPage::Colors);
 
         for page in ALL_GALLERY_PAGES {
+            let Some(digit) = page.digit() else {
+                continue;
+            };
             assert_eq!(
-                selection.apply(WindowInput::key_down(page.digit())),
+                selection.apply(WindowInput::key_down(digit)),
                 PageSelection::Changed(page)
             );
             assert_eq!(selection.active(), page);
@@ -2503,46 +4326,150 @@ mod tests {
         }
     }
 
-    /// An unbound digit normalizes to the same value any unbound key does, and
-    /// the scene keeps the page it was on.
+    /// T036 — stepping alone reaches all fifteen, both ways.
     #[test]
-    fn an_unbound_digit_retains_the_current_page() {
-        for key in [egui::Key::Num9, egui::Key::Num0] {
-            let (normalized, is_digit) = normalize_gallery_key(key);
-            assert_eq!(normalized, WindowKey::Other);
-            assert!(is_digit, "{key:?} is not recognized as a digit");
-            assert_eq!(ComponentGalleryPage::for_digit(normalized), None);
+    fn stepping_from_either_end_visits_every_declared_page() {
+        let mut selection = GalleryPageSelection::default();
+        assert_eq!(selection.active(), ALL_GALLERY_PAGES[0]);
 
-            let mut selection = GalleryPageSelection::default();
-            selection.apply(WindowInput::key_down(
-                ComponentGalleryPage::ValuesAndStatus.digit(),
-            ));
-            let before = selection.active();
-            assert_eq!(
-                selection.apply(WindowInput::key_down(normalized)),
-                PageSelection::Retained(before)
+        let mut forward = vec![selection.active()];
+        for _ in 1..GALLERY_PAGE_COUNT {
+            let step = selection.apply(WindowInput::key_down(PageStep::Next.key()));
+            assert!(
+                matches!(step, PageSelection::Stepped(_)),
+                "a forward step short of the last page did not move: {step:?}"
             );
-            assert_eq!(selection.active(), before);
+            forward.push(selection.active());
         }
-        let (letter, is_digit) = normalize_gallery_key(egui::Key::Z);
-        assert_eq!(letter, WindowKey::Other);
-        assert!(
-            !is_digit,
-            "a letter must not be counted as an unbound digit"
+        assert_eq!(
+            forward,
+            ALL_GALLERY_PAGES.to_vec(),
+            "stepping forward did not visit the declared order exactly"
+        );
+
+        let mut backward = vec![selection.active()];
+        for _ in 1..GALLERY_PAGE_COUNT {
+            selection.apply(WindowInput::key_down(PageStep::Previous.key()));
+            backward.push(selection.active());
+        }
+        backward.reverse();
+        assert_eq!(
+            backward,
+            ALL_GALLERY_PAGES.to_vec(),
+            "stepping back did not visit the declared order exactly"
         );
     }
 
-    /// The `app_state_generation_delta = 0` predicate, measured.
+    /// T036 — stepping does not wrap, at either end.
+    #[test]
+    fn a_step_past_either_end_retains_the_end_page() {
+        let first = ALL_GALLERY_PAGES[0];
+        let last = ALL_GALLERY_PAGES[GALLERY_PAGE_COUNT - 1];
+
+        let mut selection = GalleryPageSelection::default();
+        assert_eq!(selection.active(), first);
+        for _ in 0..3 {
+            assert_eq!(
+                selection.apply(WindowInput::key_down(PageStep::Previous.key())),
+                PageSelection::Retained(first),
+                "a previous-step at the first page wrapped"
+            );
+            assert_eq!(selection.active(), first);
+        }
+
+        for _ in 1..GALLERY_PAGE_COUNT {
+            selection.apply(WindowInput::key_down(PageStep::Next.key()));
+        }
+        assert_eq!(selection.active(), last);
+        for _ in 0..3 {
+            assert_eq!(
+                selection.apply(WindowInput::key_down(PageStep::Next.key())),
+                PageSelection::Retained(last),
+                "a next-step at the last page wrapped"
+            );
+            assert_eq!(selection.active(), last);
+        }
+    }
+
+    /// A step key is only a step on key-down, like every other binding here.
+    #[test]
+    fn a_step_key_up_and_a_focus_loss_move_nothing() {
+        let mut selection = GalleryPageSelection::default();
+        selection.apply(WindowInput::key_down(PageStep::Next.key()));
+        let settled = selection.active();
+        for input in [
+            WindowInput::key_up(PageStep::Next.key()),
+            WindowInput::key_up(PageStep::Previous.key()),
+            WindowInput::focus_lost(),
+        ] {
+            assert_eq!(selection.apply(input), PageSelection::Retained(settled));
+        }
+    }
+
+    /// The scene normalizes the two bracket keys, and every key it does not
+    /// bind still normalizes to the catch-all.
+    #[test]
+    fn the_bracket_keys_normalize_and_every_other_key_binds_nothing() {
+        assert_eq!(
+            normalize_gallery_key(egui::Key::OpenBracket),
+            WindowKey::BracketLeft
+        );
+        assert_eq!(
+            normalize_gallery_key(egui::Key::CloseBracket),
+            WindowKey::BracketRight
+        );
+        assert_eq!(normalize_gallery_key(egui::Key::Num9), WindowKey::Digit9);
+        assert_eq!(normalize_gallery_key(egui::Key::Num0), WindowKey::Digit0);
+        assert_eq!(normalize_gallery_key(egui::Key::Z), WindowKey::Other);
+    }
+
+    /// A key that binds no page retains the current one.
+    ///
+    /// This used to be demonstrated with `9`, and cannot be any more: all ten
+    /// digits now select pages. What still binds nothing is every key beyond
+    /// the twelve the scene knows, and the property being held is unchanged —
+    /// an input the scene has no meaning for changes nothing.
+    #[test]
+    fn a_key_binding_no_page_retains_the_current_page() {
+        let mut selection = GalleryPageSelection::default();
+        selection.apply(WindowInput::key_down(
+            ComponentGalleryPage::ValuesAndStatus
+                .digit()
+                .expect("ValuesAndStatus carries a digit"),
+        ));
+        let before = selection.active();
+        assert_eq!(before, ComponentGalleryPage::ValuesAndStatus);
+
+        let unbound = normalize_gallery_key(egui::Key::Z);
+        assert_eq!(ComponentGalleryPage::for_digit(unbound), None);
+        assert_eq!(PageStep::for_key(unbound), None);
+        assert_eq!(
+            selection.apply(WindowInput::key_down(unbound)),
+            PageSelection::Retained(before)
+        );
+        assert_eq!(selection.active(), before);
+    }
+
+    /// The `app_state_generation_delta = 0` predicate, measured across a full
+    /// traversal by digit *and* by step.
     #[test]
     fn a_full_page_walk_never_advances_the_production_reducer() {
         let scene = ComponentGalleryScene::new().expect("the gallery reducer witness is buildable");
         let before = scene.app_state.generation();
         let mut selection = GalleryPageSelection::default();
         for page in ALL_GALLERY_PAGES {
-            assert_eq!(
-                selection.apply(WindowInput::key_down(page.digit())),
-                PageSelection::Changed(page)
-            );
+            if let Some(digit) = page.digit() {
+                assert_eq!(
+                    selection.apply(WindowInput::key_down(digit)),
+                    PageSelection::Changed(page)
+                );
+            }
+        }
+        for _ in 0..GALLERY_PAGE_COUNT {
+            selection.apply(WindowInput::key_down(PageStep::Next.key()));
+        }
+        for _ in 0..GALLERY_PAGE_COUNT {
+            selection.apply(WindowInput::key_down(PageStep::Previous.key()));
         }
         selection.apply(WindowInput::key_down(WindowKey::Other));
         assert_eq!(
@@ -2730,13 +4657,39 @@ mod tests {
     #[test]
     fn the_declared_minimum_window_is_the_size_the_gallery_composes_at() {
         let smallest = minimum_gallery_viewport();
-        assert_eq!(
-            smallest.width_px,
-            ViewportDensityPolicy::SteamDeck
-                .authored_viewport()
-                .width_px,
-            "the gallery minimum width drifted from the authored compact width"
+        assert_eq!(smallest.width_px, minimum_gallery_width_px());
+        assert!(
+            smallest.width_px
+                >= ViewportDensityPolicy::SteamDeck
+                    .authored_viewport()
+                    .width_px,
+            "the gallery minimum width fell below the authored compact width"
         );
+        // Each policy's column seats two of that policy's own authored control
+        // widths. This is the property the width is derived from, asserted
+        // rather than trusted: a control page splits its column in two, and half
+        // a column narrower than an authored control is a control shown
+        // colliding with itself at a width the product never renders it at.
+        let stage_width = smallest.width_px;
+        for (policy, column) in [
+            (
+                ViewportDensityPolicy::Desktop,
+                stage_width * desktop_stage_fraction(),
+            ),
+            (
+                ViewportDensityPolicy::SteamDeck,
+                stage_width * (1.0 - desktop_stage_fraction()),
+            ),
+        ] {
+            let content = column - 2.0 * policy.rhythm().inset_px;
+            let seat = (content - SpacingStep::S16.resolve()) / 2.0;
+            assert!(
+                seat >= policy.utility_control().width_px,
+                "a {} specimen seat is {seat} px against an authored control width of {}",
+                policy.canonical_name(),
+                policy.utility_control().width_px
+            );
+        }
         assert_eq!(smallest.height_px, MINIMUM_GALLERY_HEIGHT_PX);
 
         let composed = paint_pages(
@@ -2897,9 +4850,17 @@ mod tests {
         let observation = ComponentGalleryObservation::from_paint(&empty, 0, false);
         assert_eq!(observation.pages_declared(), GALLERY_PAGE_COUNT);
         assert_eq!(observation.states_declared(), COMPONENT_STATE_COUNT);
+        assert_eq!(observation.controls_declared(), COMPONENT_CONTROL_COUNT);
+        assert_eq!(observation.compositions_declared(), SHELL_COMPOSITION_COUNT);
         assert_eq!(observation.pages_painted(), 0);
         assert_eq!(observation.pages_reachable_by_digit(), 0);
+        assert_eq!(observation.pages_reachable_by_step(), 0);
         assert_eq!(observation.states_painted(), 0);
+        assert_eq!(observation.controls_painted(), 0);
+        assert_eq!(observation.compositions_painted(), 0);
+        // Every askable pair is unmapped when nothing painted, which is what
+        // makes the zero this predicate wants evidence rather than a constant.
+        assert!(observation.kind_role_pairs_unmapped() > 0);
         assert!(!observation.token_source_exact());
         assert!(!observation.typeface_resolved());
         assert!(!observation.desktop_viewport_painted());
@@ -2908,6 +4869,8 @@ mod tests {
         assert!(!observation.unbound_digit_retained_page());
         assert!(!observation.window_closed());
         assert!(observation.states_rendered().is_empty());
+        assert!(observation.controls_rendered().is_empty());
+        assert!(observation.compositions_rendered().is_empty());
     }
 
     /// A page requested by its digit counts as reached only once it also paints.
@@ -2942,32 +4905,224 @@ mod tests {
             .unbound_digit_retained_page());
     }
 
-    /// A complete browsing session satisfies every predicate the witness asserts.
-    #[test]
-    fn a_complete_session_satisfies_the_declared_witness_predicates() {
+    /// Drives a complete browsing session and returns the ledger it filled.
+    ///
+    /// Every page is painted, every page a digit binds is *requested* by that
+    /// digit, and every page is *stepped* to, so what the reachability counters
+    /// report is what a real traversal produced.
+    fn complete_session() -> GalleryPaintLedger {
         let mut ledger = paint_pages(gallery_window(), &ALL_GALLERY_PAGES);
+        let mut selection = GalleryPageSelection::default();
         for page in ALL_GALLERY_PAGES {
-            ledger.record_digit_request(page);
+            if let Some(digit) = page.digit() {
+                if let PageSelection::Changed(reached) =
+                    selection.apply(WindowInput::key_down(digit))
+                {
+                    ledger.record_digit_request(reached);
+                }
+            }
+        }
+        // Back to the first page by stepping, then forward through all fifteen,
+        // so the step counter sees every page.
+        for _ in 0..GALLERY_PAGE_COUNT {
+            selection.apply(WindowInput::key_down(PageStep::Previous.key()));
+        }
+        for _ in 0..GALLERY_PAGE_COUNT {
+            if let PageSelection::Stepped(reached) =
+                selection.apply(WindowInput::key_down(PageStep::Next.key()))
+            {
+                ledger.record_step_request(reached);
+            }
+        }
+        // The first page is the one the scene opens on rather than one stepped
+        // to, so it is requested here the way the window requests it.
+        ledger.record_step_request(ALL_GALLERY_PAGES[0]);
+        for page in ALL_GALLERY_PAGES {
             ledger.record_painted_page(page, 1);
         }
         ledger.record_unbound_key(false);
+        ledger
+    }
+
+    /// A complete browsing session satisfies every predicate the witness asserts.
+    ///
+    /// The numbers are read from the declared families rather than written out,
+    /// so growing a family is a failure here until the gallery grows with it —
+    /// which is the point. A hard-coded `8` would keep passing on the day a
+    /// ninth control landed with no specimen.
+    #[test]
+    fn a_complete_session_satisfies_the_declared_witness_predicates() {
+        let ledger = complete_session();
         let observation = ComponentGalleryObservation::from_paint(&ledger, 0, true);
 
-        assert_eq!(observation.pages_declared(), 8);
-        assert_eq!(observation.pages_painted(), 8);
-        assert_eq!(observation.pages_reachable_by_digit(), 8);
+        assert_eq!(observation.pages_declared(), GALLERY_PAGE_COUNT);
+        assert_eq!(observation.pages_painted(), GALLERY_PAGE_COUNT);
+        assert_eq!(
+            observation.pages_reachable_by_digit(),
+            GALLERY_DIGIT_BINDING_COUNT
+        );
+        assert_eq!(observation.pages_reachable_by_step(), GALLERY_PAGE_COUNT);
         assert!(observation.unbound_digit_retained_page());
-        assert_eq!(observation.states_declared(), 9);
-        assert_eq!(observation.states_painted(), 9);
+        assert_eq!(observation.states_declared(), COMPONENT_STATE_COUNT);
+        assert_eq!(observation.states_painted(), COMPONENT_STATE_COUNT);
         assert!(observation.states_distinguishable_without_color());
+        assert_eq!(observation.controls_declared(), COMPONENT_CONTROL_COUNT);
+        assert_eq!(observation.controls_painted(), COMPONENT_CONTROL_COUNT);
+        assert_eq!(observation.kind_role_pairs_unmapped(), 0);
+        assert_eq!(observation.controls_unreachable_by_any_pair(), 0);
+        assert_eq!(observation.compositions_declared(), SHELL_COMPOSITION_COUNT);
+        assert_eq!(observation.compositions_painted(), SHELL_COMPOSITION_COUNT);
         assert!(observation.desktop_viewport_painted());
         assert!(observation.steam_deck_viewport_painted());
         assert!(observation.bands_retained_both_viewports());
         assert_eq!(observation.clipped_or_overlapping_text(), 0);
         assert!(observation.token_source_exact());
         assert!(observation.typeface_resolved());
+        assert!(!observation.audio_or_midi_constructed());
         assert_eq!(observation.app_state_generation_delta(), 0);
         assert!(observation.window_closed());
+    }
+
+    /// Every declared control and composition has a specimen, named exactly.
+    ///
+    /// Generic over the declared families rather than over a list this test
+    /// carries: an added variant is absent from the rendered set and fails here,
+    /// which is the coverage invariant the crest-spec places on the page set.
+    /// Exact set equality rather than a count, because a count is satisfied by
+    /// painting one control twice.
+    #[test]
+    fn every_declared_control_and_composition_has_a_painted_specimen() {
+        let ledger = complete_session();
+        let observation = ComponentGalleryObservation::from_paint(&ledger, 0, true);
+
+        let painted: BTreeSet<&str> = observation
+            .controls_rendered()
+            .iter()
+            .map(PaintedControlRecord::control)
+            .collect();
+        let declared: BTreeSet<&str> = ALL_COMPONENT_CONTROLS
+            .into_iter()
+            .map(ComponentControl::canonical_name)
+            .collect();
+        assert_eq!(painted, declared, "a declared control has no specimen");
+
+        let painted: BTreeSet<&str> = observation
+            .compositions_rendered()
+            .iter()
+            .map(PaintedCompositionRecord::composition)
+            .collect();
+        let declared: BTreeSet<&str> = ALL_SHELL_COMPOSITIONS
+            .into_iter()
+            .map(ShellComposition::canonical_name)
+            .collect();
+        assert_eq!(painted, declared, "a declared composition has no specimen");
+
+        // Each control reports every state it declares, and a label a reader
+        // actually sees beside the specimen.
+        for record in observation.controls_rendered() {
+            let control = ALL_COMPONENT_CONTROLS
+                .into_iter()
+                .find(|control| control.canonical_name() == record.control())
+                .expect("a rendered control is a declared control");
+            assert_eq!(record.states_painted(), control.applicable_states().len());
+            assert_eq!(record.states_declared(), control.applicable_states().len());
+            assert!(
+                !record.visible_label().is_empty(),
+                "{} painted no visible label",
+                record.control()
+            );
+        }
+    }
+
+    /// The coverage counts are measured: removing one painted specimen drops
+    /// them.
+    ///
+    /// This is the assertion that separates a measured observation from a
+    /// declared one. If deleting a specimen left the count unchanged, the count
+    /// would be reporting the specimen *list* rather than the paint pass, which
+    /// is exactly the vacuity the crest-spec forbids.
+    #[test]
+    fn removing_one_painted_specimen_drops_the_coverage_counts() {
+        let mut ledger = complete_session();
+        assert_eq!(ledger.painted_control_count(), COMPONENT_CONTROL_COUNT);
+        assert_eq!(ledger.painted_composition_count(), SHELL_COMPOSITION_COUNT);
+        assert_eq!(ledger.unmapped_kind_role_pairs(), 0);
+
+        // One state of one control, in one composition only.
+        ledger.controls_painted[policy_index(ViewportDensityPolicy::SteamDeck)]
+            [control_index(ComponentControl::Toggle)][state_index(ComponentState::Disabled)] = None;
+        assert_eq!(ledger.painted_control_count(), COMPONENT_CONTROL_COUNT - 1);
+        assert!(
+            ledger.unmapped_kind_role_pairs() > 0,
+            "a control with no specimen left every pair that selects it mapped"
+        );
+        let observation = ComponentGalleryObservation::from_paint(&ledger, 0, true);
+        assert_eq!(observation.controls_painted(), COMPONENT_CONTROL_COUNT - 1);
+        assert!(observation
+            .controls_rendered()
+            .iter()
+            .all(|record| record.control() != ComponentControl::Toggle.canonical_name()));
+
+        // One composition, in one composition-of-the-viewport only.
+        ledger.compositions_painted[policy_index(ViewportDensityPolicy::Desktop)]
+            [composition_index(ShellComposition::Footer)] = None;
+        assert_eq!(
+            ledger.painted_composition_count(),
+            SHELL_COMPOSITION_COUNT - 1
+        );
+        let observation = ComponentGalleryObservation::from_paint(&ledger, 0, true);
+        assert_eq!(
+            observation.compositions_painted(),
+            SHELL_COMPOSITION_COUNT - 1
+        );
+        assert!(observation
+            .compositions_rendered()
+            .iter()
+            .all(|record| record.composition() != ShellComposition::Footer.canonical_name()));
+    }
+
+    /// A composition that emitted no text is not a painted composition.
+    #[test]
+    fn a_composition_that_emitted_nothing_is_not_counted_as_painted() {
+        let mut ledger = complete_session();
+        for policy in ALL_DENSITY_POLICIES {
+            ledger.compositions_painted[policy_index(policy)]
+                [composition_index(ShellComposition::Section)] = Some(Vec::new());
+        }
+        assert_eq!(
+            ledger.painted_composition_count(),
+            SHELL_COMPOSITION_COUNT - 1,
+            "an empty run list counted as a painted composition"
+        );
+    }
+
+    /// The seats the gallery allocates do not overlap and stay inside the area
+    /// they divide.
+    ///
+    /// Positions, not counts: F-14 records that a shape *count* passed while
+    /// every hairline sat in the wrong place. The same applies here — two
+    /// specimens both painting is no evidence that they are not on top of each
+    /// other.
+    #[test]
+    fn allocated_specimen_seats_are_disjoint_and_inside_the_area_they_divide() {
+        let area = Rect::from_min_max(pos2(10.0, 20.0), pos2(730.0, 640.0));
+        for count in 1..=4 {
+            let seats = split_columns(area, count);
+            assert_eq!(seats.len(), count);
+            for (index, seat) in seats.iter().enumerate() {
+                assert!(
+                    area.contains_rect(*seat),
+                    "seat {index} of {count} left the area it divides"
+                );
+                assert!(seat.width() > 0.0);
+                for other in seats.iter().skip(index + 1) {
+                    assert!(
+                        !overlaps(*seat, *other),
+                        "two of {count} seats overlap: {seat:?} and {other:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// The serialized observation carries every field the witness reads.
@@ -2980,18 +5135,28 @@ mod tests {
             "pages_declared",
             "pages_painted",
             "pages_reachable_by_digit",
+            "pages_reachable_by_step",
             "unbound_digit_retained_page",
             "states_declared",
             "states_painted",
             "states_distinguishable_without_color",
+            "controls_declared",
+            "controls_painted",
+            "kind_role_pairs_unmapped",
+            "controls_unreachable_by_any_pair",
+            "compositions_declared",
+            "compositions_painted",
             "desktop_viewport_painted",
             "steam_deck_viewport_painted",
             "bands_retained_both_viewports",
             "clipped_or_overlapping_text",
             "token_source_exact",
             "typeface_resolved",
+            "audio_or_midi_constructed",
             "app_state_generation_delta",
             "window_closed",
+            "controls_rendered",
+            "compositions_rendered",
         ] {
             assert!(
                 json.get(field).is_some(),
@@ -3002,6 +5167,287 @@ mod tests {
             COMPONENT_GALLERY_OBSERVATION_MARKER,
             "CREST_COMPONENT_GALLERY_OBSERVATION "
         );
+    }
+
+    // =======================================================================
+    // T039 — the silence is derived, and the derivation can say otherwise
+    // =======================================================================
+
+    /// The gallery constructs no audio output and no MIDI event source.
+    #[test]
+    fn the_gallery_scene_constructs_no_audio_output_and_no_midi_source() {
+        assert!(
+            !audio_or_midi_constructed(),
+            "the gallery scene names an audio output or a MIDI event source"
+        );
+        let observation =
+            ComponentGalleryObservation::from_paint(&GalleryPaintLedger::default(), 0, true);
+        assert!(!observation.audio_or_midi_constructed());
+    }
+
+    /// The derivation is capable of reporting `true`.
+    ///
+    /// Without this the flag would be indistinguishable from a hard-coded
+    /// `false`: a scan that had quietly stopped matching anything would report
+    /// silence just as convincingly as a scene that is actually silent. Each
+    /// needle is exercised on its own, so a search that had lost one of them
+    /// still fails here.
+    #[test]
+    fn the_silence_derivation_reports_true_when_a_construction_is_present() {
+        for source in [
+            format!("let output = {}{}::new();", "Cpal", "AudioOutput"),
+            format!("let midi = {}{}::new();", "CorridorsMidi", "EventSource"),
+            format!("fn take(port: &dyn {}{})", "Audio", "OutputPort"),
+            format!("fn take(source: &dyn {}{})", "MidiEvent", "Source"),
+            format!("let graph: {}{};", "Prepared", "Graph"),
+            format!("let renderer: {}{};", "Audio", "Renderer"),
+            format!("let message: {}{};", "Midi", "Message"),
+        ] {
+            assert!(
+                source_constructs_audio_or_midi(&source),
+                "the derivation did not notice {source:?}"
+            );
+        }
+        assert!(!source_constructs_audio_or_midi(
+            "let painter = ui.painter().clone();"
+        ));
+    }
+
+    /// The derivation does not find its own needles.
+    ///
+    /// The function that searches for these names necessarily spells fragments
+    /// of them. If a fragment were itself a needle, the search would report
+    /// every source that contains the search as constructing audio — which is
+    /// exactly the defect this pair of tests caught during implementation. Held
+    /// explicitly rather than left to the silence assertion, so the failure
+    /// names its cause.
+    #[test]
+    fn the_silence_derivation_does_not_match_its_own_needles() {
+        let production = production_source(GALLERY_SCENE_SOURCE);
+        assert!(
+            production.contains("fn source_constructs_audio_or_midi"),
+            "the derivation's own source was excluded from the scan"
+        );
+        assert!(
+            !source_constructs_audio_or_midi(&production),
+            "the derivation matched a fragment it spells itself"
+        );
+    }
+
+    /// The derivation reads this module's shipping source, and reads something.
+    ///
+    /// A scan that read an empty string would report silence for the same reason
+    /// it reports it now, so what it read is checked as well as what it found.
+    #[test]
+    fn the_silence_derivation_reads_this_modules_shipping_source() {
+        let production = production_source(GALLERY_SCENE_SOURCE);
+        assert!(
+            production.len() > 10_000,
+            "the silence derivation read only {} bytes of this module",
+            production.len()
+        );
+        assert!(
+            production.contains("fn paint_gallery"),
+            "the silence derivation did not read this module's paint path"
+        );
+        // The test module is excluded, so the needles this file spells below do
+        // not answer for the production path.
+        assert!(
+            !production
+                .contains("the_silence_derivation_reports_true_when_a_construction_is_present"),
+            "the silence derivation read the tests as if they shipped"
+        );
+        // And the prose is excluded, so a comment explaining the boundary is not
+        // mistaken for code crossing it.
+        assert!(
+            !production.contains("Realizes `valueObject.Shell.ComponentGalleryPage`"),
+            "the silence derivation read this module's prose as if it were code"
+        );
+    }
+
+    /// Building the scene and traversing every page opens no stream and
+    /// dispatches no note.
+    ///
+    /// Measured through the one thing the scene owns that could observe either:
+    /// the production reducer. A note dispatched or a graph published would
+    /// advance it, and it does not move.
+    #[test]
+    fn building_and_traversing_the_gallery_opens_no_stream_and_dispatches_no_note() {
+        let scene = ComponentGalleryScene::new().expect("the gallery reducer witness is buildable");
+        let before = scene.app_state.generation();
+        let ledger = complete_session();
+        assert_eq!(
+            scene.app_state.generation(),
+            before,
+            "a full traversal advanced the reducer, so something reached it"
+        );
+        let observation = ComponentGalleryObservation::from_paint(&ledger, 0, true);
+        assert!(!observation.audio_or_midi_constructed());
+        assert_eq!(observation.app_state_generation_delta(), 0);
+    }
+
+    /// Every text run one real pass put on screen, in paint order.
+    ///
+    /// Read back off the layer the pass painted into, the same way the control
+    /// and composition specimens are, so what this returns is what reached the
+    /// screen rather than what the page meant to say.
+    fn painted_text(size: Vec2, page: ComponentGalleryPage) -> Vec<String> {
+        let context = egui::Context::default();
+        context.set_fonts(
+            AuthoredTypeface::load()
+                .expect("the vendored faces are present")
+                .font_definitions(),
+        );
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            ..RawInput::default()
+        };
+        // The same warm-up pass `paint_pages` uses, for the same reason.
+        run_pass(&context, &input, page, &mut GalleryPaintLedger::default());
+        let mut runs = Vec::new();
+        let output = context.run(input, |context| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().inner_margin(egui::Margin::ZERO))
+                .show(context, |ui| {
+                    runs = painted_runs(ui, |ui| {
+                        paint_gallery(ui, page, &mut GalleryPaintLedger::default());
+                    });
+                });
+        });
+        // Tessellated for the same reason `run_pass` tessellates: what this
+        // returns must be backed by geometry that actually reached the
+        // tessellator, not by shapes that were merely appended.
+        assert!(
+            !context
+                .tessellate(output.shapes, output.pixels_per_point)
+                .is_empty(),
+            "{} produced no tessellated geometry",
+            page.canonical_name()
+        );
+        runs.into_iter().map(|run| run.text).collect()
+    }
+
+    /// A row specimen seat narrower than the authored control width says so on
+    /// the page, in the numbers it actually has.
+    ///
+    /// Two controls share a page and the state name takes a gutter, so neither
+    /// policy's seat reaches its authored control width at the declared minimum
+    /// window. That is a real shortfall — a control laid out narrower than any
+    /// surface renders it can collide with itself, and an operator who cannot
+    /// see why would report the control rather than the seat.
+    ///
+    /// Asserted against the arithmetic rather than against a fixed string, so a
+    /// note that stopped tracking the geometry fails here.
+    #[test]
+    fn a_short_row_specimen_seat_names_its_own_shortfall_on_the_page() {
+        // Joined, because the note wraps: a seat too narrow to hold the control
+        // is also too narrow to hold one line about it, so the sentence a reader
+        // sees spans several painted runs.
+        let joined =
+            painted_text(gallery_window(), ComponentGalleryPage::TogglesAndSliders).join(" ");
+        let reported: Vec<(f32, f32)> = joined
+            .match_indices("this specimen seat is ")
+            .map(|(at, marker)| {
+                let tail = &joined[at + marker.len()..];
+                let seat = read_px(tail).expect("the note names its seat in px");
+                let authored_at = tail
+                    .find("control width of ")
+                    .expect("the note names the authored width");
+                let authored = read_px(&tail[authored_at + "control width of ".len()..])
+                    .expect("the note names the authored width in px");
+                (seat, authored)
+            })
+            .collect();
+
+        // Two controls on the page, each in both compositions.
+        assert_eq!(
+            reported.len(),
+            2 * ALL_DENSITY_POLICIES.len(),
+            "expected one note per row specimen per composition, got {reported:?}"
+        );
+        for policy in ALL_DENSITY_POLICIES {
+            let authored = policy.utility_control().width_px;
+            let mine: Vec<(f32, f32)> = reported
+                .iter()
+                .copied()
+                .filter(|(_, against)| *against == authored)
+                .collect();
+            assert_eq!(
+                mine.len(),
+                2,
+                "the {} column did not name both specimen seats against its authored {authored} px width; reported {reported:?}",
+                policy.canonical_name()
+            );
+            // The number the note reports is the seat, not the authored width:
+            // a note that echoed the authored width back would read as a page
+            // with nothing wrong on it.
+            for (seat, _) in mine {
+                assert!(
+                    seat > 0.0 && seat < authored,
+                    "the {} note reported a {seat} px seat against a {authored} px authored width",
+                    policy.canonical_name()
+                );
+            }
+        }
+
+        // And a page with no row specimens makes no such claim.
+        let colors = painted_text(gallery_window(), ComponentGalleryPage::Colors);
+        assert!(
+            !colors.iter().any(|run| run.contains("specimen seat is")),
+            "a page with no row specimen still reported a seat shortfall"
+        );
+    }
+
+    /// Reads the leading `<number> px` off `text`.
+    fn read_px(text: &str) -> Option<f32> {
+        let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    }
+
+    /// The note is conditional, not unconditional: a seat at or above the
+    /// authored width paints nothing.
+    ///
+    /// Without this the note would be indistinguishable from a banner the page
+    /// always carries, which would tell an operator nothing about this seat.
+    #[test]
+    fn a_row_specimen_seat_at_the_authored_width_reports_no_shortfall() {
+        let context = egui::Context::default();
+        context.set_fonts(
+            AuthoredTypeface::load()
+                .expect("the vendored faces are present")
+                .font_definitions(),
+        );
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 900.0))),
+            ..RawInput::default()
+        };
+        for (seat_px, expected) in [(279.0_f32, true), (280.0, false), (999.0, false)] {
+            let mut runs = Vec::new();
+            let _ = context.run(input.clone(), |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    runs = painted_runs(ui, |ui| {
+                        let painter = ui.painter().clone();
+                        let families = ui.ctx().fonts(eframe::egui::text::Fonts::families);
+                        let mut ledger = GalleryPaintLedger::default();
+                        let area = ui.max_rect();
+                        let mut specimen =
+                            SpecimenPainter::new(&painter, ui.ctx(), &families, &mut ledger, area);
+                        let mut stack = Stack::new(area);
+                        paint_row_seat_note(
+                            &mut specimen,
+                            &mut stack,
+                            ViewportDensityPolicy::SteamDeck,
+                            seat_px,
+                        );
+                    });
+                });
+            });
+            let said = runs.iter().any(|run| run.text.contains("specimen seat is"));
+            assert_eq!(
+                said, expected,
+                "a {seat_px} px seat against an authored 280 px width reported {said}"
+            );
+        }
     }
 
     /// Two rects that merely touch are not overlapping; one inside another is.
