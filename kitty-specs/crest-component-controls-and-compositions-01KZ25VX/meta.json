@@ -1,4 +1,16 @@
 {
+  "acceptance_history": [
+    {
+      "acceptance_mode": "pr",
+      "accepted_at": "2026-08-03T22:51:19.376294+00:00",
+      "accepted_by": "crestenstclair",
+      "accepted_from_commit": "79998363b18b14949af01cc393b3f81e87e95bbd"
+    }
+  ],
+  "acceptance_mode": "pr",
+  "accepted_at": "2026-08-03T22:51:19.376294+00:00",
+  "accepted_by": "crestenstclair",
+  "accepted_from_commit": "79998363b18b14949af01cc393b3f81e87e95bbd",
   "baseline_merge_commit": "438d25630d2b0f49e28bf4aabfe5ba64e5678ff5",
   "coordination_branch": "kitty/mission-crest-component-controls-and-compositions-01KZ25VX",
   "created_at": "2026-08-02T21:25:19.846487+00:00",
