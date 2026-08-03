@@ -115,6 +115,29 @@
       "parallel_group": 2
     },
     {
+      "lane_id": "lane-i",
+      "wp_ids": [
+        "WP09"
+      ],
+      "write_scope": [
+        "src/shell/visual/compositions/mixer_strip_bank.rs",
+        "src/shell/visual/density.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "legacy-cleanup",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-a",
+        "lane-c",
+        "lane-e"
+      ],
+      "parallel_group": 3
+    },
+    {
       "lane_id": "lane-f",
       "wp_ids": [
         "WP06"
@@ -130,9 +153,10 @@
       ],
       "depends_on_lanes": [
         "lane-d",
-        "lane-e"
+        "lane-e",
+        "lane-i"
       ],
-      "parallel_group": 3
+      "parallel_group": 4
     },
     {
       "lane_id": "lane-g",
@@ -152,9 +176,10 @@
         "lane-b",
         "lane-c",
         "lane-d",
-        "lane-e"
+        "lane-e",
+        "lane-i"
       ],
-      "parallel_group": 3
+      "parallel_group": 4
     },
     {
       "lane_id": "lane-h",
@@ -177,10 +202,10 @@
         "lane-f",
         "lane-g"
       ],
-      "parallel_group": 4
+      "parallel_group": 5
     }
   ],
-  "computed_at": "2026-08-02T21:57:01.416972+00:00",
+  "computed_at": "2026-08-03T04:15:37.812841+00:00",
   "computed_from": "dependency_graph+ownership",
   "planning_artifact_wps": []
 }

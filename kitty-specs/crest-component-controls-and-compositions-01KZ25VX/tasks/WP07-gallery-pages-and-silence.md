@@ -6,6 +6,7 @@ dependencies:
 - WP03
 - WP04
 - WP05
+- WP09
 requirement_refs:
 - FR-007
 - FR-008

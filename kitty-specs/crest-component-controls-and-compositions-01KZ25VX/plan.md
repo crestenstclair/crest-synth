@@ -65,7 +65,7 @@ No violations. Complexity Tracking is therefore omitted.
 
 | Canonical ID | Change |
 |---|---|
-| `valueObject.Shell.ViewportDensityPolicy` | +`mixerColumn` (F-09): the authored mixer-column width and pitch, the floor a column may not narrow past, and the declared overflow rule — sixteen columns divide the main surface by uniform narrowing, never by scrolling, elision, or a third layout. Retires `MIXER_TRACK_MIN_WIDTH_PX` from the adapter |
+| `valueObject.Shell.ViewportDensityPolicy` | +`mixerColumn` (F-09): the authored mixer-column width and pitch, the floor a column may not narrow past, and the declared overflow rule — sixteen columns divide the main surface by uniform narrowing, never by scrolling, elision, or a third layout. Retires `MIXER_TRACK_MIN_WIDTH_PX` from the adapter, and the surface-local derivation `fader.rs` carried in its place. Backed in Rust by WP09, which takes ownership of the previously unowned `src/shell/visual/density.rs`. **`WORKSPACE_TITLE_ROW_PX` gains no member**: the crest-spec declares only `mixerColumn`, so that constant retires with WP06's adapter paint rather than acquiring an undeclared accessor (F-11, ruled on in WP09's prompt) |
 | `valueObject.Shell.ComponentGalleryPage` | 8 → 15 variants; reachability replaces one-digit-per-page; the eight existing bindings are pinned. Page set unchanged by F-09 — `StripPanelAndFooter` hosts the new composition and the coverage invariant is generic |
 | `valueObject.Shell.WindowInput` | +`Digit9`, `Digit0`, `BracketLeft`, `BracketRight`; surfaceDescriptor 33 → 41 |
 | `valueObject.Shell.ComponentGalleryObservation` | +controls, compositions, and `audioOrMidiConstructed` fields |
@@ -86,7 +86,7 @@ None.
 
 | Asset | Files it produces |
 |---|---|
-| `asset.ShellContextModules` | `src/shell/visual/controls/*`, `src/shell/visual/compositions/*`, `src/shell/visual/mod.rs`, `src/shell/window_input.rs` |
+| `asset.ShellContextModules` | `src/shell/visual/controls/*`, `src/shell/visual/compositions/*`, `src/shell/visual/density.rs`, `src/shell/visual/mod.rs`, `src/shell/window_input.rs` |
 | `asset.AdapterModules` | `src/adapter/eframe_graphical_window.rs` (reduced) |
 | `asset.TestingContextModules` | `src/testing/component_gallery_scene.rs` |
 | `asset.ComponentCompositionAcceptanceTests` | `tests/component_composition.rs` |

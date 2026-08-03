@@ -4,6 +4,7 @@ title: Adapter reduction
 dependencies:
 - WP04
 - WP05
+- WP09
 requirement_refs:
 - FR-005
 - FR-006
