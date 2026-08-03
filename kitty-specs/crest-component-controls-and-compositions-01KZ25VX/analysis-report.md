@@ -4,33 +4,29 @@ artifact_type: spec-kitty.analysis-report
 command: /spec-kitty.analyze
 mission_slug: crest-component-controls-and-compositions-01KZ25VX
 mission_id: 01KZ25VXB55XTK6MS4Q4FH3V4C
-generated_at: '2026-08-02T23:31:16.796948+00:00'
+generated_at: '2026-08-03T04:20:11.454176+00:00'
 analyzer_agent: unknown
 input_artifacts:
   spec.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/crest-component-controls-and-compositions-01KZ25VX/spec.md
-    sha256: 8ffd36dfec7835b64bc4064627aad464b6408cc24e42962aa3935714b72e86b6
+    sha256: 71984c5aec3a0ca6c9211ed1848f6720e25cc737dd3c63d9a6fa65c64e067ea1
   plan.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/crest-component-controls-and-compositions-01KZ25VX/plan.md
-    sha256: a045de88bef12ad1899dba74e7b8faf7141802526941bfecba751a6cdcdb372c
+    sha256: 06bf382338d0c1deca22043263a2f7d884009a11c639ef29270df7a31e64fe5e
   tasks.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks.md
-    sha256: 816ab97779ff73a2a9621389b292636beb54d9f23a02aee4b5774c76bbebb9d3
+    sha256: c02773e0b4f27472fcf1b4d9b8c31f92512ee4ec5103824f03594bd60ab4602e
   charter:
     path: /Users/crestenstclair/workspace/crest-synth/.kittify/charter/charter.md
     sha256: 0b21a43cf5772d1308561d843239947e53247cc7d071c98c920023d23024672b
 verdict: ready
 issue_counts:
   high: 0
+  low: 1
   medium: 0
-  low: 2
   critical: 0
   info: 0
 findings:
-- id: A5
-  severity: low
-  category: inconsistency
-  summary: The ASCII dependency graph in tasks.md does not render the WP05/WP07 edges that WP frontmatter and lanes.json declare.
 - id: A6
   severity: low
   category: charter
@@ -40,97 +36,81 @@ findings:
 ## Specification Analysis Report
 
 **Mission**: `crest-component-controls-and-compositions-01KZ25VX`
-**Artifacts**: `spec.md`, `plan.md`, `tasks.md` + 8 WP prompts
-**Charter**: `.kittify/charter/charter.md` + `charter.yaml` (software-dev-default, DDD, DIRECTIVE_001/003/010/024/025)
-**Pass**: second — the four MEDIUM findings from the first pass were remediated at operator instruction before implementation. This report supersedes it.
+**Pass**: third — re-run because the artifacts changed mid-implementation. This report supersedes the second.
 
-### Resolved since the first pass
+### Why this pass exists
+
+Two deliberate amendments landed after pass two, both authored *before* the code that depends on them:
+
+1. **`spec.md`** — FR-004 and SC-002 now name eight compositions, not seven, following the crest-spec amendment (`d91fbf5`) that added `valueObject.Shell.ShellComposition.MixerStripBank` and `ViewportDensityPolicy.state.mixerColumn`.
+2. **`tasks.md`** — WP09 was authored (`bc2c740`) to implement that amendment: six subtasks T047–T052, dependencies WP01/WP03/WP05, owning `mixer_strip_bank.rs` and `density.rs`. `lanes.json` recomputed cleanly to lane-i; WP06 and WP07 now depend on it.
+
+Neither is drift. Implementation proved the declared composition family incomplete — `paint_mixer_workspace` landed nowhere in the closed seven — and the crest-spec was amended first, then the work package derived from it, which is the order `CLAUDE.md` requires.
+
+### Resolved since pass two
 
 | ID | Was | Resolution |
 |----|-----|------------|
-| A1 | NFR-001/NFR-002 had zero subtask coverage and an undefined "development rig" | `spec.md` now states both as **operator-judged, not machine-enforced**, with the rationale recorded in place: instrumenting them would add duration fields to `valueObject.Shell.ComponentGalleryObservation` — a structural crest-spec change made after crest-spec authoring closed — to serve two numbers on a scene the operator already watches, which C-007 bounds out. Every other NFR remains machine-enforced, and the spec now says which are which. |
-| A2 | T042's literal guard was scoped to the adapter file while NFR-004/SC-004 scope it to every file outside `src/shell/visual/` | WP08 T042 step 3 now walks the whole source tree excluding `src/shell/visual/`, names the gallery scene and other adapters as in-scope, and reports file and line per hit. Its validation block now requires a non-adapter file to fail the guard too, so a one-file guard cannot pass. |
-| A3 | FR-001 and US1 scenario 1 promised one control per `SemanticControlKind` while the plan builds an eight-variant family selected by kind × role | `spec.md` FR-001 and US1 scenarios 1 and 5 are restated in kind × role terms — exactly one control per declared pair, every control reachable by at least one pair, and role added to the exhaustiveness trigger. This is what T041 asserts, so the reviewer's criterion and the implementer's target now match. |
-| A4 | WP06 and WP08 `requirement_refs` omitted requirements their subtasks gate on | Registered via `spec-kitty agent tasks map-requirements`: WP06 +NFR-003, NFR-005; WP08 +FR-001, FR-005, FR-006, FR-009, FR-010, NFR-004, C-003. |
-
-Two edits were made outside `kitty-specs/`: none. One repair was needed — `map-requirements` rewrote WP06 and WP08 frontmatter without the `agent: claude` key that commit `dfa5bd1` had set on every work package; it was restored on both.
+| A5 | The ASCII dependency graph did not match `lanes.json` or the WP frontmatter | Replaced with an edge table transcribing the same field `lanes.json` computes from, so it cannot drift into a different shape. Now carries all nine WPs with depths. |
 
 ### Open findings
 
 | ID | Category | Severity | Location(s) | Summary | Recommendation |
 |----|----------|----------|-------------|---------|----------------|
-| A5 | Inconsistency | LOW | tasks.md:211-217 | The ASCII dependency graph does not draw the edges the WP frontmatter and `lanes.json` declare: WP05 depends on WP01+WP02+WP03 (drawn as flowing from WP04), and WP07 depends on WP02-WP05 (drawn hanging off the WP06/WP08 line). The authoritative graph in frontmatter and `lanes.json` is correct and mutually consistent; only the drawing is wrong, and nothing reads the drawing. | Redraw or drop the ASCII graph. No sequencing change — `lanes.json` already computes the correct order. |
-| A6 | Charter | LOW | tasks/WP08 T042 step 4 vs spec.md C-007, tasks.md:205 | T042 step 4 asks the implementer to reintroduce a literal, confirm the guard fails, then remove it. WP08's own risk note says "if a check here starts checking another check, it is out of scope and should be deleted." The step is a one-time manual verification that ships nothing, so it is defensible — but the tension is stated inside the same work package and is left for the reviewer to arbitrate. | Keep the step and add one line stating it is a manual, non-shipping verification and therefore not a proof-about-proof layer under C-007. |
+| A6 | Charter | LOW | tasks/WP08 T042 step 4 vs spec.md C-007 | T042 step 4 asks the implementer to reintroduce a literal, confirm the guard fails, then remove it, while WP08's own risk note says "if a check here starts checking another check, it is out of scope and should be deleted." The step is a one-time manual verification that ships nothing, so it is defensible — but the tension is stated inside the same work package and left for the reviewer to arbitrate. | Keep the step and add one line stating it is a manual, non-shipping verification and therefore not a proof-about-proof layer under C-007. |
 
 ### Coverage Summary
 
+All fourteen functional requirements retain at least one work package. WP09 adds coverage rather than shifting it: FR-004, FR-005, FR-006, FR-010, FR-011 and C-003, verified against `spec.md` at authoring time.
+
 | Requirement Key | Has Task? | Task IDs | Notes |
 |-----------------|-----------|----------|-------|
-| FR-001 configurable-control-family | Yes | T001-T005, T041 | Spec and tasks now both state kind × role totality |
-| FR-002 product-control-shapes | Yes | T008-T011, T013-T016 | Eight shapes, one file each |
-| FR-003 nine-state-rendering | Yes | T012, T017 | Non-color evidence asserted per control family |
-| FR-004 reusable-composition-family | Yes | T018-T021, T023-T025 | Seven compositions across WP04/WP05 |
-| FR-005 shell-composes-from-library | Yes | T029, T030, T042 | |
-| FR-006 adapter-holds-no-visual-decisions | Yes | T031, T032, T042 | |
-| FR-007 gallery-covers-controls-and-compositions | Yes | T035, T038 | |
+| FR-001 configurable-control-family | Yes | T001-T005, T041 | Approved in WP01 |
+| FR-002 product-control-shapes | Yes | T008-T011, T013-T016 | Approved in WP02, WP03 |
+| FR-003 nine-state-rendering | Yes | T012, T017 | Mutation-verified in both control WPs |
+| FR-004 reusable-composition-family | Yes | T018-T021, T023-T025, T049, T051 | **Now eight compositions**; WP09 adds the bank |
+| FR-005 shell-composes-from-library | Yes | T029, T030, T042, T052 | |
+| FR-006 adapter-holds-no-visual-decisions | Yes | T031, T032, T042, T047, T048 | WP09's policy member is what lets the adapter shed its column literal |
+| FR-007 gallery-covers-controls-and-compositions | Yes | T035, T038 | WP07 now depends on WP09 so its coverage invariant sees eight |
 | FR-008 coverage-assertion-over-closed-unions | Yes | T038, T041, T045 | |
 | FR-009 components-own-no-application-state | Yes | T005, T043 | |
-| FR-010 both-viewports-from-declared-policies | Yes | T022, T044 | |
-| FR-011 figma-authored-appearance | Yes | T008-T011, T013-T016 | Fidelity is per-control, not separately asserted |
-| FR-012 additive-gallery-page-vocabulary | Yes | T034, T037 | T037 pins the eight existing bindings |
+| FR-010 both-viewports-from-declared-policies | Yes | T022, T044, T047, T052 | |
+| FR-011 figma-authored-appearance | Yes | T008-T011, T013-T016, T048 | T048 retires the fader's 90.75px surface-local derivation |
+| FR-012 additive-gallery-page-vocabulary | Yes | T034, T037 | |
 | FR-013 design-md-state-list-corrected | Yes | T046 | |
 | FR-014 roadmap-amendment-recorded | Yes | T046 | |
-| NFR-001 gallery-opens-promptly | Declared operator-judged | — | Resolved A1; explicitly not machine-enforced, with rationale in spec.md |
-| NFR-002 page-changes-feel-immediate | Declared operator-judged | — | Resolved A1; same |
-| NFR-003 render-adapter-size-reduction | Yes | T032, T042 | ≤512 lines from 1,282 |
-| NFR-004 no-visual-literals-outside-module | Yes | T042 (full tree) | Resolved A2; guard now matches the requirement's scope |
-| NFR-005 existing-suite-unbroken | Yes | T028, T033 | Baseline captured before the move |
-| NFR-006 silence-is-verifiable | Yes | T039 | Derived, not literal |
-| C-001 no-midi-no-audio | Yes | T039 | Measured, not asserted in prose |
-| C-002 no-semantic-vocabulary-changes | Yes | T031, T043 | |
-| C-003 no-invented-values-in-production | Yes | T026, T027, T043 | |
-| C-004 closed-unions-stay-exhaustive | Yes | T001, T002, T003, T006 | Tuple match makes additions a compile error |
-| C-005 crest-owns-the-component-api | Yes | T013-T016 | research.md R-02 forbids egui widgets for appearance |
-| C-006 phase-4a-artifacts-additive-only | Yes | T037, T045 | |
+| NFR-001 / NFR-002 | Declared operator-judged | — | Resolved in pass one, rationale recorded in spec.md |
+| NFR-003 render-adapter-size-reduction | Yes | T032, T042 | See risk below — the budget projected to ~650 against ≤512 before WP09 existed |
+| NFR-004 no-visual-literals-outside-module | Yes | T042 (full tree) | Widened in pass one |
+| NFR-005 existing-suite-unbroken | Yes | T028, T033 | |
+| NFR-006 silence-is-verifiable | Yes | T039 | |
+| C-001 through C-006 | Yes | as pass two | C-003 additionally covered by T050's two-level marking |
 | C-007 no-mission-artifact-proof-work | Partial | — | A6; bounded by prose only |
+
+### Risks carried into implementation, recorded not blocking
+
+These are implementation findings rather than artifact defects, so they do not carry a severity — but a reader of this report should know them.
+
+1. **NFR-003's line budget is unproven.** WP04's reviewer enumerated 51 decisions in `paint_shell` and its region painters at review granularity and projected the adapter to ~650 lines against the required ≤512, or ~529 with every then-known blocker solved. WP09 relocates the mixer column geometry and the bank, which moves the number in the right direction, but nothing has re-measured it. WP06 should measure before assuming the target is reachable.
+2. **Two unowned files remain.** `src/control/semantic_graphical_view_model.rs` (the compact-label overflow F-06, the `T00 Mute` label F-02) and `src/testing/live_demo_runner.rs` (the second protected frame consumer). `density.rs` was unowned through pass two and is now WP09's.
+3. **The mechanized baseline capture is broken mission-wide** (finding F-12). Three test counts circulated for one tree; `baseline-tests.json` has recorded a CLI usage error rather than a test run, and in one case targeted a commit that was not an ancestor of the mission branch. Every work package must measure its own baseline by stashing.
+4. **`spec-kitty agent tasks map-requirements` silently strips `agent: claude`** from the frontmatter it rewrites — the defect commit `dfa5bd1` originally repaired across all eight WPs, seen twice more since. Expect it on any WP whose requirements are remapped.
+5. **Review-artifact numbering runs one ahead of the review cycle**, and acknowledgement files inherit `verdict: rejected`, so a WP's own acknowledged feedback blocks its next approval (waiver W-01). It has also caused reviewers to find stale copies of prior feedback where current feedback should be.
 
 ### Charter Alignment
 
-No charter violations. The plan's Charter Check (`plan.md:24-42`) declares DIRECTIVE_001, 003, 010, 024, 025, 030, 031, 034, 036 and marks DIRECTIVE_035 N/A; the tasks are consistent with each.
-
-- **DIRECTIVE_010 Specification Fidelity** — every `owned_files` entry traces to a declared crest-spec asset (`plan.md:80-90`). The A4 remediation closed the last traceability gap between what a WP proves and what its frontmatter claims.
-- **DIRECTIVE_003 Decision Documentation** — the A1 resolution is recorded in `spec.md` with its reasoning rather than dropped, which is what the directive asks of a deliberate non-enforcement.
-- **DIRECTIVE_025 Boy Scout Rule** — the `DESIGN.md` six-vs-nine state contradiction is folded in as FR-013 rather than filed away.
-- **DIRECTIVE_034 Test-First** — T003 (failing totality assertion before T004's selector), T012/T017, T028 (baseline before reduction). Held.
-- **DIRECTIVE_035 Bulk Edit** — correctly N/A; this mission relocates code and adds identifiers, it renames no string across files.
-
-### Unmapped Tasks
-
-None blocking. Two tasks serve constraints rather than an FR, deliberately:
-
-- **T027** — records designed-but-undriven structures; its output is the input to Phase 5, per `tasks.md:152`.
-- **T028** — pre-reduction behavioral baseline; exists to make NFR-005 falsifiable rather than to satisfy an FR.
+No violations. The two amendments strengthen DIRECTIVE_010 (Specification Fidelity) rather than straining it: the crest-spec was authored before the implementing code, `plan.md`'s Crest-Spec Derivation was updated, and the amendment is additive — no existing declaration was reworded to make room. DIRECTIVE_003 (Decision Documentation) is served by `cross-wp-findings.md`, which now records the ruling, the rejected alternative, and the reasoning.
 
 ### Metrics
 
 - Total requirements: **27** (14 FR, 6 NFR, 7 C)
-- Total subtasks: **46** across 8 work packages
+- Total subtasks: **52** across **9** work packages (was 46 across 8)
 - FR coverage: **14/14 (100%)**
-- NFR coverage: **4/6 machine-enforced, 2/6 declared operator-judged with recorded rationale, 0 silently uncovered**
-- Constraint coverage: **6/7 asserted, 1 prose-bounded**
-- Ambiguity count: **0** (both first-pass ambiguities resolved)
-- Duplication count: **0** — FR-002/003/011 in both WP02 and WP03, and FR-004 in both WP04 and WP05, by deliberate file-disjoint split
-- Critical issues: **0**
-- High issues: **0**
-- Medium issues: **0**
+- Critical issues: **0** · High: **0** · Medium: **0** · Low: **1**
 
 ### Next Actions
 
-Verdict **ready**. Implementation may proceed; WP01 is unblocked and touches nothing either open finding affects.
+Verdict **ready**. Implementation continues.
 
-Remaining work, both LOW and both cosmetic:
-
-1. **A5** — redraw or drop the ASCII dependency graph in `tasks.md`. `lanes.json` is authoritative and correct.
-2. **A6** — one clarifying line in WP08 T042 that step 4 is a manual, non-shipping verification.
-
-Neither gates any work package. Fix opportunistically, or fold into WP08 when it lands.
+1. **A6** — one clarifying line in WP08 T042. Not blocking; fold into WP08 when it lands.
+2. Re-measure NFR-003's line budget in WP06 before treating ≤512 as reachable.
