@@ -434,3 +434,103 @@ So the helper does not merely under-cover: on its own two declared bands it can 
 ### Not WP06's to fix
 
 `state_projector.rs` is unowned by any work package in this mission, and `tests/component_vocabulary.rs` is WP08's only for the page-reachability change. WP06 raised this rather than widening its own scope, which is correct.
+
+### Correction — two of the three reported overruns are measurement artifacts
+
+**Raised by**: WP06 cycle-2 review, by re-measuring the production frame
+**Status**: reproduced both ways on a clean tree
+
+**A glyph run's rectangle is not `pos + galley.size()`.** `Galley::rect` is expressed relative to
+the anchor and already carries the job's horizontal alignment: a **right-aligned** run has
+`rect.right() == 0.0` and extends *leftward* from `pos`. The correct composition is the one
+`tests/component_vocabulary.rs:530` already uses:
+
+```rust
+let rect = text.galley.rect.translate(text.pos.to_vec2());
+```
+
+Measured against the production paint path at 1920×1080 MIXER, both ways:
+
+| Run | naive `pos + size` | alignment-correct | Real? |
+|---|---|---|---|
+| `ROUTED PATCHES · 01` | x → **2048.3** | x = 1743.7 → 1896.0, inside a band ending at 1920 | **no** |
+| `READY` | x → **1935.0** | x = 1857.0 → 1896.0 | **no** |
+| `NAVIGATE` | overruns | contained | **no** |
+| 64 mixer cell labels at 1280 | clip | clip | **yes** |
+
+The `2048` figure in the table above is the naive number exactly, which identifies the error. With
+alignment-correct rects, **zero** runs escape `ContextLine`, `IdentityHeader` or `MainWorkspace` at
+either authored viewport. Only the 64 mixer cell labels at 1280 survive as real, plus F-18 below.
+
+**Consequence for blindness claim 2:** it does not currently fire. Every `ContextLine` run in the
+shipped frame carries the band rect itself as its clip, so the identity comparison does match and
+would flag a real escape. The fragility is genuine but **latent** — a run painted through a nested
+`painter_at` inside a fixed band would evade it. Record it as a hardening note, not as an active
+defect, and **do not let T044 chase `READY` or `ROUTED PATCHES`: they are not clipping.**
+
+**Blindness claim 1 stands, confirmed independently.** `fixed_bands` is built from
+`[ShellRegionId::ContextLine, ShellRegionId::IdentityHeader]` only, so `PersistentSideRegion` and
+`MainWorkspace` escapes are counted as `scrolled_out_of_view` and never asserted. That is why both
+cycle-1 defects shipped green, and it is what T044 must replace.
+
+---
+
+## F-18 — The side region lost its scroll, and roughly half the mixer Inspector is now unreachable
+
+**Raised by**: WP06 cycle-2 review, by measuring the production frame
+**Owner**: WP05's composition surface / mission review — **not a cycle-3 ask of WP06**
+**Status**: measured at both authored viewports; no existing test can see it
+
+The shipped adapter wrapped the side region's content in
+`egui::ScrollArea::vertical().id_salt("crest-synth-side-controls")`
+(`eframe_graphical_window.rs:643` at mission base). WP06 correctly deleted that and routed the region
+through `UtilityInspectorPanel`. **That composition has no scroll region, and neither does any other
+composition except the footer's horizontal one** — `grep -rn ScrollArea src/` returns exactly one hit,
+`footer.rs:231`.
+
+So the Inspector's rows are still painted, at their full natural extent, straight past the bottom of
+the panel that contains them, with nothing to scroll them back into view.
+
+Measured at 1920×1080 on MIXER, side band `y = 120…1016`:
+
+| Run | Painted at y | Panel ends at |
+|---|---|---|
+| `Return B0 Level` | 1039 | 1016 |
+| `Return B1` / `Empty` / `Locked` | 1118 | 1016 |
+| `Return B6 Level` | 1795 | 1016 |
+
+**39 runs escape the side region at 1920, and 46 at 1280.** Everything from `Return B0`'s level row
+downward — the returns' levels, all of `Return B1`–`B7`, and master gain — is painted off the panel
+and cannot be reached by any gesture. Before WP06 the same content was reachable by scrolling.
+
+This is not a clipping-at-the-edge cosmetic issue like F-17's; it is **content the operator could
+reach and now cannot**, at the authored desktop viewport.
+
+### Why it is recorded rather than sent back to WP06
+
+- **No test fails.** Per F-17's blindness claim 1, `check_no_text_clips_or_overlaps` does not assert
+  on `PersistentSideRegion` at all, so the whole suite is green at 862/0 with this present.
+- **The fix is not in WP06's file.** A scroll region is layout, and layout belongs to the
+  composition — `utility_inspector_panel.rs`, which is WP05's approved surface. No protected
+  assertion forces WP06 to touch it, and WP06 has already been held to a strict standard about
+  editing other packages' files only under compulsion.
+- **It was present in cycle 1 and not raised then**, including by this reviewer. Re-rejecting cycle 2
+  for it after scoping that cycle to two named edits would move the goalposts without landing the fix
+  in the right place.
+
+### What is actually wanted
+
+A decision, not a reflex. Restoring a scroll region is the cheap answer and matches shipped
+behaviour, but note that `MixerStripBank`'s authored rule is deliberately **"uniform narrowing, never
+scrolling and never elision"** (F-09), so scrolling is not automatically the house style — the
+Inspector is a different surface from the bank and may legitimately answer differently. Whoever takes
+it should also check the PATCH Utility side surface, which is shorter and may not overflow.
+
+### Measurement recipe
+
+A ~120-line integration test reproduces all of the above: build `EframeGraphicalApplication` over
+`AppLoop` exactly as `tests/graphical_application_shell.rs` does, `begin_pass` / `update` /
+`end_pass`, then walk `output.shapes` recursing through `Shape::Vec`, and for each `Shape::Text`
+record `text.galley.rect.translate(text.pos.to_vec2())` against the `ClippedShape`'s own
+`clip_rect`. Assert `clip.contains_rect(rect)` per run, per band, with a denominator. **That is
+T044.**
