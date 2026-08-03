@@ -1,6 +1,7 @@
 {
   "coordination_branch": "kitty/mission-crest-component-controls-and-compositions-01KZ25VX",
   "created_at": "2026-08-02T21:25:19.846487+00:00",
+  "crest_spec_impact": "structural",
   "flattened": false,
   "friendly_name": "Crest Component Controls and Compositions",
   "mission_id": "01KZ25VXB55XTK6MS4Q4FH3V4C",
@@ -13,5 +14,6 @@
   "slug": "crest-component-controls-and-compositions-01KZ25VX",
   "target_branch": "feat/crest-component-controls-and-compositions",
   "topology": "coord",
-  "crest_spec_impact": "structural"
+  "vcs": "git",
+  "vcs_locked_at": "2026-08-02T23:31:24.925636+00:00"
 }
