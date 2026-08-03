@@ -404,3 +404,33 @@ The relevant asymmetry today: WP03 built the **`ModalOption` control** against F
 A modal is not a sixth band. It is a layer over the frame, which means whatever composition owns it has to answer things the current family never had to: what it dims or blocks beneath, how it is dismissed, where focus goes while it is open and where it returns, and whether it participates in `ShellFrameObservation` at all.
 
 Worth noting for whoever scopes it: adding it is the same shape of change as `MixerStripBank` (F-09) — a crest-spec amendment to `valueObject.Shell.ShellComposition`, authored first, then a work package deriving from it.
+
+---
+
+## F-17 — T044's residual exposure, and the helper it will be built on is partly blind
+
+**Raised by**: WP06 cycle 2
+**Owner**: WP08, before T044 is written
+
+WP06's caption fix closes the clipping the operator saw by eye in the Inspector route line and the `Locked` label. **It does not close T044.** Runs that do not pass through `section::caption` still clip in the production frame:
+
+| Run | Where it comes from | Measured |
+|---|---|---|
+| `ROUTED PATCHES · 01` | a projected surface title, `src/control/state_projector.rs:596`, painted by the section *header* rather than the caption | overruns to x=2048 at 1920 |
+| `READY`, `NAVIGATE` | context line | overrun the viewport |
+| 64 mixer cell labels | mixer columns | clip at 1280 |
+
+### The part that matters more than the list
+
+**`check_no_text_clips_or_overlaps` (`tests/component_vocabulary.rs:1642`) is blind in two ways, and T044 would inherit both.**
+
+1. **It asserts clipping only for `ContextLine` and `IdentityHeader`.** Everything in `PersistentSideRegion` and `MainWorkspace` is outside its reach — which is exactly why WP06 cycle 1 shipped both the meter displacement and the caption clipping with the whole suite green at 862/0. Reverting the wrap fix *still* passes 862/0 today.
+2. **It compares clip-rect identity against the band rect**, so a `ContextLine` run that escapes the viewport is counted as *scrolled* rather than flagged. `READY` overruns and the helper does not notice.
+
+So the helper does not merely under-cover: on its own two declared bands it can miss the failure it exists to catch.
+
+**T044 must not be layered on it unexamined.** Whatever WP08 writes needs its own clip determination, over every band, with a denominator — and per F-14 and WP04's reachability finding, absence and clipping are different failures: a culled run and a run never composed are the same absence in a shape stream, so a reachability check needs a supplied-count comparison rather than a shape scan.
+
+### Not WP06's to fix
+
+`state_projector.rs` is unowned by any work package in this mission, and `tests/component_vocabulary.rs` is WP08's only for the page-reachability change. WP06 raised this rather than widening its own scope, which is correct.
