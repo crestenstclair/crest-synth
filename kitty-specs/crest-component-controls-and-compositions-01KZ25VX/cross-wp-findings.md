@@ -161,6 +161,16 @@ Expect this to recur on every work package that goes through a rejection cycle. 
 
 The board still reports `WP03 ⚠ review artifact: verdict=rejected`. If the merge gate reads the same signal it will refuse — and at that point the override would be applied to a **merge** gate, a different and more serious class than the per-WP approval gate. Resolve the artifact frontmatter before merge rather than waiving again there.
 
+### Fourth occurrence — WP09 cycle 1, 2026-08-03
+
+Reproduced exactly as predicted, and recorded here **before** it blocks anything so the next reviewer does not rediscover it.
+
+The WP09 cycle-1 rejection was written to `review-cycle-1.md` and `move-task --to planned --review-feedback-file` additionally emitted `review-cycle-2.md`. Verified by the reviewer: **the two bodies are byte-identical** (17,285 bytes each), both opening `# WP09 review — cycle 1`; only `review-cycle-2.md`'s frontmatter differs, carrying `cycle_number: 2` and an inherited `verdict: rejected`.
+
+**There is exactly one WP09 rejection, and it is cycle 1.** When WP09 returns for approval, `spec-kitty` will refuse with `WP09 has a rejected review artifact (review-cycle-2.md)`. That refusal is the tooling defect, not a second rejection — inspect both files, confirm the bodies match, and say so plainly in the approval note.
+
+This is the fourth occurrence and the first recorded proactively rather than after a blocked approval. The defect is now confirmed to fire on the **first** rejection cycle of a work package, not only on later ones.
+
 ---
 
 ## F-09 — The mixer strip has no composition, and an eighth variant is required
@@ -319,3 +329,39 @@ So `spec-kitty accept` would have passed regardless. The divergence was between 
 ### Still open
 
 `tests/component_vocabulary.rs:625` remains release-incompatible. No work package in this mission owns that file except WP08, and only for the page-reachability change. Either gate the line behind `#[cfg(debug_assertions)]` or drop it — but that is a decision for whoever next owns the file, not a Phase 4b fix.
+
+---
+
+## F-14 — The shared composition probe is blind to two whole classes of defect
+
+**Raised by**: WP09's review, via a sixteen-mutation sweep against the production suite
+**Owner**: mission review, and **WP08** if its vocabulary proof is to mean what it says
+**Status**: reproduced first-hand; every claim below was applied to a clean tree and run
+
+`section::probe` is the harness every Phase 4b composition proves itself with. Two blind spots in it are not any one work package's to close, because they weaken WP04's, WP05's, and WP09's assertions identically.
+
+### 1. Non-text shapes are never asserted, so hairlines can vanish silently
+
+`probe::Painted` **does** carry `shapes: usize`, documented as *"How many non-text shapes were emitted"* (`section.rs:377`). **No composition test in the mission reads it.** The controls layer does — `browser_row.rs:313` asserts `shown.shapes < 16` — so the pattern exists and the compositions simply never adopted it.
+
+Measured consequence: making `mixer_strip_bank::paint_separators` a no-op — **no hairline separators at all** — passes the full **810-test suite at exit 0**. Moving each hairline off the gutter midpoint onto the column edge also passes. `DESIGN.md:462` names "compact columns with hairline separators, not cards" as a product requirement.
+
+The same exposure exists at `section.rs:309` and `utility_inspector_panel.rs:421`, which paint `rules::hairline` under the same unasserted conditions. **This is why WP09 was not rejected for the hairline gap alone** — it would have applied a standard two approved work packages were not held to.
+
+### 2. `from_projection_or_vocabulary` matches by substring, so C-003 guards leak
+
+`section.rs:1010` accepts a painted run if any projected text **`contains`** it:
+
+```rust
+.any(|text| !text.is_empty() && text.contains(piece))
+```
+
+Containment, not equality. So any fabricated numeral that happens to be a substring of a real projected label passes the no-placeholder assertion that every composition relies on.
+
+Measured consequence: painting a literal `"0"` into every empty mixer column passes `a_marked_bank_paints_no_value_the_projection_did_not_carry`, whose own docstring claims it proves *"no level, no zero, and no dash standing in for a reading nobody reported."* `"0"` is a substring of `"T00 Level"`. `"0.0"` passes too. `"-12.5 dB"` is correctly caught, so the helper is not inert — but the **canonical** fabrication walks through it.
+
+C-003 is the mission's most-enforced constraint, and this is the shared mechanism guarding it. A per-WP fix (assert whole-label equality in the composition's own test) is what WP09 was asked for; the helper itself belongs to whoever next owns `section.rs`.
+
+### Why this is recorded rather than assigned
+
+Both are in WP05's approved file. Tightening the helper would change what every existing composition assertion accepts, which is a mission-level decision, not a work-package edit. **The cheap per-WP mitigation is for each composition to assert equality rather than lean on the shared helper, and to count non-text shapes where it paints structure.**
