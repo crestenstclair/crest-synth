@@ -4,12 +4,12 @@ artifact_type: spec-kitty.analysis-report
 command: /spec-kitty.analyze
 mission_slug: crest-component-controls-and-compositions-01KZ25VX
 mission_id: 01KZ25VXB55XTK6MS4Q4FH3V4C
-generated_at: '2026-08-03T18:08:07.556817+00:00'
+generated_at: '2026-08-03T20:51:49.826240+00:00'
 analyzer_agent: unknown
 input_artifacts:
   spec.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/crest-component-controls-and-compositions-01KZ25VX/spec.md
-    sha256: 71984c5aec3a0ca6c9211ed1848f6720e25cc737dd3c63d9a6fa65c64e067ea1
+    sha256: 2e7ec66493b230bb1781f7f4dc22eb4e5511d1102eba3aa86fb159733fb19c5b
   plan.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/crest-component-controls-and-compositions-01KZ25VX/plan.md
     sha256: 06bf382338d0c1deca22043263a2f7d884009a11c639ef29270df7a31e64fe5e
@@ -21,8 +21,8 @@ input_artifacts:
     sha256: 0b21a43cf5772d1308561d843239947e53247cc7d071c98c920023d23024672b
 verdict: ready
 issue_counts:
-  critical: 0
   low: 1
+  critical: 0
   high: 0
   medium: 0
   info: 0
@@ -36,7 +36,9 @@ findings:
 ## Specification Analysis Report
 
 **Mission**: `crest-component-controls-and-compositions-01KZ25VX`
-**Pass**: fourth — re-run because the artifacts changed mid-implementation. This report supersedes the third.
+**Pass**: fifth — re-run because the artifacts changed mid-implementation. This report supersedes the fourth.
+
+**Change since pass four**: `spec.md` NFR-006 was rewritten and dropped from High to Medium, and a scope correction was recorded. The operator's direction was that *there is no need for any sound in the UI system*; through this mission's dispatches that had become a formal measured-and-provable silence property — a derived `audioOrMidiConstructed` field, witness predicates carrying it, source-scan derivations judged for strength, and requests for audible confirmation. **That escalation was the orchestrator's, not any work package's**, and it is the proof-about-proof layer C-007 exists to forbid. What is required is that the demo scene constructs no audio output and no MIDI source, so it plays nothing. C-001 is unchanged, because it constrains what gets built rather than what must be proven about it. Recorded in the same correction: **display fidelity is not a rejection axis at this stage** — seat widths, derived band heights, and clipping details are cleanup, not gates.
 
 **Change since pass three**: ten `cargo test --release` commands across `quickstart.md`, `tasks.md`, and the WP06/WP08/WP09 prompts were corrected to the debug profile. The release profile **cannot compile this tree** — `tests/component_vocabulary.rs:625` reads `style.debug`, which egui gates behind `#[cfg(debug_assertions)]` (`E0609`), pre-existing since `589fa01`. Every work package told to baseline that way ran zero tests and received a compile error, which is the mechanism behind the unreliable baselines in risk 3 below. The **declared** validations in `.kittify/crest-spec/proof/validations.yaml` never used `--release`, so acceptance was unaffected; the drift was between what the tooling executes and what agents read.
 
