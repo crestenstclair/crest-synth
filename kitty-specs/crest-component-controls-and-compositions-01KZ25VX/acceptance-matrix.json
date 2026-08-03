@@ -150,73 +150,97 @@
       "invariant_id": "C-001",
       "description": "No MIDI, no audio anywhere in this slice.",
       "evidence": "The component demo scene constructs no audio output and no MIDI event source, so running it plays nothing. No audio device is opened and no MIDI fixture is loaded.",
-      "pass_fail": "pass",
-      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
-      "verified_at": "2026-08-03T00:00:00Z",
-      "notes": "SCOPE CORRECTION (operator, 2026-08-03): an earlier reading of this mission inflated 'no sound in the UI' into a measured, provable silence property with witness predicates and source-scan derivations. That escalation was the orchestrator's and is exactly the proof-about-proof layer C-007 forbids. What is required is that the scene plays nothing; no proof of silence is owed."
+      "notes": "SCOPE CORRECTION (operator, 2026-08-03): an earlier reading of this mission inflated 'no sound in the UI' into a measured, provable silence property with witness predicates and source-scan derivations. That escalation was the orchestrator's and is exactly the proof-about-proof layer C-007 forbids. What is required is that the scene plays nothing; no proof of silence is owed.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition -- --nocapture"
     },
     {
       "invariant_id": "C-002",
       "description": "No new semantic vocabulary: no SemanticAction variant, no focus target, no reducer behavior.",
       "evidence": "tests/component_composition.rs::no_component_owns_caches_or_dispatches_application_state asserts no control or composition dispatches a SemanticAction; ControlIntent is returned and never converted inside the visual module.",
-      "pass_fail": "pass",
-      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
-      "verified_at": "2026-08-03T00:00:00Z",
-      "notes": "Four WindowInput key variants were added, which are normalized physical keys rather than semantic vocabulary. Two gaps were declared rather than closed by extending the projection: T009's choice-boundary criterion (F-05) and the mixer meter's level (F-10 item 9)."
+      "notes": "Four WindowInput key variants were added, which are normalized physical keys rather than semantic vocabulary. Two gaps were declared rather than closed by extending the projection: T009's choice-boundary criterion (F-05) and the mixer meter's level (F-10 item 9).",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition no_component_owns_caches_or_dispatches_application_state"
     },
     {
       "invariant_id": "C-003",
       "description": "No invented values in the production shell \u2014 omit or mark explicitly unavailable, never fabricate.",
       "evidence": "tests/component_composition.rs::a_composition_with_no_view_data_marks_the_gap_rather_than_painting_one. mark_unavailable paints the declared marker plus the missing structure's name, never an empty string or a zero. Mutation-verified: painting '0.000' for the mark fails by name.",
-      "pass_fail": "pass",
-      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
-      "verified_at": "2026-08-03T00:00:00Z",
-      "notes": "Visible in the shipped product: the PATCH Utility panel renders MASTER VOLUME, MIDI INPUT and VOICE LIMIT as the declared unavailable marker. T027 (F-10) records the ten designed structures the projection does not drive; that list is Phase 5's declared input."
+      "notes": "Visible in the shipped product: the PATCH Utility panel renders MASTER VOLUME, MIDI INPUT and VOICE LIMIT as the declared unavailable marker. T027 (F-10) records the ten designed structures the projection does not drive; that list is Phase 5's declared input.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition a_composition_with_no_view_data_marks_the_gap_rather_than_painting_one"
     },
     {
       "invariant_id": "C-004",
       "description": "Closed unions stay closed and exhaustively matched.",
       "evidence": "Every family is a closed enum matched exhaustively with no `_` arm. Proven at merge rather than only by test: adding MixerStripBank produced E0004 at application_shell.rs:422, naming the site that had to change.",
-      "pass_fail": "pass",
-      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
-      "verified_at": "2026-08-03T00:00:00Z",
-      "notes": "The same property retired both scaffold stubs. paints_nothing and arranges_nothing each became unreachable once every arm resolved to a real module, failing clippy -D warnings on dead code at the cross-lane merge \u2014 a result no single lane could observe."
+      "notes": "The same property retired both scaffold stubs. paints_nothing and arranges_nothing each became unreachable once every arm resolved to a real module, failing clippy -D warnings on dead code at the cross-lane merge \u2014 a result no single lane could observe.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo clippy --all-targets -- -D warnings"
     },
     {
       "invariant_id": "C-005",
       "description": "Crest owns the component API; third-party egui utilities may be used underneath.",
       "evidence": "research.md R-02 is enforced: everything paints through Painter over an allocated Response. No egui::Slider, ProgressBar, Checkbox, or SelectableLabel is used for appearance, verified by grep in every control review.",
-      "pass_fail": "pass",
-      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
-      "verified_at": "2026-08-03T00:00:00Z",
-      "notes": "The reason is NFR-004: a styled egui widget hides a visual literal inside egui::Style, where the guard cannot see it."
+      "notes": "The reason is NFR-004: a styled egui widget hides a visual literal inside egui::Style, where the guard cannot see it.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition every_drivable_pair_paints_through_the_production_render_path"
     },
     {
       "invariant_id": "C-006",
       "description": "Phase 4a artifacts are additive-only.",
       "evidence": "The eight pre-existing gallery pages and their digit bindings are pinned by T037's frozen baseline. Tokens, typeface, density policies, and primitives were consumed, not revised.",
-      "pass_fail": "pass",
-      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
-      "verified_at": "2026-08-03T00:00:00Z",
-      "notes": "ViewportDensityPolicy gained mixer_column(), which is additive and was declared in the crest-spec before the code existed."
+      "notes": "ViewportDensityPolicy gained mixer_column(), which is additive and was declared in the crest-spec before the code existed.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_vocabulary"
     },
     {
       "invariant_id": "C-007",
       "description": "No mission-artifact proof work \u2014 this mission proves the library exists and is used, and builds no layer that verifies the verification.",
       "evidence": "The acceptance target contains no check of another check. The words 'silence', 'audible', and 'audioOrMidiConstructed' do not appear in it.",
-      "pass_fail": "pass",
-      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
-      "verified_at": "2026-08-03T00:00:00Z",
-      "notes": "C-007 was breached once during the mission, by the orchestrator, in the form of the invented silence-proof requirement. It was retracted before WP08 was dispatched and no proof-about-proof layer shipped."
+      "notes": "C-007 was breached once during the mission, by the orchestrator, in the form of the invented silence-proof requirement. It was retracted before WP08 was dispatched and no proof-about-proof layer shipped.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition -- --nocapture"
     },
     {
       "invariant_id": "NFR-005",
       "description": "The existing suite passes with zero failures and no existing shell, projection, or focus test modified to accommodate this mission.",
       "evidence": "893 passed / 0 failed / 1 ignored on the final lane, against a baseline measured by stashing. tests/component_vocabulary.rs is the one existing test file this mission may modify, sanctioned by T045 because the crest-spec deliberately changed the rule it encodes; WP07's reviewer proved the edit forced by restoring the mission-branch copy and getting two hard type errors (E0308, E0277) plus a runtime assert made false by the fifteen-variant page union.",
-      "pass_fail": "pass",
-      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
-      "verified_at": "2026-08-03T00:00:00Z",
-      "notes": "The 1 ignored test is a deliberate forward-looking tripwire asserting what should become true when an unowned fixture is repaired."
+      "notes": "The 1 ignored test is a deliberate forward-looking tripwire asserting what should become true when an unowned fixture is repaired.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test"
     }
   ]
 }
