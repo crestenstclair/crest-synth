@@ -143,6 +143,136 @@
       "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
       "verified_at": "2026-08-03T00:00:00Z",
       "notes": "WP08 deliberately did NOT amend the program-level 'live-demo requirement for every phase' rule from inside one phase's entry, recording the contradiction instead. Its reviewer ruled that restraint correct, noting the cross-reference is one-directional and one pointer line at ROADMAP.md:9-20 would close it."
+    },
+    {
+      "criterion_id": "NFR-001",
+      "description": "Gallery opens promptly.",
+      "proof_type": "manual_review",
+      "evidence": "Operator-judged by direction, not machine-enforced. The orchestrator launched the shell binary directly and it presented its first painted frame without perceptible wait.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Recorded in spec.md as operator-judged with the reasoning: instrumenting it would add duration fields to ComponentGalleryObservation, a structural crest-spec change made after crest-spec authoring closed, to serve two numbers on a scene the operator already watches. C-007 bounds that out."
+    },
+    {
+      "criterion_id": "NFR-002",
+      "description": "Page changes feel immediate.",
+      "proof_type": "manual_review",
+      "evidence": "Operator-judged. Context switching in the running shell was immediate with no perceptible lag; the gallery's page stepping was exercised across all fifteen pages in two full runs by WP07.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Same operator-judged rationale as NFR-001."
+    },
+    {
+      "criterion_id": "NFR-003",
+      "description": "Render adapter size reduction.",
+      "proof_type": "automated_test",
+      "evidence": "src/adapter/eframe_graphical_window.rs is 740 lines: 497 production span (366 code, 101 comment, 30 blank) and a 243-line #[cfg(test)] module byte-identical to base. Production span went 1,039 -> 497, a 52% reduction, asserted as a no-regression ceiling at ADAPTER_PRODUCTION_LINE_CEILING in tests/component_composition.rs.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "THE STATED NUMBER IS NOT MET AND CANNOT BE. NFR-003 asked for <=512, i.e. 40% of 1,282 \u2014 but that figure counted the adapter's own 243-line test module, which NFR-005 forbids touching. The floor is 595 at zero comments and zero blank lines, so NFR-003 and NFR-005 are in direct arithmetic conflict. Two independent reviews ruled it mis-specified rather than failed, and no line-count work was asked for. Graded pass on the measure the requirement meant \u2014 the production span \u2014 with the literal shortfall stated here rather than hidden. A reader who needs the literal number should treat this as unmet."
+    },
+    {
+      "criterion_id": "NFR-004",
+      "description": "No visual literals outside the visual module.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::no_visual_decision_survives_outside_the_visual_module, with three supporting tests. Mutation-verified: a planted Color32::from_rgb in the adapter and, separately, in src/testing/component_gallery_scene.rs each fail by file and line. Corpus 130 sources / 82,372 lines, exactly one excluded subtree.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Repo-wide in FILE coverage but not yet in CONSTRUCT coverage: Vec2::new, vec2(), and a bare f32 band extent are not needles. The tree was grepped and is clean of those forms today, so this is a completeness gap rather than a concealed violation. Originally scoped to the adapter alone; widened during analysis (finding A2) to the scope NFR-004 actually states."
+    },
+    {
+      "criterion_id": "NFR-005",
+      "description": "Existing suite unbroken, no existing test modified to accommodate the mission.",
+      "proof_type": "automated_test",
+      "evidence": "893 passed / 0 failed / 1 ignored on the merged target, against baselines each work package measured by stashing.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "tests/component_vocabulary.rs is the one existing test file this mission may modify, sanctioned by T045 because the crest-spec deliberately changed the rule it encodes. WP07's reviewer proved the edit forced by restoring the mission-branch copy and getting two hard type errors (E0308, E0277) plus a runtime assert made false by the fifteen-variant page union. The 1 ignored test is a deliberate forward tripwire."
+    },
+    {
+      "criterion_id": "NFR-006",
+      "description": "The demo scene plays nothing.",
+      "proof_type": "manual_review",
+      "evidence": "The component gallery scene constructs no audio output and no MIDI event source. WP07 ran it live twice; no CoreAudio IO thread, zero audio frames in a sampled call graph, zero audio device handles.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "SCOPE CORRECTION (operator, 2026-08-03): this was originally graded as a provable silence property. That escalation was the orchestrator's and is the proof-about-proof layer C-007 forbids. What is required is that the scene plays nothing. No audible confirmation is owed and none is claimed."
+    },
+    {
+      "criterion_id": "C-001",
+      "description": "No MIDI, no audio.",
+      "proof_type": "manual_review",
+      "evidence": "No MIDI fixture, no audio device, no note events, and no audible behavior in any scene, test, or demo target this mission adds.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "See NFR-006's correction. C-001 constrains what gets built, not what must be proven about it."
+    },
+    {
+      "criterion_id": "C-002",
+      "description": "No semantic vocabulary changes.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::no_component_owns_caches_or_dispatches_application_state. No SemanticAction variant, focus target, or reducer behavior added.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Four WindowInput key variants were added \u2014 normalized physical keys, not semantic vocabulary. Two gaps were declared rather than closed by extending the projection: T009's choice-boundary criterion (F-05) and the mixer meter's level (F-10 item 9)."
+    },
+    {
+      "criterion_id": "C-003",
+      "description": "No invented values in the production shell.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::a_composition_with_no_view_data_marks_the_gap_rather_than_painting_one. Mutation-verified: painting '0.000' for the mark fails by name.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Visible in the shipped product \u2014 the PATCH Utility panel renders MASTER VOLUME, MIDI INPUT and VOICE LIMIT as the declared unavailable marker. T027 (F-10) lists the ten designed structures the projection does not drive; that list is Phase 5's declared input."
+    },
+    {
+      "criterion_id": "C-004",
+      "description": "Closed unions stay closed and exhaustive.",
+      "proof_type": "automated_test",
+      "evidence": "Every family is a closed enum matched exhaustively with no `_` arm. Proven at merge as well as by test: adding MixerStripBank produced E0004 at application_shell.rs:422, naming the site that had to change.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "The same property retired both scaffold stubs \u2014 paints_nothing and arranges_nothing each became unreachable once every arm resolved to a real module, failing clippy -D warnings at the cross-lane merge, a result no single lane could observe."
+    },
+    {
+      "criterion_id": "C-005",
+      "description": "Crest owns the component API.",
+      "proof_type": "automated_test",
+      "evidence": "research.md R-02 enforced: everything paints through Painter over an allocated Response. No egui::Slider, ProgressBar, Checkbox, or SelectableLabel used for appearance, verified by grep in every control review.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "The reason is NFR-004: a styled egui widget hides a visual literal inside egui::Style where the guard cannot see it."
+    },
+    {
+      "criterion_id": "C-006",
+      "description": "Phase 4a artifacts are additive-only.",
+      "proof_type": "automated_test",
+      "evidence": "The eight pre-existing gallery pages and their digit bindings are pinned by T037's frozen baseline; a Digit3/Digit4 swap fails exactly one test. Tokens, typeface, density policies and primitives were consumed, not revised.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "ViewportDensityPolicy gained mixer_column(), which is additive and was declared in the crest-spec before the code existed."
+    },
+    {
+      "criterion_id": "C-007",
+      "description": "No mission-artifact proof work.",
+      "proof_type": "manual_review",
+      "evidence": "The acceptance target contains no check of another check. The words 'silence', 'audible', and 'audioOrMidiConstructed' do not appear in it.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "BREACHED ONCE DURING THE MISSION, BY THE ORCHESTRATOR, as the invented silence-proof requirement \u2014 retracted before WP08 was dispatched, and no proof-about-proof layer shipped."
     }
   ],
   "negative_invariants": [
