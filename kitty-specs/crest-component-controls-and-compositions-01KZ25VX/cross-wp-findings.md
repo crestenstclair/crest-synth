@@ -365,3 +365,12 @@ C-003 is the mission's most-enforced constraint, and this is the shared mechanis
 ### Why this is recorded rather than assigned
 
 Both are in WP05's approved file. Tightening the helper would change what every existing composition assertion accepts, which is a mission-level decision, not a work-package edit. **The cheap per-WP mitigation is for each composition to assert equality rather than lean on the shared helper, and to count non-text shapes where it paints structure.**
+
+### WP09 cycle 2 closed its own exposure locally — the pattern is worth copying
+
+WP09 did **not** edit `section.rs`. It added a `rects` channel to its own harness and asserted exact equality in its own tests. Both exposures above are now closed for `MixerStripBank` and remain open for `Section` and `UtilityInspectorPanel`.
+
+Two details worth carrying to whoever fixes this mission-wide:
+
+1. **A shape *count* is not sufficient.** `probe::Painted.shapes` would have caught "every hairline deleted" but **not** "every hairline moved onto the column edge" — the count stays at fifteen either way. Verified by mutation during review. `mixer_strip_bank`'s `fifteen_hairlines_sit_on_the_gutter_midpoints_at_both_viewports` asserts *positions* derived from the painted column extents, which catches both. If the shared probe is ever extended, extend it with geometry, not a counter.
+2. **Exact ordered equality is the form that works.** `a_marked_bank_paints_exactly_its_structure_names_and_nothing_else` asserts the empty-bank run list equals an expected sequence exactly, rather than asking whether each run is "explainable". That is what catches a fabricated `"0"`; substring explainability does not. The broader cross-context sweep still leans on `from_projection_or_vocabulary`, and that residual reliance is documented in the test rather than hidden.
