@@ -119,3 +119,32 @@ A tenth state would grow the mixer set automatically but silently omit itself fr
 - **Three pairs are genuinely un-askable and pinned as data**: `Choice`, `Asset`, and `Surface` in `VerticalStrip`.
 - **`(Toggle, ModalEntry)` resolves to `ModalOption`**, so the toggle is reachable in three roles, not four. The WP prompt text saying otherwise is wrong; the pinned table is right.
 - **The baseline's "1 pre-existing test failure" is not a Rust test.** It is a malformed CLI invocation in the capture harness (`"<declared-command>"` / `"For more information, try '--help'."`). The Rust suite was green before Phase 4b and every failure since is owned by the work package that caused it.
+
+---
+
+## W-01 — Waiver: `--skip-review-artifact-check` used to approve WP03 cycle 2
+
+**Date**: 2026-08-03
+**Gate waived**: the review-artifact governance check on `move-task --to approved`
+**Waived by**: the WP03 cycle-2 reviewer, recorded in its approval note
+**Class**: process/tooling gate — the charter permits self-service waiver here provided it is committed in-repo with rationale and flagged in the next human-visible report. It is **not** a product or proof gate (acceptance validation, live-demo gate, real-time contract proof, or `crest-spec doctor`), none of which may be waived autonomously.
+
+### What happened
+
+`spec-kitty` refused the approval with `WP03 has a rejected review artifact (review-cycle-2.md)`.
+
+### Why the refusal was wrong
+
+`review-cycle-2.md` is not a second rejection. It is the **implementer's acknowledgement copy of the cycle-1 rejection**, written when it set `review_status: "acknowledged"`. Its YAML frontmatter carries `cycle_number: 2` and a stale `verdict: rejected` inherited from the file it copied.
+
+Verified independently by the orchestrator: stripping the frontmatter, the cycle-2 body is **byte-identical to `review-cycle-1.md`** (14,093 bytes each). Both bodies open `# WP03 review — cycle 1`. No cycle-2 rejection was ever issued — cycle 2 was reviewed and approved.
+
+### The underlying tooling defect
+
+**Review-artifact numbering runs one ahead of the review cycle in this mission.** The acknowledgement of cycle-N feedback is written as `review-cycle-(N+1).md` and inherits `verdict: rejected`, so the next approval attempt is blocked by the WP's own acknowledged feedback. The review prompt compounds it by directing a genuine new rejection to `review-cycle-3.md`.
+
+Expect this to recur on every work package that goes through a rejection cycle. WP04 is in cycle 2 now and will hit it.
+
+### Consequence to watch
+
+The board still reports `WP03 ⚠ review artifact: verdict=rejected`. If the merge gate reads the same signal it will refuse — and at that point the override would be applied to a **merge** gate, a different and more serious class than the per-WP approval gate. Resolve the artifact frontmatter before merge rather than waiving again there.
