@@ -44,7 +44,19 @@ The consequence is a spelling divergence already in the tree:
 
 WP02 is not at fault — its own specimen genuinely does not exist (F-01) and it said so. But **the seam needs one owner before the mixer strip composes**, or the mixer column will read differently from the design file.
 
-Related, and settled: `UNAVAILABLE_MARK` (`--`) is **authored**, not merely permitted. The Compact Mixer Fader's `State` run uses `--` in exactly the "this fact is not present" role, which is what C-003's mark-unavailable rule asks for.
+### Settled by WP05 and confirmed in review
+
+**WP02's `Toggle` owns the mixer column's mute/solo readout. The fader does not.**
+
+The reason is not arbitrary: a strip's mute/solo on-ness is a **value** the control paints from `ParameterValue::Toggle`. Also handing the fader `Muted`/`Soloed` as a **state** would give one fact two representations that can disagree. The Inspector reads both toggles by `MixerControlId::Track { track, Mute|Solo }` out of the projection, never from the state a fader was handed (`controls/mod.rs:153` already said this).
+
+The residual divergence from the authored `M ON · S --` is entirely a **projected label** difference (`T00 Mute` vs `M`), built in `semantic_graphical_view_model.rs` — the same unowned file as F-06. Recorded in T027, not approximated.
+
+### Correction — an earlier version of this note was wrong
+
+This note previously claimed `--` is authored in the "this fact is not present" role. **That is not what the specimen shows**, and the bullets three lines above contradict it: the design authors `M -- · S --` **at rest**, so in the fader specimen `--` means *off*, not *absent*.
+
+As originally written, this note would have justified exactly the collapse WP05 correctly refused. The shipped toggle spells off as `OFF` and reserves `--` for *absent*. **Making "off" and "no data" identical is precisely the T026 failure**, so keeping them distinct is deliberate and correct — even though it means the mixer column does not match the specimen's spelling until the projected label is fixed upstream.
 
 ---
 
@@ -148,3 +160,99 @@ Expect this to recur on every work package that goes through a rejection cycle. 
 ### Consequence to watch
 
 The board still reports `WP03 ⚠ review artifact: verdict=rejected`. If the merge gate reads the same signal it will refuse — and at that point the override would be applied to a **merge** gate, a different and more serious class than the per-WP approval gate. Resolve the artifact frontmatter before merge rather than waiving again there.
+
+---
+
+## F-09 — The mixer strip has no composition, and an eighth variant is required
+
+**Raised by**: WP04 (as a scope gap), independently confirmed by WP05 and by two architecture reviews
+**Owner**: mission level — must be authored before WP06 can finish
+**Status**: ruled on; the cheap alternative was tested and rejected
+
+`paint_patch_workspace` lands in `Section` — demonstrated and tested by WP05. **`paint_mixer_workspace` lands nowhere in the closed family of seven.** A `Section` at `VerticalStrip` is one track **column**; what has no composition is the **strip** — sixteen columns side by side.
+
+### The cheap alternative was considered and does not work
+
+The orchestrator proposed giving `Section` a layout axis, so the strip would be a `Section` of sixteen `VerticalStrip` entries laid out horizontally. Both suspected blockers turned out to be neutral: vertical stacking **is** an unparameterized layout choice, an axis is a *structural* argument rather than a visual value so FR-004 would not forbid it, and the crest-spec's `region()` binding is explicitly many-to-one (`Section` and `PatchStripRow` already share `MainWorkspace`), with no hardcoded `7` anywhere in `.kittify/crest-spec/`.
+
+**It fails for a different reason.** `Section`'s entries are typed `&[SemanticControlViewModel]` — *controls*. A mixer strip's entries are *columns*, and a column is itself a titled group in its own role, i.e. a `Section`. **The strip is a group of groups.** An axis flag does not change entry type: a horizontal `Section` handed the flat `MixerMain` list would paint all sixteen tracks' controls in one horizontal run with no per-column title and no column boundary. The gap is nesting and grouping, not direction.
+
+Three further blocks, each independently sufficient:
+
+1. `Section` paints **one** header band with one title. A strip has titles at two levels — per-column, plus the authored `Mixer Legend` (`42:21`).
+2. `render_entries` marks the **group** unavailable on zero entries. A strip needs that per-column **and** per-strip.
+3. Decisively: **vertical stacking consumes extent; sixteen columns must divide it.** The adapter carries `MIXER_TRACK_MIN_WIDTH_PX = 176.0` as a local literal, and 16 × 176 = 2816 exceeds both main surfaces (Desktop 1500, SteamDeck 960). `ViewportDensityPolicy` has **no** mixer, column, or strip concept at all. Flipping an axis changes the composition from *consuming* to *allocating* — structural, not a parameter.
+
+It cannot stay in the adapter: the `AppWindow` port invariant (`shell.yaml:377`) says the window "decides no paint, layout, band height, or state visualization", and sixteen-column division is layout. It cannot go to `ApplicationShell` (`WholeFrame`, structural bands only) without putting `MixerTrackId` partitioning into the frame composition.
+
+### To author the change
+
+1. Add one name to `valueObject.Shell.ShellComposition.from` (`shell.yaml:224-226`). An eighth variant bound to `MainWorkspace` is legal — `region()` is many-to-one.
+2. Add a mixer-column geometry member to `ViewportDensityPolicy` so the 176 px literal resolves through policy rather than living in the adapter.
+3. Update `spec.md` FR-004 (it enumerates the seven by name) and SC-002 ("all seven named compositions").
+4. **No gallery-page change needed** — `StripPanelAndFooter` already exists and the coverage invariant is generic.
+
+### Urgent for WP06
+
+`Section::render` on MIXER resolves `main_for` → `MixerMain` and paints all sixteen tracks **flat at `ListedRow`**. Wiring it into `mainWorkspace` as-is regresses the operator from sixteen columns to one long vertical list.
+
+Compounding it: the shipped adapter drives a **live meter today** (`eframe_graphical_window.rs:542-570`, an `egui::ProgressBar` fed from `audio_observation.track(track_id).rms()`). WP06 therefore cannot simply delete `paint_mixer_workspace` — no composition replaces it, and C-001 puts the meter out of scope. See F-10.
+
+---
+
+## F-10 — T027: ten designed structures the projection does not drive
+
+**Raised by**: WP05
+**Owner**: Phase 5 — this list is its declared input (`plan.md`, `tasks.md:152`)
+
+Transcribed here verbatim from the event log because `status.events.jsonl` is machine-managed and **has already diverged between checkouts** (16 events in the primary worktree vs 101 in coord). The document `plan.md` calls "the real input to Phase 5" must not survive in one mutable log.
+
+**Marked unavailable** (the structure is designed, the data is absent, so the composition marks it):
+
+1. **PATCH Utility `MASTER VOLUME`** — master gain *is* projected, but as `MixerControlId::Global{MasterGainDb}` on the MIXER Inspector. The PATCH Utility surface has no path to it.
+2. **MIDI INPUT** — `Patch` carries `MidiChannel`; `patch_utility_paths` projects only `PatchOutputParameter`.
+3. **VOICE LIMIT** — no state, no descriptor, no path anywhere.
+4. **The requested value of a row mid-structural-edit** — `SemanticLifecycleStatus` carries only the target graph revision. Marked in the lifecycle band.
+
+**Omitted** (designed structure with nothing behind it, so the composition omits it):
+
+5. **The Patch strip row's authored right-hand per-row action hint** — no per-row hints exist; `validActions` are global to the focus.
+6. **The Inspector's three-line help block**, including "SELECT enters multi-select", which the reducer cannot do.
+
+**Recorded defects and gaps:**
+
+7. `MixerControlId::Track` is unreachable from `mixer_inspector_paths` (sends/returns/globals only), so the Inspector's cursor, value, range, mute, and solo are resolved from `MixerMain` by identity.
+8. **Global rows project `descriptor.name()` (`masterGainDb`) as their label** — a serialization key rendered on screen. This is user-visible.
+9. **The mixer meter is not drivable in this slice.** `AudioObservationSnapshot` has no path to any composition and `MixerTrackParameter::MAIN` has no meter. With C-001 putting audio out of scope, WP03's `Meter` is production-unreachable — `(Identity, VerticalStrip) → Meter` never fires in the shipped app. WP08's T041 asserts *selector* reachability, which genuinely holds; production reachability is a different claim and is currently false.
+10. **Sub-band constants** `WORKSPACE_TITLE_ROW_PX` and `MIXER_TRACK_MIN_WIDTH_PX` still have no `ViewportDensityPolicy` accessor.
+
+**Additional gaps found in review, not in WP05's list:**
+
+11. The Utility panel's authored hint line is silently dropped.
+12. The `M`/`S` label divergence WP05's note claims to have recorded but did not (see F-02).
+13. `numeric_range` and `unit` are projected but never painted.
+
+---
+
+## F-11 — Two derived band heights shrink shipped bands
+
+**Raised by**: WP05 (the section header), and by WP05's review (the panel title — unraised by WP05)
+**Owner**: WP06, which is structurally guaranteed to hit both constants
+
+- **The panel title band derives to 34 px against the adapter's shipped `WORKSPACE_TITLE_ROW_PX = 42.0`** — an 8 px visible shrink of the side-panel title row the moment WP06 swaps the adapter. WP05 did not raise this one, and it is larger than the one it did.
+- **The section header band**: WP05 reported a 30 px vs authored 42 px gap, but review measured the real divergence at **~2 px, not 12** — `render_group` adds the entry gap *after* the band, so it composes to 44 against an authored 42 on desktop, and to *exactly* 42 at `PanelEntry`. WP05 compared its band-only figure against the authored band-plus-gap figure and **overstated its own drift**.
+
+WP05's three other raised divergences are forced by the vocabulary and are not drift: no 12 px SemiBold face exists, no 20 px spacing step exists, and `HINT_SEPARATOR` is the authored Phase 4a separator.
+
+---
+
+## F-12 — The mechanized test baseline is unreliable
+
+**Raised by**: WP05's review
+**Owner**: mission tooling — treat every reported baseline as unverified
+
+Three separate baseline numbers circulated for the same tree (741, 768, 796). **768 is correct**, reproduced twice at mission base `e2ee4a4`; WP05's delta is exactly +28. The **741 figure the orchestrator passed in the WP05 dispatch is unsourced** — it matches no ref reachable from that lane, and the planning base measures 668.
+
+Separately, WP05's mechanized `baseline-tests.json` **never ran the test command** (`total:1 / passed:0`, a CLI usage error) and targets a commit that is *not an ancestor of the mission branch*. This is the same capture defect that produced the mission's bogus "1 pre-existing test failure".
+
+**Every WP must measure its own baseline by stashing, and no dispatch should quote a baseline as authoritative.**

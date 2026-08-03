@@ -1,4 +1,15 @@
 ---
+affected_files: []
+cycle_number: 3
+mission_slug: crest-component-controls-and-compositions-01KZ25VX
+reproduction_command:
+reviewed_at: '2026-08-03T03:21:08Z'
+reviewer_agent: unknown
+verdict: rejected
+wp_id: WP04
+---
+
+---
 affected_files:
 - src/shell/visual/compositions/application_shell.rs
 - src/shell/visual/compositions/context_switch.rs
