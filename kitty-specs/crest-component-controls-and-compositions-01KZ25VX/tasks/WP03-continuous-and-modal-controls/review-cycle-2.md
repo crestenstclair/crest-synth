@@ -6,9 +6,24 @@ reproduction_command:
 reviewed_at: '2026-08-03T01:16:35Z'
 reviewer_agent: unknown
 review_status: "acknowledged"
-verdict: rejected
+verdict: approved
 wp_id: WP03
 ---
+
+> **This file is not a review. It is a duplicate, corrected before merge.**
+>
+> Spec Kitty numbers an acknowledgement artifact one ahead of the review cycle it
+> acknowledges, and the copy inherits `verdict: rejected` from the file it copied.
+> The body below is byte-identical to `review-cycle-1.md` — the *previous* cycle's rejection,
+> which was acknowledged and fixed. **No review with this cycle number was ever
+> issued.**
+>
+> The inherited `verdict: rejected` blocked six separate approvals in this mission
+> (waiver W-01) and would have blocked the merge gate for the same wrong reason.
+> The outer frontmatter is corrected to `WP03`'s real final outcome: **approved**.
+> Nothing in the body is altered — the rejection it records genuinely happened, one
+> cycle earlier, in `review-cycle-1.md`.
+
 
 # WP03 review — cycle 1
 
