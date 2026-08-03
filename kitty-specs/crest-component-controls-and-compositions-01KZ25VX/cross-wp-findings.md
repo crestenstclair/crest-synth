@@ -534,3 +534,35 @@ A ~120-line integration test reproduces all of the above: build `EframeGraphical
 record `text.galley.rect.translate(text.pos.to_vec2())` against the `ClippedShape`'s own
 `clip_rect`. Assert `clip.contains_rect(rect)` per run, per band, with a denominator. **That is
 T044.**
+
+---
+
+## F-19 — CORRECTION: the silence requirement was over-inflated, and display fidelity is not a gate
+
+**Raised by**: the operator, 2026-08-03
+**Owner**: the orchestrator — this is a correction to how the mission was driven, not to any work package
+
+### The silence escalation was mine
+
+The operator's direction was that **there is no need for any sound in the UI system**. Through this mission's dispatches that became a formal, measured, provable silence property: a derived `audioOrMidiConstructed` field, witness predicates carrying it, source-scan derivations judged for strength, and repeated requests for audible confirmation.
+
+**That escalation was not asked for**, and it is precisely the proof-about-proof layer C-007 bounds this mission against. No work package invented it; the orchestrator did, and reinforced it in every brief.
+
+**What is actually required**: the component demo scene constructs no audio output and no MIDI source, so it plays nothing. A scene that opens no audio device satisfies it. No proof of silence is owed, no reviewer should weigh a derivation's provability, and nobody should be asked to confirm audibly.
+
+`spec.md`'s NFR-006 is rewritten accordingly and dropped from High to Medium. C-001 is unchanged — no MIDI, no audio, anywhere — because that is a scope constraint on what gets built, not a property to be proven about what was built.
+
+### Display fidelity is not a rejection axis at this stage
+
+The bar is a **working component library and a browsable demo scene**. Seat widths, derived band heights, and text-clipping details are recorded for later cleanup rather than blocking a work package.
+
+Findings already recorded that fall under this and should **not** gate anything further: the toggle's 196 px gallery seat against an authored 280 px width; the section header and panel title band derivations (F-11); the residual clip list in F-17.
+
+### What this changes about the remaining work
+
+- **WP07** must not be rejected on silence-derivation strength or on the toggle seat. It is being reviewed on coverage exactness, the frozen digit bindings, the measured observation, the lane merge, and the `tests/component_vocabulary.rs` edit against NFR-005.
+- **WP08's T044** should be scoped to text that is actually unreadable or unreachable, not to every measurable overrun. F-17's correction already showed part of that list was a measurement artifact.
+
+### One item that is NOT a display nit
+
+**F-18 stands.** The side region losing its scroll makes the bus returns and master gain **unreachable**, not merely ugly — content a person could previously scroll to cannot now be reached at all. That is functional, and it is tracked separately.

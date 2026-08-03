@@ -157,12 +157,18 @@ A maintainer starting the Phase 5 Patch editor writes screen-specific assembly o
 | NFR-003 | Render adapter size reduction | `src/adapter/eframe_graphical_window.rs` ends at no more than 40% of its current 1,282 lines, with the removed content relocated into compositions rather than deleted. | Maintainability | High | Open |
 | NFR-004 | No visual literals outside the module | A repository guard reports zero literal colors, type sizes, spacing constants, and band heights in any file outside `src/shell/visual/`. | Maintainability | High | Open |
 | NFR-005 | Existing suite unbroken | The full test suite passes with zero failures, and no existing shell, projection, or focus test is modified to accommodate this mission. | Reliability | High | Open |
-| NFR-006 | Silence is verifiable | An automated check confirms the gallery scene constructs no audio output and no MIDI event source. | Correctness | High | Open |
+| NFR-006 | The demo scene plays nothing | The component demo scene constructs no audio output and no MIDI event source, so running it plays no sound. **Not a provable "silence" property** — see the correction below. | Correctness | Medium | Open |
 
 ### Constraints
 
 | ID | Title | Constraint | Category | Priority | Status |
 |----|-------|------------|----------|----------|--------|
+**Correction — the silence requirement was over-inflated (operator, 2026-08-03).** The operator's direction was that *there is no need for any sound in the UI system*. That became, through this mission's dispatches, a formal measured-and-provable silence property: a derived `audioOrMidiConstructed` field, witness predicates, source-scan derivations, and requests for audible confirmation. **That escalation was not asked for and is exactly the proof-about-proof layer C-007 forbids.**
+
+What is required: the component demo scene constructs no audio output and no MIDI source, so it plays nothing. A scene that opens no audio device satisfies this. No proof that it is silent is owed, no witness predicate needs to carry it, and no reviewer should reject on the strength of a silence derivation.
+
+**Display fidelity is likewise not a gate at this stage (operator, 2026-08-03).** Seat widths, band-height derivations, and text-clipping details are recorded for later cleanup rather than blocking a work package. The bar is a working component library and a browsable demo scene.
+
 | C-001 | No MIDI, no audio | This mission introduces no MIDI fixture, no audio device, no note events, and no audible behavior in any scene, test, or demo target it adds. Operator directive, 2026-08-02. | Scope | High | Open |
 | C-002 | No semantic vocabulary changes | This mission adds no `SemanticAction` variant, no focus target, and no reducer behavior. It changes how state is rendered, never what state exists. Phase 5 owns functional changes. | Technical | High | Open |
 | C-003 | No invented values in the production shell | Where a composition's designed structure has no view data behind it, it omits that structure or marks it explicitly unavailable. It never paints a placeholder or representative value in the shipped product. | Technical | High | Open |
