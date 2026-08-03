@@ -152,7 +152,7 @@ So: **WP06 keeps it**, as F-11 assigned it, and deletes the constant with the re
 
 ```bash
 git stash push --include-untracked
-cargo test --release > /tmp/wp09-baseline.log 2>&1; echo "exit=$?"
+cargo test > /tmp/wp09-baseline.log 2>&1; echo "exit=$?"
 git stash pop
 ```
 

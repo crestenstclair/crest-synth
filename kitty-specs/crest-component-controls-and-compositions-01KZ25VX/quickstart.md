@@ -44,9 +44,9 @@ Every region on screen — context line, identity header, main workspace, side r
 ## Run the proof
 
 ```bash
-cargo test --release --test component_composition -- --nocapture > /tmp/cc.log 2>&1; echo "exit=$?"
-cargo test --release --test component_vocabulary  -- --nocapture > /tmp/cv.log 2>&1; echo "exit=$?"
-cargo test --release > /tmp/all.log 2>&1; echo "exit=$?"
+cargo test --test component_composition -- --nocapture > /tmp/cc.log 2>&1; echo "exit=$?"
+cargo test --test component_vocabulary  -- --nocapture > /tmp/cv.log 2>&1; echo "exit=$?"
+cargo test > /tmp/all.log 2>&1; echo "exit=$?"
 cargo clippy --all-targets -- -D warnings; cargo fmt --check
 ```
 

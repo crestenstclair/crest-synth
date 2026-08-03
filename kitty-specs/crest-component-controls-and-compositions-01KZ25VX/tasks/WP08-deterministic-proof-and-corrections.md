@@ -74,8 +74,8 @@ Deliver `tests/component_composition.rs` — the declared project completion che
 
 Complete when:
 
-- `cargo test --release --test component_composition` exits 0 and emits `CREST_ACCEPTANCE component_composition passed`.
-- `cargo test --release --test component_vocabulary` still passes with the reachability change.
+- `cargo test --test component_composition` exits 0 and emits `CREST_ACCEPTANCE component_composition passed`.
+- `cargo test --test component_vocabulary` still passes with the reachability change.
 - `DESIGN.md` names all nine non-color-signalled states.
 - `ROADMAP.md`'s component-library demo bullet is amended in place to state what was delivered.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and the full suite are green.
@@ -116,7 +116,7 @@ Every assertion drives the **production render path** with real projected view d
 **Files**: `tests/component_composition.rs`
 
 **Validation**:
-- `cargo test --release --test component_composition` runs and the marker appears only on success.
+- `cargo test --test component_composition` runs and the marker appears only on success.
 
 ---
 

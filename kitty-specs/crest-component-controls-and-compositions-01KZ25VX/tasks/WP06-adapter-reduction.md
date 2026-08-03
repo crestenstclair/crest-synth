@@ -106,7 +106,7 @@ Everything else moves.
 
 1. Run the full suite on the current tree and record the result to a file. **Never pipe test output through `head` or `tail`** — the pipe reports the pager's exit code and a "green" recorded that way is a lie. Redirect:
    ```bash
-   cargo test --release > /tmp/wp06-baseline.log 2>&1; echo "exit=$?"
+   cargo test > /tmp/wp06-baseline.log 2>&1; echo "exit=$?"
    ```
 2. Record `wc -l src/adapter/eframe_graphical_window.rs` — the 1,282 starting point.
 3. Run `make run`, look at both PATCH and MIXER, and capture what the product currently looks like. You need this to tell a regression from an improvement.
@@ -213,7 +213,7 @@ Everything else moves.
 
 1. Run the full suite, redirected to a file:
    ```bash
-   cargo test --release > /tmp/wp06-after.log 2>&1; echo "exit=$?"
+   cargo test > /tmp/wp06-after.log 2>&1; echo "exit=$?"
    ```
 2. Compare against the T028 baseline. Same tests, same passes.
 3. Run:

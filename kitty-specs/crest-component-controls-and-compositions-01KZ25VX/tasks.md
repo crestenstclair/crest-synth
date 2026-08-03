@@ -233,7 +233,7 @@ Rows are ordered by ID. **WP09's subtasks run before WP06's and WP07's** despite
 
 **Goal**: deliver `tests/component_composition.rs` as the declared project completion check, extend `tests/component_vocabulary.rs` for page reachability, and land the two document corrections.
 
-**Independent test**: `cargo test --release --test component_composition` emits `CREST_ACCEPTANCE component_composition passed` and exits 0.
+**Independent test**: `cargo test --test component_composition` emits `CREST_ACCEPTANCE component_composition passed` and exits 0.
 
 **Subtasks**: T040, T041, T042, T043, T044, T045, T046
 

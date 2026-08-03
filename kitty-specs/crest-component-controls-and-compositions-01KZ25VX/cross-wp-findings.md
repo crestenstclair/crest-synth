@@ -275,3 +275,47 @@ Three separate baseline numbers circulated for the same tree (741, 768, 796). **
 Separately, WP05's mechanized `baseline-tests.json` **never ran the test command** (`total:1 / passed:0`, a CLI usage error) and targets a commit that is *not an ancestor of the mission branch*. This is the same capture defect that produced the mission's bogus "1 pre-existing test failure".
 
 **Every WP must measure its own baseline by stashing, and no dispatch should quote a baseline as authoritative.**
+
+---
+
+## F-13 — `cargo test --release` cannot compile this tree, and that is the root cause of F-12
+
+**Raised by**: WP09
+**Confirmed by**: the orchestrator, independently
+**Owner**: closed for this mission's artifacts; the underlying source defect is unowned
+
+```
+error[E0609]: no field `debug` on type `&mut eframe::egui::Style`
+   --> tests/component_vocabulary.rs:625:41
+    |
+625 |         context.style_mut(|style| style.debug.show_interactive_widgets = true);
+```
+
+`egui` gates `Style::debug` behind `#[cfg(debug_assertions)]`, so the release profile does not have the field. **Pre-existing since `589fa01` in the previous mission** — nothing in Phase 4b caused it.
+
+### Why this matters more than it first looks
+
+**Ten commands across five mission artifacts told work packages to measure with `cargo test --release`.** Every one of them returns a compile error and runs **zero tests**.
+
+That is the mechanism behind F-12. The mission's mechanized `baseline-tests.json` captures recorded `total:1 / passed:0` with a CLI-shaped error rather than a test run, and three different test counts circulated for the same tree. Work packages that dutifully ran the command they were given got no measurement at all, and one of them — the mission's own bogus "1 pre-existing test failure" — propagated into four dispatches before being disproved.
+
+**A baseline command that cannot compile fails silently in exactly the way a passing baseline looks.**
+
+### What was corrected
+
+All ten occurrences replaced with the debug-profile form, in `quickstart.md`, `tasks.md`, and the WP06, WP08, and WP09 prompts.
+
+### Acceptance was never at risk
+
+The **declared** validations in `.kittify/crest-spec/proof/validations.yaml` do not use `--release`:
+
+```yaml
+command: [cargo, test, --test, component_vocabulary, --, --nocapture]
+command: [cargo, test, --test, component_composition, --, --nocapture]
+```
+
+So `spec-kitty accept` would have passed regardless. The divergence was between the crest-spec's declared commands and the prose that work packages actually read — which is its own lesson: **the artifacts a human or agent reads drifted from the artifact the tooling executes**, and only the executed one was right.
+
+### Still open
+
+`tests/component_vocabulary.rs:625` remains release-incompatible. No work package in this mission owns that file except WP08, and only for the page-reachability change. Either gate the line behind `#[cfg(debug_assertions)]` or drop it — but that is a decision for whoever next owns the file, not a Phase 4b fix.
