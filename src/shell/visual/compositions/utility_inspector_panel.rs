@@ -46,7 +46,7 @@
 //! and density vocabularies, and the panel returns aggregated
 //! [`CompositionIntent`].
 
-use eframe::egui::Ui;
+use eframe::egui::{ScrollArea, Ui};
 
 use super::{patch_strip_row, section, CompositionIntent};
 use crate::control::semantic_graphical_view_model::SemanticRoutedPatch;
@@ -155,51 +155,80 @@ pub fn render(
     let surface = model.surface(SurfaceId::side_for(model.context()));
     section::inset_scope(ui, density, |ui| {
         render_title(ui, title, density);
-        let Some(surface) = surface else {
-            section::mark_unavailable(ui, title, density);
-            return CompositionIntent::none();
-        };
-        let mode = model.interaction_mode();
-        match surface.summary() {
-            SemanticSurfaceSummary::PatchUtility {
-                patch_id,
-                capability_id,
-                ..
-            } => {
-                // The authored identity line (`36:51`). Both halves are
-                // projected by the summary, so both are painted.
-                section::caption(
-                    ui,
-                    format!("{patch_id}{HINT_SEPARATOR}{capability_id}"),
-                    SemanticColor::AccentFocus,
-                );
-                render_patch_utility(ui, surface, mode, density)
-            }
-            SemanticSurfaceSummary::MixerInspector {
-                focused_control,
-                focused_track,
-                routed_patches,
-                ..
-            } => render_mixer_inspector(
-                ui,
-                InspectorSlice {
-                    model,
-                    surface,
+        entry_viewport(ui, |ui| {
+            let Some(surface) = surface else {
+                section::mark_unavailable(ui, title, density);
+                return CompositionIntent::none();
+            };
+            let mode = model.interaction_mode();
+            match surface.summary() {
+                SemanticSurfaceSummary::PatchUtility {
+                    patch_id,
+                    capability_id,
+                    ..
+                } => {
+                    // The authored identity line (`36:51`). Both halves are
+                    // projected by the summary, so both are painted.
+                    section::caption(
+                        ui,
+                        format!("{patch_id}{HINT_SEPARATOR}{capability_id}"),
+                        SemanticColor::AccentFocus,
+                    );
+                    render_patch_utility(ui, surface, mode, density)
+                }
+                SemanticSurfaceSummary::MixerInspector {
                     focused_control,
-                    focused_track: *focused_track,
+                    focused_track,
                     routed_patches,
-                },
-                mode,
-                density,
-            ),
-            // A main-surface summary in the side region is incoherent: the
-            // panel has no reading for it and will not invent one.
-            SemanticSurfaceSummary::Patch { .. } | SemanticSurfaceSummary::Mixer { .. } => {
-                section::mark_unavailable(ui, SUMMARY_LABEL, density);
-                CompositionIntent::none()
+                    ..
+                } => render_mixer_inspector(
+                    ui,
+                    InspectorSlice {
+                        model,
+                        surface,
+                        focused_control,
+                        focused_track: *focused_track,
+                        routed_patches,
+                    },
+                    mode,
+                    density,
+                ),
+                // A main-surface summary in the side region is incoherent: the
+                // panel has no reading for it and will not invent one.
+                SemanticSurfaceSummary::Patch { .. } | SemanticSurfaceSummary::Mixer { .. } => {
+                    section::mark_unavailable(ui, SUMMARY_LABEL, density);
+                    CompositionIntent::none()
+                }
             }
-        }
+        })
     })
+}
+
+/// The stable id the entry viewport is registered under.
+const ENTRY_VIEWPORT_ID: &str = "crest-side-region-entries";
+
+/// The scrollable extent the panel's entries are arranged in, below the title.
+///
+/// # Why the side region scrolls and the mixer bank does not
+///
+/// The bank's authored rule is uniform narrowing, never scrolling and never
+/// elision, because its cardinality is fixed at sixteen and the design seats all
+/// sixteen inside the authored content width. The Inspector is the opposite
+/// shape: its extent is vertical and driven by how many return buses, sends and
+/// routed patches the projection carries, so there is no width budget to
+/// reclaim and no authored count to fit. Content that does not fit has to stay
+/// reachable by a gesture.
+///
+/// The title is arranged outside this viewport so the surface stays named while
+/// its entries scroll, which is the behaviour the region had before the shell
+/// was recomposed — the adapter wrapped the same content in a vertical scroll
+/// region and that wrapping had no composition to land in.
+fn entry_viewport<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ScrollArea::vertical()
+        .id_salt(ENTRY_VIEWPORT_ID)
+        .auto_shrink([false, false])
+        .show(ui, add)
+        .inner
 }
 
 /// The immutable slice the Inspector reads.

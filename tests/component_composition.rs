@@ -59,12 +59,14 @@
 //!   fabricating a view model to cover them. The set is pinned in
 //!   [`PRODUCTION_PROJECTED_KINDS`] and asserted exactly, so a kind appearing or
 //!   disappearing fails here and forces the pair list to be revisited.
-//! - **Clipping is asserted by band, and two recorded findings are scoped
-//!   around rather than fixed.** `PersistentSideRegion` overflow (F-18, owned by
-//!   the panel composition) and the compact mixer cell labels (F-17, recorded
-//!   for cleanup) are permitted by *rule* and bounded by a measured ceiling, so
-//!   they cannot grow. Every other escape, in every band, fails. See
-//!   [`check_viewport_integrity_survived_recomposition`].
+//! - **Clipping is asserted by band, and one recorded finding is scoped around
+//!   rather than fixed.** The compact mixer cell labels (F-17, recorded for
+//!   cleanup) are permitted by *rule* and bounded by a measured ceiling, so they
+//!   cannot grow. `PersistentSideRegion` overflow (F-18) is **closed**, not
+//!   scoped around: the panel regained the scroll region the adapter used to
+//!   supply, so its lower rows are reachable and a run that leaves a band with
+//!   the band itself as its container now fails. Every other escape, in every
+//!   band, fails. See [`check_viewport_integrity_survived_recomposition`].
 //! - **The adapter still paints one run.** `paint_focused_track_meter` puts the
 //!   focused track's level on screen because the level has a source, a declared
 //!   painter, and no route between them. It is measured here for what this
@@ -2184,31 +2186,6 @@ fn check_no_component_owns_or_dispatches_application_state() {
 // T044 — viewport integrity after recomposition
 // ===========================================================================
 
-/// How many runs may escape the persistent side region before this fails.
-///
-/// **This is F-18, and it is not this work package's to fix.** The shipped
-/// adapter wrapped the side region in a vertical scroll area; the composition
-/// that replaced it has none, so the Inspector's lower rows — the bus returns'
-/// levels and master gain — paint past the bottom of the panel with no gesture
-/// that brings them back. Owned by the panel composition, recorded in
-/// `cross-wp-findings.md`.
-///
-/// It is bounded rather than asserted to zero so that this target neither fails
-/// on a defect it may not touch nor goes blind to it. Measured here, per band,
-/// on the production frame: **18 runs at 1920×1080 and 22 at 1280×800, both on
-/// MIXER**. F-18 reports 39 and 46 counting every run past the panel rather than
-/// only those whose container is the side band; the two figures describe the
-/// same overflow at different granularities, and this is the one this target
-/// measures.
-///
-/// Measured here and not reported by F-18: **the PATCH Utility side surface does
-/// not overflow at either viewport**, which answers the question F-18 left open
-/// for whoever takes it.
-///
-/// If the overflow grows, this fails and names F-18; if it is fixed, this keeps
-/// passing.
-const SIDE_REGION_OVERFLOW_CEILING: usize = 22;
-
 /// How many runs may be cut by an inner clip while staying inside their band.
 ///
 /// **This is F-17's residual and the display-fidelity relaxation.** A run in
@@ -2392,15 +2369,18 @@ fn check_viewport_integrity_survived_recomposition(
     );
 
     for (band, count) in &escapes {
-        let ceiling = if band.ends_with(&format!("{:?}", Escape::BelowTheBand)) {
-            SIDE_REGION_OVERFLOW_CEILING
-        } else {
-            INSIDE_BAND_CLIP_CEILING
-        };
+        // Scrolled-out content is reachable by a gesture, so it carries no
+        // ceiling: capping it would penalise a composition for holding more
+        // than fits, which is what a scroll region is for. Trimmed content is
+        // not reachable and is bounded so F-17's residual cannot grow.
+        if band.ends_with(&format!("{:?}", Escape::ScrolledOutOfView)) {
+            continue;
+        }
         assert!(
-            *count <= ceiling,
-            "{band}: {count} runs escape, above the recorded ceiling of {ceiling}; \
-             this is a regression beyond the findings this target scopes around"
+            *count <= INSIDE_BAND_CLIP_CEILING,
+            "{band}: {count} runs escape, above the recorded ceiling of \
+             {INSIDE_BAND_CLIP_CEILING}; this is a regression beyond the findings this \
+             target scopes around"
         );
     }
     escapes
@@ -2416,27 +2396,40 @@ fn band_containing(frame: &PaintedFrame, run: &PaintedRun) -> Option<ShellRegion
 /// How an escaping run is classified.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Escape {
-    /// The run left the structural band it belongs to by running past its
-    /// bottom edge: content that used to be reachable by scrolling and now is
-    /// not. **F-18.** Unreachable, not merely trimmed.
-    BelowTheBand,
+    /// The run left its structural band from inside a scroll viewport strictly
+    /// smaller than the band, so the gesture that reveals it is the scroll.
+    /// Reachable, therefore permitted and uncapped.
+    ScrolledOutOfView,
     /// The run is still inside its structural band and is trimmed by a narrower
     /// container the composition put it in — a mixer column, a row inset.
     /// **F-17's residual**, and the display-fidelity relaxation.
     TrimmedInsideTheBand,
-    /// Anything else. A run escaping a chrome band, leaving a band sideways or
-    /// upward, or leaving the frame. These are defects and fail.
+    /// Anything else. A run leaving a band with the band itself as its
+    /// container, or leaving it sideways or upward, or leaving the frame.
+    /// **Unreachable by any gesture.** These are defects and fail.
     Defect,
 }
 
 /// Classifies one escaping run.
 ///
-/// The distinction the operator drew is between text that is *unreachable* and
-/// text that is *trimmed*, and it is exactly the distinction between leaving the
-/// band and being cut inside it. Nothing here is permitted by which finding it
-/// belongs to — it is permitted by where the glyphs ended up — so a new defect
-/// of either shape is still counted, and the ceilings above stop either class
-/// from growing.
+/// The distinction that matters is between text that is *unreachable* and text
+/// that is merely *not on screen right now*, and the shape stream carries it in
+/// the clip rectangle: a run whose container **is the band** has no scroll
+/// region it could have come from, so nothing brings it back, while a run
+/// clipped by a viewport strictly inside the band was composed into a scroll
+/// area and a gesture reveals it.
+///
+/// This is what closed **F-18**. Before the side region regained its scroll
+/// region, the Inspector's lower rows carried the band rect itself as their clip
+/// — measured at `[[1500,120]-[1920,1016]]`, the band exactly — and were
+/// unreachable. They now carry `[[1500,154]-[1920,1016]]`, the entry viewport
+/// below the pinned title. Deleting
+/// `utility_inspector_panel::entry_viewport` restores the first shape and this
+/// classifies those runs as `Defect` again, which is the falsification the
+/// finding needs.
+///
+/// Nothing here is permitted by which finding it belongs to — it is permitted by
+/// where the glyphs ended up and what contained them.
 fn classify_escape(frame: &PaintedFrame, id: ShellRegionId, run: &PaintedRun) -> Escape {
     let band = frame.band(id);
     let tolerance = 1.0;
@@ -2456,12 +2449,13 @@ fn classify_escape(frame: &PaintedFrame, id: ShellRegionId, run: &PaintedRun) ->
             }
         };
     }
-    let only_below = run.rect.min.x >= band.min.x - tolerance
-        && run.rect.max.x <= band.max.x + tolerance
-        && run.rect.min.y >= band.min.y - tolerance
-        && run.rect.max.y > band.max.y;
-    if only_below && id == ShellRegionId::PersistentSideRegion {
-        return Escape::BelowTheBand;
+    // Strictly inside on at least one axis: a viewport the size of the band is
+    // the band, and scrolls nothing.
+    let scrollable_viewport = band.contains_rect(run.clip)
+        && (run.clip.width() < band.width() - tolerance
+            || run.clip.height() < band.height() - tolerance);
+    if scrollable_viewport {
+        return Escape::ScrolledOutOfView;
     }
     Escape::Defect
 }
