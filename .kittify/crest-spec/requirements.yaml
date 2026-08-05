@@ -1182,7 +1182,8 @@ requirements:
       strip bank, Utility/Inspector panel, and footer exist as declared ShellCompositions that arrange
       primitives and controls, resolve their geometry from ViewportDensityPolicy, and declare no visual
       value of their own; the mixer strip bank arranges sixteen track columns rather than controls, so
-      it is a group of groups and not a section laid out sideways
+      it is a group of groups and not a section laid out sideways, and one column is the declared
+      MixerTrackColumnStructure anatomy rather than however many controls the projection reported
     goals:
     - build_from_component_vocabulary
     capabilities:
@@ -1230,6 +1231,43 @@ requirements:
     capabilities:
     - component_vocabulary
     - observable_demo_scene
+  mixer_track_column_anatomy:
+    kind: functional
+    description: One mixer track column is the declared closed five-structure anatomy — track header,
+      level fader, level readout, pan readout, state line — presented in the authored order at authored
+      proportions with the level fader dominant, the track header the column's only name, pan presented
+      compactly rather than as a second full-height fader, and mute and solo presented together on one
+      state line; every extent resolves from ViewportDensityPolicy's mixer-column geometry and the same
+      anatomy resolves at both authored viewports
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - graphical_application_shell
+  readout_value_presentation_form:
+    kind: functional
+    description: A readout writes its already-projected value in a declared ValuePresentationForm supplied
+      by the structure that presents it; the mixer track column's level readout uses the MIDI-hexadecimal
+      form the product design authority writes, every other readout in the product keeps the canonical
+      form, and the binding of hexadecimal to that one structure is asserted so the form cannot spread
+      without a deliberate declaration
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+  column_presentation_only_change:
+    kind: nonfunctional
+    description: Recomposing the mixer track column changes presentation alone — level, pan, mute, and
+      solo stay focusable and adjustable in the order the canonical mixer descriptor declares, returning
+      the intent they returned before, with focus and every applicable ComponentState visible on whichever
+      structure presents the field including the compact ones; no SemanticAction variant, focus target,
+      reducer behavior, or projection field is added, and the existing shell, projection, and focus verification
+      passes unmodified
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - semantic_graphical_view_model
   component_vocabulary_behavioral_proof:
     kind: nonfunctional
     description: Authored-value fidelity, literal absence, state coverage, control and composition coverage,

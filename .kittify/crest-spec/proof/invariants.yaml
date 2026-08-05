@@ -93,6 +93,15 @@ invariantGroups:
       no component owns or caches Patch values, focus, navigation, reducer state, or audio state
     meta:
       rationale: the one-way state path survives only if the component layer stays passive
+  - text: one mixer track column is the closed, exhaustively matched MixerTrackColumnStructure anatomy
+      — track header, level fader, level readout, pan readout, state line — in that order at proportions
+      resolved from ViewportDensityPolicy, with the track header its only name and MidiHexadecimal bound
+      to its level readout alone; the column changes presentation only and adds no SemanticAction variant,
+      focus target, reducer behavior, or projection field
+    meta:
+      rationale: a column assembled from whatever controls the projection reported divides available height
+        instead of expressing a designed shape, which is why the mixer read as a spreadsheet; declaring
+        the anatomy as a closed union names every site an added structure must change
   - text: component gallery page selection is scene-local and never becomes a SemanticAction, reaches
       AppState, or changes focus, Patch values, graph revision, or audio behavior; the browsable gallery
       makes no exact-generation claim and does not weaken the autonomous witness contract

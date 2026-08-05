@@ -60,11 +60,14 @@ projectValidations:
     resources:
     - ComponentControl
     - ShellComposition
+    - MixerTrackColumnStructure
+    - ValuePresentationForm
     - ComponentState
     - ComponentGalleryPage
     - ViewportDensityPolicy
     - GraphicalShellProjection
     - SemanticControlViewModel
+    - MixerControlId
     - AppWindow
     - EframeGraphicalWindow
     - ComponentCompositionAcceptanceTests
@@ -81,7 +84,11 @@ projectValidations:
       render adapter holds no paint, layout, band-height, or state-visualization decision, that a composition
       with no view data omits or marks the gap rather than painting a placeholder, that no control or
       composition owns application state, and that both authored viewports keep every band and the authored
-      minimum target after recomposition
+      minimum target after recomposition; it further proves one mixer track column presents exactly the
+      five declared structures in the declared order with the level fader dominant, every extent resolved
+      from the density policy, exactly one name in the column, the MIDI-hexadecimal form bound to that
+      column's level readout alone, and level, pan, mute, and solo still reachable and adjustable in the
+      canonical descriptor order without a new action, focus target, reducer behavior, or projection field
   engine_selection_workflow:
     scope: project
     kind: integration

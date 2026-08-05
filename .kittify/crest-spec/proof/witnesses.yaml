@@ -3138,6 +3138,8 @@ witnesses:
     - ComponentState
     - ComponentControl
     - ShellComposition
+    - MixerTrackColumnStructure
+    - ValuePresentationForm
     - ComponentGalleryPage
     - ComponentGalleryObservation
     - EframeGraphicalWindow
@@ -3150,6 +3152,8 @@ witnesses:
     - ComponentState
     - ComponentControl
     - ShellComposition
+    - MixerTrackColumnStructure
+    - ValuePresentationForm
     - ComponentGalleryPage
     - ComponentGalleryObservation
     evidence:
@@ -3178,6 +3182,10 @@ witnesses:
         controls_unreachable_by_any_pair: number
         compositions_declared: number
         compositions_painted: number
+        mixer_column_structures_declared: number
+        mixer_column_structures_painted: number
+        mixer_column_names_beyond_track_header: number
+        mixer_column_level_readout_is_midi_hex: bool
         desktop_viewport_painted: bool
         steam_deck_viewport_painted: bool
         bands_retained_both_viewports: bool
@@ -3230,6 +3238,18 @@ witnesses:
     - field: compositions_painted
       op: eq
       value: 8
+    - field: mixer_column_structures_declared
+      op: eq
+      value: 5
+    - field: mixer_column_structures_painted
+      op: eq
+      value: 5
+    - field: mixer_column_names_beyond_track_header
+      op: eq
+      value: 0
+    - field: mixer_column_level_readout_is_midi_hex
+      op: eq
+      value: true
     - field: desktop_viewport_painted
       op: eq
       value: true

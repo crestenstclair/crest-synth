@@ -60,6 +60,8 @@ assets:
     - ViewportDensityPolicy
     - ComponentState
     - ComponentControl
+    - ValuePresentationForm
+    - MixerTrackColumnStructure
     - ShellComposition
     - WindowInput
     prompts:
@@ -100,11 +102,33 @@ assets:
     - Provide one composition per declared ShellComposition variant. A composition arranges primitives
       and controls, resolves bands, split, inset, row height, and row pitch from ViewportDensityPolicy,
       and declares no color, type style, spacing step, or geometry value of its own.
-    - MixerStripBank arranges groups, not controls. Its entries are the sixteen track columns, each a
-      titled group of controls asked in the vertical-strip role, so it takes the bank's own legend plus
-      one title per column and marks unavailability per column and for the bank. It divides the main
-      surface through the policy's mixer-column geometry rather than stacking into it, and it is not
-      a section given a horizontal axis.
+    - MixerStripBank arranges groups, not controls. Its entries are the sixteen track columns, so it
+      takes the bank's own legend plus one column per track and marks unavailability per structure and
+      for the bank. It divides the main surface through the policy's mixer-column geometry rather than
+      stacking into it, and it is not a section given a horizontal axis.
+    - Declare MixerTrackColumnStructure as a closed ordered vocabulary and build one column from it —
+      track header, level fader, level readout, pan readout, state line — matched exhaustively so an
+      added structure names every site that must change. A column is this anatomy; it is never the available
+      height divided by however many controls the projection reported for that track.
+    - Measure the column's internal proportions from the authored column in the visual design reference,
+      the way the tokens and the column width were taken, and resolve every extent through the policy's
+      mixer-column geometry. The level fader is dominant; the readouts are compact. Declare no extent
+      in the composition.
+    - The track header is the column's only name. Do not caption the fader, the readouts, or the state
+      line with the track identity — the repeated per-control caption is what makes sixteen columns read
+      as a spreadsheet.
+    - Present pan as the authored compact label-and-condition pair, not as a second full-height fader,
+      and present mute and solo together on one state line that shows the resting condition rather than
+      collapsing to empty. A centered pan and a resting state line are values; neither may look like
+      an unavailable structure.
+    - Reuse the declared fader control for the level structure rather than introducing a second one, and
+      keep every structure's focus and applicable ComponentState visible with text or shape beyond color.
+      A compact presentation never makes a field unfocusable or a state invisible.
+    - Declare ValuePresentationForm and let the presenting structure supply it. Bind MidiHexadecimal to
+      the column's level readout and assert that binding, so hexadecimal cannot spread to other values;
+      every readout elsewhere keeps the canonical form and no shared formatter is retargeted product-wide.
+    - The column presents no send. Sends stay on the MIXER Inspector where the canonical mixer descriptor
+      orders them.
     - Where a composition's designed structure has no view data behind it, omit that structure or mark
       it explicitly unavailable. Never paint an invented or representative value in the production shell;
       representative content belongs to the gallery.
@@ -128,6 +152,7 @@ assets:
     - ComponentState
     - ComponentControl
     - ShellComposition
+    - MixerTrackColumnStructure
     - ViewportDensityPolicy
     prompts:
     - Add the browsable component gallery scene. It renders the declared pages through the shared primitives
@@ -150,6 +175,12 @@ assets:
       over the full order so no page is reachable by neither route. Stepping does not wrap past an end.
     - Construct no audio output and no MIDI event source. Report that as a measured field in the emitted
       observation so the gallery's silence is falsifiable rather than claimed.
+    - The bank specimen shows the same column anatomy the shipped MIXER shows. Add no gallery page and
+      renumber no digit binding for it; the composition specimen already declared carries the new column,
+      and the gallery is where the column may hold representative content.
+    - Report the column anatomy in the emitted observation — how many structures the specimen declared,
+      how many it painted, how many names appeared in a column beyond its track header, and whether the
+      level readout wrote the MIDI-hexadecimal form — so the redrawn column is measured rather than claimed.
     contributesTo:
       component_vocabulary: makes every declared value, state, control, and composition visually judgable
         and measurably covered
@@ -1120,6 +1151,8 @@ assets:
     targets:
     - ComponentControl
     - ShellComposition
+    - MixerTrackColumnStructure
+    - ValuePresentationForm
     - ComponentGalleryPage
     - AppWindow
     - ViewportDensityPolicy
@@ -1140,8 +1173,26 @@ assets:
       omits it or marks it explicitly unavailable, and never paints a value that was not in the view data.
     - Prove no control or composition owns, caches, or derives Patch values, focus, navigation, reducer
       state, or audio state, and that none dispatches a SemanticAction.
+    - Prove one mixer track column presents exactly the five declared structures in the declared order
+      and presents nothing else, that the MixerTrackColumnStructure set is exhaustively matched, that
+      the level fader is the dominant structure, that every extent resolved from the density policy rather
+      than from the number of controls the projection reported, and that exactly one name appears in a
+      column. Drive it through the production render path with real projected view data; a test that only
+      proves the structures exist is vacuous.
+    - Prove the column's level readout writes the MIDI-hexadecimal form, that the binding of MidiHexadecimal
+      to that single structure is asserted, and that every other readout in the product still writes the
+      canonical form.
+    - Prove level, pan, mute, and solo remain reachable in the order the canonical mixer descriptor declares
+      and return the intent they returned before, that focus and every applicable state render on the
+      compact pan readout and the state line, and that no SemanticAction variant, focus target, reducer
+      behavior, or projection field was added.
+    - Prove a column handed a projection slice with no data behind one of its five structures omits that
+      structure or marks it explicitly unavailable, and that a centered pan and a resting state line are
+      presented as values rather than as unavailable structures.
     - Prove both authored viewports still retain every structural band, the persistent side region, and
-      the authored minimum interactive target after recomposition, with no clipped or overlapping text.
+      the authored minimum interactive target after recomposition, with no clipped or overlapping text,
+      and that sixteen columns seat at both viewports under the uniform-narrowing rule with one anatomy
+      rather than two.
     contributesTo:
       component_vocabulary: is the deterministic proof that the controls and compositions exist and that
         the shipped shell actually uses them

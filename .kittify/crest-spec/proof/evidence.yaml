@@ -227,7 +227,10 @@ evidence:
       gallery agree that every rendered value equals its authored counterpart, that no literal or visual
       decision survives outside the vocabulary, that every control kind and shell region resolves to a
       declared component, and that every declared state, control, composition, and page is reachable and
-      judgable at both authored viewports
+      judgable at both authored viewports; the mixer track column is included on the same terms — the
+      shipped column and the gallery specimen agree on the declared five-structure anatomy, its authored
+      proportions, its single name, and its MIDI-hexadecimal level readout, with level, pan, mute, and
+      solo still reachable and adjustable exactly as before the redrawing
     validations:
     - component_vocabulary
     - component_composition

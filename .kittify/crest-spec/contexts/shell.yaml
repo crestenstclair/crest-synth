@@ -134,8 +134,9 @@ valueObjects:
       bands: context-line, identity-header, workspace, and footer heights
       split: main-surface and persistent side-region widths
       rhythm: content inset, row height, row pitch, and control geometry
-      mixerColumn: the authored width and pitch of one mixer track column, the floor a column may not
-        narrow past, and the rule resolving sixteen of them against the main-surface content width
+      mixerColumn: the authored width and pitch of one mixer track column, the authored extent of each
+        MixerTrackColumnStructure within it, the floor a column may not narrow past, and the rule resolving
+        sixteen of them against the main-surface content width
     invariants:
     - both declared policies retain every structural band, the persistent side region, and the authored
       minimum interactive target; neither hides a required region to fit
@@ -155,6 +156,12 @@ valueObjects:
       policy is proven to seat sixteen columns at or above that floor by a validation rather than by review;
       a main surface too narrow to seat sixteen at the floor is a typed visible policy failure, not a
       silent scroll, an elided track, or a third hard-coded layout
+    - a column's internal extents resolve here beside its width and pitch, so the authored proportions
+      of its structures are policy rather than surface-local arithmetic; dividing available column height
+      by however many controls the projection reported is a layout decision taken outside the policy and
+      is rejected on the same terms as a surface-local column width
+    - both declared policies resolve the same column anatomy; the compact viewport narrows the declared
+      structures under the uniform-narrowing rule and never substitutes a second arrangement
     contributesTo:
       component_vocabulary: makes the two authored sizes a declared policy rather than scattered constants
       graphical_application_shell: supplies the band and split geometry the shell already renders
@@ -227,6 +234,78 @@ valueObjects:
       graphical_application_shell: replaces the adapter-local control painting the shell previously owned
       semantic_graphical_view_model: renders the projected control view model without adding a second
         model of it
+  ValuePresentationForm:
+    description: the closed set of written forms a readout may present an already-projected value in,
+      so a presentation change is declared at one site instead of spreading through the surfaces that
+      render values
+    from:
+    - Canonical
+    - MidiHexadecimal
+    invariants:
+    - a form changes only how a projected value is written, never what the projection reports; a readout
+      presents the value handed to it and derives nothing the view data did not supply
+    - Canonical is the form every existing readout keeps, so introducing this vocabulary retires no current
+      presentation anywhere in the product
+    - MidiHexadecimal writes a value as two uppercase hexadecimal digits over the MIDI domain 00 through
+      7F, matching the product design authority
+    - MidiHexadecimal is bound to exactly one presenting structure — MixerTrackColumnStructure LevelReadout
+      — and that binding is asserted rather than conventional, so the form cannot spread to other values
+      without a deliberate declaration here
+    - the presenting structure supplies the form; a primitive or control never selects one from the value's
+      magnitude, its range, the surface identity, or the viewport
+    contributesTo:
+      component_vocabulary: makes value presentation a declared, scoped choice rather than a per-surface
+        formatting habit
+  MixerTrackColumnStructure:
+    description: the closed ordered vocabulary of the five structures one mixer track column contains,
+      declaring what each presents and the authored proportion it occupies
+    from:
+    - TrackHeader
+    - LevelFader
+    - LevelReadout
+    - PanReadout
+    - StateLine
+    state:
+      order: the authored top-to-bottom order, which is the declared variant order
+      extent: the authored proportion of the column this structure occupies, resolved from ViewportDensityPolicy's
+        mixer-column geometry
+      presents: the track identity in the case of TrackHeader, and otherwise the immutable SemanticControlViewModel
+        whose field this structure presents
+      presentationForm: the ValuePresentationForm a value-bearing structure writes its value in
+    invariants:
+    - the set is closed and exhaustively matched, so adding a structure fails compilation or the declared
+      coverage assertion at every site rather than a column silently gaining a row
+    - a column presents exactly these five structures in the declared order and presents nothing else;
+      it is not the available height divided by however many controls the projection reported for that
+      track
+    - LevelFader is the dominant structure at both authored viewports and every structure's extent resolves
+      through ViewportDensityPolicy's mixer-column geometry; a column declares no extent of its own
+    - TrackHeader carries the column's only name; no other structure repeats the track identity as a per-control
+      caption, because sixteen columns of captioned rows read as a spreadsheet rather than as a channel
+      strip
+    - LevelFader, PanReadout, and StateLine present the same level, pan, mute, and solo the bank presented
+      before, each still focusable and adjustable through its existing projected control identity in the
+      order the canonical mixer descriptor declares; this vocabulary changes presentation and adds no
+      SemanticAction variant, focus target, reducer behavior, or projection field
+    - PanReadout presents pan compactly as the authored label-and-condition pair rather than as a second
+      full-height fader, and a centered pan is a presented value rather than an absence
+    - StateLine presents mute and solo together on one line, including the resting condition, so an engaged
+      pair is never reduced to whichever was set last and a resting line never looks like an unavailable
+      one
+    - every structure renders focus and each applicable ComponentState with text or shape in addition
+      to color, so a compact presentation never makes a state invisible or a field unfocusable
+    - a structure with no view data behind it is omitted or marked explicitly unavailable in the production
+      shell and never painted with a representative value; representative content belongs to the gallery
+      specimen
+    - the column presents no send; sends remain on the MIXER Inspector, where the canonical mixer descriptor
+      already orders them by ascending bus identity
+    contributesTo:
+      component_vocabulary: makes the mixer column a declared shape later surfaces reuse rather than an
+        incidental division of available height
+      graphical_application_shell: gives the shipped MIXER the channel-strip anatomy the product design
+        authority authors
+      semantic_graphical_view_model: presents the projected mixer control view models without adding a
+        second model of them
   ShellComposition:
     description: the closed family of reusable compositions, each filling one named shell region by arranging
       primitives and controls and owning no value of its own
@@ -261,17 +340,19 @@ valueObjects:
       by a declared composition, not that every composition holds a region to itself
     - a composition whose entries are themselves groups declares that nesting rather than flattening it;
       MixerStripBank arranges the sixteen fixed mixer track columns side by side in the main workspace,
-      and each column is a titled group of controls asked in the vertical-strip role, so the bank arranges
-      groups where Section arranges controls and a bank painted as one flat run of every track's controls
-      does not satisfy it
-    - MixerStripBank titles at two levels — the bank's own authored legend and each column's track identity
+      and each column is the declared MixerTrackColumnStructure anatomy — a fixed composite of five named
+      structures at authored proportions — rather than a group of every control the projection happens
+      to report for that track, so the bank arranges groups where Section arranges controls and a bank
+      painted as one flat run of every track's controls does not satisfy it
+    - MixerStripBank titles at two levels — the bank's own authored legend and each column's TrackHeader
       — because a single header band can name the mixer or name a track but not both, and an operator
-      reading a column needs to know which track it is
-    - MixerStripBank carries the no-placeholder rule at both of those levels; a track whose designed row
-      has no view data behind it marks that row unavailable inside its own column, and a bank with no
-      track view data at all marks the bank unavailable, because a bank that could mark only itself would
-      report one empty track as an empty mixer and a column that could mark only itself would leave the
-      bank silent about which tracks it could not draw
+      reading a column needs to know which track it is; the column's TrackHeader is the only name inside
+      it, so the second level titles the column rather than captioning each of its structures
+    - MixerStripBank carries the no-placeholder rule at both of those levels; a track whose designed structure
+      has no view data behind it marks that structure unavailable inside its own column, and a bank with
+      no track view data at all marks the bank unavailable, because a bank that could mark only itself
+      would report one empty track as an empty mixer and a column that could mark only itself would leave
+      the bank silent about which tracks it could not draw
     - MixerStripBank allocates the main surface rather than consuming it; the sixteen columns divide the
       surface width through ViewportDensityPolicy's declared mixer-column geometry, and no column is scrolled
       out of view, elided, or narrowed past the declared floor in order to fit, because the product design
@@ -329,6 +410,9 @@ valueObjects:
       statesRendered: the ComponentState identities actually painted, with visible-label evidence
       controlsRendered: the ComponentControl identities actually painted, with visible-label evidence
       compositionsRendered: the ShellComposition identities actually painted, with visible-label evidence
+      mixerColumnAnatomy: the MixerTrackColumnStructure identities the bank specimen actually painted,
+        the count of names appearing in one column beyond its TrackHeader, and whether the level readout
+        wrote the MidiHexadecimal form
       tokenSourceExact: bool asserting every painted value resolved through SemanticVisualToken
       typefaceResolved: bool asserting every text run resolved to the authored family and weight
       audioOrMidiConstructed: bool asserting whether the scene constructed an audio output or a MIDI event
@@ -341,6 +425,9 @@ valueObjects:
     - the observation is scene data and never becomes AppState, focus, Patch, graph, or audio state
     - audioOrMidiConstructed is measured from what the scene actually constructed, so the gallery's declared
       silence is falsifiable rather than a claim in prose
+    - mixerColumnAnatomy is measured from the structures the specimen actually painted, so a column that
+      regressed to a generic run of controls, acquired a second name, or lost the authored value form
+      fails a predicate instead of passing on the composition count alone
     contributesTo:
       component_vocabulary: makes gallery coverage measurable instead of asserted
   AudioDeviceConfig:

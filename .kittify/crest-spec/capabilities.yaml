@@ -748,6 +748,35 @@ capabilities:
           observes: the meter presents the resting level the view data reports and invents no signal
         evidence:
         - evidence.component_vocabulary_contract
+      the_mixer_column_is_a_designed_shape:
+        description: the shipped MIXER reads as a mixing desk because one column is the declared anatomy
+          the product design authority authors, and nothing became unadjustable when it was redrawn
+        actor: player
+        steps:
+        - action: launch the normal standalone application, select MIXER, and look at one track column
+          observes: it presents exactly five structures — track header, level fader, level readout, pan
+            readout, state line — in the authored order and presents nothing else; the level fader is
+            the dominant structure, the track header is the only name in the column, pan is a compact
+            readout rather than a second full-height fader, and mute and solo share one state line
+        - action: read the column's level readout
+          observes: it writes the value as two hexadecimal digits over the MIDI domain, matching the product
+            design authority; every value elsewhere in the product keeps its existing form and the hexadecimal
+            binding to that one structure is asserted rather than conventional
+        - action: navigate within the track and adjust each field
+          observes: level, pan, mute, and solo are each reachable in the order the canonical mixer descriptor
+            declares and return the intent they returned before; focus and every applicable state are
+            visible on whichever structure presents the field, including the compact pan readout and the
+            state line
+        - action: run the existing shell, projection, and focus verification against the recomposed column
+          observes: it passes unmodified, because this is a redrawing and no semantic action, focus target,
+            reducer behavior, or projection field was added
+        - action: inspect both authored viewports and hand a column a projection slice missing part of
+            its designed structure
+          observes: all sixteen columns seat under the declared uniform-narrowing rule with the same anatomy
+            and no second layout, and the undriven structure is omitted or marked explicitly unavailable
+            rather than painted with a plausible value
+        evidence:
+        - evidence.component_vocabulary_contract
       every_region_is_a_composition:
         description: the shipped shell is assembled from the same pieces a later surface would use, so
           the completion condition is proven by the product rather than by a gallery alone
