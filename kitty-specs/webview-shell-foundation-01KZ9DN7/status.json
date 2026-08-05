@@ -2,7 +2,7 @@
   "event_count": 42,
   "last_event_id": "01KZ9XD6NBWSN2W8EHJ9D2YH8S",
   "materialized_at": "2026-08-05T21:31:24.715417+00:00",
-  "mission_number": "4",
+  "mission_number": "",
   "mission_slug": "webview-shell-foundation-01KZ9DN7",
   "mission_type": "software-dev",
   "summary": {
@@ -20,154 +20,62 @@
     "WP01": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZ9XD234TZD11H9HAF8VBMYP",
       "last_transition_at": "2026-08-05T21:31:20.036703+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: NSEvent local monitor wins (tauri WindowEvent has no keyboard variant — tao path fails structurally); full-vocabulary press/release + K Edit-hold + Shift chords proven through production translator via in-process synthetic NSEvents (session was LOCKED — System Events injection attempted first, no permission error, keystrokes routed to loginwindow; focused-hardware sweep deferred to human: cargo run --bin webview_input_probe). T004 fully proven live: 3 real sessions, fixture sounding, ~48000 frames/s continuous, non_finite=0, no xrun, clean CloseRequested->Destroyed->Exit, exit 0. cargo test 896 passed / 0 failed; clippy --all-targets clean; fmt applied. Research note on feat/webview-shell-foundation (b4f21f8). Out-of-map: src/shell/mod.rs (+1 line), src/shell/webview/mod.rs, build.rs (+tauri_build), tauri.conf.json, icons/icon.png, .gitignore — rationale in commit 7282450.",
-        "Review passed: NSEvent local-monitor verdict verified. I independently confirmed the API-shape claim in vendored source: tauri-2.11.5/src/app.rs:111 WindowEvent has no keyboard variant (zero KeyboardInput refs in the crate; tao 0.35.3 has it but tauri-runtime-wry-2.11.4 never maps it), so the tao path fails structurally and the monitor is the only viable path regardless of any hardware sweep. Ruling on synthetic evidence: ACCEPTED for this probe WP — the local monitor intercepts on the in-process queue before sendEvent:/responder dispatch (focus routing happens after the monitor), and the synthetic sweep proved mechanism, keycode normalization, and production translator wiring end-to-end (Edit-hold, Shift identity, unbound-key invariant). The residual (hardware sweep at an unlocked session, i.e. real window-server focus routing) is low-risk and explicitly covered downstream by WP02's manual key check and WP06's live layer; the limitation was disclosed honestly with the failed locked-session injection attempt documented. PROBE_RT audio-coexistence logs are internally consistent (48000 frames/s sustained, exactly 256 frames/block every snapshot, realistic jitter, clean CloseRequested->Destroyed->exit). cargo build green; full suite 896 passed / 0 failed / 2 ignored — matches claim, no regressions. input_capture.rs carries only the winning path with install(sink) as specified; page registers no key handler; tauri unconditional (no feature gate); eframe path untouched (src diff = probe bin + webview module + 1-line mod registration); out-of-map touches (build.rs append after vendor compile, window-only tauri.conf.json, 105-byte icon, /gen/schemas/ gitignore) minimal and documented. Anti-pattern checklist: 1 dead-code PASS (probe bin is live caller; WP02 is declared durable consumer), 2 synthetic-fixture PASS, 3 silent-empty PASS, 4 FR-003 coverage PASS, 5 frozen-surface PASS, 6 locked-decision PASS, 7 shared-file PASS, 8 fragility PASS (typed InputCaptureError per FR-007)."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 29938,
-      "shell_pid_created_at": "1785954238.986605",
-      "subtasks": {
-        "T001": "done",
-        "T002": "done",
-        "T003": "done",
-        "T004": "done",
-        "T005": "done"
-      }
+      "shell_pid": 84395,
+      "shell_pid_created_at": "1785951652.719657"
     },
     "WP02": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZ9XD33EKXH981S1HNEX0QKB",
       "last_transition_at": "2026-08-05T21:31:21.070042+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: --shell <egui|webview> selection at the composition root (default egui, mechanical Box<dyn AppWindow> match; forwarding impl placed in standalone_application.rs to stay in owned_files); TauriWebviewWindow per WP01 verdict (NSEvent capture -> shared KeyboardInputTranslator, run_return, 16ms waker ticks on MainEventsCleared, Focused(false) -> focus_lost, crest:// custom protocol, authored viewport sizes); typed WebviewShellError (RuntimeUnavailable/PageLoadFailed/WindowCreation/InputCapture, each with cause) joins ApplicationError::Window; deterministic CREST_WEBVIEW_PAGE init-failure hook documented in module docs. on_frame is held un-invoked with a WP05 seam: ShellFrameObservation structurally demands five painted-region evidences the placeholder page does not paint, so emitting would mean inventing fields; documented in code. T009 needed no extraction: both shells return from AppWindow::run into the same StandaloneApplication::run teardown. PROVEN LIVE (unlocked session): --shell webview opened+screenshotted, MIXER keys injected via System Events, closed via close button, exit 0; session-level hardware-equivalent key sweep (WP01's outstanding human sweep) delivered through the probe: all vocabulary down/up pairs, K Edit-hold chord, Shift+W identity, unbound G -> Other, PROBE_EXIT clean; default eframe run opened identically (screenshot), closed, exit 0; CREST_WEBVIEW_PAGE=/nonexistent -> typed PageLoadFailed chain, exit 1, no window, no fallback. Headless: cargo build clean, full cargo test green (808 lib + all integration suites, 0 failed), clippy --all-targets 0 warnings, cargo fmt --check clean. No out-of-map edits.",
-        "Review passed: typed WebviewShellError joins the fatal path with no fallback edge (verified live: CREST_WEBVIEW_PAGE=/nonexistent exits 1 typed, no window; --shell webview opens placeholder window, screenshot on file); shared KeyboardInputTranslator with no second key state machine; run_return returns both shells into the one StandaloneApplication teardown, no duplication; eframe arm byte-identical (boxed via pure forwarding impl only); zero out-of-map edits; 809 tests green, clippy clean. on_frame ruling: withholding the callback is CORRECT — ShellFrameObservation's own invariants forbid constructing an observation from a pre-render plan, the placeholder paints no declared region so any emission would invent all five region evidences (the WP's named rejection cause), the port invariant's 'after painting' trigger never fires, and the only reachable path wires on_frame to a no-op; documented WP05 seam completes it."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 68294,
-      "shell_pid_created_at": "1785956327.673749",
-      "subtasks": {
-        "T006": "done",
-        "T007": "done",
-        "T008": "done",
-        "T009": "done",
-        "T010": "done"
-      }
+      "shell_pid": 41363,
+      "shell_pid_created_at": "1785954816.041313"
     },
     "WP03": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZ9XD40TJTE1CA0WVBWDP0MK",
       "last_transition_at": "2026-08-05T21:31:22.010194+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "T011-T013 done. projection_channel.rs: generation-gated push of the projector's exact SemanticGraphicalViewModel serde document on crest://projection (no DTO, no trimming; gate advances only on successful emit; typed ProjectionChannelError -> WindowError). meter_channel.rs: crest://meters latest-value AudioObservationSnapshot, METER_RATE_HZ=30 named against NFR-002, single pending slot, loss = display-only (module docs). Unit tests prove gating (same gen -> no emit, changed -> one emit, payload == projector serialization with declared top-level keys), coalescing (5 rapid reads -> latest wins), single-slot, failed-emit semantics. Out-of-map one-liners in WP02 files (sanctioned seam wiring): mod.rs +2 module decls & doc line; window.rs seam replaced with channel wiring incl. WindowEvent::Destroyed teardown guard and post-loop transport_error surfacing (the seam comment had labeled the meter half 'WP04' but WP03 owns meter_channel per tasks file). AudioObservationSnapshot already derives Serialize - no derive change needed. Evidence: 31/31 test targets green (813 lib tests incl. 9 new), cargo clippy --all-targets clean, cargo fmt applied. Live check: GUI session locked (black screencapture), so page-visible verification not possible; bounded live run 'cargo run --bin crest-synth -- --shell webview' ran 30s with event loop alive, zero stderr, clean SIGTERM exit - no transport error path triggered. Page-side listener also infeasible without withGlobalTauri (false in WP02 tauri.conf.json); page-visible receipt lands with WP05's page.",
-        "Review passed: emit path serializes the projector's own SemanticGraphicalViewModel (serde_json::to_value(projection.semantic_model())) with no page-facing DTO — no new type derives Serialize; byte-equality test compares the value handed to the emitter against the projector's serialization and the declared SERIALIZED_PROPERTY_DESCRIPTOR key set. Generation-gating proven by unit test (same gen -> no emit, changed -> one emit). RULING gate-on-success: APPROVED — advancing the gate only on successful emit means an accepted document is never silently lost, satisfying 'typed and not swallowed'; teardown tolerance is structural (WindowEvent::Destroyed sets close_requested before any teardown emit can fail), and while-alive failures take the exact eframe record-first-error-and-close-once path (get_or_insert + close, surfaced after run_return), matching the WP's eframe-parity wording. Meter channel: single Option pending slot (queue depth bounded at one by construction), METER_RATE_HZ=30 named with NFR-002 pointer, METER_INTERVAL derived (no 33 ms literal), loss semantics documented as display-only; AudioObservationSnapshot Serialize verified pre-existing at mission base (no lane commit touched src/real_time or src/control). window.rs/mod.rs edits are the minimal WP02 seam completion (imports, channels+error slot before run_return, Destroyed handler, MainEventsCleared emission, post-loop error surfacing) — nothing else changed; out-of-map wiring acknowledged as the seam left for WP03. RULING page-receipt deferral: ACCEPTED — withGlobalTauri:false makes page-side listening structurally impossible until WP05; the byte-equality test plus emit-path inspection satisfies FR-004 at this WP's boundary; WP05 review must re-verify page-visible receipt. RT callback untouched by inspection (commit touches only shell/webview; both channels read control-side accessors on the event thread). 10 channel unit tests green (one more than the 9 claimed), full suite 31 targets green, clippy --all-targets clean. Anti-pattern checklist: all 8 PASS."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 23591,
-      "shell_pid_created_at": "1785958419.263171",
-      "subtasks": {
-        "T011": "done",
-        "T012": "done",
-        "T013": "done"
-      }
+      "shell_pid": 79575,
+      "shell_pid_created_at": "1785957011.088633"
     },
     "WP04": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZ9XD4XRJE10DJKMFCQT1H14",
       "last_transition_at": "2026-08-05T21:31:22.936933+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: token_export.rs generates tokens.css mechanically from ALL_COLORS/ALL_TYPE_STYLES/ALL_SPACING_STEPS/ALL_RADII + keyline/halo/target constants, plus (analysis C1) the mixer-column width/pitch/floor of both authored density policies read via ViewportDensityPolicy accessors (--mixer-column-{width,pitch,floor}-{desktop,steam-deck}); injective name transform asserted by test. committed_tokens_are_fresh is the byte-for-byte WP06 contract, TokenDrift names the first differing property. make webview-tokens runs exactly one cargo command (the #[ignore]d write_tokens_css lib test); regeneration proven idempotent (two runs byte-identical). Full cargo test green (30 suites, incl. the repo literal guard: color spot-checks derive expected hex from resolved channels because the guard forbids spelling authored hex outside token.rs), clippy -D warnings clean, fmt clean. Out-of-map: one-line 'pub mod token_export;' added to WP02's src/shell/webview/mod.rs — required for the module to be reachable; no other change to that file.",
-        "Review passed: generator is fully accessor-driven (zero hand-typed token values in non-test code; only format specs and name-transform mechanics), transform is mechanical with an injectivity test over all declarations; C1 geometry emitted from ViewportDensityPolicy::mixer_column() and cross-checked against density.rs authored 82/86 desktop and 52/56 steam-deck. Floor-naming ruling: per-viewport --mixer-column-floor-{desktop,steam-deck} is ACCEPTED — it deviates from the finding's single-floor example but is the mechanically uniform choice (every MixerColumnGeometry field of every policy emitted identically, all via the accessor); the shared 48px is a property of the authored data, not a hand copy. Freshness is byte-for-byte with TokenDrift naming the first differing property; committed tokens.css verified fresh and regeneration idempotent (identical SHA-256 across two make webview-tokens runs, no git diff). Makefile target is exactly one cargo invocation, .PHONY + help conventions followed. Commit 48328d2 touches only owned files plus the recorded one-line out-of-map pub mod token_export; in WP02's mod.rs. Full suite green (818 lib + all integration tests), clippy --all-targets clean."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 21148,
-      "shell_pid_created_at": "1785958293.530472",
-      "subtasks": {
-        "T014": "done",
-        "T015": "done",
-        "T016": "done"
-      }
+      "shell_pid": 79575,
+      "shell_pid_created_at": "1785957011.088633"
     },
     "WP05": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZ9XD5SJQVRQV7VT4FNPDVET",
       "last_transition_at": "2026-08-05T21:31:23.826136+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: authored MIXER projection page proven live. webview-page/index.html = five semantic band containers, no inline styles or key handlers; page.js = pure render(model) (deterministic, document-order walks) + renderObservation(model) post-paint evidence (bands, per-column five-structure anatomy in order, hex readouts, focus target, Inspector computed widthPx, sends in declared order) + separate listener glue: crest://projection -> render -> crest://painted ack (generation + painted region bounds/labels keyed by ShellRegionId serialized names, so WP06 T026 only needs the Rust-side forward through the _on_frame seam); crest://meters repaints only the meter element under the eframe stale rule (parameterGeneration + graphRevision compatibility, else zero state). page.css: zero hex colors, zero vocabulary-named px literals (grep-verified); one commented page-side block for fader specimen geometry (14/8/3/34x6/2 px, not vocabulary-named); bank = repeat(16, minmax(--mixer-column-floor-desktop, --mixer-column-width-desktop)) with gutter = pitch minus width; focus keyline/halo from keyline-emphasis + focus-halo tokens via color-mix; Inspector width = clamp over the exported surface-split tokens (>=320 compact, 420 desktop). Live evidence in /tmp/wp05-mixer-page-evidence/: live-desktop-1920-final.png (side-by-side reads as figma-reference-mixer.png), live-focus-t04.png (D navigation moves focus: column emphasis, Inspector cursor, breadcrumb, hint set update; METER animates from live crest://meters), live-adjust.png (hold-K+W: T04 level to 7F in fader, hex readout, Inspector big readout), live-compact-1280.png (1280x800: all five bands, sixteen columns seated above the 48px floor, Inspector >=320px, no scroll/elision). Full cargo test green, clippy clean. Out-of-map edits + rationale: (1) src/shell/webview/window.rs - sanctioned '// WP05' seam completion: embedded asset routing over crest://, override semantics preserved, tests extended; (2) tauri.conf.json - withGlobalTauri + inline core:event:default capability for the main window (Tauri v2 ACL rejects event.listen without it; verified live via the CREST_WEBVIEW_PAGE diagnostic seam); (3) src/shell/webview/token_export.rs - exported ViewportDensityPolicy::split per the generator's own pattern so the page does not restate 420/320, tokens.css regenerated via make webview-tokens. Known compact compromise: StateLine ('M --.S --', separator tightened because the spaced authored form measures 88px vs the 82px desktop column) holds one line at desktop and wraps to two centered lines at deck column widths - full content visible, no overlap, recorded for review. ShellFrameObservation forwarding deliberately left at the _on_frame seam for WP06 T026 (the painted ack already carries the post-paint region evidence).",
-        "Review passed: Figma parity confirmed by eye AND by my own live run (launched --shell webview, drove keys via System Events: focus moved T00->T04, Inspector/breadcrumb/hints/big-readout updated from real projections — WP03's deferred page-visible event receipt is hereby re-verified live). 1920 render reads as the same design as figma-reference-mixer.png: five-band composition, Azeret Mono, hairline columns, dominant fader with cap, pink hex readouts, cyan focused-column keyline+halo+panel, Inspector cursor/big-hex/range/mute-solo/sends; deltas are document-driven fixtures only. Purity: render(model) reads only the document (no Date.now/Math.random, document-order walks), glue separate, window.crest={render,renderObservation} exposed; renderObservation carries inspector.widthPx integer (A1) plus bands/per-column painted structure order/hex/focus/sends for WP06. Painted ack (I1): crest://painted emits post-rAF with echoed generation + measured region bounds/labels keyed by ShellRegionId::name() serialized names (verified against shell_frame_observation.rs) — nothing invented; Rust forwarding honestly left at _on_frame for WP06 T026. Tokens: zero hex colors, px literals only in the one commented fader-geometry block (14/8/3/34x6 + 2px specimen rounding, none vocabulary-named); bank and Inspector resolve from --mixer-column-* and new --surface-split-* tokens. Anatomy: exactly five structures in order, TrackHeader sole name, PanReadout compact P/C, hex only on level values (Inspector big readout shows the same focused level in the same bound form, exactly as the Figma authors it). STATELINE RULING: tightened 'M --.S --' ACCEPTED — engaged words stay DESIGN.md:468's literal 'M ON'/'S ON', resting marks legible at desktop in the authored hint style, and the spaced form measurably cannot hold one line in the 82px column without shrinking type or dropping resting marks (which would read as unavailable); the disclosed two-line wrap at deck column widths preserves the invariant's substance (pair always together, nothing elided, same arrangement narrowed) — noted, not blocking. Out-of-map x3 all minimal+justified with recorded rationales: window.rs = sanctioned WP05 seam (embedded asset routing, typed 404, traversal-tested, freshness test on embedded tokens); tauri.conf.json = withGlobalTauri + core:event:default scoped to main window only, structurally required and proven live; token_export.rs = split export per the generator's own pattern, tokens.css regenerated (cargo test --lib token_export: 10 passed incl. freshness+injectivity). Both viewports hold via CSS clamp/minmax only (Inspector 420/320, sixteen columns above 48px floor, five bands at 1280x800). Full cargo test green in the worktree; WP05 commit touches only its 7 declared files — no eframe-path changes. Anti-pattern checklist 1-8 all PASS."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 78459,
-      "shell_pid_created_at": "1785961365.228804",
-      "subtasks": {
-        "T017": "done",
-        "T018": "done",
-        "T019": "done",
-        "T020": "done",
-        "T021": "done"
-      }
+      "shell_pid": 43772,
+      "shell_pid_created_at": "1785959214.517722"
     },
     "WP06": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZ9XD6NBWSN2W8EHJ9D2YH8S",
       "last_transition_at": "2026-08-05T21:31:24.715417+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: tests/webview_projection_shell.rs realizes validation.webview_projection_shell (harness=false in Cargo.toml — out-of-map one-liner, rationale: live sections open a real Tauri window which macOS permits only on the main thread; libtest runs tests on worker threads). Five proofs: T022 byte+structural emit-path fidelity via production ProjectionChannel across 3 reducer states (gens 2/3/4; byte-identity vs an independent same-code-path serialization AND vs the canonicalized bytes of to_string(model) — serde_json maps sort keys, documented in-test; round-trip Value equality; declared key surface). T023 committed tokens.css byte-fresh via WP04 committed_tokens_are_fresh, GENERATED header, 74 unique properties (injectivity), drift names --space-8. T024 live: real committed page in a real window seated on a display holding the authored viewport (window is moved to the first monitor that fits 1920x1080 — it initially opened on the 1512px-wide built-in Retina and macOS clamped it; page-measured innerWidth asserted at both viewports), double-render observation deep-equal at 1920x1080 AND 1280x800, five bands, 16 columns x five declared structures in order, one focused column = document focus, 2-digit uppercase hex readouts, Inspector sends in declared order, width 420 desktop / 320 compact floors. T025 shipped binary + CREST_WEBVIEW_PAGE=/nonexistent/...: exit 1 in ~1.5s, typed PageLoadFailed display on stderr, self-exit + no eframe/egui/winit marker = no fallback. T026: NFR-001 projection-to-paint over 150 paced production-reducer edits p50=7.6ms p95=8.5ms max=12.8ms (<=50ms PASS); NFR-002 60s soak (300s behind CREST_WEBVIEW_FULL_SOAK=1, both printed): 1765 emits = 29.41Hz vs declared 30Hz pace (interval-quantized floor 29.0 documented), max gap 49.6ms, thirds 29.42/29.40Hz stable, 47422 observations coalesced into 1765 emits (pending slot bounded at 1 by construction; emit count <= pace bound 1802), 0 lost, page-side received 1765/1765 = 29.41Hz; harness window owned close run_return=0; shutdown parity from REAL runs of the shipped binary: --shell egui and --shell webview each opened with live audio, closed via the native close button (System Events), both exit 0 through the shared StandaloneApplication teardown (stream release -> worker completion -> graph ownership collection). Marker prints only after every ran section passed, with the skip list beside it; skip decision is the CREST_WEBVIEW_TESTS env var alone, taken before any window attempt. DEMO-LIVE QUESTION FOR REVIEWER: WP02's parse still rejects --shell webview with any demo/smoke mode (\"--shell webview supports only the standalone run\"), so the paced demo report cannot run through the webview shell; T026 implements the sanctioned fallback scope (real-run parity + in-harness NFR measurement). Un-changing that rejection is a WP02 decision I did not overturn. PRE-EXISTING BASELINE FAILURE (recorded \"1 pre-existing test failure(s)\" at claim time since WP01): identified as the mission's own declared-but-not-yet-implemented validation target — cargo test --test webview_projection_shell fails with \"no test target named\" on every pre-WP06 tree (verified at the WP06 lane base); all WP01-WP05 claims simultaneously reported the full suite green, and my merged-lane baseline run was 31/31 targets green (830 lib tests, 0 failed) before this WP, so no real test regression exists; this WP creates the missing target, resolving the recorded failure. Also noted, NOT fixed (not mine): src/shell/webview/window.rs has a one-arm rustfmt drift from WP05 (cargo fmt --check flags /tokens.css match arm); I reverted fmt's touch on it to keep production code unchanged. No production code changed. Evidence: live log with marker + NFR lines (LIVE_EXIT=0) and headless log with explicit skips (EXIT=0); screenshots t024-desktop-1920x1080.png, t024-compact-1280x800.png, t026-live-mixer-render.png, t026-shutdown-parity-egui.png, t026-shutdown-parity-webview.png in $TMPDIR/crest-wp06-webview-acceptance/. Full suite: 32/32 targets green including the new target headless.",
-        "Review passed: ran the declared validation myself both ways in the lane-f worktree. Headless: exit 0, exact marker CREST_ACCEPTANCE webview_projection_shell passed, explicit skip list; gate read in code — decided once from CREST_WEBVIEW_TESTS alone at main() before any window, live failures panic/exit(101) before the marker, a failure can never become a skip. Live (CREST_WEBVIEW_TESTS=1, unlocked session): exit 0, zero skips; my re-measured NFR-001 projection-to-paint p50 7.7ms / p95 8.5ms / max 30.8ms vs 50ms threshold (their 8.4ms claim consistent); NFR-002 29.40 Hz over 60s soak, first/last-third 29.45/29.41 Hz, max gap 47.8ms, 47374 observations coalesced to 1765 emits, 0 lost, page received 1765 (100%). 30Hz RULING: honestly met, not gamed — production MeterChannel emits on now-previous >= METER_INTERVAL (exactly 1/30s), so a minimum-spacing decimator measures one poll-tick under nominal (~34ms spacing = 29.4Hz) by construction; the raw figure, declared pace, and quantization floor are printed side by side and sustainment/bounded-queue/zero-loss are separately asserted, so real degradation still falsifies. T022 rigor: calls production ProjectionChannel::push (serialization inside push), the identical path window.rs:303 invokes; byte + canonicalized + structural equality across 3 ascending generations. T025: shipped binary via CARGO_BIN_EXE + documented CREST_WEBVIEW_PAGE override, typed PageLoadFailed display on stderr, nonzero self-exit, no eframe/egui/winit markers. T026 LIVE-LAYER RULING: satisfied — WP02's demo-live+webview parse rejection (crest_synth.rs:405-413) stands untouched and is correct for this scope (C-004 excludes beyond-meters action IPC; this WP changes no production code), so literal runner reuse is unsatisfiable; the evidence substitutes real unmocked artifacts (150 paced reducer edits through production projector+emit path into the real page; real window-close runs of the shipped binary under BOTH shells reaching the identical owned shutdown, exit 0) — the mocks-the-runner reject trigger is not tripped. BASELINE CONFIRMED: 265155c is the only commit ever adding tests/webview_projection_shell.rs and the crest-spec validation (51a329e, 10:03) predates the baseline capture (5a459a0, 12:46) — the recorded pre-existing failure is the declared-but-not-yet-existing test target itself, self-resolving with this WP; the mission has NO real baseline failure. Full suite: 925 passed / 0 failed across 31 targets. Scope: commit touches only tests/webview_projection_shell.rs + Cargo.toml [[test]] harness=false stanza (out-of-map rationale documented: macOS main-thread window vs libtest worker threads); WP05's rustfmt drift in window.rs untouched, left to its owner. Anti-patterns: dead code N/A, synthetic fixture PASS (production reducer/projector/channels/binary/page throughout), silent returns PASS, FR coverage PASS (FR-003 via WP01/WP02 tests in the suite per the two-layer posture), frozen surface PASS, locked decisions PASS, shared-file PASS, fragility N/A."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 30377,
-      "shell_pid_created_at": "1785964345.317159",
-      "subtasks": {
-        "T022": "done",
-        "T023": "done",
-        "T024": "done",
-        "T025": "done",
-        "T026": "done"
-      }
+      "shell_pid": 90359,
+      "shell_pid_created_at": "1785962048.612736"
     }
   }
 }
