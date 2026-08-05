@@ -7,6 +7,9 @@ requirement_refs:
 planning_base_branch: feat/webview-shell-foundation
 merge_target_branch: feat/webview-shell-foundation
 branch_strategy: Planning artifacts for this mission were generated on feat/webview-shell-foundation. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/webview-shell-foundation unless the human explicitly redirects the landing branch.
+base_branch: kitty/mission-webview-shell-foundation-01KZ9DN7
+base_commit: 3eb6771413c75de7a1b7dbbec7019b6669fb0b14
+created_at: '2026-08-05T17:40:56.709121+00:00'
 subtasks:
 - T001
 - T002
