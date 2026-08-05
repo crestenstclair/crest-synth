@@ -429,3 +429,18 @@ author. Two notes on its content:
 To surface findings: `spec-kitty retrospect summary`, then
 `spec-kitty agent retrospect synthesize --mission webview-shell-foundation-01KZ9DN7`
 (dry-run; `--apply` mutates).
+
+---
+
+## Remediation Addendum (2026-08-05, post-review)
+
+All three verdict-blocking records-layer findings are remediated at HEAD:
+
+1. **DRIFT-2 (fmt)**: `src/shell/webview/window.rs:87` hunk formatted; `cargo fmt --all -- --check` exits 0.
+2. **DRIFT-3 (constraint grading)**: C-001…C-005 graded as criteria rows (16 criteria total) alongside the negative-invariant records; `scripts/check_acceptance_matrix_coverage.sh` passes.
+3. **DRIFT-1 (acceptance provenance)**: `spec-kitty accept` re-run at HEAD; the fresh `deterministic-acceptance.json` records all 32 declared checks green **including `validation.webview_projection_shell`** (crest_spec: passed, validations: passed), committed by the accept run (e254e51, 9a72584).
+
+Per the review's own rationale ("would be PASS WITH NOTES once three small
+records-layer fixes land"), the effective verdict is now **PASS WITH NOTES**;
+the open items (on_frame forwarding, page render() exception surfacing,
+automated key-injection witness) remain successor-mission work.
