@@ -1,0 +1,180 @@
+{
+  "mission_slug": "webview-shell-foundation-01KZ9DN7",
+  "mission_number": "",
+  "mission_type": "software-dev",
+  "overall_verdict": "pass",
+  "criteria": [
+    {
+      "criterion_id": "FR-001",
+      "description": "Launch with a Tauri v2 window rendering the MIXER context of the canonical SemanticGraphicalViewModel, selected explicitly at launch; egui remains the default shell.",
+      "proof_type": "automated_test",
+      "evidence": "tests/webview_projection_shell.rs T024/T026 sections render the committed page in a real Tauri window from the production fixture document at both authored viewports; WP02 live runs (screenshots on file) show --shell webview opening the window and the default/--shell egui arms opening the unchanged eframe shell. Reviewer WP05/WP06 re-ran both shells live.",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": "Selection is a typed launch-time decision (ShellSelection, crest_synth.rs); no fallback edge exists (WP02 review verified no code path constructs the eframe window after webview failure)."
+    },
+    {
+      "criterion_id": "FR-002",
+      "description": "Page renders the authored MIXER composition resolving every color/type/spacing/geometry value from the generated token vocabulary, never hand-copied.",
+      "proof_type": "automated_test",
+      "evidence": "token freshness proof (T023) byte-compares committed webview-page/tokens.css against token_export::tokens_css() (74 properties incl. mixer-column geometry per analysis C1); WP05 review grepped page.css/index.html: zero hex, zero vocabulary-named px outside the one commented specimen-geometry block; side-by-side vs figma-functional-interpretation/assets/mixer.png judged by reviewer's own eyes and live run.",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": "Analysis finding C1 (density-policy geometry) resolved during WP04: --mixer-column-{width,pitch,floor}-{desktop,steam-deck} generated from ViewportDensityPolicy accessors."
+    },
+    {
+      "criterion_id": "FR-003",
+      "description": "Physical input captured Rust-side by the existing translators; webview captures no input; full MIXER key vocabulary works unchanged.",
+      "proof_type": "automated_test",
+      "evidence": "Two-layer per plan R-05: WP01 probe hardware-equivalent sweep delivered live during WP02 (full vocabulary, distinct press/release, K Edit-hold chord, Shift identity, unbound-key invariant) through the production KeyboardInputTranslator into the production AppLoop; WP05/WP06 reviewers drove real keys via System Events against the live window (focus moves, level adjust). Page registers no key handler (grepped at WP05 review); NSEvent local monitor is the single capture path (tauri v2 WindowEvent verified to carry no keyboard variant).",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": "Analysis finding C2 (no fully-automated key witness) accepted at review; recorded for the successor mission."
+    },
+    {
+      "criterion_id": "FR-004",
+      "description": "Every projection reaches the webview as the same serialized view model the projector emits \u2014 one schema, no fork.",
+      "proof_type": "automated_test",
+      "evidence": "T022: byte-identity + canonicalized + structural equality between the production ProjectionChannel::push emit path and serde_json of the projector's model across three reducer states (ascending generations); WP03 unit tests prove generation-gating; WP05 live runs show page receipt (reviewer re-verified live, closing WP03's deferral).",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-005",
+      "description": "Decimated meter observations animate MIXER meters; latest-value, loss degrades display only.",
+      "proof_type": "automated_test",
+      "evidence": "T026 soak: 60s at 29.4Hz sustained, 47k observations coalesced to 1.7k emits, pending bounded at 1, 0 lost, page received 100%; MeterChannel single-slot latest-value by construction (WP03 unit tests); stale snapshot renders stale state mirroring the eframe rule (WP05).",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-006",
+      "description": "Window close drives the same owned shutdown as the egui shell.",
+      "proof_type": "automated_test",
+      "evidence": "T026 parity: shipped binary run under both shells with live audio, closed via native close button, both exit 0 through the identical StandaloneApplication::run teardown (stream release before worker collection); WP01 PROBE_RT sessions showed clean CloseRequested->Destroyed->Exit ordering.",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": null
+    },
+    {
+      "criterion_id": "FR-007",
+      "description": "Webview initialization failure is a typed startup error ending the process; no silent fallback.",
+      "proof_type": "automated_test",
+      "evidence": "T025: subprocess with CREST_WEBVIEW_PAGE=/nonexistent exits 1 in ~1.4s with typed PageLoadFailed on stderr and no eframe/egui/winit startup marker; WP02 review verified the same live.",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": null
+    },
+    {
+      "criterion_id": "NFR-001",
+      "description": "Projection-to-paint <= 50 ms p95 under paced workload.",
+      "proof_type": "automated_test",
+      "evidence": "T026 live measurement over 150 paced reducer edits via the crest://painted generation echo: p50 7.7ms / p95 8.4ms / max 12.1ms (implementer) and p95 8.5ms / max 30.8ms (reviewer re-run). 6x under threshold.",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": null
+    },
+    {
+      "criterion_id": "NFR-002",
+      "description": "Meter animation sustains 30 Hz without queue growth over the soak.",
+      "proof_type": "automated_test",
+      "evidence": "T026: 29.39/29.40 Hz sustained over 60s (interval-quantized floor of the exact 1/30s minimum-spacing decimator, documented and ruled honest by the reviewer), thirds equal, max gap <60ms, pending bounded at 1, 0 lost; 300s soak behind CREST_WEBVIEW_FULL_SOAK=1.",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": "Reviewer ruling: 29.4Hz is the measured face of a 30Hz pace under interval quantization; degradation still falsifies via sustainment/loss/bound assertions."
+    },
+    {
+      "criterion_id": "NFR-003",
+      "description": "RT callback measured bounds unchanged from the egui baseline.",
+      "proof_type": "automated_test",
+      "evidence": "WP01 PROBE_RT: three sessions with production fixture sounding inside the Tauri process, constant ~48,006 frames/s, non_finite=0, routing_failures=0, no device xrun; WP03 modules read control-side accessors on the event thread only (verified by inspection at review); full existing suite incl. RT contracts green on every lane and at WP06 (925 passed / 0 failed).",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": null
+    },
+    {
+      "criterion_id": "NFR-004",
+      "description": "Webview MIXER passes both authored viewports preserving bands, minimums, hierarchy.",
+      "proof_type": "automated_test",
+      "evidence": "T024: real window at 1920x1080 and 1280x800, five bands present, sixteen columns each carrying the five declared structures in order, Inspector widthPx 420/320 asserted (>=320 at compact, analysis A1 resolved), columns seated above the 48px floor; WP05 compact screenshot on file.",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator (implementer-ivan/frontend-freddy lanes; independent reviewer-renata verification per WP)",
+      "verified_at": "2026-08-05T19:30:00+00:00",
+      "notes": null
+    }
+  ],
+  "negative_invariants": [
+    {
+      "invariant_id": "C-001",
+      "description": "DESIGN.md boundaries hold untouched: input->semantic->reducer->projections; bounded RT callback; separate transports.",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test webview_projection_shell -- --nocapture",
+      "result": "confirmed_absent",
+      "evidence": "No lane commit touched src/real_time/ or src/control/ (verified at WP03/WP06 reviews); input flows through the existing KeyboardInputTranslator (single state machine, WP02 review); transports are event-thread reads of control-side accessors.",
+      "verified_ref": "fb537b18ac41431c1df0501b24b0752f8098b7b4",
+      "verified_surface_kind": "coordination",
+      "provenance_origin": "recorded",
+      "notes": null
+    },
+    {
+      "invariant_id": "C-002",
+      "description": "No UI-owned copy of audio or application state in the page; page stateless between documents apart from presentation-only concerns.",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test webview_projection_shell -- --nocapture",
+      "result": "confirmed_absent",
+      "evidence": "page.js render(document) verified pure at WP05 review (no Date.now/Math.random/ambient state; double-render observation deep-equal in T024); meters and the painted ack are the documented presentation-only carve-outs.",
+      "verified_ref": "fb537b18ac41431c1df0501b24b0752f8098b7b4",
+      "verified_surface_kind": "coordination",
+      "provenance_origin": "recorded",
+      "notes": null
+    },
+    {
+      "invariant_id": "C-003",
+      "description": "selected_egui_stack stays satisfied: egui default, its proofs keep passing.",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test",
+      "result": "confirmed_absent",
+      "evidence": "Default launch opens the unchanged eframe shell (WP02/WP06 live runs); full suite incl. component_vocabulary, component_composition, graphical_application_shell green at every WP and at WP06 (925/0 across 31 targets).",
+      "verified_ref": "fb537b18ac41431c1df0501b24b0752f8098b7b4",
+      "verified_surface_kind": "coordination",
+      "provenance_origin": "recorded",
+      "notes": null
+    },
+    {
+      "invariant_id": "C-004",
+      "description": "Scope excludes PATCH, modals, sample browser, beyond-meters action IPC, egui deletion.",
+      "verification_method": "custom_command",
+      "verification_command": "git log --stat kitty/mission-webview-shell-foundation-01KZ9DN7",
+      "result": "confirmed_absent",
+      "evidence": "No PATCH/modal/browser code in any lane diff; demo-live+webview remains parse-rejected (WP02 decision, upheld at WP06 review); no egui file deleted; page emits only the painted ack and consumes the two declared channels.",
+      "verified_ref": "fb537b18ac41431c1df0501b24b0752f8098b7b4",
+      "verified_surface_kind": "coordination",
+      "provenance_origin": "recorded",
+      "notes": null
+    },
+    {
+      "invariant_id": "C-005",
+      "description": "New structure declared in the crest-spec before planning; no data-model.md/contracts/.",
+      "verification_method": "custom_command",
+      "verification_command": "ls kitty-specs/webview-shell-foundation-01KZ9DN7/",
+      "result": "confirmed_absent",
+      "evidence": "TauriWebviewWindow adapter, two requirements, three assets, CargoLockfile asset, and the webview_projection_shell validation authored at commit 51a329e before plan.md; neither data-model.md nor contracts/ exists in the mission dir.",
+      "verified_ref": "51a329e",
+      "verified_surface_kind": "coordination",
+      "provenance_origin": "recorded",
+      "notes": null
+    }
+  ]
+}

@@ -14,6 +14,22 @@ path = "src/bin/crest_synth.rs"
 name = "crest-synth-witness"
 path = "src/bin/crest_synth_witness.rs"
 
+# WP01 disposable evidence binary: input-capture and audio-coexistence probe
+# for the webview shell (kitty-specs/webview-shell-foundation-01KZ9DN7).
+[[bin]]
+name = "webview_input_probe"
+path = "src/bin/webview_input_probe.rs"
+
+# WP06 acceptance (crest-spec validation.webview_projection_shell): harness =
+# false because the live-gated sections open a real Tauri window, which macOS
+# permits only on the main thread; the default libtest harness runs every
+# test on a worker thread. The target still runs under the declared
+# `cargo test --test webview_projection_shell -- --nocapture` command.
+[[test]]
+name = "webview_projection_shell"
+path = "tests/webview_projection_shell.rs"
+harness = false
+
 [dependencies]
 midly = "0.5.3"
 cpal = "0.18.1"
@@ -26,9 +42,24 @@ rtrb = "0.3.4"
 triple_buffer = "9.0.0"
 anyhow = "1.0"
 thiserror = "2.0"
+# Webview shell runtime (peer of eframe behind the AppWindow port). Kept
+# unconditional deliberately: shell selection is a runtime decision (research
+# R-01); a cargo feature gate would fork the binary the mission forbids.
+# Default macOS bundle only — no tray, updater, or CLI features.
+tauri = "2"
+
+# Rust-side native key capture under a focused WKWebView (research R-02):
+# the NSEvent local-monitor path lives in src/shell/webview/input_capture.rs.
+# These are the same objc2 bindings tauri/wry already carry in the tree.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSApplication", "NSResponder", "NSWindow", "NSGraphicsContext", "block2"] }
+objc2-foundation = "0.3"
+block2 = "0.6"
 
 [build-dependencies]
 cc = "1.2"
+tauri-build = "2"
 
 [dev-dependencies]
 sha2 = "0.10"

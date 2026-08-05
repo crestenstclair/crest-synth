@@ -17,6 +17,9 @@
 # autopilot validation artifact (regenerated each run)
 autopilot.png
 
+# tauri-build regenerates these ACL/config schemas on every build
+/gen/schemas/
+
 # Added by Spec Kitty CLI (auto-managed)
 .codex/
 .vibe/

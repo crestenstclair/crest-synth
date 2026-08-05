@@ -47,4 +47,10 @@ fn main() {
     println!("cargo:rerun-if-changed=vendor/chorus/PROVENANCE.md");
     println!("cargo:rerun-if-changed=vendor/chorus/SHA256SUMS");
     chorus.compile("crest_chorus");
+
+    // Tauri webview-shell scaffolding (mission webview-shell-foundation):
+    // generates the context consumed by `tauri::generate_context!` for the
+    // window-only, no-frontend-bundle setup declared in `tauri.conf.json`.
+    // Extends the existing C++ vendor build; never replaces it.
+    tauri_build::build();
 }

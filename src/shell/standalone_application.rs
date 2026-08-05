@@ -120,6 +120,26 @@ impl Default for ApplicationConfig {
     }
 }
 
+/// Forwards the `AppWindow` port through a boxed window so the composition
+/// root can select the shell implementation at launch (one match on
+/// `crate::shell::webview::ShellSelection`, `--shell <egui|webview>`) while
+/// `StandaloneApplication` stays generic over exactly one window type. Pure
+/// forwarding: behavior is the boxed implementation's, unchanged, and no
+/// code path substitutes one shell for another after selection.
+impl<Window: AppWindow + ?Sized> AppWindow for Box<Window> {
+    fn run(
+        &self,
+        on_input: AppInputCallback,
+        projection: ProjectionCallback,
+        audio_observation: AudioObservationCallback,
+        on_tick: TickCallback,
+        on_frame: FrameObservationCallback,
+    ) -> Result<(), WindowError> {
+        self.as_ref()
+            .run(on_input, projection, audio_observation, on_tick, on_frame)
+    }
+}
+
 /// Deliberate smoke-path falsification selected by the command-line harness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DegenerateMode {

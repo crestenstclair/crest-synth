@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "crest-synth",
+  "version": "0.1.0",
+  "identifier": "synth.crest.dev",
+  "build": {},
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null,
+      "capabilities": [
+        {
+          "identifier": "crest-projection-page-events",
+          "description": "The MIXER projection page listens on crest://projection and crest://meters and echoes crest://painted; no other IPC surface is granted.",
+          "windows": ["main"],
+          "permissions": ["core:event:default"]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
