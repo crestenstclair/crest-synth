@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "mission_slug": "webview-shell-foundation-01KZ9DN7",
+  "mission_id": "01KZ9DN7SDDFNYYYVC74XT21QG",
+  "mission_branch": "kitty/mission-webview-shell-foundation-01KZ9DN7",
+  "target_branch": "feat/webview-shell-foundation",
+  "lanes": [
+    {
+      "lane_id": "lane-a",
+      "wp_ids": [
+        "WP01"
+      ],
+      "write_scope": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "src/bin/webview_input_probe.rs",
+        "src/shell/webview/input_capture.rs"
+      ],
+      "predicted_surfaces": [
+        "api"
+      ],
+      "depends_on_lanes": [],
+      "parallel_group": 0
+    },
+    {
+      "lane_id": "lane-b",
+      "wp_ids": [
+        "WP02"
+      ],
+      "write_scope": [
+        "src/bin/crest_synth.rs",
+        "src/shell/mod.rs",
+        "src/shell/standalone_application.rs",
+        "src/shell/webview/mod.rs",
+        "src/shell/webview/window.rs"
+      ],
+      "predicted_surfaces": [
+        "api"
+      ],
+      "depends_on_lanes": [
+        "lane-a"
+      ],
+      "parallel_group": 1
+    },
+    {
+      "lane_id": "lane-c",
+      "wp_ids": [
+        "WP03"
+      ],
+      "write_scope": [
+        "src/shell/webview/meter_channel.rs",
+        "src/shell/webview/projection_channel.rs"
+      ],
+      "predicted_surfaces": [
+        "api"
+      ],
+      "depends_on_lanes": [
+        "lane-b"
+      ],
+      "parallel_group": 2
+    },
+    {
+      "lane_id": "lane-d",
+      "wp_ids": [
+        "WP04"
+      ],
+      "write_scope": [
+        "Makefile",
+        "src/shell/webview/token_export.rs",
+        "webview-page/tokens.css"
+      ],
+      "predicted_surfaces": [
+        "api"
+      ],
+      "depends_on_lanes": [
+        "lane-b"
+      ],
+      "parallel_group": 2
+    },
+    {
+      "lane_id": "lane-e",
+      "wp_ids": [
+        "WP05"
+      ],
+      "write_scope": [
+        "webview-page/index.html",
+        "webview-page/page.css",
+        "webview-page/page.js"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "artifact-rendering",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-c",
+        "lane-d"
+      ],
+      "parallel_group": 3
+    },
+    {
+      "lane_id": "lane-f",
+      "wp_ids": [
+        "WP06"
+      ],
+      "write_scope": [
+        "tests/webview_projection_shell.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "artifact-rendering"
+      ],
+      "depends_on_lanes": [
+        "lane-e"
+      ],
+      "parallel_group": 4
+    }
+  ],
+  "computed_at": "2026-08-05T17:32:05.949128+00:00",
+  "computed_from": "dependency_graph+ownership",
+  "planning_artifact_wps": []
+}

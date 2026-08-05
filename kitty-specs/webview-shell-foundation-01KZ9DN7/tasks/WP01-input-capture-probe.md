@@ -6,7 +6,7 @@ requirement_refs:
 - FR-003
 planning_base_branch: feat/webview-shell-foundation
 merge_target_branch: feat/webview-shell-foundation
-branch_strategy: lane worktree computed by finalize-tasks; merges into feat/webview-shell-foundation
+branch_strategy: Planning artifacts for this mission were generated on feat/webview-shell-foundation. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/webview-shell-foundation unless the human explicitly redirects the landing branch.
 subtasks:
 - T001
 - T002
@@ -20,14 +20,12 @@ authoritative_surface: src/shell/webview/
 create_intent:
 - src/shell/webview/input_capture.rs
 - src/bin/webview_input_probe.rs
-- kitty-specs/webview-shell-foundation-01KZ9DN7/research/input-capture-probe.md
 execution_mode: code_change
 owned_files:
 - Cargo.toml
 - Cargo.lock
 - src/shell/webview/input_capture.rs
 - src/bin/webview_input_probe.rs
-- kitty-specs/webview-shell-foundation-01KZ9DN7/research/input-capture-probe.md
 role: implementer
 tags: []
 tracker_refs: []
