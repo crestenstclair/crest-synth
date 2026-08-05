@@ -1,0 +1,8 @@
+{
+  "event": "completed",
+  "invocation_id": "01KZ9CN8E0YEMQEZQG8Q7VEESM",
+  "completed_at": "2026-08-05T16:44:51.057785+00:00",
+  "outcome": "done",
+  "closed_by": "agent",
+  "evidence_ref": "spike/webview-mixer/README.md"
+}
