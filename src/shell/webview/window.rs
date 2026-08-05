@@ -87,7 +87,10 @@ const FONT_AZERET_BOLD: &[u8] = include_bytes!("../../../vendor/azeret-mono/Azer
 fn page_asset(path: &str, index_html: &str) -> Option<(&'static str, Vec<u8>)> {
     match path {
         "/" | "/index.html" => Some(("text/html; charset=utf-8", index_html.as_bytes().to_vec())),
-        "/tokens.css" => Some(("text/css; charset=utf-8", PAGE_TOKENS_CSS.as_bytes().to_vec())),
+        "/tokens.css" => Some((
+            "text/css; charset=utf-8",
+            PAGE_TOKENS_CSS.as_bytes().to_vec(),
+        )),
         "/page.css" => Some(("text/css; charset=utf-8", PAGE_CSS.as_bytes().to_vec())),
         "/page.js" => Some((
             "text/javascript; charset=utf-8",
