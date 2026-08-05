@@ -1,0 +1,15 @@
+{
+  "coordination_branch": "kitty/mission-mixer-track-column-01KZ7KQS",
+  "created_at": "2026-08-05T00:03:56.973374+00:00",
+  "flattened": false,
+  "friendly_name": "Mixer Track Column",
+  "mission_id": "01KZ7KQSDB3CADQEWQ745HTJB1",
+  "mission_number": null,
+  "mission_slug": "mixer-track-column-01KZ7KQS",
+  "mission_type": "software-dev",
+  "purpose_context": "Phase 4 shipped the mixer strip bank by rendering each of the sixteen track columns as a generic section of every control the projection carries for that track. The design file authors something else: one column is a track header, a single full-height fader, a hex value readout, a compact pan readout, and one state line. The shipped column stacks four labelled controls and two OFF rows instead, which is why the mixer reads as a spreadsheet rather than as a mixing desk. This mission replaces the generic list with the authored composite. Pan, mute and solo stay focusable and adjustable; only how they are drawn changes.",
+  "purpose_tldr": "Rebuild the mixer track column as the column the design file authors, instead of a generic list of every control the projection reports.",
+  "slug": "mixer-track-column-01KZ7KQS",
+  "target_branch": "feat/mixer-track-column",
+  "topology": "coord"
+}
