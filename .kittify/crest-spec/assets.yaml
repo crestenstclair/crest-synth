@@ -29,6 +29,10 @@ assetKinds:
   vendored-typeface:
     description: The vendored authored typeface, its license, provenance, and hash manifest
     filePattern: vendor/azeret-mono/*
+  webview-projection-page:
+    description: The webview projection surface — HTML/CSS/JS documents rendering serialized view models,
+      plus the generated token table
+    filePattern: webview-page/*
 assets:
   KernelContextModules:
     kind: rust-context-source
@@ -142,6 +146,65 @@ assets:
         without changing the shell's structural bands or passivity
       semantic_graphical_view_model: renders the projected control view model without introducing a second
         model of it
+  WebviewShellModules:
+    kind: rust-context-source
+    description: src/shell/webview — the Tauri v2 window composition, serialized-projection and meter
+      transport, launch-time shell selection, and token-table generation realizing adapter.TauriWebviewWindow
+    targets:
+    - TauriWebviewWindow
+    - WindowInput
+    prompts:
+    - Compose the Tauri v2 window as a second implementer of the AppWindow contract, selected explicitly
+      at launch beside the default eframe window; selection is a typed decision at the composition root,
+      never a fallback taken after a failure.
+    - Push each accepted projection to the page as the serde serialization of the embedded SemanticGraphicalViewModel.
+      Do not define a page-facing struct, DTO, or trimmed variant; if the page needs a field the model
+      does not carry, the model is extended through the projector, not forked.
+    - Carry meter observations on a separate decimated latest-value channel at the declared rate. A lost
+      frame is repainted over by the next one; meter traffic never blocks, never queues unboundedly,
+      and never reaches the real-time callback.
+    - Keep physical input on the Rust side. Normalize key presses, releases, and focus loss through the
+      same KeyboardInputTranslator path the eframe window uses, so the two shells cannot drift in vocabulary;
+      the page registers no key handler.
+    - Generate the page's token table from the authored Rust vocabulary as a build step, emitting each
+      canonical authored name and value; assert generation freshness so a hand-edited or stale table
+      fails rather than drifts.
+    - Return a typed startup error and end the process when the system webview or the page fails to initialize;
+      do not open a blank window, retry silently, or fall back to the eframe shell.
+    - Drive window close through the same owned shutdown as the eframe shell — stream release, worker
+      completion, graph ownership collection, normal exit — sharing the existing shutdown path rather
+      than duplicating it.
+    contributesTo:
+      graphical_application_shell: adds the webview projection peer behind the existing passive window
+        boundary
+      semantic_graphical_view_model: proves the canonical model serializes to one page-facing schema with
+        no fork
+  WebviewProjectionPage:
+    kind: webview-projection-page
+    description: webview-page — the MIXER projection surface documents and the generated token table
+      the webview renders
+    targets:
+    - TauriWebviewWindow
+    prompts:
+    - Render the received serialized view model deterministically — the same document always paints the
+      same screen — holding no state between documents beyond presentation-only animation, capturing
+      no input, and inventing no field.
+    - Lay out the authored MIXER composition — context line, identity header, sixteen-column strip bank,
+      focused-column emphasis, Inspector, hint rows — with the browser layout engine; declare authored
+      constants (column width, pitch, track and fill widths, cap geometry) as custom properties, not
+      scattered literals.
+    - Resolve every color, type style, spacing step, and geometry value from the generated token table;
+      the page declares no raw value the vocabulary already names.
+    - Render the authored typeface from the vendored faces; a missing face is a visible failure, never
+      a substituted font stack.
+    - Present the mixer column as the declared MixerTrackColumnStructure anatomy — track header, level
+      fader, level readout, pan readout, state line — with the level readout in the bound hexadecimal
+      form, focus and every applicable state visible with text or shape beyond color, and both authored
+      viewports passing the declared blockout checks.
+    contributesTo:
+      graphical_application_shell: is the webview shell's only painted surface
+      component_vocabulary: proves the authored vocabulary survives translation to a second rendering
+        medium without re-derivation
   TestingContextModules:
     kind: rust-context-source
     description: src/testing — retained scenes, deterministic workers, mutation harness, and measurements
@@ -1106,6 +1169,37 @@ assets:
       act that updates the manifest and provenance in the same change.
     contributesTo:
       component_vocabulary: makes the authored type styles renderable rather than nominal
+  WebviewProjectionShellAcceptanceTests:
+    kind: rust-integration-tests
+    description: tests/webview_projection_shell.rs, the non-vacuous acceptance for the webview shell's
+      serialized-projection fidelity, page determinism, token generation freshness, typed startup failure,
+      and owned shutdown
+    profile:
+      kind: verification_harness
+      witness: the webview shell renders the canonical serialized model at authored parity without owning
+        state
+      failurePolicy: a page-facing schema fork, a hand-edited or stale token table, a nondeterministic
+        page render, a silent shell fallback, input captured by the page, meter loss mutating state,
+        or a shutdown path divergence fails
+    targets:
+    - TauriWebviewWindow
+    prompts:
+    - Prove the page-facing document is byte-identical to the serde serialization of the projector's
+      SemanticGraphicalViewModel for the production fixture across both contexts' MIXER-relevant states;
+      any divergence is a schema fork.
+    - Prove the generated token table matches the authored Rust vocabulary value-for-value and fails
+      when regenerated output differs from the committed table.
+    - Prove a given serialized document renders to a stable declared observation (structure and values,
+      not pixels) twice in a row, and that the rendered MIXER anatomy is the declared column structure
+      at both authored viewports.
+    - Prove webview initialization failure surfaces as the typed startup error and process exit, with
+      no eframe window opened in its place.
+    - Prove window close through the webview shell reaches the same owned shutdown observations the eframe
+      shell records — stream release, worker completion, graph ownership collection, normal exit.
+    contributesTo:
+      graphical_application_shell: makes the webview peer falsifiable on the same boundary terms as the
+        eframe window
+      semantic_graphical_view_model: guards the one-schema transport against forks
   ComponentVocabularyAcceptanceTests:
     kind: rust-integration-tests
     description: tests/component_vocabulary.rs, the non-vacuous production-path acceptance for authored-value

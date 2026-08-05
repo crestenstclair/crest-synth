@@ -373,13 +373,46 @@ requirements:
     - realtime_execution
   selected_egui_stack:
     kind: nonfunctional
-    description: The production desktop UI uses eframe and egui, with the matching egui_extras companion
-      for layout and image/SVG loading; Crest owns the shell, state, semantic behavior, and later component
-      APIs, and no alternate GUI runtime or third-party component system is introduced
+    description: The default production desktop UI uses eframe and egui, with the matching egui_extras
+      companion for layout and image/SVG loading; Crest owns the shell, state, semantic behavior, and
+      component APIs. The Tauri webview projection shell is the one declared alternate runtime, introduced
+      as an explicitly selected peer behind the same AppWindow port while egui remains the default and
+      its proofs remain in force; no other GUI runtime or third-party component system is introduced,
+      and retiring the egui stack is a deliberate future declaration, not a side effect
     goals:
     - use_graphical_shell
     capabilities:
     - graphical_application_shell
+  webview_projection_shell:
+    kind: functional
+    description: The application can launch with an explicitly selected Tauri v2 window whose webview
+      renders the MIXER context of the canonical serialized SemanticGraphicalViewModel at authored-design
+      parity — context line, identity header, sixteen-column strip bank, focused-column emphasis, Inspector,
+      hint rows — resolving every color, type style, spacing step, and geometry value from a token table
+      generated from the authored Rust vocabulary, never hand-copied; the page captures no input and
+      owns no navigation, focus, or value state; physical input stays normalized on the Rust side through
+      KeyboardInputTranslator; webview initialization failure is a typed startup error ending the process
+      with no silent fallback to another shell; window close drives the same owned shutdown as the egui
+      shell
+    goals:
+    - use_graphical_shell
+    capabilities:
+    - graphical_application_shell
+    - semantic_graphical_view_model
+  serialized_projection_transport:
+    kind: nonfunctional
+    description: The webview consumes exactly the serde serialization of SemanticGraphicalViewModel the
+      projector already emits — one schema, no webview-specific variant, no page-invented field; a reducer
+      state change is visible in the webview within 50 ms at p95 under the paced live demo workload;
+      meter observations reach the page as decimated latest-value traffic sustaining 30 Hz without queue
+      growth over a five-minute render, and their loss degrades display only; the real-time callback's
+      measured bounds are unchanged from the egui-shell baseline
+    goals:
+    - use_graphical_shell
+    capabilities:
+    - graphical_application_shell
+    - semantic_graphical_view_model
+    - sixteen_track_mixer_routing
   immutable_graphical_shell_projection:
     kind: nonfunctional
     description: StateProjector derives one immutable GraphicalShellProjection embedding the exact accepted
