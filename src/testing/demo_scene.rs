@@ -2615,6 +2615,10 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyDown, WindowKey::Digit6) => "keyDown.digit6",
         (WindowInputKind::KeyDown, WindowKey::Digit7) => "keyDown.digit7",
         (WindowInputKind::KeyDown, WindowKey::Digit8) => "keyDown.digit8",
+        (WindowInputKind::KeyDown, WindowKey::Digit9) => "keyDown.digit9",
+        (WindowInputKind::KeyDown, WindowKey::Digit0) => "keyDown.digit0",
+        (WindowInputKind::KeyDown, WindowKey::BracketLeft) => "keyDown.bracketLeft",
+        (WindowInputKind::KeyDown, WindowKey::BracketRight) => "keyDown.bracketRight",
         (WindowInputKind::KeyDown, WindowKey::Q) => "keyDown.q",
         (WindowInputKind::KeyDown, WindowKey::E) => "keyDown.e",
         (WindowInputKind::KeyDown, WindowKey::W) => "keyDown.w",
@@ -2631,6 +2635,10 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyUp, WindowKey::Digit6) => "keyUp.digit6",
         (WindowInputKind::KeyUp, WindowKey::Digit7) => "keyUp.digit7",
         (WindowInputKind::KeyUp, WindowKey::Digit8) => "keyUp.digit8",
+        (WindowInputKind::KeyUp, WindowKey::Digit9) => "keyUp.digit9",
+        (WindowInputKind::KeyUp, WindowKey::Digit0) => "keyUp.digit0",
+        (WindowInputKind::KeyUp, WindowKey::BracketLeft) => "keyUp.bracketLeft",
+        (WindowInputKind::KeyUp, WindowKey::BracketRight) => "keyUp.bracketRight",
         (WindowInputKind::KeyUp, WindowKey::Q) => "keyUp.q",
         (WindowInputKind::KeyUp, WindowKey::E) => "keyUp.e",
         (WindowInputKind::KeyUp, WindowKey::W) => "keyUp.w",
@@ -2773,7 +2781,7 @@ mod tests {
             .expected_coverage()
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
-        assert_eq!(WindowInput::surface_descriptor().len(), 33);
+        assert_eq!(WindowInput::surface_descriptor().len(), 41);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
             26

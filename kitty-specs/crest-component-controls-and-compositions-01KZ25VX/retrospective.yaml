@@ -1,0 +1,245 @@
+schema_version: 1
+mission_id: 01KZ25VXB55XTK6MS4Q4FH3V4C
+mission_slug: crest-component-controls-and-compositions-01KZ25VX
+mission_number: 3
+friendly_name: Crest Component Controls and Compositions
+mission_type: software-dev
+target_branch: feat/crest-component-controls-and-compositions
+created_at: '2026-08-03T22:32:15.276178+00:00'
+created_by:
+  kind: runtime
+  id: spec-kitty-generator
+  display: Spec Kitty Generator
+provenance:
+  kind: runtime_post_completion
+  invoked_at: '2026-08-03T22:32:15.276178+00:00'
+  policy_resolved_from:
+    enabled: <default>
+    timing: <default>
+    failure_policy: <default>
+    write_record: <default>
+    generate_proposals: <default>
+    apply_proposals: <default>
+    permissions.write_record: <default>
+    permissions.inspect_mission_artifacts: <default>
+    permissions.propose_glossary_changes: <default>
+    permissions.propose_drg_changes: <default>
+    permissions.propose_doctrine_changes: <default>
+    permissions.apply_low_risk_changes: <default>
+    permissions.apply_structural_changes: <default>
+    precedence: <default>
+    generator: <default>
+policy_source:
+  enabled: <default>
+  timing: <default>
+  failure_policy: <default>
+  write_record: <default>
+  generate_proposals: <default>
+  apply_proposals: <default>
+  permissions.write_record: <default>
+  permissions.inspect_mission_artifacts: <default>
+  permissions.propose_glossary_changes: <default>
+  permissions.propose_drg_changes: <default>
+  permissions.propose_doctrine_changes: <default>
+  permissions.apply_low_risk_changes: <default>
+  permissions.apply_structural_changes: <default>
+  precedence: <default>
+  generator: <default>
+findings_status: has_findings
+helped:
+- id: h-001
+  category: implementation
+  summary: WP01 completed without rejection cycles
+  evidence_refs:
+  - e-014
+- id: h-002
+  category: implementation
+  summary: WP02 completed without rejection cycles
+  evidence_refs:
+  - e-014
+- id: h-003
+  category: implementation
+  summary: WP05 completed without rejection cycles
+  evidence_refs:
+  - e-014
+- id: h-004
+  category: implementation
+  summary: WP07 completed without rejection cycles
+  evidence_refs:
+  - e-014
+- id: h-005
+  category: implementation
+  summary: WP08 completed without rejection cycles
+  evidence_refs:
+  - e-014
+not_helpful:
+- id: n-010
+  category: doc
+  summary: analysis-report.md present with findings
+  evidence_refs:
+  - e-025
+  details: An analysis-report.md artifact is present for this mission. Review its findings to understand documented 
+    issues and decisions.
+- id: n-006
+  category: implementation
+  summary: WP03 needed 2 implementation cycles
+  evidence_refs:
+  - e-021
+  details: WP WP03 entered in_progress 2 times. Multiple implementation cycles suggest rework not captured as a 
+    documented review rejection; the WP scope or contract may need refinement.
+- id: n-007
+  category: implementation
+  summary: WP04 needed 4 implementation cycles
+  evidence_refs:
+  - e-022
+  details: WP WP04 entered in_progress 4 times. Multiple implementation cycles suggest rework not captured as a 
+    documented review rejection; the WP scope or contract may need refinement.
+- id: n-008
+  category: implementation
+  summary: WP06 needed 2 implementation cycles
+  evidence_refs:
+  - e-023
+  details: WP WP06 entered in_progress 2 times. Multiple implementation cycles suggest rework not captured as a 
+    documented review rejection; the WP scope or contract may need refinement.
+- id: n-009
+  category: implementation
+  summary: WP09 needed 2 implementation cycles
+  evidence_refs:
+  - e-024
+  details: WP WP09 entered in_progress 2 times. Multiple implementation cycles suggest rework not captured as a 
+    documented review rejection; the WP scope or contract may need refinement.
+- id: n-005
+  category: process
+  summary: WP04 required 1 --force override(s) during workflow
+  evidence_refs:
+  - e-019
+  details: WP WP04 required 1 operator-driven --force lane transition(s). Force overrides typically indicate the runtime
+    guard failed or the operator routed around it; investigate the underlying cause.
+- id: n-001
+  category: review_loop
+  summary: WP03 required 1 rejection cycle(s) before approval
+  evidence_refs:
+  - e-015
+  details: WP WP03 was sent back from review to planning 1 time(s).
+- id: n-002
+  category: review_loop
+  summary: WP04 required 2 rejection cycle(s) before approval
+  evidence_refs:
+  - e-016
+  details: WP WP04 was sent back from review to planning 2 time(s).
+- id: n-003
+  category: review_loop
+  summary: WP06 required 1 rejection cycle(s) before approval
+  evidence_refs:
+  - e-017
+  details: WP WP06 was sent back from review to planning 1 time(s).
+- id: n-004
+  category: review_loop
+  summary: WP09 required 1 rejection cycle(s) before approval
+  evidence_refs:
+  - e-018
+  details: WP WP09 was sent back from review to planning 1 time(s).
+gaps:
+- id: g-002
+  category: doc
+  summary: data-model.md absent
+  evidence_refs:
+  - e-002
+  details: spec.md declares domain entities but data-model.md is missing. A data model document clarifies domain entity 
+    relationships.
+- id: g-001
+  category: process
+  summary: Arbiter override needed for WP04 (3x)
+  evidence_refs:
+  - e-020
+  details: WP WP04 required 3 arbiter override(s). Arbiter overrides are an escape hatch; recurring use suggests the 
+    normal review path is blocked and the underlying policy/guard may need adjustment.
+proposals: []
+evidence_refs:
+- id: e-001
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/meta.json
+- id: e-002
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/spec.md
+- id: e-003
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/plan.md
+- id: e-004
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks.md
+- id: e-005
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks/WP01-component-family-scaffold.md
+- id: e-006
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks/WP02-row-and-choice-controls.md
+- id: e-007
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks/WP03-continuous-and-modal-controls.md
+- id: e-008
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks/WP04-frame-compositions.md
+- id: e-009
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks/WP05-content-compositions.md
+- id: e-010
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks/WP06-adapter-reduction.md
+- id: e-011
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks/WP07-gallery-pages-and-silence.md
+- id: e-012
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks/WP08-deterministic-proof-and-corrections.md
+- id: e-013
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/tasks/WP09-mixer-strip-bank.md
+- id: e-014
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+- id: e-015
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: 01KZ2K3C8WRNTKT5AK71D1MS68
+- id: e-016
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: 01KZ2KJT7NAV0NP4E1ZT0Y450H..01KZ2T7DG4BARZD30BWX3DDYG7
+- id: e-017
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: 01KZ4J0CF0ATQTMA3Q0HQ72GNW
+- id: e-018
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: 01KZ4CVFF348D72A7X0Z7QFN59
+- id: e-019
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: 01KZ2YD7C35N0PX9AJXKVFN1BV
+- id: e-020
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: 01KZ2Y4CJDS6FTC3KYAJX9H5Z7..01KZ4TZT49000SWJ20E3ZVX191
+- id: e-021
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: implementation_cycles
+- id: e-022
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: implementation_cycles
+- id: e-023
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: implementation_cycles
+- id: e-024
+  kind: event_range
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/status.events.jsonl
+  range: implementation_cycles
+- id: e-025
+  kind: file
+  path: kitty-specs/crest-component-controls-and-compositions-01KZ25VX/analysis-report.md
+generator_version: '1.0'
+provenance_history: []

@@ -14,6 +14,10 @@
 //!
 //! Realizes `valueObject.Shell.ViewportDensityPolicy`.
 
+use crate::mixer::mixer_track_id::MixerTrackId;
+
+use super::token::MIN_INTERACTIVE_TARGET_PX;
+
 /// Which authored viewport a policy resolves.
 ///
 /// The set is closed at two. A third size is a design decision, not a code
@@ -151,6 +155,50 @@ pub struct ControlGeometry {
     pub bar_thickness_px: f32,
 }
 
+/// The geometry of one mixer track column in the main surface.
+///
+/// The mixer's main surface is not stacked, it is divided: the fixed sixteen
+/// track columns sit side by side across it. This is the declared result of
+/// that division, so no surface performs it for itself — a column that derived
+/// its own width from the main surface would be a second, competing answer to
+/// the question this value exists to answer.
+///
+/// The gutter between two columns is the difference between the pitch and the
+/// width, and it is the authored `space/4` at both policies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MixerColumnGeometry {
+    /// The width of one column, gutter excluded.
+    pub width_px: f32,
+    /// The distance between the left edges of two adjacent columns.
+    pub pitch_px: f32,
+    /// The width a column may never narrow past.
+    ///
+    /// A fader is grabbed on this axis, so it is an interactive target and the
+    /// floor is [`super::token::MIN_INTERACTIVE_TARGET_PX`] — read here rather
+    /// than restated, so the minimum has one home.
+    pub floor_px: f32,
+}
+
+impl MixerColumnGeometry {
+    /// The gutter between two adjacent columns.
+    ///
+    /// What is painted in it is a hairline; that the gutter is wide enough to
+    /// carry one is a property of the two authored values, not a third value.
+    pub const fn gutter_px(self) -> f32 {
+        self.pitch_px - self.width_px
+    }
+
+    /// The width the whole bank of sixteen columns occupies.
+    ///
+    /// Fifteen pitches plus one final column. Multiplying the pitch sixteen
+    /// times would claim a trailing gutter the bank never paints, and that
+    /// off-by-one gutter is the difference between fitting and not at the
+    /// compact viewport.
+    pub const fn bank_width_px(self) -> f32 {
+        self.pitch_px * (MixerTrackId::COUNT - 1) as f32 + self.width_px
+    }
+}
+
 impl ViewportDensityPolicy {
     /// Resolves a viewport width to the policy that governs it.
     ///
@@ -245,6 +293,72 @@ impl ViewportDensityPolicy {
         }
     }
 
+    /// Returns the geometry of one mixer track column.
+    ///
+    /// Desktop is transcribed, not derived. The design file's `16 Fader Grid`
+    /// (`42:25`) sits inside `Faders` (`42:20`, 1500 × 896) at the authored
+    /// inset, so its content is `1500 − 24 × 2 = 1452` px, and it holds sixteen
+    /// instances 82 px wide on an 86 px pitch:
+    ///
+    /// ```text
+    /// 15 × 86 + 82 = 1372 ≤ 1452
+    /// ```
+    ///
+    /// All sixteen already fit, so this policy keeps the measured values rather
+    /// than stretching them. The remaining 80 px is authored slack at the right
+    /// of the grid; dividing 1452 sixteen ways arrives at a 90.75 px pitch that
+    /// also fits and is nevertheless wrong, because it spends slack the design
+    /// left on purpose.
+    ///
+    /// The Steam Deck main surface is 960 px, so its content is
+    /// `960 − 16 × 2 = 928` px and the measured column overflows it
+    /// (`1372 > 928`). The declared rule is uniform narrowing — never a scroll,
+    /// never an elided track, never a third layout — so the width and the pitch
+    /// narrow together, holding the authored `space/4` gutter the desktop
+    /// measurement shows (`86 − 82`):
+    ///
+    /// ```text
+    /// 15 × 56 + 52 = 892 ≤ 928
+    /// ```
+    ///
+    /// The narrowing lands on 56 because that is a pitch this policy already
+    /// authors: it is both [`Self::rhythm`]'s row pitch and
+    /// [`Self::utility_control`]'s control pitch at this viewport, so the
+    /// compact column rides the compact viewport's own rhythm instead of
+    /// introducing a fourth number.
+    ///
+    /// Two tighter alternatives exist and neither is taken. Solving
+    /// `16w + 15 × 4 ≤ 928` gives `w ≤ 54.25`, so the tightest column is 54.25
+    /// wide on a 58.25 pitch — a fractional column whose bank is
+    /// `15 × 58.25 + 54.25 = 928.0`, consuming the surface exactly and leaving
+    /// nothing. Rounding it down gives the real competitor, 54 on a 58 pitch:
+    /// integral, above the floor, the same authored gutter, and
+    /// `15 × 58 + 54 = 924 ≤ 928`. It is rejected because 58 is a pitch this
+    /// policy authors nowhere, and the declared overflow rule is not
+    /// occupancy-maximizing — the crest-spec's "where they already fit it keeps
+    /// the measured values rather than stretching them" says the rule narrows
+    /// until sixteen seat, not until the surface is full.
+    ///
+    /// The 36 px this leaves over is **not** the same thing as the desktop
+    /// grid's 80 px. Desktop's is measured slack that exists in the design file;
+    /// this is residue from choosing a rhythm-aligned pitch. Those are the two
+    /// halves of [`PolicyProvenance`] and they stay distinguishable: this policy
+    /// is `AuthoredFromDesktopFrames`, and a tightest-fit value would make that
+    /// a misstatement. The resulting 52 px column stays above the authored
+    /// interactive floor, which is what makes the narrowing legitimate rather
+    /// than merely arithmetic.
+    pub const fn mixer_column(self) -> MixerColumnGeometry {
+        let (width_px, pitch_px) = match self {
+            Self::Desktop => (82.0, 86.0),
+            Self::SteamDeck => (52.0, 56.0),
+        };
+        MixerColumnGeometry {
+            width_px,
+            pitch_px,
+            floor_px: MIN_INTERACTIVE_TARGET_PX,
+        }
+    }
+
     /// Returns whether this policy was measured or authored.
     pub const fn provenance(self) -> PolicyProvenance {
         match self {
@@ -265,7 +379,7 @@ impl ViewportDensityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::visual::token::MIN_INTERACTIVE_TARGET_PX;
+    use crate::shell::visual::token::{SpacingStep, MIN_INTERACTIVE_TARGET_PX};
 
     /// Every interactive target this policy declares, for the minimum-target
     /// assertions. Spelled out rather than derived so a new interactive
@@ -454,6 +568,105 @@ mod tests {
                 policy.canonical_name()
             );
         }
+    }
+
+    /// Sixteen mixer columns and their gutters seat inside the main surface at
+    /// both policies.
+    ///
+    /// This is the declared allocate-don't-consume property, proven by a
+    /// validation rather than by review: a main surface too narrow to seat
+    /// sixteen is a typed visible failure, so it must fail here rather than
+    /// become a scroll at a call site.
+    #[test]
+    fn every_policy_seats_sixteen_mixer_columns_in_its_main_surface() {
+        for policy in ALL_DENSITY_POLICIES {
+            let content = policy.split().main_px - policy.rhythm().inset_px * 2.0;
+            assert!(
+                policy.mixer_column().bank_width_px() <= content,
+                "{} cannot seat {} mixer columns in {content} px; it needs {}",
+                policy.canonical_name(),
+                MixerTrackId::COUNT,
+                policy.mixer_column().bank_width_px()
+            );
+        }
+    }
+
+    /// No policy narrows a column past the authored interactive target.
+    ///
+    /// The floor is read from the token vocabulary rather than restated, so a
+    /// policy cannot declare a floor of its own to slip under.
+    #[test]
+    fn every_policy_holds_its_mixer_column_at_or_above_the_authored_floor() {
+        for policy in ALL_DENSITY_POLICIES {
+            let column = policy.mixer_column();
+            assert_eq!(
+                column.floor_px,
+                MIN_INTERACTIVE_TARGET_PX,
+                "{} declares a mixer-column floor of its own",
+                policy.canonical_name()
+            );
+            assert!(
+                column.width_px >= column.floor_px,
+                "{} narrows a mixer column to {} px, below the {} px floor",
+                policy.canonical_name(),
+                column.width_px,
+                column.floor_px
+            );
+        }
+    }
+
+    /// The desktop column reproduces the design file's grid exactly.
+    ///
+    /// `42:25` "16 Fader Grid" holds sixteen instances at width 82 on an 86 px
+    /// pitch inside 1452 px of content. This is the assertion that fails if the
+    /// column is ever "optimized" to divide the surface evenly: 90.75 px also
+    /// fits, and it consumes 80 px of slack the design authored.
+    #[test]
+    fn the_desktop_mixer_column_reproduces_the_measured_design_grid() {
+        let desktop = ViewportDensityPolicy::Desktop;
+        let column = desktop.mixer_column();
+        assert_eq!(column.width_px, 82.0);
+        assert_eq!(column.pitch_px, 86.0);
+        assert_eq!(column.bank_width_px(), 1_372.0);
+        let content = desktop.split().main_px - desktop.rhythm().inset_px * 2.0;
+        assert_eq!(content, 1_452.0);
+        assert!(
+            column.bank_width_px() < content,
+            "the desktop grid stopped leaving the authored slack at its right"
+        );
+    }
+
+    /// The gutter is the authored spacing step at both policies.
+    ///
+    /// Asserted against the step rather than against 4.0: the desktop
+    /// measurement and the compact narrowing agree on it because it is the same
+    /// authored value, not because two numbers happen to match.
+    #[test]
+    fn every_policy_separates_its_mixer_columns_by_the_authored_spacing_step() {
+        for policy in ALL_DENSITY_POLICIES {
+            assert_eq!(
+                policy.mixer_column().gutter_px(),
+                SpacingStep::S4.resolve(),
+                "{} does not separate its mixer columns by the authored step",
+                policy.canonical_name()
+            );
+        }
+    }
+
+    /// The compact column rides a pitch this policy already authors.
+    ///
+    /// This is the stated reason 52/56 is chosen over the tighter 54/58, so it
+    /// is held mechanically rather than left in prose: if the compact mixer
+    /// pitch ever stops matching the rhythm this viewport already lays content
+    /// on, the justification in `mixer_column`'s doc has stopped being true.
+    #[test]
+    fn the_compact_mixer_column_rides_a_pitch_this_policy_already_authors() {
+        let deck = ViewportDensityPolicy::SteamDeck;
+        assert_eq!(deck.mixer_column().pitch_px, deck.rhythm().row_pitch_px);
+        assert_eq!(
+            deck.mixer_column().pitch_px,
+            deck.utility_control().pitch_px
+        );
     }
 
     #[test]

@@ -1,0 +1,211 @@
+{
+  "version": 1,
+  "mission_slug": "crest-component-controls-and-compositions-01KZ25VX",
+  "mission_id": "01KZ25VXB55XTK6MS4Q4FH3V4C",
+  "mission_branch": "kitty/mission-crest-component-controls-and-compositions-01KZ25VX",
+  "target_branch": "feat/crest-component-controls-and-compositions",
+  "lanes": [
+    {
+      "lane_id": "lane-a",
+      "wp_ids": [
+        "WP01"
+      ],
+      "write_scope": [
+        "src/shell/visual/compositions/mod.rs",
+        "src/shell/visual/controls/mod.rs",
+        "src/shell/visual/mod.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "artifact-rendering",
+        "legacy-cleanup",
+        "workspace"
+      ],
+      "depends_on_lanes": [],
+      "parallel_group": 0
+    },
+    {
+      "lane_id": "lane-b",
+      "wp_ids": [
+        "WP02"
+      ],
+      "write_scope": [
+        "src/shell/visual/controls/browser_row.rs",
+        "src/shell/visual/controls/choice_row.rs",
+        "src/shell/visual/controls/parameter_row.rs",
+        "src/shell/visual/controls/toggle.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "legacy-cleanup"
+      ],
+      "depends_on_lanes": [
+        "lane-a"
+      ],
+      "parallel_group": 1
+    },
+    {
+      "lane_id": "lane-c",
+      "wp_ids": [
+        "WP03"
+      ],
+      "write_scope": [
+        "src/shell/visual/controls/compact_slider.rs",
+        "src/shell/visual/controls/fader.rs",
+        "src/shell/visual/controls/meter.rs",
+        "src/shell/visual/controls/modal_option.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "legacy-cleanup",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-a"
+      ],
+      "parallel_group": 1
+    },
+    {
+      "lane_id": "lane-d",
+      "wp_ids": [
+        "WP04"
+      ],
+      "write_scope": [
+        "src/shell/visual/compositions/application_shell.rs",
+        "src/shell/visual/compositions/context_switch.rs",
+        "src/shell/visual/compositions/footer.rs",
+        "src/shell/visual/compositions/identity_header.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-a"
+      ],
+      "parallel_group": 1
+    },
+    {
+      "lane_id": "lane-e",
+      "wp_ids": [
+        "WP05"
+      ],
+      "write_scope": [
+        "src/shell/visual/compositions/patch_strip_row.rs",
+        "src/shell/visual/compositions/section.rs",
+        "src/shell/visual/compositions/utility_inspector_panel.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-a",
+        "lane-b",
+        "lane-c"
+      ],
+      "parallel_group": 2
+    },
+    {
+      "lane_id": "lane-i",
+      "wp_ids": [
+        "WP09"
+      ],
+      "write_scope": [
+        "src/shell/visual/compositions/mixer_strip_bank.rs",
+        "src/shell/visual/density.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "legacy-cleanup",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-a",
+        "lane-c",
+        "lane-e"
+      ],
+      "parallel_group": 3
+    },
+    {
+      "lane_id": "lane-f",
+      "wp_ids": [
+        "WP06"
+      ],
+      "write_scope": [
+        "src/adapter/eframe_graphical_window.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "workspace"
+      ],
+      "depends_on_lanes": [
+        "lane-d",
+        "lane-e",
+        "lane-i"
+      ],
+      "parallel_group": 4
+    },
+    {
+      "lane_id": "lane-g",
+      "wp_ids": [
+        "WP07"
+      ],
+      "write_scope": [
+        "src/shell/window_input.rs",
+        "src/testing/component_gallery_scene.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "artifact-rendering",
+        "legacy-cleanup"
+      ],
+      "depends_on_lanes": [
+        "lane-b",
+        "lane-c",
+        "lane-d",
+        "lane-e",
+        "lane-i"
+      ],
+      "parallel_group": 4
+    },
+    {
+      "lane_id": "lane-h",
+      "wp_ids": [
+        "WP08"
+      ],
+      "write_scope": [
+        "DESIGN.md",
+        "ROADMAP.md",
+        "tests/component_composition.rs",
+        "tests/component_vocabulary.rs"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "app-shell",
+        "artifact-rendering",
+        "legacy-cleanup"
+      ],
+      "depends_on_lanes": [
+        "lane-f",
+        "lane-g"
+      ],
+      "parallel_group": 5
+    }
+  ],
+  "computed_at": "2026-08-03T04:15:37.812841+00:00",
+  "computed_from": "dependency_graph+ownership",
+  "planning_artifact_wps": []
+}

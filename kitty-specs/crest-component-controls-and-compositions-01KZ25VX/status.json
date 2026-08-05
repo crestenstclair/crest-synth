@@ -1,0 +1,111 @@
+{
+  "event_count": 94,
+  "last_event_id": "01KZ4W15KN433P63BPJC1M4SF6",
+  "materialized_at": "2026-08-03T22:31:09.685282+00:00",
+  "mission_number": "",
+  "mission_slug": "crest-component-controls-and-compositions-01KZ25VX",
+  "mission_type": "software-dev",
+  "summary": {
+    "approved": 0,
+    "blocked": 0,
+    "canceled": 0,
+    "claimed": 0,
+    "done": 9,
+    "for_review": 0,
+    "in_progress": 0,
+    "in_review": 0,
+    "planned": 0
+  },
+  "work_packages": {
+    "WP01": {
+      "actor": "merge",
+      "agent": "claude",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ4W0YB0WAJJXPRPS7YQSYSQ",
+      "last_transition_at": "2026-08-03T22:31:02.240474+00:00",
+      "shell_pid": 13826,
+      "shell_pid_created_at": "1785713482.260755"
+    },
+    "WP02": {
+      "actor": "merge",
+      "agent": "claude",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ4W0ZA66BBHFXVQ7B92YTGK",
+      "last_transition_at": "2026-08-03T22:31:03.239022+00:00",
+      "shell_pid": 54664,
+      "shell_pid_created_at": "1785716498.235304"
+    },
+    "WP03": {
+      "actor": "merge",
+      "agent": "claude",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ4W106TP0AWJ1DSEVTA9EYR",
+      "last_transition_at": "2026-08-03T22:31:04.154279+00:00",
+      "shell_pid": 30956,
+      "shell_pid_created_at": "1785719845.735586"
+    },
+    "WP04": {
+      "actor": "merge",
+      "agent": "claude",
+      "force_count": 2,
+      "lane": "done",
+      "last_event_id": "01KZ4W113PY67Q3V15T3NRXVC6",
+      "last_transition_at": "2026-08-03T22:31:05.078640+00:00",
+      "shell_pid": 22137,
+      "shell_pid_created_at": "1785730817.079627"
+    },
+    "WP05": {
+      "actor": "merge",
+      "agent": "claude",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ4W11ZWVQ4AQD9QC9HEP5RN",
+      "last_transition_at": "2026-08-03T22:31:05.980271+00:00",
+      "shell_pid": 1694,
+      "shell_pid_created_at": "1785725183.452981"
+    },
+    "WP06": {
+      "actor": "merge",
+      "agent": "claude",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ4W13S8RDA72FAT3NVW3EGF",
+      "last_transition_at": "2026-08-03T22:31:07.816228+00:00",
+      "shell_pid": 24109,
+      "shell_pid_created_at": "1785785819.336924"
+    },
+    "WP07": {
+      "actor": "merge",
+      "agent": "claude",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ4W14PM1CZPTPN9THB1Y705",
+      "last_transition_at": "2026-08-03T22:31:08.756204+00:00",
+      "shell_pid": 54629,
+      "shell_pid_created_at": "1785782414.161137"
+    },
+    "WP08": {
+      "actor": "merge",
+      "agent": "claude",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ4W15KN433P63BPJC1M4SF6",
+      "last_transition_at": "2026-08-03T22:31:09.685282+00:00",
+      "shell_pid": 87960,
+      "shell_pid_created_at": "1785790308.940151"
+    },
+    "WP09": {
+      "actor": "merge",
+      "agent": "claude",
+      "force_count": 0,
+      "lane": "done",
+      "last_event_id": "01KZ4W12WSSWWQFMTYP3F9S59N",
+      "last_transition_at": "2026-08-03T22:31:06.905554+00:00",
+      "shell_pid": 23879,
+      "shell_pid_created_at": "1785780486.230046"
+    }
+  }
+}

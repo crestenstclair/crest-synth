@@ -223,11 +223,14 @@ evidence:
   component_vocabulary_contract:
     kind: behavioral
     description: the authored vocabulary, vendored typeface, both density policies, the closed state set,
-      the production shell repaint, and the browsable gallery agree that every rendered value equals its
-      authored counterpart, that no literal survives outside the vocabulary, and that every declared state
-      and page is reachable and judgable at both authored viewports
+      the control and composition families, the recomposed production shell, and the browsable silent
+      gallery agree that every rendered value equals its authored counterpart, that no literal or visual
+      decision survives outside the vocabulary, that every control kind and shell region resolves to a
+      declared component, and that every declared state, control, composition, and page is reachable and
+      judgable at both authored viewports
     validations:
     - component_vocabulary
+    - component_composition
     - graphical_application_shell
     - egui_context
     - test

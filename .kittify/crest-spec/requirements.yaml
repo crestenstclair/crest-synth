@@ -1164,12 +1164,67 @@ requirements:
     capabilities:
     - component_vocabulary
     - one_way_parameter_control
+  configurable_control_family:
+    kind: functional
+    description: Every SemanticControlKind and presentation-role pair resolves to exactly one declared
+      ComponentControl — parameter row, choice row, toggle, compact slider, fader, meter, browser row,
+      or modal option — each presenting immutable view data in an explicit ComponentState, declaring which
+      states apply to it, and returning typed semantic intent rather than acting; the requesting composition
+      supplies the role, so a control never decides what it is
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - semantic_graphical_view_model
+  reusable_shell_compositions:
+    kind: functional
+    description: The application shell, context switch, identity header, section, Patch strip row, mixer
+      strip bank, Utility/Inspector panel, and footer exist as declared ShellCompositions that arrange
+      primitives and controls, resolve their geometry from ViewportDensityPolicy, and declare no visual
+      value of their own; the mixer strip bank arranges sixteen track columns rather than controls, so
+      it is a group of groups and not a section laid out sideways
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - graphical_application_shell
+  shell_composed_from_components:
+    kind: functional
+    description: The production window paints every region through a declared ShellComposition and every
+      control through a declared ComponentControl, so the render adapter carries window plumbing and event
+      translation only and holds no paint, layout, band-height, or state-visualization decision
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - graphical_application_shell
+  no_placeholder_values_in_production:
+    kind: nonfunctional
+    description: Where a composition's designed structure has no view data behind it, the production shell
+      omits that structure or marks it explicitly unavailable; representative content belongs to the gallery
+      and never to the shipped application, because a placeholder would misrepresent absent state as present
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - graphical_application_shell
   browsable_component_gallery:
     kind: functional
     description: One command opens a real browsable window whose locally bound digit keys select among
-      the declared gallery pages, rendering every declared ComponentState with representative content
-      at both authored viewports; page selection is scene-local and never becomes a SemanticAction or
-      reaches AppState
+      the first ten declared gallery pages and whose bidirectional stepping reaches every declared page,
+      rendering every declared ComponentState, ComponentControl, and ShellComposition with representative
+      content at both authored viewports; page selection is scene-local and never becomes a SemanticAction
+      or reaches AppState
+    goals:
+    - build_from_component_vocabulary
+    capabilities:
+    - component_vocabulary
+    - observable_demo_scene
+  silent_component_gallery:
+    kind: nonfunctional
+    description: The browsable gallery scene constructs no audio output and no MIDI event source and sounds
+      nothing; its silence is measured in the emitted observation rather than claimed, so the component
+      library is judged by sight alone and cannot quietly acquire an audio dependency
     goals:
     - build_from_component_vocabulary
     capabilities:
@@ -1177,10 +1232,10 @@ requirements:
     - observable_demo_scene
   component_vocabulary_behavioral_proof:
     kind: nonfunctional
-    description: Authored-value fidelity, literal absence, state coverage, page reachability, viewport
-      integrity, and typeface resolution are proven by measured comparison through the production render
-      path and a live gallery observation; construction-only tests, success-token logs, and pre-render
-      plans are not evidence
+    description: Authored-value fidelity, literal absence, state coverage, control and composition coverage,
+      page reachability, viewport integrity, typeface resolution, and gallery silence are proven by measured
+      comparison through the production render path and a live gallery observation; construction-only
+      tests, success-token logs, and pre-render plans are not evidence
     goals:
     - build_from_component_vocabulary
     capabilities:

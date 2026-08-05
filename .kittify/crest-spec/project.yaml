@@ -168,3 +168,4 @@ completion:
   - no_name_enumerated_identity
   - acceptance_matrix_covers_all_requirement_kinds
   - component_vocabulary
+  - component_composition

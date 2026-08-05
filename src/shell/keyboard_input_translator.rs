@@ -67,12 +67,12 @@ impl KeyboardInputTranslator {
             WindowKey::S => Direction::Down,
             WindowKey::A => Direction::Left,
             WindowKey::D => Direction::Right,
-            // `Digit3` through `Digit8` are normalized at the window boundary
-            // and bound nowhere here. A scene that pages a gallery binds them
-            // itself, scene-locally; routing them through the translator would
-            // make paging a semantic action, which it is not. An unbound digit
-            // therefore produces no action at all rather than an approximate
-            // one.
+            // `Digit3` through `Digit9`, `Digit0`, and the two bracket keys are
+            // normalized at the window boundary and bound nowhere here. A scene
+            // that pages a gallery binds them itself, scene-locally; routing
+            // them through the translator would make paging a semantic action,
+            // which it is not. An unbound key therefore produces no action at
+            // all rather than an approximate one.
             WindowKey::Digit1
             | WindowKey::Digit2
             | WindowKey::Digit3
@@ -81,6 +81,10 @@ impl KeyboardInputTranslator {
             | WindowKey::Digit6
             | WindowKey::Digit7
             | WindowKey::Digit8
+            | WindowKey::Digit9
+            | WindowKey::Digit0
+            | WindowKey::BracketLeft
+            | WindowKey::BracketRight
             | WindowKey::Q
             | WindowKey::E
             | WindowKey::K
@@ -110,14 +114,22 @@ mod tests {
         (WindowKey::D, Direction::Right),
     ];
 
-    /// The digits the window normalizes and this translator binds to nothing.
-    const UNBOUND_DIGITS: [WindowKey; 6] = [
+    /// The keys the window normalizes and this translator binds to nothing.
+    ///
+    /// The four the gallery added — `Digit9`, `Digit0`, and the two brackets —
+    /// are here for the same reason the six digits are: normalizing a key so a
+    /// scene may bind it locally must not give it an application meaning.
+    const UNBOUND_DIGITS: [WindowKey; 10] = [
         WindowKey::Digit3,
         WindowKey::Digit4,
         WindowKey::Digit5,
         WindowKey::Digit6,
         WindowKey::Digit7,
         WindowKey::Digit8,
+        WindowKey::Digit9,
+        WindowKey::Digit0,
+        WindowKey::BracketLeft,
+        WindowKey::BracketRight,
     ];
 
     #[test]

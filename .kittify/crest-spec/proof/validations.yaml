@@ -39,8 +39,49 @@ projectValidations:
     description: the production render path proves every authored color, type style, spacing step, and
       geometry value equals its authored counterpart, that no literal survives outside the vocabulary,
       that both density policies retain every band and the authored minimum target, that the state set
-      is exhaustively matched and never color-only, that every gallery page has exactly one digit binding,
-      and that an unavailable typeface fails typed rather than substituting a face
+      is exhaustively matched and never color-only, that every gallery page is reachable by binding or
+      by stepping, and that an unavailable typeface fails typed rather than substituting a face
+  component_composition:
+    scope: project
+    kind: integration
+    command:
+    - cargo
+    - test
+    - --test
+    - component_composition
+    - --
+    - --nocapture
+    assertions:
+    - type: exit-code
+      equals: 0
+    - type: stdout-contains
+      value: CREST_ACCEPTANCE component_composition passed
+    timeout: 180s
+    resources:
+    - ComponentControl
+    - ShellComposition
+    - ComponentState
+    - ComponentGalleryPage
+    - ViewportDensityPolicy
+    - GraphicalShellProjection
+    - SemanticControlViewModel
+    - AppWindow
+    - EframeGraphicalWindow
+    - ComponentCompositionAcceptanceTests
+    capabilities:
+    - component_vocabulary
+    - graphical_application_shell
+    goals:
+    - build_from_component_vocabulary
+    - use_graphical_shell
+    description: the production render path proves selection is total over SemanticControlKind and presentation
+      role together with every declared control reachable, that each control renders every state it declares
+      applicable with text or shape beyond color, that every region the shipped window shows is produced
+      by a declared composition, that the
+      render adapter holds no paint, layout, band-height, or state-visualization decision, that a composition
+      with no view data omits or marks the gap rather than painting a placeholder, that no control or
+      composition owns application state, and that both authored viewports keep every band and the authored
+      minimum target after recomposition
   engine_selection_workflow:
     scope: project
     kind: integration

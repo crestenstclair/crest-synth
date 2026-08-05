@@ -1,0 +1,376 @@
+{
+  "mission_slug": "crest-component-controls-and-compositions-01KZ25VX",
+  "mission_number": "",
+  "mission_type": "software-dev",
+  "overall_verdict": "pass",
+  "criteria": [
+    {
+      "criterion_id": "FR-001",
+      "description": "Configurable control family \u2014 every declared (SemanticControlKind, PresentationRole) pair resolves to exactly one ComponentControl, and every control is reachable by at least one pair.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::selection_is_total_over_kind_and_role_with_every_control_reachable, plus ::every_drivable_pair_paints_through_the_production_render_path. control_for is one exhaustive match on the tuple with no `_` arm; 28 pairs, 25 resolving to a control and 3 to an explicit typed refusal. WP01's review verified the compile-error property in both directions: a fifth PresentationRole and an eighth SemanticControlKind each produce E0004 naming the uncovered pairs.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "18 of the 25 askable pairs are drivable with production-projected data; Stepped and Surface are production-unprojected, so the remaining 7 are named and pinned rather than covered by a fabricated view model. The projected-kind set is asserted exactly, so a change forces the sweep to be revisited."
+    },
+    {
+      "criterion_id": "FR-002",
+      "description": "Product control shapes \u2014 parameter rows, choice rows, toggles, compact sliders, faders, meters, browser rows, and modal options render as their designed shapes.",
+      "proof_type": "automated_test",
+      "evidence": "All eight controls exist as separate modules under src/shell/visual/controls/ and are reached only through control_for. tests/component_composition.rs::every_drivable_pair_paints_through_the_production_render_path asserts each paints. research.md R-02 compliance verified by review: no egui::Slider, ProgressBar, Checkbox, or SelectableLabel is used for appearance anywhere.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Three shapes have NO authored Figma specimen and ship as flagged minimums: the toggle, the choice-row adjacency affordance, and the meter. Confirmed absent by two independent node-type censuses of the whole Screens page. Recorded as F-01; this is an open product decision, not an implementation gap."
+    },
+    {
+      "criterion_id": "FR-003",
+      "description": "Nine-state rendering per control \u2014 every applicable ComponentState carries both its authored color treatment and its authored NonColorSignal.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::every_control_paints_every_applicable_state_without_relying_on_color. Each control additionally carries a pairwise assertion that no two applicable states produce identical evidence with color excluded. Mutation-verified by WP03's reviewer: stripping Selected's non-color evidence failed all four pairwise assertions by name.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Applicability is declared per control rather than assumed over the full cross product, and a non-applicable state is declared rather than merely absent."
+    },
+    {
+      "criterion_id": "FR-004",
+      "description": "Reusable composition family \u2014 the shell regions are available as shared compositions.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::every_shipped_region_is_produced_by_a_declared_composition. ShellComposition is closed at eight and exhaustively matched at region(); adding a variant is a compile error.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "The family grew from seven to eight mid-mission. Implementation proved it incomplete: paint_mixer_workspace landed nowhere, because a Section at VerticalStrip is one track column and nothing composed the bank of sixteen. The crest-spec was amended first (MixerStripBank), then WP09 derived from it. The cheaper alternative \u2014 a layout axis on Section \u2014 was tested and rejected: Section's entries are typed &[SemanticControlViewModel], i.e. controls, while a bank's entries are columns, and a column is itself a Section."
+    },
+    {
+      "criterion_id": "FR-005",
+      "description": "The production shell composes from the library.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::every_shipped_region_is_produced_by_a_declared_composition drives the real EframeGraphicalApplication::update. paint_shell iterates application_shell::frame_plan_for, builds the panel each placement names, and hands the band to arrange_band.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Verified by eye as well as by test: the orchestrator ran the app at both contexts and confirmed the frame is composed, all sixteen mixer columns seat with no scroll, and the track cards are gone."
+    },
+    {
+      "criterion_id": "FR-006",
+      "description": "The render adapter holds no visual decisions.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::no_visual_decision_survives_outside_the_visual_module, with three supporting tests proving the guard reads the delivered tree, reports a planted decision, and allows what the vocabulary permits. Mutation-verified: a Color32::from_rgb planted in the adapter and, separately, in src/testing/component_gallery_scene.rs each fail the same test by file and line.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "The guard is repo-wide in FILE coverage (130 sources, 82,372 lines, exactly one excluded subtree) but not in CONSTRUCT coverage: Vec2::new, vec2(), and a bare f32 band extent are not yet needles. The tree is clean of those forms today \u2014 verified by grep across src/ \u2014 so this is a completeness gap, not a concealed violation."
+    },
+    {
+      "criterion_id": "FR-007",
+      "description": "The gallery covers controls and compositions.",
+      "proof_type": "automated_test",
+      "evidence": "Fifteen gallery pages: 8 vocabulary + 4 control pages + 3 composition pages, with MixerStripBank joining the existing StripPanelAndFooter page. tests/component_vocabulary.rs asserts coverage as exact set equality over ALL_COMPONENT_CONTROLS and ALL_SHELL_COMPOSITIONS.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Set equality, not a count: WP07's reviewer confirmed that skipping the Toggle fails with left={7 controls} vs right={8}, the identical failure a ninth declared variant with no specimen would produce."
+    },
+    {
+      "criterion_id": "FR-008",
+      "description": "Coverage assertion over the closed unions.",
+      "proof_type": "automated_test",
+      "evidence": "The coverage assertion is generic over the declared families rather than a hardcoded total, so a ninth variant fails rather than passing at 8-of-9. Mutation-verified by WP07's reviewer: removing one painted specimen drops the coverage counts and fails by name.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "This form was chosen deliberately over a count. F-14 records why: in this mission a count failed to catch a hairline moved to the wrong position, and a containment check passed a fabricated value."
+    },
+    {
+      "criterion_id": "FR-009",
+      "description": "Components own no application state.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::no_component_owns_caches_or_dispatches_application_state. The check has a source half and a runtime half that are independent: an AtomicU32 render counter, deliberately absent from the source guard's needle list, was caught by the runtime half alone ('ParameterRow paints differently on a second identical render').",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "The runtime half currently covers controls but not compositions. Recorded for mission review."
+    },
+    {
+      "criterion_id": "FR-010",
+      "description": "Both viewports resolve from declared density policies.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::both_authored_viewports_survive_recomposition. Every band height, split, inset, and the mixer column geometry resolve through ViewportDensityPolicy; no composition or control reads a raw viewport size.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "WP09 added ViewportDensityPolicy::mixer_column() so the adapter's invented MIXER_TRACK_MIN_WIDTH_PX = 176.0 could be deleted rather than relocated."
+    },
+    {
+      "criterion_id": "FR-011",
+      "description": "Figma-authored appearance.",
+      "proof_type": "manual_review",
+      "evidence": "Each control and composition was authored against its Figma specimen and reviewed against the live design file, not against a report. The load-bearing measurement was independently re-verified twice: node 42:25 holds sixteen Fader instances at width 82, pitch 86, gutter 4, inside 1452 px of content, so 15x86+82 = 1372 <= 1452.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "That measurement retired a real shipped defect: MIXER_TRACK_MIN_WIDTH_PX = 176.0 is 2.15x the authored width, and 16x176 = 2816 > 1500 was the only reason the horizontal ScrollArea existed. It was compensating for an invented constant, not carrying load. DESIGN.md:462 requires all sixteen faders visible at 1920x1080; they now are. Remaining divergences are recorded (F-11) and are cleanup, not gates, per operator direction."
+    },
+    {
+      "criterion_id": "FR-012",
+      "description": "Additive gallery page vocabulary \u2014 Phase 4a's eight pages and their digit bindings preserved exactly.",
+      "proof_type": "automated_test",
+      "evidence": "T037's frozen baseline pins the eight pre-existing digit bindings. Mutation-verified by WP07's reviewer: swapping Digit3 and Digit4 fails exactly ONE test, the frozen-baseline one \u2014 the ordered-equality signature. A containment check would have passed it.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Four keys were added (Digit9, Digit0, BracketLeft, BracketRight) with the WindowInput descriptor count moving 33 to 41 in the same change, as the invariant requires."
+    },
+    {
+      "criterion_id": "FR-013",
+      "description": "DESIGN.md names all nine non-color-signalled states.",
+      "proof_type": "manual_review",
+      "evidence": "DESIGN.md:576 previously named six states while ComponentState has held nine since Phase 4a. Corrected in WP08 (T046).",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "This was finding A10 of the Phase 4a analysis report, folded in under DIRECTIVE_025 rather than filed away."
+    },
+    {
+      "criterion_id": "FR-014",
+      "description": "ROADMAP amendment recorded.",
+      "proof_type": "manual_review",
+      "evidence": "ROADMAP.md's component-library demo bullet is amended in place to state what Phase 4 actually delivered: a hand-browsable gallery, no MIDI fixture, no audio.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "WP08 deliberately did NOT amend the program-level 'live-demo requirement for every phase' rule from inside one phase's entry, recording the contradiction instead. Its reviewer ruled that restraint correct, noting the cross-reference is one-directional and one pointer line at ROADMAP.md:9-20 would close it."
+    },
+    {
+      "criterion_id": "NFR-001",
+      "description": "Gallery opens promptly.",
+      "proof_type": "manual_review",
+      "evidence": "Operator-judged by direction, not machine-enforced. The orchestrator launched the shell binary directly and it presented its first painted frame without perceptible wait.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Recorded in spec.md as operator-judged with the reasoning: instrumenting it would add duration fields to ComponentGalleryObservation, a structural crest-spec change made after crest-spec authoring closed, to serve two numbers on a scene the operator already watches. C-007 bounds that out."
+    },
+    {
+      "criterion_id": "NFR-002",
+      "description": "Page changes feel immediate.",
+      "proof_type": "manual_review",
+      "evidence": "Operator-judged. Context switching in the running shell was immediate with no perceptible lag; the gallery's page stepping was exercised across all fifteen pages in two full runs by WP07.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Same operator-judged rationale as NFR-001."
+    },
+    {
+      "criterion_id": "NFR-003",
+      "description": "Render adapter size reduction.",
+      "proof_type": "automated_test",
+      "evidence": "src/adapter/eframe_graphical_window.rs is 740 lines: 497 production span (366 code, 101 comment, 30 blank) and a 243-line #[cfg(test)] module byte-identical to base. Production span went 1,039 -> 497, a 52% reduction, asserted as a no-regression ceiling at ADAPTER_PRODUCTION_LINE_CEILING in tests/component_composition.rs.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "THE STATED NUMBER IS NOT MET AND CANNOT BE. NFR-003 asked for <=512, i.e. 40% of 1,282 \u2014 but that figure counted the adapter's own 243-line test module, which NFR-005 forbids touching. The floor is 595 at zero comments and zero blank lines, so NFR-003 and NFR-005 are in direct arithmetic conflict. Two independent reviews ruled it mis-specified rather than failed, and no line-count work was asked for. Graded pass on the measure the requirement meant \u2014 the production span \u2014 with the literal shortfall stated here rather than hidden. A reader who needs the literal number should treat this as unmet."
+    },
+    {
+      "criterion_id": "NFR-004",
+      "description": "No visual literals outside the visual module.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::no_visual_decision_survives_outside_the_visual_module, with three supporting tests. Mutation-verified: a planted Color32::from_rgb in the adapter and, separately, in src/testing/component_gallery_scene.rs each fail by file and line. Corpus 130 sources / 82,372 lines, exactly one excluded subtree.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Repo-wide in FILE coverage but not yet in CONSTRUCT coverage: Vec2::new, vec2(), and a bare f32 band extent are not needles. The tree was grepped and is clean of those forms today, so this is a completeness gap rather than a concealed violation. Originally scoped to the adapter alone; widened during analysis (finding A2) to the scope NFR-004 actually states."
+    },
+    {
+      "criterion_id": "NFR-005",
+      "description": "Existing suite unbroken, no existing test modified to accommodate the mission.",
+      "proof_type": "automated_test",
+      "evidence": "893 passed / 0 failed / 1 ignored on the merged target, against baselines each work package measured by stashing.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "tests/component_vocabulary.rs is the one existing test file this mission may modify, sanctioned by T045 because the crest-spec deliberately changed the rule it encodes. WP07's reviewer proved the edit forced by restoring the mission-branch copy and getting two hard type errors (E0308, E0277) plus a runtime assert made false by the fifteen-variant page union. The 1 ignored test is a deliberate forward tripwire."
+    },
+    {
+      "criterion_id": "NFR-006",
+      "description": "The demo scene plays nothing.",
+      "proof_type": "manual_review",
+      "evidence": "The component gallery scene constructs no audio output and no MIDI event source. WP07 ran it live twice; no CoreAudio IO thread, zero audio frames in a sampled call graph, zero audio device handles.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "SCOPE CORRECTION (operator, 2026-08-03): this was originally graded as a provable silence property. That escalation was the orchestrator's and is the proof-about-proof layer C-007 forbids. What is required is that the scene plays nothing. No audible confirmation is owed and none is claimed."
+    },
+    {
+      "criterion_id": "C-001",
+      "description": "No MIDI, no audio.",
+      "proof_type": "manual_review",
+      "evidence": "No MIDI fixture, no audio device, no note events, and no audible behavior in any scene, test, or demo target this mission adds.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "See NFR-006's correction. C-001 constrains what gets built, not what must be proven about it."
+    },
+    {
+      "criterion_id": "C-002",
+      "description": "No semantic vocabulary changes.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::no_component_owns_caches_or_dispatches_application_state. No SemanticAction variant, focus target, or reducer behavior added.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Four WindowInput key variants were added \u2014 normalized physical keys, not semantic vocabulary. Two gaps were declared rather than closed by extending the projection: T009's choice-boundary criterion (F-05) and the mixer meter's level (F-10 item 9)."
+    },
+    {
+      "criterion_id": "C-003",
+      "description": "No invented values in the production shell.",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs::a_composition_with_no_view_data_marks_the_gap_rather_than_painting_one. Mutation-verified: painting '0.000' for the mark fails by name.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "Visible in the shipped product \u2014 the PATCH Utility panel renders MASTER VOLUME, MIDI INPUT and VOICE LIMIT as the declared unavailable marker. T027 (F-10) lists the ten designed structures the projection does not drive; that list is Phase 5's declared input."
+    },
+    {
+      "criterion_id": "C-004",
+      "description": "Closed unions stay closed and exhaustive.",
+      "proof_type": "automated_test",
+      "evidence": "Every family is a closed enum matched exhaustively with no `_` arm. Proven at merge as well as by test: adding MixerStripBank produced E0004 at application_shell.rs:422, naming the site that had to change.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "The same property retired both scaffold stubs \u2014 paints_nothing and arranges_nothing each became unreachable once every arm resolved to a real module, failing clippy -D warnings at the cross-lane merge, a result no single lane could observe."
+    },
+    {
+      "criterion_id": "C-005",
+      "description": "Crest owns the component API.",
+      "proof_type": "automated_test",
+      "evidence": "research.md R-02 enforced: everything paints through Painter over an allocated Response. No egui::Slider, ProgressBar, Checkbox, or SelectableLabel used for appearance, verified by grep in every control review.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "The reason is NFR-004: a styled egui widget hides a visual literal inside egui::Style where the guard cannot see it."
+    },
+    {
+      "criterion_id": "C-006",
+      "description": "Phase 4a artifacts are additive-only.",
+      "proof_type": "automated_test",
+      "evidence": "The eight pre-existing gallery pages and their digit bindings are pinned by T037's frozen baseline; a Digit3/Digit4 swap fails exactly one test. Tokens, typeface, density policies and primitives were consumed, not revised.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "ViewportDensityPolicy gained mixer_column(), which is additive and was declared in the crest-spec before the code existed."
+    },
+    {
+      "criterion_id": "C-007",
+      "description": "No mission-artifact proof work.",
+      "proof_type": "manual_review",
+      "evidence": "The acceptance target contains no check of another check. The words 'silence', 'audible', and 'audioOrMidiConstructed' do not appear in it.",
+      "pass_fail": "pass",
+      "verified_by": "claude (orchestrator), on evidence re-run independently by each work package's reviewer",
+      "verified_at": "2026-08-03T00:00:00Z",
+      "notes": "BREACHED ONCE DURING THE MISSION, BY THE ORCHESTRATOR, as the invented silence-proof requirement \u2014 retracted before WP08 was dispatched, and no proof-about-proof layer shipped."
+    }
+  ],
+  "negative_invariants": [
+    {
+      "invariant_id": "C-001",
+      "description": "No MIDI, no audio anywhere in this slice.",
+      "evidence": "The component demo scene constructs no audio output and no MIDI event source, so running it plays nothing. No audio device is opened and no MIDI fixture is loaded.",
+      "notes": "SCOPE CORRECTION (operator, 2026-08-03): an earlier reading of this mission inflated 'no sound in the UI' into a measured, provable silence property with witness predicates and source-scan derivations. That escalation was the orchestrator's and is exactly the proof-about-proof layer C-007 forbids. What is required is that the scene plays nothing; no proof of silence is owed.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition -- --nocapture"
+    },
+    {
+      "invariant_id": "C-002",
+      "description": "No new semantic vocabulary: no SemanticAction variant, no focus target, no reducer behavior.",
+      "evidence": "tests/component_composition.rs::no_component_owns_caches_or_dispatches_application_state asserts no control or composition dispatches a SemanticAction; ControlIntent is returned and never converted inside the visual module.",
+      "notes": "Four WindowInput key variants were added, which are normalized physical keys rather than semantic vocabulary. Two gaps were declared rather than closed by extending the projection: T009's choice-boundary criterion (F-05) and the mixer meter's level (F-10 item 9).",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition no_component_owns_caches_or_dispatches_application_state"
+    },
+    {
+      "invariant_id": "C-003",
+      "description": "No invented values in the production shell \u2014 omit or mark explicitly unavailable, never fabricate.",
+      "evidence": "tests/component_composition.rs::a_composition_with_no_view_data_marks_the_gap_rather_than_painting_one. mark_unavailable paints the declared marker plus the missing structure's name, never an empty string or a zero. Mutation-verified: painting '0.000' for the mark fails by name.",
+      "notes": "Visible in the shipped product: the PATCH Utility panel renders MASTER VOLUME, MIDI INPUT and VOICE LIMIT as the declared unavailable marker. T027 (F-10) records the ten designed structures the projection does not drive; that list is Phase 5's declared input.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition a_composition_with_no_view_data_marks_the_gap_rather_than_painting_one"
+    },
+    {
+      "invariant_id": "C-004",
+      "description": "Closed unions stay closed and exhaustively matched.",
+      "evidence": "Every family is a closed enum matched exhaustively with no `_` arm. Proven at merge rather than only by test: adding MixerStripBank produced E0004 at application_shell.rs:422, naming the site that had to change.",
+      "notes": "The same property retired both scaffold stubs. paints_nothing and arranges_nothing each became unreachable once every arm resolved to a real module, failing clippy -D warnings on dead code at the cross-lane merge \u2014 a result no single lane could observe.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo clippy --all-targets -- -D warnings"
+    },
+    {
+      "invariant_id": "C-005",
+      "description": "Crest owns the component API; third-party egui utilities may be used underneath.",
+      "evidence": "research.md R-02 is enforced: everything paints through Painter over an allocated Response. No egui::Slider, ProgressBar, Checkbox, or SelectableLabel is used for appearance, verified by grep in every control review.",
+      "notes": "The reason is NFR-004: a styled egui widget hides a visual literal inside egui::Style, where the guard cannot see it.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition every_drivable_pair_paints_through_the_production_render_path"
+    },
+    {
+      "invariant_id": "C-006",
+      "description": "Phase 4a artifacts are additive-only.",
+      "evidence": "The eight pre-existing gallery pages and their digit bindings are pinned by T037's frozen baseline. Tokens, typeface, density policies, and primitives were consumed, not revised.",
+      "notes": "ViewportDensityPolicy gained mixer_column(), which is additive and was declared in the crest-spec before the code existed.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_vocabulary"
+    },
+    {
+      "invariant_id": "C-007",
+      "description": "No mission-artifact proof work \u2014 this mission proves the library exists and is used, and builds no layer that verifies the verification.",
+      "evidence": "The acceptance target contains no check of another check. The words 'silence', 'audible', and 'audioOrMidiConstructed' do not appear in it.",
+      "notes": "C-007 was breached once during the mission, by the orchestrator, in the form of the invented silence-proof requirement. It was retracted before WP08 was dispatched and no proof-about-proof layer shipped.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test --test component_composition -- --nocapture"
+    },
+    {
+      "invariant_id": "NFR-005",
+      "description": "The existing suite passes with zero failures and no existing shell, projection, or focus test modified to accommodate this mission.",
+      "evidence": "893 passed / 0 failed / 1 ignored on the final lane, against a baseline measured by stashing. tests/component_vocabulary.rs is the one existing test file this mission may modify, sanctioned by T045 because the crest-spec deliberately changed the rule it encodes; WP07's reviewer proved the edit forced by restoring the mission-branch copy and getting two hard type errors (E0308, E0277) plus a runtime assert made false by the fifteen-variant page union.",
+      "notes": "The 1 ignored test is a deliberate forward-looking tripwire asserting what should become true when an unowned fixture is repaired.",
+      "result": "confirmed_absent",
+      "verified_ref": "5a16b535a696b18cc959061ca249756c2a8f1885",
+      "verified_surface_kind": "primary",
+      "provenance_origin": "recorded",
+      "verification_method": "custom_command",
+      "verification_command": "cargo test"
+    }
+  ]
+}
