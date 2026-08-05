@@ -1,5 +1,4 @@
 {
-  "accept_commit": "fa612294f33e747bc3b2228ae980a57fd30a4c99",
   "acceptance_history": [
     {
       "accept_commit": "fa612294f33e747bc3b2228ae980a57fd30a4c99",
@@ -7,12 +6,18 @@
       "accepted_at": "2026-08-05T21:30:33.284489+00:00",
       "accepted_by": "crestenstclair",
       "accepted_from_commit": "0d31f3f041d82446d3245738b3abf1cdd3ade3ca"
+    },
+    {
+      "acceptance_mode": "pr",
+      "accepted_at": "2026-08-05T22:54:34.383264+00:00",
+      "accepted_by": "crestenstclair",
+      "accepted_from_commit": "f6393f76df29d77e40639bff29914500ab24674a"
     }
   ],
   "acceptance_mode": "pr",
-  "accepted_at": "2026-08-05T21:30:33.284489+00:00",
+  "accepted_at": "2026-08-05T22:54:34.383264+00:00",
   "accepted_by": "crestenstclair",
-  "accepted_from_commit": "0d31f3f041d82446d3245738b3abf1cdd3ade3ca",
+  "accepted_from_commit": "f6393f76df29d77e40639bff29914500ab24674a",
   "baseline_merge_commit": "aedcafde732a96aa756a71b8fb8d12aa61497255",
   "coordination_branch": "kitty/mission-webview-shell-foundation-01KZ9DN7",
   "created_at": "2026-08-05T16:56:10.798806+00:00",
