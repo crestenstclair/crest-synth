@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crest Synth — webview mixer spike</title>
+<style>
+  /* ---- authored tokens, verbatim from src/shell/visual/token.rs ---- */
+  :root {
+    --bg-canvas:   #0c1015;
+    --bg-surface:  #121821;
+    --bg-panel:    #17202a;
+    --bg-elevated: #1d2733;
+    --bg-selected: #2a3745;
+    --border-default: #2a3745;
+    --border-strong:  #415166;
+    --text-primary:   #f2f6f8;
+    --text-secondary: #b8c4d1;
+    --text-muted:     #6f8095;
+    --accent-focus:    #65e5ff;
+    --accent-adjust:   #ffb454;
+    --accent-positive: #58e887;
+    --accent-warning:  #ff6868;
+    --accent-patch:    #ff6fbe;
+
+    --space-4: 4px; --space-8: 8px; --space-12: 12px;
+    --space-16: 16px; --space-24: 24px; --space-32: 32px;
+    --radius-small: 4px; --radius-large: 8px;
+
+    /* mixer column, from the design specimen (82 px column, 86 px pitch) */
+    --column-width: 82px;
+    --column-gutter: var(--space-4);
+    --fader-track: 14px;
+    --fader-fill: 8px;
+  }
+  @font-face { font-family: Azeret; src: url(AzeretMono-Regular.ttf);  font-weight: 400; }
+  @font-face { font-family: Azeret; src: url(AzeretMono-Medium.ttf);   font-weight: 500; }
+  @font-face { font-family: Azeret; src: url(AzeretMono-SemiBold.ttf); font-weight: 600; }
+  @font-face { font-family: Azeret; src: url(AzeretMono-Bold.ttf);     font-weight: 700; }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: Azeret, monospace;
+    display: flex; flex-direction: column;
+  }
+
+  /* ---- authored type styles ---- */
+  .display   { font-size: 32px; line-height: 40px; font-weight: 600; letter-spacing: .4px; }
+  .heading   { font-size: 18px; line-height: 24px; font-weight: 600; letter-spacing: 1.4px; }
+  .label     { font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: .8px; }
+  .value     { font-size: 14px; line-height: 20px; font-weight: 600; letter-spacing: .2px; }
+  .hint      { font-size: 11px; line-height: 16px; font-weight: 500; letter-spacing: .8px; }
+
+  .muted     { color: var(--text-muted); }
+  .secondary { color: var(--text-secondary); }
+  .focus     { color: var(--accent-focus); }
+  .positive  { color: var(--accent-positive); }
+  .adjust    { color: var(--accent-adjust); }
+  .patch     { color: var(--accent-patch); }
+
+  /* ---- frame bands ---- */
+  header.context {
+    display: flex; align-items: center; gap: var(--space-24);
+    padding: var(--space-12) var(--space-24);
+    border-bottom: 1px solid var(--border-default);
+  }
+  header.context .spring { flex: 1; }
+  header.identity {
+    display: flex; align-items: baseline; gap: var(--space-12);
+    padding: var(--space-12) var(--space-24);
+    border-bottom: 1px solid var(--border-default);
+  }
+  header.identity .spring { flex: 1; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  .workspace {
+    flex: 1; display: flex; flex-direction: column;
+    padding: var(--space-16) var(--space-24);
+  }
+  .caption-row, .hint-row {
+    display: flex; align-items: center; gap: var(--space-16);
+  }
+  .caption-row .spring, .hint-row .spring { flex: 1; }
+  .hint-row { padding-top: var(--space-12); border-top: 1px solid var(--border-default); }
+
+  /* ---- the sixteen columns: one grid rule replaces the density policy ---- */
+  .bank {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(16, minmax(48px, var(--column-width)));
+    column-gap: var(--column-gutter);
+    margin: var(--space-16) 0;
+    min-height: 0;
+  }
+  .column {
+    display: flex; flex-direction: column; align-items: center;
+    padding: var(--space-8) 0 var(--space-12);
+    border-right: 1px solid var(--border-default);
+  }
+  .column:first-child { border-left: 1px solid var(--border-default); }
+  .column.focused {
+    background: var(--bg-panel);
+    border-left: 3px solid var(--accent-focus);
+    box-shadow: 0 0 8px 1px rgba(101, 229, 255, .28);
+  }
+
+  .fader {
+    flex: 1; width: var(--fader-track);
+    background: var(--bg-elevated); border-radius: var(--radius-small);
+    margin: var(--space-8) 0;
+    display: flex; flex-direction: column-reverse; align-items: center;
+    position: relative;
+  }
+  .fader .fill {
+    width: var(--fader-fill);
+    background: var(--fill-color, var(--accent-patch));
+    border-radius: 2px;
+    margin-bottom: 3px; /* the specimen's 3 px shoulder */
+  }
+  .fader .cap {
+    position: absolute;
+    width: 34px; height: 6px; border-radius: 2px;
+    background: var(--text-primary);
+    left: 50%; transform: translateX(-50%);
+  }
+
+  /* ---- persistent side region ---- */
+  aside.inspector {
+    width: 420px;
+    border-left: 1px solid var(--border-default);
+    padding: var(--space-16) var(--space-24);
+    display: flex; flex-direction: column; gap: var(--space-12);
+  }
+  aside.inspector .big { font-size: 48px; line-height: 56px; font-weight: 700; }
+  aside.inspector .rule { border-top: 1px solid var(--border-default); }
+  aside.inspector table { border-collapse: collapse; }
+  aside.inspector td { padding: 2px var(--space-16) 2px 0; }
+
+  footer {
+    display: flex; align-items: center; gap: var(--space-24);
+    padding: var(--space-12) var(--space-24);
+    border-top: 1px solid var(--border-default);
+  }
+  footer .spring { flex: 1; }
+</style>
+</head>
+<body>
+<script src="view-model.js"></script>
+<script>
+const vm = VIEW_MODEL;
+const surfaces = Object.fromEntries(vm.surfaces.map(s => [s.id, s]));
+const main = surfaces.mixerMain, inspector = surfaces.mixerInspector;
+
+// group the flat control list into sixteen columns by track id
+const tracks = new Map();
+for (const c of main.controls) {
+  const id = c.path.controlId.id;
+  if (id.kind !== "track") continue;
+  if (!tracks.has(id.track_id)) tracks.set(id.track_id, {});
+  tracks.get(id.track_id)[id.parameter] = c;
+}
+
+const norm = c => (c.value.value - c.numericRange.minimum) /
+                  (c.numericRange.maximum - c.numericRange.minimum);
+const hex  = c => Math.round(norm(c) * 127).toString(16).toUpperCase().padStart(2, "0");
+const isOn = c => c.value.value === true || c.value.value === 1;
+
+function fillClass(col) {
+  if (col.level.focused) return "var(--accent-focus)";
+  if (isOn(col.mute))    return "var(--accent-warning)";
+  if (isOn(col.solo))    return "var(--accent-positive)";
+  return "var(--accent-patch)";
+}
+const panMark = c => { const n = norm(c); return n < .45 ? "L" : n > .55 ? "R" : "C"; };
+
+document.body.insertAdjacentHTML("beforeend", `
+  <header class="context">
+    <span class="heading">CREST SYNTH</span><span class="spring"></span>
+    <span class="label muted">PATCH</span>
+    <span class="label"><span class="patch">*</span> <span class="focus">MIXER</span></span>
+    <span class="label positive">${vm.status.label}</span>
+  </header>
+  <header class="identity">
+    <span class="display">MIXER</span>
+    <span class="label muted">/ 16 TRACKS</span><span class="spring"></span>
+    <span class="value focus">${vm.focusPath.controlId.id.kind === "track"
+      ? `T${vm.focusPath.controlId.id.track_id.toString(16).toUpperCase().padStart(2,"0")} / ${vm.focusPath.controlId.id.parameter.toUpperCase()}` : ""}</span>
+  </header>
+  <main>
+    <section class="workspace">
+      <div class="caption-row">
+        <span class="label muted">LEVEL / PAN / MUTE / SOLO</span><span class="spring"></span>
+        <span class="hint focus">L/R:track</span><span class="hint focus">U/D:control</span>
+      </div>
+      <div class="bank">
+        ${[...tracks.entries()].map(([tid, col]) => `
+          <div class="column ${col.level.focused ? "focused" : ""}">
+            <span class="label ${col.level.focused ? "focus" : "secondary"}">
+              T${tid.toString(16).toUpperCase().padStart(2,"0")}</span>
+            <div class="fader">
+              <div class="fill" style="--fill-color:${fillClass(col)}; height:${(norm(col.level)*100).toFixed(1)}%"></div>
+              <div class="cap" style="bottom:${(norm(col.level)*100).toFixed(1)}%"></div>
+            </div>
+            <span class="value ${col.level.focused ? "focus" : "patch"}">${hex(col.level)}</span>
+            <span class="hint muted" style="margin-top: var(--space-8)">
+              P ${panMark(col.pan)}${isOn(col.mute) ? " · M ON" : ""}${isOn(col.solo) ? " · S ON" : ""}</span>
+          </div>`).join("")}
+      </div>
+      <div class="hint-row">
+        <span class="hint focus">EDIT+L/R fine</span>
+        <span class="hint adjust">EDIT+U/D coarse</span><span class="spring"></span>
+        <span class="hint focus">EDIT:toggle</span>
+      </div>
+    </section>
+    <aside class="inspector">
+      <span class="label muted">CURSOR</span>
+      <span class="value focus">T00 / ${vm.focusPath.controlId.id.parameter.toUpperCase()}</span>
+      <span class="big positive">${hex(tracks.get(0).level)}</span>
+      <span class="hint muted">LEVEL 00 — 7F</span>
+      <div class="rule"></div>
+      <table class="hint secondary">
+        <tr><td>MUTE</td><td>${isOn(tracks.get(0).mute) ? "ON" : "OFF"}</td></tr>
+        <tr><td>SOLO</td><td>${isOn(tracks.get(0).solo) ? "ON" : "OFF"}</td></tr>
+      </table>
+      <div class="rule"></div>
+      <table class="hint secondary">
+        ${inspector.controls.filter(c => c.path.controlId.id.track_id === 0).slice(0, 4)
+          .map(c => `<tr><td>${c.label.replace("T00 ", "").toUpperCase()}</td><td>${hex(c)}</td></tr>`).join("")}
+      </table>
+      <span class="hint muted">EDIT toggles Mute/Solo.<br>SHIFT+UP returns to Patch.<br>SELECT enters multi-select.</span>
+    </aside>
+  </main>
+  <footer>
+    <span class="hint secondary">MIXER / T00 / ${vm.focusPath.controlId.id.parameter.toUpperCase()}</span>
+    <span class="spring"></span>
+    ${vm.validActions.filter(a => a.hint).slice(2, 8).map(a =>
+      `<span class="hint focus">${a.hint}:${a.label.replace("Move ", "").toLowerCase()}</span>`).join("")}
+  </footer>
+`);
+</script>
+</body>
+</html>
