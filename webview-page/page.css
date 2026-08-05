@@ -1,0 +1,378 @@
+/* crest-synth MIXER projection page composition
+ * (crest-spec asset.WebviewProjectionPage).
+ *
+ * Every color, type style, spacing step, radius, keyline, halo, and mixer
+ * geometry value resolves from the generated tokens.css custom properties —
+ * this file declares no raw value the authored vocabulary already names.
+ * The one declared exception is the block immediately below.
+ */
+
+/* ---- Page-side authored constants ------------------------------------
+ * The fader specimen geometry from the authored design (DESIGN.md /
+ * figma mixer-faders.png) is not part of the Rust visual vocabulary, so it
+ * is declared here as custom properties rather than scattered literals:
+ * 14 px track, 8 px fill, 3 px bottom shoulder, 34×6 px cap, 2 px fill and
+ * cap rounding. Everything else in this file resolves from tokens.css.
+ */
+:root {
+  --fader-track-width: 14px;
+  --fader-fill-width: 8px;
+  --fader-shoulder: 3px;
+  --fader-cap-width: 34px;
+  --fader-cap-height: 6px;
+  --fader-rounding: 2px;
+}
+
+/* Vendored Azeret Mono faces, served over the crest:// protocol from
+ * vendor/azeret-mono/. Deliberately no fallback stack: a missing face is a
+ * visible failure, never a silently substituted font
+ * (crest-spec asset.WebviewProjectionPage). */
+@font-face {
+  font-family: "Azeret Mono";
+  src: url("fonts/AzeretMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "Azeret Mono";
+  src: url("fonts/AzeretMono-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "Azeret Mono";
+  src: url("fonts/AzeretMono-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+}
+@font-face {
+  font-family: "Azeret Mono";
+  src: url("fonts/AzeretMono-Bold.ttf") format("truetype");
+  font-weight: 700;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg-canvas);
+  color: var(--color-text-primary);
+  font-family: "Azeret Mono";
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---- authored type styles (from the generated table) ------------------ */
+
+.type-display {
+  font-size: var(--type-display-screen-size);
+  line-height: var(--type-display-screen-line);
+  font-weight: var(--type-display-screen-weight);
+  letter-spacing: var(--type-display-screen-tracking);
+}
+
+.type-heading {
+  font-size: var(--type-heading-section-size);
+  line-height: var(--type-heading-section-line);
+  font-weight: var(--type-heading-section-weight);
+  letter-spacing: var(--type-heading-section-tracking);
+}
+
+.type-label {
+  font-size: var(--type-label-control-size);
+  line-height: var(--type-label-control-line);
+  font-weight: var(--type-label-control-weight);
+  letter-spacing: var(--type-label-control-tracking);
+}
+
+.type-value {
+  font-size: var(--type-code-value-size);
+  line-height: var(--type-code-value-line);
+  font-weight: var(--type-code-value-weight);
+  letter-spacing: var(--type-code-value-tracking);
+}
+
+.type-hint {
+  font-size: var(--type-instruction-hint-size);
+  line-height: var(--type-instruction-hint-line);
+  font-weight: var(--type-instruction-hint-weight);
+  letter-spacing: var(--type-instruction-hint-tracking);
+}
+
+/* ---- semantic color roles --------------------------------------------- */
+
+.muted {
+  color: var(--color-text-muted);
+}
+
+.secondary {
+  color: var(--color-text-secondary);
+}
+
+.focus {
+  color: var(--color-accent-focus);
+}
+
+.positive {
+  color: var(--color-accent-positive);
+}
+
+.adjust {
+  color: var(--color-accent-adjust);
+}
+
+.warning {
+  color: var(--color-accent-warning);
+}
+
+.patch {
+  color: var(--color-accent-patch);
+}
+
+.spring {
+  flex: 1;
+}
+
+/* ---- the five shell bands --------------------------------------------- */
+
+#context-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-24);
+  padding: var(--space-12) var(--space-24);
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+}
+
+#context-line .context-entry {
+  min-width: var(--space-32);
+  text-align: right;
+}
+
+#identity-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-12);
+  padding: var(--space-12) var(--space-24);
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+}
+
+#main-region {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+#workspace {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-16) var(--space-24);
+}
+
+.caption-row,
+.hint-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+}
+
+/* The focused track's meter reading rides the legend line as a painter
+ * would: absolutely centered, taking no layout space from the row. */
+.caption-row .meter {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.hint-row {
+  padding-top: var(--space-12);
+  border-top: var(--keyline-resting) solid var(--color-border-default);
+}
+
+/* ---- the sixteen-column strip bank ------------------------------------
+ * The authored desktop geometry (82 px column on an 86 px pitch) narrows
+ * uniformly — width and pitch together — down to the declared interactive
+ * floor, never scrolling and never eliding a track. The gutter is the
+ * declared pitch minus the declared width. */
+
+.bank {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(
+    16,
+    minmax(var(--mixer-column-floor-desktop), var(--mixer-column-width-desktop))
+  );
+  column-gap: calc(
+    var(--mixer-column-pitch-desktop) - var(--mixer-column-width-desktop)
+  );
+  margin: var(--space-16) 0;
+  min-height: 0;
+}
+
+.bank.bank-unavailable {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* One column = the declared five-structure anatomy in order: TrackHeader,
+ * LevelFader, LevelReadout, PanReadout, StateLine. Channels are separated
+ * by hairlines, not cards. */
+.column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  padding: var(--space-8) 0 var(--space-12);
+  border-right: var(--keyline-resting) solid var(--color-border-default);
+}
+
+.column:first-child {
+  border-left: var(--keyline-resting) solid var(--color-border-default);
+}
+
+/* Focused column: emphasis keyline plus the authored halo — focus is also
+ * carried by the header emphasis and the Inspector cursor, never by color
+ * alone. */
+.column.focused {
+  background: var(--color-bg-panel);
+  border-left: var(--keyline-emphasis) solid var(--color-accent-focus);
+  box-shadow: 0 0 var(--focus-halo-radius) var(--focus-halo-spread)
+    color-mix(
+      in srgb,
+      var(--color-accent-focus) calc(var(--focus-halo-opacity) * 100%),
+      transparent
+    );
+}
+
+/* LevelFader — the dominant structure at both authored viewports. */
+.level-fader {
+  flex: 1;
+  align-self: stretch;
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  margin: var(--space-8) 0;
+}
+
+.level-fader.unavailable {
+  align-items: center;
+}
+
+.fader-track {
+  position: relative;
+  width: var(--fader-track-width);
+  height: 100%;
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-small);
+}
+
+.fader-fill {
+  position: absolute;
+  bottom: var(--fader-shoulder);
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--fader-fill-width);
+  height: calc(var(--level, 0) * (100% - var(--fader-shoulder)));
+  border-radius: var(--fader-rounding);
+  background: var(--color-accent-patch);
+}
+
+.fader-cap {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--fader-cap-width);
+  height: var(--fader-cap-height);
+  border-radius: var(--fader-rounding);
+  background: var(--color-text-primary);
+  bottom: calc(
+    var(--fader-shoulder) +
+      (100% - var(--fader-shoulder) - var(--fader-cap-height)) *
+      var(--level, 0)
+  );
+}
+
+/* Fill color by state; each state is also carried by text or shape (the
+ * StateLine marks, the keyline, the disabled dimming of the whole column). */
+.level-fader[data-state="focused"] .fader-fill {
+  background: var(--color-accent-focus);
+}
+
+.level-fader[data-state="muted"] .fader-fill {
+  background: var(--color-accent-warning);
+}
+
+.level-fader[data-state="soloed"] .fader-fill {
+  background: var(--color-accent-positive);
+}
+
+.level-fader[data-state="error"] .fader-fill {
+  background: var(--color-accent-warning);
+}
+
+.level-fader[data-state="disabled"] .fader-fill {
+  background: var(--color-border-strong);
+}
+
+.pan-readout {
+  margin-top: var(--space-8);
+}
+
+.state-line {
+  margin-top: var(--space-4);
+}
+
+/* ---- the persistent Inspector ------------------------------------------
+ * Width resolves from the vocabulary's declared surface split: the desktop
+ * side region when the viewport carries it, narrowed toward — and never
+ * below — the deck's 320 px side region (T021: >= 320 px at 1280×800).
+ * 100vw minus the desktop main width reproduces both authored splits
+ * exactly at the two authored viewports. */
+#inspector {
+  width: clamp(
+    var(--surface-split-side-steam-deck),
+    calc(100vw - var(--surface-split-main-desktop)),
+    var(--surface-split-side-desktop)
+  );
+  flex-shrink: 0;
+  border-left: var(--keyline-resting) solid var(--color-border-default);
+  padding: var(--space-16) var(--space-24);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  overflow: hidden;
+}
+
+#inspector .big-readout {
+  font-weight: var(--type-heading-panel-weight);
+}
+
+#inspector .rule {
+  border-top: var(--keyline-resting) solid var(--color-border-default);
+}
+
+#inspector table {
+  border-collapse: collapse;
+  align-self: start;
+}
+
+#inspector td {
+  padding: calc(var(--space-4) / 2) var(--space-16) calc(var(--space-4) / 2) 0;
+}
+
+#footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-24);
+  padding: var(--space-12) var(--space-24);
+  border-top: var(--keyline-resting) solid var(--color-border-default);
+}

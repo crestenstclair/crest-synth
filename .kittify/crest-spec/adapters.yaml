@@ -152,6 +152,49 @@ adapters:
         tick
       semantic_graphical_view_model: renders the canonical multi-layout model and emits only its semantic
         actions
+  TauriWebviewWindow:
+    implements: AppWindow
+    layer: infrastructure
+    profile:
+      kind: ui
+      surfaces:
+      - keyboard
+      - context_line
+      - identity_header
+      - main_workspace
+      - utility_or_inspector
+      - footer
+    meta:
+      framework: tauri v2 (wry system webview)
+      rules:
+      - is an explicitly selected peer of EframeGraphicalWindow behind the same AppWindow contract; egui
+        remains the default shell and selecting the webview shell is a launch-time decision, never a
+        fallback
+      - push each accepted GraphicalShellProjection to the page as the serde serialization of its embedded
+        SemanticGraphicalViewModel — one schema, no webview-specific variant — and push decimated latest-value
+        AudioObservationSnapshot meter frames separately; neither channel carries mutable state, and
+        lost meter frames degrade display only
+      - the page is a projection surface — it renders the received document deterministically, holds
+        no state between documents beyond presentation-only animation, captures no input, and invents
+        no field
+      - normalize physical key presses, releases, and focus loss on the Rust side through the same KeyboardInputTranslator
+        path the eframe window uses; the webview DOM receives no input responsibility
+      - resolve every color, type style, spacing step, and geometry value in the page from a token table
+        generated from the authored Rust vocabulary; a hand-copied or drifted value is a defect, and
+        the generation is part of the build, not a manual step
+      - webview or page initialization failure is a typed startup error that ends the process; render
+        this mission's MIXER context only, with PATCH and modals arriving in a successor mission
+      - window close drives the same owned shutdown as the egui shell — stream release, worker completion,
+        graph ownership collection, normal exit — and adds no work to the real-time callback
+    contributesTo:
+      graphical_application_shell: renders the authored MIXER composition through a webview projection
+        surface while the shell's structural bands and passivity are unchanged
+      semantic_graphical_view_model: consumes the one serialized canonical model and introduces no second
+        schema of it
+      sixteen_track_mixer_routing: animates the sixteen fixed meters from decimated latest-value observations
+        without feeding them back into domain state
+      one_way_parameter_control: keeps the disposable webview outside application state with input normalized
+        on the Rust side
   CpalAudioOutput:
     implements: AudioOutput
     layer: infrastructure

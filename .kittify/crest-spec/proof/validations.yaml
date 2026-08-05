@@ -5,6 +5,39 @@ defaults:
     stdoutBytes: 8388608
     stderrBytes: 8388608
 projectValidations:
+  webview_projection_shell:
+    scope: project
+    kind: integration
+    command:
+    - cargo
+    - test
+    - --test
+    - webview_projection_shell
+    - --
+    - --nocapture
+    assertions:
+    - type: exit-code
+      equals: 0
+    - type: stdout-contains
+      value: CREST_ACCEPTANCE webview_projection_shell passed
+    timeout: 300s
+    resources:
+    - TauriWebviewWindow
+    - GraphicalShellProjection
+    - StateProjector
+    - AppWindow
+    - KeyboardInputTranslator
+    - WebviewProjectionShellAcceptanceTests
+    capabilities:
+    - graphical_application_shell
+    - semantic_graphical_view_model
+    goals:
+    - use_graphical_shell
+    description: the webview shell proves serialized-projection fidelity (page document byte-identical
+      to the projector's serialization), token-table generation freshness against the authored vocabulary,
+      deterministic page rendering of a given document at both authored viewports, typed startup failure
+      with no silent shell fallback, Rust-side input ownership, and the same owned shutdown observations
+      as the eframe shell
   component_vocabulary:
     scope: project
     kind: integration

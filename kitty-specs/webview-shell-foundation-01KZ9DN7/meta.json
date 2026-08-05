@@ -1,0 +1,42 @@
+{
+  "accept_commit": "6e7470a9794d2a384e86f33e5159c8579a1290ba",
+  "acceptance_history": [
+    {
+      "accept_commit": "fa612294f33e747bc3b2228ae980a57fd30a4c99",
+      "acceptance_mode": "pr",
+      "accepted_at": "2026-08-05T21:30:33.284489+00:00",
+      "accepted_by": "crestenstclair",
+      "accepted_from_commit": "0d31f3f041d82446d3245738b3abf1cdd3ade3ca"
+    },
+    {
+      "accept_commit": "6e7470a9794d2a384e86f33e5159c8579a1290ba",
+      "acceptance_mode": "pr",
+      "accepted_at": "2026-08-05T22:54:34.383264+00:00",
+      "accepted_by": "crestenstclair",
+      "accepted_from_commit": "f6393f76df29d77e40639bff29914500ab24674a"
+    }
+  ],
+  "acceptance_mode": "pr",
+  "accepted_at": "2026-08-05T22:54:34.383264+00:00",
+  "accepted_by": "crestenstclair",
+  "accepted_from_commit": "f6393f76df29d77e40639bff29914500ab24674a",
+  "baseline_merge_commit": "aedcafde732a96aa756a71b8fb8d12aa61497255",
+  "coordination_branch": "kitty/mission-webview-shell-foundation-01KZ9DN7",
+  "created_at": "2026-08-05T16:56:10.798806+00:00",
+  "crest_spec_impact": "structural",
+  "flattened": false,
+  "friendly_name": "Webview Shell Foundation",
+  "mission_id": "01KZ9DN7SDDFNYYYVC74XT21QG",
+  "mission_number": null,
+  "mission_slug": "webview-shell-foundation-01KZ9DN7",
+  "mission_type": "software-dev",
+  "pr_bound": true,
+  "purpose_context": "Building the controller-first UI by hand-painting every rect in egui has cost far more effort than the design warrants; a one-day spike (spike/webview-mixer, Op 01KZ9CN8E0YEMQEZQG8Q7VEESM) rendered the full authored MIXER screen from the production SemanticGraphicalViewModel JSON in 244 lines of HTML/CSS, replacing the density-policy arithmetic with one CSS grid rule. This mission makes that real: a Tauri v2 window whose webview renders the MIXER context at authored-design parity — projection, focus, adjustment, meters — while physical input capture, the reducer, and the real-time audio boundaries stay exactly where DESIGN.md puts them. The webview is a projection surface only; the egui shell remains the running default behind a flag. PATCH, modals, and egui retirement follow in a successor mission.",
+  "purpose_tldr": "Replace the hand-painted egui rendering of the MIXER screen with a Tauri webview projection surface fed by the existing semantic view model, behind a flag, with egui still the default.",
+  "slug": "webview-shell-foundation-01KZ9DN7",
+  "status_phase": "1",
+  "target_branch": "feat/webview-shell-foundation",
+  "topology": "coord",
+  "vcs": "git",
+  "vcs_locked_at": "2026-08-05T17:40:54.980455+00:00"
+}

@@ -1,0 +1,1861 @@
+{
+  "version": "3.0",
+  "scope": {
+    "mode": "mission",
+    "mission": "webview-shell-foundation-01KZ9DN7"
+  },
+  "root": "/Users/crestenstclair/workspace/crest-synth",
+  "applicable": true,
+  "passed": true,
+  "gates": {
+    "crest_spec": {
+      "status": "passed",
+      "root": "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec",
+      "files": [
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/actors.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/adapters.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/assets.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/capabilities.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/contexts/control.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/contexts/kernel.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/contexts/mixer.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/contexts/realtime.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/contexts/shell.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/contexts/synth.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/contexts/testing.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/goals.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/project.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/proof/evidence.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/proof/invariants.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/proof/validations.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/proof/witnesses.yaml",
+        "/Users/crestenstclair/workspace/crest-synth/.kittify/crest-spec/requirements.yaml"
+      ],
+      "diagnostics": []
+    },
+    "validations": {
+      "status": "passed",
+      "declaredProjectChecks": 31,
+      "applicableAttachedTests": 0,
+      "applicableAttachedRuntimeSessions": 0,
+      "resolved": 31,
+      "executed": 31,
+      "diagnostics": []
+    }
+  },
+  "checks": [
+    {
+      "id": "validation.format",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.format",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 835,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.clippy",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.clippy",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "clippy",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 17402,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.29s\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.test",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.test",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--all-targets"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 281989,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 832 tests\ntest adapter::atomic_audio_observation::tests::concrete_handles_are_send_and_keep_narrow_capabilities ... ok\ntest adapter::braids_native::tests::index_model_and_chunk_failures_are_typed_before_native_dispatch ... ok\ntest adapter::braids_native::tests::bank_owns_exactly_sixteen_initialized_voices_and_native_lifecycle ... ok\ntest adapter::braids_preparer::tests::braids_preparer_requires_exact_rate_config_and_frame_capacity ... ok\ntest adapter::atomic_audio_observation::tests::atomic_audio_observation_is_latest_wins_and_coherent ... ok\ntest adapter::braids_capability::tests::braids_capability_declares_all_playable_models_and_exact_scalar_shape ... ok\ntest adapter::corridors_midi_event_source::tests::corridors_midi_event_source_reports_malformed_data_clearly ... ok\ntest adapter::braids_capability::tests::braids_config_is_canonical_and_never_substitutes_bad_values ... ok\ntest adapter::cpal_audio_output::tests::adapter_implements_the_audio_output_port ... ok\ntest adapter::braids_preparer::tests::overlapping_notes_release_independently_and_midi_expression_is_local ... ok\ntest adapter::braids_preparer::tests::idle_first_then_oldest_stealing_is_patch_local_and_all_notes_off_is_bounded ... ok\ntest adapter::corridors_midi_event_source::tests::corridors_midi_event_source_rejects_channel_exhaustion ... ok\ntest adapter::braids_preparer::tests::braids_preparer_owns_one_bank_and_renders_finite_nonzero_audio_in_24_sample_chunks ... ok\ntest adapter::cpal_audio_output::tests::conversion_chunks_are_bounded_stereo_sample_storage ... ok\ntest adapter::cpal_audio_output::tests::preferred_default_does_not_require_optional_range_enumeration ... ok\ntest adapter::cpal_audio_output::tests::stereo_samples_fill_first_two_channels_and_silence_surplus_channels ... ok\ntest adapter::cpal_audio_output::tests::valid_default_survives_optional_range_query_failure ... ok\ntest adapter::cpal_audio_output::tests::non_f32_conversion_is_finite_and_bounded ... ok\ntest adapter::delay_capability::tests::declares_exactly_milliseconds_and_feedback_with_retired_global_values ... ok\ntest adapter::delay_capability::tests::declares_no_return_level_and_no_role_marker ... ok\ntest adapter::delay_capability::tests::default_config_is_valid_without_any_role_hint ... ok\ntest adapter::delay_preparer::tests::preparation_refusals_are_typed_and_publish_no_instance ... ok\ntest adapter::delay_preparer::tests::delayed_stereo_feedback_matches_the_retired_behavior ... ok\ntest adapter::delay_preparer::tests::process_rejects_mismatched_layouts_without_touching_audio ... ok\ntest adapter::delay_preparer::tests::one_entry_prepares_into_both_roles_with_independent_instances ... ok\ntest adapter::delay_preparer::tests::zero_input_cannot_create_a_wet_return ... ok\ntest adapter::eframe_graphical_window::tests::graphical_window_delegates_direct_context_keys ... ok\ntest adapter::delay_preparer::tests::the_complete_declared_delay_range_is_prepared_without_truncation ... ok\ntest adapter::eframe_graphical_window::tests::graphical_window_delegates_every_direction_to_the_shared_translator ... ok\ntest adapter::cpal_audio_output::tests::cpal_runtime_errors_map_without_formatting_or_allocation ... ok\ntest adapter::cpal_audio_output::tests::every_supported_pcm_format_has_a_canonical_configuration_value ... ok\ntest adapter::cpal_audio_output::tests::failed_default_and_range_queries_remain_one_actionable_error ... ok\ntest adapter::delay_capability::tests::maximum_delay_requirement_covers_the_complete_declared_range ... ok\ntest adapter::eframe_graphical_window::tests::graphical_window_default_uses_the_product_name ... ok\ntest adapter::braids_preparer::tests::model_timbre_and_color_each_change_the_native_render ... ok\ntest adapter::eframe_graphical_window::tests::graphical_window_normalizes_focus_loss_and_ignores_other_events ... ok\ntest adapter::eframe_graphical_window::tests::graphical_window_delegates_release_and_focus_reset_without_private_state ... ok\ntest adapter::eframe_graphical_window::tests::graphical_window_normalizes_the_complete_key_vocabulary ... ok\ntest adapter::eframe_graphical_window::tests::graphical_window_normalizes_the_unbound_digits_without_binding_them ... ok\ntest adapter::eframe_graphical_window::tests::graphical_window_resolves_the_desktop_bands_it_used_to_carry ... ok\ntest adapter::eframe_graphical_window::tests::graphical_window_uses_the_two_reference_side_widths ... ok\ntest adapter::atomic_audio_observation::tests::atomic_audio_observation_never_tears_concurrent_snapshots ... ok\ntest adapter::lock_free_audio_boundary::tests::bounded_commands_remain_fifo_and_return_rejected_values ... ok\ntest adapter::lock_free_audio_boundary::tests::concrete_handles_are_send_but_keep_distinct_capabilities ... ok\ntest adapter::lock_free_audio_boundary::tests::parameter_publication_is_latest_wins_and_complete ... ok\ntest adapter::lock_free_structural_graph_boundary::tests::boundary_rejects_zero_queue_capacities ... ok\ntest adapter::corridors_midi_event_source::tests::corridors_midi_event_source_prepares_multiple_stable_parts ... ok\ntest adapter::corridors_midi_event_source::tests::corridors_midi_event_source_drains_delayed_input_in_bounded_ordered_batches ... ok\ntest adapter::lock_free_structural_graph_boundary::tests::status_is_latest_wins_coherent_and_never_backpressures_audio ... ok\ntest adapter::production_effects::tests::default_bus_returns_occupy_zero_and_one_and_leave_the_rest_empty ... ok\ntest adapter::production_effects::tests::default_occupancy_prepares_reverb_and_delay_with_their_descriptor_defaults ... ok\ntest adapter::production_effects::tests::every_production_entry_prepares_from_its_descriptor_defaults ... ok\ntest adapter::corridors_midi_event_source::tests::corridors_midi_event_source_runs_once_and_rewrites_target_channels ... ok\ntest adapter::production_effects::tests::providers_and_preparers_stay_paired ... ok\ntest adapter::production_effects::tests::global_effects_parameter_sensitivity ... ok\ntest adapter::production_effects::tests::registry_installs_chorus_reverb_and_delay_in_stable_order ... ok\ntest adapter::production_effects::tests::startup_returns_split_is_strict_for_production_and_permissive_for_tests ... ok\ntest adapter::production_effects::tests::racked_default_returns_match_the_retired_processor_sample_for_sample ... ok\ntest adapter::reverb_capability::tests::declares_exactly_room_size_and_damping_with_retired_global_values ... ok\ntest adapter::reverb_capability::tests::declares_no_return_level_and_no_role_marker ... ok\ntest adapter::reverb_capability::tests::default_config_is_valid_without_any_role_hint ... ok\ntest adapter::reverb_preparer::tests::one_entry_prepares_into_both_roles_with_independent_instances ... ok\ntest adapter::reverb_preparer::tests::preparation_refusals_are_typed_and_publish_no_instance ... ok\ntest adapter::reverb_preparer::tests::process_rejects_mismatched_layouts_without_touching_audio ... ok\ntest adapter::reverb_preparer::tests::wet_excitation_derives_only_from_the_declared_input ... ok\ntest adapter::reverb_preparer::tests::zero_input_cannot_create_a_wet_return ... ok\ntest adapter::hidef_soundfont_asset::tests::fixed_asset_is_parsed_once_into_sorted_control_and_numeric_projections ... ok\ntest control::app_event::tests::all_direction_payloads_are_explicit_and_copyable ... ok\ntest control::app_event::tests::context_event_preserves_its_semantic_payload ... ok\ntest control::app_event::tests::install_event_preserves_patch_order_payload ... ok\ntest control::app_event::tests::midi_event_preserves_its_typed_target_and_message ... ok\ntest control::app_event::tests::navigate_and_adjust_retain_their_semantic_direction ... ok\ntest control::app_event::tests::surface_descriptor_is_unique_and_exhaustive ... ok\ntest adapter::hidef_soundfont_capability::tests::hidef_soundfont_capability_declares_the_exact_catalog_backed_schema ... ok\ntest adapter::hidef_soundfont_capability::tests::hidef_soundfont_capability_validates_exact_preset_and_locked_asset ... ok\ntest adapter::hidef_soundfont_preparer::tests::preparer_rejects_invalid_assets_configs_presets_and_audio_limits ... ok\ntest adapter::hidef_soundfont_preparer::tests::common_adsr_is_owned_by_each_overlapping_soundfont_note_voice ... ok\ntest adapter::hidef_soundfont_preparer::tests::prepared_mapping_is_patch_scoped_and_uses_the_fixed_asset ... ok\ntest adapter::production_instruments::tests::production_composition_installs_exactly_both_matching_engine_ports ... ok\ntest adapter::hidef_soundfont_preparer::tests::one_parse_supplies_independent_melodic_and_percussion_instruments ... ok\ntest adapter::hidef_soundfont_preparer::tests::every_common_adsr_field_changes_soundfont_audio_before_the_patch_stem ... ok\ntest adapter::lock_free_structural_graph_boundary::tests::full_queues_return_the_exact_graph_without_callback_destruction ... ok\ntest adapter::lock_free_structural_graph_boundary::tests::distinct_queues_preserve_owned_graphs_and_only_control_collection_drops ... ok\ntest control::app_loop::tests::one_way_control_loop_publishes_one_coherent_edit ... ok\ntest control::app_loop::tests::control_observation_trace_records_exact_sources_hashes_and_generations ... ok\ntest control::app_loop::tests::one_way_control_loop_reports_queue_saturation_after_acceptance ... ok\ntest control::app_state::tests::app_state_adjustment_rejects_a_clamped_no_op ... ok\ntest control::app_state::tests::app_state_adjustment_uses_fine_and_coarse_directions ... ok\ntest control::app_loop::tests::one_way_control_loop_rejection_has_no_effects_or_view_change ... ok\ntest control::app_loop::tests::one_way_control_loop_publishes_parameters_before_midi_command ... ok\ntest control::app_state::tests::app_state_adjusts_exactly_one_value_and_rejects_at_the_bound ... ok\ntest control::app_state::tests::adjust_edits_a_gapped_occupant_at_its_true_position ... ok\ntest control::app_loop::tests::context_dispatch_projects_page_and_publishes_same_values_without_audio_command ... ok\ntest control::app_state::tests::app_state_context_defaults_to_mixer_and_installation_sets_stable_focus ... ok\ntest control::app_state::tests::app_state_commits_only_the_target_config_then_acknowledges_both_directions ... ok\ntest control::app_state::tests::app_state_installation_preserves_order_and_is_startup_only ... ok\ntest control::app_state::tests::app_state_engine_failure_and_stale_or_mismatched_outcomes_preserve_source_and_recover ... ok\ntest control::app_loop::tests::one_way_control_loop_edits_only_the_selected_non_first_patch ... ok\ntest control::app_state::tests::app_state_installation_rejects_duplicate_midi_channels ... ok\ntest control::app_state::tests::app_state_selection_is_read_only_and_typed ... ok\ntest control::app_state::tests::app_state_rejects_invalid_instrument_config_atomically_and_remains_processable ... ok\ntest control::app_state::tests::app_state_keeps_midi_context_and_mixer_control_available_while_preparing ... ok\ntest control::app_loop::tests::one_way_control_loop_boundary_rejection_is_nonfatal ... ok\ntest adapter::threaded_graph_preparation_worker::tests::threaded_graph_preparation_worker_is_capacity_one_and_prepares_both_real_directions ... ok\ntest control::app_state::tests::app_state_midi_acceptance_returns_one_effect_without_parameter_mutation ... ok\ntest control::app_state::tests::direct_and_repeated_context_selection_preserves_independent_focus ... ok\ntest control::app_state::tests::install_accepts_a_gapped_chain_and_keeps_every_position ... ok\ntest control::app_state::tests::app_state_engine_request_is_adjacent_nonwrapping_correlated_and_busy_without_early_commit ... ok\ntest control::app_state::tests::app_state_navigation_changes_selection_without_parameters ... ok\ntest control::app_state::tests::patch_editable_surface_is_patch_owned_and_reduces_transactionally ... ok\ntest control::app_state::tests::patch_selection_before_installation_and_patch_actions_reject_transactionally ... ok\ntest control::app_state::tests::patch_focus_and_adsr_generation_and_effect_accounting_is_exact ... ok\ntest control::app_state::tests::patch_navigation_and_adjustment_route_by_focused_control ... ok\ntest control::app_state::tests::rejection_descriptor_is_unique_and_reducer_table_exercises_its_partition ... ok\ntest control::app_state::tests::select_patch_is_refused_outside_its_context_mode_and_axis ... ok\ntest control::app_state::tests::select_patch_moves_the_focused_patch_through_the_reducer_without_wrapping ... ok\ntest control::app_state::tests::unavailable_patch_actions_reject_then_valid_focus_and_adsr_events_recover ... ok\ntest control::app_state::tests::validate_effect_slots_accepts_gaps_and_rejects_duplicate_identities ... ok\ntest control::app_state::tests::app_state_installation_rejects_more_than_sixteen_patches ... ok\ntest control::engine_selection::tests::engine_selection_effect_requires_the_revision_shape_declared_by_its_kind ... ok\ntest control::engine_selection::tests::engine_selection_request_id_reserves_zero_and_reports_exhaustion ... ok\ntest control::engine_selection::tests::engine_selection_status_enforces_the_declared_lifecycle_and_revision_boundary ... ok\ntest control::event_log::tests::bounded_control_thread_journal_reports_every_eviction ... ok\ntest control::event_log::tests::append_rejects_broken_state_chain_without_evicting_history ... ok\ntest control::event_log::tests::append_rejects_noncontiguous_sequence_without_mutating_the_log ... ok\ntest control::engine_selection::tests::engine_selection_values_have_unique_exhaustive_stable_serialized_names ... ok\ntest control::engine_selection::tests::engine_selection_status_serialization_contains_only_stable_control_metadata ... ok\ntest control::event_log::tests::exhaustive_capacity_retains_the_complete_chain_without_drops ... ok\ntest control::event_log::tests::named_coverage_and_json_are_sorted_stable_and_explicit ... ok\ntest control::event_log::tests::zero_capacity_is_rejected ... ok\ntest control::event_record::tests::event_source_surface_includes_worker_with_stable_serialized_names ... ok\ntest control::event_record::tests::install_input_records_every_domain_payload ... ok\ntest control::event_record::tests::accepted_record_rejects_incoherent_projection_generation ... ok\ntest control::event_record::tests::install_input_preserves_slot_identities_of_a_gapped_chain ... ok\ntest control::graphical_shell_projection::tests::graphical_shell_projection_maps_patch_and_mixer_exactly ... ok\ntest control::event_record::tests::rejected_record_preserves_state_and_emits_nothing ... ok\ntest control::graphical_shell_projection::tests::graphical_shell_projection_leaf_descriptor_is_bidirectionally_exact ... ok\ntest control::graphical_shell_projection::tests::graphical_shell_projection_rejects_incoherent_diagnostic_identity ... ok\ntest control::interaction_state::tests::context_round_trip_preserves_independent_stable_paths ... ok\ntest control::interaction_state::tests::interaction_state_starts_with_one_stable_mixer_focus ... ok\ntest control::interaction_state::tests::phase_two_rejects_reserved_modes_and_cross_context_surface_entry ... ok\ntest control::interaction_state::tests::side_surface_round_trip_restores_exact_origin_and_navigate_mode ... ok\ntest control::patch_control_id::tests::effect_slot_occupancy_rows_round_trip_positional_identity ... ok\ntest control::patch_control_id::tests::every_patch_control_id_has_a_stable_string_round_trip ... ok\ntest control::patch_control_id::tests::patch_control_ids_follow_the_canonical_envelope_descriptor ... ok\ntest control::patch_control_id::tests::unknown_patch_control_identity_is_rejected ... ok\ntest control::event_record::tests::serialized_leaf_descriptor_exactly_matches_discriminating_record_union ... ok\ntest control::event_record::tests::accepted_record_keeps_one_coherent_hash_generation_and_effect_chain ... ok\ntest control::semantic_action::tests::semantic_action_descriptors_are_closed_unique_and_phase_two_safe ... ok\ntest control::semantic_action::tests::valid_action_round_trips_typed_action_not_its_label ... ok\ntest control::semantic_focus::tests::focus_paths_round_trip_stable_semantic_ids ... ok\ntest control::patch_page_projection::tests::gapped_chain_projects_the_occupant_at_its_true_position ... ok\ntest control::semantic_focus::tests::four_surfaces_are_context_compatible_and_layout_neutral ... ok\ntest control::semantic_focus::tests::return_path_requires_exact_same_context_main_origin ... ok\ntest control::semantic_focus::tests::send_and_return_paths_are_index_addressed_inspector_targets ... ok\ntest control::patch_page_projection::tests::both_production_capabilities_share_one_exact_generic_projection_walk ... ok\ntest control::semantic_resolver::tests::recovery_is_exact_then_next_before_previous ... ok\ntest control::semantic_resolver::tests::gapped_chain_resolves_slot_rows_per_position_and_the_occupant_by_identity ... ok\ntest control::serialized_state::tests::interior_gap_serializes_neighbors_in_position_order ... ok\ntest control::serialized_state::tests::gapped_chain_serializes_the_occupant_with_its_stable_identity ... ok\ntest control::patch_page_projection::tests::projection_serialization_and_midi_hash_update_keep_owned_schema_content ... ok\ntest control::state_projector::tests::malformed_snapshot_cannot_be_rendered ... ok\ntest control::patch_page_projection::tests::focus_identity_is_independent_from_engine_action_availability ... ok\ntest control::semantic_graphical_view_model::tests::gapped_chain_counts_occupants_and_projects_rows_per_position ... ok\ntest control::app_state::tests::mixer_tracks_and_patch_envelopes_have_disjoint_ownership ... ok\ntest control::app_loop::tests::ready_and_recoverable_failed_patch_adsr_edits_publish_source_revision_to_renderer ... ok\ntest control::state_projector::tests::complete_projection_uses_one_accepted_generation ... ok\ntest control::app_state::tests::patch_focus_reducer_covers_every_control_edge_and_direction_without_wrapping ... ok\ntest control::state_projector::tests::patch_projection_and_generation_only_midi_are_context_coherent_and_shared ... ok\ntest control::state_projector::tests::midi_generation_projection_is_exactly_equal_to_eager_projection ... ok\ntest control::state_projector::tests::rejects_a_typed_selection_from_a_different_snapshot ... ok\ntest control::state_snapshot::tests::generation_successor_matches_eager_canonical_json_and_hash ... ok\ntest control::state_snapshot::tests::hash_is_deterministic_and_content_sensitive ... ok\ntest control::state_snapshot::tests::retains_the_complete_canonical_json ... ok\ntest control::state_snapshot::tests::value_equality_covers_json_and_derived_hash ... ok\ntest control::state_projector::tests::serialization_is_deterministic_and_round_trips_every_field ... ok\ntest control::state_projector::tests::projector_rejects_a_tree_projection_for_another_graph_revision ... ok\ntest control::state_tree::tests::nested_schema_descriptor_covers_registry_configs_and_tagged_values_once ... ok\ntest control::state_projector::tests::state_projector_exact_projection_values ... ok\ntest control::app_loop::tests::patch_adsr_coexists_with_preparing_staged_activation_and_latest_target_snapshot ... ok\ntest control::state_projector::tests::text_is_derived_from_the_snapshot_and_typed_selection ... ok\ntest control::state_tree::tests::rejects_a_text_projection_from_another_snapshot ... ok\ntest control::state_tree::tests::rejects_malformed_state_and_mismatched_global_parameters ... ok\ntest control::text_projection::tests::cloning_preserves_the_atomic_projection_value ... ok\ntest control::text_projection::tests::serialized_property_descriptor_exactly_matches_the_projection ... ok\ntest control::state_tree::tests::serializes_every_state_text_and_audio_property_with_stable_names ... ok\ntest control::text_projection::tests::projection_keeps_one_snapshot_body_selection_and_hash_together ... ok\ntest control::state_tree::tests::rejects_stale_generation_and_mismatched_context_graphical_shells ... ok\ntest control::top_level_context::tests::top_level_context_surface_is_closed_unique_and_defaults_to_mixer ... ok\ntest kernel::midi_channel::tests::accepts_both_ends_of_the_midi_channel_range ... ok\ntest kernel::midi_channel::tests::primitive_conversions_preserve_the_validated_value ... ok\ntest kernel::midi_channel::tests::rejects_values_above_the_midi_channel_range ... ok\ntest kernel::midi_message::tests::accepts_the_complete_seven_bit_data_range ... ok\ntest control::state_projector::tests::rejects_oversized_patch_installation_before_projection ... ok\ntest kernel::midi_message::tests::exposes_every_required_message_kind ... ok\ntest kernel::midi_message::tests::public_api_keeps_normalized_state_read_only ... ok\ntest kernel::midi_message::tests::rejects_each_out_of_range_data_byte ... ok\ntest kernel::patch_id::tests::accepts_every_non_zero_boundary_value ... ok\ntest kernel::midi_message::tests::validation_errors_are_actionable ... ok\ntest kernel::patch_id::tests::identity_traits_compare_the_underlying_value ... ok\ntest kernel::patch_id::tests::primitive_conversions_preserve_the_validated_value ... ok\ntest kernel::patch_id::tests::rejects_zero ... ok\ntest mixer::bus_id::tests::fixed_bank_is_exact_and_positional ... ok\ntest mixer::bus_id::tests::out_of_range_identity_is_rejected_without_clamping ... ok\ntest mixer::bus_return::tests::derived_slot_identity_is_stable_and_non_zero ... ok\ntest mixer::bus_id::tests::serde_round_trip_preserves_numeric_identity_and_rejects_invalid ... ok\ntest mixer::bus_return::tests::occupancy_can_be_set_replaced_and_cleared_on_each_of_eight_returns ... ok\ntest mixer::bus_return::tests::preparation_errors_have_actionable_messages ... ok\ntest mixer::bus_return::tests::return_level_descriptor_matches_the_retired_return_bounds ... ok\ntest mixer::bus_return::tests::return_level_is_validated_and_never_clamped ... ok\ntest mixer::bus_return::tests::return_level_survives_every_occupancy_transition ... ok\ntest mixer::global_parameters::tests::errors_explain_the_rejected_bound ... ok\ntest mixer::global_parameters::tests::only_master_gain_carries_global_storage ... ok\ntest mixer::global_parameters::tests::surface_descriptor_is_master_gain_alone ... ok\ntest mixer::mix_engine::tests::global_mix_applies_gain_and_pan_independently ... ok\ntest mixer::bus_return::tests::unknown_registry_entries_are_rejected_without_substitution ... ok\ntest mixer::mix_engine::tests::global_mix_applies_master_gain_after_effect_returns ... ok\ntest mixer::mix_engine::tests::global_mix_routes_both_sends_through_both_returns ... ok\ntest mixer::mix_engine::tests::global_mix_silences_mismatched_patch_identity ... ok\ntest control::state_tree::tests::serialization_is_deterministic_and_consumable_as_an_owned_value ... ok\ntest mixer::mix_engine::tests::mix_observation_measures_owned_stages_without_changing_output ... ok\ntest mixer::mix_engine::tests::muted_track_contributes_nothing_to_any_send ... ok\ntest mixer::mix_engine::tests::global_mix_uses_only_preallocated_bounded_storage ... ok\ntest mixer::mix_engine::tests::mix_observation_counts_non_finite_output_without_non_finite_metrics ... ok\ntest mixer::mix_engine::tests::raised_send_is_isolated_to_its_own_destination ... ok\ntest mixer::mix_engine::tests::return_output_cannot_feed_another_return ... ok\ntest mixer::mix_engine::tests::send_position_is_post_fader_sample_exact ... ok\ntest mixer::mix_engine::tests::sends_from_two_tracks_accumulate_at_one_bus ... ok\ntest mixer::mix_observation::tests::legacy_constructor_maps_named_inputs_onto_the_first_two_buses ... ok\ntest mixer::mix_engine::tests::solo_excluded_track_contributes_nothing_to_any_send ... ok\ntest control::state_tree::tests::rejects_parameter_generation_patch_order_and_values_that_do_not_match ... ok\ntest mixer::mix_engine::tests::unoccupied_return_contributes_silence_not_its_accumulated_input ... ok\ntest mixer::mix_observation::tests::mix_observation_is_fixed_size_copyable_numeric_data ... ok\ntest mixer::mixer_state::tests::bank_always_contains_exactly_sixteen_independent_tracks ... ok\ntest mixer::mixer_track_id::tests::adjacent_choice_is_nonwrapping ... ok\ntest mixer::mixer_track_id::tests::fixed_bank_is_exact_and_formats_t00_through_t0f ... ok\ntest mixer::mixer_track_id::tests::invalid_identity_is_rejected_without_clamping ... ok\ntest mixer::mixer_track_id::tests::serde_round_trip_preserves_numeric_identity ... ok\ntest mixer::mixer_track_parameters::tests::all_eight_sends_share_the_one_bus_send_descriptor_exactly ... ok\ntest mixer::mixer_track_parameters::tests::descriptor_has_exactly_the_four_main_fields ... ok\ntest mixer::mixer_state::tests::serde_round_trip_retains_fixed_order_and_count ... ok\ntest mixer::mixer_track_parameters::tests::each_invalid_numeric_class_is_rejected ... ok\ntest mixer::mixer_track_parameters::tests::every_continuous_inclusive_boundary_is_valid ... ok\ntest mixer::mixer_track_parameters::tests::every_one_of_eight_sends_validates_its_range ... ok\ntest mixer::mixer_track_parameters::tests::from_values_validates_the_complete_send_bank ... ok\ntest mixer::mixer_track_parameters::tests::scalar_adjustment_and_toggle_kinds_are_disjoint ... ok\ntest mixer::mixer_track_parameters::tests::serialized_shape_stays_byte_identical_to_the_declared_leaves ... ok\ntest mixer::patch_output::tests::descriptor_is_complete_stable_and_typed ... ok\ntest mixer::mixer_track_parameters::tests::serde_cannot_bypass_numeric_validation ... ok\ntest mixer::patch_output::tests::route_choice_changes_only_the_destination_and_never_wraps ... ok\ntest mixer::patch_output::tests::trim_accepts_inclusive_bounds_and_rejects_every_invalid_class ... ok\ntest mixer::patch_output::tests::serde_rejects_an_invalid_nested_track_identity ... ok\ntest mixer::track_meter::tests::meter_is_copy_fixed_size_and_validated ... ok\ntest real_time::audio_boundary::tests::real_time_values_are_copyable_and_need_no_destruction ... ok\ntest real_time::audio_boundary::tests::boundary_full_preserves_the_rejected_command ... ok\ntest real_time::audio_command::tests::all_notes_off_has_no_patch_or_message_payload ... ok\ntest real_time::audio_command::tests::commands_are_copyable_and_require_no_destruction ... ok\ntest real_time::audio_boundary::tests::split_handles_expose_their_narrow_operations ... ok\ntest real_time::audio_command::tests::patch_midi_keeps_the_target_and_message_together ... ok\ntest real_time::audio_observation_snapshot::tests::snapshot_is_copyable_fixed_size_numeric_data ... ok\ntest real_time::audio_renderer::tests::active_note_observation_tracks_patch_lifecycle_with_bounded_bits ... ok\ntest real_time::audio_renderer::tests::graph_swaps_apply_once_at_block_start_and_return_the_old_owner ... ok\ntest real_time::audio_renderer::tests::hidef_soundfont_preparer_callback_operations_allocate_and_deallocate_nothing ... ok\ntest real_time::audio_renderer::tests::normal_renderer_callback_allocates_deallocates_and_destroys_nothing ... ok\ntest real_time::audio_renderer::tests::occupancy_scoped_activation_carries_the_live_instrument_and_held_notes ... ok\ntest real_time::audio_renderer::tests::incompatible_scalar_races_keep_each_graphs_last_compatible_snapshot ... ok\ntest real_time::audio_renderer::tests::prepared_graph_exposes_fixed_patch_stem_storage ... ok\ntest real_time::callback_safety::tests::callback_scope_is_nested_and_thread_local ... ok\ntest control::state_projector::tests::patch_text_marker_and_selected_line_follow_every_canonical_control ... ok\ntest real_time::audio_renderer::tests::renderer_routes_heterogeneous_patches_and_publishes_finite_mix_observation ... ok\ntest real_time::audio_renderer::tests::retirement_pressure_retains_and_retries_without_taking_another_graph ... ok\ntest real_time::graph_handoff_status::tests::status_is_fixed_copyable_and_saturating ... ok\ntest real_time::graph_preparation_worker::tests::carry_over_capability_identity_refusal_reports_an_invalid_candidate_config ... ok\ntest real_time::graph_revision::tests::rejects_the_reserved_zero_and_numeric_exhaustion ... ok\ntest real_time::graph_revision::tests::revision_is_nonzero_copyable_and_monotonic ... ok\ntest real_time::audio_renderer::tests::production_layout_changing_swap_is_bounded_finite_and_allocation_free ... ok\ntest real_time::parameter_snapshot::tests::bus_return_projection_rejects_capacity_and_finiteness_violations ... ok\ntest real_time::parameter_snapshot::tests::compatibility_requires_revision_count_and_exact_patch_order ... ok\ntest real_time::parameter_snapshot::tests::copies_one_complete_accepted_control_projection ... ok\ntest real_time::parameter_snapshot::tests::every_track_carries_all_eight_indexed_sends ... ok\ntest real_time::parameter_snapshot::tests::duplicate_instance_identity_is_refused_before_the_feed_sees_it ... ok\ntest real_time::audio_renderer::tests::selected_engine_scope_restarts_only_the_selected_patch ... ok\ntest real_time::parameter_snapshot::tests::explicit_returns_are_the_only_live_return_source ... ok\ntest real_time::parameter_snapshot::tests::fully_occupied_snapshot_initializes_every_slot_at_its_exact_position ... ok\ntest real_time::parameter_snapshot::tests::rejects_state_larger_than_the_compile_time_bound ... ok\ntest real_time::parameter_snapshot::tests::patch_projection_carries_bounded_envelope_and_descriptor_ordered_scalars ... ok\ntest real_time::parameter_snapshot::tests::returns_project_only_from_the_canonical_bus_return_bank ... ok\ntest real_time::parameter_snapshot::tests::serialized_leaf_descriptor_exactly_matches_the_active_projection ... ok\ntest real_time::parameter_snapshot::tests::gapped_patch_chain_feeds_occupied_entries_at_true_positions ... ok\ntest real_time::parameter_snapshot::tests::snapshot_and_patch_values_need_no_drop_or_dynamic_storage ... ok\ntest real_time::parameter_snapshot::tests::unused_fixed_entries_are_inactive ... ok\ntest real_time::patch_audio_block::tests::active_stems_follow_snapshot_identity_and_index ... ok\ntest real_time::patch_audio_block::tests::clearing_and_filling_reuse_prepared_storage ... ok\ntest real_time::patch_audio_block::tests::prepares_fixed_stereo_capacity_for_every_patch ... ok\ntest real_time::patch_audio_block::tests::rejects_invalid_or_excessive_frame_capacity_without_mutation ... ok\ntest real_time::prepared_bus_return_rack::tests::carry_over_capability_identity_agreement_still_carries_the_live_return ... ok\ntest real_time::prepared_bus_return_rack::tests::carry_over_capability_identity_mismatch_keeps_the_fresh_return_instance ... ok\ntest real_time::prepared_bus_return_rack::tests::failed_processing_contributes_silence_not_passthrough ... ok\ntest real_time::patch_audio_block::tests::starting_the_next_block_rekeys_clears_and_deactivates_stems ... ok\ntest real_time::prepared_bus_return_rack::tests::matches_parameters_stays_exact_at_every_return ... ok\ntest real_time::prepared_bus_return_rack::tests::mismatched_live_entry_contributes_silence_never_wrong_values ... ok\ntest real_time::prepared_bus_return_rack::tests::occupancy_can_be_replaced_and_cleared_per_return ... ok\ntest real_time::prepared_bus_return_rack::tests::occupied_return_scales_wet_by_the_return_owned_level ... ok\ntest real_time::prepared_bus_return_rack::tests::one_return_cannot_feed_another_return ... ok\ntest real_time::prepared_bus_return_rack::tests::preparation_rejects_invalid_configuration ... ok\ntest real_time::prepared_bus_return_rack::tests::processing_is_bounded_by_the_prepared_frame_capacity ... ok\ntest real_time::prepared_bus_return_rack::tests::rack_prepares_eight_returns_with_preallocated_scratch ... ok\ntest real_time::prepared_bus_return_rack::tests::unoccupied_return_contributes_exact_silence_not_its_input ... ok\ntest real_time::prepared_bus_return_rack::tests::zero_input_cannot_produce_a_wet_return ... ok\ntest real_time::prepared_engine_rack::tests::callback_statuses_are_copyable_and_have_no_destructors ... ok\ntest real_time::prepared_engine_rack::tests::carry_over_capability_identity_agreement_still_carries_the_live_engine ... ok\ntest real_time::prepared_engine_rack::tests::carry_over_capability_identity_mismatch_keeps_the_fresh_engine_instance ... ok\ntest real_time::prepared_graph::tests::carry_over_capability_identity_layout_admission_is_position_exact ... ok\ntest real_time::prepared_graph::tests::carry_over_capability_identity_records_at_capacity_and_refuses_one_byte_beyond ... ok\ntest real_time::prepared_graph::tests::replacement_layout_changes_only_the_selected_patch_scalar_shape ... ok\ntest real_time::audio_renderer::tests::full_occupancy::snapshot_publish_cost_is_measured_and_bounded_at_full_occupancy ... ok\ntest real_time::graph_preparation_worker::tests::graph_preparation_request_freezes_exactly_one_validated_replacement ... ok\ntest real_time::graph_preparation_worker::tests::graph_preparation_correlation_and_request_reject_mismatches_without_fallback ... ok\ntest real_time::prepared_graph_builder::tests::builder_returns_one_complete_ordered_callback_ready_graph ... ok\ntest real_time::prepared_graph_builder::tests::builder_records_carry_over_capability_identity_for_every_position ... ok\ntest real_time::prepared_post_effect_rack::tests::carry_over_capability_identity_agreement_still_carries_the_live_effect ... ok\ntest real_time::prepared_graph_builder::tests::carry_over_capability_identity_beyond_the_record_refuses_the_whole_graph ... ok\ntest real_time::prepared_post_effect_rack::tests::carry_over_capability_identity_mismatch_keeps_the_fresh_effect_instance ... ok\ntest real_time::prepared_post_effect_rack::tests::each_slot_enforces_its_own_frame_capacity ... ok\ntest real_time::prepared_post_effect_rack::tests::matches_parameters_stays_exact_at_every_slot_position ... ok\ntest real_time::prepared_post_effect_rack::tests::public_process_applies_a_single_effect_at_each_position ... ok\ntest control::app_loop::tests::app_loop_coordinates_real_bidirectional_graph_work_and_recoverable_failure ... ok\ntest real_time::prepared_post_effect_rack::tests::same_registry_entry_instances_keep_disjoint_state ... ok\ntest real_time::prepared_post_effect_rack::tests::rerouting_the_patch_output_preserves_chain_and_instance_state ... ok\ntest real_time::prepared_graph_builder::tests::candidate_failures_leave_an_existing_graph_unchanged ... ok\ntest shell::app_window::tests::window_error_preserves_its_actionable_message ... ok\ntest shell::app_window::tests::port_is_object_safe_and_routes_only_callbacks ... ok\ntest shell::audio_device_status::tests::concrete_handles_are_send_and_have_no_destructor_work ... ok\ntest shell::audio_device_status::tests::first_runtime_failure_is_bounded_visible_and_consumable ... ok\ntest shell::audio_output::tests::device_configuration_rejects_unsupported_values ... ok\ntest shell::audio_output::tests::negotiation_precedes_start_and_forwards_the_device_buffer ... ok\ntest real_time::structural_graph_coordinator::tests::publication_rejects_a_graph_with_different_callback_capacities ... ok\ntest real_time::prepared_graph_builder::tests::prepared_graph_refreshes_only_an_exact_target_revision_and_engine_layout ... ok\ntest shell::audio_output::tests::setup_error_preserves_its_actionable_message ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_focus_loss_clears_the_modifier ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_ignores_direction_key_releases ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_ignores_unrelated_keys ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_k_release_restores_navigation ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_keeps_the_two_bound_context_digits ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_leaves_every_unbound_digit_unbound ... ok\ntest real_time::structural_graph_coordinator::tests::one_in_flight_graph_requires_activation_retirement_and_collection ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_maps_direct_context_keys_independent_of_modifier ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_leaves_unbound_digits_unbound_under_the_modifier ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_maps_every_bare_direction_to_navigation ... ok\ntest shell::keyboard_input_translator::tests::keyboard_input_translator_maps_every_modified_direction_to_adjustment ... ok\ntest shell::shell_frame_observation::tests::shell_frame_observation_preserves_ordered_post_paint_evidence ... ok\ntest shell::shell_frame_observation::tests::shell_frame_observation_rejects_reordered_or_out_of_bounds_evidence ... ok\ntest control::state_projector::tests::every_engine_selection_generation_is_cross_projection_coherent ... ok\ntest real_time::structural_graph_coordinator::tests::publication_preserves_graph_on_full_missing_or_nonmonotonic_state ... ok\ntest real_time::prepared_post_effect_rack::tests::slot_order_is_render_order_and_exchanging_slots_changes_the_sound ... ok\ntest real_time::structural_graph_coordinator::tests::selected_layout_change_stages_retries_and_is_adopted_only_after_collection ... ok\ntest shell::standalone_application::tests::standalone_live_demo_early_close_is_typed_and_never_reports_success ... ok\ntest shell::standalone_application::tests::standalone_live_demo_total_bound_closes_and_releases_stream ... ok\ntest shell::visual::compositions::application_shell::tests::an_addressed_hint_resolves_only_against_the_collection_it_was_minted_over ... ok\ntest control::app_state::tests::every_patch_envelope_field_uses_descriptor_steps_bounds_and_target_isolation ... ok\ntest shell::visual::compositions::application_shell::tests::every_band_extent_resolves_from_the_density_policy ... ok\ntest shell::standalone_application::tests::normal_run_loads_once_and_joins_window_input_to_the_shared_loop ... ok\ntest shell::visual::compositions::application_shell::tests::every_band_names_itself_from_its_own_projection_slice ... ok\ntest shell::visual::compositions::application_shell::tests::every_band_reports_the_label_the_live_demo_runner_expects ... ok\ntest shell::visual::compositions::application_shell::tests::every_band_reports_the_region_it_fills ... ok\ntest shell::visual::compositions::application_shell::tests::every_band_surface_is_a_declared_color_role ... ok\ntest shell::visual::compositions::application_shell::tests::an_arranged_frame_with_nothing_addressed_asks_for_nothing ... ok\ntest shell::visual::compositions::application_shell::tests::every_planned_band_names_a_declared_composition ... ok\ntest shell::standalone_application::tests::standalone_live_demo_stall_times_out_closes_and_releases_stream ... ok\ntest shell::visual::compositions::application_shell::tests::the_application_shell_is_bound_to_the_whole_frame ... ok\ntest shell::visual::compositions::application_shell::tests::every_frame_composition_is_reachable_through_the_family_and_paints ... ok\ntest control::state_projector::tests::patch_projection_is_generic_for_both_engines_every_focus_and_context_round_trip ... ok\ntest shell::visual::compositions::application_shell::tests::the_independent_band_geometry_agrees_with_the_plan ... ok\ntest shell::visual::compositions::application_shell::tests::the_observed_order_is_the_order_the_observation_demands ... ok\ntest shell::visual::compositions::application_shell::tests::the_overflow_rule_detects_a_clipped_run_and_a_collision_and_nothing_else ... ok\ntest shell::visual::compositions::application_shell::tests::the_plan_claims_space_in_the_authored_order ... ok\ntest shell::visual::compositions::application_shell::tests::the_plan_fills_every_observed_region_exactly_once ... ok\ntest shell::visual::compositions::application_shell::tests::the_family_dispatch_reaches_the_same_frame_this_module_arranges ... ok\ntest shell::visual::compositions::context_switch::tests::an_overlong_product_label_neither_clips_nor_overlaps_at_either_viewport ... ok\ntest shell::visual::compositions::context_switch::tests::every_declared_interaction_mode_resolves_to_a_declared_color ... ok\ntest shell::visual::compositions::application_shell::tests::both_authored_viewports_retain_every_band_and_the_side_region ... ok\ntest shell::visual::compositions::context_switch::tests::both_top_level_contexts_are_painted_and_exactly_one_is_marked ... ok\ntest shell::visual::compositions::application_shell::tests::no_chrome_run_clips_or_overlaps_at_either_viewport ... ok\ntest shell::visual::compositions::context_switch::tests::no_context_line_run_clips_or_overlaps_at_either_viewport ... ok\ntest shell::visual::compositions::context_switch::tests::the_context_line_is_bound_to_its_observed_region ... ok\ntest real_time::audio_renderer::tests::full_occupancy::fully_occupied_render_and_activation_stay_allocation_and_destruction_free ... ok\ntest shell::visual::compositions::footer::tests::a_single_token_hint_is_the_one_shape_that_gains_a_trailing_space ... ok\ntest shell::visual::compositions::application_shell::tests::the_frame_paints_only_text_the_projection_supplied ... ok\ntest shell::visual::compositions::footer::tests::an_addressed_index_resolves_exactly_when_the_two_collections_agree ... ok\ntest shell::visual::compositions::context_switch::tests::the_band_paints_only_text_the_projection_supplied ... ok\ntest shell::visual::compositions::footer::tests::an_over_full_footer_neither_clips_nor_overlaps_at_either_viewport ... ok\ntest shell::visual::compositions::footer::tests::a_footer_with_no_hints_renders_empty_rather_than_defaulted ... ok\ntest shell::visual::compositions::footer::tests::an_over_full_footer_still_paints_the_operator_location ... ok\ntest shell::visual::compositions::context_switch::tests::the_active_entry_is_distinguishable_from_the_inactive_one_without_color ... ok\ntest shell::visual::compositions::footer::tests::every_supplied_hint_round_trips_through_the_hint_primitive ... ok\ntest shell::visual::compositions::application_shell::tests::every_band_reports_a_label_it_actually_paints ... ok\ntest shell::visual::compositions::footer::tests::the_footer_is_bound_to_its_observed_region ... ok\ntest shell::visual::compositions::footer::tests::every_hint_target_is_framed_at_the_authored_minimum_at_both_viewports ... ok\ntest shell::visual::compositions::footer::tests::the_one_painted_tone_is_a_declared_tone ... ok\ntest shell::visual::compositions::footer::tests::the_shared_fixture_should_pair_its_hints_with_its_valid_actions ... ignored, shared fixture desync: SemanticGraphicalViewModel::fixture carries no valid actions\ntest shell::visual::compositions::footer::tests::an_unaddressed_footer_reports_no_activation ... ok\ntest shell::visual::compositions::identity_header::tests::both_authored_bands_hold_the_type_they_carry ... ok\ntest shell::visual::compositions::footer::tests::no_footer_run_clips_or_overlaps_at_either_viewport ... ok\ntest shell::visual::compositions::identity_header::tests::both_labels_take_authored_styles_and_do_not_read_alike ... ok\ntest shell::visual::compositions::footer::tests::the_footer_paints_exactly_the_hints_the_projection_supplied ... ok\ntest shell::visual::compositions::identity_header::tests::the_identity_band_is_bound_to_its_observed_region ... ok\ntest shell::visual::compositions::identity_header::tests::both_identity_labels_are_painted_at_both_viewports ... ok\ntest shell::visual::compositions::identity_header::tests::the_band_paints_only_text_the_projection_supplied ... ok\ntest shell::visual::compositions::footer::tests::addressing_a_hint_reports_that_hint_index ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::a_bank_with_no_track_view_data_marks_the_bank_and_every_column ... ok\ntest shell::visual::compositions::identity_header::tests::an_overlong_label_neither_clips_nor_overlaps_at_either_viewport ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::a_column_cells_stack_down_it_without_overlapping_at_both_viewports ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::a_marked_bank_paints_exactly_its_structure_names_and_nothing_else ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::both_viewports_paint_the_same_content ... ok\ntest shell::visual::compositions::footer::tests::an_overlong_path_label_still_leaves_every_hint_reachable ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::the_bank_scrolls_nothing_and_reaches_past_no_boundary ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::every_track_cell_is_painted_inside_that_track_own_column ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::a_track_with_no_view_data_marks_its_own_column_and_not_the_bank ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::fifteen_hairlines_sit_on_the_gutter_midpoints_at_both_viewports ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::the_bank_titles_at_the_bank_level_and_at_every_column ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::the_declared_bank_composition_renders_through_this_module ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::sixteen_columns_seat_inside_the_main_surface_at_both_viewports ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::the_bank_paints_no_text_that_did_not_arrive_in_the_projection ... ok\ntest shell::visual::compositions::mixer_strip_bank::tests::the_marked_column_never_collides_its_name_with_its_mark ... ok\ntest shell::visual::compositions::patch_strip_row::tests::every_role_holds_the_authored_minimum_target_at_both_viewports ... ok\ntest shell::visual::compositions::patch_strip_row::tests::a_resting_row_carries_no_lifecycle_band ... ok\ntest shell::visual::compositions::patch_strip_row::tests::a_row_mid_structural_edit_shows_its_phase_and_marks_its_unprojected_request ... ok\ntest shell::visual::compositions::patch_strip_row::tests::a_read_only_row_is_handed_disabled_and_reads_as_locked ... ok\ntest shell::visual::compositions::patch_strip_row::tests::an_unaskable_pair_marks_unavailable_instead_of_painting_a_generic_row ... ok\ntest shell::visual::compositions::patch_strip_row::tests::the_declared_row_composition_renders_through_this_module ... ok\ntest shell::visual::compositions::patch_strip_row::tests::the_projected_interaction_mode_separates_focus_from_adjustment ... ok\ntest shell::visual::compositions::patch_strip_row::tests::the_row_paints_the_control_the_projection_focuses ... ok\ntest shell::visual::compositions::section::tests::a_section_with_no_entries_marks_its_body_rather_than_inventing_a_row ... ok\ntest shell::visual::compositions::section::tests::every_policy_resolves_a_positive_header_band_and_entry_gap ... ok\ntest shell::visual::compositions::section::tests::no_composition_reads_app_state_a_raw_viewport_or_its_own_surroundings ... ok\ntest shell::visual::compositions::section::tests::a_section_in_the_vertical_strip_role_is_one_mixer_track_column ... ok\ntest shell::visual::compositions::patch_strip_row::tests::the_row_paints_no_text_that_did_not_arrive_in_the_projection ... ok\ntest shell::visual::compositions::patch_strip_row::tests::the_row_adds_no_row_and_reorders_nothing ... ok\ntest shell::visual::compositions::section::tests::the_no_invention_predicate_rejects_a_value_nothing_projected ... ok\ntest shell::visual::compositions::patch_strip_row::tests::both_viewports_paint_the_same_content_in_every_role ... ok\ntest shell::visual::compositions::tests::an_empty_composition_intent_records_nothing ... ok\ntest shell::visual::compositions::tests::every_observed_region_is_filled_by_a_composition ... ok\ntest shell::visual::compositions::tests::iteration_yields_every_declared_composition ... ok\ntest shell::visual::compositions::section::tests::the_section_paints_its_projected_title_and_every_visible_entry ... ok\ntest shell::visual::compositions::tests::no_composition_source_names_a_semantic_action ... ok\ntest shell::visual::compositions::tests::only_the_application_shell_fills_the_whole_frame ... ok\ntest shell::visual::compositions::tests::the_composition_family_holds_exactly_eight_compositions ... ok\ntest shell::visual::compositions::tests::the_scan_reads_the_composition_sources ... ok\ntest shell::visual::compositions::section::tests::the_declared_section_composition_renders_through_this_module ... ok\ntest shell::visual::compositions::tests::no_match_arm_in_the_composition_family_falls_through_a_wildcard ... ok\ntest shell::visual::compositions::utility_inspector_panel::tests::the_designed_entry_list_is_coherent ... ok\ntest shell::visual::compositions::utility_inspector_panel::tests::every_designed_utility_entry_is_either_driven_or_marked ... ok\ntest shell::visual::compositions::section::tests::the_focus_annotation_is_projected_and_omitted_when_nothing_is_focused ... ok\ntest shell::visual::compositions::section::tests::both_viewports_paint_the_same_content ... ok\ntest shell::visual::compositions::section::tests::the_section_paints_no_text_that_did_not_arrive_in_the_projection ... ok\ntest shell::standalone_application::tests::smoke_observation_uses_real_dispatch_and_render_measurements ... ok\ntest shell::visual::compositions::utility_inspector_panel::tests::the_inspector_identifies_cursor_mute_solo_and_route ... ok\ntest shell::visual::controls::browser_row::tests::a_locked_asset_row_says_it_is_locked ... ok\ntest shell::visual::controls::browser_row::tests::a_row_paints_no_waveform ... ok\ntest shell::visual::controls::browser_row::tests::every_asset_kind_carries_its_own_readable_tag ... ok\ntest shell::visual::compositions::utility_inspector_panel::tests::the_declared_panel_composition_renders_through_this_module ... ok\ntest shell::visual::controls::browser_row::tests::the_metadata_column_is_explicitly_unavailable ... ok\ntest shell::visual::controls::browser_row::tests::the_row_names_the_asset_the_projection_supplied ... ok\ntest shell::visual::compositions::utility_inspector_panel::tests::the_panel_paints_its_projected_side_label ... ok\ntest shell::visual::controls::browser_row::tests::focus_and_adjustment_paint_the_authored_cursor ... ok\ntest shell::visual::compositions::utility_inspector_panel::tests::the_panel_paints_no_text_that_did_not_arrive_in_the_projection ... ok\ntest shell::visual::controls::choice_row::tests::a_choice_mid_structural_edit_shows_its_active_value_and_its_progress ... ok\ntest shell::visual::controls::choice_row::tests::every_value_kind_resolves_to_the_name_the_projection_supplied ... ok\ntest shell::visual::controls::choice_row::tests::focus_and_adjustment_paint_the_authored_cursor ... ok\ntest shell::visual::controls::browser_row::tests::every_applicable_state_renders_evidence_that_is_not_a_color ... ok\ntest shell::visual::controls::choice_row::tests::the_row_reports_no_adjacency_it_was_not_given ... ok\ntest shell::visual::compositions::utility_inspector_panel::tests::the_panel_is_visible_at_the_compact_viewport_with_its_targets_intact ... ok\ntest shell::visual::controls::compact_slider::tests::a_declared_range_positions_the_fill_inside_the_bar ... ok\ntest shell::visual::controls::browser_row::tests::the_row_paints_no_text_that_did_not_arrive_in_its_view_model ... ok\ntest shell::visual::controls::compact_slider::tests::direction_follows_the_sign_of_the_drag ... ok\ntest shell::visual::controls::choice_row::tests::every_applicable_state_renders_evidence_that_is_not_a_color ... ok\ntest shell::visual::controls::compact_slider::tests::an_absent_range_leaves_the_value_unpositioned ... ok\ntest shell::visual::controls::compact_slider::tests::a_frame_with_no_input_asks_for_nothing ... ok\ntest shell::visual::controls::compact_slider::tests::the_family_asks_for_this_control_in_a_panel_entry ... ok\ntest shell::visual::controls::compact_slider::tests::it_paints_only_what_the_view_data_carries ... ok\ntest shell::visual::controls::compact_slider::tests::the_interactive_target_never_drops_below_the_authored_minimum ... ok\ntest shell::visual::controls::compact_slider::tests::the_value_bar_carries_the_authored_thickness_at_both_viewports ... ok\ntest shell::visual::controls::compact_slider::tests::the_words_the_sweep_looks_for_are_the_declared_ones ... ok\ntest shell::visual::controls::fader::tests::a_column_is_never_narrower_than_the_authored_interactive_target ... ok\ntest shell::visual::controls::choice_row::tests::the_row_paints_no_text_that_did_not_arrive_in_its_view_model ... ok\ntest shell::visual::controls::compact_slider::tests::no_two_applicable_states_look_alike_without_color ... ok\ntest shell::visual::controls::fader::tests::a_declared_range_positions_the_fill_inside_the_track ... ok\ntest shell::visual::controls::fader::tests::a_frame_with_no_input_asks_for_nothing ... ok\ntest shell::visual::controls::fader::tests::an_absent_range_leaves_the_level_unpositioned ... ok\ntest shell::visual::controls::fader::tests::a_selected_column_centers_its_mark_like_every_other_run ... ok\ntest shell::visual::controls::fader::tests::every_applicable_state_paints_its_declared_non_color_signal ... ok\ntest shell::visual::controls::fader::tests::sixteen_columns_and_their_hairlines_fit_the_main_surface ... ok\ntest shell::visual::controls::fader::tests::muted_soloed_and_resting_are_three_different_things_without_color ... ok\ntest shell::visual::controls::fader::tests::the_fader_declares_every_state_applicable ... ok\ntest shell::visual::controls::fader::tests::the_family_asks_for_this_control_in_a_mixer_column ... ok\ntest shell::visual::controls::fader::tests::the_four_bands_stack_without_overlapping_at_both_viewports ... ok\ntest shell::visual::controls::compact_slider::tests::every_applicable_state_paints_its_declared_non_color_signal ... ok\ntest shell::visual::controls::browser_row::tests::both_viewports_paint_the_same_content ... ok\ntest shell::visual::controls::meter::tests::a_meter_with_no_reported_position_invents_none ... ok\ntest shell::visual::controls::fader::tests::it_paints_only_what_the_view_data_carries ... ok\ntest shell::visual::controls::choice_row::tests::both_viewports_paint_the_same_content ... ok\ntest shell::visual::controls::fader::tests::no_two_applicable_states_look_alike_without_color ... ok\ntest shell::visual::controls::meter::tests::it_paints_only_what_the_view_data_carries_and_asks_for_nothing ... ok\ntest shell::visual::controls::meter::tests::the_family_asks_for_this_control_in_a_mixer_column ... ok\ntest shell::visual::controls::meter::tests::every_applicable_state_paints_its_declared_non_color_signal ... ok\ntest shell::visual::controls::meter::tests::the_meter_declares_every_state_applicable ... ok\ntest shell::visual::controls::meter::tests::no_two_applicable_states_look_alike_without_color ... ok\ntest shell::visual::controls::meter::tests::the_meter_names_no_part_of_the_audio_boundary ... ok\ntest shell::visual::controls::meter::tests::a_muted_meter_still_shows_its_level_and_says_so_separately ... ok\ntest shell::visual::controls::modal_option::tests::a_row_sits_on_the_authored_interactive_minimum_at_both_viewports ... ok\ntest shell::visual::controls::modal_option::tests::every_kind_asked_in_a_modal_resolves_to_this_control ... ok\ntest shell::visual::controls::meter::tests::the_same_view_data_paints_the_same_thing_twice ... ok\ntest shell::visual::controls::modal_option::tests::a_frame_with_no_input_asks_for_nothing ... ok\ntest shell::visual::controls::parameter_row::tests::a_continuous_value_reads_to_the_authored_precision ... ok\ntest shell::visual::controls::parameter_row::tests::a_row_without_a_declared_range_carries_no_position ... ok\ntest shell::visual::controls::fader::tests::the_three_column_runs_sit_on_the_column_axis_at_both_viewports ... ok\ntest shell::visual::controls::modal_option::tests::no_two_applicable_states_look_alike_without_color ... ok\ntest shell::visual::controls::parameter_row::tests::a_surface_summary_renders_as_a_row ... ok\ntest shell::visual::controls::modal_option::tests::selected_and_focused_are_told_apart_without_color ... ok\ntest shell::visual::controls::modal_option::tests::every_applicable_state_paints_its_declared_non_color_signal ... ok\ntest shell::visual::controls::parameter_row::tests::every_role_and_policy_resolves_an_authored_row_height ... ok\ntest shell::visual::controls::modal_option::tests::a_resting_row_paints_the_option_name_and_nothing_else ... ok\ntest shell::visual::controls::parameter_row::tests::every_value_kind_renders_as_finished_text ... ok\ntest shell::visual::controls::parameter_row::tests::the_middle_region_never_runs_backwards ... ok\ntest shell::visual::controls::meter::tests::the_column_runs_sit_on_the_column_axis_at_both_viewports ... ok\ntest shell::visual::controls::tests::every_control_declares_resting_focused_and_disabled ... ok\ntest shell::visual::controls::tests::every_control_declares_states_drawn_from_the_state_vocabulary ... ok\ntest shell::visual::controls::tests::every_control_is_reachable_by_at_least_one_pair ... ok\ntest shell::visual::controls::tests::iteration_yields_every_declared_control ... ok\ntest shell::visual::controls::tests::iteration_yields_every_declared_control_kind ... ok\ntest shell::visual::controls::tests::iteration_yields_every_declared_role ... ok\ntest shell::visual::controls::tests::no_control_source_names_a_semantic_action ... ok\ntest shell::visual::controls::tests::no_match_arm_in_the_control_family_falls_through_a_wildcard ... ok\ntest shell::visual::controls::tests::only_mixer_strip_controls_declare_mute_and_solo ... ok\ntest shell::visual::controls::tests::selection_is_total_over_kind_and_role ... ok\ntest shell::visual::controls::tests::the_control_family_holds_exactly_eight_controls ... ok\ntest shell::visual::controls::tests::the_declared_states_cover_every_component_state ... ok\ntest shell::visual::controls::tests::the_role_vocabulary_holds_exactly_four_roles ... ok\ntest shell::visual::controls::tests::the_scan_reads_the_control_sources ... ok\ntest shell::visual::controls::toggle::tests::a_disabled_toggle_in_the_on_position_shows_both_facts ... ok\ntest shell::visual::controls::toggle::tests::a_value_that_is_not_a_binary_carries_no_position ... ok\ntest shell::visual::controls::parameter_row::tests::focus_and_adjustment_paint_the_authored_cursor ... ok\ntest shell::visual::controls::parameter_row::tests::every_applicable_state_renders_evidence_that_is_not_a_color ... ok\ntest shell::visual::controls::toggle::tests::every_role_holds_the_authored_minimum_target ... ok\ntest shell::visual::controls::parameter_row::tests::an_unaddressed_row_asks_for_nothing ... ok\ntest shell::visual::controls::parameter_row::tests::the_row_paints_no_text_that_did_not_arrive_in_its_view_model ... ok\ntest shell::visual::controls::toggle::tests::every_role_renders ... ok\ntest shell::visual::controls::toggle::tests::the_two_positions_read_differently_without_color ... ok\ntest shell::visual::density::tests::each_authored_size_resolves_to_its_own_policy ... ok\ntest shell::visual::density::tests::every_policy_fits_its_utility_control_inside_its_side_region ... ok\ntest shell::visual::density::tests::every_policy_holds_every_interactive_target_at_or_above_the_minimum ... ok\ntest shell::visual::density::tests::every_policy_holds_its_mixer_column_at_or_above_the_authored_floor ... ok\ntest shell::visual::density::tests::every_policy_leaves_a_positive_gap_between_rows_and_between_controls ... ok\ntest shell::visual::density::tests::every_policy_retains_all_five_structural_regions ... ok\ntest shell::visual::density::tests::every_policy_seats_sixteen_mixer_columns_in_its_main_surface ... ok\ntest shell::visual::density::tests::every_policy_separates_its_mixer_columns_by_the_authored_spacing_step ... ok\ntest shell::visual::density::tests::every_policy_tiles_its_viewport_exactly ... ok\ntest shell::visual::density::tests::the_compact_mixer_column_rides_a_pitch_this_policy_already_authors ... ok\ntest shell::visual::density::tests::the_desktop_mixer_column_reproduces_the_measured_design_grid ... ok\ntest shell::visual::density::tests::the_desktop_policy_reproduces_the_authored_design_geometry ... ok\ntest shell::visual::density::tests::the_desktop_policy_reproduces_the_current_adapter_constants_exactly ... ok\ntest shell::visual::density::tests::the_measured_and_authored_policies_stay_distinguishable ... ok\ntest shell::visual::density::tests::the_steam_deck_policy_carries_its_authored_values ... ok\ntest shell::visual::density::tests::viewport_widths_resolve_through_the_declared_threshold ... ok\ntest shell::visual::primitives::focus::tests::a_state_is_framed_exactly_when_it_declares_the_emphasis_width ... ok\ntest shell::visual::primitives::focus::tests::focus_and_adjustment_frame_at_three_pixels_in_their_authored_accents ... ok\ntest shell::visual::primitives::focus::tests::focus_is_legible_without_color ... ok\ntest shell::visual::primitives::focus::tests::focus_is_the_only_state_whose_frame_carries_a_halo ... ok\ntest shell::visual::primitives::focus::tests::no_unfocused_state_draws_the_cursor ... ok\ntest shell::visual::primitives::focus::tests::resting_is_an_absence_rather_than_a_suppressed_frame ... ok\ntest shell::visual::primitives::focus::tests::the_cursor_column_is_reserved_for_every_state ... ok\ntest shell::visual::primitives::focus::tests::the_halo_carries_the_authored_radius_spread_and_opacity ... ok\ntest shell::visual::primitives::focus::tests::the_label_starts_where_the_reserved_column_ends ... ok\ntest shell::visual::primitives::hint::tests::a_disabled_hint_line_mutes_every_tone ... ok\ntest shell::visual::primitives::hint::tests::an_empty_hint_list_paints_an_empty_line ... ok\ntest shell::visual::primitives::hint::tests::each_hint_keeps_its_own_tone_and_the_separator_stays_neutral ... ok\ntest shell::visual::primitives::hint::tests::hints_are_set_in_the_authored_instruction_style ... ok\ntest shell::visual::primitives::hint::tests::separators_sit_between_hints_and_never_at_the_ends ... ok\ntest shell::visual::primitives::hint::tests::the_four_declared_tones_are_visually_distinct ... ok\ntest shell::visual::primitives::hint::tests::the_line_reads_as_the_design_file_writes_it ... ok\ntest shell::visual::primitives::rules::tests::a_horizontal_rule_is_one_authored_pixel_centered_on_its_line ... ok\ntest shell::visual::primitives::rules::tests::a_span_carries_no_layout_of_its_own ... ok\ntest shell::visual::primitives::rules::tests::a_vertical_rule_is_one_authored_pixel_centered_on_its_line ... ok\ntest shell::visual::primitives::rules::tests::separators_use_the_resting_width_and_never_the_emphasis_width ... ok\ntest shell::visual::primitives::status::tests::a_disabled_component_says_it_is_locked ... ok\ntest shell::visual::primitives::status::tests::error_reports_the_typed_failure_the_caller_supplied ... ok\ntest shell::visual::primitives::status::tests::error_without_typed_text_still_says_a_word ... ok\ntest shell::visual::primitives::status::tests::every_state_routed_to_the_declared_word_declares_one ... ok\ntest shell::visual::primitives::status::tests::every_state_that_carries_a_status_says_something_that_is_not_a_color ... ok\ntest shell::visual::primitives::status::tests::loading_reports_the_phase_the_caller_supplied ... ok\ntest shell::visual::primitives::status::tests::loading_without_a_phase_still_says_a_word ... ok\ntest shell::visual::primitives::status::tests::mute_and_solo_carry_the_authored_words_in_the_authored_accents ... ok\ntest shell::visual::primitives::status::tests::rest_focus_and_adjustment_carry_no_status_mark ... ok\ntest shell::visual::primitives::status::tests::selection_is_a_fill_plus_a_mark_and_never_the_fill_alone ... ok\ntest shell::visual::primitives::status::tests::selection_is_the_only_state_that_fills_its_row ... ok\ntest shell::visual::primitives::status::tests::the_five_status_bearing_states_and_disabled_all_mark ... ok\ntest shell::visual::primitives::status::tests::the_mark_reuses_the_accent_the_state_declared ... ok\ntest shell::visual::primitives::tests::no_match_arm_falls_through_a_wildcard ... ok\ntest shell::visual::primitives::tests::every_source_that_imports_at_all_is_seen_by_the_import_check ... ok\ntest shell::visual::primitives::tests::no_primitive_imports_anything_outside_the_vocabulary_egui_and_std ... ok\ntest shell::visual::primitives::tests::no_primitive_walks_out_of_the_vocabulary_by_a_relative_path ... ok\ntest shell::visual::primitives::tests::the_scan_covers_every_primitive_source ... ok\ntest shell::visual::primitives::text::tests::a_run_carries_its_content_verbatim_in_one_section ... ok\ntest shell::visual::primitives::text::tests::disabled_mutes_and_error_warns_whatever_color_the_caller_asked_for ... ok\ntest shell::visual::primitives::text::tests::every_state_resolves_to_a_declared_color ... ok\ntest shell::visual::primitives::text::tests::every_style_carries_its_authored_metrics_into_the_text_format ... ok\ntest shell::visual::primitives::text::tests::focus_and_adjustment_leave_the_content_color_alone ... ok\ntest shell::visual::primitives::text::tests::the_weight_reaches_the_family_rather_than_being_declared_and_dropped ... ok\ntest shell::visual::primitives::value::tests::a_disabled_value_is_muted ... ok\ntest shell::visual::primitives::value::tests::a_value_is_set_in_the_authored_code_style ... ok\ntest shell::visual::primitives::value::tests::adjustment_paints_the_adjust_accent ... ok\ntest shell::visual::primitives::value::tests::every_other_state_paints_primary_text_except_error_which_warns ... ok\ntest shell::visual::state::tests::adjusting_and_loading_share_an_accent_and_are_told_apart_by_text ... ok\ntest shell::visual::state::tests::error_pairs_the_warning_accent_with_typed_text ... ok\ntest shell::visual::state::tests::every_state_draws_an_authored_keyline_width ... ok\ntest shell::visual::state::tests::every_state_other_than_resting_reads_without_color ... ok\ntest shell::visual::state::tests::focus_is_the_only_state_that_draws_a_halo ... ok\ntest shell::visual::controls::parameter_row::tests::both_viewports_paint_the_same_content ... ok\ntest shell::visual::state::tests::iteration_yields_every_declared_variant ... ok\ntest shell::visual::state::tests::loading_carries_the_authored_structural_edit_progress_words ... ok\ntest shell::visual::state::tests::mute_and_solo_carry_the_authored_words ... ok\ntest shell::visual::state::tests::no_two_states_are_distinguishable_by_color_alone ... ok\ntest shell::visual::state::tests::selection_is_the_only_state_that_fills_its_row ... ok\ntest shell::visual::state::tests::the_state_vocabulary_holds_exactly_nine_states ... ok\ntest shell::visual::token::tests::authored_weights_carry_their_numeric_values ... ok\ntest shell::visual::token::tests::every_color_resolves_to_its_authored_value ... ok\ntest shell::visual::token::tests::every_geometry_value_equals_its_authored_number ... ok\ntest shell::visual::token::tests::every_spacing_step_resolves_to_its_authored_value ... ok\ntest shell::visual::token::tests::every_type_style_resolves_to_its_authored_metrics ... ok\ntest shell::visual::token::tests::focus_accent_is_cyan_not_the_pre_mission_green ... ok\ntest shell::visual::token::tests::selected_background_and_default_border_share_a_value_but_stay_distinct ... ok\ntest shell::visual::token::tests::the_type_vocabulary_holds_exactly_eight_unique_styles ... ok\ntest shell::visual::token::tests::the_color_vocabulary_holds_exactly_seventeen_unique_roles ... ok\ntest shell::visual::typeface::tests::all_four_authored_weights_register ... ok\ntest shell::visual::typeface::tests::an_unavailable_face_is_a_typed_error_naming_it ... ok\ntest shell::visual::typeface::tests::an_unavailable_face_names_the_family_in_its_message ... ok\ntest shell::visual::typeface::tests::every_type_style_resolves_to_a_registered_family ... ok\ntest shell::visual::typeface::tests::an_empty_face_is_unreadable_rather_than_silently_accepted ... ok\ntest shell::visual::typeface::tests::the_default_families_resolve_to_the_authored_face ... ok\ntest shell::visual::typeface::tests::the_manifest_covers_every_vendored_file ... ok\ntest shell::visual::typeface::tests::the_open_font_license_ships_verbatim ... ok\ntest shell::visual::typeface::tests::the_provenance_record_names_the_upstream_source_and_derivation ... ok\ntest shell::webview::input_capture::tests::every_normalized_key_is_reachable_from_one_macos_key_code ... ok\ntest shell::webview::input_capture::tests::raw_key_events_are_copyable_shell_data ... ok\ntest shell::webview::input_capture::tests::unmapped_key_codes_normalize_to_other ... ok\ntest shell::webview::meter_channel::tests::a_failed_emit_loses_only_that_frame ... ok\ntest shell::webview::meter_channel::tests::at_most_one_frame_is_ever_pending ... ok\ntest shell::webview::meter_channel::tests::meter_event_name_satisfies_the_tauri_event_charset ... ok\ntest shell::webview::meter_channel::tests::rapid_reads_coalesce_and_the_latest_frame_wins ... ok\ntest shell::webview::meter_channel::tests::the_interval_realizes_the_declared_rate ... ok\ntest shell::visual::primitives::tests::no_primitive_names_a_path_outside_the_visual_vocabulary ... ok\ntest shell::webview::projection_channel::tests::a_failed_emit_is_typed_and_leaves_the_gate_unmoved ... ok\ntest shell::webview::projection_channel::tests::a_changed_generation_emits_exactly_one_more_document ... ok\ntest shell::webview::projection_channel::tests::a_new_generation_emits_the_exact_projector_serialization_once ... ok\ntest shell::webview::projection_channel::tests::an_unchanged_generation_emits_nothing ... ok\ntest shell::webview::projection_channel::tests::projection_event_name_satisfies_the_tauri_event_charset ... ok\ntest shell::webview::tests::webview_shell_error_joins_the_window_error_path_with_its_cause_text ... ok\ntest shell::webview::tests::shell_selection_defaults_to_egui ... ok\ntest shell::webview::tests::webview_shell_error_preserves_each_typed_cause ... ok\ntest shell::webview::token_export::tests::a_deleted_declaration_names_the_missing_property ... ok\ntest shell::webview::token_export::tests::a_mutated_header_byte_is_still_drift ... ok\ntest shell::webview::token_export::tests::fresh_output_passes_the_freshness_check ... ok\ntest shell::webview::token_export::tests::every_vocabulary_member_appears_exactly_once ... ok\ntest shell::webview::token_export::tests::generated_values_read_the_authored_accessors ... ok\ntest shell::webview::token_export::tests::one_mutated_byte_names_the_drifted_property ... ok\ntest shell::webview::token_export::tests::output_is_stable_across_two_calls ... ok\ntest shell::webview::token_export::tests::spot_checked_declarations_match_their_authored_values ... ok\ntest shell::webview::token_export::tests::the_name_transformation_is_injective_over_the_declared_vocabulary ... ok\ntest shell::webview::token_export::tests::the_stylesheet_opens_with_the_generated_header_and_one_root_block ... ok\ntest shell::webview::token_export::tests::write_tokens_css ... ignored, writes webview-page/tokens.css; run via `make webview-tokens`\ntest shell::webview::window::tests::an_unloadable_override_page_is_a_typed_page_load_failure ... ok\ntest shell::webview::window::tests::the_embedded_token_table_matches_the_generated_vocabulary ... ok\ntest shell::webview::window::tests::the_protocol_serves_each_declared_page_asset_and_nothing_else ... ok\ntest shell::webview::window::tests::webview_window_default_uses_the_product_name ... ok\ntest shell::window_input::tests::focus_loss_has_one_canonical_representation ... ok\ntest shell::window_input::tests::key_down_preserves_every_normalized_key ... ok\ntest shell::window_input::tests::key_up_preserves_every_normalized_key ... ok\ntest shell::window_input::tests::normalized_input_is_copyable_shell_data ... ok\ntest shell::window_input::tests::surface_descriptor_contains_exactly_the_normalized_vocabulary ... ok\ntest shell::window_input::tests::the_declared_key_list_names_every_key_once ... ok\ntest shell::window_input::tests::the_four_keys_added_for_the_gallery_reach_no_semantic_action ... ok\ntest synth::capability_id::tests::capability_id_accepts_stable_namespaced_kebab_case ... ok\ntest synth::capability_id::tests::capability_id_rejects_unstable_or_malformed_values ... ok\ntest shell::webview::window::tests::page_resolution_serves_the_projection_page_without_an_override ... ok\ntest shell::visual::controls::parameter_row::tests::every_pair_that_selects_one_of_these_controls_renders_through_it ... ok\ntest synth::descriptor_default_config_factory::tests::descriptor_default_config_factory_creates_both_exact_production_defaults ... ok\ntest synth::descriptor_default_config_factory::tests::descriptor_default_config_factory_revalidates_provider_output ... ok\ntest synth::effect_slot_id::tests::slot_index_accepts_every_position_and_rejects_out_of_range ... ok\ntest synth::effect_slot_id::tests::slot_index_all_lists_positions_in_ascending_render_order ... ok\ntest synth::effect_slot_id::tests::slot_index_serde_round_trips_and_validates ... ok\ntest synth::instrument_capability::tests::capability_registry_canonicalizes_and_validates_configs ... ok\ntest synth::descriptor_default_config_factory::tests::descriptor_default_config_factory_rejects_unknown_missing_duplicate_and_mismatched_providers_without_fallback ... ok\ntest shell::visual::typeface::tests::every_vendored_file_matches_its_recorded_hash ... ok\ntest synth::instrument_capability::tests::capability_registry_rejects_every_invalid_asset_and_dependency_case ... ok\ntest synth::descriptor_default_config_factory::tests::descriptor_default_config_factory_replaces_exactly_one_structural_choice ... ok\ntest synth::instrument_capability::tests::capability_registry_rejects_unknown_duplicate_missing_wrong_and_out_of_range_values ... ok\ntest synth::instrument_capability::tests::descriptor_rejects_duplicate_sections_parameters_choices_and_asset_requirements ... ok\ntest synth::instrument_capability::tests::descriptor_rejects_invalid_defaults_dependencies_capacity_and_midi_duplicates ... ok\ntest synth::instrument_capability_provider::tests::provider_contract_is_generic_control_side_metadata_only ... ok\ntest synth::instrument_capability::tests::descriptor_rejects_more_than_sixteen_scalar_parameters ... ok\ntest synth::instrument_capability::tests::scalar_values_encode_replace_and_adjust_without_fallback ... ok\ntest synth::parameter_id::tests::parameter_id_rejects_labels_paths_and_malformed_segments ... ok\ntest synth::parameter_id::tests::parameter_id_round_trips_its_stable_value ... ok\ntest synth::patch::tests::a_fourth_position_is_unrepresentable ... ok\ntest synth::patch::tests::an_occupied_later_position_leaves_the_earlier_one_empty ... ok\ntest synth::patch::tests::clearing_a_slot_never_compacts_the_others ... ok\ntest synth::patch::tests::each_position_sets_replaces_and_clears_independently ... ok\ntest synth::patch::tests::instance_identities_stay_stable_across_occupancy_changes_elsewhere ... ok\ntest synth::patch::tests::patch_holds_zero_through_three_ordered_effects ... ok\ntest synth::patch::tests::public_api_keeps_configuration_read_only ... ok\ntest synth::patch::tests::replacing_a_gapped_occupant_addresses_its_own_position ... ok\ntest synth::patch::tests::rerouting_the_output_leaves_the_effect_chain_untouched ... ok\ntest synth::patch::tests::duplicate_instance_identity_is_rejected_not_replaced ... ok\ntest synth::patch::tests::with_effect_slot_refuses_one_instance_identity_at_two_positions - should panic ... ok\ntest synth::instrument_composition::tests::matching_provider_and_preparer_registrations_freeze_in_provider_order ... ok\ntest synth::instrument_composition::tests::duplicate_missing_unknown_and_mismatched_registrations_are_typed ... ok\ntest synth::prepared_engine_rack_builder::tests::partial_preparation_is_destroyed_before_atomic_failure_returns ... ok\ntest synth::prepared_instrument::tests::callback_status_is_copyable_and_has_no_destructor ... ok\ntest synth::prepared_engine_rack_builder::tests::heterogeneous_slots_route_and_render_only_their_exact_patch_stems ... ok\ntest synth::prepared_post_effect_rack_builder::tests::duplicate_instance_identity_across_positions_never_reaches_preparation ... ok\ntest synth::prepared_post_effect_rack_builder::tests::empty_positions_stay_empty_without_compacting_occupied_neighbors ... ok\ntest synth::sound_font_instrument::tests::accepts_both_program_boundaries_and_every_bank_value ... ok\ntest synth::sound_font_instrument::tests::percussion_is_part_of_instrument_identity ... ok\ntest synth::sound_font_instrument::tests::preserves_every_selector_field ... ok\ntest synth::sound_font_instrument::tests::rejects_programs_outside_the_midi_range ... ok\ntest synth::sound_font_preset::tests::catalog_rejects_invalid_playable_metadata_and_lookup_without_fallback ... ok\ntest synth::sound_font_preset::tests::catalog_uses_first_playable_coordinate_and_numeric_order_without_name_identity ... ok\ntest synth::sound_font_preset::tests::stable_choice_identity_rejects_noncanonical_or_out_of_range_text ... ok\ntest synth::sound_font_preset::tests::stable_choice_identity_round_trips_limits_and_percussion ... ok\ntest synth::voice_envelope::tests::default_is_neutral_bounded_and_descriptor_complete ... ok\ntest synth::voice_envelope::tests::validates_every_field_and_replaces_only_the_selected_value ... ok\ntest synth::voice_envelope_state::tests::attack_decay_and_release_advance_exactly_one_sample_at_a_time ... ok\ntest synth::voice_envelope_state::tests::extreme_finite_times_and_rates_remain_finite_and_destructor_free ... ok\ntest synth::voice_envelope_state::tests::note_on_and_note_off_latch_independent_snapshot_fields ... ok\ntest synth::voice_envelope_state::tests::zero_time_stages_collapse_without_a_loop ... ok\ntest synth::prepared_engine_rack_builder::tests::rack_rejects_mismatched_caller_owned_stems_before_rendering ... ok\ntest synth::prepared_post_effect_rack_builder::tests::a_fully_occupied_sixteen_by_three_grid_prepares_with_every_position_owned ... ok\ntest testing::automatic_midi_test::tests::explicit_start_is_required_once_after_patch_installation ... ok\ntest testing::automatic_midi_test::tests::duplicate_part_indexes_are_rejected_before_installation_or_start ... ok\ntest testing::automatic_midi_test::tests::initialize_installs_one_default_patch_per_part_without_starting ... ok\ntest testing::automatic_midi_test::tests::initialize_alternates_exact_soundfont_and_default_braids_configs_in_discovery_order ... ok\ntest shell::visual::controls::toggle::tests::both_viewports_paint_the_same_content ... ok\ntest synth::prepared_engine_rack_builder::tests::builder_rejects_invalid_matching_capacity_and_identity_inputs ... ok\ntest testing::automatic_midi_test::tests::initialize_rejects_missing_provider_before_patch_installation ... ok\ntest testing::automatic_midi_test::tests::initialize_rejects_provider_registry_mismatch_before_patch_installation ... ok\ntest testing::automatic_midi_test::tests::initialize_rejects_provider_conversion_failure_atomically_without_substitution ... ok\ntest testing::automatic_midi_test::tests::the_effect_fixture_derives_each_occupant_identity_from_its_position ... ok\ntest testing::automatic_midi_test::tests::tick_rejects_unknown_part_targets_without_bypassing_app_loop ... ok\ntest testing::automatic_midi_test::tests::tick_maps_part_identity_and_dispatches_through_app_loop ... ok\ntest testing::component_gallery_scene::tests::a_bound_digit_changes_the_page_and_anything_else_retains_it ... ok\ntest shell::standalone_application::tests::degenerate_modes_falsify_their_respective_observations ... ok\ntest testing::component_gallery_scene::tests::a_digit_request_alone_does_not_make_a_page_reachable ... ok\ntest testing::component_gallery_scene::tests::a_full_page_walk_never_advances_the_production_reducer ... ok\ntest testing::component_gallery_scene::tests::a_key_binding_no_page_retains_the_current_page ... ok\ntest testing::component_gallery_scene::tests::a_row_specimen_seat_at_the_authored_width_reports_no_shortfall ... ok\ntest testing::component_gallery_scene::tests::a_short_row_specimen_seat_names_its_own_shortfall_on_the_page ... ok\ntest testing::component_gallery_scene::tests::a_composition_that_emitted_nothing_is_not_counted_as_painted ... ok\ntest testing::component_gallery_scene::tests::a_step_key_up_and_a_focus_loss_move_nothing ... ok\ntest testing::component_gallery_scene::tests::a_step_past_either_end_retains_the_end_page ... ok\ntest testing::component_gallery_scene::tests::allocated_specimen_seats_are_disjoint_and_inside_the_area_they_divide ... ok\ntest testing::component_gallery_scene::tests::an_unpainted_gallery_observes_nothing ... ok\ntest testing::component_gallery_scene::tests::a_complete_session_satisfies_the_declared_witness_predicates ... ok\ntest testing::component_gallery_scene::tests::a_state_painted_in_only_one_composition_is_not_counted_as_covered ... ok\ntest shell::visual::controls::toggle::tests::every_applicable_state_renders_evidence_that_is_not_a_color ... ok\ntest testing::component_gallery_scene::tests::building_and_traversing_the_gallery_opens_no_stream_and_dispatches_no_note ... ok\ntest shell::visual::controls::toggle::tests::the_toggle_paints_no_text_that_did_not_arrive_in_its_view_model ... ok\ntest testing::component_gallery_scene::tests::every_painted_color_resolves_through_the_vocabulary ... ok\ntest testing::component_gallery_scene::tests::every_declared_control_and_composition_has_a_painted_specimen ... ok\ntest testing::component_gallery_scene::tests::every_painted_text_run_resolves_to_the_authored_typeface ... ok\ntest shell::visual::compositions::footer::tests::a_hint_the_over_full_band_could_not_show_is_still_reachable ... ok\ntest testing::component_gallery_scene::tests::stepping_from_either_end_visits_every_declared_page ... ok\ntest testing::component_gallery_scene::tests::ten_digits_bind_ten_pages_and_stepping_reaches_the_rest ... ok\ntest testing::component_gallery_scene::tests::the_bracket_keys_normalize_and_every_other_key_binds_nothing ... ok\ntest testing::component_gallery_scene::tests::every_reported_state_names_both_authored_compositions ... ok\ntest testing::component_gallery_scene::tests::the_eight_pre_existing_digit_bindings_are_exactly_the_frozen_baseline ... ok\ntest testing::component_gallery_scene::tests::the_gallery_declares_exactly_fifteen_pages ... ok\ntest testing::component_gallery_scene::tests::every_painted_state_is_distinguishable_without_color_in_both_compositions ... ok\ntest testing::component_gallery_scene::tests::the_gallery_window_fits_on_the_authored_desktop_display_with_its_chrome ... ok\ntest testing::component_gallery_scene::tests::the_overlap_test_separates_touching_from_overlapping ... ok\ntest testing::component_gallery_scene::tests::the_reducer_the_delta_is_measured_against_does_advance_when_an_event_reaches_it ... ok\ntest testing::component_gallery_scene::tests::no_specimen_clips_its_column_or_overlaps_another_in_either_composition ... ok\ntest testing::component_gallery_scene::tests::the_gallery_scene_constructs_no_audio_output_and_no_midi_source ... ok\ntest testing::component_gallery_scene::tests::the_serialized_observation_carries_every_declared_field ... ok\ntest testing::component_gallery_scene::tests::the_silence_derivation_reads_this_modules_shipping_source ... ok\ntest testing::component_gallery_scene::tests::the_silence_derivation_reports_true_when_a_construction_is_present ... ok\ntest testing::component_gallery_scene::tests::the_silence_derivation_does_not_match_its_own_needles ... ok\ntest testing::component_gallery_scene::tests::the_translator_leaves_the_paging_digits_unbound ... ok\ntest testing::component_gallery_scene::tests::the_two_added_digits_bind_the_ninth_and_tenth_pages ... ok\ntest testing::behavioral_mutation_harness::tests::faithful_effects_nonzero_sends_and_baseline_restoration ... ok\ntest testing::component_gallery_scene::tests::the_unbound_digit_predicate_needs_a_press_that_changed_nothing ... ok\ntest testing::component_gallery_scene::tests::the_shell_bands_page_paints_all_five_regions_at_both_policies ... ok\ntest testing::demo_scene::tests::boundary_checkpoints_name_nonfatal_rejections_and_restoration ... ok\ntest testing::demo_scene::tests::construction_and_coverage_order_are_deterministic ... ok\ntest testing::demo_scene::tests::includes_every_normalized_window_input_and_focus_reset ... ok\ntest testing::demo_scene::tests::requires_discriminating_multi_patch_input ... ok\ntest testing::demo_scene::tests::derives_patch_specific_parameters_and_midi_from_the_fixture ... ok\ntest testing::demo_scene::tests::schema_derived_current_surface ... ok\ntest testing::demo_scene_report::tests::missing_coverage_or_dropped_history_can_never_claim_completion ... ok\ntest testing::demo_scene_report::tests::rejects_a_final_tree_that_is_not_the_event_endpoint ... ok\ntest testing::deterministic_graph_preparation_worker::tests::deterministic_graph_preparation_worker_advances_real_work_and_controlled_failure_exactly ... ok\ntest testing::instrument_part::tests::assigns_each_supported_index_to_the_same_unique_channel ... ok\ntest testing::instrument_part::tests::cloned_parts_retain_their_assignment_and_identity ... ok\ntest testing::instrument_part::tests::preserves_the_stable_part_identity ... ok\ntest testing::instrument_part::tests::rejects_channel_exhaustion_instead_of_reusing_a_channel - should panic ... ok\ntest testing::live_demo_report::tests::absent_frames_to_projection_never_renders_through_the_accessor - should panic ... ok\ntest testing::live_demo_report::tests::absent_measurement_fails_every_effects_completeness_expectation ... ok\ntest testing::live_demo_report::tests::absent_track_count_never_renders_through_the_accessor - should panic ... ok\ntest testing::live_demo_report::tests::empty_observation_set_derives_absent_measurements_that_render_null_and_fail ... ok\ntest testing::live_demo_report::tests::exact_coverage_reports_missing_unexpected_and_duplicate_expected_values ... ok\ntest testing::live_demo_report::tests::measured_lifecycle_observations_derive_unchanged_nonzero_maximums ... ok\ntest testing::live_demo_report::tests::measured_zero_renders_as_zero_and_is_judged_on_its_merits ... ok\ntest testing::live_demo_report::tests::mixer_routing_distinguishes_absent_counts_from_measured_zero ... ok\ntest testing::live_demo_runner::tests::non_finite_callback_measurements_are_rejected_before_checkpointing ... ok\ntest testing::live_demo_runner::tests::shell_frame_credit_rejects_stale_overlap_and_future_audio ... ok\ntest testing::live_demo_runner::tests::shell_frame_credit_requires_complete_named_regions_and_nonzero_audio ... ok\ntest testing::live_demo_scene::tests::audible_predicates_are_finite_and_stage_specific ... ok\ntest testing::live_effects_and_buses_scene::tests::absent_entry_id_is_namespaced ... ok\ntest testing::midi_event_source::tests::batch_appends_in_order_and_reuses_its_fixed_storage ... ok\ntest testing::midi_event_source::tests::batch_rejects_events_beyond_its_fixed_capacity ... ok\ntest testing::midi_event_source::tests::source_contract_is_object_safe_and_poll_appends ... ok\ntest testing::midi_event_source::tests::source_error_preserves_its_actionable_message ... ok\ntest testing::demo_scene_report::tests::complete_report_embeds_stable_grouped_trace_objects ... ok\ntest testing::component_gallery_scene::tests::the_declared_minimum_window_is_the_size_the_gallery_composes_at ... ok\ntest testing::component_gallery_scene::tests::walking_every_page_paints_every_declared_page_and_state_at_both_authored_sizes ... ok\ntest testing::component_gallery_scene::tests::removing_one_painted_specimen_drops_the_coverage_counts ... ok\ntest testing::component_gallery_scene::tests::every_page_paints_both_authored_viewport_compositions ... ok\ntest testing::behavioral_mutation_harness::tests::every_case_emits_its_exact_declared_schema ... ok\ntest testing::behavioral_mutation_harness::tests::healthy_cases_satisfy_and_matching_mutants_falsify_the_same_predicates ... ok\ntest shell::standalone_application::tests::standalone_live_demo_composition_isolates_input_and_closes_on_completion ... ok\ntest shell::standalone_application::tests::standalone_exhaustive_gui_demo_control_degeneracy_is_detectable ... ok\ntest shell::standalone_application::tests::standalone_exhaustive_gui_demo_composes_a_complete_production_trace ... ok\ntest testing::exhaustive_gui_demo::tests::exhaustive_gui_demo_scene_uses_production_seams_and_has_no_coverage_gaps ... ok\n\ntest result: ok. 830 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 33.93s\n\n\nrunning 5 tests\ntest tests::accepts_normal_smoke_observation_demo_scene_and_each_negative_mode ... ok\ntest tests::witness_enum_surfaces_remain_exhaustive ... ok\ntest tests::the_component_gallery_is_its_own_option_and_never_a_live_demo_alias ... ok\ntest tests::the_shell_selection_defaults_to_egui_and_parses_both_explicit_values ... ok\ntest tests::rejects_unknown_duplicate_and_out_of_context_options ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 2 tests\ntest tests::rejects_missing_duplicate_unknown_extra_and_mismatched_arguments ... ok\ntest tests::accepts_every_healthy_and_matching_mutant_case_in_either_option_order ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 1 test\ntest every_named_mutant_falsifies_its_measured_healthy_predicate ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.17s\n\n\nrunning 1 test\ntest pinned_braids_engine_satisfies_the_mixed_production_contract ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.92s\n\n\nrunning 1 test\ntest capability_schema_is_exact_generic_and_rejected_without_fallback ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s\n\n\nrunning 13 tests\ntest selection_is_total_over_kind_and_role_with_every_control_reachable ... ok\ntest the_visual_decision_guard_allows_what_the_vocabulary_permits ... ok\ntest the_visual_decision_guard_reports_a_planted_decision ... ok\ntest both_authored_viewports_survive_recomposition ... ok\ntest a_composition_with_no_view_data_marks_the_gap_rather_than_painting_one ... ok\ntest the_production_projection_carries_the_kinds_this_target_can_drive ... ok\ntest every_control_paints_every_applicable_state_without_relying_on_color ... ok\ntest no_component_owns_caches_or_dispatches_application_state ... ok\ntest every_drivable_pair_paints_through_the_production_render_path ... ok\ntest every_shipped_region_is_produced_by_a_declared_composition ... ok\ntest the_visual_decision_guard_reads_the_delivered_tree ... ok\ntest no_visual_decision_survives_outside_the_visual_module ... ok\ntest component_composition_acceptance ... ok\n\ntest result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.35s\n\n\nrunning 11 tests\ntest every_declared_value_equals_its_authored_counterpart ... ok\ntest every_gallery_page_is_reachable_by_digit_or_by_stepping ... ok\ntest the_literal_guard_reports_a_planted_literal ... ok\ntest the_literal_guard_allows_what_the_vocabulary_permits ... ok\ntest an_unavailable_typeface_is_a_typed_visible_failure ... ok\ntest the_state_vocabulary_is_closed_exhaustive_and_legible_without_color ... ok\ntest both_authored_viewports_render_intact ... ok\ntest the_production_render_path_paints_only_authored_values ... ok\ntest no_interactive_target_is_below_the_authored_minimum ... ok\ntest the_literal_guard_reads_the_delivered_tree ... ok\ntest component_vocabulary_acceptance ... ok\n\ntest result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.27s\n\n\nrunning 1 test\ntest fifteen_patch_midi_dispatch_uses_the_complete_production_control_path ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s\n\n\nrunning 1 test\ntest effects_and_buses_scene_completes_with_measured_topology_and_responsiveness ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.18s\n\n\nrunning 1 test\ntest real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s\n\n\nrunning 1 test\ntest engine_selection_workflow_is_correlated_audible_and_falsifiable ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s\n\n\nrunning 1 test\ntest exhaustive_scene_proves_exact_coverage_boundaries_and_restoration ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 46.32s\n\n\nrunning 1 test\ntest expandable_effects_and_bus_topology ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s\n\n\nrunning 5 tests\ntest false_tick_closes_once_without_projection_frame_or_repaint ... ok\ntest mixer_frame_reads_one_compatible_immutable_audio_observation ... ok\ntest production_render_paints_the_authored_palette_and_typeface ... ok\ntest production_update_renders_both_contexts_at_both_reference_viewports ... ok\ntest patch_utility_controls_dispatch_through_the_same_semantic_callback ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s\n\n\nrunning 2 tests\ntest live_demo_early_close_uses_semantic_cleanup_without_success_report ... ok\ntest live_demo_scene_uses_production_state_projection_render_and_observation_paths ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.16s\n\n\nrunning 8 tests\ntest guard_refuses_to_run_without_perl_rather_than_stripping_every_line_away ... ok\ntest guard_refuses_to_run_without_ripgrep_rather_than_reporting_a_clean_tree ... ok\ntest guard_fails_on_a_reintroduced_variant_with_file_line_and_identifier ... ok\ntest guard_allows_master_gain_and_the_documented_exempt_surfaces ... ok\ntest guard_passes_on_the_delivered_tree ... ok\ntest missing_tool_and_found_violation_report_different_exit_codes ... ok\ntest guard_fails_on_every_retired_identifier_family ... ok\ntest guard_self_test_observes_its_own_failure_path ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s\n\n\nrunning 1 test\ntest patch_page_context_is_exact_recoverable_and_audio_neutral ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s\n\n\nrunning 1 test\ntest common_adsr_is_per_voice_in_both_production_engines ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s\n\n\nrunning 1 test\ntest prepared_engine_rack_acceptance ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s\n\n\nrunning 10 tests\nCREST_TEST_VALIDATION zero-selection-rejected passed\ntest zero_selection_validation_is_rejected_even_if_broad_output_looks_successful ... ok\ntest defective_default_return_composition_aborts_startup_with_the_named_error ... ok\ntest unsupported_device_configuration_is_rejected_before_graph_preparation ... ok\ntest audio_observation_realtime_contract ... ok\ntest prepared_graph_handoff ... ok\ntest production_composition_validates_every_injected_registration_before_publication ... ok\ntest post_start_device_failure_becomes_an_exact_application_error ... ok\ntest audio_renderer_realtime_contract ... ok\ntest declared_default_return_composition_boots_the_production_root ... ok\ntest gapped_chain_survives_the_composition_root_round_trip ... ok\n\ntest result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n\n\nrunning 1 test\ntest typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.38s\n\n\nrunning 6 tests\ntest all_three_slot_rows_are_reachable_and_the_context_set_is_closed ... ok\ntest return_occupancy_uses_the_same_adjacent_choice_contract ... ok\ntest slot_occupancy_cycles_adjacent_choices_without_wrapping ... ok\ntest mixer_projection_carries_eight_sends_eight_returns_and_one_global ... ok\ntest slot_projection_is_descriptor_driven_for_every_registry_entry ... ok\ntest clearing_a_focused_slot_recovers_focus_deterministically ... ok\n\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s\n\n\nrunning 1 test\ntest production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s\n\n\nrunning 1 test\ntest production_path_proves_canonical_sixteen_track_routing ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s\n\n\nrunning 1 test\ntest soundfont_preset_selection ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s\n\n\nrunning 1 test\ntest dump_production_mixer_view_model ... ignored, spike harness: writes spike/webview-mixer/view-model.json on demand\n\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 6 tests\ntest chorus_capability_schema_and_config_are_exact ... ok\ntest chorus_source_provenance ... ok\ntest prepared_post_effect_rack_processes_only_the_configured_patch ... ok\ntest prepared_post_effect_rack_builder_prepares_exact_zero_or_one_slots ... ok\ntest static_patch_effect ... ok\ntest chorus_preparer_enforces_rate_layout_and_finite_stereo_processing ... ok\n\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s\n\n\nrunning 11 tests\ntest invalid_occupancy_changes_are_refused_before_publication_without_mutation ... ok\ntest topology_status_is_projected_with_reason_and_position ... ok\ntest recovery_ordering_and_scalar_structural_coexistence_hold ... ok\ntest repeated_topology_changes_retire_off_callback_with_clean_ownership_at_exit ... ok\ntest controlled_rejection_leaves_the_active_graph_intact_with_sample_exact_audio ... ok\ntest occupancy_changes_travel_the_canonical_structural_path_and_become_audible ... ok\ntest the_occupancy_lifecycle_is_deterministic_across_two_runs ... ok\ntest a_configured_chain_and_its_live_state_follow_the_patch_across_a_reroute ... ok\ntest held_voices_carry_over_a_slot_occupancy_activation_sample_continuously ... ok\ntest return_clear_held_note_continuity_preserves_held_voices_sample_exactly ... ok\ntest held_voices_carry_over_a_slot_clear_activation_sample_continuously ... ok\n\ntest result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.72s\n\nwebview_projection_shell acceptance: headless run\nT022 serialized-schema fidelity: PASS (3 distinct states, generations 2/3/4, emit path byte-identical + structural round-trip + declared key surface)\nT023 token-table freshness: PASS (74 unique custom properties, byte-fresh, GENERATED header, drift names its property)\nT025 typed startup failure: PASS (exit=Some(1) after 1.6s, typed PageLoadFailed on stderr, self-exit \u2014 no eframe fallback)\nCREST_WEBVIEW_SKIP T024 page render determinism (DOM layer at 1920x1080 and 1280x800): CREST_WEBVIEW_TESTS=1 absent (skip decided before any window attempt; serialized-document fidelity for the same documents ran above as T022)\nCREST_WEBVIEW_SKIP T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak): CREST_WEBVIEW_TESTS=1 absent (skip decided before any window attempt; serialized-document fidelity for the same documents ran above as T022)\nCREST_ACCEPTANCE webview_projection_shell passed (skipped: T024 page render determinism (DOM layer at 1920x1080 and 1280x800); T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak))\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.66s\n     Running unittests src/lib.rs (target/debug/deps/crest_synth-bbd6c7b8ff826a3b)\n     Running unittests src/bin/crest_synth.rs (target/debug/deps/crest_synth-3b7e5b4ce1c3988c)\n     Running unittests src/bin/crest_synth_witness.rs (target/debug/deps/crest_synth_witness-95110ceb2c019132)\n     Running unittests src/bin/webview_input_probe.rs (target/debug/deps/webview_input_probe-3b03d39dcc8aa6b6)\n     Running tests/behavioral_mutation_harness.rs (target/debug/deps/behavioral_mutation_harness-caabd258ab4ebe67)\n     Running tests/braids_engine.rs (target/debug/deps/braids_engine-7499556cf287bb37)\n     Running tests/capability_schema.rs (target/debug/deps/capability_schema-7275760ee14f30f4)\n     Running tests/component_composition.rs (target/debug/deps/component_composition-bca5f41976b0c560)\n     Running tests/component_vocabulary.rs (target/debug/deps/component_vocabulary-3b83527d873421b4)\n     Running tests/control_dispatch_performance.rs (target/debug/deps/control_dispatch_performance-c9060fff9ec731b3)\n     Running tests/effects_and_buses.rs (target/debug/deps/effects_and_buses-8fa048f6bbbcefb3)\n     Running tests/eframe_context.rs (target/debug/deps/eframe_context-40c093f8a3a9504f)\n     Running tests/engine_selection_workflow.rs (target/debug/deps/engine_selection_workflow-1d7d7a911b36354f)\n     Running tests/exhaustive_demo_scene.rs (target/debug/deps/exhaustive_demo_scene-9269de2c7622a192)\n     Running tests/expandable_effects_and_bus_topology.rs (target/debug/deps/expandable_effects_and_bus_topology-2bfc5ba25439a223)\n     Running tests/graphical_application_shell.rs (target/debug/deps/graphical_application_shell-3d8196b53640216c)\n     Running tests/live_demo_scene.rs (target/debug/deps/live_demo_scene-b7318c60eb02ac38)\n     Running tests/no_name_enumeration_guard.rs (target/debug/deps/no_name_enumeration_guard-42a610b9dd3b3dd1)\n     Running tests/patch_page_projection.rs (target/debug/deps/patch_page_projection-c4d3572b86e67e2e)\n     Running tests/per_voice_envelope.rs (target/debug/deps/per_voice_envelope-00b0290bad340d03)\n     Running tests/prepared_engine_rack.rs (target/debug/deps/prepared_engine_rack-8ce7e049147a8f45)\n     Running tests/production_runtime_contracts.rs (target/debug/deps/production_runtime_contracts-192635d3d2b0f8fa)\n     Running tests/schema_surface.rs (target/debug/deps/schema_surface-12e7f602da506ec9)\n     Running tests/semantic_focus_and_projection.rs (target/debug/deps/semantic_focus_and_projection-e0cf66281bbb4c40)\n     Running tests/semantic_graphical_view_model.rs (target/debug/deps/semantic_graphical_view_model-2dc25cf386dfe666)\n     Running tests/sixteen_track_mixer_routing.rs (target/debug/deps/sixteen_track_mixer_routing-acf0ab1d6092064c)\n     Running tests/soundfont_preset_selection.rs (target/debug/deps/soundfont_preset_selection-0375ab4e5764d7e7)\n     Running tests/spike_webview_view_model_dump.rs (target/debug/deps/spike_webview_view_model_dump-d7fc61886b80db27)\n     Running tests/static_patch_effect.rs (target/debug/deps/static_patch_effect-7e2534cd914e801b)\n     Running tests/topology_change_lifecycle.rs (target/debug/deps/topology_change_lifecycle-8f09c5669d4b5c40)\n     Running tests/webview_projection_shell.rs (target/debug/deps/webview_projection_shell-08a97bb45714da40)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.smoke",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.smoke",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "run",
+          "--bin",
+          "crest-synth",
+          "--",
+          "--smoke"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 12290,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.72s\n     Running `target/debug/crest-synth --smoke`\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.capability_schema",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.capability_schema",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "capability_schema",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 8654,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE capability_schema passed\ntest capability_schema_is_exact_generic_and_rejected_without_fallback ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.93s\n     Running tests/capability_schema.rs (target/debug/deps/capability_schema-7275760ee14f30f4)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE capability_schema passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.static_patch_effect",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.static_patch_effect",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--release",
+          "--test",
+          "static_patch_effect",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 32262,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 6 tests\ntest chorus_capability_schema_and_config_are_exact ... ok\ntest chorus_preparer_enforces_rate_layout_and_finite_stereo_processing ... ok\ntest chorus_source_provenance ... ok\ntest prepared_post_effect_rack_processes_only_the_configured_patch ... ok\ntest prepared_post_effect_rack_builder_prepares_exact_zero_or_one_slots ... ok\nCREST_PATCH_EFFECT_OBSERVATION {\"schemaVersion\":1,\"upstreamRevision\":\"08460a69a7e1f7a81c5a2abcc7189c9a6b7208d4\",\"stmlibRevision\":\"e3bd7c9cc00e4364166f9905c0509b6ffd0535ec\",\"sourceHashesMatch\":true,\"licensePresent\":true,\"configuredPatchId\":1,\"configuredEffectSlots\":1,\"amountDepthCasesExercised\":2,\"patchFocusOrderExact\":true,\"scalarOnlyPublication\":true,\"orderedBeforeMix\":true,\"targetAudioDistinct\":true,\"stereoSideEnergyNonzero\":true,\"targetPatchExact\":true,\"untargetedPatchesExact\":true,\"independentInstances\":true,\"independentTails\":true,\"structuralConfigPreserved\":true,\"unsupportedRateRejected\":true,\"missingRegistrationRejected\":true,\"fallbackCount\":0,\"callbackReachableStrings\":0,\"callbackAllocations\":0,\"callbackDeallocations\":0,\"callbackDestructions\":0,\"p99RenderMicroseconds\":45}\nCREST_ACCEPTANCE static_patch_effect passed\ntest static_patch_effect ... ok\n\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `release` profile [optimized] target(s) in 31.77s\n     Running tests/static_patch_effect.rs (target/release/deps/static_patch_effect-ade11dd06cc7acf0)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE static_patch_effect passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.patch_page_projection",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.patch_page_projection",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "patch_page_projection",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 10073,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE patch_page_projection passed\ntest patch_page_context_is_exact_recoverable_and_audio_neutral ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.81s\n     Running tests/patch_page_projection.rs (target/debug/deps/patch_page_projection-c4d3572b86e67e2e)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE patch_page_projection passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.engine_selection_workflow",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.engine_selection_workflow",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "engine_selection_workflow",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 10037,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ENGINE_SELECTION_OBSERVATION {\"schemaVersion\":1,\"patchId\":1,\"sourceCapabilityId\":\"instrument.soundfont.hidef\",\"forwardCapabilityId\":\"instrument.braids\",\"finalCapabilityId\":\"instrument.soundfont.hidef\",\"revisions\":[1,2,3],\"preparingSourceAudible\":true,\"busyRejected\":true,\"staleResultRejected\":true,\"controlledFailurePreservedSource\":true,\"fallbackCount\":0,\"graphPublications\":2,\"activationAcknowledgements\":2,\"braidsPrimaryPatchRms\":0.30279657,\"soundfontPrimaryPatchRms\":0.0023892918,\"targetAudioFinite\":true,\"targetedPatchExact\":true,\"untargetedPatchExact\":true,\"finalDescriptorDefaultSoundFont\":true,\"callbackAllocations\":0,\"callbackDeallocations\":0,\"callbackDestructions\":0,\"retiredGraphsCollectedOffCallback\":2}\nCREST_ACCEPTANCE engine_selection_workflow passed\ntest engine_selection_workflow_is_correlated_audible_and_falsifiable ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.26s\n     Running tests/engine_selection_workflow.rs (target/debug/deps/engine_selection_workflow-1d7d7a911b36354f)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE engine_selection_workflow passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.soundfont_preset_selection",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.soundfont_preset_selection",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--release",
+          "--test",
+          "soundfont_preset_selection",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 32292,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_SOUNDFONT_PRESET_OBSERVATION {\"schemaVersion\":1,\"catalogEntries\":280,\"exactAuthoredNames\":true,\"numericOrder\":true,\"rawOrderDiscriminates\":true,\"alphabeticalOrderDiscriminates\":true,\"choiceIdsRoundTrip\":true,\"duplicateBehaviorExact\":true,\"parseCount\":1,\"callbackMetadataCounts\":[0,0,0,0],\"focusedControlId\":\"patch.capability.soundfont.preset\",\"sourceChoiceId\":\"sf2.bank-0.program-0\",\"targetChoiceId\":\"sf2.bank-0.program-1\",\"preparingSourceAudible\":true,\"busyRejected\":true,\"staleRejected\":true,\"earlyAckRejected\":true,\"controlledFailurePreservedSource\":true,\"exactOneAssignmentCommit\":true,\"scalarEditMerged\":true,\"targetAudioFiniteNonzeroDistinct\":true,\"restoredDescriptorDefault\":true,\"lowerBoundaryRejected\":true,\"upperBoundaryRejected\":true,\"callbackAllocations\":0,\"callbackDeallocations\":0,\"finalRevision\":3}\nCREST_ACCEPTANCE soundfont_preset_selection passed\ntest soundfont_preset_selection ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `release` profile [optimized] target(s) in 31.68s\n     Running tests/soundfont_preset_selection.rs (target/release/deps/soundfont_preset_selection-720307f4df312966)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE soundfont_preset_selection passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.prepared_engine_rack",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.prepared_engine_rack",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "prepared_engine_rack",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9760,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE prepared_engine_rack passed\ntest prepared_engine_rack_acceptance ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.05s\n     Running tests/prepared_engine_rack.rs (target/debug/deps/prepared_engine_rack-8ce7e049147a8f45)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE prepared_engine_rack passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.braids_engine",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.braids_engine",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--release",
+          "--test",
+          "braids_engine",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 32391,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_BRAIDS_OBSERVATION {\"upstream_revision\":\"08460a69a7e1f7a81c5a2abcc7189c9a6b7208d4\",\"stmlib_revision\":\"e3bd7c9cc00e4364166f9905c0509b6ffd0535ec\",\"source_hashes_match\":true,\"model_count\":47,\"voices_per_patch\":16,\"braids_patch_count\":3,\"total_braids_voice_capacity\":48,\"capacity_matches_patch_count\":true,\"no_braids_specific_patch_limit\":true,\"independent_patch_banks\":true,\"sixteen_voices_audible\":true,\"seventeenth_stole_oldest\":true,\"scalar_cases_exercised\":3,\"unsupported_rate_rejected\":true,\"mixed_routing_exact\":true,\"parameter_isolation_exact\":true,\"finite_audio\":true,\"callback_allocations\":0,\"callback_destructions\":0,\"native_callback_destructions\":0,\"p99_render_microseconds\":338}\nCREST_ACCEPTANCE braids_engine passed\ntest pinned_braids_engine_satisfies_the_mixed_production_contract ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `release` profile [optimized] target(s) in 31.78s\n     Running tests/braids_engine.rs (target/release/deps/braids_engine-ca4ea1ad9ec0d882)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE braids_engine passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.per_voice_envelope",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.per_voice_envelope",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "per_voice_envelope",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9824,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ENVELOPE_OBSERVATION {\"parameter_cases_exercised\":4,\"patch_control_cases_exercised\":4,\"patch_focus_order_exact\":true,\"fine_coarse_adjustment_exact\":true,\"mixer_excludes_patch_envelope\":true,\"scalar_only_publication\":true,\"target_patch_isolated\":true,\"soundfont_synthesizers_per_patch\":1,\"braids_voices_per_patch\":16,\"state_text_snapshot_exact\":true,\"soundfont_overlap_independent\":true,\"braids_overlap_independent\":true,\"all_fields_audible\":true,\"post_stem_envelope_absent\":true,\"extremes_finite\":true,\"callback_allocations\":0,\"callback_destructions\":0}\nCREST_ACCEPTANCE per_voice_envelope passed\ntest common_adsr_is_per_voice_in_both_production_engines ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.87s\n     Running tests/per_voice_envelope.rs (target/debug/deps/per_voice_envelope-00b0290bad340d03)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE per_voice_envelope passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.control_dispatch_performance",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.control_dispatch_performance",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "control_dispatch_performance",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9764,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE control_dispatch_performance passed patches=15 events=512 elapsed_ms=3 budget_ms=50 events_per_second=139168.3\ntest fifteen_patch_midi_dispatch_uses_the_complete_production_control_path ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.01s\n     Running tests/control_dispatch_performance.rs (target/debug/deps/control_dispatch_performance-c9060fff9ec731b3)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE control_dispatch_performance passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.demo_scene",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.demo_scene",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "exhaustive_demo_scene",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 56036,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE exhaustive_demo_scene passed\ntest exhaustive_scene_proves_exact_coverage_boundaries_and_restoration ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 46.00s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.41s\n     Running tests/exhaustive_demo_scene.rs (target/debug/deps/exhaustive_demo_scene-9269de2c7622a192)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE exhaustive_demo_scene passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.schema_surface",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.schema_surface",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "schema_surface",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 31464,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE schema_surface passed\ntest typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.47s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.40s\n     Running tests/schema_surface.rs (target/debug/deps/schema_surface-12e7f602da506ec9)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE schema_surface passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.egui_context",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.egui_context",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "eframe_context",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9420,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE eframe_context passed\ntest real_egui_frames_dispatch_into_app_loop_and_render_the_accepted_projection ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.42s\n     Running tests/eframe_context.rs (target/debug/deps/eframe_context-40c093f8a3a9504f)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE eframe_context passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.graphical_application_shell",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.graphical_application_shell",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "graphical_application_shell",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9470,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 5 tests\ntest false_tick_closes_once_without_projection_frame_or_repaint ... ok\ntest mixer_frame_reads_one_compatible_immutable_audio_observation ... ok\ntest production_render_paints_the_authored_palette_and_typeface ... ok\nCREST_ACCEPTANCE graphical_application_shell passed\ntest production_update_renders_both_contexts_at_both_reference_viewports ... ok\ntest patch_utility_controls_dispatch_through_the_same_semantic_callback ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.70s\n     Running tests/graphical_application_shell.rs (target/debug/deps/graphical_application_shell-3d8196b53640216c)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE graphical_application_shell passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.semantic_graphical_view_model",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.semantic_graphical_view_model",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "semantic_graphical_view_model",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9978,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE semantic_graphical_view_model passed\ntest production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.15s\n     Running tests/semantic_graphical_view_model.rs (target/debug/deps/semantic_graphical_view_model-2dc25cf386dfe666)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE semantic_graphical_view_model passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.sixteen_track_mixer_routing",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.sixteen_track_mixer_routing",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "sixteen_track_mixer_routing",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9903,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE sixteen_track_mixer_routing passed\ntest production_path_proves_canonical_sixteen_track_routing ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.13s\n     Running tests/sixteen_track_mixer_routing.rs (target/debug/deps/sixteen_track_mixer_routing-acf0ab1d6092064c)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE sixteen_track_mixer_routing passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.mutation_harness",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.mutation_harness",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "behavioral_mutation_harness",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 14295,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_ACCEPTANCE behavioral_mutation_harness passed\ntest every_named_mutant_falsifies_its_measured_healthy_predicate ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.01s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.64s\n     Running tests/behavioral_mutation_harness.rs (target/debug/deps/behavioral_mutation_harness-caabd258ab4ebe67)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE behavioral_mutation_harness passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.live_demo",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.live_demo",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "live_demo",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 137078,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 17 tests\ntest testing::live_demo_report::tests::absent_measurement_fails_every_effects_completeness_expectation ... ok\ntest testing::live_demo_report::tests::exact_coverage_reports_missing_unexpected_and_duplicate_expected_values ... ok\ntest testing::live_demo_report::tests::mixer_routing_distinguishes_absent_counts_from_measured_zero ... ok\ntest testing::live_demo_report::tests::measured_zero_renders_as_zero_and_is_judged_on_its_merits ... ok\ntest testing::live_demo_report::tests::absent_frames_to_projection_never_renders_through_the_accessor - should panic ... ok\ntest testing::live_demo_report::tests::absent_track_count_never_renders_through_the_accessor - should panic ... ok\ntest testing::live_demo_runner::tests::non_finite_callback_measurements_are_rejected_before_checkpointing ... ok\ntest testing::live_demo_scene::tests::audible_predicates_are_finite_and_stage_specific ... ok\ntest testing::live_demo_report::tests::measured_lifecycle_observations_derive_unchanged_nonzero_maximums ... ok\ntest testing::live_demo_report::tests::empty_observation_set_derives_absent_measurements_that_render_null_and_fail ... ok\ntest testing::live_demo_runner::tests::shell_frame_credit_requires_complete_named_regions_and_nonzero_audio ... ok\ntest testing::live_demo_runner::tests::shell_frame_credit_rejects_stale_overlap_and_future_audio ... ok\ntest shell::visual::compositions::application_shell::tests::every_band_reports_the_label_the_live_demo_runner_expects ... ok\ntest shell::standalone_application::tests::standalone_live_demo_total_bound_closes_and_releases_stream ... ok\ntest shell::standalone_application::tests::standalone_live_demo_early_close_is_typed_and_never_reports_success ... ok\ntest shell::standalone_application::tests::standalone_live_demo_stall_times_out_closes_and_releases_stream ... ok\ntest shell::standalone_application::tests::standalone_live_demo_composition_isolates_input_and_closes_on_completion ... ok\n\ntest result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 815 filtered out; finished in 7.87s\n\n\nrunning 1 test\ntest tests::the_component_gallery_is_its_own_option_and_never_a_live_demo_alias ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s\n\n\nrunning 2 tests\ntest live_demo_early_close_uses_semantic_cleanup_without_success_report ... ok\nCREST_ACCEPTANCE live_demo_scene passed\ntest live_demo_scene_uses_production_state_projection_render_and_observation_paths ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.11s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s\n\nwebview_projection_shell acceptance: headless run\nT022 serialized-schema fidelity: PASS (3 distinct states, generations 2/3/4, emit path byte-identical + structural round-trip + declared key surface)\nT023 token-table freshness: PASS (74 unique custom properties, byte-fresh, GENERATED header, drift names its property)\nT025 typed startup failure: PASS (exit=Some(1) after 1.5s, typed PageLoadFailed on stderr, self-exit \u2014 no eframe fallback)\nCREST_WEBVIEW_SKIP T024 page render determinism (DOM layer at 1920x1080 and 1280x800): CREST_WEBVIEW_TESTS=1 absent (skip decided before any window attempt; serialized-document fidelity for the same documents ran above as T022)\nCREST_WEBVIEW_SKIP T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak): CREST_WEBVIEW_TESTS=1 absent (skip decided before any window attempt; serialized-document fidelity for the same documents ran above as T022)\nCREST_ACCEPTANCE webview_projection_shell passed (skipped: T024 page render determinism (DOM layer at 1920x1080 and 1280x800); T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak))\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.69s\n     Running unittests src/lib.rs (target/debug/deps/crest_synth-bbd6c7b8ff826a3b)\n\nthread 'testing::live_demo_report::tests::absent_track_count_never_renders_through_the_accessor' (34522462) panicked at src/testing/live_demo_report.rs:252:21:\ntrack_count is absent: the canonical StateTree carried no mixer track evidence\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\nthread 'testing::live_demo_report::tests::absent_frames_to_projection_never_renders_through_the_accessor' (34522460) panicked at src/testing/live_demo_report.rs:851:21:\nframes_to_projection_max is absent: no observed topology transition carried the measurement\n     Running unittests src/bin/crest_synth.rs (target/debug/deps/crest_synth-3b7e5b4ce1c3988c)\n     Running unittests src/bin/crest_synth_witness.rs (target/debug/deps/crest_synth_witness-95110ceb2c019132)\n     Running unittests src/bin/webview_input_probe.rs (target/debug/deps/webview_input_probe-3b03d39dcc8aa6b6)\n     Running tests/behavioral_mutation_harness.rs (target/debug/deps/behavioral_mutation_harness-caabd258ab4ebe67)\n     Running tests/braids_engine.rs (target/debug/deps/braids_engine-7499556cf287bb37)\n     Running tests/capability_schema.rs (target/debug/deps/capability_schema-7275760ee14f30f4)\n     Running tests/component_composition.rs (target/debug/deps/component_composition-bca5f41976b0c560)\n     Running tests/component_vocabulary.rs (target/debug/deps/component_vocabulary-3b83527d873421b4)\n     Running tests/control_dispatch_performance.rs (target/debug/deps/control_dispatch_performance-c9060fff9ec731b3)\n     Running tests/effects_and_buses.rs (target/debug/deps/effects_and_buses-8fa048f6bbbcefb3)\n     Running tests/eframe_context.rs (target/debug/deps/eframe_context-40c093f8a3a9504f)\n     Running tests/engine_selection_workflow.rs (target/debug/deps/engine_selection_workflow-1d7d7a911b36354f)\n     Running tests/exhaustive_demo_scene.rs (target/debug/deps/exhaustive_demo_scene-9269de2c7622a192)\n     Running tests/expandable_effects_and_bus_topology.rs (target/debug/deps/expandable_effects_and_bus_topology-2bfc5ba25439a223)\n     Running tests/graphical_application_shell.rs (target/debug/deps/graphical_application_shell-3d8196b53640216c)\n     Running tests/live_demo_scene.rs (target/debug/deps/live_demo_scene-b7318c60eb02ac38)\n     Running tests/no_name_enumeration_guard.rs (target/debug/deps/no_name_enumeration_guard-42a610b9dd3b3dd1)\n     Running tests/patch_page_projection.rs (target/debug/deps/patch_page_projection-c4d3572b86e67e2e)\n     Running tests/per_voice_envelope.rs (target/debug/deps/per_voice_envelope-00b0290bad340d03)\n     Running tests/prepared_engine_rack.rs (target/debug/deps/prepared_engine_rack-8ce7e049147a8f45)\n     Running tests/production_runtime_contracts.rs (target/debug/deps/production_runtime_contracts-192635d3d2b0f8fa)\n     Running tests/schema_surface.rs (target/debug/deps/schema_surface-12e7f602da506ec9)\n     Running tests/semantic_focus_and_projection.rs (target/debug/deps/semantic_focus_and_projection-e0cf66281bbb4c40)\n     Running tests/semantic_graphical_view_model.rs (target/debug/deps/semantic_graphical_view_model-2dc25cf386dfe666)\n     Running tests/sixteen_track_mixer_routing.rs (target/debug/deps/sixteen_track_mixer_routing-acf0ab1d6092064c)\n     Running tests/soundfont_preset_selection.rs (target/debug/deps/soundfont_preset_selection-0375ab4e5764d7e7)\n     Running tests/spike_webview_view_model_dump.rs (target/debug/deps/spike_webview_view_model_dump-d7fc61886b80db27)\n     Running tests/static_patch_effect.rs (target/debug/deps/static_patch_effect-7e2534cd914e801b)\n     Running tests/topology_change_lifecycle.rs (target/debug/deps/topology_change_lifecycle-8f09c5669d4b5c40)\n     Running tests/webview_projection_shell.rs (target/debug/deps/webview_projection_shell-08a97bb45714da40)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE live_demo_scene passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.production_runtime_contracts",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.production_runtime_contracts",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "production_runtime_contracts",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 11681,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 10 tests\nCREST_TEST_VALIDATION zero-selection-rejected passed\nCREST_ACCEPTANCE production_runtime_contracts passed\ntest zero_selection_validation_is_rejected_even_if_broad_output_looks_successful ... ok\nCREST_RT_VALIDATION defective_default_return_composition_aborts_startup_with_the_named_error passed\ntest defective_default_return_composition_aborts_startup_with_the_named_error ... ok\nCREST_RT_VALIDATION audio_observation_realtime_contract passed\ntest audio_observation_realtime_contract ... ok\ntest unsupported_device_configuration_is_rejected_before_graph_preparation ... ok\nCREST_RT_VALIDATION prepared_graph_handoff passed\ntest prepared_graph_handoff ... ok\ntest production_composition_validates_every_injected_registration_before_publication ... ok\ntest post_start_device_failure_becomes_an_exact_application_error ... ok\nCREST_RT_VALIDATION audio_renderer_realtime_contract passed\ntest audio_renderer_realtime_contract ... ok\nCREST_RT_VALIDATION declared_default_return_composition_boots_the_production_root passed\ntest declared_default_return_composition_boots_the_production_root ... ok\nCREST_RT_VALIDATION gapped_chain_survives_the_composition_root_round_trip passed\ntest gapped_chain_survives_the_composition_root_round_trip ... ok\n\ntest result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.92s\n     Running tests/production_runtime_contracts.rs (target/debug/deps/production_runtime_contracts-192635d3d2b0f8fa)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE production_runtime_contracts passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.audio_renderer_realtime_contract",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.audio_renderer_realtime_contract",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "bash",
+          "scripts/run_exact_test_validation.sh",
+          "production_runtime_contracts",
+          "audio_renderer_realtime_contract",
+          "CREST_RT_VALIDATION audio_renderer_realtime_contract passed"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9657,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.88s\n     Running tests/production_runtime_contracts.rs (target/debug/deps/production_runtime_contracts-192635d3d2b0f8fa)\n\nrunning 1 test\nCREST_RT_VALIDATION audio_renderer_realtime_contract passed\ntest audio_renderer_realtime_contract ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.12s\n\nCREST_TEST_VALIDATION {\"target\":\"production_runtime_contracts\",\"selector\":\"audio_renderer_realtime_contract\",\"testsExecuted\":1}\n",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "\"testsExecuted\":1",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.prepared_graph_handoff_contract",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.prepared_graph_handoff_contract",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "bash",
+          "scripts/run_exact_test_validation.sh",
+          "production_runtime_contracts",
+          "prepared_graph_handoff",
+          "CREST_RT_VALIDATION prepared_graph_handoff passed"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9549,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.75s\n     Running tests/production_runtime_contracts.rs (target/debug/deps/production_runtime_contracts-192635d3d2b0f8fa)\n\nrunning 1 test\nCREST_RT_VALIDATION prepared_graph_handoff passed\ntest prepared_graph_handoff ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.11s\n\nCREST_TEST_VALIDATION {\"target\":\"production_runtime_contracts\",\"selector\":\"prepared_graph_handoff\",\"testsExecuted\":1}\n",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "\"testsExecuted\":1",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.audio_observation_realtime_contract",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.audio_observation_realtime_contract",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "bash",
+          "scripts/run_exact_test_validation.sh",
+          "production_runtime_contracts",
+          "audio_observation_realtime_contract",
+          "CREST_RT_VALIDATION audio_observation_realtime_contract passed"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 9958,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.17s\n     Running tests/production_runtime_contracts.rs (target/debug/deps/production_runtime_contracts-192635d3d2b0f8fa)\n\nrunning 1 test\nCREST_RT_VALIDATION audio_observation_realtime_contract passed\ntest audio_observation_realtime_contract ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.10s\n\nCREST_TEST_VALIDATION {\"target\":\"production_runtime_contracts\",\"selector\":\"audio_observation_realtime_contract\",\"testsExecuted\":1}\n",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "\"testsExecuted\":1",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.zero_selection_guard",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.zero_selection_guard",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "bash",
+          "scripts/run_exact_test_validation.sh",
+          "--self-test"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 20,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "CREST_TEST_VALIDATION zero-selection-rejected passed\n",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_TEST_VALIDATION zero-selection-rejected passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.expandable_effects_and_bus_topology",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.expandable_effects_and_bus_topology",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--release",
+          "--test",
+          "expandable_effects_and_bus_topology",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 33340,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 1 test\nCREST_EFFECTS_AND_BUSES_OBSERVATION {\"schemaVersion\":2,\"orderedSlotCasesExercised\":3,\"slotOrderExchangeDistinct\":true,\"sameEntryInstancesIndependent\":true,\"clearedSlotPreservedHeldNotes\":true,\"clearedSlotFocusRecovered\":true,\"addressableReturns\":8,\"defaultReturnOccupancyExact\":true,\"maxOffTargetBusDbfs\":-200.0,\"mutedOrSoloExcludedWetContribution\":0.0,\"unoccupiedReturnSilent\":true,\"returnContentChangeDryUninterrupted\":true,\"topologyRejectionsExercised\":4,\"rejectionPreservedActiveGraph\":true,\"rejectionReasonAttributable\":true,\"postRejectionValidChangeAccepted\":true,\"partiallyAppliedTopologyBlocks\":0,\"registryEntryAdditionStructuralChanges\":0,\"fourthEntryEndToEndExercised\":true,\"carryOverWrongEngineIdentityRefused\":true,\"callbackAllocations\":0,\"callbackDeallocations\":0,\"callbackDestructions\":0,\"retiredGraphsCollectedOffCallback\":15,\"activeNotesAtExit\":0,\"twoRunTraceEqual\":true}\nCREST_ACCEPTANCE expandable_effects_and_bus_topology passed\ntest expandable_effects_and_bus_topology ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `release` profile [optimized] target(s) in 32.70s\n     Running tests/expandable_effects_and_bus_topology.rs (target/release/deps/expandable_effects_and_bus_topology-c2383f400dc1faa7)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE expandable_effects_and_bus_topology passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.no_name_enumerated_identity",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.no_name_enumerated_identity",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "bash",
+          "scripts/check_no_name_enumerated_identity.sh"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 132,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "CREST_STATIC_VALIDATION no_name_enumerated_identity passed\n",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_STATIC_VALIDATION no_name_enumerated_identity passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.acceptance_matrix_covers_all_requirement_kinds",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.acceptance_matrix_covers_all_requirement_kinds",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "bash",
+          "scripts/check_acceptance_matrix_coverage.sh"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 78,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "out of scope: crest-component-controls-and-compositions-01KZ25VX (archived)\nout of scope: crest-component-foundations-01KZ02H2 (archived)\nout of scope: demo-journey-fidelity-and-hygiene-01KYWVYG (archived)\nout of scope: expandable-effects-and-bus-topology-01KYNGX8 (archived)\nout of scope: falsifiable-journey-proof-01KYZTQ1 (archived)\nout of scope: mixer-track-column-01KZ7KQS (has not run acceptance)\ngraded 1 mission acceptance record(s) against FR, NFR, C\nCREST_STATIC_VALIDATION acceptance_matrix_covers_all_requirement_kinds passed\n",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_STATIC_VALIDATION acceptance_matrix_covers_all_requirement_kinds passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.component_vocabulary",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.component_vocabulary",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "component_vocabulary",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 12072,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 11 tests\ntest every_declared_value_equals_its_authored_counterpart ... ok\ntest every_gallery_page_is_reachable_by_digit_or_by_stepping ... ok\ntest the_literal_guard_reports_a_planted_literal ... ok\ntest the_literal_guard_allows_what_the_vocabulary_permits ... ok\ntest an_unavailable_typeface_is_a_typed_visible_failure ... ok\ntest the_state_vocabulary_is_closed_exhaustive_and_legible_without_color ... ok\ntest both_authored_viewports_render_intact ... ok\ntest the_production_render_path_paints_only_authored_values ... ok\ntest no_interactive_target_is_below_the_authored_minimum ... ok\ntest the_literal_guard_reads_the_delivered_tree ... ok\nCREST_COMPONENT_VOCABULARY_OBSERVATION colors=17 type_styles=8 spacing_steps=6 radii=3 states=9 pages=15 density_policies=2 frames=4 glyph_runs=580 runs_scrolled_out_of_view=151 sources_scanned=83 lines_scanned=58398\nCREST_ACCEPTANCE component_vocabulary passed\ntest component_vocabulary_acceptance ... ok\n\ntest result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.24s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.12s\n     Running tests/component_vocabulary.rs (target/debug/deps/component_vocabulary-3b83527d873421b4)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE component_vocabulary passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    },
+    {
+      "id": "validation.component_composition",
+      "declaration": {
+        "kind": "project_check",
+        "location": "project.validations.component_composition",
+        "owner": "project.crest-synth"
+      },
+      "applicability": {
+        "mode": "project-check",
+        "changes": []
+      },
+      "process": {
+        "command": [
+          "cargo",
+          "test",
+          "--test",
+          "component_composition",
+          "--",
+          "--nocapture"
+        ],
+        "working_directory": "/Users/crestenstclair/workspace/crest-synth",
+        "limits": {
+          "timeout_ms": 300000,
+          "stdout_bytes": 8388608,
+          "stderr_bytes": 8388608
+        },
+        "duration_ms": 14032,
+        "termination": "exited",
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "output_limit_exceeded": [],
+        "spawn_error": null,
+        "stdout": "\nrunning 13 tests\ntest selection_is_total_over_kind_and_role_with_every_control_reachable ... ok\ntest the_visual_decision_guard_allows_what_the_vocabulary_permits ... ok\ntest the_visual_decision_guard_reports_a_planted_decision ... ok\ntest both_authored_viewports_survive_recomposition ... ok\ntest a_composition_with_no_view_data_marks_the_gap_rather_than_painting_one ... ok\ntest the_production_projection_carries_the_kinds_this_target_can_drive ... ok\ntest every_control_paints_every_applicable_state_without_relying_on_color ... ok\ntest no_component_owns_caches_or_dispatches_application_state ... ok\ntest every_drivable_pair_paints_through_the_production_render_path ... ok\ntest every_shipped_region_is_produced_by_a_declared_composition ... ok\ntest no_visual_decision_survives_outside_the_visual_module ... ok\ntest the_visual_decision_guard_reads_the_delivered_tree ... ok\nCREST_COMPONENT_COMPOSITION_OBSERVATION controls=8 compositions=8 kinds=7 roles=4 pairs=28 pairs_driven=18 states=9 frames=4 glyph_runs=580 sources_scanned=137 lines_scanned=84907 recorded_escapes={\"1280x800 Mixer mainWorkspace TrimmedInsideTheBand\": 64, \"1280x800 Mixer persistentSideRegion ScrolledOutOfView\": 22, \"1280x800 Patch mainWorkspace TrimmedInsideTheBand\": 1, \"1920x1080 Mixer persistentSideRegion ScrolledOutOfView\": 18, \"1920x1080 Patch mainWorkspace TrimmedInsideTheBand\": 1}\nCREST_ACCEPTANCE component_composition passed\ntest component_composition_acceptance ... ok\n\ntest result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.48s\n\n",
+        "stderr": "   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.53s\n     Running tests/component_composition.rs (target/debug/deps/component_composition-bca5f41976b0c560)\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "processPassed": true,
+      "assertions": [
+        {
+          "index": 1,
+          "type": "exit-code",
+          "passed": true,
+          "expected": 0,
+          "observed": 0,
+          "diagnostic": null
+        },
+        {
+          "index": 2,
+          "type": "stdout-contains",
+          "passed": true,
+          "expected": "CREST_ACCEPTANCE component_composition passed",
+          "observed": true,
+          "diagnostic": null
+        }
+      ],
+      "assertionsPassed": true,
+      "passed": true,
+      "diagnostics": []
+    }
+  ],
+  "diagnostics": [],
+  "semanticReview": {
+    "status": "not_evaluated",
+    "message": "Deterministic acceptance does not establish semantic implementation conformance; adversarial review is a separate, mandatory layer."
+  }
+}

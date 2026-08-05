@@ -1,0 +1,3298 @@
+{
+  "generation": 2,
+  "stateHash": "2b6c844cc65cb9ff",
+  "context": "mixer",
+  "activeSurface": "mixerMain",
+  "focusPath": {
+    "context": "mixer",
+    "surface": "mixerMain",
+    "patchId": null,
+    "capabilityId": null,
+    "controlId": {
+      "kind": "mixer",
+      "id": {
+        "kind": "track",
+        "track_id": 0,
+        "parameter": "level"
+      }
+    },
+    "modalId": null
+  },
+  "interactionMode": "navigate",
+  "returnPath": null,
+  "validActions": [
+    {
+      "action": {
+        "kind": "selectContext",
+        "payload": "patch"
+      },
+      "label": "Open PATCH",
+      "hint": "2"
+    },
+    {
+      "action": {
+        "kind": "selectContext",
+        "payload": "mixer"
+      },
+      "label": "Open MIXER",
+      "hint": "1"
+    },
+    {
+      "action": {
+        "kind": "navigate",
+        "payload": "down"
+      },
+      "label": "Move down",
+      "hint": "S"
+    },
+    {
+      "action": {
+        "kind": "navigate",
+        "payload": "right"
+      },
+      "label": "Move right",
+      "hint": "D"
+    },
+    {
+      "action": {
+        "kind": "setInteractionMode",
+        "payload": "navigate"
+      },
+      "label": "Navigate mode",
+      "hint": "release K"
+    },
+    {
+      "action": {
+        "kind": "setInteractionMode",
+        "payload": "adjust"
+      },
+      "label": "Adjust mode",
+      "hint": "hold K"
+    },
+    {
+      "action": {
+        "kind": "enterSurface",
+        "payload": "mixerInspector"
+      },
+      "label": "Open Inspector",
+      "hint": null
+    }
+  ],
+  "status": {
+    "kind": "ready",
+    "label": "READY",
+    "requestId": null,
+    "graphRevision": 1,
+    "targetGraphRevision": null
+  },
+  "errors": [],
+  "surfaces": [
+    {
+      "id": "mixerMain",
+      "label": "MIXER",
+      "role": "main",
+      "controls": [
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 0,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": true,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 0,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 0,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 0,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 1,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T01 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 1,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T01 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 1,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T01 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 1,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T01 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 2,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T02 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 2,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T02 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 2,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T02 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 2,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T02 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 3,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T03 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 3,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T03 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 3,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T03 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 3,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T03 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 4,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T04 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 4,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T04 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 4,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T04 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 4,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T04 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 5,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T05 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 5,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T05 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 5,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T05 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 5,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T05 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 6,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T06 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 6,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T06 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 6,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T06 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 6,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T06 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 7,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T07 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 7,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T07 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 7,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T07 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 7,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T07 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 8,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T08 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 8,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T08 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 8,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T08 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 8,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T08 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 9,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T09 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 9,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T09 Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 9,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T09 Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 9,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T09 Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 10,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0A Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 10,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0A Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 10,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0A Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 10,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0A Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 11,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0B Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 11,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0B Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 11,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0B Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 11,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0B Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 12,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0C Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 12,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0C Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 12,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0C Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 12,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0C Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 13,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0D Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 13,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0D Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 13,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0D Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 13,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0D Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 14,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0E Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 14,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0E Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 14,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0E Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 14,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0E Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 15,
+                "parameter": "level"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0F Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": "dB",
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 15,
+                "parameter": "pan"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0F Pan",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 15,
+                "parameter": "mute"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0F Mute",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerMain",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "track",
+                "track_id": 15,
+                "parameter": "solo"
+              }
+            },
+            "modalId": null
+          },
+          "label": "T0F Solo",
+          "kind": "toggle",
+          "value": {
+            "kind": "parameter",
+            "value": {
+              "kind": "toggle",
+              "value": false
+            }
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        }
+      ],
+      "summary": {
+        "kind": "mixer",
+        "patch_count": 2,
+        "global_parameter_count": 1
+      }
+    },
+    {
+      "id": "mixerInspector",
+      "label": "INSPECTOR",
+      "role": "persistentSide",
+      "controls": [
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "send",
+                "track_id": 0,
+                "bus": 0
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Send B0",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "send",
+                "track_id": 0,
+                "bus": 1
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Send B1",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "send",
+                "track_id": 0,
+                "bus": 2
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Send B2",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "send",
+                "track_id": 0,
+                "bus": 3
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Send B3",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "send",
+                "track_id": 0,
+                "bus": 4
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Send B4",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "send",
+                "track_id": 0,
+                "bus": 5
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Send B5",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "send",
+                "track_id": 0,
+                "bus": 6
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Send B6",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "send",
+                "track_id": 0,
+                "bus": 7
+              }
+            },
+            "modalId": null
+          },
+          "label": "T00 Send B7",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.0
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnOccupancy",
+                "bus": 0
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B0",
+          "kind": "choice",
+          "value": {
+            "kind": "identity",
+            "value": "Empty"
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnLevel",
+                "bus": 0
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B0 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.5
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnOccupancy",
+                "bus": 1
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B1",
+          "kind": "choice",
+          "value": {
+            "kind": "identity",
+            "value": "Empty"
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnLevel",
+                "bus": 1
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B1 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.5
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnOccupancy",
+                "bus": 2
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B2",
+          "kind": "choice",
+          "value": {
+            "kind": "identity",
+            "value": "Empty"
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnLevel",
+                "bus": 2
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B2 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.5
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnOccupancy",
+                "bus": 3
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B3",
+          "kind": "choice",
+          "value": {
+            "kind": "identity",
+            "value": "Empty"
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnLevel",
+                "bus": 3
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B3 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.5
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnOccupancy",
+                "bus": 4
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B4",
+          "kind": "choice",
+          "value": {
+            "kind": "identity",
+            "value": "Empty"
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnLevel",
+                "bus": 4
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B4 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.5
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnOccupancy",
+                "bus": 5
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B5",
+          "kind": "choice",
+          "value": {
+            "kind": "identity",
+            "value": "Empty"
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnLevel",
+                "bus": 5
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B5 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.5
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnOccupancy",
+                "bus": 6
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B6",
+          "kind": "choice",
+          "value": {
+            "kind": "identity",
+            "value": "Empty"
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnLevel",
+                "bus": 6
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B6 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.5
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnOccupancy",
+                "bus": 7
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B7",
+          "kind": "choice",
+          "value": {
+            "kind": "identity",
+            "value": "Empty"
+          },
+          "numericRange": null,
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "returnLevel",
+                "bus": 7
+              }
+            },
+            "modalId": null
+          },
+          "label": "Return B7 Level",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": 0.5
+          },
+          "numericRange": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "fineStep": 0.009999999776482582,
+            "coarseStep": 0.10000000149011612
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        },
+        {
+          "path": {
+            "context": "mixer",
+            "surface": "mixerInspector",
+            "patchId": null,
+            "capabilityId": null,
+            "controlId": {
+              "kind": "mixer",
+              "id": {
+                "kind": "global",
+                "parameter": "masterGainDb"
+              }
+            },
+            "modalId": null
+          },
+          "label": "masterGainDb",
+          "kind": "continuous",
+          "value": {
+            "kind": "scalar",
+            "value": -3.0
+          },
+          "numericRange": {
+            "minimum": -60.0,
+            "maximum": 6.0,
+            "fineStep": 1.0,
+            "coarseStep": 6.0
+          },
+          "unit": null,
+          "enabled": true,
+          "visible": true,
+          "focusable": true,
+          "editable": true,
+          "focused": false,
+          "status": null,
+          "error": null
+        }
+      ],
+      "summary": {
+        "kind": "mixerInspector",
+        "focused_control": {
+          "kind": "track",
+          "track_id": 0,
+          "parameter": "level"
+        },
+        "focused_track": 0,
+        "patch_count": 2,
+        "routed_patches": [
+          {
+            "patchId": 1,
+            "patchName": "Semantic 1"
+          }
+        ]
+      }
+    }
+  ]
+}
