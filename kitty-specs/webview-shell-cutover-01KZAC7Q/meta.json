@@ -1,9 +1,8 @@
 {
   "baseline_merge_commit": "7e61dc7857ffc624e929800ed773402df309c696",
-  "coordination_branch": "kitty/mission-webview-shell-cutover-01KZAC7Q",
   "created_at": "2026-08-06T01:50:33.898823+00:00",
   "crest_spec_impact": "structural",
-  "flattened": false,
+  "flattened": true,
   "friendly_name": "Webview Shell Cutover",
   "mission_id": "01KZAC7QD98CQ1SGFN71KF4RX7",
   "mission_number": null,
@@ -15,7 +14,7 @@
   "slug": "webview-shell-cutover-01KZAC7Q",
   "status_phase": "1",
   "target_branch": "feat/webview-shell-cutover",
-  "topology": "coord",
+  "topology": "lanes",
   "vcs": "git",
   "vcs_locked_at": "2026-08-06T03:43:08.705114+00:00"
 }
