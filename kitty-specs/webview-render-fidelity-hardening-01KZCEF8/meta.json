@@ -10,5 +10,6 @@
   "purpose_tldr": "Fix the shipped webview's CSP-blocked fader rendering and silent page render failures, and close the two proof gaps that let both ship.",
   "slug": "webview-render-fidelity-hardening-01KZCEF8",
   "target_branch": "feat/webview-shell-cutover",
-  "topology": "single_branch"
+  "topology": "single_branch",
+  "crest_spec_impact": "structural"
 }

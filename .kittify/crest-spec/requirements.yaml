@@ -390,10 +390,14 @@ requirements:
       contexts (PATCH and MIXER), context line, identity header, main workspace, focused-control emphasis,
       persistent Utility/Inspector region, footer, hint rows — resolving every color, type style, spacing
       step, and geometry value from a token table generated from the authored Rust vocabulary, never
-      hand-copied; the page captures no input and owns no navigation, focus, or value state; physical
-      input stays normalized on the Rust side through KeyboardInputTranslator; webview initialization
-      failure is a typed startup error ending the process with no silent fallback to another shell;
-      window close drives the owned shutdown path
+      hand-copied; the page's dynamic geometry (fader fills, position indicators) paints correctly under
+      the production content security policy without JS-built inline style attributes, and parity is
+      never bought by weakening that policy; the page captures no input and owns no navigation, focus,
+      or value state; physical input stays normalized on the Rust side through KeyboardInputTranslator;
+      webview initialization failure is a typed startup error ending the process with no silent fallback
+      to another shell; a page render exception or unhandled rejection after successful load surfaces
+      through the typed render-error channel and ends the process nonzero, never a silently stale
+      document; window close drives the owned shutdown path
     goals:
     - use_graphical_shell
     capabilities:
@@ -403,7 +407,8 @@ requirements:
     kind: nonfunctional
     description: The webview consumes exactly the serde serialization of SemanticGraphicalViewModel the
       projector already emits — one schema, no webview-specific variant, no page-invented field; a reducer
-      state change is visible in the webview within 50 ms at p95 under the paced live demo workload;
+      state change is visible in the webview within 50 ms at p95 under the paced live demo workload
+      with the page served under the production content security policy;
       meter observations reach the page as decimated latest-value traffic sustaining 30 Hz without queue
       growth over a five-minute render, and their loss degrades display only; the real-time callback's
       measured bounds are unchanged from the recorded pre-cutover baseline
@@ -471,7 +476,10 @@ requirements:
     description: A named headless shell acceptance target proves exact region identity, non-overlap, responsive
       geometry, projection-generation coherence, input dispatch, and audio-neutral context switching at
       both reference viewports through the production webview projection path (rendered-document and
-      frame-observation assertions); the retained release-mode make demo-live-graphical-shell target proves
+      frame-observation assertions), serving the page under the identical content security policy the
+      production window ships — policy parity asserted from the single policy source, painted fader
+      geometry proven to reflect the level value under it, and a forced page render throw proven to
+      exit nonzero with the typed page-render-failure error; the retained release-mode make demo-live-graphical-shell target proves
       the real window, fixture, physical audio, visible context sequence, semantic cleanup, resource teardown,
       and normal parent exit
     goals:

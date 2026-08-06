@@ -37,7 +37,10 @@ projectValidations:
       to the projector's serialization), token-table generation freshness against the authored vocabulary,
       deterministic page rendering of a given document at both authored viewports, typed startup failure
       with no silent shell fallback, Rust-side input ownership, and the declared owned shutdown
-      observations
+      observations — with the harness serving the identical production content security policy (asserted
+      from the single policy source), painted fader geometry proven to reflect the level value under
+      that policy, and a forced page render throw or unhandled rejection proven to exit nonzero with
+      the typed page-render-failure error
   component_vocabulary:
     scope: project
     kind: integration

@@ -179,9 +179,12 @@ assets:
     - Forward the page's painted acknowledgment as a ShellFrameObservation copying the supplied projection's
       semantic identity exactly; live reports credit only qualifying forwarded frames, and a scene that
       outpaces acknowledgments blocks on them, never on wall-clock sleeps.
-    - Surface a page render exception after a successful load as a typed error, never a frozen window.
+    - Surface a page render exception after a successful load as the typed page-render-failure error
+      ending the process nonzero, never a frozen window or silently stale document.
     - Set a restrictive content security policy on the page — every document and asset resolves over
-      embedded application resources — and compile the local page-override seam out of release builds.
+      embedded application resources, base-uri and form-action denied, no unsafe-inline in any directive
+      — and compile the local page-override seam out of release builds. The policy is the single source
+      the acceptance harness serves; it is never weakened to make the page paint.
     contributesTo:
       graphical_application_shell: is the sole shell composition behind the passive window boundary
       semantic_graphical_view_model: proves the canonical model serializes to one page-facing schema with
@@ -219,6 +222,12 @@ assets:
       source.
     - Acknowledge each painted document so the adapter can emit its frame observation; the acknowledgment
       carries the document's semantic identity and nothing else.
+    - Apply dynamic per-element geometry (fader fill level, position indicators) through CSSOM custom-property
+      assignment or data-attribute-plus-stylesheet binding, never a JS-built inline style attribute,
+      so the paint survives the production content security policy unchanged.
+    - Wrap document rendering in an error boundary that emits the render-error channel with a typed
+      payload on any render throw or unhandled rejection; the boundary itself does no rendering or
+      allocation-heavy formatting, and repeated failures keep the first typed error.
     contributesTo:
       graphical_application_shell: is the webview shell's only painted surface
       component_vocabulary: proves the authored vocabulary survives translation to a second rendering
@@ -1202,15 +1211,17 @@ assets:
   WebviewProjectionShellAcceptanceTests:
     kind: rust-integration-tests
     description: tests/webview_projection_shell.rs, the non-vacuous acceptance for the webview shell's
-      serialized-projection fidelity, page determinism, token generation freshness, typed startup failure,
-      and owned shutdown
+      serialized-projection fidelity, page determinism, token generation freshness, typed startup and
+      render failure, and owned shutdown — all measured with the page served under the production content
+      security policy
     profile:
       kind: verification_harness
-      witness: the webview shell renders the canonical serialized model at authored parity without owning
-        state
+      witness: the webview shell renders the canonical serialized model at authored parity, under the
+        shipped security policy, without owning state
       failurePolicy: a page-facing schema fork, a hand-edited or stale token table, a nondeterministic
         page render, a silent shell fallback, input captured by the page, meter loss mutating state,
-        or a shutdown path divergence fails
+        a shutdown path divergence, a harness policy laxer than production, painted fader geometry not
+        reflecting the level value under the shipped policy, or a silent page render exception fails
     targets:
     - TauriWebviewWindow
     prompts:
@@ -1226,6 +1237,15 @@ assets:
       no alternate window opened in its place.
     - Prove window close through the webview shell reaches the declared owned shutdown observations —
       stream release, worker completion, graph ownership collection, normal exit.
+    - Serve the page through the production response path so the harness carries the identical content
+      security policy the shipped window enforces, asserted equal against the single policy source —
+      never a restated copy, never a laxer stand-in.
+    - Prove painted fader geometry reflects the level custom property under the shipped policy — a fill
+      that stays empty while the readout shows the value fails, distinguishing value-zero from
+      variable-never-applied.
+    - Prove a forced page render throw and a forced unhandled rejection each emit the typed render-error
+      payload and end the shell nonzero with the typed page-render-failure error; a stale document with
+      no acknowledgment and no error must be unrepresentable.
     contributesTo:
       graphical_application_shell: makes the sole webview shell falsifiable on the declared boundary
         terms
