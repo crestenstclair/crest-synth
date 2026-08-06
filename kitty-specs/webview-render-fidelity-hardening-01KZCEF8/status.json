@@ -86,7 +86,8 @@
       "last_transition_at": "2026-08-06T23:33:19.151861+00:00",
       "model": "__resolved_model_absent__",
       "notes": [
-        "Ready for review: gallery pair joins both guard scans; two declared allowances (transparent read-back sentinel, fonts.check probe px) narrated in-test; falsifiability demonstrated and reverted"
+        "Ready for review: gallery pair joins both guard scans; two declared allowances (transparent read-back sentinel, fonts.check probe px) narrated in-test; falsifiability demonstrated and reverted",
+        "Review passed: gallery pair joined both guard scans, existing coverage byte-equivalent, both allowances verified narrow+narrated, all six falsifiability probes caught"
       ],
       "provider": "__resolved_provider_absent__",
       "role": "reviewer",
