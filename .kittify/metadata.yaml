@@ -28,3 +28,7 @@ migrations:
     result: success
     notes: Configured git merge.spec-kitty-meta.name; Configured git merge.spec-kitty-meta.driver;
       Configured git merge.spec-kitty-traces.name; Configured git merge.spec-kitty-traces.driver
+  - id: unify_charter_activation_promote_answers
+    applied_at: '2026-08-05T17:27:33.571799'
+    result: success
+    notes: No changes (all promotions already present)
