@@ -1,7 +1,7 @@
 {
-  "event_count": 13,
-  "last_event_id": "01KZCP6AMNN2STQKD9CQAWZCP1",
-  "materialized_at": "2026-08-06T23:23:02.677359+00:00",
+  "event_count": 14,
+  "last_event_id": "01KZCP756SAJNBGYFZYANJ5JS4",
+  "materialized_at": "2026-08-06T23:23:29.881076+00:00",
   "mission_number": "",
   "mission_slug": "webview-render-fidelity-hardening-01KZCEF8",
   "mission_type": "software-dev",
@@ -11,8 +11,8 @@
     "canceled": 0,
     "claimed": 0,
     "done": 0,
-    "for_review": 1,
-    "in_progress": 1,
+    "for_review": 2,
+    "in_progress": 0,
     "in_review": 1,
     "planned": 1
   },
@@ -52,6 +52,9 @@
       "last_event_id": "01KZCP6AMNN2STQKD9CQAWZCP1",
       "last_transition_at": "2026-08-06T23:23:02.677359+00:00",
       "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: PAGE_CSP hardened with base-uri/form-action denials, protocol_response+PAGE_CSP exported as documented single-source policy seam, render-failure path latched first-error-wins with in-module test"
+      ],
       "provider": "__resolved_provider_absent__",
       "role": "implementer",
       "shell_pid": 32447,
@@ -76,14 +79,19 @@
       "agent_profile": "__resolved_profile_absent__",
       "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
-      "lane": "in_progress",
-      "last_event_id": "01KZCNHTJX17M4K8KM220WHN3Z",
-      "last_transition_at": "2026-08-06T23:11:50.877159+00:00",
+      "lane": "for_review",
+      "last_event_id": "01KZCP756SAJNBGYFZYANJ5JS4",
+      "last_transition_at": "2026-08-06T23:23:29.881076+00:00",
       "model": "__resolved_model_absent__",
       "provider": "__resolved_provider_absent__",
       "role": "implementer",
       "shell_pid": 32780,
-      "shell_pid_created_at": "1786057908.366609"
+      "shell_pid_created_at": "1786057908.366609",
+      "subtasks": {
+        "T015": "done",
+        "T016": "done",
+        "T017": "done"
+      }
     }
   }
 }
