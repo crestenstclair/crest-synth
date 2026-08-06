@@ -7,6 +7,7 @@
   "mission_number": null,
   "mission_slug": "webview-shell-cutover-01KZAC7Q",
   "mission_type": "software-dev",
+  "pr_bound": true,
   "purpose_context": "The webview-shell-foundation mission proved the production MIXER renders from the canonical semantic view model in a fraction of the egui layer's code. This mission completes the pivot: PATCH and every shipped surface move to the webview shell, all retained live demo scenes re-run through it with refreshed hardware evidence, the egui visual layer and its dependencies are deleted, and the crest-spec records the retirement deliberately. Phase 5 and later phases then build on one renderer instead of two.",
   "purpose_tldr": "Render every shell surface through the Tauri webview and retire the egui visual layer before Phase 5",
   "slug": "webview-shell-cutover-01KZAC7Q",
