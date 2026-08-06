@@ -2,7 +2,7 @@
   "event_count": 51,
   "last_event_id": "01KZB762WJQRMFS9YGBMBSVDSW",
   "materialized_at": "2026-08-06T09:41:31.666952+00:00",
-  "mission_number": "4",
+  "mission_number": "",
   "mission_slug": "webview-shell-cutover-01KZAC7Q",
   "mission_type": "software-dev",
   "summary": {
@@ -20,181 +20,72 @@
     "WP01": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 1,
       "lane": "done",
       "last_event_id": "01KZB75WCE6E64KN9W206CCKC2",
       "last_transition_at": "2026-08-06T09:41:25.006145+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: PATCH page composition + identity-carrying paint ack. Validation: 'cargo test --test webview_projection_shell -- --nocapture' exit 0 headless (marker with declared skips) AND exit 0 live with CREST_WEBVIEW_TESTS=1 (marker 'skipped: none' — T024 PATCH determinism at both viewports, WP01 ack identity verbatim, NFR-001 p95 13.4ms, NFR-002 29.33Hz, shutdown parity). Lint: cargo clippy --test webview_projection_shell -- -D warnings exit 0; cargo fmt --check exit 0; no JS/CSS linter is configured in this repo (none declared — noted, not skipped silently). Token gaps recorded in page.css comment: content-rhythm row height/pitch not in generated table; leaned on --min-interactive-target and spacing steps. Page paints patch identity from serialized summary fields (patch_id number, capability_id) — egui Display formatting of PatchId is not serialized, minor divergence recorded.",
-        "Releasing codex review claim: codex CLI dispatch blocked by harness permission classifier; switching reviewer to claude/reviewer-renata",
-        "Review passed: diff confined to the four owned files (tests/webview_projection_shell.rs, webview-page/index.html, page.css, page.js). Verified mechanically: headless run green with CREST_ACCEPTANCE marker; live run (CREST_WEBVIEW_TESTS=1) green with skipped:none — T022 fidelity across both contexts (3 MIXER + 3 PATCH states, byte-identical emit), T024 double-render determinism for MIXER + all 3 PATCH documents at 1920x1080 and 1280x800, WP01 paint-ack identity (one ack per painted document, identity fields verbatim, region evidence), T026 shutdown parity. clippy -D warnings clean; window.rs no-key-handler test green. Falsifiability: breaking disabled-state precedence in page.js failed T024 (declared ComponentState treatment assertion); recomputing ack stateHash failed the verbatim-identity assertion; both restored and suite re-ran green. No input handlers in page.js, no px/rem/hex literals in added CSS (all var(--...) resolve against generated tokens.css, token gaps recorded in comments), no third layout mode, all document strings escaped, tokens.css untouched. Screenshots confirm full PATCH composition at both viewports with Locked/-- non-color state text."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 84871,
-      "shell_pid_created_at": "1785989446.307919",
-      "subtasks": {
-        "T001": "done",
-        "T002": "done",
-        "T003": "done",
-        "T004": "done"
-      }
+      "shell_pid": 64480,
+      "shell_pid_created_at": "1785987785.897616"
     },
     "WP02": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZB75XHY8P2MGHB6W7KCB06P",
       "last_transition_at": "2026-08-06T09:41:26.206834+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: cargo test --all-targets exit 0 (30/30 suites, 848 lib tests incl. 49 webview); cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --check exit 0. T005 forward_ack wired live in window.rs (listen_any -> event-thread drain -> on_frame + QualifyingFrameStream). T006 seam: frame_stream module, poll + condvar await, typed Timeout naming identity, no sleeps. T007 CSP on served document (default-src 'none', self-only, tauri IPC loopback), CREST_WEBVIEW_PAGE cfg(debug_assertions)-gated out of release. T008 crest://render-error -> typed PageRenderFailed fatal path; close retried once then typed WindowClose surfaced. Ack payload shape negotiated for WP01: identity fields (generation/stateHash/context/activeSurface/focusPath/interactionMode) verbatim + viewport{widthPx,heightPx} + regions[{id,xPx,yPx,widthPx,heightPx,label}]; page must also emit crest://render-error on render throw. frame_stream() accessor has no external caller yet by design - WP03 consumes it. No files outside src/shell/webview/** touched.",
-        "Review passed: forward_ack constructs exactly one ShellFrameObservation per correlated ack (identity verbatim from the tracked pushed document, geometry from measured ack evidence, typed PaintedAckError otherwise; bounded 8-doc tracker); QualifyingFrameStream await seam is condvar-parked (zero sleeps; only sleep in window.rs is the pre-existing tick waker) with typed Timeout naming the awaited identity; CSP is default-src 'none' plus self style/script/font and the tauri IPC loopback only; CREST_WEBVIEW_PAGE proven absent from release binary via strings grep (debug=1 hit, release=0) and cfg-gated at both env read and serving branch; PageRenderFailed and WindowClose (one retry) are typed on the fatal runtime path; stale window.rs forwarding comment fixed. Validation: cargo test --all-targets 848+ green, clippy -D warnings clean, fmt clean. Falsifiability: weakening the identity-verbatim gate failed an_ack_that_rewrites_identity_is_a_typed_mismatch; dropping default-src 'none' failed the_csp_allows_exactly_what_the_shipped_page_needs; both restored. Live gate note: CREST_WEBVIEW_TESTS=1 fails on lane-b alone (page lacks the ack identity echo WP01 owns) but a scratch merge of lane-a+lane-b passes the full live gate with zero skips including paint-ack identity verbatim and webview shutdown parity exit 0 - expected two-sided-protocol seam, resolved at mission merge. frame_stream() external caller lands in WP03 per the accepted seam; it is tested and reachable via TauriWebviewWindow."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 2987,
-      "shell_pid_created_at": "1785990371.03906",
-      "subtasks": {
-        "T005": "done",
-        "T006": "done",
-        "T007": "done",
-        "T008": "done",
-        "T009": "done"
-      }
+      "shell_pid": 64991,
+      "shell_pid_created_at": "1785987801.901644"
     },
     "WP03": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZB75YMM933DC4AHG6Z6F109",
       "last_transition_at": "2026-08-06T09:41:27.316338+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: all four make demo-live-* targets run webview-hosted with exit 0 locally (graphical-shell, semantic-view-model, sixteen-track-mixer-routing, effects-and-buses; real window + physical audio, clean teardown). Validation: cargo test --all-targets (30/30 targets ok, 852 lib tests, exit 0); cargo test --release --test expandable_effects_and_bus_topology (ok); cargo test --test live_demo_scene / graphical_application_shell / semantic_graphical_view_model / effects_and_buses (ok); make smoke exit 0 (headless untouched); interactive egui default launches healthy (12s alarm-kill). Lint: cargo clippy --all-targets -- -D warnings clean; cargo fmt --all -- --check clean. Frozen identities: live evidence shows the 17-identity topology baseline byte-identical in order with journey Cycle insertions only, now also asserted at scene declaration (C-004). Out-of-map edits with rationale: crest_synth.rs (WP07) removes the retired egui live-window branch (no parallel live path; interactive selection untouched); projection_channel.rs+window.rs (WP02) consume late acks for capacity-dropped documents as SupersededLate lost frames instead of fatal UnknownDocument — first real live runs showed paced late acks are routine under generation churn; fabricated future acks stay fatal. Note for reviewer: WP03 consumes WP02's forwarded-frame seam via the AppWindow frame callback (the same observations the QualifyingFrameStream records); the stream's blocking face is for harness threads (WP05/WP06) and per its own docs must not be awaited on the event thread hosting the live composition.",
-        "Review passed: 3/4 live targets independently run (graphical-shell, effects-and-buses, semantic-view-model) all exit 0 with complete reports and clean teardown; paint gate proven real (skipped acks and stale-only acks both fail with typed 'parameter projection paint confirmation' ProgressTimedOut); frozen baselines (17 topology + 3 engine) asserted at scene declaration, mutations fail the twins; cargo test --all-targets, clippy -D warnings, fmt, make smoke all green. Out-of-map adjudications: (a) projection_channel/window SupersededLate accepted — genuine WP02 gap (late ack for evicted document was typed-fatal under sustained churn), minimal, identity-verbatim rejection for in-flight documents preserved, no observation constructible from a late ack, merge-tree clean vs lane-b/d/e; (b) crest_synth.rs retired-egui-live-branch removal accepted — interactive egui default untouched (default ShellSelection::Egui, parse tests intact), narrows WP07 T028 exactly as its task file anticipates."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 26386,
-      "shell_pid_created_at": "1785997076.929005",
-      "subtasks": {
-        "T010": "done",
-        "T011": "done",
-        "T012": "done",
-        "T013": "done"
-      }
+      "shell_pid": 15577,
+      "shell_pid_created_at": "1785991588.86673"
     },
     "WP04": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZB75ZNGXRE8H1KJK70XXQZY",
       "last_transition_at": "2026-08-06T09:41:28.368874+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: cargo test --all-targets exit 0 (821 lib + all integration suites, incl. 32 gallery-scene tests and component_vocabulary acceptance); cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --all -- --check exit 0. Live smoke: --demo-live-component-library opens the webview gallery, alive 12s, no startup crash (full operator walk pending review). No JS/CSS linter configured in repo. Out-of-map: shell/webview/mod.rs + window.rs one-line tauri_context() sharing (generate_context! is once-per-binary).",
-        "Review passed: 15-page gallery re-hosted on webview from scene-local crest-gallery-scene/1 documents; frozen eight digit bindings byte-identical (FR-012 gate proven by mutation); non-wrapping stepping; ack-gated observation reads painted DOM back post-paint via requestAnimationFrame; gallery.js registers zero input handlers (input stays Rust-side via input_capture); gallery.css fully token-resolved, zero px/hex literals (NFR-004); coverage assertions falsifiable — three mutations (Footer specimen removed, Adjusting state dropped from controls, digit swap) each failed naming the defect, restored. C-002 clean: production SemanticGraphicalViewModel untouched, gallery uses its own crest://gallery event, never the projection channel. cargo test --all-targets (823+ pass, 0 fail), clippy -D warnings clean, fmt clean. Out-of-scope adjudication (WP02-owned files): shell/webview/mod.rs +11-line tauri_context() accessor and one-line window.rs call-site change accepted — tauri::generate_context! may be invoked once per binary and the gallery scene builds a second tauri app in the same lib crate, so the shared accessor is minimal and necessary; verified via git merge-tree that lane-b (WP02) and lane-d merge cleanly and the merged window.rs correctly calls the accessor with no direct macro invocation left in lib code."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 44719,
-      "shell_pid_created_at": "1785993043.913062",
-      "subtasks": {
-        "T014": "done",
-        "T015": "done",
-        "T016": "done"
-      }
+      "shell_pid": 98539,
+      "shell_pid_created_at": "1785990030.91612"
     },
     "WP05": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZB760RCKR6CZP3TE3VSCGXF",
       "last_transition_at": "2026-08-06T09:41:29.484100+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: five markers green through the webview path. Validation: cargo test --all-targets exit 0 (31 targets, 0 failures); per-file: cargo test --test shell_event_dispatch -- --nocapture exit 0 (CREST_ACCEPTANCE shell_event_dispatch passed), graphical_application_shell exit 0, semantic_graphical_view_model exit 0, component_vocabulary exit 0, component_composition exit 0 (all markers printed), input_capture_witness exit 0 (46 transitions exactly-once through the production NSEvent monitor, 15 actions byte-exact, held-K focus-loss cleared via the window path), eframe_context untouched and exit 0. Lint: cargo clippy --all-targets -- -D warnings exit 0; cargo fmt --all -- --check exit 0. Out-of-scope necessities recorded in the commit: (1) Cargo.toml [[test]] harness=false entry for the main-thread witness; (2) src/shell/webview/input_capture.rs exactly-once delivery - the witness found WebKit's unhandled-key round-trip re-delivering every KeyDown to the local monitor (real double-dispatch of the translator in the running shell), fixed at the production seam by skipping the verbatim (type,keyCode,timestamp) replay. Reviewer: please scrutinize that fix (WP02 surface) and the headless page-ack role in the retargeted harnesses (identity is forced verbatim from the pushed document by forward_ack; geometry stands in from the authored density policy, DOM-measured live in webview_projection_shell T024).",
-        "Review passed: five acceptance markers re-proven on the webview path (shell_event_dispatch, graphical_application_shell, semantic_graphical_view_model, component_vocabulary, component_composition), all verified green with --nocapture. Assertion parity verified against pre-retarget versions: semantic_graphical_view_model lost only the egui render-helper assert and gained typed identity-fabrication negatives; graphical_application_shell compared assertion-by-assertion (all contracts kept, strengthened with byte-identity document check, full-surface generation agreement, stale-frame rejection); shell_event_dispatch is a faithful line-for-line port of eframe_context's inventory plus forward_ack rejection negatives. Falsifiability proven live: weakening ACK_IDENTITY_FIELDS failed the semantic negative; a transport-added document field failed the gas verbatim-serialization assert; both restored. Out-of-scope adjudication 1 (Cargo.toml, WP07's surface): one additive harness=false [[test]] block for the main-thread witness, rationale comment, merge-clean - WP07 should rebase-note it. Adjudication 2 (src/shell/webview/input_capture.rs, WP02's surface): the WebKit unhandled-key round-trip double-dispatch is real - reverting the fix fails the witness with 48/46 duplicate KeyDown deliveries; the (type,keyCode,timestamp) signature preserves legitimate repeats (same-key represses in the script all delivered under exact-sequence equality); diff is purely additive over lane-b and git merge-tree of lane-b+lane-e is conflict-free; bijectivity tests untouched. Witness ran full on this machine: 46 transitions exactly-once raw and translated, held-K focus-loss cleared through the window path. eframe_context.rs untouched (git log empty) and green. cargo test --all-targets green on repeated clean runs; clippy -D warnings and fmt clean. Known risk for WP06/WP07: the witness hard-failed once in five clean full-suite runs (43/46, post-HideWindow tail undelivered - in-suite window-activation race); standalone 5/5. Recommend hardening the typed-partial gate to cover a window that never held key focus, since validation.test = cargo test --all-targets gates accept."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 87404,
-      "shell_pid_created_at": "1785995134.544271",
-      "subtasks": {
-        "T017": "done",
-        "T018": "done",
-        "T019": "done",
-        "T020": "done",
-        "T021": "done"
-      }
+      "shell_pid": 16124,
+      "shell_pid_created_at": "1785991607.33101"
     },
     "WP06": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZB761VDY08B19GHSWST5DFT",
       "last_transition_at": "2026-08-06T09:41:30.605816+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: twins gate cargo test --all-targets exit 0 (947 passed/0 failed) at lane HEAD before any hardware run. T023 four scene hardware runs (make demo-live-{graphical-shell,semantic-view-model,sixteen-track-mixer-routing,effects-and-buses}) all exit 0, complete, 0 dropped, callbackAllocations=0, clean teardown, qualifying webview frames 1868/1872/1884/2198; effects topology audioUninterrupted 0 false/30 true. T022 scripts/rt_ab_measurement.sh (lane commit 9b208c9) RT A/B egui d41e7bd vs webview b966da8, same workload: callbackAllocations 0/0, dropped 0/0, exit 0/0, all bounds within baseline envelope (rt-ab-comparison.md); first invocation report step failed under macOS bash 3.2 (declare -A), script fixed, comparison regenerated via --reuse-logs from unmodified logs — narrated in README. T024 300s soak exit 0: 29.43 Hz sustained (first/last third 29.43/29.43), max gap 44.3ms, lost 0, page-side 8830/8830 lossless; RSS sampler no growth trend (plateau 107728->103904 KiB); NFR-001 measured p95 8.8ms <= 50ms threshold. T025 README identity comparison machine-checked: engine baseline 3/3 preserved in order all four scenes, topology 17/17 byte-identical + 13 pure insertions, 0 modified/0 removed. Evidence artifacts live on feat/webview-shell-cutover per lane gate: commits 69fa5eb (four scene logs, rt-ab-egui.log, rt-ab-webview.log, rt-ab-comparison.md, soak-300s.log, soak-300s-rss.samples.log) + b57bf9d (README.md with C-007 precedence statement); lane branch carries scripts/rt_ab_measurement.sh (9b208c9) and the kitty-specs cleanup (71b15c0). shellcheck not installed (bash -n clean); no Rust changed so clippy/fmt n/a.",
-        "Review passed: script bash-3.2-clean (bash -n OK, no bash-4-isms; shellcheck absent on rig, noted); --reuse-logs regenerated rt-ab-comparison.md byte-identical except timestamp; all README/comparison numbers verified in raw logs (callbackAllocations 0/0, dropped 0/0, 114/114 cp, soak 29.43 Hz lost 0, RSS plateau 107728->103904 KiB no growth, NFR-001 p95 8.8 ms, topology 17/17 + 13 pure insertions verified against frozen baseline, engine 3/3 all four scenes); reviewer reproduction run exit 0 with same shape (114 cp, 0 allocs, clean teardown); evidence commits 69fa5eb/b57bf9d on feat precede any egui deletion (none exists, lane-g absent); cargo test --all-targets exit 0; no Rust changed"
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 64221,
-      "shell_pid_created_at": "1786001088.101442",
-      "subtasks": {
-        "T022": "done",
-        "T023": "done",
-        "T024": "done",
-        "T025": "done"
-      }
+      "shell_pid": 44926,
+      "shell_pid_created_at": "1785998702.832809"
     },
     "WP07": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZB762WJQRMFS9YGBMBSVDSW",
       "last_transition_at": "2026-08-06T09:41:31.666952+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: sole-shell flip complete, egui deleted. C-007 gate verified before any edit (lane-local evidence commits 9b208c9+521e22e are HEAD ancestors; planning-branch 69fa5eb+b57bf9d linked in ROADMAP). Commit order on lane-g: 7032e7e relocation (vocabulary -> src/shell/{tokens,typeface,density,component_state,component_vocabulary}.rs), 86b23e6 fader tokens (six specimens authored, tokens.css regenerated, page.css literal-free), d35c304 flip (TauriWebviewWindow direct construction, --shell/ShellSelection/stale bail removed), 0cee450 pre-deletion decoupling (patch_page_projection retargeted onto the production KeyPipeline, shutdown parity single-shell, guard needles runtime-assembled, prose reworded), ceef87b THE deletion commit (39 files +212/-18353: src/shell/visual/, eframe adapter, eframe_context.rs, webview_input_probe [[bin]]+source, eframe+egui_extras deps, Cargo.lock regenerated; deletion-coupled AuthoredRgb swap and typeface egui trim), adb81a1 records (DESIGN.md pivot, ROADMAP gate closure). Validation + exit codes: cargo test --all-targets=0 (29 targets, 0 failures, input_capture_witness passed in-suite, no flake rerun needed); cargo clippy --all-targets -- -D warnings=0; cargo fmt --all -- --check=0; make smoke=0; make demo-live=0 (complete report, 2158 qualifying webview frames, 0 dropped, callbackAllocations=0, clean teardown); make run verified (real window 'crest-synth' alive at 10s, SIGTERM after); make demo-live-component-library exit 0 via native close button, observation emitted; US4 forced failure CREST_WEBVIEW_PAGE=/nonexistent -> exit 1 typed PageLoadFailed, no window (also re-proven in-suite as T025). SC-003: grep -riE '\\b(egui|eframe)\\b' src/ tests/ webview-page/ Cargo.toml Cargo.lock -> zero matches (ExhaustiveGuiDemo/WholeFrame are pre-existing identifiers with incidental case-insensitive substrings, not stack references). SC-004 (I2 finding honored, CODE paths only): git diff --shortstat d41e7bd..HEAD -- src tests webview-page Cargo.toml Cargo.lock = +13368/-27907 = net -14539 (>=10k bar; -13506 on src+tests alone; deletion commit alone -18353). Out-of-map edits (recorded, all mechanical consequences of owned work): src/shell/standalone_application.rs (U1 finding: T028-directed comment/seam updates), src/shell/webview/** (WP02: import repoints, token_export fader emission, ShellSelection removal, prose), src/testing/component_gallery_scene.rs + live_demo_runner.rs (WP03/WP04: import repoints, prose), tests/component_vocabulary.rs + component_composition.rs (WP05: guard paths to relocated vocabulary, fader authored table, runtime-assembled needles, AuthoredRgb alpha assertion), tests/patch_page_projection.rs (egui harness replaced by production KeyPipeline; contract assertions unchanged), tests/webview_projection_shell.rs (--shell arg removal, single-shell parity), tests/{shell_event_dispatch,graphical_application_shell,semantic_graphical_view_model}.rs (ForwardedAck merge-base compile repair + import repoints), Makefile + webview-page/page.css/page.js/gallery.js (WP01: stale comments, page-local fader block removal). Known flake did not occur; witness typed-partial hardening not attempted (suite passed in-suite, scope kept bounded).",
-        "Review passed: independent mechanical verification. C-007 gate: WP06 evidence commits 9b208c9+521e22e verified ancestors of deletion commit ceef87b (git merge-base --is-ancestor), planning-branch 69fa5eb+b57bf9d exist on feat/webview-shell-cutover and are linked in the ROADMAP closure record. SC-003 reran: zero word-boundary egui/eframe matches in src/tests/webview-page/Cargo.toml/Cargo.lock; only incidental pre-existing identifiers (ExhaustiveGuiDemo, WholeFrame) as claimed. SC-004 reran: +13368/-27907 = net -14539 on code paths from d41e7bd (kitty-specs excluded per I2), -13506 on src+tests alone; deletion commit 39 files +212/-18353 with insertions all deletion-coupled (AuthoredRgb replaces the deleted egui Color32 at the sole surviving use, typeface egui surface trim). T026 relocation is a pure move (token.rs byte-identical, others import-path-only); T027 fader values 14/8/3/34/6/2 match pre-flip page.css, tokens.css regeneration byte-stable (make webview-tokens, empty diff), page.css zero px literals. Cargo.lock: 244 crates removed, none added, tauri/wry/objc2 intact. Out-of-map adjudications all accepted: standalone_application/webview transport/gallery/live-runner/page scripts are prose-only; patch_page_projection retargeted onto the production KeyPipeline with assertions unchanged (egui harness had no survivor path, replacement is stronger); ForwardedAck merge-base repair is fail-loud, not weakening; guard needles runtime-assembled with equal power. No WP02/WP05 guard weakened - proven by mutation: FADER_TRACK_WIDTH_PX 14->15 caught by TokenDrift freshness + authored-table tests; planted egui/rect_filled in production window.rs caught by 3 composition guards; both restored. Live runs (my own): make smoke exit 0; make demo-live exit 0 complete report (2187 qualifying frames, 0 dropped, callbackAllocations=0, clean teardown, real window+audio); interactive binary sole webview window 'crest-synth' alive at 10s no errors, clean SIGTERM; forced failure CREST_WEBVIEW_PAGE=/nonexistent exit 1 typed PageLoadFailed no window; override confirmed cfg(debug_assertions). Validation: cargo test --all-targets exit 0 (29 targets, 0 failures, input_capture_witness passed live in-suite, no flake); clippy -D warnings exit 0; fmt --check exit 0. DESIGN.md pivot confined to rendering rows/bullets; anti-pattern checklist all PASS (FR-007 records verified by inspection)."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 18755,
-      "shell_pid_created_at": "1786006554.489399",
-      "subtasks": {
-        "T026": "done",
-        "T027": "done",
-        "T028": "done",
-        "T029": "done",
-        "T030": "done",
-        "T031": "done"
-      }
+      "shell_pid": 70429,
+      "shell_pid_created_at": "1786001917.925889"
     }
   }
 }
