@@ -1,15 +1,16 @@
-//! Installation of the authored typeface.
+//! The authored typeface as a typed, verifiable asset.
 //!
-//! The four vendored Azeret Mono faces are read from disk once, before the
-//! first painted frame, and registered as four egui families — one per weight,
-//! because egui selects a face by family name and has no weight axis. Each of
-//! the eight authored type styles then resolves to the family matching its
-//! declared weight.
+//! The four vendored Azeret Mono faces are the only faces the product ever
+//! renders: the projection page binds one `@font-face` per authored weight
+//! and the webview window serves exactly the vendored bytes. This module
+//! owns the vocabulary around that asset — the family name, the per-weight
+//! face files, and the typed failure an unavailable or unreadable face
+//! raises.
 //!
-//! An unavailable face is a typed error naming the file. It is never absorbed
-//! by egui's default stack, never substituted, and never synthesized: a
-//! substituted face would let the product claim the authored design while not
-//! rendering it.
+//! An unavailable face is a typed error naming the file. It is never
+//! absorbed by a system font stack, never substituted, and never
+//! synthesized: a substituted face would let the product claim the authored
+//! design while not rendering it.
 //!
 //! Realizes `valueObject.Shell.AuthoredTypeface` over `asset.AzeretMonoTypeface`.
 
@@ -17,9 +18,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{FontData, FontDefinitions, FontFamily};
-
-use super::token::{FontWeight, TypeStyle, ALL_WEIGHTS};
+use crate::shell::tokens::{FontWeight, ALL_WEIGHTS};
 
 /// The authored family, as the design file names it.
 pub const AUTHORED_FAMILY: &str = "Azeret Mono";
@@ -119,49 +118,16 @@ impl AuthoredTypeface {
         Ok(Self { faces })
     }
 
-    /// Builds the font definitions registering all four faces.
-    ///
-    /// Call once, before the first painted frame. Never per frame, and never
-    /// from the audio callback.
-    pub fn font_definitions(&self) -> FontDefinitions {
-        let mut definitions = FontDefinitions::empty();
-        for (weight, bytes) in &self.faces {
-            let name = family_name(*weight);
-            definitions.font_data.insert(
-                name.clone(),
-                std::sync::Arc::new(FontData::from_owned(bytes.clone())),
-            );
-            definitions
-                .families
-                .insert(FontFamily::Name(name.clone().into()), vec![name.clone()]);
-        }
-        // The proportional and monospace defaults resolve to the authored
-        // Regular face so no text run can silently fall through to a system
-        // font.
-        let regular = family_name(FontWeight::Regular);
-        definitions
-            .families
-            .insert(FontFamily::Proportional, vec![regular.clone()]);
-        definitions
-            .families
-            .insert(FontFamily::Monospace, vec![regular]);
-        definitions
-    }
-
     /// Returns the weights this value carries.
     pub fn registered_weights(&self) -> Vec<FontWeight> {
         self.faces.keys().copied().collect()
     }
 }
 
-/// Returns the egui family name carrying the given authored weight.
+/// Returns the per-weight display name of an authored face, e.g.
+/// `Azeret Mono SemiBold`.
 pub fn family_name(weight: FontWeight) -> String {
     format!("{AUTHORED_FAMILY} {}", weight_face_name(weight))
-}
-
-/// Returns the egui font family a type style paints in.
-pub fn family_for(style: TypeStyle) -> FontFamily {
-    FontFamily::Name(family_name(style.metrics().weight).into())
 }
 
 /// Returns the vendored file name for an authored weight.
@@ -191,7 +157,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::shell::visual::token::ALL_TYPE_STYLES;
+    use crate::shell::tokens::ALL_TYPE_STYLES;
 
     /// The vendored directory, resolved beside the crate manifest.
     fn vendor_root() -> PathBuf {
@@ -320,53 +286,28 @@ mod tests {
                 FontWeight::Bold,
             ]
         );
-
-        let definitions = typeface.font_definitions();
         for weight in ALL_WEIGHTS {
-            let name = family_name(weight);
             assert!(
-                definitions.font_data.contains_key(&name),
-                "{name} was not registered"
-            );
-            assert!(
-                definitions
-                    .families
-                    .contains_key(&FontFamily::Name(name.clone().into())),
-                "{name} has no family entry"
+                family_name(weight).starts_with(AUTHORED_FAMILY),
+                "{} does not carry the authored family",
+                family_name(weight)
             );
         }
     }
 
+    /// Every authored type style is set in a weight whose face is vendored,
+    /// so no style can resolve to a face the product does not ship.
     #[test]
-    fn every_type_style_resolves_to_a_registered_family() {
-        let definitions = AuthoredTypeface::load()
-            .expect("vendored faces are present")
-            .font_definitions();
+    fn every_type_style_resolves_to_a_vendored_weight() {
+        let typeface = AuthoredTypeface::load().expect("vendored faces are present");
+        let weights = typeface.registered_weights();
         for style in ALL_TYPE_STYLES {
-            let family = family_for(style);
             assert!(
-                definitions.families.contains_key(&family),
-                "{} resolves to an unregistered family",
+                weights.contains(&style.metrics().weight),
+                "{} is set in a weight with no vendored face",
                 style.canonical_name()
             );
         }
-    }
-
-    #[test]
-    fn the_default_families_resolve_to_the_authored_face() {
-        let definitions = AuthoredTypeface::load()
-            .expect("vendored faces are present")
-            .font_definitions();
-        let regular = family_name(FontWeight::Regular);
-        assert_eq!(
-            definitions.families.get(&FontFamily::Proportional),
-            Some(&vec![regular.clone()]),
-            "proportional text could fall through to a system font"
-        );
-        assert_eq!(
-            definitions.families.get(&FontFamily::Monospace),
-            Some(&vec![regular])
-        );
     }
 
     /// The negative assertion is the one that matters. A happy-path-only test

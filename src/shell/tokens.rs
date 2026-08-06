@@ -12,7 +12,42 @@
 //!
 //! Realizes `valueObject.Shell.SemanticVisualToken`.
 
-use eframe::egui::Color32;
+/// One authored opaque sRGB color, as the vocabulary declares it.
+///
+/// The vocabulary owns its own value type: the webview shell consumes colors
+/// as generated CSS custom properties (`webview-page/tokens.css`), so no
+/// renderer's color type is imported here. Alpha does not exist on this type
+/// — every authored role is opaque, and the one authored opacity (the focus
+/// halo's) is its own token, [`FOCUS_HALO_OPACITY`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct AuthoredRgb {
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+impl AuthoredRgb {
+    /// Builds an authored color from its channels. Private: the only place a
+    /// raw channel may be spelled is this file's vocabulary.
+    const fn new(red: u8, green: u8, blue: u8) -> Self {
+        Self { red, green, blue }
+    }
+
+    /// The red channel.
+    pub const fn r(self) -> u8 {
+        self.red
+    }
+
+    /// The green channel.
+    pub const fn g(self) -> u8 {
+        self.green
+    }
+
+    /// The blue channel.
+    pub const fn b(self) -> u8 {
+        self.blue
+    }
+}
 
 /// A named background, border, text, or accent role.
 ///
@@ -91,7 +126,7 @@ impl SemanticColor {
     /// `BgSelected` and `BorderDefault` deliberately share `#2a3745`. They mean
     /// different things and are kept as two named tokens so they can diverge
     /// without a search-and-replace.
-    pub const fn resolve(self) -> Color32 {
+    pub const fn resolve(self) -> AuthoredRgb {
         let (r, g, b) = match self {
             Self::BgCanvas => (0x0c, 0x10, 0x15),
             Self::BgSurface => (0x12, 0x18, 0x21),
@@ -111,7 +146,7 @@ impl SemanticColor {
             Self::AccentPatch => (0xff, 0x6f, 0xbe),
             Self::AccentChorus => (0xf6, 0xf1, 0x78),
         };
-        Color32::from_rgb(r, g, b)
+        AuthoredRgb::new(r, g, b)
     }
 
     /// Returns the canonical authored name, as published by the design file.
@@ -141,8 +176,9 @@ impl SemanticColor {
 /// An authored typeface weight.
 ///
 /// The interface ships four static faces rather than the upstream variable
-/// font: `ab_glyph` supports variation axes but `epaint` does not expose them,
-/// so a variable font would paint every style at a single weight.
+/// font: the projection page binds one `@font-face` per numeric weight, and a
+/// static face per weight keeps what is served identical to what was vendored
+/// and hashed.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FontWeight {
     Regular,
@@ -209,9 +245,9 @@ pub const ALL_TYPE_STYLES: [TypeStyle; 8] = [
 
 /// The authored metrics of one text style.
 ///
-/// `tracking_px` is applied faithfully — `epaint::text::TextFormat` exposes
-/// `extra_letter_spacing`, so the authored value reaches the rendered glyph run
-/// rather than being declared and dropped.
+/// `tracking_px` is applied faithfully — it is emitted as the style's
+/// `--type-*-tracking` custom property and reaches the rendered glyph run as
+/// CSS `letter-spacing`, rather than being declared and dropped.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TypeStyleMetrics {
     /// Glyph size in pixels.
@@ -362,6 +398,29 @@ pub const FOCUS_HALO_SPREAD_PX: f32 = 1.0;
 /// same number.
 pub const FOCUS_HALO_OPACITY: f32 = 0.28;
 
+// The mixer fader specimen geometry, measured from the authored design
+// (`DESIGN.md` § visual vocabulary; the design file's mixer fader specimen).
+// Declared here so the projection page resolves them as generated custom
+// properties rather than carrying hand-copied pixel literals.
+
+/// The authored width of the fader track.
+pub const FADER_TRACK_WIDTH_PX: f32 = 14.0;
+
+/// The authored width of the fader's level fill inside the track.
+pub const FADER_FILL_WIDTH_PX: f32 = 8.0;
+
+/// The authored bottom shoulder the fader fill rises from.
+pub const FADER_SHOULDER_PX: f32 = 3.0;
+
+/// The authored width of the fader cap.
+pub const FADER_CAP_WIDTH_PX: f32 = 34.0;
+
+/// The authored height of the fader cap.
+pub const FADER_CAP_HEIGHT_PX: f32 = 6.0;
+
+/// The authored corner rounding of the fader fill and cap.
+pub const FADER_ROUNDING_PX: f32 = 2.0;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,71 +432,71 @@ mod tests {
     fn every_color_resolves_to_its_authored_value() {
         assert_eq!(
             SemanticColor::BgCanvas.resolve(),
-            Color32::from_rgb(0x0c, 0x10, 0x15)
+            AuthoredRgb::new(0x0c, 0x10, 0x15)
         );
         assert_eq!(
             SemanticColor::BgSurface.resolve(),
-            Color32::from_rgb(0x12, 0x18, 0x21)
+            AuthoredRgb::new(0x12, 0x18, 0x21)
         );
         assert_eq!(
             SemanticColor::BgPanel.resolve(),
-            Color32::from_rgb(0x17, 0x20, 0x2a)
+            AuthoredRgb::new(0x17, 0x20, 0x2a)
         );
         assert_eq!(
             SemanticColor::BgElevated.resolve(),
-            Color32::from_rgb(0x1d, 0x27, 0x33)
+            AuthoredRgb::new(0x1d, 0x27, 0x33)
         );
         assert_eq!(
             SemanticColor::BgSelected.resolve(),
-            Color32::from_rgb(0x2a, 0x37, 0x45)
+            AuthoredRgb::new(0x2a, 0x37, 0x45)
         );
         assert_eq!(
             SemanticColor::BorderDefault.resolve(),
-            Color32::from_rgb(0x2a, 0x37, 0x45)
+            AuthoredRgb::new(0x2a, 0x37, 0x45)
         );
         assert_eq!(
             SemanticColor::BorderStrong.resolve(),
-            Color32::from_rgb(0x41, 0x51, 0x66)
+            AuthoredRgb::new(0x41, 0x51, 0x66)
         );
         assert_eq!(
             SemanticColor::TextPrimary.resolve(),
-            Color32::from_rgb(0xf2, 0xf6, 0xf8)
+            AuthoredRgb::new(0xf2, 0xf6, 0xf8)
         );
         assert_eq!(
             SemanticColor::TextSecondary.resolve(),
-            Color32::from_rgb(0xb8, 0xc4, 0xd1)
+            AuthoredRgb::new(0xb8, 0xc4, 0xd1)
         );
         assert_eq!(
             SemanticColor::TextMuted.resolve(),
-            Color32::from_rgb(0x6f, 0x80, 0x95)
+            AuthoredRgb::new(0x6f, 0x80, 0x95)
         );
         assert_eq!(
             SemanticColor::AccentFocus.resolve(),
-            Color32::from_rgb(0x65, 0xe5, 0xff)
+            AuthoredRgb::new(0x65, 0xe5, 0xff)
         );
         assert_eq!(
             SemanticColor::AccentAdjust.resolve(),
-            Color32::from_rgb(0xff, 0xb4, 0x54)
+            AuthoredRgb::new(0xff, 0xb4, 0x54)
         );
         assert_eq!(
             SemanticColor::AccentPositive.resolve(),
-            Color32::from_rgb(0x58, 0xe8, 0x87)
+            AuthoredRgb::new(0x58, 0xe8, 0x87)
         );
         assert_eq!(
             SemanticColor::AccentWarning.resolve(),
-            Color32::from_rgb(0xff, 0x68, 0x68)
+            AuthoredRgb::new(0xff, 0x68, 0x68)
         );
         assert_eq!(
             SemanticColor::AccentInstrument.resolve(),
-            Color32::from_rgb(0xb8, 0x94, 0xff)
+            AuthoredRgb::new(0xb8, 0x94, 0xff)
         );
         assert_eq!(
             SemanticColor::AccentPatch.resolve(),
-            Color32::from_rgb(0xff, 0x6f, 0xbe)
+            AuthoredRgb::new(0xff, 0x6f, 0xbe)
         );
         assert_eq!(
             SemanticColor::AccentChorus.resolve(),
-            Color32::from_rgb(0xf6, 0xf1, 0x78)
+            AuthoredRgb::new(0xf6, 0xf1, 0x78)
         );
     }
 
@@ -445,7 +504,7 @@ mod tests {
     fn focus_accent_is_cyan_not_the_pre_mission_green() {
         // The adapter painted `rgb(110, 205, 174)` before this mission. That
         // value must not survive anywhere in the vocabulary.
-        let green = Color32::from_rgb(110, 205, 174);
+        let green = AuthoredRgb::new(110, 205, 174);
         for color in ALL_COLORS {
             assert_ne!(
                 color.resolve(),
@@ -456,7 +515,7 @@ mod tests {
         }
         assert_eq!(
             SemanticColor::AccentFocus.resolve(),
-            Color32::from_rgb(0x65, 0xe5, 0xff)
+            AuthoredRgb::new(0x65, 0xe5, 0xff)
         );
     }
 
@@ -574,5 +633,15 @@ mod tests {
         assert_eq!(FOCUS_HALO_RADIUS_PX, 8.0);
         assert_eq!(FOCUS_HALO_SPREAD_PX, 1.0);
         assert_eq!(FOCUS_HALO_OPACITY, 0.28);
+    }
+
+    #[test]
+    fn the_fader_specimen_carries_its_authored_geometry() {
+        assert_eq!(FADER_TRACK_WIDTH_PX, 14.0);
+        assert_eq!(FADER_FILL_WIDTH_PX, 8.0);
+        assert_eq!(FADER_SHOULDER_PX, 3.0);
+        assert_eq!(FADER_CAP_WIDTH_PX, 34.0);
+        assert_eq!(FADER_CAP_HEIGHT_PX, 6.0);
+        assert_eq!(FADER_ROUNDING_PX, 2.0);
     }
 }

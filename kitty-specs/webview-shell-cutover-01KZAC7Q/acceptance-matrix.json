@@ -1,0 +1,259 @@
+{
+  "mission_slug": "webview-shell-cutover-01KZAC7Q",
+  "mission_number": "",
+  "mission_type": "software-dev",
+  "overall_verdict": "pass",
+  "criteria": [
+    {
+      "criterion_id": "FR-001",
+      "description": "PATCH context renders through the webview: every shipped PATCH surface renders from the canonical serialized view model",
+      "proof_type": "automated_test",
+      "evidence": "tests/webview_projection_shell.rs T022 fidelity (both contexts, byte-identity through production ProjectionChannel) and T024 double-render determinism for all three PATCH documents at 1920x1080 and 1280x800; live gate CREST_WEBVIEW_TESTS=1 passed (skipped: none). WP01 review: two falsifiability breaks (state precedence, ack identity) both caught by the suite.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP01 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "WP01 approved cycle 1."
+    },
+    {
+      "criterion_id": "FR-002",
+      "description": "The webview shell is the default and only shell; launch-time egui selection is removed with the adapter",
+      "proof_type": "automated_test",
+      "evidence": "WP07 commit d35c304: composition root constructs TauriWebviewWindow directly; --shell flag and ShellSelection deleted. WP07 review ran the binary: one window named crest-synth, clean SIGTERM exit; forced-failure probe (debug CREST_WEBVIEW_PAGE=/nonexistent) exits 1 typed PageLoadFailed with no window.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP07 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "WP07 approved cycle 1."
+    },
+    {
+      "criterion_id": "FR-003",
+      "description": "Every retained make demo-live-<scene> target runs through the webview shell with refreshed committed hardware evidence, before egui deletion lands",
+      "proof_type": "manual_verification",
+      "evidence": "All four demo-live targets exit 0 on the webview shell, run independently by the WP03 implementer, WP03 reviewer, WP06 implementer, and WP06 reviewer (real window, physical audio, clean teardown). Committed evidence: kitty-specs/webview-shell-cutover-01KZAC7Q/evidence/ at feat commits 69fa5eb/b57bf9d; ancestry verified: evidence commits precede deletion commit ceef87b.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP03+WP06 reviews) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "Frames: 1868-2198 qualifying per scene, 0 dropped."
+    },
+    {
+      "criterion_id": "FR-004",
+      "description": "Painted-ack to ShellFrameObservation forwarding is owned and live reports credit only qualifying webview frames",
+      "proof_type": "automated_test",
+      "evidence": "ProjectionChannel::forward_ack requires verbatim identity against the tracked pushed document (typed IdentityMismatch/UnknownDocument otherwise); observation unconstructible from expectations alone. WP03 review experiments: skipping acks and forwarding stale frames both fail with typed paint-confirmation timeout; a never-painted checkpoint cannot be credited.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP02+WP03 reviews) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "SupersededLate degradation for capacity-dropped documents adjudicated in WP03 review as a genuine protocol gap fix."
+    },
+    {
+      "criterion_id": "FR-005",
+      "description": "The component gallery renders through the webview: all pages, both authored densities, keyboard-browsable",
+      "proof_type": "automated_test",
+      "evidence": "Closed 15-variant page enum with exhaustive sections, both Desktop/SteamDeck densities in every document; frozen 8-binding digit baseline byte-identical (exact ordered equality test); WP04 review mutations (dropped Footer specimen, filtered Adjusting state, swapped digits) all caught by named test failures. Live smoke: gallery window opened and survived 12 s.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP04 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "WP04 approved cycle 1; SC-006 companion row."
+    },
+    {
+      "criterion_id": "FR-006",
+      "description": "The egui visual layer (src/shell/visual/), the eframe window adapter, and the eframe/egui_extras dependencies are deleted",
+      "proof_type": "automated_test",
+      "evidence": "Deletion commit ceef87b: 39 files, +212/-18353; src/shell/visual/, eframe adapter, tests/eframe_context.rs, webview_input_probe removed; Cargo.lock lost 244 transitive crates. Reviewer-rerun sweep grep -riE '\\b(egui|eframe)\\b' over src/ tests/ webview-page/ Cargo.toml Cargo.lock: zero matches.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP07 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "Runtime guards catch reintroduction (planted egui probe failed 3 guards in review)."
+    },
+    {
+      "criterion_id": "FR-007",
+      "description": "The crest-spec authors the retirement first and DESIGN.md records the pivot",
+      "proof_type": "manual_verification",
+      "evidence": "Crest-spec authored at 307873e before plan d266760 (branch history). DESIGN.md pivot record and ROADMAP gate closure with evidence pointers landed in WP07 commit adb81a1; crest-spec selected_webview_stack referenced.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP07 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "C-005 companion row."
+    },
+    {
+      "criterion_id": "FR-008",
+      "description": "An automated key-injection witness drives the full key vocabulary through the production translator into the running webview shell",
+      "proof_type": "automated_test",
+      "evidence": "tests/input_capture_witness.rs (harness=false, main-thread): 46 transitions exactly-once through the production NSEvent monitor, 15 translated actions byte-exact, held-K focus-loss cleared through the real window path. Witness power proven: reverting the input_capture fix fails it with 48/46 duplicate transitions (real WebKit double-dispatch found and fixed by WP05).",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP05 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "Known low-rate in-suite flake from window-activation race documented in WP05 review; passes standalone deterministically and passed in-suite in WP07 review."
+    },
+    {
+      "criterion_id": "NFR-001",
+      "description": "Real-time neutrality: same-workload RT A/B (egui vs webview, before deletion) shows no added real-time callback work; migrated scenes record zero audio_uninterrupted=false checkpoints",
+      "proof_type": "manual_verification",
+      "evidence": "evidence/rt-ab-comparison.md from rt-ab-egui.log (baseline d41e7bd) and rt-ab-webview.log (lane HEAD): callbackAllocations 0/0, callbackDestructions 0/0, dropped 0/0, audio predicate failures 0/0, 114/114 checkpoints, exit 0/0. effects-and-buses: 30/30 audioUninterrupted=true. Numbers cross-checked against raw logs by the WP06 reviewer.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP06 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "Hardware: Mac15,6, macOS 26.5.2, arm64 (evidence/README.md)."
+    },
+    {
+      "criterion_id": "NFR-002",
+      "description": "Sustained stability: one recorded 300 s soak completes with no leak growth trend, no dropped-event records, and clean teardown",
+      "proof_type": "manual_verification",
+      "evidence": "evidence/soak-300s.log: 29.43 Hz sustained (first/last third identical), max gap 44.3 ms, 0 lost, page-side 8830/8830 lossless, clean teardown, CREST_ACCEPTANCE passed (skipped: none). Quantified leak metric (analysis finding A1): RSS series committed (soak-300s-rss.samples.log) declining 107728 -> 103904 KiB plateau - no growth trend.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP06 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "Plan's <=50 ms p95 visibility goal (analysis finding C1) measured on hardware: p50 7.9 / p95 8.8 / max 10.9 ms."
+    },
+    {
+      "criterion_id": "NFR-003",
+      "description": "Page hardening: restrictive CSP set; CREST_WEBVIEW_PAGE compiled out of release builds",
+      "proof_type": "automated_test",
+      "evidence": "PAGE_CSP: default-src 'none' with only self script/style/font and documented tauri IPC connect-src; CSP-coverage test fails when default-src 'none' is dropped (WP02 review mutation). Release gating proven structurally: strings on debug binary contains CREST_WEBVIEW_PAGE once, release binary zero.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP02 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "WP07 review re-verified the cfg(debug_assertions) gate post-flip."
+    },
+    {
+      "criterion_id": "NFR-004",
+      "description": "Token single source: zero hand-copied style values in the page; every value resolves from the generated token table, including the six fader-specimen px values",
+      "proof_type": "automated_test",
+      "evidence": "Zero px/hex literals in page.css/gallery.css diffs (mechanical greps in WP01/WP04 reviews); make webview-tokens regeneration byte-stable (empty diff, WP07 review); six FADER_*_PX specimens (14/8/3/34/6/2) emitted to tokens.css matching pre-flip literals exactly; TokenDrift falsifiability: mutating FADER_TRACK_WIDTH_PX 14->15 fails 2 tests naming --fader-track-width.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP01+WP04+WP07 reviews) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "Two authored-table token gaps documented in-code per WP01 rule (no literals introduced)."
+    },
+    {
+      "criterion_id": "C-001",
+      "description": "Input stays Rust-side: all key normalization through the production KeyboardInputTranslator; the webview DOM registers no input handlers",
+      "proof_type": "automated_test",
+      "evidence": "Greps in WP01 and WP04 reviews: zero addEventListener/onkey/onmouse/onclick hits in page.js and gallery.js; source-scan test enforces no-input-handler; input_capture_witness proves the production translator path end-to-end in the running shell.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP01+WP04+WP05 reviews) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "C-002",
+      "description": "One schema: the page consumes the serde serialization of SemanticGraphicalViewModel and decimated latest-value meter frames; no webview-specific variant of the model exists",
+      "proof_type": "automated_test",
+      "evidence": "graphical_application_shell.rs asserts the rendered document is the projector's serialization byte-verbatim (mutation adding adapterOwnedHint field failed it in WP05 review). Gallery uses a declared scene-local schema crest-gallery-scene/1 beside (never claiming) the production model, adjudicated against C-002 in WP04 review; production model untouched.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP04+WP05 reviews) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "Analysis finding A2 (scope wording) resolved by the WP04 adjudication."
+    },
+    {
+      "criterion_id": "C-003",
+      "description": "Boundaries unchanged: one-way loop, immutable projections, owned shutdown, hard real-time callback contract, no-silent-fallback preserved exactly",
+      "proof_type": "automated_test",
+      "evidence": "Every review checked the RT boundary (no callback work added; A/B callbackAllocations 0/0 confirms empirically); shutdown parity tests retained through the flip; all failure paths typed (PaintedAckError, WebviewShellError, FrameAwaitError, LiveDemoIncomplete); no fallback shell exists post-flip.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (all WP reviews) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "C-004",
+      "description": "Add-only scene identity: frozen checkpoint baselines stay byte-identical and in order; webview-era identities are pure insertions",
+      "proof_type": "automated_test",
+      "evidence": "FROZEN_TOPOLOGY_IDENTITY_BASELINE (17) and FROZEN_ENGINE_TRANSITION_IDENTITY_BASELINE (3) asserted at scene declaration via subsequence checker; mutation of either fails the named test (WP03 review). WP06 machine-verified live evidence: topology 17/17 byte-identical in order with 13 pure insertions, engine 3/3 across all four scenes, 0 modified/removed.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP03+WP06 reviews) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "C-005",
+      "description": "Derivation discipline: crest-spec authored before plan; no data-model.md, no contracts/",
+      "proof_type": "manual_verification",
+      "evidence": "Branch history: crest-spec commit 307873e precedes plan commit d266760. No data-model.md or contracts/ exists in kitty-specs/webview-shell-cutover-01KZAC7Q/ (verified by inspection; WP07 review anti-pattern checklist confirmed locked decisions).",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "C-006",
+      "description": "Gallery disposition: rebuild the gallery in the webview (not retired, not deferred)",
+      "proof_type": "automated_test",
+      "evidence": "WP04 delivered the webview gallery (15 pages, both densities, frozen keyboard baseline) and was approved; make demo-live-component-library opens the webview gallery.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP04 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "C-007",
+      "description": "Ordering: evidence-refresh commits land before the egui deletion commit; the deletion is the last structural change",
+      "proof_type": "manual_verification",
+      "evidence": "git merge-base --is-ancestor confirms evidence commits 9b208c9/521e22e are ancestors of deletion commit ceef87b; planning-branch evidence hashes 69fa5eb/b57bf9d predate any deletion and are linked in the ROADMAP closure record; deletion is followed only by the records commit adb81a1.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP07 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-001",
+      "description": "Every currently supported player journey completes in the webview shell in both contexts with audible consequence",
+      "proof_type": "automated_test",
+      "evidence": "tests/shell_event_dispatch.rs ports the full eframe_context behavioral inventory (80+ assertions) to the webview path; T022 fidelity spans both PATCH and MIXER contexts; live demos complete with physical_audio_nonzero=true.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP05 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-002",
+      "description": "4/4 retained live scenes pass on hardware through the webview shell with clean teardown, zero audio interruptions, all frozen identities preserved add-only",
+      "proof_type": "manual_verification",
+      "evidence": "evidence/*.log: four scenes exit 0, 0 dropped, callbackAllocations=0, clean teardown fields all true, 30/30 audioUninterrupted; identity add-only verified machine-checked. WP06 reviewer independently reproduced the mixer-routing run (exit 0, same structure and invariants).",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP06 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-003",
+      "description": "Zero references to the retired UI stack remain in production code and dependency manifests after deletion",
+      "proof_type": "automated_test",
+      "evidence": "Sweep grep -riE '\\b(egui|eframe)\\b' src/ tests/ webview-page/ Cargo.toml Cargo.lock: zero matches, run independently by the WP07 implementer and reviewer; only incidental identifier substrings (ExhaustiveGuiDemo, WholeFrame) remain and are not stack references.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP07 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-004",
+      "description": "Net shell code reduction of at least 10,000 lines against the hand-painted visual layer",
+      "proof_type": "manual_verification",
+      "evidence": "git diff --shortstat d41e7bd..HEAD -- src tests webview-page Cargo.toml Cargo.lock = +13368/-27907 = net -14539 lines (code paths only, excluding kitty-specs/evidence and planning docs per analysis finding I2); -13506 on src+tests alone. Reviewer rerun matched digit-for-digit.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP07 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": null
+    },
+    {
+      "criterion_id": "SC-005",
+      "description": "All declared deterministic acceptance checks are green at mission end; no proof silently dropped",
+      "proof_type": "automated_test",
+      "evidence": "cargo test --all-targets green at every lane HEAD (29-31 targets, 0 failures) including all retargeted component proofs and the CREST_ACCEPTANCE markers; eframe_context retired deliberately with its inventory ported to shell_event_dispatch (WP05 review assertion-parity audit). Final deterministic record: deterministic-acceptance.json from the post-merge spec-kitty accept run.",
+      "pass_fail": "pass",
+      "verified_by": "claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "Graded from lane-level runs pre-merge; the post-merge accept re-run is the binding deterministic record."
+    },
+    {
+      "criterion_id": "SC-006",
+      "description": "The maintainer can browse the complete component gallery at both densities through the webview shell",
+      "proof_type": "manual_verification",
+      "evidence": "make demo-live-component-library opens the webview gallery; 15-page index always on screen; digit/bracket keyboard browsing via the frozen Rust-side bindings; both densities in every document; live smoke run survived 12 s with no startup crash.",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata (WP04 review) / claude orchestrator",
+      "verified_at": "2026-08-06T00:00:00Z",
+      "notes": "Full interactive operator walk remains available to the human maintainer; mechanics proven by the unit suite and ack-gated observation."
+    }
+  ],
+  "negative_invariants": []
+}

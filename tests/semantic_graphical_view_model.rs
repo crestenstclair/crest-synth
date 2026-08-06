@@ -1,7 +1,22 @@
+//! Acceptance for the semantic graphical view model (crest-spec
+//! `validation.semantic_graphical_view_model`, asset
+//! `SemanticGraphicalViewModelAcceptanceTests`).
+//!
+//! Retargeted by mission webview-shell-cutover-01KZAC7Q WP05 (T019): only the
+//! render half changed. The action/focus/recovery/projection assertions are
+//! renderer-neutral and untouched; "render through production native frames at
+//! both viewports" became "render the same immutable model through the
+//! webview projection path at both viewports" — the production
+//! [`ProjectionChannel`] emit (the exact transport `TauriWebviewWindow`'s
+//! tick performs), the page's painted-ack role echoing the pushed document's
+//! own identity with the authored band geometry, and WP02's
+//! `forward_ack` seam constructing the one `ShellFrameObservation`. Identity
+//! cannot be supplied from outside the pushed document: `forward_ack`
+//! rejects any ack that is not a verbatim copy of the in-flight document's
+//! serialized identity, so a separately supplied projection is structurally
+//! impossible in this harness.
+
 use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
-use crest_synth::adapter::eframe_graphical_window::{
-    install_authored_typeface, EframeGraphicalApplication,
-};
 use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::production_effects::{
     production_chorus_config, production_effect_registry,
@@ -21,18 +36,16 @@ use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::{PatchOutput, PatchOutputParameter};
 use crest_synth::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crest_synth::real_time::{AudioCommand, GraphRevision, ParameterSnapshot};
-use crest_synth::shell::app_window::{
-    AppInputCallback, FrameObservationCallback, ProjectionCallback, TickCallback,
+use crest_synth::shell::density::ViewportDensityPolicy;
+use crest_synth::shell::webview::projection_channel::{
+    ForwardedAck, ProjectionChannel, ProjectionPush,
 };
 use crest_synth::shell::{ShellFrameObservation, ShellRegionId};
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{EffectSlotId, InstrumentConfig, Patch};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
-use eframe::egui;
-use eframe::App;
-use std::cell::RefCell;
-use std::rc::Rc;
+use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -116,36 +129,122 @@ fn semantic(state: &AppState) -> crest_synth::control::SemanticGraphicalViewMode
         .clone()
 }
 
+/// The page's per-band first visible text, derived from the pushed document
+/// exactly as the committed page derives it (`webview-page/page.js`): the
+/// static product word on the context line, the context display on the
+/// identity header, the caption-row left run on the workspace, the side
+/// panel's opening label, and the footer breadcrumb prefix.
+fn page_band_labels(document: &Value) -> [String; 5] {
+    let context = document
+        .get("context")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let surface_label = |id: &str| -> String {
+        document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|surface| surface.get("label").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let workspace = if context == "mixer" {
+        "LEVEL / PAN / MUTE / SOLO".to_owned()
+    } else {
+        surface_label("patchMain")
+    };
+    let side = if context == "mixer" {
+        "CURSOR".to_owned()
+    } else {
+        surface_label("patchUtility")
+    };
+    [
+        "CREST SYNTH".to_owned(),
+        context.to_uppercase(),
+        workspace,
+        side,
+        context.to_uppercase(),
+    ]
+}
+
+/// The page's paint-acknowledgment role, played headless: the six identity
+/// fields copied verbatim from the pushed document (the page contract —
+/// `paintedEvidence` echoes the received document, never re-derives), and
+/// the measured band geometry standing in for the page's CSS-seated bands
+/// through the authored density policy for the viewport. The live DOM
+/// measurement of the same bands is `tests/webview_projection_shell.rs`
+/// (T024/T026); what this harness proves is the seam: only an ack whose
+/// identity matches a pushed document, whose geometry tiles the viewport,
+/// and whose labels are visible can ever become an observation.
+fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
+    let policy = ViewportDensityPolicy::resolve(viewport[0]);
+    let bands = policy.bands();
+    let split = policy.split();
+    let context_bottom = bands.context_line_px;
+    let identity_bottom = context_bottom + bands.identity_header_px;
+    let workspace_bottom = viewport[1] - bands.footer_px;
+    let main_width = viewport[0] - split.side_px;
+    let labels = page_band_labels(document);
+    json!({
+        "generation": document["generation"],
+        "stateHash": document["stateHash"],
+        "context": document["context"],
+        "activeSurface": document["activeSurface"],
+        "focusPath": document["focusPath"],
+        "interactionMode": document["interactionMode"],
+        "viewport": { "widthPx": viewport[0], "heightPx": viewport[1] },
+        "regions": [
+            { "id": "contextLine", "xPx": 0.0, "yPx": 0.0,
+              "widthPx": viewport[0], "heightPx": context_bottom,
+              "label": labels[0] },
+            { "id": "identityHeader", "xPx": 0.0, "yPx": context_bottom,
+              "widthPx": viewport[0], "heightPx": bands.identity_header_px,
+              "label": labels[1] },
+            { "id": "mainWorkspace", "xPx": 0.0, "yPx": identity_bottom,
+              "widthPx": main_width, "heightPx": workspace_bottom - identity_bottom,
+              "label": labels[2] },
+            { "id": "persistentSideRegion", "xPx": main_width, "yPx": identity_bottom,
+              "widthPx": split.side_px, "heightPx": workspace_bottom - identity_bottom,
+              "label": labels[3] },
+            { "id": "footer", "xPx": 0.0, "yPx": workspace_bottom,
+              "widthPx": viewport[0], "heightPx": bands.footer_px,
+              "label": labels[4] },
+        ],
+    })
+}
+
+/// Renders one immutable projection through the webview projection path at
+/// one viewport: the production [`ProjectionChannel`] serializes and emits
+/// the projection's embedded semantic model (the exact transport the
+/// `TauriWebviewWindow` tick performs), the page's ack role echoes the
+/// pushed document, and WP02's `forward_ack` seam constructs the one
+/// [`ShellFrameObservation`]. Passive by construction: no input path exists
+/// anywhere in this render.
 fn render(
     projection: crest_synth::control::GraphicalShellProjection,
     viewport: [f32; 2],
 ) -> ShellFrameObservation {
-    let observations = Rc::new(RefCell::new(Vec::new()));
-    let observed = Rc::clone(&observations);
-    let on_input: AppInputCallback = Box::new(|_| panic!("passive render emitted input"));
-    let projection_callback: ProjectionCallback = Box::new(move || projection.clone());
-    let tick: TickCallback = Box::new(|_| true);
-    let on_frame: FrameObservationCallback =
-        Box::new(move |frame| observed.borrow_mut().push(frame));
-    let mut application =
-        EframeGraphicalApplication::new(on_input, projection_callback, tick, on_frame);
-    let context = egui::Context::default();
-    install_authored_typeface(&context)
-        .expect("the authored typeface installs into the test context");
-    let mut frame = eframe::Frame::_new_kittest();
-    context.begin_pass(egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(viewport[0], viewport[1]),
-        )),
-        predicted_dt: 0.0,
-        ..Default::default()
-    });
-    application.update(&context, &mut frame);
-    let _ = context.end_pass();
-    assert_eq!(application.frame_observation_error(), None);
-    let result = observations.borrow().last().cloned().unwrap();
-    result
+    let mut channel = ProjectionChannel::new();
+    let mut emitted = None;
+    let outcome = channel
+        .push(&projection, |document| {
+            emitted = Some(document);
+            Ok(())
+        })
+        .expect("the passive webview render emit succeeds");
+    assert_eq!(outcome, ProjectionPush::Emitted);
+    let document = emitted.expect("an Emitted push hands the emitter exactly one document");
+    match channel
+        .forward_ack(&page_painted_ack(&document, viewport).to_string())
+        .expect("the painted ack for the pushed document becomes exactly one observation")
+    {
+        ForwardedAck::Observation(observation) => observation,
+        ForwardedAck::SupersededLate { generation } => {
+            panic!("the ack for the just-pushed document cannot be late (generation {generation})")
+        }
+    }
 }
 
 #[test]
@@ -362,6 +461,51 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
             .regions()
             .iter()
             .all(|region| region.rect().is_finite_nonempty()));
+    }
+    // "Identical despite different rectangles": the two viewports really did
+    // seat different geometry, so the semantic identity above was proven
+    // across a genuine layout difference rather than two copies of one frame.
+    assert_ne!(large.viewport_width(), compact.viewport_width());
+    for id in [
+        ShellRegionId::MainWorkspace,
+        ShellRegionId::PersistentSideRegion,
+    ] {
+        assert_ne!(
+            large.region(id).rect().width(),
+            compact.region(id).rect().width(),
+            "{id:?} must measure differently at the two authored viewports"
+        );
+    }
+
+    // A separately supplied projection is structurally impossible: an ack
+    // whose identity is not a verbatim copy of the pushed document's is a
+    // typed rejection, never an observation.
+    {
+        use crest_synth::shell::webview::projection_channel::PaintedAckError;
+        let mut probe = ProjectionChannel::new();
+        let mut emitted = None;
+        probe
+            .push(&shell, |document| {
+                emitted = Some(document);
+                Ok(())
+            })
+            .expect("the probe emit succeeds");
+        let document = emitted.expect("the probe push emits one document");
+        let mut rewritten = page_painted_ack(&document, [1920.0, 1080.0]);
+        rewritten["stateHash"] = Value::from("state-invented-elsewhere");
+        assert!(matches!(
+            probe.forward_ack(&rewritten.to_string()),
+            Err(PaintedAckError::IdentityMismatch {
+                field: "stateHash",
+                ..
+            })
+        ));
+        let mut unpushed = page_painted_ack(&document, [1920.0, 1080.0]);
+        unpushed["generation"] = Value::from(shell.generation() + 1_000);
+        assert!(matches!(
+            probe.forward_ack(&unpushed.to_string()),
+            Err(PaintedAckError::UnknownDocument { .. })
+        ));
     }
 
     let mut failed = installed_state(true);

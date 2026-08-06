@@ -1,5 +1,6 @@
 <!doctype html>
-<!-- crest-synth MIXER projection page (crest-spec asset.WebviewProjectionPage).
+<!-- crest-synth projection page — PATCH and MIXER
+     (crest-spec asset.WebviewProjectionPage).
 
      Structure only: the five declared shell bands as semantic containers.
      All paint comes from the generated tokens.css (authored vocabulary) and
@@ -26,9 +27,11 @@
   <!-- Band 2: identity header — surface identity and focus annotation. -->
   <header id="identity-header" data-band="identityHeader"></header>
   <main id="main-region">
-    <!-- Band 3: main workspace — legend, sixteen-column strip bank, hints. -->
+    <!-- Band 3: main workspace — the MIXER sixteen-column strip bank or the
+         PATCH listed strip, with the shared caption and hint rows. -->
     <section id="workspace" data-band="workspace"></section>
-    <!-- Band 4: persistent side region — the Inspector. -->
+    <!-- Band 4: persistent side region — Inspector on MIXER, Utility on
+         PATCH. -->
     <aside id="inspector" data-band="inspector"></aside>
   </main>
   <!-- Band 5: footer — breadcrumb and the valid-action hint run. -->

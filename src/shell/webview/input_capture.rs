@@ -14,7 +14,7 @@
 //! The module emits [`RawKeyEvent`] values only. It owns no translator, no
 //! modifier state, and no application state: the sink is expected to
 //! normalize into [`crate::shell::window_input::WindowInput`] and feed the
-//! shared [`crate::shell::KeyboardInputTranslator`], exactly as the eframe
+//! shared [`crate::shell::KeyboardInputTranslator`], exactly as the retired native
 //! adapter does — that wiring belongs to the webview window composition
 //! (WP02), not here.
 //!
@@ -33,7 +33,7 @@ use core::fmt;
 /// ([`WindowKey`]) here, inside the platform module, so no platform key code
 /// leaks past this boundary. Shift chords need no separate representation:
 /// the macOS virtual key code identifies the physical key regardless of held
-/// modifiers, so Shift+W arrives as `W` — the same normalization the eframe
+/// modifiers, so Shift+W arrives as `W` — the same normalization the retired native
 /// path performs.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RawKeyEvent {
@@ -64,8 +64,8 @@ impl RawKeyEvent {
 
     /// `true` when this press is an OS auto-repeat of a held key.
     ///
-    /// Releases are never repeats. The eframe path receives auto-repeats too
-    /// (egui forwards them); the consumer decides what repeats mean.
+    /// Releases are never repeats. The retired native path received
+    /// auto-repeats too; the consumer decides what repeats mean.
     pub const fn repeat(&self) -> bool {
         self.repeat
     }
@@ -106,7 +106,7 @@ impl std::error::Error for InputCaptureError {}
 /// `kVK_ANSI_*` constants; on non-ANSI hardware layouts the physical position
 /// wins, which is the standard behavior for position-based bindings (WASD).
 /// Every unmapped code normalizes to [`WindowKey::Other`], mirroring the
-/// eframe adapter's `normalize_key`.
+/// retired native adapter's `normalize_key`.
 pub const fn window_key_from_macos_key_code(key_code: u16) -> WindowKey {
     match key_code {
         18 => WindowKey::Digit1,
@@ -142,6 +142,26 @@ mod platform {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSEvent, NSEventMask, NSEventType};
     use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    /// How many recently delivered key-event signatures the monitor retains
+    /// to recognize WebKit's re-dispatch of an unhandled key event.
+    ///
+    /// WKWebView processes key events asynchronously: an event the page does
+    /// not handle comes back through `sendEvent:` a second time (the
+    /// unhandled-key round-trip), and a local monitor observes that second
+    /// delivery too. One physical transition must feed the translator
+    /// exactly once (mission webview-shell-cutover WP05, the FR-003
+    /// key-injection witness), so the monitor skips an event whose
+    /// `(type, keyCode, timestamp)` it has already delivered — two distinct
+    /// physical transitions can never share an `NSEvent` timestamp, while
+    /// the round-trip preserves it verbatim. The window is bounded; the
+    /// round-trip returns within a frame or two, so a small ring suffices.
+    const REDISPATCH_WINDOW: usize = 64;
+
+    /// The identity of one delivered key event: down/up, hardware key code,
+    /// and the event's own timestamp bit pattern.
+    type DeliveredSignature = (bool, u16, u64);
 
     /// Owns the installed local monitor; dropping it removes the monitor.
     pub struct InputCaptureHandle {
@@ -160,9 +180,15 @@ mod platform {
     }
 
     /// Installs the `NSEvent` local key monitor and feeds every key
-    /// transition to `sink`. Events are returned to AppKit unchanged, so the
-    /// webview still receives them; whether the product shell swallows
-    /// vocabulary keys is the window composition's decision (WP02).
+    /// transition to `sink` — exactly once per physical transition. Events
+    /// are returned to AppKit unchanged, so the webview still receives them;
+    /// whether the product shell swallows vocabulary keys is the window
+    /// composition's decision (WP02).
+    ///
+    /// A key event WebKit re-dispatches after its asynchronous
+    /// unhandled-key round-trip is recognized by its verbatim
+    /// `(type, keyCode, timestamp)` signature and passed through without a
+    /// second sink delivery (see [`REDISPATCH_WINDOW`]).
     pub fn install(
         sink: impl FnMut(RawKeyEvent) + 'static,
     ) -> Result<InputCaptureHandle, InputCaptureError> {
@@ -170,6 +196,8 @@ mod platform {
             return Err(InputCaptureError::NotMainThread);
         }
         let sink = RefCell::new(sink);
+        let delivered: RefCell<VecDeque<DeliveredSignature>> =
+            RefCell::new(VecDeque::with_capacity(REDISPATCH_WINDOW));
         let handler = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit hands the monitor a valid event for the duration
             // of the call; we only read from it.
@@ -180,6 +208,22 @@ mod platform {
                 NSEventType::KeyUp => false,
                 _ => return event.as_ptr(),
             };
+            // WebKit's unhandled-key round-trip delivers the same event a
+            // second time; one physical transition feeds the translator
+            // exactly once. Two distinct transitions can never share a
+            // timestamp, so the verbatim signature identifies the replay.
+            let signature: DeliveredSignature =
+                (pressed, observed.keyCode(), observed.timestamp().to_bits());
+            {
+                let mut recent = delivered.borrow_mut();
+                if recent.contains(&signature) {
+                    return event.as_ptr();
+                }
+                if recent.len() == REDISPATCH_WINDOW {
+                    recent.pop_front();
+                }
+                recent.push_back(signature);
+            }
             let raw = RawKeyEvent::new(
                 window_key_from_macos_key_code(observed.keyCode()),
                 pressed,

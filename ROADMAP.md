@@ -249,6 +249,50 @@ The gate closes on a hardware run of the cumulative `make demo-live` target
 through the webview shell — real window, physical audio, real MIDI fixture,
 full teardown contract — with the egui visual layer no longer in the tree.
 
+**Gate closed (2026-08-06, mission `webview-shell-cutover-01KZAC7Q`).**
+Closure evidence, in the order the C-007 constraint demands:
+
+- *Retained evidence first.* The WP06 hardware evidence wall —
+  `kitty-specs/webview-shell-cutover-01KZAC7Q/evidence/README.md` with the
+  four retained scene logs, the same-workload RT A/B comparison against the
+  egui baseline, and the 300 s soak — was committed on
+  `feat/webview-shell-cutover` at `69fa5eb` (logs) and `b57bf9d` (README),
+  strictly before any deletion.
+- *Deletion last.* WP07's deletion commit (`ceef87b` on lane
+  `kitty/mission-webview-shell-cutover-01KZAC7Q-lane-g`, "delete the egui
+  layer") removed `src/shell/visual/`, the eframe window adapter,
+  `tests/eframe_context.rs`, the `webview_input_probe` binary, and the
+  `eframe`/`egui_extras` dependencies in one deletion-only change:
+  39 files, +212/−18,353 lines. The authored vocabulary survived it,
+  relocated to `src/shell/tokens.rs`, `typeface.rs`, `density.rs`,
+  `component_state.rs`, and `component_vocabulary.rs`.
+- *Probe decision.* The WP01 foundation probe binary
+  (`webview_input_probe`, 484 lines) is deleted with its `[[bin]]` entry:
+  its evidence is the committed probe verdict
+  (`kitty-specs/webview-shell-foundation-01KZ9DN7/research/input-capture-probe.md`),
+  and the automated key-injection witness (`tests/input_capture_witness.rs`,
+  WP05) carries the living input-capture contract.
+- *SC-003, zero references.* `grep -riE '\b(egui|eframe)\b' src/ tests/
+  webview-page/ Cargo.toml Cargo.lock` returns zero matches. (Two
+  pre-existing identifiers — `ExhaustiveGuiDemo` and the `WholeFrame`
+  shell region — contain incidental case-insensitive substrings and do not
+  reference the retired stack.)
+- *SC-004, net shell-code reduction.* Measured on code paths only —
+  committed evidence logs and planning documents under `kitty-specs/` are
+  deliberately excluded: `git diff --shortstat d41e7bd..HEAD -- src tests
+  webview-page Cargo.toml Cargo.lock` (from the pre-mission planning tip
+  `d41e7bd` of `feat/webview-shell-cutover`) reports +13,368/−27,907 =
+  **net −14,539 lines** (−13,506 restricted to `src/` and `tests/`),
+  clearing the ≥10,000-line bar.
+- *Post-deletion hardware close.* `make demo-live` (cumulative
+  effects-and-buses scene) after the deletion: exit 0, report complete
+  (105/105 parameters, 3/3 engine transitions, 2,158 qualifying webview
+  frames, 15,214 events, 0 dropped, `callbackAllocations=0`, clean
+  teardown), real window and physical audio on the same rig as the WP06
+  wall. The forced init failure (`CREST_WEBVIEW_PAGE` to an unloadable
+  path) exits 1 with the typed `PageLoadFailed` error and no alternate
+  window.
+
 ## Phase 5 — Functional Patch editor blockout
 
 **Blocked by the webview shell cutover gate above (2026-08-05).** All Phase 5

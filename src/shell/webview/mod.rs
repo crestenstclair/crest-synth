@@ -1,32 +1,57 @@
-//! Webview shell modules (mission webview-shell-foundation-01KZ9DN7).
+//! Webview shell modules (mission webview-shell-foundation-01KZ9DN7,
+//! hardened and given its observation forwarding by mission
+//! webview-shell-cutover-01KZAC7Q WP02; the product's sole shell since the
+//! WP07 cutover).
 //!
-//! WP01 contributed the native input-capture path; WP02 adds launch-time
-//! shell selection ([`ShellSelection`]), the typed webview startup error
-//! ([`WebviewShellError`]), and the Tauri v2 window composition
-//! ([`TauriWebviewWindow`]). WP03 adds the two page-bound transports:
+//! The foundation contributed the native input-capture path, the typed
+//! webview startup error ([`WebviewShellError`]), the Tauri v2 window
+//! composition ([`TauriWebviewWindow`]), and the two page-bound transports:
 //! [`projection_channel`] (generation-gated serialized view models) and
-//! [`meter_channel`] (30 Hz latest-value meter frames). The real projection
-//! page arrives with later work packages.
+//! [`meter_channel`] (30 Hz latest-value meter frames). The cutover mission
+//! adds the painted-ack → `ShellFrameObservation` forwarding
+//! ([`projection_channel::ProjectionChannel::forward_ack`]), the
+//! qualifying-frame await seam ([`frame_stream`]), the restrictive page CSP,
+//! release-gating of the page override, and typed render-exception and
+//! window-close surfacing.
 //!
-//! # Selection is a launch-time decision
+//! # One shell, no fallback
 //!
-//! Which shell runs is decided exactly once, at launch, by parsing
-//! `--shell <egui|webview>` at the composition root (default `egui`). There
-//! is no fallback edge from one shell to the other in any code path: a
-//! webview startup failure is a typed [`WebviewShellError`] that ends the
+//! The webview shell is the only shell: the composition root constructs
+//! [`TauriWebviewWindow`] directly, and no launch flag chooses a renderer.
+//! A webview startup failure is a typed [`WebviewShellError`] that ends the
 //! process through the same fatal-error path every other startup failure
-//! uses — it never opens the eframe window instead, retries silently, or
-//! leaves a blank window behind.
+//! uses — it never opens an alternate window, retries silently, or leaves a
+//! blank window behind.
 //!
-//! # Deterministic init-failure hook
+//! # The qualifying-frame seam (WP02 T006)
 //!
-//! For the acceptance test that proves the typed failure path (WP06, T025):
-//! setting the `CREST_WEBVIEW_PAGE` environment variable overrides the page
-//! the window serves with the file at that path. An unreadable path is
+//! Scenes and harnesses block on "a qualifying frame for accepted
+//! generation N was painted" through [`frame_stream::QualifyingFrameStream`]
+//! (a handle from [`TauriWebviewWindow::frame_stream`]), never on wall-clock
+//! sleeps. A forwarded observation qualifies for a
+//! [`frame_stream::FrameExpectation`] when its generation and stateHash
+//! equal the awaited accepted generation's and its context and activeSurface
+//! equal the expectation's — the identity gate the retained live scenes'
+//! crediting has always started from. The non-blocking poll answers from
+//! inside the tick loop; the blocking variant parks on a condition variable
+//! until a qualifying observation is forwarded or the caller's timeout
+//! passes, and a timeout is a typed
+//! [`frame_stream::FrameAwaitError::Timeout`] naming the awaited identity —
+//! it means no honest painted ack for that identity ever arrived, not that
+//! a frame may be assumed.
+//!
+//! # Deterministic init-failure hook (debug builds only)
+//!
+//! For the acceptance tests that prove the typed failure path and inject
+//! fixture pages: in debug builds, setting the `CREST_WEBVIEW_PAGE`
+//! environment variable overrides the page the window serves with the file
+//! at that path. An unreadable path is
 //! [`WebviewShellError::PageLoadFailed`], raised before any window is
 //! created, so the process exits nonzero with no blank window lingering.
-//! The hook is an internal test seam, not an operator surface.
+//! The hook is an internal test seam, not an operator surface, and release
+//! builds compile it out entirely (`cfg(debug_assertions)`, WP02 T007).
 
+pub mod frame_stream;
 pub mod input_capture;
 pub mod meter_channel;
 pub mod projection_channel;
@@ -35,32 +60,28 @@ pub mod window;
 
 pub use window::TauriWebviewWindow;
 
+/// The single embedded tauri context for this crate.
+///
+/// `tauri::generate_context!` embeds link-time artifacts (the Info.plist
+/// symbol among them) and therefore may be invoked exactly once per binary.
+/// Every composition that builds a tauri app — the production
+/// [`TauriWebviewWindow`] and the webview-hosted component gallery scene —
+/// obtains the context here rather than invoking the macro again.
+pub fn tauri_context() -> tauri::Context {
+    tauri::generate_context!()
+}
+
 use crate::shell::app_window::WindowError;
 use core::fmt;
 use input_capture::InputCaptureError;
 
-/// The launch-time shell decision parsed from `--shell <egui|webview>`.
-///
-/// Egui is the default. The selection is made once at the composition root
-/// and never revisited: no code path falls back from one shell to the other
-/// after a failure (crest-spec `adapter.TauriWebviewWindow` rule).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ShellSelection {
-    /// The default eframe/egui window (`EframeGraphicalWindow`).
-    #[default]
-    Egui,
-    /// The explicitly selected Tauri v2 webview window
-    /// ([`TauriWebviewWindow`]).
-    Webview,
-}
-
-/// A typed webview shell startup failure.
+/// A typed webview shell runtime failure.
 ///
 /// Every variant carries its underlying cause. The error surfaces through
 /// the `AppWindow` port's declared `WindowError` into
 /// `ApplicationError::Window` — the same top-level fatal path every other
 /// startup failure uses — and ends the process nonzero. There is no
-/// fallback to the eframe shell.
+/// fallback shell.
 #[derive(Debug)]
 pub enum WebviewShellError {
     /// The Tauri runtime (system webview) failed to initialize.
@@ -76,6 +97,17 @@ pub enum WebviewShellError {
     WindowCreation(tauri::Error),
     /// The native Rust-side key monitor could not be installed.
     InputCapture(InputCaptureError),
+    /// The page loaded but threw while rendering a pushed document
+    /// (reported on the `crest://render-error` IPC event). Fatal on the
+    /// same runtime path a startup failure uses — never a frozen window
+    /// (WP02 T008).
+    PageRenderFailed {
+        /// The failure the page reported.
+        detail: String,
+    },
+    /// Closing the webview window failed twice (one retry). Surfaced
+    /// through the shutdown path rather than swallowed (foundation RISK-2).
+    WindowClose(tauri::Error),
 }
 
 impl fmt::Display for WebviewShellError {
@@ -93,6 +125,15 @@ impl fmt::Display for WebviewShellError {
             Self::InputCapture(error) => {
                 write!(formatter, "webview input capture failed: {error}")
             }
+            Self::PageRenderFailed { detail } => {
+                write!(formatter, "webview page render failed: {detail}")
+            }
+            Self::WindowClose(error) => {
+                write!(
+                    formatter,
+                    "webview window close failed after one retry: {error}"
+                )
+            }
         }
     }
 }
@@ -100,9 +141,12 @@ impl fmt::Display for WebviewShellError {
 impl std::error::Error for WebviewShellError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::RuntimeUnavailable(error) | Self::WindowCreation(error) => Some(error),
+            Self::RuntimeUnavailable(error)
+            | Self::WindowCreation(error)
+            | Self::WindowClose(error) => Some(error),
             Self::PageLoadFailed { source, .. } => Some(source),
             Self::InputCapture(error) => Some(error),
+            Self::PageRenderFailed { .. } => None,
         }
     }
 }
@@ -118,14 +162,9 @@ impl From<WebviewShellError> for WindowError {
 
 #[cfg(test)]
 mod tests {
-    use super::{InputCaptureError, ShellSelection, WebviewShellError};
+    use super::{InputCaptureError, WebviewShellError};
     use crate::shell::app_window::WindowError;
     use std::error::Error;
-
-    #[test]
-    fn shell_selection_defaults_to_egui() {
-        assert_eq!(ShellSelection::default(), ShellSelection::Egui);
-    }
 
     #[test]
     fn webview_shell_error_preserves_each_typed_cause() {
@@ -145,6 +184,26 @@ mod tests {
             "webview input capture failed: input capture must be installed on the main thread"
         );
         assert!(capture_error.source().is_some());
+    }
+
+    #[test]
+    fn render_and_close_failures_are_typed_with_their_causes() {
+        let render = WebviewShellError::PageRenderFailed {
+            detail: "TypeError: renderPatch is not a function".to_owned(),
+        };
+        assert_eq!(
+            render.to_string(),
+            "webview page render failed: TypeError: renderPatch is not a function"
+        );
+        assert!(render.source().is_none());
+
+        let close = WebviewShellError::WindowClose(tauri::Error::from(std::io::Error::other(
+            "close refused",
+        )));
+        assert!(close
+            .to_string()
+            .starts_with("webview window close failed after one retry:"));
+        assert!(close.source().is_some());
     }
 
     #[test]

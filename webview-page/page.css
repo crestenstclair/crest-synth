@@ -1,27 +1,13 @@
-/* crest-synth MIXER projection page composition
+/* crest-synth projection page composition — PATCH and MIXER
  * (crest-spec asset.WebviewProjectionPage).
  *
- * Every color, type style, spacing step, radius, keyline, halo, and mixer
- * geometry value resolves from the generated tokens.css custom properties —
- * this file declares no raw value the authored vocabulary already names.
- * The one declared exception is the block immediately below.
+ * Every color, type style, spacing step, radius, keyline, halo, fader, and
+ * mixer geometry value resolves from the generated tokens.css custom
+ * properties — this file declares no raw value the authored vocabulary
+ * already names. The fader specimen geometry (--fader-*) joined the authored
+ * vocabulary in mission webview-shell-cutover WP07; it arrives from
+ * tokens.css like everything else.
  */
-
-/* ---- Page-side authored constants ------------------------------------
- * The fader specimen geometry from the authored design (DESIGN.md /
- * figma mixer-faders.png) is not part of the Rust visual vocabulary, so it
- * is declared here as custom properties rather than scattered literals:
- * 14 px track, 8 px fill, 3 px bottom shoulder, 34×6 px cap, 2 px fill and
- * cap rounding. Everything else in this file resolves from tokens.css.
- */
-:root {
-  --fader-track-width: 14px;
-  --fader-fill-width: 8px;
-  --fader-shoulder: 3px;
-  --fader-cap-width: 34px;
-  --fader-cap-height: 6px;
-  --fader-rounding: 2px;
-}
 
 /* Vendored Azeret Mono faces, served over the crest:// protocol from
  * vendor/azeret-mono/. Deliberately no fallback stack: a missing face is a
@@ -329,6 +315,155 @@ body {
 
 .state-line {
   margin-top: var(--space-4);
+}
+
+/* ---- the PATCH strip ----------------------------------------------------
+ * The PATCH main workspace: the projected controls as full-width listed
+ * rows in the document's declared order, on the same fluid width the mixer
+ * bank rides — no third layout mode, both authored viewports seat through
+ * the browser layout engine. Rows that exceed the band stay reachable by
+ * scroll (the side region's own affordance), never clipped and never
+ * overlapped.
+ *
+ * Token gaps (recorded, not closed with literals): the authored content
+ * rhythm (row 52/66 px desktop, 48/56 px deck) and utility pitch are not in
+ * the generated table, so the row minimum leans on the declared
+ * --min-interactive-target and the gaps on the declared spacing steps. */
+
+#workspace .strip {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  margin: var(--space-16) 0;
+}
+
+#workspace .strip.strip-unavailable {
+  justify-content: center;
+}
+
+/* One listed row: label left, state mark or position indicator in the
+ * middle, value (and unit) right — the shipped parameter-row anatomy. The
+ * left keyline carries the state's declared emphasis; rows separate with
+ * hairlines, not cards. */
+.prow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+  min-height: var(--min-interactive-target);
+  padding: 0 var(--space-12);
+  border-left: var(--keyline-resting) solid var(--color-border-default);
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+}
+
+.prow .prow-label {
+  color: var(--color-text-secondary);
+}
+
+.prow .prow-value {
+  color: var(--color-text-primary);
+}
+
+/* Focused: the emphasis keyline plus the authored halo — the same focus
+ * treatment the mixer's focused column carries, so focus reads identically
+ * across both contexts and never by color alone (the header annotation and
+ * footer breadcrumb carry it as text). */
+.prow[data-state="focused"] {
+  background: var(--color-bg-panel);
+  border-left: var(--keyline-emphasis) solid var(--color-accent-focus);
+  box-shadow: 0 0 var(--focus-halo-radius) var(--focus-halo-spread)
+    color-mix(
+      in srgb,
+      var(--color-accent-focus) calc(var(--focus-halo-opacity) * 100%),
+      transparent
+    );
+}
+
+.prow[data-state="focused"] .prow-label,
+.prow[data-state="focused"] .prow-value {
+  color: var(--color-accent-focus);
+}
+
+/* Adjusting: emphasis keyline in the adjust accent, no halo (declared
+ * ComponentState treatment — shape distinguishes it from focus). */
+.prow[data-state="adjusting"] {
+  border-left: var(--keyline-emphasis) solid var(--color-accent-adjust);
+}
+
+.prow[data-state="adjusting"] .prow-label,
+.prow[data-state="adjusting"] .prow-value {
+  color: var(--color-accent-adjust);
+}
+
+/* Disabled: muted throughout; the row also says "Locked" in text. */
+.prow[data-state="disabled"] .prow-label,
+.prow[data-state="disabled"] .prow-value {
+  color: var(--color-text-muted);
+}
+
+/* Loading: the adjust accent with the lifecycle word in text. */
+.prow[data-state="loading"] {
+  border-left: var(--keyline-emphasis) solid var(--color-accent-adjust);
+}
+
+/* Error and unknown-state rows: the warning accent with the typed failure
+ * (or explicit ?state marker) in text. */
+.prow[data-state="error"],
+.prow[data-state="unknown"] {
+  border-left: var(--keyline-emphasis) solid var(--color-accent-warning);
+}
+
+.prow[data-state="error"] .prow-value {
+  color: var(--color-accent-warning);
+}
+
+/* The position indicator: where the value sits inside its declared bounds.
+ * Fill color follows the row state; the track resolves from the elevated
+ * surface role like the fader track. */
+.prow-position {
+  flex: 1;
+  position: relative;
+  height: var(--space-4);
+  border-radius: var(--radius-small);
+  background: var(--color-bg-elevated);
+  overflow: hidden;
+}
+
+.prow-position-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: calc(var(--position, 0) * 100%);
+  border-radius: var(--radius-small);
+  background: var(--color-accent-patch);
+}
+
+.prow[data-state="focused"] .prow-position-fill {
+  background: var(--color-accent-focus);
+}
+
+.prow[data-state="adjusting"] .prow-position-fill {
+  background: var(--color-accent-adjust);
+}
+
+.prow[data-state="disabled"] .prow-position-fill {
+  background: var(--color-border-strong);
+}
+
+/* The lifecycle band beneath a row reporting a structural edit: a readout,
+ * not a row — it takes no focus and allocates no interactive target. */
+#workspace .lifecycle,
+#inspector .lifecycle {
+  padding: 0 var(--space-12);
+}
+
+/* Utility panel rows ride the side region's own column and rhythm. */
+#inspector .prow {
+  gap: var(--space-8);
+  padding: 0 var(--space-8);
 }
 
 /* ---- the persistent Inspector ------------------------------------------

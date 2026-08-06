@@ -6,7 +6,6 @@ use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
 use crest_synth::adapter::braids_preparer::BraidsPreparer;
 use crest_synth::adapter::corridors_midi_event_source::CorridorsMidiEventSource;
 use crest_synth::adapter::cpal_audio_output::CpalAudioOutput;
-use crest_synth::adapter::eframe_graphical_window::EframeGraphicalWindow;
 use crest_synth::adapter::hidef_soundfont_asset::HiDefSoundFontAsset;
 use crest_synth::adapter::hidef_soundfont_capability::{
     HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
@@ -28,11 +27,10 @@ use crest_synth::mixer::mixer_track_parameters::MixerTrackParameters;
 use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::real_time::{GraphHandoffStatus, GraphRevision};
-use crest_synth::shell::app_window::AppWindow;
 use crest_synth::shell::standalone_application::{
     ApplicationConfig, DegenerateMode, LiveSceneKind, StandaloneApplication,
 };
-use crest_synth::shell::webview::{ShellSelection, TauriWebviewWindow};
+use crest_synth::shell::webview::TauriWebviewWindow;
 use crest_synth::shell::window_input::WindowInput;
 use crest_synth::synth::{InstrumentCapabilityProvider, InstrumentPreparer};
 use crest_synth::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport};
@@ -118,19 +116,14 @@ fn run(options: Options) -> Result<()> {
             GraphHandoffStatus::with_active(GraphRevision::INITIAL),
         )
         .context("failed to prepare the structural graph boundary")?;
-        // The one launch-time shell selection (T008): a mechanical match with
-        // no shared mutable state between arms and no fallback edge between
-        // shells. Everything downstream of the window is common.
-        let window: Box<dyn AppWindow> = if options.demo_live {
-            Box::new(EframeGraphicalWindow::new(
-                "crest-synth — autonomous live demo",
-            ))
-        } else {
-            match options.shell {
-                ShellSelection::Egui => Box::new(EframeGraphicalWindow::default()),
-                ShellSelection::Webview => Box::new(TauriWebviewWindow::default()),
-            }
-        };
+        // The webview shell is the product's one shell (mission
+        // webview-shell-cutover WP07, crest-spec `selected_webview_stack`):
+        // construction is direct, no launch flag chooses a renderer, and a
+        // webview init failure is a typed startup error on the fatal path —
+        // never an alternate window. Live modes do not use this interactive
+        // window: `run_live_demo_scene` composes its own webview shell
+        // window (WP03).
+        let window = TauriWebviewWindow::default();
         StandaloneApplication::new_with_effects(
             boundary,
             providers,
@@ -295,10 +288,6 @@ struct Options {
     /// `--demo-live` alias group.
     demo_component_library: bool,
     degenerate: Option<DegenerateMode>,
-    /// The launch-time shell decision (`--shell <egui|webview>`, default
-    /// egui). Selection happens exactly once, here; no code path falls back
-    /// from one shell to the other.
-    shell: ShellSelection,
 }
 
 fn parse_options<I, Argument>(arguments: I) -> Result<Options>
@@ -307,25 +296,10 @@ where
     Argument: AsRef<str>,
 {
     let mut options = Options::default();
-    let mut shell_selected = false;
 
-    let mut arguments = arguments.into_iter();
-    while let Some(argument) = arguments.next() {
+    let arguments = arguments.into_iter();
+    for argument in arguments {
         match argument.as_ref() {
-            "--shell" if !shell_selected => {
-                let Some(value) = arguments.next() else {
-                    bail!("--shell requires a value: egui or webview");
-                };
-                options.shell = match value.as_ref() {
-                    "egui" => ShellSelection::Egui,
-                    "webview" => ShellSelection::Webview,
-                    unsupported => {
-                        bail!("unsupported shell {unsupported}: expected egui or webview")
-                    }
-                };
-                shell_selected = true;
-            }
-            "--shell" => bail!("duplicate option --shell"),
             "--smoke" if !options.smoke => options.smoke = true,
             "--observe" if !options.observe => options.observe = true,
             "--demo-scene" if !options.demo_scene => options.demo_scene = true,
@@ -397,20 +371,6 @@ where
             || options.degenerate.is_some())
     {
         bail!("the component gallery option must be used by itself");
-    }
-    // The webview shell is selected for the standalone interactive run only
-    // in this mission; scene and smoke harnesses keep the default egui shell
-    // and their proofs. Rejecting the combination is a typed decision, never
-    // a silent substitution.
-    if options.shell == ShellSelection::Webview
-        && (options.smoke
-            || options.observe
-            || options.demo_scene
-            || options.demo_live
-            || options.demo_component_library
-            || options.degenerate.is_some())
-    {
-        bail!("--shell webview supports only the standalone run; demo and smoke modes keep the egui shell");
     }
 
     Ok(options)
@@ -1171,7 +1131,7 @@ fn parameter_projection_matches_state(tree: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_options, DegenerateMode, Options, ShellSelection};
+    use super::{parse_options, DegenerateMode, Options};
     use crest_synth::control::event_record::{EventDirection, MidiKind};
 
     #[test]
@@ -1189,7 +1149,6 @@ mod tests {
                 demo_live_effects_and_buses: false,
                 demo_component_library: false,
                 degenerate: None,
-                shell: ShellSelection::Egui,
             }
         );
         assert_eq!(
@@ -1204,7 +1163,6 @@ mod tests {
                 demo_live_effects_and_buses: false,
                 demo_component_library: false,
                 degenerate: None,
-                shell: ShellSelection::Egui,
             }
         );
         assert_eq!(
@@ -1219,7 +1177,6 @@ mod tests {
                 demo_live_effects_and_buses: false,
                 demo_component_library: false,
                 degenerate: None,
-                shell: ShellSelection::Egui,
             }
         );
         assert_eq!(
@@ -1234,7 +1191,6 @@ mod tests {
                 demo_live_effects_and_buses: false,
                 demo_component_library: false,
                 degenerate: Some(DegenerateMode::Audio),
-                shell: ShellSelection::Egui,
             }
         );
         assert_eq!(
@@ -1255,7 +1211,6 @@ mod tests {
                 demo_live_effects_and_buses: false,
                 demo_component_library: false,
                 degenerate: Some(DegenerateMode::Control),
-                shell: ShellSelection::Egui,
             }
         );
         assert_eq!(
@@ -1335,45 +1290,13 @@ mod tests {
         assert!(parse_options(["--demo-live-component-library", "--smoke", "--observe"]).is_err());
     }
 
-    /// The shell selection is a single launch-time decision: it defaults to
-    /// egui, parses both explicit values, and never combines the webview
-    /// shell with a scene or smoke harness — rejection, not substitution.
-    #[test]
-    fn the_shell_selection_defaults_to_egui_and_parses_both_explicit_values() {
-        assert_eq!(
-            parse_options([] as [&str; 0]).unwrap().shell,
-            ShellSelection::Egui
-        );
-        assert_eq!(
-            parse_options(["--shell", "egui"]).unwrap(),
-            Options::default()
-        );
-        assert_eq!(
-            parse_options(["--shell", "webview"]).unwrap(),
-            Options {
-                shell: ShellSelection::Webview,
-                ..Options::default()
-            }
-        );
-        assert_eq!(
-            parse_options(["--shell", "egui", "--smoke"]).unwrap(),
-            Options {
-                smoke: true,
-                ..Options::default()
-            }
-        );
-
-        assert!(parse_options(["--shell"]).is_err());
-        assert!(parse_options(["--shell", "gtk"]).is_err());
-        assert!(parse_options(["--shell", "egui", "--shell", "webview"]).is_err());
-        assert!(parse_options(["--shell", "webview", "--smoke"]).is_err());
-        assert!(parse_options(["--shell", "webview", "--demo-live"]).is_err());
-        assert!(parse_options(["--shell", "webview", "--demo-live-component-library"]).is_err());
-    }
-
     #[test]
     fn rejects_unknown_duplicate_and_out_of_context_options() {
         assert!(parse_options(["--play"]).is_err());
+        // A launch flag choosing a renderer no longer exists: the webview
+        // shell is the only shell (mission webview-shell-cutover WP07).
+        assert!(parse_options(["--shell"]).is_err());
+        assert!(parse_options(["--shell", "webview"]).is_err());
         assert!(parse_options(["--smoke", "--smoke"]).is_err());
         assert!(parse_options(["--observe"]).is_err());
         assert!(parse_options(["--demo-scene"]).is_err());

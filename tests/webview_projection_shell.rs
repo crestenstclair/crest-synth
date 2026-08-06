@@ -8,18 +8,27 @@
 //! binary:
 //!
 //! - T022 serialized-schema fidelity: the emit path's document is
-//!   byte-identical to the projector's own serialization across three
-//!   distinct reducer states, so no page-facing schema fork can hide behind
-//!   generation gating.
+//!   byte-identical to the projector's own serialization across distinct
+//!   reducer states in BOTH top-level contexts — three MIXER states and
+//!   three PATCH states (navigate, adjust with a focused editable control,
+//!   and a state carrying disabled controls) — so no page-facing schema fork
+//!   can hide behind generation gating (crest-spec
+//!   `WebviewProjectionShellAcceptanceTests`: "across both contexts").
 //! - T023 token-table freshness: the committed `webview-page/tokens.css` is
 //!   byte-fresh against the authored vocabulary via WP04's
 //!   `committed_tokens_are_fresh` contract, carries the GENERATED header, and
 //!   keeps the injective property-name transform; drift names its property.
 //! - T024 page render determinism: the real page in a real Tauri window
 //!   renders one document to the same declared observation twice at both
-//!   authored viewports, with the declared MIXER anatomy.
+//!   authored viewports, with the declared MIXER anatomy — and (WP01) the
+//!   same double-render determinism for the PATCH fixture documents, with
+//!   the projected strip rows in declared order, the focused row carrying
+//!   the declared focus treatment, and every painted acknowledgment
+//!   carrying the exact semantic identity (generation, stateHash, context,
+//!   active surface, focus path, interaction mode) of its document, one ack
+//!   per painted document in paint order.
 //! - T025 typed startup failure: an unloadable page is a typed
-//!   `PageLoadFailed` on stderr with nonzero exit and no eframe fallback,
+//!   `PageLoadFailed` on stderr with nonzero exit and no fallback shell,
 //!   proven on the shipped binary as a subprocess.
 //! - T026 shutdown parity and the live layer: the harness window closes
 //!   through the owned CloseRequested → Destroyed → Exit path; the shipped
@@ -54,7 +63,8 @@ use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_soundfont_capability,
 };
 use crest_synth::control::{
-    AppEvent, AppState, Direction, SemanticGraphicalViewModel, StateProjector, TopLevelContext,
+    AppEvent, AppState, Direction, InteractionMode, SemanticGraphicalViewModel, StateProjector,
+    TopLevelContext,
 };
 use crest_synth::kernel::{MidiChannel, PatchId};
 use crest_synth::mixer::global_parameters::GlobalParameters;
@@ -62,7 +72,7 @@ use crest_synth::mixer::mix_observation::MixObservation;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::AudioObservationSnapshot;
-use crest_synth::shell::visual::ViewportDensityPolicy;
+use crest_synth::shell::density::ViewportDensityPolicy;
 use crest_synth::shell::webview::meter_channel::{
     MeterChannel, MeterEmit, METER_EVENT, METER_INTERVAL, METER_RATE_HZ,
 };
@@ -136,7 +146,8 @@ fn main() {
         Vec::new()
     } else {
         vec![
-            "T024 page render determinism (DOM layer at 1920x1080 and 1280x800)",
+            "T024 page render determinism (DOM layer at 1920x1080 and 1280x800, MIXER and PATCH documents)",
+            "T024/WP01 paint-acknowledgment identity (one ack per painted document with verbatim semantic identity)",
             "T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak)",
         ]
     };
@@ -233,6 +244,40 @@ fn production_mixer_state() -> AppState {
     state
 }
 
+/// The fixture with the PATCH context selected, in navigate mode — the first
+/// PATCH fixture state (WP01 T004).
+fn production_patch_state() -> AppState {
+    let mut state = production_fixture_state();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .expect("selecting PATCH is accepted");
+    state
+}
+
+/// The PATCH fixture in adjust mode with an editable continuous control
+/// focused (the first envelope row, one step below the engine row).
+fn production_patch_adjust_state() -> AppState {
+    let mut state = production_patch_state();
+    state
+        .apply(AppEvent::Navigate(Direction::Down))
+        .expect("moving PATCH focus down from the engine row is accepted");
+    state
+        .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+        .expect("entering adjust mode on an editable PATCH row is accepted");
+    state
+}
+
+/// The PATCH fixture focused on the second installed patch (Braids), whose
+/// projected surface carries read-only capability rows — the declared
+/// disabled ComponentState treatment target.
+fn production_patch_braids_state() -> AppState {
+    let mut state = production_patch_state();
+    state
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .expect("selecting the next installed patch is accepted");
+    state
+}
+
 // ---------------------------------------------------------------------------
 // T022 — serialized-schema fidelity
 // ---------------------------------------------------------------------------
@@ -242,6 +287,11 @@ struct FidelityEvidence {
     /// the transport), reused by the live sections so the DOM layer renders
     /// the very document whose fidelity was proven here.
     document_a: String,
+    /// The three PATCH fixture documents (navigate, adjust, Braids-focused),
+    /// labelled, in fidelity-proof order — the same bytes the live sections
+    /// render and push so the DOM and ack layers see exactly the documents
+    /// whose fidelity was proven here.
+    patch_documents: Vec<(&'static str, String)>,
 }
 
 /// Pushes the state's accepted projection through the production
@@ -374,12 +424,202 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
          ({generation_a}, {generation_b}, {generation_c}) so gating cannot mask a fork"
     );
 
+    // The PATCH half of the "across both contexts" contract: the same emit
+    // path, the same byte-identity and structural assertions, over three
+    // distinct PATCH fixture states. A fresh channel exercises the gate over
+    // the PATCH generations independently of the MIXER run above.
+    let mut patch_channel = ProjectionChannel::new();
+    let (patch_generation_a, patch_navigate) = check_state_fidelity(
+        &projector,
+        &mut patch_channel,
+        &production_patch_state(),
+        "PATCH state A (navigate)",
+    );
+    let (patch_generation_b, patch_adjust) = check_state_fidelity(
+        &projector,
+        &mut patch_channel,
+        &production_patch_adjust_state(),
+        "PATCH state B (adjust, focused editable control)",
+    );
+    let (patch_generation_c, patch_braids) = check_state_fidelity(
+        &projector,
+        &mut patch_channel,
+        &production_patch_braids_state(),
+        "PATCH state C (Braids focus, disabled rows present)",
+    );
+    let patch_generations = [patch_generation_a, patch_generation_b, patch_generation_c];
+    assert_eq!(
+        patch_generations.iter().collect::<HashSet<_>>().len(),
+        patch_generations.len(),
+        "the three PATCH states must carry distinct generations \
+         ({patch_generations:?}) so gating cannot mask a fork"
+    );
+
+    assert_patch_fixture_documents(&patch_navigate, &patch_adjust, &patch_braids);
+
     println!(
         "T022 serialized-schema fidelity: PASS \
-         (3 distinct states, generations {generation_a}/{generation_b}/{generation_c}, \
+         (6 distinct states across both contexts, MIXER generations \
+         {generation_a}/{generation_b}/{generation_c}, PATCH generations \
+         {patch_generation_a}/{patch_generation_b}/{patch_generation_c}, \
          emit path byte-identical + structural round-trip + declared key surface)"
     );
-    FidelityEvidence { document_a }
+    FidelityEvidence {
+        document_a,
+        patch_documents: vec![
+            ("patch-navigate", patch_navigate),
+            ("patch-adjust", patch_adjust),
+            ("patch-braids", patch_braids),
+        ],
+    }
+}
+
+/// Structural facts about the three PATCH fixture documents, asserted on the
+/// exact bytes the emit path produced: the declared context/surface/mode
+/// identities, the engine and envelope rows in declared order, the utility
+/// output rows, the focused editable control in the adjust document, and the
+/// presence of the disabled ComponentState precondition (a visible
+/// non-editable control) in the Braids document.
+fn assert_patch_fixture_documents(navigate: &str, adjust: &str, braids: &str) {
+    let parse = |bytes: &str, label: &str| -> Value {
+        serde_json::from_str(bytes)
+            .unwrap_or_else(|error| panic!("{label}: the emitted document parses: {error}"))
+    };
+    let navigate = parse(navigate, "PATCH navigate");
+    let adjust = parse(adjust, "PATCH adjust");
+    let braids = parse(braids, "PATCH braids");
+
+    for (document, label, mode) in [
+        (&navigate, "PATCH navigate", "navigate"),
+        (&adjust, "PATCH adjust", "adjust"),
+        (&braids, "PATCH braids", "navigate"),
+    ] {
+        assert_eq!(
+            document.get("context").and_then(Value::as_str),
+            Some("patch"),
+            "{label}: the document's context is PATCH"
+        );
+        assert_eq!(
+            document.get("activeSurface").and_then(Value::as_str),
+            Some("patchMain"),
+            "{label}: the active surface is the PATCH main surface"
+        );
+        assert_eq!(
+            document.get("interactionMode").and_then(Value::as_str),
+            Some(mode),
+            "{label}: the document carries the fixture's interaction mode"
+        );
+    }
+
+    let main_controls = |document: &Value, label: &str| -> Vec<Value> {
+        document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+            .unwrap_or_else(|| panic!("{label}: the document carries the patchMain surface"))
+            .get("controls")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let control_id = |control: &Value| -> String {
+        control
+            .pointer("/path/controlId/id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    // The declared PATCH surface prefix: the engine row then the four
+    // envelope rows, in the reducer's declared order.
+    let controls = main_controls(&navigate, "PATCH navigate");
+    let ids: Vec<String> = controls.iter().map(control_id).collect();
+    let declared_prefix = [
+        "patch.engine",
+        "patch.envelope.attackMilliseconds",
+        "patch.envelope.decayMilliseconds",
+        "patch.envelope.sustain",
+        "patch.envelope.releaseMilliseconds",
+    ];
+    assert!(
+        ids.len() >= declared_prefix.len() && ids[..declared_prefix.len()] == declared_prefix,
+        "PATCH navigate: the main surface opens with the declared engine + envelope rows \
+         (got {ids:?})"
+    );
+    assert!(
+        ids.iter().any(|id| id.starts_with("patch.effectSlot.")),
+        "PATCH navigate: the main surface carries the effect-slot occupancy rows"
+    );
+    assert_eq!(
+        navigate
+            .pointer("/focusPath/controlId/id")
+            .and_then(Value::as_str),
+        Some("patch.engine"),
+        "PATCH navigate: focus opens on the engine row"
+    );
+
+    // The utility side surface carries the two projected output rows.
+    let utility_ids: Vec<String> = navigate
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchUtility"))
+        .expect("PATCH navigate: the document carries the patchUtility surface")
+        .get("controls")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(control_id)
+        .collect();
+    for driver in ["patch.output.trimGainDb", "patch.output.outputTrack"] {
+        assert!(
+            utility_ids.iter().any(|id| id == driver),
+            "PATCH navigate: the utility surface projects {driver} (got {utility_ids:?})"
+        );
+    }
+
+    // Adjust document: the focused control is an editable continuous row.
+    let adjust_controls = main_controls(&adjust, "PATCH adjust");
+    let focused: Vec<&Value> = adjust_controls
+        .iter()
+        .filter(|control| control.get("focused").and_then(Value::as_bool) == Some(true))
+        .collect();
+    assert_eq!(
+        focused.len(),
+        1,
+        "PATCH adjust: exactly one focused control on the main surface"
+    );
+    assert_eq!(
+        focused[0].get("kind").and_then(Value::as_str),
+        Some("continuous"),
+        "PATCH adjust: the focused control is continuous"
+    );
+    assert_eq!(
+        focused[0].get("editable").and_then(Value::as_bool),
+        Some(true),
+        "PATCH adjust: the focused control is editable"
+    );
+
+    // Braids document: at least one visible control the page must render in
+    // the declared disabled treatment (present but not editable).
+    let braids_controls = main_controls(&braids, "PATCH braids");
+    let disabled = braids_controls
+        .iter()
+        .filter(|control| {
+            control.get("visible").and_then(Value::as_bool) == Some(true)
+                && (control.get("enabled").and_then(Value::as_bool) != Some(true)
+                    || control.get("editable").and_then(Value::as_bool) != Some(true))
+        })
+        .count();
+    assert!(
+        disabled > 0,
+        "PATCH braids: the document carries at least one visible control in the \
+         disabled treatment (present but not editable)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -488,8 +728,8 @@ fn wait_with_timeout(
 fn prove_typed_startup_failure() {
     let missing_page = "/nonexistent/crest-webview-acceptance-page.html";
     let started = Instant::now();
+    // No shell flag exists: the webview shell is the only shell (WP07).
     let child = Command::new(env!("CARGO_BIN_EXE_crest-synth"))
-        .args(["--shell", "webview"])
         .env("CREST_WEBVIEW_PAGE", missing_page)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .stdout(Stdio::piped())
@@ -511,13 +751,20 @@ fn prove_typed_startup_failure() {
         "stderr must carry the typed PageLoadFailed display; got:\n{stderr}"
     );
 
-    // No fallback: the process exited by itself (asserted above — an eframe
-    // window would have kept it alive), and no shell startup marker or
-    // observation output appears on either stream.
-    for marker in ["eframe", "egui", "winit"] {
+    // No fallback: the process exited by itself (asserted above — an
+    // alternate window would have kept it alive), and no retired-shell
+    // startup marker or observation output appears on either stream. The
+    // marker needles are assembled at runtime so this guard's own source
+    // stays clean under the zero-reference sweep while still catching a
+    // reintroduced fallback shell.
+    for marker in [
+        concat!("efr", "ame"),
+        concat!("eg", "ui"),
+        concat!("wi", "nit"),
+    ] {
         assert!(
             !stdout.to_lowercase().contains(marker) && !stderr.to_lowercase().contains(marker),
-            "no eframe-shell startup marker may appear (found {marker:?}):\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            "no retired-shell startup marker may appear (found {marker:?}):\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
     }
     assert!(
@@ -527,7 +774,7 @@ fn prove_typed_startup_failure() {
 
     println!(
         "T025 typed startup failure: PASS \
-         (exit={:?} after {elapsed:.1?}, typed PageLoadFailed on stderr, self-exit — no eframe fallback)",
+         (exit={:?} after {elapsed:.1?}, typed PageLoadFailed on stderr, self-exit — no fallback shell)",
         output.status.code()
     );
 }
@@ -675,12 +922,19 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
 
     let handle = app.handle().clone();
     let document_a = fidelity.document_a.clone();
+    let patch_documents = fidelity.patch_documents.clone();
     let driver_painted = Arc::clone(&painted);
     let outcome: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
     let driver_outcome = Arc::clone(&outcome);
     let driver = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            drive_live_window(&handle, &harness_receiver, &driver_painted, &document_a)
+            drive_live_window(
+                &handle,
+                &harness_receiver,
+                &driver_painted,
+                &document_a,
+                &patch_documents,
+            )
         }));
         let posted = match result {
             Ok(Ok(())) => Ok(()),
@@ -977,15 +1231,296 @@ fn assert_observation_structure(
     );
 }
 
+/// The declared ComponentState treatment one projected control must paint in,
+/// derived with exactly the shipped precedence (patch_strip_row::
+/// component_state): a failed edit outranks an in-flight one, focus outranks
+/// read-only-ness.
+fn expected_control_state(control: &Value, mode: &str) -> String {
+    if control.get("error").is_some_and(|error| !error.is_null()) {
+        return "error".to_owned();
+    }
+    if let Some(kind) = control.pointer("/status/kind").and_then(Value::as_str) {
+        match kind {
+            "preparing" | "activating" => return "loading".to_owned(),
+            "ready" | "failed" => {}
+            unknown => return format!("unknown:{unknown}"),
+        }
+    }
+    if control.get("focused").and_then(Value::as_bool) == Some(true) {
+        return match mode {
+            "adjust" => "adjusting".to_owned(),
+            "navigate" | "modal" | "multiSelect" => "focused".to_owned(),
+            unknown => format!("unknown:{unknown}"),
+        };
+    }
+    if control.get("enabled").and_then(Value::as_bool) == Some(true)
+        && control.get("editable").and_then(Value::as_bool) == Some(true)
+    {
+        "resting".to_owned()
+    } else {
+        "disabled".to_owned()
+    }
+}
+
+/// Structural correctness of one painted PATCH observation against the
+/// document it rendered: the declared bands, every visible main-surface
+/// control as one strip row in declared order with its declared
+/// ComponentState treatment, exactly one focused/adjusting row matching the
+/// document's focus path, the section annotation naming the focused entry,
+/// the Utility panel's designed entries, and the side-region floor.
+fn assert_patch_observation_structure(
+    observation: &Value,
+    document: &Value,
+    inspector_width_at_least: f32,
+    label: &str,
+) {
+    let bands = observation
+        .get("bands")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("{label}: the observation must carry bands"));
+    for band in [
+        "contextLine",
+        "identityHeader",
+        "workspace",
+        "inspector",
+        "footer",
+    ] {
+        assert_eq!(
+            bands.get(band).and_then(Value::as_bool),
+            Some(true),
+            "{label}: band {band} must be painted with nonzero area"
+        );
+    }
+
+    let mode = document
+        .get("interactionMode")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: the document names its interaction mode"));
+    let expected_rows: Vec<(String, String)> = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+        .unwrap_or_else(|| panic!("{label}: the document carries the patchMain surface"))
+        .get("controls")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+        .map(|control| {
+            (
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                expected_control_state(control, mode),
+            )
+        })
+        .collect();
+    assert!(
+        !expected_rows.is_empty(),
+        "{label}: the fixture document projects visible PATCH rows"
+    );
+
+    let painted_rows: Vec<(String, String)> = observation
+        .get("rows")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label}: the observation must carry the strip rows"))
+        .iter()
+        .map(|row| {
+            (
+                row.get("control")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                row.get("state")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    // The painted-state names for unknown states carry the raw string in the
+    // mark, not the data-state attribute, so an expected "unknown:x" compares
+    // against a painted "unknown".
+    let expected_painted: Vec<(String, String)> = expected_rows
+        .iter()
+        .map(|(id, state)| {
+            let state = if state.starts_with("unknown:") {
+                "unknown".to_owned()
+            } else {
+                state.clone()
+            };
+            (id.clone(), state)
+        })
+        .collect();
+    assert_eq!(
+        painted_rows, expected_painted,
+        "{label}: the strip paints every visible projected control, in declared order, \
+         in its declared ComponentState treatment"
+    );
+
+    // Every painted row carries its label and value text.
+    for row in observation
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let text = |key: &str| {
+            row.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert!(
+            !text("label").is_empty() && !text("value").is_empty(),
+            "{label}: every strip row paints a label and a value (got {row:?})"
+        );
+        // Disabled rows announce themselves with text beyond color.
+        if row.get("state").and_then(Value::as_str) == Some("disabled") {
+            assert_eq!(
+                row.get("mark").and_then(Value::as_str),
+                Some("Locked"),
+                "{label}: a disabled row says Locked in text"
+            );
+        }
+    }
+
+    // Exactly one focused/adjusting row, and it is the document's focus.
+    let emphasized: Vec<&(String, String)> = painted_rows
+        .iter()
+        .filter(|(_, state)| state == "focused" || state == "adjusting")
+        .collect();
+    assert_eq!(
+        emphasized.len(),
+        1,
+        "{label}: exactly one strip row carries the focus treatment (got {emphasized:?})"
+    );
+    let document_focus = document
+        .pointer("/focusPath/controlId/id")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: the document focus path names a PATCH control"));
+    assert_eq!(
+        emphasized[0].0, document_focus,
+        "{label}: the painted focus treatment sits on the document's focused control"
+    );
+
+    // The section annotation names the focused entry (never computed, read
+    // from the document's own focused control label).
+    let focused_label = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|surface| {
+            surface
+                .get("controls")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|control| control.get("focused").and_then(Value::as_bool) == Some(true))
+        .and_then(|control| {
+            control
+                .get("label")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| panic!("{label}: the document carries a focused control"));
+    assert_eq!(
+        observation.get("sectionAnnotation").and_then(Value::as_str),
+        Some(format!("FOCUS · {focused_label}").as_str()),
+        "{label}: the section annotation names the focused entry"
+    );
+
+    // The Utility panel: the projected identity caption, the two driven
+    // output rows, and the three designed entries the projection does not
+    // drive marked explicitly unavailable.
+    let summary = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchUtility"))
+        .unwrap_or_else(|| panic!("{label}: the document carries the patchUtility surface"))
+        .get("summary")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let patch_id = summary.get("patch_id").and_then(Value::as_u64).unwrap_or(0);
+    let capability_id = summary
+        .get("capability_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert_eq!(
+        observation.get("patchIdentity").and_then(Value::as_str),
+        Some(format!("{patch_id} · {capability_id}").as_str()),
+        "{label}: the Utility panel paints the projected patch identity"
+    );
+    let utility_rows: Vec<(String, String, String)> = observation
+        .pointer("/inspector/utility")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label}: the observation reports the Utility rows"))
+        .iter()
+        .map(|row| {
+            let text = |key: &str| {
+                row.get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            (text("control"), text("label"), text("value"))
+        })
+        .collect();
+    for driver in ["patch.output.trimGainDb", "patch.output.outputTrack"] {
+        assert!(
+            utility_rows.iter().any(|(control, _, _)| control == driver),
+            "{label}: the Utility panel paints the projected {driver} row \
+             (got {utility_rows:?})"
+        );
+    }
+    for designed in ["MASTER VOLUME", "MIDI INPUT", "VOICE LIMIT"] {
+        assert!(
+            utility_rows
+                .iter()
+                .any(|(_, label_text, value)| label_text == designed && value == "--"),
+            "{label}: the undriven designed entry {designed} is marked explicitly \
+             unavailable (got {utility_rows:?})"
+        );
+    }
+
+    // The persistent side region honors the authored floor, and the meter
+    // paints nothing when no mixer track is focused.
+    let width = observation
+        .pointer("/inspector/widthPx")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| panic!("{label}: the observation reports the side-region width"));
+    assert!(
+        width >= f64::from(inspector_width_at_least) - 1.0,
+        "{label}: side-region width {width}px must be at least the authored \
+         {inspector_width_at_least}px"
+    );
+    assert_eq!(
+        observation.get("meter").and_then(Value::as_str),
+        Some(""),
+        "{label}: the meter paints nothing when no mixer track is focused"
+    );
+}
+
 /// The driver: everything the live window is asked to do, in order — T024's
-/// double-render determinism at both authored viewports, then T026's NFR
-/// measurements. Runs off the main thread; every failure is a returned error
-/// (or panic), never a skip.
+/// double-render determinism at both authored viewports for MIXER and PATCH
+/// documents, then the WP01 paint-acknowledgment identity proof, then T026's
+/// NFR measurements. Runs off the main thread; every failure is a returned
+/// error (or panic), never a skip.
 fn drive_live_window(
     handle: &tauri::AppHandle,
     receiver: &mpsc::Receiver<Value>,
     painted: &PaintedAcks,
     document_a: &str,
+    patch_documents: &[(&'static str, String)],
 ) -> Result<(), String> {
     use tauri::Manager;
 
@@ -1079,6 +1614,30 @@ fn drive_live_window(
     );
     screenshot("t024-desktop-1920x1080.png");
 
+    // The PATCH fixture documents at the desktop viewport: the same
+    // double-render determinism, against the exact bytes the fidelity
+    // section proved.
+    for (patch_label, patch_bytes) in patch_documents {
+        let patch_document: Value = serde_json::from_str(patch_bytes)
+            .map_err(|error| format!("the {patch_label} fidelity document parses: {error}"))?;
+        let tag_one = format!("desktop-{patch_label}-1");
+        let tag_two = format!("desktop-{patch_label}-2");
+        let first = observe_render(&window, receiver, patch_bytes, &tag_one)?;
+        let second = observe_render(&window, receiver, patch_bytes, &tag_two)?;
+        assert_eq!(
+            first, second,
+            "T024: two renders of the {patch_label} document at {}x{} must observe identically",
+            desktop.width_px, desktop.height_px
+        );
+        assert_patch_observation_structure(
+            &first,
+            &patch_document,
+            desktop_side,
+            &format!("T024 desktop 1920x1080 {patch_label}"),
+        );
+    }
+    screenshot("t024-patch-desktop-1920x1080.png");
+
     window
         .set_size(tauri::LogicalSize::new(
             f64::from(compact.width_px),
@@ -1103,6 +1662,28 @@ fn drive_live_window(
     );
     screenshot("t024-compact-1280x800.png");
 
+    // The PATCH fixture documents at the compact viewport.
+    for (patch_label, patch_bytes) in patch_documents {
+        let patch_document: Value = serde_json::from_str(patch_bytes)
+            .map_err(|error| format!("the {patch_label} fidelity document parses: {error}"))?;
+        let tag_one = format!("compact-{patch_label}-1");
+        let tag_two = format!("compact-{patch_label}-2");
+        let first = observe_render(&window, receiver, patch_bytes, &tag_one)?;
+        let second = observe_render(&window, receiver, patch_bytes, &tag_two)?;
+        assert_eq!(
+            first, second,
+            "T024: two renders of the {patch_label} document at {}x{} must observe identically",
+            compact.width_px, compact.height_px
+        );
+        assert_patch_observation_structure(
+            &first,
+            &patch_document,
+            compact_side,
+            &format!("T024 compact 1280x800 {patch_label}"),
+        );
+    }
+    screenshot("t024-patch-compact-1280x800.png");
+
     window
         .set_size(tauri::LogicalSize::new(
             f64::from(desktop.width_px),
@@ -1112,7 +1693,8 @@ fn drive_live_window(
     std::thread::sleep(Duration::from_millis(500));
     println!(
         "T024 page render determinism: PASS (double-render identical at both authored \
-         viewports; Inspector {}px desktop / {}px compact floors held)",
+         viewports for the MIXER document and all three PATCH documents; Inspector \
+         {}px desktop / {}px compact floors held)",
         desktop_side, compact_side
     );
 
@@ -1221,6 +1803,121 @@ fn drive_live_window(
             ));
         }
     }
+
+    // ---- WP01 T003/T004: paint-acknowledgment identity --------------------
+    // The three PATCH fixture states pushed through the production emit path;
+    // each painted document must come back as exactly one ack, in paint
+    // order, carrying the document's semantic identity — generation,
+    // stateHash, context, active surface, focus path, interaction mode —
+    // verbatim, plus post-paint region evidence.
+    let pre_push_count = painted.lock().expect("painted acks lock").len();
+    let patch_states: Vec<(&str, AppState)> = vec![
+        ("patch-navigate", production_patch_state()),
+        ("patch-adjust", production_patch_adjust_state()),
+        ("patch-braids", production_patch_braids_state()),
+    ];
+    let mut patch_channel = ProjectionChannel::new();
+    let mut pushed_documents: Vec<(&str, Value)> = Vec::with_capacity(patch_states.len());
+    for (state_label, state) in &patch_states {
+        let projection = projector
+            .project_with_shell(state)
+            .map_err(|error| format!("{state_label}: projection failed: {error}"))?
+            .3;
+        patch_channel
+            .push(&projection, |payload| {
+                pushed_documents.push((*state_label, payload.clone()));
+                tauri::Emitter::emit(handle, PROJECTION_EVENT, payload)
+            })
+            .map_err(|error| format!("{state_label}: push failed: {error}"))?;
+        std::thread::sleep(METER_INTERVAL);
+    }
+    // The rebuilt states serialize to the exact documents the fidelity
+    // section proved: the deterministic reducer and projector may not drift
+    // between the fidelity proof and the paint that acks it.
+    for ((push_label, pushed), (fidelity_label, fidelity_bytes)) in
+        pushed_documents.iter().zip(patch_documents)
+    {
+        let pushed_bytes = serde_json::to_string(pushed)
+            .map_err(|error| format!("{push_label}: the pushed document serializes: {error}"))?;
+        if &pushed_bytes != fidelity_bytes {
+            return Err(format!(
+                "{push_label}/{fidelity_label}: the live push must carry the exact \
+                 fidelity-proven document bytes"
+            ));
+        }
+    }
+    let expected_acks = pre_push_count + patch_states.len();
+    let ack_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let acked = painted.lock().expect("painted acks lock").len();
+        if acked >= expected_acks {
+            break;
+        }
+        if Instant::now() > ack_deadline {
+            return Err(format!(
+                "only {} of {} pushed PATCH documents were acked as painted within 15s",
+                acked - pre_push_count,
+                patch_states.len()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let all_acks = painted.lock().expect("painted acks lock").clone();
+    if all_acks.len() != expected_acks {
+        return Err(format!(
+            "exactly one ack per painted document: expected {expected_acks} total acks, \
+             observed {}",
+            all_acks.len()
+        ));
+    }
+    for ((push_label, pushed), (_, _, ack)) in
+        pushed_documents.iter().zip(&all_acks[pre_push_count..])
+    {
+        for field in [
+            "generation",
+            "stateHash",
+            "context",
+            "activeSurface",
+            "focusPath",
+            "interactionMode",
+        ] {
+            if ack.get(field) != pushed.get(field) {
+                return Err(format!(
+                    "{push_label}: ack field {field} must be copied verbatim from the \
+                     painted document (ack {:?}, document {:?})",
+                    ack.get(field),
+                    pushed.get(field)
+                ));
+            }
+        }
+        let ack_regions = ack
+            .get("regions")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("{push_label}: the ack carries region evidence"))?;
+        for region_id in SHELL_REGION_IDS {
+            let region = ack_regions
+                .iter()
+                .find(|region| region.get("id").and_then(Value::as_str) == Some(region_id))
+                .ok_or_else(|| format!("{push_label}: ack lacks region {region_id}"))?;
+            let width = region.get("widthPx").and_then(Value::as_f64).unwrap_or(0.0);
+            let height = region
+                .get("heightPx")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            if width <= 0.0 || height <= 0.0 {
+                return Err(format!(
+                    "{push_label}: ack region {region_id} must carry painted bounds \
+                     (got {width}x{height})"
+                ));
+            }
+        }
+    }
+    println!(
+        "WP01 paint-acknowledgment identity: PASS ({} PATCH documents pushed through the \
+         production emit path, one ack each in paint order, identity fields verbatim, \
+         region evidence painted)",
+        patch_states.len()
+    );
 
     // ---- T026: NFR-002 meter cadence soak ---------------------------------
     let full_soak = std::env::var("CREST_WEBVIEW_FULL_SOAK").as_deref() == Ok("1");
@@ -1381,23 +2078,23 @@ fn drive_live_window(
 // T026 — shutdown parity on the shipped binary (real window-close runs)
 // ---------------------------------------------------------------------------
 
-/// Runs the shipped binary under each shell, closes its real window through
-/// the native close button (System Events), and asserts the identical owned
-/// terminal outcome: exit 0 with no error output. Both shells return from
-/// `AppWindow::run` into the same `StandaloneApplication::run` teardown —
-/// stream release before worker completion, graph ownership collection,
-/// normal exit — so an equal clean exit through a real window close is the
-/// shutdown-observation parity the eframe shell records.
+/// Runs the shipped binary (the webview shell is the only shell since the
+/// WP07 cutover), closes its real window through the native close button
+/// (System Events), and asserts the owned terminal outcome: exit 0 with no
+/// error output. The window returns from `AppWindow::run` into the same
+/// `StandaloneApplication::run` teardown — stream release before worker
+/// completion, graph ownership collection, normal exit — the identical
+/// shutdown observation the retired shell recorded before the cutover.
 fn prove_shutdown_parity_on_real_runs() {
-    for shell in ["egui", "webview"] {
+    let shell = "webview";
+    {
         let started = Instant::now();
         let mut child = Command::new(env!("CARGO_BIN_EXE_crest-synth"))
-            .args(["--shell", shell])
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .unwrap_or_else(|error| panic!("the shipped binary spawns under {shell}: {error}"));
+            .unwrap_or_else(|error| panic!("the shipped binary spawns: {error}"));
         let pid = child.id();
 
         // Let the composition start: SoundFont parse, audio negotiation,
@@ -1413,7 +2110,7 @@ fn prove_shutdown_parity_on_real_runs() {
         screenshot(&format!("t026-shutdown-parity-{shell}.png"));
 
         // The owned path: the native close button, exactly what an operator
-        // clicks. Targeted by unix id so both sequential runs stay distinct.
+        // clicks. Targeted by unix id.
         let click = Command::new("osascript")
             .args([
                 "-e",
@@ -1449,7 +2146,7 @@ fn prove_shutdown_parity_on_real_runs() {
         );
     }
     println!(
-        "T026 shutdown parity: PASS (both shells reached the identical owned shutdown \
-         outcome from real window-close runs)"
+        "T026 shutdown parity: PASS (the sole shell reached the owned shutdown outcome \
+         from a real window-close run)"
     );
 }

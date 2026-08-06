@@ -16,7 +16,7 @@
 //!
 //! Realizes `valueObject.Shell.ComponentState`.
 
-use super::token::{SemanticColor, KEYLINE_EMPHASIS_PX, KEYLINE_RESTING_PX};
+use crate::shell::tokens::{SemanticColor, KEYLINE_EMPHASIS_PX, KEYLINE_RESTING_PX};
 
 /// A behavioral state a component may be handed.
 ///

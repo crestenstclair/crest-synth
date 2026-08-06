@@ -8,15 +8,15 @@
 //! A surface asks the policy. It does not read a viewport size to decide a
 //! layout: [`ViewportDensityPolicy::resolve`] is the single place a raw width
 //! is consumed, and everything downstream of it is a named accessor. The
-//! intended first consumer is `src/adapter/eframe_graphical_window.rs`, whose
-//! band constants and ad-hoc `desired_side_width` proportional rule this
-//! module replaces — that swap is WP04's work, not this module's.
+//! generated token table (`webview-page/tokens.css`) carries the per-policy
+//! geometry to the projection page, which replaced the retired native
+//! adapter's band constants and ad-hoc proportional side-width rule.
 //!
 //! Realizes `valueObject.Shell.ViewportDensityPolicy`.
 
 use crate::mixer::mixer_track_id::MixerTrackId;
 
-use super::token::MIN_INTERACTIVE_TARGET_PX;
+use crate::shell::tokens::MIN_INTERACTIVE_TARGET_PX;
 
 /// Which authored viewport a policy resolves.
 ///
@@ -147,7 +147,7 @@ pub struct ControlGeometry {
     /// Control width.
     pub width_px: f32,
     /// Control height. This is an interactive target, so it never drops below
-    /// [`super::token::MIN_INTERACTIVE_TARGET_PX`].
+    /// [`crate::shell::tokens::MIN_INTERACTIVE_TARGET_PX`].
     pub height_px: f32,
     /// The distance between the tops of two consecutive controls.
     pub pitch_px: f32,
@@ -174,7 +174,7 @@ pub struct MixerColumnGeometry {
     /// The width a column may never narrow past.
     ///
     /// A fader is grabbed on this axis, so it is an interactive target and the
-    /// floor is [`super::token::MIN_INTERACTIVE_TARGET_PX`] — read here rather
+    /// floor is [`crate::shell::tokens::MIN_INTERACTIVE_TARGET_PX`] — read here rather
     /// than restated, so the minimum has one home.
     pub floor_px: f32,
 }
@@ -379,7 +379,7 @@ impl ViewportDensityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::visual::token::{SpacingStep, MIN_INTERACTIVE_TARGET_PX};
+    use crate::shell::tokens::{SpacingStep, MIN_INTERACTIVE_TARGET_PX};
 
     /// Every interactive target this policy declares, for the minimum-target
     /// assertions. Spelled out rather than derived so a new interactive
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn the_desktop_policy_reproduces_the_current_adapter_constants_exactly() {
-        // These are the values `src/adapter/eframe_graphical_window.rs:17-25`
+        // These are the values the retired native adapter
         // carries today. WP04 deletes those constants in favour of this
         // policy; if this test ever fails, that swap changed the geometry.
         let desktop = ViewportDensityPolicy::Desktop;

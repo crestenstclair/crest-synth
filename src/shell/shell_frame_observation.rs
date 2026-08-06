@@ -40,7 +40,7 @@ impl ShellRegionId {
     }
 }
 
-/// Host-neutral pixel bounds copied from one actually composed egui region.
+/// Host-neutral pixel bounds copied from one actually composed shell region.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellRegionRect {
