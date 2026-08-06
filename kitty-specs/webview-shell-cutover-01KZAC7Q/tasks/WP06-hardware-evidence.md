@@ -19,13 +19,11 @@ subtasks:
 history:
 - '2026-08-06: authored from plan IC-03 (evidence half); C-007 evidence wall'
 agent_profile: implementer-ivan
-authoritative_surface: kitty-specs/webview-shell-cutover-01KZAC7Q/evidence/
+authoritative_surface: scripts/
 create_intent:
 - scripts/rt_ab_measurement.sh
-- kitty-specs/webview-shell-cutover-01KZAC7Q/evidence/README.md
 execution_mode: code_change
 owned_files:
-- kitty-specs/webview-shell-cutover-01KZAC7Q/evidence/**
 - scripts/rt_ab_measurement.sh
 role: implementer
 tags: []

@@ -21,6 +21,7 @@ agent_profile: implementer-ivan
 authoritative_surface: tests/
 create_intent:
 - tests/shell_event_dispatch.rs
+- tests/input_capture_witness.rs
 execution_mode: code_change
 owned_files:
 - tests/shell_event_dispatch.rs
@@ -28,7 +29,7 @@ owned_files:
 - tests/semantic_graphical_view_model.rs
 - tests/component_vocabulary.rs
 - tests/component_composition.rs
-- tests/input_capture.rs
+- tests/input_capture_witness.rs
 role: implementer
 tags: []
 tracker_refs: []
@@ -159,8 +160,10 @@ provably reaches the translator in the running webview shell without a
 human.
 
 **Steps**:
-1. Extend `tests/input_capture.rs` (or a focused harness within it): with
-   the webview shell running (debug seam page is fine), synthesize the full
+1. Create `tests/input_capture_witness.rs` (the existing bijectivity unit
+   tests live in `src/shell/webview/input_capture.rs` — WP02's file, leave
+   them there): with the webview shell running (debug seam page is fine),
+   synthesize the full
    `WindowKey` vocabulary through the NSEvent local-monitor path — press,
    release, and focus-loss — and assert each arrives at
    `KeyboardInputTranslator` exactly once with correct kind/key, using the
