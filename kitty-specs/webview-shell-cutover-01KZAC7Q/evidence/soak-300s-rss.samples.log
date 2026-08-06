@@ -1,0 +1,36 @@
+# RSS samples of the webview_projection_shell test process (ps -o rss=, KiB), every 10 s
+# mission webview-shell-cutover-01KZAC7Q WP06 T024 — external quantified-leak metric alongside the soak
+# started: 2026-08-06T07:12:59Z
+07:13:09 rss_kb=507840
+07:13:19 rss_kb=607392
+07:13:29 rss_kb=607344
+07:13:39 rss_kb=607296
+07:13:49 rss_kb=607296
+07:13:59 rss_kb=607312
+07:14:09 rss_kb=607312
+07:14:19 rss_kb=155840
+07:14:29 rss_kb=145472
+07:14:39 rss_kb=145424
+07:14:49 rss_kb=121696
+07:14:59 rss_kb=121712
+07:15:09 rss_kb=107728
+07:15:20 rss_kb=107056
+07:15:30 rss_kb=107024
+07:15:40 rss_kb=106752
+07:15:50 rss_kb=106768
+07:16:00 rss_kb=106736
+07:16:10 rss_kb=106720
+07:16:20 rss_kb=106720
+07:16:30 rss_kb=106720
+07:16:40 rss_kb=103856
+07:16:50 rss_kb=103968
+07:17:00 rss_kb=103920
+07:17:10 rss_kb=103872
+07:17:20 rss_kb=103920
+07:17:30 rss_kb=103904
+07:17:40 rss_kb=103888
+07:17:50 rss_kb=103904
+07:18:00 rss_kb=103920
+07:18:10 rss_kb=103904
+07:18:20 rss_kb=93568
+07:18:30 rss_kb=94160

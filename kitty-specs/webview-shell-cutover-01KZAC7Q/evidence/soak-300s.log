@@ -1,0 +1,24 @@
+   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth/.worktrees/webview-shell-cutover-01KZAC7Q-lane-f)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.96s
+     Running tests/webview_projection_shell.rs (target/debug/deps/webview_projection_shell-08a97bb45714da40)
+webview_projection_shell acceptance: live (CREST_WEBVIEW_TESTS=1) run
+T022 serialized-schema fidelity: PASS (6 distinct states across both contexts, MIXER generations 2/3/4, PATCH generations 2/4/3, emit path byte-identical + structural round-trip + declared key surface)
+T023 token-table freshness: PASS (74 unique custom properties, byte-fresh, GENERATED header, drift names its property)
+T025 typed startup failure: PASS (exit=Some(1) after 1.4s, typed PageLoadFailed on stderr, self-exit — no eframe fallback)
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t024-desktop-1920x1080.png
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t024-patch-desktop-1920x1080.png
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t024-compact-1280x800.png
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t024-patch-compact-1280x800.png
+T024 page render determinism: PASS (double-render identical at both authored viewports for the MIXER document and all three PATCH documents; Inspector 420px desktop / 320px compact floors held)
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t026-live-mixer-render.png
+CREST_WEBVIEW_NFR001 projection-to-paint over 150 paced reducer edits: p50=7.9ms p95=8.8ms max=10.9ms (threshold p95 <= 50ms)
+WP01 paint-acknowledgment identity: PASS (3 PATCH documents pushed through the production emit path, one ack each in paint order, identity fields verbatim, region evidence painted)
+CREST_WEBVIEW_NFR002 soak configuration: running 300s (full five-minute soak; 60s default, 300s with CREST_WEBVIEW_FULL_SOAK=1)
+CREST_WEBVIEW_NFR002 meter cadence over 300s: rust-side 8830 emits = 29.43 Hz (declared pace 30 Hz, interval-quantized floor 29.0), max gap 44.3ms, first/last-third 29.43/29.43 Hz, 239013 observations coalesced (pending slot bounded at one by construction, emit count 8830 <= pace bound 9002), lost 0; page-side received 8830 frames = 29.43 Hz
+T026 harness window owned shutdown: PASS (run_return = 0 through the owned close path)
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t026-shutdown-parity-egui.png
+T026 shutdown parity (egui): PASS (real window closed via the native close button after 9.2s; owned teardown — stream release, worker completion, graph ownership collection — reached exit 0)
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t026-shutdown-parity-webview.png
+T026 shutdown parity (webview): PASS (real window closed via the native close button after 8.5s; owned teardown — stream release, worker completion, graph ownership collection — reached exit 0)
+T026 shutdown parity: PASS (both shells reached the identical owned shutdown outcome from real window-close runs)
+CREST_ACCEPTANCE webview_projection_shell passed (skipped: none)
