@@ -208,7 +208,53 @@ The bullet above is amended in place rather than rewritten, because a gate is cl
 - **Display fidelity cleanup.** Compact mixer cell labels are trimmed at their column edge, the disabled `Locked` word overruns its row inset, and two derived band heights sit a few pixels off their authored extents. Recorded, bounded by the deterministic proof so none can grow, and not a gate at this stage.
 - **Three controls have no authored specimen.** The design file defines no toggle, no choice-row adjacency affordance, and no meter. All three shipped as flagged minimums; whether the design file is extended or the minimums stand is a product call.
 
+## Webview shell cutover gate (added 2026-08-05) — retire the egui visual layer before Phase 5
+
+**Operator decision (2026-08-05): all current shell work moves to the Tauri
+webview shell before any further product implementation.** Mission
+`webview-shell-foundation-01KZ9DN7` (merged via PR #2, effective verdict PASS
+WITH NOTES) proved the approach: the production MIXER renders from the same
+`SemanticGraphicalViewModel` through 244 lines of HTML/CSS where the
+hand-painted egui layer needed a 684-line density policy. This gate **blocks
+Phase 5**; Phases 5–9 assemble their surfaces in the webview shell.
+
+- Author the retirement in the crest-spec FIRST: replace
+  `requirement.selected_egui_stack` with a webview-default declaration, retire
+  the egui adapter and any validations that drive the egui render path
+  (Phase 4's `component_vocabulary` / `component_composition` proofs must be
+  re-declared against the webview path or deliberately retired, not silently
+  dropped), and record the pivot in `DESIGN.md`. This is a deliberate
+  declaration, never a side effect of deletion.
+- Render the PATCH context and every shipped shell surface through the webview
+  shell from the canonical view model. Keyboard input stays Rust-side; the
+  one-way loop, immutable projections, and owned-shutdown path are unchanged.
+- Migrate the retained live scenes before deleting the egui window: every
+  `make demo-live-<scene>` target must run through the webview shell with
+  refreshed hardware evidence. Retained evidence survives the cutover or the
+  cutover does not complete. The component-library gallery either re-renders
+  through the webview vocabulary or its retirement is recorded here — a
+  decision for specify, not a silent casualty.
+- Delete the egui visual layer (`src/shell/visual/`, ~17k lines), the eframe
+  window adapter, and the `eframe`/`egui_extras` dependencies. The Phase 4
+  token/type/spacing/state vocabulary carries forward as the authored CSS
+  vocabulary under FR-002's single-source contract; the component *contracts*
+  survive the renderer they were first painted with.
+- Discharge the foundation review's successor items: painted-ack →
+  `ShellFrameObservation` forwarding with an explicit owner, the same-workload
+  RT A/B measurement, the 300 s soak, a restrictive CSP,
+  `cfg(debug_assertions)` on `CREST_WEBVIEW_PAGE`, and the automated
+  key-injection witness.
+
+The gate closes on a hardware run of the cumulative `make demo-live` target
+through the webview shell — real window, physical audio, real MIDI fixture,
+full teardown contract — with the egui visual layer no longer in the tree.
+
 ## Phase 5 — Functional Patch editor blockout
+
+**Blocked by the webview shell cutover gate above (2026-08-05).** All Phase 5
+surfaces are assembled in the webview shell; references to the egui window in
+the entry condition below are the historical record of how LIMIT-1 was found
+and remain accurate as history.
 
 ### Entry condition — close LIMIT-1: the journey must reach more than one instrument
 
