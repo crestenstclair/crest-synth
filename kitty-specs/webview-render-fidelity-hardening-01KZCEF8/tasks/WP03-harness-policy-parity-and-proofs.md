@@ -13,7 +13,7 @@ requirement_refs:
 - NFR-003
 planning_base_branch: feat/webview-shell-cutover
 merge_target_branch: feat/webview-shell-cutover
-branch_strategy: Planning artifacts for this mission were generated on feat/webview-shell-cutover. During /spec-kitty.implement this WP branches from a base containing WP01 and WP02, and completed changes must merge back into feat/webview-shell-cutover unless the human explicitly redirects the landing branch.
+branch_strategy: Planning artifacts for this mission were generated on feat/webview-shell-cutover. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/webview-shell-cutover unless the human explicitly redirects the landing branch.
 created_at: '2026-08-06T22:44:12+00:00'
 subtasks:
 - T010
@@ -25,12 +25,10 @@ history:
 - '2026-08-06: authored from plan IC-03, crest-spec asset WebviewProjectionShellAcceptanceTests, mission-review DRIFT-1 + FR-coverage re-run mandate'
 agent_profile: implementer-ivan
 authoritative_surface: tests/
-create_intent:
-- kitty-specs/webview-render-fidelity-hardening-01KZCEF8/evidence/README.md
+create_intent: []
 execution_mode: code_change
 owned_files:
 - tests/webview_projection_shell.rs
-- kitty-specs/webview-render-fidelity-hardening-01KZCEF8/evidence/**
 role: implementer
 tags: []
 tracker_refs: []
