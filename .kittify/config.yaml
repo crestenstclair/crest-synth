@@ -17,36 +17,6 @@ review:
   # junit path is fixed by .config/nextest.toml's ci profile, so the command
   # copies it to wherever the gate asked while preserving the runner's exit
   # status (the gate parses JUnit even on test failures).
-  test_command: 'cargo nextest run --profile ci; rc=$?; cp -f target/nextest/ci/junit.xml
-    {output_file} 2>/dev/null; exit $rc'
+  test_command: 'cargo nextest run --profile ci; rc=$?; cp -f target/nextest/ci/junit.xml {output_file} 2>/dev/null; exit $rc'
   test_output_format: junit_xml
 charter: .kittify/charter/charter.yaml
-activated_directives:
-- 001-architectural-integrity-standard
-- 003-decision-documentation-requirement
-- 010-specification-fidelity-requirement
-- 018-doctrine-versioning-requirement
-- 024-locality-of-change
-- 025-boy-scout-rule
-- 028-search-tool-discipline
-- 029-agent-commit-signing-policy
-- 030-test-and-typecheck-quality-gate
-- 031-context-aware-design
-- 032-conceptual-alignment
-- 033-targeted-staging-policy
-- 034-test-first-development
-- 035-bulk-edit-occurrence-classification
-- 036-black-box-integration-testing
-- 037-living-documentation-sync
-- 038-structured-prompt-boundary
-- 039-lynn-cole-engineering-culture
-- 040-recurring-bug-structural-intervention
-activated_paradigms:
-- atomic-design
-- behaviour-driven-development
-- brownfield-onboarding
-- c4-incremental-detail-modeling
-- deep-module-design
-- domain-driven-design
-- specification-by-example
-- structured-prompt-driven-development

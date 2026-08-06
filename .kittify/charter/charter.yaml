@@ -1436,3 +1436,32 @@ overrides: {}
 metadata:
   generated_at: '2026-07-31T05:04:48Z'
   bundle_schema_version: 2
+activated_directives:
+- 001-architectural-integrity-standard
+- 003-decision-documentation-requirement
+- 010-specification-fidelity-requirement
+- 018-doctrine-versioning-requirement
+- 024-locality-of-change
+- 025-boy-scout-rule
+- 028-search-tool-discipline
+- 029-agent-commit-signing-policy
+- 030-test-and-typecheck-quality-gate
+- 031-context-aware-design
+- 032-conceptual-alignment
+- 033-targeted-staging-policy
+- 034-test-first-development
+- 035-bulk-edit-occurrence-classification
+- 036-black-box-integration-testing
+- 037-living-documentation-sync
+- 038-structured-prompt-boundary
+- 039-lynn-cole-engineering-culture
+- 040-recurring-bug-structural-intervention
+activated_paradigms:
+- atomic-design
+- behaviour-driven-development
+- brownfield-onboarding
+- c4-incremental-detail-modeling
+- deep-module-design
+- domain-driven-design
+- specification-by-example
+- structured-prompt-driven-development

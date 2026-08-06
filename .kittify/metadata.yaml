@@ -32,3 +32,19 @@ migrations:
     applied_at: '2026-08-05T17:27:33.571799'
     result: success
     notes: No changes (all promotions already present)
+  - id: 3.2.6_vendored_review_skills
+    applied_at: '2026-08-05T17:30:19.611205'
+    result: success
+    notes: 'Installed 2 vendored skill(s) for 2 agent(s) (194 managed files); Updated
+      .kittify/skills-manifest.json with vendored entries; Archived customized skill
+      file for manual review: .kittify/.migration-backup/agent-skills/20260806T003019Z/.agents/skills/spec-kitty-mission-review/SKILL.md;
+      Archived customized skill file for manual review: .kittify/.migration-backup/agent-skills/20260806T003019Z/.agents/skills/spk-gate-mission-review/SKILL.md;
+      Archived customized skill file for manual review: .kittify/.migration-backup/agent-skills/20260806T003019Z/.agents/skills/spk-mission-crest-spec/SKILL.md;
+      Archived customized skill file for manual review: .kittify/.migration-backup/agent-skills/20260806T003019Z/.claude/skills/spec-kitty-mission-review/SKILL.md;
+      Archived customized skill file for manual review: .kittify/.migration-backup/agent-skills/20260806T003019Z/.claude/skills/spk-gate-mission-review/SKILL.md;
+      Archived customized skill file for manual review: .kittify/.migration-backup/agent-skills/20260806T003019Z/.claude/skills/spk-mission-crest-spec/SKILL.md'
+  - id: consolidate_charter_bundle_fold
+    applied_at: '2026-08-05T17:30:19.807331'
+    result: success
+    notes: 'Relocated activation keys onto existing /Users/crestenstclair/workspace/crest-synth/.kittify/charter/charter.yaml;
+      Updated .kittify/config.yaml: removed activated_* keys, added charter: pointer'
