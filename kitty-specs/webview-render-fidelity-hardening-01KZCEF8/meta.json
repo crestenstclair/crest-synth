@@ -1,5 +1,6 @@
 {
   "created_at": "2026-08-06T21:08:07.004857+00:00",
+  "crest_spec_impact": "structural",
   "flattened": false,
   "friendly_name": "Webview Render Fidelity and Error-Path Hardening",
   "mission_id": "01KZCEF8PV9K67ZMFTABBHXHK1",
@@ -11,5 +12,6 @@
   "slug": "webview-render-fidelity-hardening-01KZCEF8",
   "target_branch": "feat/webview-shell-cutover",
   "topology": "single_branch",
-  "crest_spec_impact": "structural"
+  "vcs": "git",
+  "vcs_locked_at": "2026-08-06T23:11:14.655241+00:00"
 }

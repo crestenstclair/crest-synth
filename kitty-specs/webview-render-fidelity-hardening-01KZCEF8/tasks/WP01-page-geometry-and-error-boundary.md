@@ -8,7 +8,9 @@ requirement_refs:
 planning_base_branch: feat/webview-shell-cutover
 merge_target_branch: feat/webview-shell-cutover
 branch_strategy: Planning artifacts for this mission were generated on feat/webview-shell-cutover. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/webview-shell-cutover unless the human explicitly redirects the landing branch.
-created_at: '2026-08-06T22:44:12+00:00'
+base_branch: kitty/mission-webview-render-fidelity-hardening-01KZCEF8
+base_commit: 10d956744e4cee1b8d3e4a6bb7f15372202bc906
+created_at: '2026-08-06T23:11:15.516698+00:00'
 subtasks:
 - T001
 - T002
