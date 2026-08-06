@@ -28,7 +28,7 @@ valueObjects:
       from semantic and contain no adapter, worker, graph, engine, mixer, device, or audio owner
     - actionHints are an exact presentation of semantic.validActions and never form a second hand-maintained
       input vocabulary
-    - the value contains no pixel geometry, widget id, egui type, callback, mutable state, prepared object,
+    - the value contains no pixel geometry, widget id, renderer type, callback, mutable state, prepared object,
       device handle, or audio buffer
     contributesTo:
       graphical_application_shell: is the single immutable production-window projection for every structural
@@ -253,7 +253,7 @@ valueObjects:
     invariants:
     - PatchMain and PatchUtility belong only to PATCH; MixerMain and MixerInspector belong only to MIXER
     - the identity is invariant across desktop and Steam Deck composition and never encodes a pane index,
-      rectangle, visibility shortcut, or egui id
+      rectangle, visibility shortcut, or renderer id
     - PatchUtility owns the canonical Patch trim and output-track controls introduced by the corrective
       routing gate; MixerInspector owns selected-track sends and routed-Patch summary, and later visual
       work must reuse these identities rather than invent parallel surfaces
@@ -747,7 +747,7 @@ valueObjects:
       canonical state plus the owning instrument/effect/mixer descriptor
     - focused is true for exactly the node whose path equals SemanticGraphicalViewModel.focusPath; read-only
       and disabled nodes never enter the focus resolver
-    - the value contains no egui type, geometry, callback, mutable state, engine/effect branch, prepared
+    - the value contains no renderer type, geometry, callback, mutable state, engine/effect branch, prepared
       object, device, or audio buffer
     contributesTo:
       semantic_graphical_view_model: gives multiple layouts the same schema-derived control content
@@ -797,7 +797,7 @@ valueObjects:
     - validActions is computed by the same pure resolver used before reducer execution, status and errors
       project only typed canonical runtime lifecycle values, and a healthy state contains an explicit
       empty errors vector
-    - the model contains no eframe/egui type, viewport, rectangle, density rule, widget id, raw input,
+    - the model contains no window-toolkit type, viewport, rectangle, density rule, widget id, raw input,
       callback, AppState reference, mutable value, prepared object, device handle, or audio buffer
     - GraphicalShellProjection embeds this value and derives its path/status/footer presentation from
       it; the shell and retained TextProjection never own parallel interaction state
@@ -987,7 +987,7 @@ domainServices:
         pass the same pure precondition used by AppState.apply
       - derive GraphicalShellProjection by embedding that exact SemanticGraphicalViewModel plus the retained
         TextProjection; project every structural label, current path, status/error presentation, and footer
-        valid-action hint here and never in the eframe adapter
+        valid-action hint here and never in the window adapter
       - derive PatchPageProjection from the active or remembered PatchMain path, PatchControlId, VoiceEnvelope
         descriptor, active CapabilityDescriptor, InstrumentConfig, EngineSelectionStatus, and complete
         installed registry; use stable ids and descriptor order and never match on SoundFont or Braids

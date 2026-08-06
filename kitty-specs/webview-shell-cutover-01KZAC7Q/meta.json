@@ -12,5 +12,6 @@
   "purpose_tldr": "Render every shell surface through the Tauri webview and retire the egui visual layer before Phase 5",
   "slug": "webview-shell-cutover-01KZAC7Q",
   "target_branch": "feat/webview-shell-cutover",
-  "topology": "coord"
+  "topology": "coord",
+  "crest_spec_impact": "structural"
 }

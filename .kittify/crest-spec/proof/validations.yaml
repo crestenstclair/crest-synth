@@ -36,8 +36,8 @@ projectValidations:
     description: the webview shell proves serialized-projection fidelity (page document byte-identical
       to the projector's serialization), token-table generation freshness against the authored vocabulary,
       deterministic page rendering of a given document at both authored viewports, typed startup failure
-      with no silent shell fallback, Rust-side input ownership, and the same owned shutdown observations
-      as the eframe shell
+      with no silent shell fallback, Rust-side input ownership, and the declared owned shutdown
+      observations
   component_vocabulary:
     scope: project
     kind: integration
@@ -61,7 +61,7 @@ projectValidations:
     - ComponentState
     - ComponentGalleryPage
     - GraphicalShellProjection
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - ComponentVocabularyAcceptanceTests
     capabilities:
     - component_vocabulary
@@ -102,7 +102,7 @@ projectValidations:
     - SemanticControlViewModel
     - MixerControlId
     - AppWindow
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - ComponentCompositionAcceptanceTests
     capabilities:
     - component_vocabulary
@@ -214,7 +214,7 @@ projectValidations:
     - StateProjector
     - AppLoop
     - AppWindow
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - StandaloneApplication
     - GraphicalShellAcceptanceTests
     capabilities:
@@ -223,8 +223,8 @@ projectValidations:
     - schema_driven_patch_page
     goals:
     - use_graphical_shell
-    description: the production egui update path proves exact graphical shell structure, responsive geometry,
-      canonical context projection, passive input, and retained diagnostic content
+    description: the production webview projection path proves exact graphical shell structure, responsive
+      geometry, canonical context projection, passive input, and retained diagnostic content
   semantic_graphical_view_model:
     scope: project
     kind: integration
@@ -258,7 +258,7 @@ projectValidations:
     - StateProjector
     - AppLoop
     - KeyboardInputTranslator
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - SemanticGraphicalViewModelAcceptanceTests
     capabilities:
     - semantic_graphical_view_model
@@ -820,7 +820,7 @@ projectValidations:
     - AppLoop
     - WindowInput
     - KeyboardInputTranslator
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - ParameterSnapshot
     - AudioBoundary
     - AudioRenderer
@@ -920,7 +920,7 @@ projectValidations:
     - DescriptorDefaultConfigFactory
     - WindowInput
     - KeyboardInputTranslator
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - MixerTrackParameters
     - GlobalParameters
     - MixObservation
@@ -1021,7 +1021,7 @@ projectValidations:
     - LiveDemoReport
     - LiveDemoRunner
     - AppWindow
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - AudioOutput
     - CpalAudioOutput
     - StandaloneApplication
@@ -1101,21 +1101,21 @@ projectValidations:
     - observe_synth
     description: typed instrument/effect production surface descriptors and discovered serialized leaves
       are exactly equal with no missing or unexpected identifiers
-  egui_context:
+  shell_event_dispatch:
     scope: project
     kind: integration
     command:
     - cargo
     - test
     - --test
-    - eframe_context
+    - shell_event_dispatch
     - --
     - --nocapture
     assertions:
     - type: exit-code
       equals: 0
     - type: stdout-contains
-      value: CREST_ACCEPTANCE eframe_context passed
+      value: CREST_ACCEPTANCE shell_event_dispatch passed
     resources:
     - WindowInput
     - TopLevelContext
@@ -1123,7 +1123,7 @@ projectValidations:
     - EngineSelectionStatus
     - PatchPageProjection
     - KeyboardInputTranslator
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - AppState
     - AppLoop
     - EventLog
@@ -1139,10 +1139,10 @@ projectValidations:
     - control_synth
     - inspect_patch
     - select_patch_engine
-    description: a headless egui Context dispatches real RawInput through EframeGraphicalApplication.update
-      into AppLoop and proves the next frame, event record, accepted state, exact shell and diagnostic
-      projection values, structural regions, engine-row lifecycle status, selection, and scroll target
-      all reflect that event
+    description: the production shell adapter's event path dispatches normalized WindowInput headlessly
+      into AppLoop and proves the next serialized document, event record, accepted state, exact shell
+      and diagnostic projection values, structural regions, engine-row lifecycle status, selection, and
+      scroll target all reflect that event
   mutation_harness:
     scope: project
     kind: integration
@@ -1737,33 +1737,33 @@ attachedValidations:
     - corridors_midi_event_source
     description: the real fixture discovers multiple instruments, keeps note pairs together, assigns a
       unique channel to every Patch, rejects channel exhaustion, and emits due bounded events
-  adapter.eframe_graphical_window:
-    attachedTo: EframeGraphicalWindow
+  adapter.tauri_webview_window:
+    attachedTo: TauriWebviewWindow
     kind: test
     command:
     - cargo
     - test
-    - eframe_graphical_window
-    description: the adapter normalizes the complete egui input vocabulary and paints every structural
-      region without owning semantic state
-  adapter.eframe_context:
-    attachedTo: EframeGraphicalWindow
+    - tauri_webview_window
+    description: the adapter normalizes the complete physical input vocabulary and pushes every structural
+      region to the page without owning semantic state
+  adapter.shell_event_dispatch:
+    attachedTo: TauriWebviewWindow
     kind: integration
     command:
     - cargo
     - test
     - --test
-    - eframe_context
+    - shell_event_dispatch
     - --
     - --nocapture
     assertions:
     - type: exit-code
       equals: 0
     - type: stdout-contains
-      value: CREST_ACCEPTANCE eframe_context passed
-    description: a headless egui Context executes EframeGraphicalApplication.update, invokes the real
-      callback, renders exact shell/diagnostic projection values, and targets the exact selected line
-      without a native window
+      value: CREST_ACCEPTANCE shell_event_dispatch passed
+    description: the shell adapter's event path executes headlessly, invokes the real callback, renders
+      exact shell/diagnostic projection values, and targets the exact selected line without a native
+      window
   adapter.hidef_soundfont_asset:
     attachedTo: HiDefSoundFontAsset
     kind: test
@@ -2156,22 +2156,22 @@ attachedValidations:
     - type: stdout-contains
       value: CREST_ACCEPTANCE schema_surface passed
     description: the named schema-equality target executes behavioral assertions and passes
-  asset.acceptance_eframe_context:
+  asset.acceptance_shell_event_dispatch:
     attachedTo: BehavioralAcceptanceTests
     kind: integration
     command:
     - cargo
     - test
     - --test
-    - eframe_context
+    - shell_event_dispatch
     - --
     - --nocapture
     assertions:
     - type: exit-code
       equals: 0
     - type: stdout-contains
-      value: CREST_ACCEPTANCE eframe_context passed
-    description: the named egui-context target executes behavioral assertions and passes
+      value: CREST_ACCEPTANCE shell_event_dispatch passed
+    description: the named shell-event-dispatch target executes behavioral assertions and passes
   asset.acceptance_graphical_application_shell:
     attachedTo: BehavioralAcceptanceTests
     kind: integration
@@ -2188,7 +2188,7 @@ attachedValidations:
     - type: stdout-contains
       value: CREST_ACCEPTANCE graphical_application_shell passed
     description: the named graphical-shell target proves desktop and Steam Deck structure through the
-      production egui update path
+      production webview projection path
   asset.acceptance_mutation_harness:
     attachedTo: BehavioralAcceptanceTests
     kind: integration

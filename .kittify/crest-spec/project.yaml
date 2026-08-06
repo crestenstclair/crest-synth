@@ -7,7 +7,7 @@ mission: crest-synth is a standalone controller-first instrument host. Its curre
   sends feed eight bounded bus returns drawn from the same registry before the master stage renders low-latency
   stereo audio, projects reducer-owned PATCH/MIXER focus, modes, return paths, valid actions, status,
   errors, and descriptor content through one immutable host-neutral semantic graphical view model inside
-  the eframe/egui shell, edits canonical Patch, track, send, and return values, selects SoundFont presets
+  the webview shell, edits canonical Patch, track, send, and return values, selects SoundFont presets
   by exact authored identity, and replaces structural instrument, effect-slot, and bus-return configuration
   through one off-callback prepared-graph workflow.
 nonGoals:
@@ -162,7 +162,7 @@ completion:
   - control_dispatch_performance
   - demo_scene
   - schema_surface
-  - egui_context
+  - validation.shell_event_dispatch
   - graphical_application_shell
   - validation.semantic_graphical_view_model
   - sixteen_track_mixer_routing
