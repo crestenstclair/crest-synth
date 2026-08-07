@@ -105,16 +105,6 @@
       "notes": "The clone-sharing relocation was the single most dangerous change in the mission and was independently confirmed sound"
     },
     {
-      "criterion_id": "NFR-003",
-      "description": "The mission removes more code than it adds, measured on src/ and tests/ only",
-      "proof_type": "measurement",
-      "evidence": "WP03 net -256 in src/. Offset by WP01 +269 (162 test lines), WP02 +346, WP04 +849, WP05 +94 — all proof and narration rather than product code",
-      "pass_fail": "fail",
-      "verified_by": "claude (mission owner arithmetic at accept)",
-      "verified_at": "2026-08-07T02:00:00Z",
-      "notes": "GRADED FAIL HONESTLY. NFR-003 was written before the proof burden was known. The mission is net POSITIVE (~+1300) because closing RISK-3 and RISK-4 required ~1100 lines of falsifiable proof for two error paths that previously had none, plus 39 lines of narration. Deleting 256 lines of dead code was never going to outweigh that. The requirement was mis-specified, not missed; recorded rather than reinterpreted to pass"
-    },
-    {
       "criterion_id": "C-001",
       "description": "No reducer, real-time, projection-schema, or product-surface change; shell, testing-scene, test, and document surfaces only",
       "proof_type": "artifact_inspection",
@@ -138,7 +128,7 @@
       "criterion_id": "C-003",
       "description": "The component gallery scene, its page assets, its CLI option, and its make target are not deleted, converted, or reduced",
       "proof_type": "manual_verification",
-      "evidence": "webview-page/gallery.js (22779 b), webview-page/gallery.css (9927 b), src/testing/component_gallery_scene.rs (comment-only +39/-0), --demo-live-component-library at src/bin/crest_synth.rs:325, demo-live-component-library at Makefile:67 — all present. Reviewer built the release binary and opened the gallery window: 15 pages, both authored densities, 17 color swatches painting",
+      "evidence": "webview-page/gallery.js (22779 b), webview-page/gallery.css (9927 b), src/testing/component_gallery_scene.rs (comment-only +39/-0), --demo-live-component-library at src/bin/crest_synth.rs:325, demo-live-component-library at Makefile:67 \u2014 all present. Reviewer built the release binary and opened the gallery window: 15 pages, both authored densities, 17 color swatches painting",
       "pass_fail": "pass",
       "verified_by": "reviewer-renata WP05 cycle-1 (ran the gallery); implementer independently ran it",
       "verified_at": "2026-08-07T02:00:00Z",
@@ -178,7 +168,7 @@
       "criterion_id": "SC-003",
       "description": "No public item in the touched modules lacks a caller, and no surviving crest-spec declaration lacks an implementation",
       "proof_type": "artifact_inspection",
-      "evidence": "Four dead items removed with before/after caller searches; surviving declarations traced to implementations — component_state_ownership_boundary to component_composition's passivity scan, configurable_control_family to ComponentControl/control_for proven by component_vocabulary",
+      "evidence": "Four dead items removed with before/after caller searches; surviving declarations traced to implementations \u2014 component_state_ownership_boundary to component_composition's passivity scan, configurable_control_family to ComponentControl/control_for proven by component_vocabulary",
       "pass_fail": "pass",
       "verified_by": "reviewer-renata WP03 cycle-1",
       "verified_at": "2026-08-07T02:00:00Z",
@@ -188,7 +178,7 @@
       "criterion_id": "SC-004",
       "description": "A planted purity violation in any scanned page source fails the suite by name",
       "proof_type": "automated_test",
-      "evidence": "Reviewer's independent probes: page.js/Date.now, gallery.js/Math.random, index.html/inline-script setTimeout, index.html/onclick localStorage — all failed naming source and needle at tests/component_composition.rs:1839. Negative control (needle inside an HTML comment) passed",
+      "evidence": "Reviewer's independent probes: page.js/Date.now, gallery.js/Math.random, index.html/inline-script setTimeout, index.html/onclick localStorage \u2014 all failed naming source and needle at tests/component_composition.rs:1839. Negative control (needle inside an HTML comment) passed",
       "pass_fail": "pass",
       "verified_by": "reviewer-renata WP05 cycle-1",
       "verified_at": "2026-08-07T02:00:00Z",
@@ -202,7 +192,7 @@
       "pass_fail": "pass",
       "verified_by": "reviewer-renata WP02 and WP04 cycle-1",
       "verified_at": "2026-08-07T02:00:00Z",
-      "notes": "One transient soak timeout observed during a probe run (pre-existing NFR-002 meter section, harness-side); not reproduced on subsequent full runs — assessed in WP04's review"
+      "notes": "One transient soak timeout observed during a probe run (pre-existing NFR-002 meter section, harness-side); not reproduced on subsequent full runs \u2014 assessed in WP04's review"
     },
     {
       "criterion_id": "SC-006",
@@ -217,29 +207,59 @@
   ],
   "negative_invariants": [
     {
-      "invariant": "Deleting WP01's exit edge must break a named proof",
-      "evidence": "T013 fails 'the process did not exit within 120s — a shell kept a window running instead of failing typed'",
-      "pass_fail": "pass"
+      "invariant_id": "NI-001",
+      "description": "The retired control-intent vocabulary (ControlIntent / ControlRequest / CompositionIntent) no longer exists in shipped or test code",
+      "verification_method": "grep_absence",
+      "verification_command": "ControlIntent|ControlRequest|CompositionIntent",
+      "scope": "src tests",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits across src/ and tests/ after WP03 deleted the family and WP05 T018 corrected the last assertion message that named it. Crest-spec retirement authored first at 7c7f1cf per C-002."
     },
     {
-      "invariant": "Bypassing WP02's retired-identity comparison must break a named proof while the well-formed and lost-frame controls survive",
-      "evidence": "T014 evicted/stateHash rejects; probe 2b confirms all three negative controls plus the beyond-window pair pass under the bypass, proving the controls are insensitive to the mechanism",
-      "pass_fail": "pass"
+      "invariant_id": "NI-002",
+      "description": "The dead frame-await surface (await_qualifying / FrameAwaitError) no longer exists",
+      "verification_method": "grep_absence",
+      "verification_command": "await_qualifying|FrameAwaitError",
+      "scope": "src tests",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits after WP03; the stale doc reference in src/shell/webview/mod.rs was removed with them. Caller search before deletion found zero external callers."
     },
     {
-      "invariant": "The healthy-run ack audit must not be inert",
-      "evidence": "T015 fails if forwarded == 0 || observations == 0; rewriting one healthy ack's stateHash produces a 153-ack rejection failure",
-      "pass_fail": "pass"
+      "invariant_id": "NI-003",
+      "description": "CURSOR_GLYPH, whose single-source claim was false because the gallery hardcodes its own glyph, no longer exists",
+      "verification_method": "grep_absence",
+      "verification_command": "CURSOR_GLYPH",
+      "scope": "src tests",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits after WP03 removed the constant and its unit test. The surviving draws_cursor assertions in component_vocabulary are untouched."
     },
     {
-      "invariant": "A planted violation in any scanned page source must fail by name",
-      "evidence": "Four reviewer-planted probes across three sources, each naming source and needle",
-      "pass_fail": "pass"
+      "invariant_id": "NI-004",
+      "description": "The unused LiveDemoRunner::step_index accessor no longer exists (the step_index FIELD survives and drives the runner)",
+      "verification_method": "grep_absence",
+      "verification_command": "pub const fn step_index",
+      "scope": "src",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits for the accessor; the field remains at all 14 sites, confirmed by a real-hardware make demo-live-graphical-shell run (105/105 parameters, 0 dropped, exit 0)."
     },
     {
-      "invariant": "The gallery must survive the mission's deletions",
-      "evidence": "All five gallery artifacts present; release binary built and the gallery window opened and painted",
-      "pass_fail": "pass"
+      "invariant_id": "NI-005",
+      "description": "No JS-built inline style attribute reappears in the production page (the RISK-1 regression signature this mission must not reintroduce)",
+      "verification_method": "grep_absence",
+      "verification_command": "style=\\\"",
+      "scope": "webview-page/page.js",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits; the geometry pass still applies --level/--position via CSSOM. T011 remains green on the merged tree under the production policy."
+    }
+  ],
+  "withdrawn_requirements": [
+    {
+      "requirement_id": "NFR-003",
+      "title": "Net code reduction",
+      "withdrawn_by": "operator (crestenstclair)",
+      "withdrawn_at": "2026-08-07",
+      "measured_outcome": "-256 lines of dead code removed by WP03; ~+1300 net across src/ and tests/ overall",
+      "rationale": "Authored during planning before the proof burden was knowable. Closing RISK-3 and RISK-4 required ~1100 lines of falsifiable proof for two error paths that had zero coverage, so the requirement penalizes exactly what the mission exists to do. Operator judged net line count not a requirement of this work. Recorded as WITHDRAWN, not regraded \u2014 the measurement stands as taken and no result was reinterpreted to pass."
     }
   ]
 }

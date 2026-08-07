@@ -56,11 +56,15 @@ Two residues are recorded rather than chain-deleted, per C-004: `StreamShared.ar
 
 ---
 
-## NFR-003 — graded FAIL, recorded honestly
+## NFR-003 — WITHDRAWN by operator decision, not regraded
 
-NFR-003 required net code reduction across `src/` and `tests/`. WP03 removed 256 lines. The mission adds roughly 1,300 net, because closing RISK-3 and RISK-4 required roughly 1,100 lines of falsifiable proof for two error paths that previously had **zero** coverage, plus 39 lines of narration.
+NFR-003 required net code reduction across `src/` and `tests/`. Measured outcome: WP03 removed **256 lines** of dead code; the mission is **~+1,300 net** overall, because closing RISK-3 and RISK-4 required roughly 1,100 lines of falsifiable proof for two error paths that previously had **zero** coverage, plus 39 lines of narration.
 
-The requirement was mis-specified during planning, before the proof burden was knowable. It is graded `fail` in the acceptance matrix rather than reinterpreted — scoping "code" to exclude tests would make it pass at −256 and would be exactly the kind of after-the-fact redefinition this project treats as its costliest failure mode. **This is an operator decision at the accept gate**: accept with the requirement recorded as failed-and-explained, or amend it to production-code scope where it genuinely passes.
+Presented to the operator at the accept gate. Their judgement (2026-08-07): *"it can add or remove code I just care about functionality."* The requirement is therefore **withdrawn** — recorded in `spec.md` with a strikethrough row and in the acceptance matrix under `withdrawn_requirements`, carrying the measurement, the date, and who decided.
+
+The distinction matters and is deliberate. The row was **not** flipped from `fail` to `pass`, and the requirement was **not** rescoped to production code only (where it would have passed at −256). Either move would have made the record read better than the work. Instead the record states plainly: the requirement existed, it was measured, the measurement was unfavourable, and the operator judged it not to be a requirement of this mission. A reader can reconstruct exactly what happened.
+
+The underlying lesson is recorded for future missions: a hygiene mission that closes an unproven error path will always add more proof than it removes dead code. NFR-003 should not be restated.
 
 Every other requirement passes.
 

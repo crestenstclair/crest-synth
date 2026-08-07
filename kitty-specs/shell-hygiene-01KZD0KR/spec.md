@@ -145,7 +145,9 @@ A reader of the completed missions finds no stale terminology, no unfinished sta
 |----|-------|-------------|----------|----------|--------|
 | NFR-001 | No product behavior change | The shipped application's rendered output and semantic behavior are unchanged: the live acceptance suite passes with `skipped: none` and latency stays within the declared 50 ms p95. | Reliability | High | Open |
 | NFR-002 | No proof weakened | No frozen baseline, threshold, skip list, or assertion is loosened, and no declared validation stops executing except where it retires with its declaration. | Reliability | High | Open |
-| NFR-003 | Net code reduction | The mission removes more code than it adds, measured on `src/` and `tests/` only. | Maintainability | Low | Open |
+| ~~NFR-003~~ | ~~Net code reduction~~ | ~~The mission removes more code than it adds, measured on `src/` and `tests/` only.~~ **WITHDRAWN (operator, 2026-08-07)** — not a requirement of this mission. See the note below. | Maintainability | Low | Withdrawn |
+
+**NFR-003 withdrawal.** Measured outcome before withdrawal: **−256 lines** of dead code removed by WP03, **~+1,300 net** across `src/` and `tests/` overall, because closing RISK-3 and RISK-4 required roughly 1,100 lines of falsifiable proof for two error paths that previously had *zero* coverage, plus 39 lines of narration. The requirement was authored during planning, before that proof burden was knowable, and it penalizes exactly the thing this mission exists to do — a hygiene mission that closes an unproven error path will always add more proof than it removes dead code. The operator judged net line count not to be a requirement of this work ("it can add or remove code I just care about functionality", 2026-08-07). It is recorded as withdrawn rather than regraded: the measurement stands as taken, and no result was reinterpreted to make it pass. Future hygiene missions should not restate it.
 
 ### Constraints
 
