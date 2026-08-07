@@ -1,0 +1,33 @@
+   Compiling crest-synth v0.1.0 (/Users/crestenstclair/workspace/crest-synth/.worktrees/webview-render-fidelity-hardening-01KZCEF8-lane-c)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.48s
+     Running tests/webview_projection_shell.rs (target/debug/deps/webview_projection_shell-ba799b329deb865f)
+webview_projection_shell acceptance: live (CREST_WEBVIEW_TESTS=1) run
+T022 serialized-schema fidelity: PASS (8 distinct states across both contexts, MIXER generations 2/3/4, PATCH generations 2/4/3, emit path byte-identical + structural round-trip + declared key surface)
+T023 token-table freshness: PASS (80 unique custom properties, byte-fresh, GENERATED header, drift names its property)
+T010 harness policy parity: PASS (9 assets served through the exported production seam crest_synth::shell::webview::protocol_response, byte-identical to the committed page, document CSP equal to the exported PAGE_CSP constant, no CSP on subresources, unknown path 404)
+T025 typed startup failure: PASS (exit=Some(1) after 1.2s, typed PageLoadFailed on stderr, self-exit — no fallback shell)
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t024-desktop-1920x1080.png
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t024-patch-desktop-1920x1080.png
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t024-compact-1280x800.png
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t024-patch-compact-1280x800.png
+T024 page render determinism: PASS (double-render identical at both authored viewports for the MIXER document and all three PATCH documents; Inspector 420px desktop / 320px compact floors held)
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t011-mixer-level00-desktop-1920x1080.png
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t011-mixer-level73-desktop-1920x1080.png
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t011-mixer-level73-compact-1280x800.png
+T011 painted-geometry fidelity: PASS (measured .fader-fill/.prow-position-fill geometry proportional to document values under the production policy at 1920x1080 and 1280x800; hex-73 fixture strictly nonzero; zero-value fixture zero WITH its CSSOM property applied; attribute-present-without-property fails by name; double-measure identical)
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t026-live-mixer-render.png
+CREST_WEBVIEW_NFR001 projection-to-paint over 150 paced reducer edits: p50=8.1ms p95=8.9ms max=11.7ms (threshold p95 <= 50ms)
+WP01 paint-acknowledgment identity: PASS (3 PATCH documents pushed through the production emit path, one ack each in paint order, identity fields verbatim, region evidence painted)
+CREST_WEBVIEW_NFR002 soak configuration: running 60s (default short soak; 60s default, 300s with CREST_WEBVIEW_FULL_SOAK=1)
+CREST_WEBVIEW_NFR002 meter cadence over 60s: rust-side 1767 emits = 29.45 Hz (declared pace 30 Hz, interval-quantized floor 29.0), max gap 36.7ms, first/last-third 29.45/29.47 Hz, 47863 observations coalesced (pending slot bounded at one by construction, emit count 1767 <= pace bound 1801), lost 0; page-side received 1767 frames = 29.45 Hz
+T012 negative control: PASS (zero crest://render-error events across every healthy live section)
+T012 update-render throw: PASS (healthy documents painted and acked, then a subsequent projection's render threw: exactly one typed crest://render-error carrying the failing document's identity (generation 3), and no painted ack for it)
+T012 unhandled rejection: PASS (reloaded page painted and acked a healthy document, then an unhandled promise rejection produced exactly one typed crest://render-error carrying the last-rendered document's identity (generation 3) and no ack)
+T012 typed-exit linkage: these payloads travelled the same production crest://render-error channel the shipped binary converts to the typed WebviewShellError::PageRenderFailed nonzero exit, proven end-to-end by the forced first-render throw subprocess section
+T026 harness window owned shutdown: PASS (run_return = 0 through the owned close path)
+  evidence transcript: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t012-forced-first-render-throw.log
+T012 forced first-render throw: PASS (shipped binary exit=Some(1) after 1.2s; exactly one typed PageRenderFailed whose detail is the page's typed payload — name TypeError, message, generation, stateHash — no ack credited, no fallback shell)
+  evidence screenshot: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/t026-shutdown-parity-webview.png
+T026 shutdown parity (webview): PASS (real window closed via the native close button after 8.8s; owned teardown — stream release, worker completion, graph ownership collection — reached exit 0)
+T026 shutdown parity: PASS (the sole shell reached the owned shutdown outcome from a real window-close run)
+CREST_ACCEPTANCE webview_projection_shell passed (skipped: none)
