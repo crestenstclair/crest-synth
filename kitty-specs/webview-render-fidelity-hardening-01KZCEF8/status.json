@@ -79,7 +79,8 @@
       "last_transition_at": "2026-08-07T00:23:06.587808+00:00",
       "model": "__resolved_model_absent__",
       "notes": [
-        "Ready for review: harness serves the exported production CSP seam (T010 parity vs PAGE_CSP constant), painted-geometry proof with zero-vs-never-applied distinction (T011), forced first-render/update-render/rejection failures -> typed payload, no ack, typed nonzero exit (T012), determinism+latency+screenshots re-collected under the production policy (T013, p95 8.9ms), evidence committed on feat/webview-shell-cutover at 89df0ca (T014); falsifiability spot-checks recorded in the evidence README"
+        "Ready for review: harness serves the exported production CSP seam (T010 parity vs PAGE_CSP constant), painted-geometry proof with zero-vs-never-applied distinction (T011), forced first-render/update-render/rejection failures -> typed payload, no ack, typed nonzero exit (T012), determinism+latency+screenshots re-collected under the production policy (T013, p95 8.9ms), evidence committed on feat/webview-shell-cutover at 89df0ca (T014); falsifiability spot-checks recorded in the evidence README",
+        "Review passed: production-seam CSP parity, painted-geometry proof with exercised RISK-1 kill test, forced-render-failure proofs (first-render subprocess exit 1, update-render throw, unhandled rejection), independent live re-run green at p95 9.0 ms, evidence verified"
       ],
       "provider": "__resolved_provider_absent__",
       "role": "reviewer",
