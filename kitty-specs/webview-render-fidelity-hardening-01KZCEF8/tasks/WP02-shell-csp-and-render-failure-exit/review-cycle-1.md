@@ -1,9 +1,12 @@
 ---
 wp_id: WP02
 reviewer_agent: reviewer-renata
-cycle: 1
+cycle_number: 1
 verdict: approved
 date: 2026-08-06
+affected_files:
+  - path: src/shell/webview/window.rs
+  - path: src/shell/webview/mod.rs
 ---
 
 # WP02 Review — Cycle 1: APPROVED

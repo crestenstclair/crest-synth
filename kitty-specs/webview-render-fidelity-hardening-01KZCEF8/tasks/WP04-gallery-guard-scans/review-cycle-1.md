@@ -1,9 +1,12 @@
 ---
 wp_id: WP04
 reviewer_agent: reviewer-renata
-cycle: 1
+cycle_number: 1
 verdict: approved
 date: 2026-08-06
+affected_files:
+  - path: tests/component_composition.rs
+  - path: tests/component_vocabulary.rs
 ---
 
 # WP04 review — cycle 1: approved

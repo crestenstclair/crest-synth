@@ -1,9 +1,12 @@
 ---
 wp_id: WP03
 reviewer_agent: reviewer-renata
-cycle: 1
+cycle_number: 1
 verdict: approved
 date: 2026-08-06
+affected_files:
+  - path: tests/webview_projection_shell.rs
+  - path: kitty-specs/webview-render-fidelity-hardening-01KZCEF8/evidence/README.md
 ---
 
 # WP03 Review — Cycle 1: APPROVED
