@@ -34,9 +34,8 @@
 
 use crate::control::{SurfaceId, TopLevelContext};
 use crate::shell::ShellFrameObservation;
-use core::fmt;
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 
 /// How many recent forwarded observations the stream retains for polling.
 ///
@@ -104,20 +103,9 @@ impl FrameExpectation {
     }
 }
 
-impl fmt::Display for FrameExpectation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "generation {} state {} context {:?} surface {:?}",
-            self.generation, self.state_hash, self.context, self.active_surface
-        )
-    }
-}
-
 #[derive(Debug, Default)]
 struct StreamShared {
     recent: Mutex<VecDeque<ShellFrameObservation>>,
-    arrived: Condvar,
 }
 
 /// Shared handle onto the window's forwarded-observation stream.
@@ -135,11 +123,14 @@ impl QualifyingFrameStream {
         Self::default()
     }
 
-    /// Records one forwarded observation and wakes every waiting consumer.
+    /// Records one forwarded observation.
     ///
     /// Called by the window's painted-ack forwarding, next to the frame
     /// callback — the stream only ever sees observations that were
-    /// constructed from a real painted ack.
+    /// constructed from a real painted ack. Nothing is woken: consumers ask
+    /// [`poll`] again on their next tick.
+    ///
+    /// [`poll`]: QualifyingFrameStream::poll
     pub fn record(&self, observation: ShellFrameObservation) {
         let mut recent = self
             .shared
@@ -150,8 +141,6 @@ impl QualifyingFrameStream {
             recent.pop_front();
         }
         recent.push_back(observation);
-        drop(recent);
-        self.shared.arrived.notify_all();
     }
 
     /// Non-blocking: returns the most recent retained observation satisfying

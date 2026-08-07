@@ -621,7 +621,7 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
     assert!(parameter_values.windows(2).all(|pair| pair[0] == pair[1]));
     drop(app_loop);
 
-    // The qualifying-frame stream — the seam live scenes block on instead of
+    // The qualifying-frame stream — the seam live scenes poll instead of
     // sleeping — serves the final accepted identity from any handle cloned
     // off the production window.
     let last = harness.forwarded.last().unwrap().clone();
