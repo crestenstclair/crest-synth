@@ -664,7 +664,10 @@ fn track_level_fractions(document: &Value, label: &str) -> Vec<(u64, f64)> {
         .unwrap_or_default()
         .iter()
         .filter(|control| {
-            control.pointer("/path/controlId/id/kind").and_then(Value::as_str) == Some("track")
+            control
+                .pointer("/path/controlId/id/kind")
+                .and_then(Value::as_str)
+                == Some("track")
                 && control
                     .pointer("/path/controlId/id/parameter")
                     .and_then(Value::as_str)
@@ -3242,7 +3245,10 @@ fn assert_patch_geometry(observation: &Value, document: &Value, label: &str) {
                 "{label}: row {control} {key} --position must equal the data attribute"
             );
         }
-        let rail = entry.get("railWidth").and_then(Value::as_f64).unwrap_or(0.0);
+        let rail = entry
+            .get("railWidth")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
         let fill = entry
             .get("fillWidth")
             .and_then(Value::as_f64)

@@ -331,11 +331,11 @@ fn render_error_detail(payload: &str) -> String {
 /// a painted ack: it is a distinct [`PageSignal`] arm that never reaches
 /// the projection channel's ack forwarding.
 fn record_render_failure(payload: &str, first_error: &RefCell<Option<WindowError>>) {
-    first_error
-        .borrow_mut()
-        .get_or_insert(WindowError::from(WebviewShellError::PageRenderFailed {
+    first_error.borrow_mut().get_or_insert(WindowError::from(
+        WebviewShellError::PageRenderFailed {
             detail: render_error_detail(payload),
-        }));
+        },
+    ));
 }
 
 /// What one close-once-with-retry sequence decided about how the event loop
