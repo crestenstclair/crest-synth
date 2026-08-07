@@ -58,9 +58,9 @@ assets:
       resources
   ShellContextModules:
     kind: rust-context-source
-    description: src/shell — egui rendering of projected state realizing context.Shell resources, including
-      the authored visual vocabulary, typeface installation, density policies, reusable primitives, the
-      configurable control family, and the shell compositions every surface paints through
+    description: src/shell — the authored visual vocabulary, typeface declaration, density policies,
+      primitive/control/composition declarations, and window-input normalization realizing context.Shell
+      resources; the webview page is the painting surface these closed vocabularies drive
     targets:
     - SemanticVisualToken
     - AuthoredTypeface
@@ -75,9 +75,9 @@ assets:
     - Declare the authored vocabulary once. Colors, type styles, spacing steps, and geometry are named
       by their canonical authored names and carry the authored values exactly; raw values stay private
       to this module and are reachable only through the named token.
-    - Install the vendored typeface into the rendering context once before the first painted frame, binding
-      each authored weight to the type styles that declare it. An unavailable face returns a typed error
-      the shell makes visible; never substitute or synthesize a face.
+    - Declare the vendored typeface once, binding each authored weight to the type styles that declare
+      it; the page renders the vendored faces and an unavailable face is a typed visible failure, never
+      a substituted or synthesized face.
     - Express both authored viewports as declared density policies carrying bands, split, inset, row height,
       row pitch, control geometry, and mixer-column geometry. Surfaces ask the policy; no surface branches
       on a raw viewport size, and no third hard-coded layout is introduced.
@@ -85,20 +85,20 @@ assets:
       happens to carry, and declare its floor and its overflow rule beside it. Sixteen columns divide
       the main surface; where they do not seat at the measured width the policy narrows width and pitch
       together to the declared floor, and it neither scrolls nor elides a track to fit.
-    - Provide the primitives — text roles, hairlines, keylines, focus frames, value displays, status marks,
-      and action hints — as functions over immutable view data plus an explicit ComponentState. A primitive
-      paints; it never owns Patch values, focus, navigation, reducer state, or audio state, and never
-      reaches AppState.
+    - Declare the primitives — text roles, hairlines, keylines, focus frames, value displays, status marks,
+      and action hints — as a closed vocabulary over immutable view data plus an explicit ComponentState.
+      The page renders each primitive; none owns Patch values, focus, navigation, reducer state, or audio
+      state, and none reaches AppState.
     - Match ComponentState exhaustively at every rendering site so an added state fails compilation rather
       than defaulting silently, and render every state with text or shape in addition to color.
-    - Repaint the existing eframe adapter through the vocabulary and delete the constants it previously
-      painted from. The production application, not only the gallery, must show the authored design.
-    - Provide one control per declared ComponentControl variant. Selection is total over SemanticControlKind
+    - The production page resolves every rendered value through the generated token table; no adapter-owned
+      or page-local constant survives, and the production application, not only the gallery, shows the
+      authored design.
+    - Declare one control per ComponentControl variant. Selection is total over SemanticControlKind
       and presentation role together — the same continuous parameter is a parameter row on a listed surface
       and a fader in a mixer strip — and every declared control is reachable by at least one pair. A control
-      takes an immutable SemanticControlViewModel, an explicit ComponentState, and the role its caller
-      asks in, and returns typed semantic intent; it dispatches nothing, owns nothing, and reaches AppState
-      never.
+      is rendered by the page from an immutable SemanticControlViewModel, an explicit ComponentState, and
+      the role its caller asks in; it dispatches nothing, owns nothing, and reaches AppState never.
     - The requesting composition supplies the presentation role. A control never infers it from the value,
       the surface identity, or the viewport.
     - Declare per control which ComponentStates apply to it. Non-applicability is declared, not silently
@@ -152,14 +152,14 @@ assets:
   WebviewShellModules:
     kind: rust-context-source
     description: src/shell/webview — the Tauri v2 window composition, serialized-projection and meter
-      transport, launch-time shell selection, and token-table generation realizing adapter.TauriWebviewWindow
+      transport, painted-frame observation forwarding, and token-table generation realizing adapter.TauriWebviewWindow
     targets:
     - TauriWebviewWindow
     - WindowInput
     prompts:
-    - Compose the Tauri v2 window as a second implementer of the AppWindow contract, selected explicitly
-      at launch beside the default eframe window; selection is a typed decision at the composition root,
-      never a fallback taken after a failure.
+    - Compose the Tauri v2 window as the sole implementer of the AppWindow contract at the composition
+      root; no alternate renderer or launch-time shell selection exists, and every failure is typed,
+      never a fallback.
     - Push each accepted projection to the page as the serde serialization of the embedded SemanticGraphicalViewModel.
       Do not define a page-facing struct, DTO, or trimmed variant; if the page needs a field the model
       does not carry, the model is extended through the projector, not forked.
@@ -167,25 +167,34 @@ assets:
       frame is repainted over by the next one; meter traffic never blocks, never queues unboundedly,
       and never reaches the real-time callback.
     - Keep physical input on the Rust side. Normalize key presses, releases, and focus loss through the
-      same KeyboardInputTranslator path the eframe window uses, so the two shells cannot drift in vocabulary;
-      the page registers no key handler.
+      production KeyboardInputTranslator path; the page registers no key handler.
     - Generate the page's token table from the authored Rust vocabulary as a build step, emitting each
       canonical authored name and value; assert generation freshness so a hand-edited or stale table
       fails rather than drifts.
     - Return a typed startup error and end the process when the system webview or the page fails to initialize;
-      do not open a blank window, retry silently, or fall back to the eframe shell.
-    - Drive window close through the same owned shutdown as the eframe shell — stream release, worker
-      completion, graph ownership collection, normal exit — sharing the existing shutdown path rather
-      than duplicating it.
+      do not open a blank window, retry silently, or fall back to another renderer.
+    - Drive window close through the owned shutdown — stream release, worker completion, graph ownership
+      collection, normal exit — sharing the existing shutdown path rather than duplicating it; retry or
+      surface a close failure, never ignore it.
+    - Forward the page's painted acknowledgment as a ShellFrameObservation copying the supplied projection's
+      semantic identity exactly; live reports credit only qualifying forwarded frames, and a scene that
+      outpaces acknowledgments blocks on them, never on wall-clock sleeps.
+    - Surface a page render exception after a successful load as the typed page-render-failure error
+      ending the process nonzero, never a frozen window or silently stale document.
+    - Set a restrictive content security policy on the page — every document and asset resolves over
+      embedded application resources, base-uri and form-action denied, no unsafe-inline in any directive
+      — and compile the local page-override seam out of release builds. The policy is the single source
+      the acceptance harness serves; it is never weakened to make the page paint.
     contributesTo:
-      graphical_application_shell: adds the webview projection peer behind the existing passive window
-        boundary
+      graphical_application_shell: is the sole shell composition behind the passive window boundary
       semantic_graphical_view_model: proves the canonical model serializes to one page-facing schema with
         no fork
+      live_observable_demo: forwards painted-frame observations so live reports credit real rendered
+        frames
   WebviewProjectionPage:
     kind: webview-projection-page
-    description: webview-page — the MIXER projection surface documents and the generated token table
-      the webview renders
+    description: webview-page — the projection surface documents for both top-level contexts and the
+      gallery pages, plus the generated token table the webview renders
     targets:
     - TauriWebviewWindow
     prompts:
@@ -204,6 +213,21 @@ assets:
       fader, level readout, pan readout, state line — with the level readout in the bound hexadecimal
       form, focus and every applicable state visible with text or shape beyond color, and both authored
       viewports passing the declared blockout checks.
+    - Lay out the authored PATCH composition — context line, identity header, Patch workspace, envelope,
+      engine and effect-slot rows, persistent Utility region, footer, hint rows — from the same serialized
+      model and token table; the browser layout engine, not hand arithmetic, seats the composition at
+      both authored viewports.
+    - Render the gallery pages through the same vocabulary and token table so every declared state,
+      control, and composition specimen is browsable at both authored densities without a second styling
+      source.
+    - Acknowledge each painted document so the adapter can emit its frame observation; the acknowledgment
+      carries the document's semantic identity and nothing else.
+    - Apply dynamic per-element geometry (fader fill level, position indicators) through CSSOM custom-property
+      assignment or data-attribute-plus-stylesheet binding, never a JS-built inline style attribute,
+      so the paint survives the production content security policy unchanged.
+    - Wrap document rendering in an error boundary that emits the render-error channel with a typed
+      payload on any render throw or unhandled rejection; the boundary itself does no rendering or
+      allocation-heavy formatting, and repeated failures keep the first typed error.
     contributesTo:
       graphical_application_shell: is the webview shell's only painted surface
       component_vocabulary: proves the authored vocabulary survives translation to a second rendering
@@ -221,8 +245,9 @@ assets:
     - MixerTrackColumnStructure
     - ViewportDensityPolicy
     prompts:
-    - Add the browsable component gallery scene. It renders the declared pages through the shared primitives
-      and vocabulary, binds one digit key per page locally, and shows the active page identity on screen.
+    - Add the browsable component gallery scene. It renders the declared pages through the webview
+      projection surface and shared vocabulary, binds one digit key per page locally, and shows the active
+      page identity on screen.
     - Page selection is scene-local. It never becomes a SemanticAction, never reaches AppState, and never
       changes focus, Patch values, graph revision, or audio behavior. A digit with no page bound retains
       the current page.
@@ -259,12 +284,10 @@ assets:
     - ShellComposition
     - ComponentControl
     prompts:
-    - Reduce the eframe window adapter to window plumbing and event translation. Every region it shows
-      is painted by a declared ShellComposition and every control within one by a declared ComponentControl;
-      the adapter decides no paint, layout, band height, or state visualization.
-    - Move the region and control painting the adapter currently owns into the shell's composition and
-      control modules rather than deleting it. The adapter's remaining size is the measure of whether
-      that move actually happened.
+    - The window adapter is window plumbing, projection and meter transport, and event translation only.
+      Every region it shows is painted by the page from a declared ShellComposition and every control
+      within one from a declared ComponentControl; the adapter decides no paint, layout, band height,
+      or state visualization.
     - Keep the window passive and the observation contract intact. It still emits one immutable ShellFrameObservation
       after painting and still stores no canonical state.
     contributesTo:
@@ -306,7 +329,7 @@ assets:
     - DeterministicGraphPreparationWorker
     - AtomicAudioObservation
     - CorridorsMidiEventSource
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - CpalAudioOutput
     - AudioDeviceConfig
     - AudioDeviceRuntimeError
@@ -314,12 +337,13 @@ assets:
     prompts:
     - Create Cargo.toml for one Rust library, the crest-synth product binary, and the crest-synth-witness
       verification-only binary.
-    - 'Use only dependencies required by the declared resources: rustysynth, midly, cpal, matching eframe/egui
-      and egui_extras, rtrb, triple_buffer, serde with derive, serde_json, thiserror, anyhow, and the
-      build-only cc crate for the fixed audited Braids and Chorus C++ source lists. Enable only the egui_extras
-      layout and image/SVG loader features used by the shell. Complete graph destruction uses the dedicated
-      ownership-return structural queue and no deferred-drop dependency. Development-only test helpers
-      may be added when required by the declared tests.'
+    - 'Use only dependencies required by the declared resources: rustysynth, midly, cpal, tauri v2 with
+      its wry system webview and the macOS objc2 key-capture bindings, rtrb, triple_buffer, serde with
+      derive, serde_json, thiserror, anyhow, and the build-only cc crate for the fixed audited Braids
+      and Chorus C++ source lists. Enable only the default macOS bundle features — no tray, updater, or
+      CLI features. Complete graph destruction uses the dedicated ownership-return structural queue and
+      no deferred-drop dependency. Development-only test helpers may be added when required by the declared
+      tests.'
     - Do not add another synthesis/effect framework, GUI runtime, component library, sequencing, persistence,
       plugin, database, networking, or async-runtime library; the pinned vendored native subsets are built
       only through the declared opaque adapters.
@@ -414,8 +438,8 @@ assets:
       observable_demo_scene: keeps the focused target and exhaustive demo on the same production seams
   GraphicalShellAcceptanceTests:
     kind: rust-integration-tests
-    description: tests/graphical_application_shell.rs, the non-vacuous headless egui contract for Phase
-      1 shell structure and responsive composition
+    description: tests/graphical_application_shell.rs, the non-vacuous headless shell contract for
+      structure and responsive composition through the webview projection path
     profile:
       kind: verification_harness
       witness: desktop and Steam Deck graphical shell
@@ -426,13 +450,14 @@ assets:
     - ShellFrameObservation
     - StateProjector
     - AppLoop
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     prompts:
     - Create tests/graphical_application_shell.rs with ordinary assertions and emit CREST_ACCEPTANCE graphical_application_shell
       passed only after every structural and projection assertion succeeds.
-    - Drive real egui RawInput through the production update callback at 1920x1080 and 1280x800; inspect
-      tessellated output and recorded region rectangles for exact context line, header, workspace, side
-      region, and footer identity, visibility, ordering, bounds, and non-overlap.
+    - Drive normalized WindowInput through the production adapter callback at 1920x1080 and 1280x800;
+      inspect the serialized rendered document and recorded frame-observation region rectangles for exact
+      context line, header, workspace, side region, and footer identity, visibility, ordering, bounds,
+      and non-overlap.
     - Switch PATCH and MIXER through KeyboardInputTranslator, SemanticAction, and AppLoop, prove the frame,
       SemanticGraphicalViewModel, GraphicalShellProjection, retained TextProjection, StateTree, EventRecord,
       ParameterSnapshot generation, and unchanged graph/audio values agree, and reject any adapter-owned
@@ -641,7 +666,7 @@ assets:
     - ExhaustiveGuiDemo
     - LiveDemoRunner
     - BehavioralMutationHarness
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - TopLevelContext
     - SemanticAction
     - FocusPath
@@ -673,7 +698,7 @@ assets:
     - 'Create seventeen explicit Cargo integration-test targets: tests/capability_schema.rs, tests/patch_page_projection.rs,
       tests/engine_selection_workflow.rs, tests/prepared_engine_rack.rs, tests/braids_engine.rs, tests/per_voice_envelope.rs,
       tests/soundfont_preset_selection.rs, tests/control_dispatch_performance.rs, tests/exhaustive_demo_scene.rs,
-      tests/live_demo_scene.rs, tests/schema_surface.rs, tests/eframe_context.rs, tests/graphical_application_shell.rs,
+      tests/live_demo_scene.rs, tests/schema_surface.rs, tests/shell_event_dispatch.rs, tests/graphical_application_shell.rs,
       tests/semantic_graphical_view_model.rs, tests/sixteen_track_mixer_routing.rs, tests/expandable_effects_and_bus_topology.rs,
       and tests/behavioral_mutation_harness.rs. Project validations invoke them with cargo test --test,
       using --release for declared callback timing witnesses, so a missing target is a hard failure.'
@@ -708,11 +733,12 @@ assets:
       acknowledgement, one-in-flight throttling, queue-pressure retention, and destructor execution only
       during control collection; it must instrument the production callback path for zero allocation and
       destruction.
-    - eframe_context drives real egui RawInput through EframeGraphicalApplication.update with its callback
-      wired to AppLoop.dispatchAction, then proves the next frame and EventLog reflect the exact accepted
-      value and semantic, shell, plus diagnostic projections; rendering a separately supplied projection
-      is forbidden. graphical_application_shell renders both reference viewports through that same production
-      update path and proves all five regions are visible, ordered, bounded, non-overlapping, and generation-coherent.
+    - shell_event_dispatch drives normalized WindowInput through the production shell adapter's event
+      path with its callback wired to AppLoop.dispatchAction, then proves the next serialized document
+      and EventLog reflect the exact accepted value and semantic, shell, plus diagnostic projections;
+      rendering a separately supplied projection is forbidden. graphical_application_shell renders both
+      reference viewports through that same production projection path and proves all five regions are
+      visible, ordered, bounded, non-overlapping, and generation-coherent.
       semantic_graphical_view_model proves exact actions, stable paths, four surfaces, Navigate/Adjust,
       return, valid actions, status/errors, descriptor content, schema recovery, responsive invariance,
       and audio neutrality. behavioral_mutation_harness executes every healthy/mutant pair and asserts
@@ -736,7 +762,7 @@ assets:
         preservation, order, isolation, and audible-output assertions
       observable_demo_scene: makes every existing headless acceptance gate structurally executable and
         impossible to satisfy with zero matched tests
-      graphical_application_shell: provides named non-vacuous egui acceptance for every Phase 1 region
+      graphical_application_shell: provides named non-vacuous shell acceptance for every declared region
         and both reference viewports
       live_observable_demo: provides an executable deterministic harness for the interactive live orchestration
         contract
@@ -826,7 +852,7 @@ assets:
     - DelayPreparer
     - LockFreeAudioBoundary
     - CorridorsMidiEventSource
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - CpalAudioOutput
     prompts:
     - Create src/bin/crest_synth.rs as composition only. Parse HiDef.sf2 exactly once through HiDefSoundFontAsset,
@@ -866,7 +892,7 @@ assets:
       the complete EventLog in LiveDemoReport verification and never dump every performance MIDI record
       or print/format from the runner or audio callback.
     - The live option uses the same HiDef.sf2, Braids/Chorus adapters, alternating Corridors of Time composition
-      with first-Patch Chorus, AppLoop, EframeGraphicalWindow, CpalAudioOutput, prepared engine/effect
+      with first-Patch Chorus, AppLoop, TauriWebviewWindow, CpalAudioOutput, prepared engine/effect
       racks, PreparedGraph, AudioRenderer, and mixer as normal interactive execution. It has no fake window,
       null device, offline-only renderer, silent fallback/bypass, direct state edit, or alternate demo
       reducer.
@@ -936,7 +962,7 @@ assets:
         without owning their behavior
       automatic_test_midi: starts the fixed MIDI test input without transport controls
       one_way_parameter_control: hosts the passive graphical control loop without owning behavior
-      graphical_application_shell: composes the selected eframe/egui shell and its phase-specific live
+      graphical_application_shell: composes the webview shell and its phase-specific live
         proof without owning state or layout semantics
       schema_driven_patch_page: composes direct page input and context projection without owning page
         state
@@ -967,7 +993,7 @@ assets:
     - StateProjector
     - AppLoop
     - KeyboardInputTranslator
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     prompts:
     - Create tests/semantic_graphical_view_model.rs with ordinary assertions and emit CREST_ACCEPTANCE
       semantic_graphical_view_model passed only after every semantic and projection assertion succeeds.
@@ -981,9 +1007,10 @@ assets:
     - During a real correlated SoundFont-to-Braids replacement, focus a SoundFont-only structural row
       while Preparing and prove commit recovers to the next surviving enabled sibling before the previous
       one; separately exercise typed Failed projection and later recovery without fallback.
-    - Render the same immutable model through production egui frames at 1920x1080 and 1280x800 and prove
-      semantic focus, valid actions, return path, generation, state hash, session values, graph revision,
-      ParameterSnapshot, and audio behavior remain identical despite different rectangles.
+    - Render the same immutable model through the production webview projection path at 1920x1080 and
+      1280x800 and prove semantic focus, valid actions, return path, generation, state hash, session
+      values, graph revision, ParameterSnapshot, and audio behavior remain identical despite different
+      rectangles.
     contributesTo:
       semantic_graphical_view_model: provides the deterministic semantic model and focus-recovery witness
   SixteenTrackMixerRoutingAcceptanceTests:
@@ -1184,33 +1211,44 @@ assets:
   WebviewProjectionShellAcceptanceTests:
     kind: rust-integration-tests
     description: tests/webview_projection_shell.rs, the non-vacuous acceptance for the webview shell's
-      serialized-projection fidelity, page determinism, token generation freshness, typed startup failure,
-      and owned shutdown
+      serialized-projection fidelity, page determinism, token generation freshness, typed startup and
+      render failure, and owned shutdown — all measured with the page served under the production content
+      security policy
     profile:
       kind: verification_harness
-      witness: the webview shell renders the canonical serialized model at authored parity without owning
-        state
+      witness: the webview shell renders the canonical serialized model at authored parity, under the
+        shipped security policy, without owning state
       failurePolicy: a page-facing schema fork, a hand-edited or stale token table, a nondeterministic
         page render, a silent shell fallback, input captured by the page, meter loss mutating state,
-        or a shutdown path divergence fails
+        a shutdown path divergence, a harness policy laxer than production, painted fader geometry not
+        reflecting the level value under the shipped policy, or a silent page render exception fails
     targets:
     - TauriWebviewWindow
     prompts:
     - Prove the page-facing document is byte-identical to the serde serialization of the projector's
-      SemanticGraphicalViewModel for the production fixture across both contexts' MIXER-relevant states;
-      any divergence is a schema fork.
+      SemanticGraphicalViewModel for the production fixture across both contexts; any divergence is a
+      schema fork.
     - Prove the generated token table matches the authored Rust vocabulary value-for-value and fails
       when regenerated output differs from the committed table.
     - Prove a given serialized document renders to a stable declared observation (structure and values,
       not pixels) twice in a row, and that the rendered MIXER anatomy is the declared column structure
       at both authored viewports.
     - Prove webview initialization failure surfaces as the typed startup error and process exit, with
-      no eframe window opened in its place.
-    - Prove window close through the webview shell reaches the same owned shutdown observations the eframe
-      shell records — stream release, worker completion, graph ownership collection, normal exit.
+      no alternate window opened in its place.
+    - Prove window close through the webview shell reaches the declared owned shutdown observations —
+      stream release, worker completion, graph ownership collection, normal exit.
+    - Serve the page through the production response path so the harness carries the identical content
+      security policy the shipped window enforces, asserted equal against the single policy source —
+      never a restated copy, never a laxer stand-in.
+    - Prove painted fader geometry reflects the level custom property under the shipped policy — a fill
+      that stays empty while the readout shows the value fails, distinguishing value-zero from
+      variable-never-applied.
+    - Prove a forced page render throw and a forced unhandled rejection each emit the typed render-error
+      payload and end the shell nonzero with the typed page-render-failure error; a stale document with
+      no acknowledgment and no error must be unrepresentable.
     contributesTo:
-      graphical_application_shell: makes the webview peer falsifiable on the same boundary terms as the
-        eframe window
+      graphical_application_shell: makes the sole webview shell falsifiable on the declared boundary
+        terms
       semantic_graphical_view_model: guards the one-schema transport against forks
   ComponentVocabularyAcceptanceTests:
     kind: rust-integration-tests

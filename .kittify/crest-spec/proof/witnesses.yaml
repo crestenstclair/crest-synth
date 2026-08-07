@@ -133,7 +133,7 @@ witnesses:
     - ShellFrameObservation
     - StateProjector
     - AppLoop
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - StandaloneApplication
     - CrestSynthMain
     - BuildMakefile
@@ -142,7 +142,7 @@ witnesses:
     - ShellFrameObservation
     - StateProjector
     - AppLoop
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - StandaloneApplication
     - CrestSynthMain
     evidence:
@@ -346,7 +346,7 @@ witnesses:
     - StateProjector
     - AppLoop
     - LockFreeAudioBoundary
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - StandaloneApplication
     - AudioRenderer
     - MixEngine
@@ -481,7 +481,7 @@ witnesses:
     - AppLoop
     - WindowInput
     - KeyboardInputTranslator
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - MidiMessage
     - DemoScene
     - DemoSceneReport
@@ -535,7 +535,7 @@ witnesses:
     - AppLoop
     - WindowInput
     - KeyboardInputTranslator
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - MidiMessage
     - DemoScene
     - DemoSceneReport
@@ -1107,7 +1107,7 @@ witnesses:
       - GraphicalShellProjection
       - TextProjection
       - StateProjector
-      - EframeGraphicalWindow
+      - TauriWebviewWindow
     - field: parameter_projection_matches_state
       op: eq
       value: true
@@ -1992,7 +1992,7 @@ witnesses:
     - StateProjector
     - AppLoop
     - LiveDemoRunner
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - StandaloneApplication
     - CrestSynthMain
     - BuildMakefile
@@ -2006,7 +2006,7 @@ witnesses:
     - StateProjector
     - AppLoop
     - LiveDemoRunner
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - StandaloneApplication
     - CrestSynthMain
     evidence:
@@ -2100,7 +2100,7 @@ witnesses:
     - AudioRenderer
     - MixEngine
     - LiveDemoRunner
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - StandaloneApplication
     - SixteenTrackMixerRoutingObservation
     - CrestSynthMain
@@ -2116,7 +2116,7 @@ witnesses:
     - AudioRenderer
     - MixEngine
     - LiveDemoRunner
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - StandaloneApplication
     evidence:
     - evidence.sixteen_track_mixer_routing_contract
@@ -3142,7 +3142,7 @@ witnesses:
     - ValuePresentationForm
     - ComponentGalleryPage
     - ComponentGalleryObservation
-    - EframeGraphicalWindow
+    - TauriWebviewWindow
     - TestingContextModules
     - BuildMakefile
     repairResources:

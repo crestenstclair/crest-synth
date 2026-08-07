@@ -1,137 +1,82 @@
-//! Measured proof of the authored component vocabulary.
+//! Measured proof of the authored component vocabulary, on the webview
+//! render path.
 //!
-//! Realizes `asset.ComponentVocabularyAcceptanceTests` and the declared project
-//! validation `validation.component_vocabulary`, which asserts exit code 0 and
-//! the exact marker [`ACCEPTANCE_MARKER`] in stdout.
+//! Realizes `asset.ComponentVocabularyAcceptanceTests` and the declared
+//! project validation `validation.component_vocabulary`, which asserts exit
+//! code 0 and the exact marker [`ACCEPTANCE_MARKER`] in stdout.
 //!
-//! # What makes this non-vacuous
-//!
-//! A test that asserts token *names* exist, while never comparing a rendered
-//! *value*, passes forever and proves nothing (`C-006`). Two disciplines keep
-//! that from happening here:
+//! Retargeted by mission webview-shell-cutover-01KZAC7Q WP05 (T020): the
+//! retired shape-stream measurement is gone. The render path this target now
+//! measures is the webview one — authored Rust value → generated token
+//! table (`token_export::tokens_css`) → committed `webview-page/tokens.css`
+//! → the committed page's usage of those tokens. Values are compared, not
+//! names:
 //!
 //! 1. **The expected values are written independently of the thing under
 //!    test.** [`AUTHORED_COLORS`], [`AUTHORED_TYPE_STYLES`],
 //!    [`AUTHORED_SPACING`], and [`AUTHORED_RADII`] are transcribed from
 //!    `DESIGN.md` § Colors and § Type and geometry — the product authority —
-//!    not read back from `src/shell/visual/token.rs`. Colors are written as the
-//!    `#rrggbb` strings the design file publishes and parsed here by
-//!    [`authored_rgb`], so nothing in this file shares a derivation with the
-//!    `Color32::from_rgb(0x.., 0x.., 0x..)` the vocabulary declares.
+//!    not read back from `src/shell/visual/token.rs` or from the generator.
+//!    The generated stylesheet must spell each authored value verbatim
+//!    (`--color-accent-focus: #65e5ff`), so a vocabulary that drifts from
+//!    the design and a generator that drifts from the vocabulary both fail
+//!    here.
+//! 2. **The comparison follows the value to where the page reads it.** The
+//!    committed token table must be byte-fresh generator output
+//!    (`committed_tokens_are_fresh` — the file the production window embeds
+//!    and serves), and the committed page must actually resolve the tokens
+//!    it paints with: the composition stylesheet spells no color and no
+//!    extent of its own outside its one declared fader-geometry block.
 //!
-//! 2. **The comparison happens where the pixels are.** Every value check runs
-//!    twice: once against the declaration, and once against what the production
-//!    shell actually painted. [`paint_production_frames`] drives the real
-//!    `EframeGraphicalApplication` through a real `egui::Context` at both
-//!    authored viewports in both top-level contexts, and the assertions read
-//!    the emitted `epaint` shapes — fills, strokes, glyph runs, and their
-//!    resolved font metrics.
-//!
-//! Counts are asserted alongside values, so a silently dropped token fails
-//! rather than passing by absence.
+//! The DOM-level measurement of the same values on the real rendered page —
+//! double-render determinism, painted state treatments, seated band
+//! geometry — is `tests/webview_projection_shell.rs` (T024), gated on a
+//! live window because a DOM needs one; this target is its headless value
+//! half and can fail independently of it.
 //!
 //! # The guard that has to be able to fail
 //!
-//! [`scan_source`] is the literal-absence guard for `NFR-002`. A guard that has
-//! never failed is indistinguishable from no guard, so
-//! [`the_literal_guard_reports_a_planted_literal`] plants each family of literal
-//! in a source sample and asserts the guard reports it with file, line, and
-//! kind. [`the_literal_guard_reads_the_delivered_tree`] additionally asserts the
-//! scan read a non-trivial number of files and lines, so it cannot pass by
-//! scanning nothing.
+//! [`scan_source`] is the literal-absence guard for `NFR-002`, unchanged in
+//! scope: no raw visual value outside the vocabulary module in any adapter,
+//! shell, or scene source — which now includes the webview shell sources.
+//! [`the_literal_guard_reports_a_planted_literal`] plants each family and
+//! asserts the guard reports it with file, line, and kind;
+//! [`the_literal_guard_reads_the_delivered_tree`] asserts the scan read a
+//! non-trivial number of files and lines, so it cannot pass by scanning
+//! nothing. The page-side twin
+//! ([`check_page_sources_spell_no_visual_value`]) holds the committed page
+//! and the committed gallery pair to the same rule: no hex color, no color
+//! constructor, and no raw pixel extent outside the declared fader block and
+//! the two narrated gallery allowances.
 //!
 //! # Recorded limitations
 //!
-//! These are stated rather than papered over, because a proof that claims more
-//! than it measured is worse than one that says where it stops:
-//!
-//! - **Spacing steps do not reach the shape stream.** `ui.add_space` moves the
-//!   layout cursor; it emits no shape. What is measured for spacing is the band
-//!   and split arithmetic the density policy produces
-//!   ([`check_viewport_integrity`]) plus the declared step values. The step
-//!   values themselves are compared against the authored table, not against a
-//!   painted gap.
-//! - **Corner radii are not asserted through the render path.** The rendering
-//!   stack composes its own corner radii for the widgets it owns (a button's
-//!   2 px, a progress bar's pill), and those are its geometry rather than the
-//!   vocabulary's. Radii are compared against the authored table at the
-//!   declaration.
-//! - **Interactive-target measurement is split in two.** The shell's own framed
-//!   targets are measured as painted rects ([`MIN_TARGET_RULE_FRAMED`]); the
-//!   pointer targets whose layout the rendering stack owns are measured through
-//!   that stack's own interactive-widget registry ([`MIN_TARGET_RULE_CLICK`]).
-//!   The registry also contains every text run, because the stack registers
-//!   labels as click-and-drag widgets for text selection; a text run is not a
-//!   product target, so the click-and-drag sense is excluded by name and the
-//!   exclusion is what this paragraph exists to disclose.
-//! - **Clipping is asserted where nothing scrolls.** The shell composes three
-//!   scroll regions — the patch parameter list, the mixer track strip, and the
-//!   footer's valid actions — whose content legitimately exceeds their viewport
-//!   at 1280×800, and a shape stream cannot tell "scrolled out of view" from
-//!   "cut off". So [`check_no_text_clips_or_overlaps`] asserts containment only
-//!   for the two bands with no scroll region inside them, counts every other
-//!   run that left its container, and reports the count as
-//!   `runs_scrolled_out_of_view` in the observation line. It is 14 on the
-//!   delivered tree: long diagnostic bodies and the track columns and action
-//!   hints past the right edge of the Steam Deck viewport. Whether the Steam
-//!   Deck footer should scroll its hints at all is a design question this
-//!   target records rather than answers.
-//! - **Overlap is asserted between runs that are both fully visible.** A run
-//!   already partly out of view is excluded, because where its remainder lands
-//!   says nothing about whether two readable runs collide.
-//! - **Per-page painted specimen coverage is proven elsewhere.** The gallery's
-//!   paint pass is private to `src/testing/component_gallery_scene.rs`, so this
-//!   target proves the page and digit vocabulary is total in both directions
-//!   and leaves "every state painted a specimen on some page at both authored
-//!   sizes" to that module's own tests over its real paint pass, which the
-//!   declared `test` project validation runs.
-//!
-//! # What this target found
-//!
-//! Measuring the production path rather than the declarations turned up six
-//! defects, all of them fixed in `src/adapter/eframe_graphical_window.rs` in
-//! the same change so that the assertions below could be written at full
-//! strength rather than weakened to fit:
-//!
-//! - Every interactive target was below the authored 48 px minimum: valid-action
-//!   buttons at 18 px, control rows at 38 px, the diagnostic header at 22 px.
-//! - The meter's unfilled track, the rule between panels, the rule beside an
-//!   indented body, and the disclosure triangle painted in four grays the
-//!   vocabulary does not declare.
-//! - A mixer track's controls ran left to right inside the column instead of
-//!   stacking, which laid each row's right-aligned value on top of its label.
-//! - The meter's text was taller than the bar holding it.
-//!
-//! # The one deliberate modification, and why NFR-005 still stands
-//!
-//! `NFR-005` says no existing shell, projection, or focus test is modified to
-//! accommodate the component-controls-and-compositions mission. This file is the
-//! single exception, and it is an exception by declaration rather than by
-//! convenience: the crest-spec's `ComponentGalleryPage` grew from eight variants
-//! to fifteen against ten digit keys, so **the rule this target encoded — one
-//! digit binding per page — became false by design**, not inconvenient.
-//! [`check_every_gallery_page_is_reachable`] replaces it with the rule that
-//! survives: every declared page is reachable, by its binding where it has one
-//! and by stepping in every case.
-//!
-//! The replacement keeps every assertion that is still true, derives its counts
-//! from [`GALLERY_DIGIT_BINDING_COUNT`] and [`GALLERY_PAGE_COUNT`] rather than
-//! from restated numbers, and adds four: stepping reaches every page in declared
-//! order, stepping wraps at neither end, the two step keys select no page, and
-//! the union of both routes is exactly the declared page set. Nothing was
-//! weakened to fit. **No other test file in the repository was touched.**
+//! - **`Selected` is production-unprojected on the webview surfaces.** The
+//!   page derives row states from the document (`controlState`) and fader
+//!   states from the mixer toggles (`faderState`); neither can produce the
+//!   `Selected` treatment because no production projection carries it. The
+//!   derivable page state sets are pinned exactly
+//!   ([`PAGE_ROW_STATES`], [`PAGE_FADER_STATES`]), so a page that gains or
+//!   loses a derivable state fails and this recorded limitation must be
+//!   revisited rather than silently drifting.
+//! - **Spacing steps and radii are compared at the token table.** The page
+//!   resolves them (`var(--space-12)`, `var(--radius-small)`), and whether a
+//!   resolved token produced the authored on-screen gap is a DOM question
+//!   the live target answers.
+//! - **Per-page painted specimen coverage is proven elsewhere.** The
+//!   gallery's paint pass is private to
+//!   `src/testing/component_gallery_scene.rs`; this target proves the page
+//!   and digit vocabulary is total in both directions and leaves the painted
+//!   specimens to that module's own tests, which the declared `test`
+//!   validation runs.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crest_synth::adapter::eframe_graphical_window::{
-    install_authored_typeface, EframeGraphicalApplication,
-};
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_soundfont_capability,
 };
-use crest_synth::control::app_event::AppEvent;
-use crest_synth::control::app_loop::AppLoop;
+use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::app_state::AppState;
 use crest_synth::control::state_projector::StateProjector;
 use crest_synth::control::TopLevelContext;
@@ -140,23 +85,18 @@ use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::PatchOutput;
-use crest_synth::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
-use crest_synth::real_time::audio_command::AudioCommand;
-use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
-use crest_synth::shell::app_window::{
-    AppInputCallback, FrameObservationCallback, ProjectionCallback, TickCallback,
+use crest_synth::shell::component_state::{
+    ComponentState, NonColorSignal, ALL_COMPONENT_STATES, COMPONENT_STATE_COUNT,
+    LOADING_PROGRESS_WORDS,
 };
-use crest_synth::shell::visual::primitives::status::{LoadingPhase, StatusDetail};
-use crest_synth::shell::visual::primitives::{focus, status, value};
-use crest_synth::shell::visual::typeface::{family_for, family_name, AuthoredTypeface};
-use crest_synth::shell::visual::{
-    ComponentState, NonColorSignal, Radius, SemanticColor, SpacingStep, TypeStyle, TypefaceError,
-    ViewportDensityPolicy, ALL_COLORS, ALL_COMPONENT_STATES, ALL_DENSITY_POLICIES, ALL_RADII,
-    ALL_SPACING_STEPS, ALL_TYPE_STYLES, ALL_WEIGHTS, AUTHORED_FAMILY, COMPONENT_STATE_COUNT,
-    FOCUS_HALO_OPACITY, FOCUS_HALO_RADIUS_PX, FOCUS_HALO_SPREAD_PX, KEYLINE_EMPHASIS_PX,
-    KEYLINE_RESTING_PX, LOADING_PROGRESS_WORDS, MIN_INTERACTIVE_TARGET_PX,
+use crest_synth::shell::density::ALL_DENSITY_POLICIES;
+use crest_synth::shell::tokens::{
+    Radius, SemanticColor, SpacingStep, TypeStyle, ALL_COLORS, ALL_RADII, ALL_SPACING_STEPS,
+    ALL_TYPE_STYLES, ALL_WEIGHTS, FOCUS_HALO_OPACITY, FOCUS_HALO_RADIUS_PX, FOCUS_HALO_SPREAD_PX,
+    KEYLINE_EMPHASIS_PX, KEYLINE_RESTING_PX, MIN_INTERACTIVE_TARGET_PX,
 };
-use crest_synth::shell::{ShellFrameObservation, ShellRegionId};
+use crest_synth::shell::typeface::{family_name, AuthoredTypeface, TypefaceError, AUTHORED_FAMILY};
+use crest_synth::shell::webview::token_export;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::Patch;
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
@@ -164,10 +104,7 @@ use crest_synth::testing::component_gallery_scene::{
     ComponentGalleryPage, PageStep, ALL_GALLERY_PAGES, GALLERY_DIGIT_BINDING_COUNT,
     GALLERY_PAGE_COUNT,
 };
-use eframe::egui;
-use eframe::App;
-use std::cell::RefCell;
-use std::rc::Rc;
+use serde_json::Value;
 
 /// The exact string `validation.component_vocabulary` asserts on stdout.
 ///
@@ -186,11 +123,6 @@ const ACCEPTANCE_MARKER: &str = "CREST_ACCEPTANCE component_vocabulary passed";
 
 /// Every authored color: the vocabulary's role, the canonical name the design
 /// file publishes, and the authored value as `DESIGN.md` § Colors writes it.
-///
-/// The canonical-name column is the design file's naming, which `DESIGN.md`
-/// abbreviates in its own table (`canvas` for `color/bg/canvas`, `instrument`
-/// for `color/accent/instrument/plates`); both denote the same value and the
-/// design file's name is the one that ships in code.
 const AUTHORED_COLORS: [(SemanticColor, &str, &str); 17] = [
     (SemanticColor::BgCanvas, "color/bg/canvas", "#0c1015"),
     (SemanticColor::BgSurface, "color/bg/surface", "#121821"),
@@ -245,10 +177,6 @@ const AUTHORED_COLORS: [(SemanticColor, &str, &str); 17] = [
 
 /// Every authored type style: the vocabulary's style, the canonical name, and
 /// `DESIGN.md` § Type and geometry's size / line / weight / tracking row.
-///
-/// The weight is carried twice — as the upstream face name the family resolves
-/// to and as the numeric weight the design file declares — because a style can
-/// drift in either without drifting in the other.
 const AUTHORED_TYPE_STYLES: [(TypeStyle, &str, f32, f32, &str, u16, f32); 8] = [
     (
         TypeStyle::DisplayScreen,
@@ -352,13 +280,20 @@ const AUTHORED_HALO_RADIUS_PX: f32 = 8.0;
 const AUTHORED_HALO_SPREAD_PX: f32 = 1.0;
 const AUTHORED_HALO_OPACITY: f32 = 0.28;
 
-/// `DESIGN.md`: the two authored viewports.
-const AUTHORED_VIEWPORTS: [([f32; 2], ViewportDensityPolicy); 2] = [
-    ([1_920.0, 1_080.0], ViewportDensityPolicy::Desktop),
-    ([1_280.0, 800.0], ViewportDensityPolicy::SteamDeck),
+/// `DESIGN.md`: "Mixer fader specimen: 14 px track, 8 px fill, 3 px bottom
+/// shoulder, 34×6 px cap, 2 px rounding." Transcribed here, not read back
+/// from the vocabulary, so a drifted fader token fails against the design
+/// rather than against itself (WP07 T027, NFR-004).
+const AUTHORED_FADER: [(&str, f32); 6] = [
+    ("--fader-track-width", 14.0),
+    ("--fader-fill-width", 8.0),
+    ("--fader-shoulder", 3.0),
+    ("--fader-cap-width", 34.0),
+    ("--fader-cap-height", 6.0),
+    ("--fader-rounding", 2.0),
 ];
 
-/// The palette the adapter painted before this mission.
+/// The palette the shell painted before the component missions.
 ///
 /// These are what regression looks like: not an arbitrary wrong color, but the
 /// specific values the shell used to carry. `#6ecdae` is the focus green the
@@ -391,28 +326,54 @@ fn authored_rgb(hex: &str) -> [u8; 3] {
     [channel(0), channel(2), channel(4)]
 }
 
-/// The authored color as `epaint` carries it.
-fn authored_color32(hex: &str) -> egui::Color32 {
-    let [r, g, b] = authored_rgb(hex);
-    egui::Color32::from_rgb(r, g, b)
+// ===========================================================================
+// The committed page sources — the webview render path's delivery surface
+// ===========================================================================
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-// ===========================================================================
-// The production render path
-// ===========================================================================
+fn page_source(name: &str) -> String {
+    let path = repository_root().join("webview-page").join(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} must be readable: {error}", path.display()))
+}
 
-struct NullBoundary;
+/// The in-test transcription of the mechanical name transform the generator
+/// documents (`token_export`): slash-separated canonical names lowercase and
+/// swap `/` for `-`. Written here so the expected property names do not come
+/// from the generator's own helpers.
+fn kebab_canonical(canonical: &str) -> String {
+    canonical.to_lowercase().replace('/', "-")
+}
 
-impl ControlAudioBoundary for NullBoundary {
-    fn push_command(&mut self, _command: AudioCommand) -> Result<(), BoundaryFull> {
-        Ok(())
+/// Kebab-cases a CamelCase policy name (`SteamDeck` → `steam-deck`).
+fn kebab_camel(name: &str) -> String {
+    let mut kebab = String::new();
+    for (index, character) in name.chars().enumerate() {
+        if character.is_ascii_uppercase() && index > 0 {
+            kebab.push('-');
+        }
+        kebab.push(character.to_ascii_lowercase());
     }
-
-    fn publish_parameters(&mut self, _parameters: ParameterSnapshot) {}
+    kebab
 }
 
-/// The production reducer with one installed patch, so the shell has a real
-/// projection to paint rather than an empty one.
+/// Formats an authored pixel value as the generator's documented CSS form.
+fn css_px(value: f32) -> String {
+    if value.fract() == 0.0 {
+        format!("{}px", value as i64)
+    } else {
+        format!("{value}px")
+    }
+}
+
+// ===========================================================================
+// A production document with an in-flight structural edit
+// ===========================================================================
+
+/// The production reducer with one installed patch.
 fn installed_state() -> AppState {
     let provider = production_soundfont_capability().expect("the production SoundFont capability");
     let config =
@@ -435,299 +396,21 @@ fn installed_state() -> AppState {
     state
 }
 
-fn key_event(key: egui::Key) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::default(),
-    }
-}
-
-fn raw_input(size: [f32; 2], events: Vec<egui::Event>) -> egui::RawInput {
-    egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(size[0], size[1]),
-        )),
-        predicted_dt: 0.0,
-        events,
-        ..Default::default()
-    }
-}
-
-/// One glyph run the production shell put on screen, with the metrics it
-/// resolved to.
-#[derive(Clone, Debug)]
-struct PaintedRun {
-    content: String,
-    family: egui::FontFamily,
-    size_px: f32,
-    line_height_px: Option<f32>,
-    tracking_px: f32,
-    color: egui::Color32,
-    rect: egui::Rect,
-    clip: egui::Rect,
-}
-
-/// One rectangle the production shell put on screen.
-#[derive(Clone, Copy, Debug)]
-struct PaintedRect {
-    rect: egui::Rect,
-    stroke_color: egui::Color32,
-    stroke_width: f32,
-}
-
-/// One complete production frame: what the adapter observed about itself, and
-/// everything it actually emitted.
-struct PaintedFrame {
-    viewport: [f32; 2],
-    policy: ViewportDensityPolicy,
-    context: TopLevelContext,
-    observation: ShellFrameObservation,
-    runs: Vec<PaintedRun>,
-    rects: Vec<PaintedRect>,
-    /// Every color that reached the screen, with where it came from, so a
-    /// failure names the shape rather than only the value.
-    colors: Vec<(egui::Color32, &'static str)>,
-    /// Interact rectangles of the click-sensing widgets the rendering stack
-    /// registered, collected only when the frame was painted with the stack's
-    /// interactive-widget overlay enabled.
-    click_targets: Vec<egui::Rect>,
-}
-
-/// The stroke colors the rendering stack's interactive-widget overlay paints,
-/// by sense. Only [`DEBUG_SENSE_CLICK`] is a product target: the stack
-/// registers every label as click-and-drag for text selection, and every
-/// scroll surface as drag.
-const DEBUG_SENSE_CLICK: [u8; 3] = [0x88, 0x00, 0x00];
-const DEBUG_SENSE_CLICK_AND_DRAG: [u8; 3] = [0x88, 0x00, 0x88];
-const DEBUG_SENSE_DRAG: [u8; 3] = [0x00, 0x00, 0x88];
-
-fn debug_overlay_sense(stroke: egui::Color32) -> Option<[u8; 3]> {
-    let [r, g, b, a] = stroke.to_array();
-    if a != 0xff {
-        return None;
-    }
-    let rgb = [r, g, b];
-    [
-        DEBUG_SENSE_CLICK,
-        DEBUG_SENSE_CLICK_AND_DRAG,
-        DEBUG_SENSE_DRAG,
-    ]
-    .into_iter()
-    .find(|sense| *sense == rgb)
-}
-
-/// Collects everything one emitted shape put on screen.
-fn collect_shape(shape: &egui::Shape, clip: egui::Rect, overlay: bool, frame: &mut PaintedFrame) {
-    match shape {
-        egui::Shape::Rect(rect) => {
-            if overlay {
-                // The overlay's own rectangles are the measurement, not part of
-                // the shell's painting: record the click targets and discard
-                // everything else this pass emitted.
-                if debug_overlay_sense(rect.stroke.color) == Some(DEBUG_SENSE_CLICK)
-                    && rect.rect.width() > 0.0
-                    && rect.rect.height() > 0.0
-                {
-                    frame.click_targets.push(rect.rect);
-                }
-                return;
-            }
-            frame.colors.push((rect.fill, "rect fill"));
-            frame.colors.push((rect.stroke.color, "rect stroke"));
-            frame.rects.push(PaintedRect {
-                rect: rect.rect,
-                stroke_color: rect.stroke.color,
-                stroke_width: rect.stroke.width,
-            });
-        }
-        egui::Shape::Text(text) => {
-            if overlay {
-                return;
-            }
-            // `Galley::rect` is expressed relative to the anchor and already
-            // accounts for the job's horizontal alignment: a right-aligned run
-            // has `rect.right() == 0.0` and extends leftward from `pos`.
-            // Composing the two is what makes this the rectangle the glyphs
-            // actually occupy rather than one assumed to start at the anchor.
-            let rect = text.galley.rect.translate(text.pos.to_vec2());
-            for section in &text.galley.job.sections {
-                let color = if section.format.color == egui::Color32::PLACEHOLDER {
-                    text.fallback_color
-                } else {
-                    section.format.color
-                };
-                frame.colors.push((color, "glyph run"));
-                frame.runs.push(PaintedRun {
-                    content: text.galley.job.text.clone(),
-                    family: section.format.font_id.family.clone(),
-                    size_px: section.format.font_id.size,
-                    line_height_px: section.format.line_height,
-                    tracking_px: section.format.extra_letter_spacing,
-                    color,
-                    rect,
-                    clip,
-                });
-            }
-        }
-        egui::Shape::Circle(circle) => {
-            if !overlay {
-                frame.colors.push((circle.fill, "circle fill"));
-                frame.colors.push((circle.stroke.color, "circle stroke"));
-            }
-        }
-        egui::Shape::Path(path) => {
-            if !overlay {
-                frame.colors.push((path.fill, "path fill"));
-                if let egui::epaint::ColorMode::Solid(color) = path.stroke.color {
-                    frame.colors.push((color, "path stroke"));
-                }
-            }
-        }
-        egui::Shape::LineSegment { stroke, .. } => {
-            if !overlay {
-                frame.colors.push((stroke.color, "line segment"));
-            }
-        }
-        egui::Shape::Vec(children) => {
-            for child in children {
-                collect_shape(child, clip, overlay, frame);
-            }
-        }
-        // Meshes, ellipses, beziers, and callbacks carry no flat color this
-        // frame. A color reaching the screen only through one of them would be
-        // invisible to this scan, so nothing is claimed about them.
-        _ => {}
-    }
-}
-
-/// Drives the production shell through both authored viewports in both
-/// top-level contexts and returns what each frame painted.
-///
-/// This is the production path, not a parallel one: the same
-/// `EframeGraphicalApplication` the binary runs, the same
-/// `install_authored_typeface`, the same `AppLoop` reducer, and the same
-/// `ShellFrameObservation` the adapter emits after painting.
-///
-/// `overlay` enables the rendering stack's interactive-widget overlay. It is a
-/// separate pass because the overlay paints rectangles and labels of its own,
-/// which must never be mistaken for something the shell painted.
-fn paint_production_frames(overlay: bool) -> Vec<PaintedFrame> {
-    let app_loop = AppLoop::new(installed_state(), StateProjector::new(), NullBoundary)
-        .expect("the production reducer");
-    let shared = Rc::new(RefCell::new(app_loop));
-
-    let input_loop = Rc::clone(&shared);
-    let rejections = Rc::new(RefCell::new(Vec::new()));
-    let input_rejections = Rc::clone(&rejections);
-    let on_input: AppInputCallback = Box::new(move |event| {
-        if let Err(rejection) = input_loop.borrow_mut().dispatch_action(event) {
-            input_rejections.borrow_mut().push(rejection);
-        }
-    });
-    let projection_loop = Rc::clone(&shared);
-    let projection: ProjectionCallback =
-        Box::new(move || projection_loop.borrow().current_graphical_shell());
-    let on_tick: TickCallback = Box::new(|_| true);
-    let observations = Rc::new(RefCell::new(Vec::new()));
-    let observed = Rc::clone(&observations);
-    let on_frame: FrameObservationCallback = Box::new(move |observation| {
-        observed.borrow_mut().push(observation);
-    });
-
-    let mut application = EframeGraphicalApplication::new(on_input, projection, on_tick, on_frame);
-    let context = egui::Context::default();
-    install_authored_typeface(&context).expect("the authored typeface installs");
-    if overlay {
-        context.style_mut(|style| style.debug.show_interactive_widgets = true);
-    }
-    let mut eframe_frame = eframe::Frame::_new_kittest();
-
-    let mut frames = Vec::new();
-    for (viewport, policy) in AUTHORED_VIEWPORTS {
-        for (key, expected_context) in [
-            (egui::Key::Num2, TopLevelContext::Patch),
-            (egui::Key::Num1, TopLevelContext::Mixer),
-        ] {
-            let before = observations.borrow().len();
-            context.begin_pass(raw_input(viewport, vec![key_event(key)]));
-            application.update(&context, &mut eframe_frame);
-            let output = context.end_pass();
-            assert_eq!(
-                observations.borrow().len(),
-                before + 1,
-                "the adapter emitted no frame observation at {viewport:?}"
-            );
-            assert_eq!(
-                shared.borrow().current_graphical_shell().context(),
-                expected_context,
-                "the reducer did not reach {expected_context:?} at {viewport:?}"
-            );
-
-            let mut frame = PaintedFrame {
-                viewport,
-                policy,
-                context: expected_context,
-                observation: observations.borrow().last().unwrap().clone(),
-                runs: Vec::new(),
-                rects: Vec::new(),
-                colors: Vec::new(),
-                click_targets: Vec::new(),
-            };
-            for clipped in &output.shapes {
-                collect_shape(&clipped.shape, clipped.clip_rect, overlay, &mut frame);
-            }
-            frames.push(frame);
-        }
-    }
-
-    assert!(
-        rejections.borrow().is_empty(),
-        "the shell rejected an input while painting: {:?}",
-        rejections.borrow()
-    );
-    assert_eq!(
-        frames.len(),
-        AUTHORED_VIEWPORTS.len() * 2,
-        "both authored viewports must paint both top-level contexts"
-    );
-    assert_eq!(
-        application.frame_observation_error(),
-        None,
-        "the adapter rejected its own post-paint observation"
-    );
-    frames
-}
-
-/// Every color that reached the screen, ignoring the fully transparent
-/// no-fill and no-stroke sentinel.
-///
-/// `Color32::TRANSPARENT` is the absence of paint, not a color choice, so it is
-/// not a literal for the vocabulary to own.
-fn opaque_painted_colors(frames: &[PaintedFrame]) -> Vec<(egui::Color32, &'static str)> {
-    frames
-        .iter()
-        .flat_map(|frame| frame.colors.iter().copied())
-        .filter(|(color, _)| color.a() != 0)
-        .collect()
-}
-
-/// Whether a painted color is an authored role, or an authored role at the
-/// authored halo opacity.
-///
-/// The halo is the one place the vocabulary paints a role at less than full
-/// alpha, and it is declared: `focus::halo_color` is the authored accent at
-/// [`AUTHORED_HALO_OPACITY`].
-fn resolves_through_the_authored_table(painted: egui::Color32) -> bool {
-    AUTHORED_COLORS.into_iter().any(|(_, _, hex)| {
-        let authored = authored_color32(hex);
-        painted == authored
-    }) || ALL_COLORS
-        .into_iter()
-        .any(|role| focus::halo_color(role) == painted)
+/// The serialized PATCH document with the engine row preparing — the state
+/// whose lifecycle word the page's loading treatment paints.
+fn preparing_patch_document() -> Value {
+    let mut state = installed_state();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .expect("selecting PATCH is accepted");
+    state
+        .apply(AppEvent::Adjust(Direction::Right))
+        .expect("requesting the next engine is accepted");
+    let projection = StateProjector::new()
+        .project_with_shell(&state)
+        .expect("the production projector accepts the preparing state")
+        .3;
+    serde_json::to_value(projection.semantic_model()).expect("the projector's model serializes")
 }
 
 // ===========================================================================
@@ -754,17 +437,13 @@ impl LiteralViolation {
 }
 
 /// The one file allowed to spell a raw visual value.
-const VOCABULARY_FILE: &str = "src/shell/visual/token.rs";
+const VOCABULARY_FILE: &str = "src/shell/tokens.rs";
 
-/// The trees the guard scans: every adapter, view, scene, and shell source.
+/// The trees the guard scans: every adapter, view, scene, and shell source —
+/// including the webview shell sources.
 const SCAN_ROOTS: [&str; 3] = ["src/adapter", "src/shell", "src/testing"];
 
 /// Color constructors that build a color out of raw channels.
-///
-/// Matched on the constructor name rather than on the receiver, so a color
-/// built through a re-export or an alias is still seen. `Color32::TRANSPARENT`
-/// and every other named constant are deliberately absent: a named constant is
-/// not a literal, and the rule is construction from raw numbers.
 const COLOR_CONSTRUCTORS: [&str; 12] = [
     "from_rgb(",
     "from_rgba_unmultiplied(",
@@ -815,14 +494,6 @@ const SPACING_ASSIGNMENTS: [&str; 4] = [
 ];
 
 /// Strips line comments, and optionally the contents of string literals.
-///
-/// Comments are always stripped: they narrate the retired design as history,
-/// and history is not a value the interface paints with — the same reason
-/// `scripts/check_no_name_enumerated_identity.sh` exempts them.
-///
-/// String contents are kept only for the palette rule, which exists precisely
-/// to catch an authored hex spelled as a string. Every other rule reads the
-/// code the compiler sees, so a visible label can say anything.
 fn strip(line: &str, keep_strings: bool) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();
@@ -855,10 +526,7 @@ fn strip(line: &str, keep_strings: bool) -> String {
     out
 }
 
-/// Whether a token is a bare numeric literal.
-///
-/// Zero is excluded: it is the absence of a value rather than an authored one,
-/// and the vocabulary declares no token for "no space".
+/// Whether a token is a bare numeric literal other than zero.
 fn is_nonzero_numeric_literal(token: &str) -> bool {
     let token = token.trim();
     let token = token.strip_suffix("_f32").unwrap_or(token);
@@ -892,9 +560,6 @@ fn is_nonzero_numeric_literal(token: &str) -> bool {
 }
 
 /// The top-level arguments of the call opening immediately after `at`.
-///
-/// Nesting is respected, so `min_size(vec2(0.0, TARGET))` yields the single
-/// argument `vec2(0.0, TARGET)` rather than two numbers.
 fn call_arguments(code: &str, at: usize) -> Vec<String> {
     let mut depth = 0_i32;
     let mut current = String::new();
@@ -1053,10 +718,6 @@ fn scan_source(path: &str, source: &str) -> Vec<LiteralViolation> {
     violations
 }
 
-fn repository_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
 /// Every source the guard scans, repository-relative and sorted.
 fn scanned_sources() -> Vec<String> {
     fn walk(directory: &Path, into: &mut Vec<PathBuf>) {
@@ -1109,73 +770,16 @@ fn scan_delivered_tree() -> (Vec<String>, usize, Vec<LiteralViolation>) {
 }
 
 // ===========================================================================
-// A headless painter for the state specimens
-// ===========================================================================
-
-/// Paints one state's specimen through the production primitives and returns
-/// every text run and filled rectangle it emitted.
-///
-/// The primitives are the ones the shell composes with — `focus`, `status`, and
-/// `value` — driven through a real `egui::Context` with the authored typeface
-/// installed, so what is asserted is what a player would read rather than what
-/// the rendering code says it would draw.
-fn paint_state_specimen(
-    state: ComponentState,
-    detail: StatusDetail<'_>,
-) -> (Vec<String>, Vec<(egui::Rect, egui::Color32)>) {
-    let context = egui::Context::default();
-    install_authored_typeface(&context).expect("the authored typeface installs");
-    context.begin_pass(raw_input([1_920.0, 1_080.0], Vec::new()));
-    let row = egui::Rect::from_min_max(egui::pos2(24.0, 120.0), egui::pos2(1_476.0, 168.0));
-    let mark = egui::Rect::from_min_max(egui::pos2(1_200.0, 120.0), egui::pos2(1_320.0, 168.0));
-    egui::CentralPanel::default().show(&context, |ui| {
-        let painter = ui.painter().clone();
-        status::paint_row_fill(&painter, row, state);
-        focus::focus_frame(&painter, row, state);
-        focus::cursor(&painter, row, state);
-        status::paint_status_mark(&painter, mark, state, detail);
-        value::paint_value(&painter, row.max.x, row.center().y, "0.750", state);
-    });
-    let output = context.end_pass();
-
-    let mut texts = Vec::new();
-    let mut fills = Vec::new();
-    fn walk(
-        shape: &egui::Shape,
-        texts: &mut Vec<String>,
-        fills: &mut Vec<(egui::Rect, egui::Color32)>,
-    ) {
-        match shape {
-            egui::Shape::Text(text) => texts.push(text.galley.job.text.clone()),
-            egui::Shape::Rect(rect) => {
-                if rect.fill.a() != 0 {
-                    fills.push((rect.rect, rect.fill));
-                }
-            }
-            egui::Shape::Vec(children) => {
-                for child in children {
-                    walk(child, texts, fills);
-                }
-            }
-            _ => {}
-        }
-    }
-    for clipped in &output.shapes {
-        walk(&clipped.shape, &mut texts, &mut fills);
-    }
-    (texts, fills)
-}
-
-// ===========================================================================
-// T034 — authored-value fidelity
+// T034 — authored-value fidelity (declaration and token table)
 // ===========================================================================
 
 /// Every declared value equals its authored counterpart, and the vocabulary
 /// holds exactly the declared number of them.
 ///
 /// Both directions are asserted: every authored entry has a declaration, and
-/// every declaration has an authored entry. A token dropped from the vocabulary
-/// and a token added to it both fail here rather than passing by absence.
+/// every declaration has an authored entry. A token dropped from the
+/// vocabulary and a token added to it both fail here rather than passing by
+/// absence.
 fn check_declared_values_match_the_authored_table() {
     assert_eq!(
         ALL_COLORS.len(),
@@ -1185,17 +789,17 @@ fn check_declared_values_match_the_authored_table() {
         AUTHORED_COLORS.len()
     );
     for (role, name, hex) in AUTHORED_COLORS {
-        let [r, g, b] = authored_rgb(hex);
         let resolved = role.resolve();
         assert_eq!(
             [resolved.r(), resolved.g(), resolved.b()],
-            [r, g, b],
+            authored_rgb(hex),
             "{name} resolves to #{:02x}{:02x}{:02x} where DESIGN.md authors {hex}",
             resolved.r(),
             resolved.g(),
             resolved.b()
         );
-        assert_eq!(resolved.a(), 0xff, "{name} is not fully opaque");
+        // Opacity is structural: `AuthoredRgb` carries no alpha channel, so
+        // a translucent authored role is unrepresentable by construction.
         assert!(
             ALL_COLORS.contains(&role),
             "{name} is authored but absent from ALL_COLORS"
@@ -1263,23 +867,13 @@ fn check_declared_values_match_the_authored_table() {
     assert_eq!(FOCUS_HALO_OPACITY, AUTHORED_HALO_OPACITY);
     assert_eq!(ALL_WEIGHTS.len(), 4);
 
-    // The two values that changed most in this mission, spelled out so the
-    // regression they replace cannot come back quietly.
-    assert_eq!(
-        SemanticColor::AccentFocus.resolve(),
-        authored_color32("#65e5ff"),
-        "focus is not the authored cyan"
-    );
-    assert_eq!(
-        SemanticColor::BgCanvas.resolve(),
-        authored_color32("#0c1015"),
-        "the canvas is not the authored value"
-    );
+    // No declared role resolves to a retired value.
     for (name, hex) in RETIRED_COLORS {
-        let retired = authored_color32(hex);
+        let retired = authored_rgb(hex);
         for role in ALL_COLORS {
+            let resolved = role.resolve();
             assert_ne!(
-                role.resolve(),
+                [resolved.r(), resolved.g(), resolved.b()],
                 retired,
                 "{} still resolves to the retired {name} {hex}",
                 role.canonical_name()
@@ -1288,466 +882,347 @@ fn check_declared_values_match_the_authored_table() {
     }
 }
 
-/// Every color the production shell paints resolves through the authored
-/// table, and the values that must be on screen are on screen.
-fn check_painted_colors_are_authored(frames: &[PaintedFrame]) {
-    let painted = opaque_painted_colors(frames);
-    assert!(
-        painted.len() > 100,
-        "the production shell painted only {} colors across {} frames, which is \
-         too few to have painted a shell at all",
-        painted.len(),
-        frames.len()
-    );
+/// The generated token table spells every authored value, verbatim — the
+/// value half of "authored Rust value → generated token → page usage".
+///
+/// The expected declaration text is assembled from the DESIGN.md
+/// transcription above, never from the generator's helpers, so a generator
+/// that reformats, drops, or rewrites a value fails against the authored
+/// text. Counts and injectivity close the sweep: a token silently added or
+/// dropped changes the declaration count.
+fn check_generated_tokens_carry_every_authored_value() {
+    let generated = token_export::tokens_css();
 
-    let mut unauthored: BTreeMap<String, &'static str> = BTreeMap::new();
-    for (color, provenance) in &painted {
-        if !resolves_through_the_authored_table(*color) {
-            unauthored.insert(format!("{color:?}"), provenance);
-        }
-    }
-    assert!(
-        unauthored.is_empty(),
-        "the production shell painted colors the vocabulary does not author: {unauthored:?}"
-    );
+    // The committed table — the file the production window embeds and the
+    // page resolves — is byte-fresh generator output.
+    token_export::committed_tokens_are_fresh(&page_source("tokens.css"))
+        .expect("committed webview-page/tokens.css must match the authored vocabulary");
 
-    let distinct: BTreeSet<[u8; 4]> = painted.iter().map(|(color, _)| color.to_array()).collect();
-    assert!(
-        distinct.len() >= 8,
-        "the production shell painted only {} distinct colors, which cannot cover \
-         a canvas, panels, borders, text, and an accent",
-        distinct.len()
-    );
-
-    for hex in ["#0c1015", "#65e5ff", "#f2f6f8", "#2a3745"] {
+    for (_, name, hex) in AUTHORED_COLORS {
+        let needle = format!("  --{}: {hex};\n", kebab_canonical(name));
         assert!(
-            distinct.contains(&authored_color32(hex).to_array()),
-            "the authored {hex} is painted nowhere in the production shell"
+            generated.contains(&needle),
+            "the token table must declare {name} at the authored {hex}"
         );
     }
+    for (_, name, size, line, _, weight_numeric, tracking) in AUTHORED_TYPE_STYLES {
+        let kebab = kebab_canonical(name);
+        for (metric, expected) in [
+            ("size", css_px(size)),
+            ("line", css_px(line)),
+            ("weight", weight_numeric.to_string()),
+            ("tracking", css_px(tracking)),
+        ] {
+            let needle = format!("  --type-{kebab}-{metric}: {expected};\n");
+            assert!(
+                generated.contains(&needle),
+                "the token table must declare {name} {metric} at the authored {expected}"
+            );
+        }
+    }
+    for (_, name, value) in AUTHORED_SPACING {
+        let needle = format!("  --{}: {};\n", kebab_canonical(name), css_px(value));
+        assert!(
+            generated.contains(&needle),
+            "the token table must declare {name} at the authored {value} px"
+        );
+    }
+    for (radius, value) in AUTHORED_RADII {
+        let needle = format!(
+            "  --radius-{}: {};\n",
+            format!("{radius:?}").to_lowercase(),
+            css_px(value)
+        );
+        assert!(
+            generated.contains(&needle),
+            "the token table must declare {radius:?} at the authored {value} px"
+        );
+    }
+    for (property, value) in AUTHORED_FADER {
+        let needle = format!("  {property}: {};\n", css_px(value));
+        assert!(
+            generated.contains(&needle),
+            "the token table must declare {property} at the authored {value} px"
+        );
+    }
+    for (property, value) in [
+        ("--keyline-resting", css_px(AUTHORED_KEYLINE_RESTING_PX)),
+        ("--keyline-emphasis", css_px(AUTHORED_KEYLINE_EMPHASIS_PX)),
+        ("--min-interactive-target", css_px(AUTHORED_MIN_TARGET_PX)),
+        ("--focus-halo-radius", css_px(AUTHORED_HALO_RADIUS_PX)),
+        ("--focus-halo-spread", css_px(AUTHORED_HALO_SPREAD_PX)),
+        ("--focus-halo-opacity", format!("{AUTHORED_HALO_OPACITY}")),
+    ] {
+        let needle = format!("  {property}: {value};\n");
+        assert!(
+            generated.contains(&needle),
+            "the token table must declare {property} at the authored {value}"
+        );
+    }
+
+    // The retired palette is nowhere in the table.
     for (name, hex) in RETIRED_COLORS {
         assert!(
-            !distinct.contains(&authored_color32(hex).to_array()),
-            "the retired {name} {hex} is still painted by the production shell"
-        );
-    }
-}
-
-/// Every glyph run the production shell paints resolves to exactly one authored
-/// type style, in the authored family, at the authored size, line height, and
-/// tracking.
-fn check_painted_type_is_authored(frames: &[PaintedFrame]) {
-    let runs: Vec<&PaintedRun> = frames.iter().flat_map(|frame| frame.runs.iter()).collect();
-    assert!(
-        runs.len() > 50,
-        "the production shell painted only {} glyph runs",
-        runs.len()
-    );
-
-    let mut styles_seen: BTreeSet<&str> = BTreeSet::new();
-    for run in &runs {
-        let matched = AUTHORED_TYPE_STYLES.into_iter().find(
-            |(_, _, size, line, weight_name, _, tracking)| {
-                run.size_px == *size
-                    && run.line_height_px == Some(*line)
-                    && run.tracking_px == *tracking
-                    && run.family
-                        == egui::FontFamily::Name(format!("{AUTHORED_FAMILY} {weight_name}").into())
-            },
-        );
-        let (_, name, ..) = matched.unwrap_or_else(|| {
-            panic!(
-                "the run {:?} painted at {} px / {:?} line / {} tracking in {:?}, which no \
-                 authored type style declares",
-                run.content, run.size_px, run.line_height_px, run.tracking_px, run.family
-            )
-        });
-        styles_seen.insert(name);
-        assert!(
-            resolves_through_the_authored_table(run.color),
-            "the run {:?} painted in {:?}, which the vocabulary does not author",
-            run.content,
-            run.color
+            !generated.to_lowercase().contains(hex),
+            "the retired {name} {hex} survives in the generated table"
         );
     }
 
-    // The shell composes a subset of the vocabulary; naming which subset makes
-    // a silently dropped style visible rather than invisible.
-    for expected in [
-        "Heading/Section",
-        "Heading/Panel",
-        "Body/Compact",
-        "Label/Control",
-        "Code/Value",
-        "Instruction/Hint",
-    ] {
-        assert!(
-            styles_seen.contains(expected),
-            "the production shell painted no {expected} run; it painted {styles_seen:?}"
-        );
-    }
-    assert_eq!(
-        styles_seen.len(),
-        6,
-        "the production shell painted {styles_seen:?}; the set of styles it composes changed"
-    );
-}
-
-/// Every keyline the production shell strokes is an authored keyline width.
-fn check_painted_keylines_are_authored(frames: &[PaintedFrame]) {
-    let stroked: Vec<&PaintedRect> = frames
-        .iter()
-        .flat_map(|frame| frame.rects.iter())
-        .filter(|rect| rect.stroke_width > 0.0 && rect.stroke_color.a() != 0)
+    // Exactly the declared vocabulary, no more and no fewer, each property
+    // once.
+    let properties: Vec<&str> = generated
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with("--") {
+                return None;
+            }
+            trimmed.split(':').next()
+        })
         .collect();
-    assert!(
-        !stroked.is_empty(),
-        "the production shell stroked no rectangle at all"
-    );
-    let widths: BTreeSet<String> = stroked
-        .iter()
-        .map(|rect| format!("{}", rect.stroke_width))
-        .collect();
-    for rect in &stroked {
-        assert!(
-            rect.stroke_width == AUTHORED_KEYLINE_RESTING_PX
-                || rect.stroke_width == AUTHORED_KEYLINE_EMPHASIS_PX,
-            "a rectangle is stroked at {} px, which is not an authored keyline width; \
-             the frame stroked {widths:?}",
-            rect.stroke_width
-        );
-    }
-    assert!(
-        widths.contains("1") && widths.contains("3"),
-        "the production shell painted only {widths:?}; both authored keyline widths \
-         must reach the screen"
-    );
-}
-
-/// The authored halo reaches the screen at its authored radius, spread, and
-/// opacity, in the authored focus accent.
-fn check_painted_halo_is_authored(frames: &[PaintedFrame]) {
-    let halo = focus::halo_color(SemanticColor::AccentFocus);
-    let painted = opaque_painted_colors(frames);
-    assert!(
-        painted.iter().any(|(color, _)| *color == halo),
-        "the authored focus halo is painted nowhere"
-    );
-    let [.., alpha] = halo.to_srgba_unmultiplied();
+    let expected_count = AUTHORED_COLORS.len()
+        + AUTHORED_TYPE_STYLES.len() * 4
+        + AUTHORED_SPACING.len()
+        + AUTHORED_RADII.len()
+        + 6
+        + AUTHORED_FADER.len()
+        + ALL_DENSITY_POLICIES.len() * 5;
     assert_eq!(
-        alpha,
-        (AUTHORED_HALO_OPACITY * 255.0).round() as u8,
-        "the halo does not carry the authored opacity"
+        properties.len(),
+        expected_count,
+        "the token table declares {} custom properties where the authored vocabulary \
+         yields {expected_count}",
+        properties.len()
+    );
+    let unique: BTreeSet<&str> = properties.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        properties.len(),
+        "custom property names must stay injective over the generated table"
     );
 }
 
 // ===========================================================================
-// T036 — viewport integrity
+// T036 — viewport integrity: the authored geometry and its page usage
 // ===========================================================================
 
-/// The rule name used when a framed target fails the authored minimum.
-const MIN_TARGET_RULE_FRAMED: &str = "framed target";
-/// The rule name used when a click target fails the authored minimum.
-const MIN_TARGET_RULE_CLICK: &str = "click target";
+/// The authored density geometry tiles both authored viewports, clears the
+/// authored interactive minimum, reaches the token table per policy, and is
+/// what the page's own composition resolves.
+fn check_density_policy_geometry_reaches_the_page() {
+    let generated = token_export::tokens_css();
+    let page_css = page_source("page.css");
 
-/// Both authored viewports render every structural band and the persistent
-/// side region, with the geometry the density policy declares.
-fn check_viewport_integrity(frames: &[PaintedFrame]) {
-    let mut viewports_seen = BTreeSet::new();
-    for frame in frames {
-        let [width, height] = frame.viewport;
-        let observation = &frame.observation;
-        let label = format!("{width}x{height} {:?}", frame.context);
-        viewports_seen.insert(format!("{width}x{height}"));
+    for policy in ALL_DENSITY_POLICIES {
+        let name = policy.canonical_name();
+        let suffix = kebab_camel(name);
+        let viewport = policy.authored_viewport();
+        let bands = policy.bands();
+        let split = policy.split();
 
+        // The authored bands and split tile the authored viewport exactly.
         assert_eq!(
-            ViewportDensityPolicy::resolve(width),
-            frame.policy,
-            "{label}: the shell resolved the wrong density policy"
-        );
-        assert_eq!(observation.viewport_width(), width, "{label} width");
-        assert_eq!(observation.viewport_height(), height, "{label} height");
-
-        // Every required region is present exactly once, in canonical order.
-        assert_eq!(
-            observation
-                .regions()
-                .iter()
-                .map(|region| region.id())
-                .collect::<Vec<_>>(),
-            ShellRegionId::surface_descriptor(),
-            "{label}: the shell dropped or reordered a structural region"
-        );
-        for region in observation.regions() {
-            let rect = region.rect();
-            assert!(
-                rect.width() > 0.0 && rect.height() > 0.0,
-                "{label}: {} painted an empty rectangle",
-                region.id().name()
-            );
-            assert!(
-                !region.visible_label().trim().is_empty(),
-                "{label}: {} painted no visible label",
-                region.id().name()
-            );
-        }
-        assert!(
-            observation.regions_are_non_overlapping(),
-            "{label}: two structural regions overlap"
-        );
-
-        let bands = frame.policy.bands();
-        let split = frame.policy.split();
-        let context_line = observation.region(ShellRegionId::ContextLine).rect();
-        let identity = observation.region(ShellRegionId::IdentityHeader).rect();
-        let main = observation.region(ShellRegionId::MainWorkspace).rect();
-        let side = observation
-            .region(ShellRegionId::PersistentSideRegion)
-            .rect();
-        let footer = observation.region(ShellRegionId::Footer).rect();
-
-        assert_eq!(
-            context_line.height(),
-            bands.context_line_px,
-            "{label} context line"
+            bands.total_height_px(),
+            viewport.height_px,
+            "{name}: the bands do not sum to the authored viewport height"
         );
         assert_eq!(
-            identity.height(),
-            bands.identity_header_px,
-            "{label} identity header"
+            split.total_width_px(),
+            viewport.width_px,
+            "{name}: the surface split does not sum to the authored viewport width"
         );
-        assert_eq!(footer.height(), bands.footer_px, "{label} footer");
-        assert_eq!(side.width(), split.side_px, "{label} side region width");
-
-        // Bands plus workspace tile the viewport exactly, top to bottom.
-        assert_eq!(
-            context_line.height() + identity.height() + main.height() + footer.height(),
-            height,
-            "{label}: the bands and workspace do not sum to the viewport height"
-        );
-        // Main plus side tile the viewport exactly, left to right.
-        assert_eq!(
-            main.width() + side.width(),
-            width,
-            "{label}: the workspace and side region do not sum to the viewport width"
-        );
-        assert_eq!(
-            main.max_x(),
-            side.min_x(),
-            "{label}: a gap splits the workspace"
-        );
-        assert_eq!(
-            context_line.max_y(),
-            identity.min_y(),
-            "{label}: a gap under the context line"
-        );
-        assert_eq!(
-            identity.max_y(),
-            main.min_y(),
-            "{label}: a gap under the identity header"
-        );
-        assert_eq!(
-            main.max_y(),
-            footer.min_y(),
-            "{label}: a gap above the footer"
-        );
-        assert_eq!(
-            main.min_y(),
-            side.min_y(),
-            "{label}: the side region is not aligned"
-        );
-        assert_eq!(
-            main.max_y(),
-            side.max_y(),
-            "{label}: the side region is not aligned"
-        );
-
         // The persistent side region is narrowed by density, never hidden.
         assert!(
-            side.width() >= 320.0,
-            "{label}: the side region narrowed to {} px",
-            side.width()
+            split.side_px >= 320.0,
+            "{name}: the side region narrowed to {} px",
+            split.side_px
         );
 
-        // The policy's own declared interactive targets clear the authored
-        // minimum at this viewport.
-        for (name, extent) in [
-            ("row height", frame.policy.rhythm().row_height_px),
-            (
-                "utility control height",
-                frame.policy.utility_control().height_px,
-            ),
+        // The policy's declared interactive extents clear the authored
+        // minimum.
+        for (extent_name, extent) in [
+            ("row height", policy.rhythm().row_height_px),
+            ("utility control height", policy.utility_control().height_px),
+            ("mixer column width", policy.mixer_column().width_px),
+            ("mixer column floor", policy.mixer_column().floor_px),
         ] {
             assert!(
                 extent >= AUTHORED_MIN_TARGET_PX,
-                "{label}: the declared {name} is {extent} px, below the authored minimum"
+                "{name}: the declared {extent_name} is {extent} px, below the authored minimum"
+            );
+        }
+
+        // The per-policy geometry reaches the token table at the declared
+        // values.
+        let column = policy.mixer_column();
+        for (property, value) in [
+            (format!("--mixer-column-width-{suffix}"), column.width_px),
+            (format!("--mixer-column-pitch-{suffix}"), column.pitch_px),
+            (format!("--mixer-column-floor-{suffix}"), column.floor_px),
+            (format!("--surface-split-main-{suffix}"), split.main_px),
+            (format!("--surface-split-side-{suffix}"), split.side_px),
+        ] {
+            let needle = format!("  {property}: {};\n", css_px(value));
+            assert!(
+                generated.contains(&needle),
+                "{name}: the token table must declare {property} at the declared {value} px"
             );
         }
     }
-    assert_eq!(
-        viewports_seen.len(),
-        AUTHORED_VIEWPORTS.len(),
-        "both authored viewports must be measured; saw {viewports_seen:?}"
-    );
+
+    // The page composes from those tokens: the strip bank's column geometry,
+    // the Inspector's clamped split (narrowed toward and never below the
+    // deck's side region), and the authored minimum interactive target on
+    // every listed row.
+    for usage in [
+        "var(--mixer-column-floor-desktop)",
+        "var(--mixer-column-width-desktop)",
+        "var(--mixer-column-pitch-desktop)",
+        "var(--surface-split-side-steam-deck)",
+        "var(--surface-split-main-desktop)",
+        "var(--surface-split-side-desktop)",
+        "min-height: var(--min-interactive-target)",
+    ] {
+        assert!(
+            page_css.contains(usage),
+            "page.css must resolve {usage} rather than restating the geometry"
+        );
+    }
 }
 
-/// No target the production shell paints is smaller than the authored minimum.
-///
-/// Two rules, because two different owners decide the geometry:
-///
-/// - [`MIN_TARGET_RULE_FRAMED`] covers every rectangle the shell strokes in an
-///   authored role at an authored keyline width — its control rows, its framed
-///   buttons, its track columns. These are the focus and adjustment targets a
-///   controller reaches, and the shell composes them itself.
-/// - [`MIN_TARGET_RULE_CLICK`] covers every click-sensing widget the rendering
-///   stack registered, read from that stack's own interactive-widget registry.
-///   These are the pointer targets whose height the stack computes.
-fn check_no_target_is_below_the_authored_minimum(
-    frames: &[PaintedFrame],
-    overlay_frames: &[PaintedFrame],
-) {
-    let mut framed = 0_usize;
-    for frame in frames {
-        let label = format!("{:?} {:?}", frame.viewport, frame.context);
-        for rect in &frame.rects {
-            if rect.stroke_width <= 0.0 || rect.stroke_color.a() == 0 {
-                continue;
-            }
-            if !resolves_through_the_authored_table(rect.stroke_color) {
-                continue;
-            }
-            framed += 1;
+// ===========================================================================
+// The page-side literal guard
+// ===========================================================================
+
+/// The committed page spells no visual value of its own: no hex color, no
+/// color constructor, and no raw pixel extent outside the one declared
+/// fader-geometry block. The page paints with resolved tokens or it does not
+/// paint. The committed gallery pair (`gallery.css`/`gallery.js`) is held to
+/// the same rule, with exactly two declared allowances — the transparent
+/// read-back sentinel and the font-availability probe — each narrated at its
+/// check below.
+fn check_page_sources_spell_no_visual_value() {
+    let page_css = page_source("page.css");
+    let page_js = page_source("page.js");
+    let index_html = page_source("index.html");
+    let gallery_css = page_source("gallery.css");
+    let gallery_js = page_source("gallery.js");
+
+    // The computed-style serialization of `transparent`. The gallery's
+    // painted-evidence read-back names it solely to SKIP unpainted values —
+    // recognizing that nothing painted declares no color of the gallery's
+    // own. Mirroring the fader-geometry exemption, the allowance is declared
+    // and exact: the sentinel is erased before the scan, so any other color
+    // constructor in gallery.js still fails, and no other source shares the
+    // allowance.
+    const TRANSPARENT_READBACK_SENTINEL: &str = "rgba(0, 0, 0, 0)";
+
+    // No hex color and no color constructor in any page source. (A `#id`
+    // selector scans as at most two hex digits and is not a color.)
+    for (name, source) in [
+        ("page.css", &page_css),
+        ("page.js", &page_js),
+        ("index.html", &index_html),
+        ("gallery.css", &gallery_css),
+        ("gallery.js", &gallery_js),
+    ] {
+        for line in source.lines() {
+            let scanned = if name == "gallery.js" {
+                line.replace(TRANSPARENT_READBACK_SENTINEL, "")
+            } else {
+                line.to_owned()
+            };
             assert!(
-                rect.rect.height() >= AUTHORED_MIN_TARGET_PX,
-                "{label}: a {MIN_TARGET_RULE_FRAMED} is {} px tall, below the authored \
-                 {AUTHORED_MIN_TARGET_PX} px minimum (rect {:?})",
-                rect.rect.height(),
-                rect.rect
+                !scanned.contains("rgb(")
+                    && !scanned.contains("rgba(")
+                    && !scanned.contains("hsl("),
+                "{name} builds a color of its own: {line}"
+            );
+            let characters: Vec<char> = scanned.chars().collect();
+            for (index, character) in characters.iter().enumerate() {
+                if *character != '#' {
+                    continue;
+                }
+                let run = characters[index + 1..]
+                    .iter()
+                    .take_while(|c| c.is_ascii_hexdigit())
+                    .count();
+                assert!(
+                    !matches!(run, 3 | 4 | 6 | 8),
+                    "{name} spells a hex color: {line}"
+                );
+            }
+        }
+        // The authored and retired palettes are absent as text, too.
+        for (color_name, hex) in AUTHORED_COLORS
+            .iter()
+            .map(|(_, name, hex)| (*name, *hex))
+            .chain(RETIRED_COLORS)
+        {
+            assert!(
+                !source.to_lowercase().contains(hex),
+                "{name} spells {color_name} ({hex})"
             );
         }
     }
-    assert!(
-        framed >= 8,
-        "only {framed} framed targets were measured across both viewports, which is \
-         too few to have measured the shell's rows and buttons"
-    );
 
-    let mut clicks = 0_usize;
-    for frame in overlay_frames {
-        let label = format!("{:?} {:?}", frame.viewport, frame.context);
-        for rect in &frame.click_targets {
-            clicks += 1;
+    // Raw pixel extents live only in the declared fader-geometry block.
+    for line in page_css.lines() {
+        let code = line.split("/*").next().unwrap_or(line);
+        let has_raw_px = code
+            .char_indices()
+            .filter(|(_, character)| character.is_ascii_digit())
+            .any(|(index, _)| code[index + 1..].starts_with("px"));
+        if has_raw_px {
             assert!(
-                rect.height() >= AUTHORED_MIN_TARGET_PX,
-                "{label}: a {MIN_TARGET_RULE_CLICK} is {} px tall, below the authored \
-                 {AUTHORED_MIN_TARGET_PX} px minimum (rect {rect:?})",
-                rect.height()
+                code.trim_start().starts_with("--fader-"),
+                "page.css sets a raw pixel extent outside the declared fader block: {line}"
             );
         }
     }
-    assert!(
-        clicks >= 8,
-        "only {clicks} click targets were read from the rendering stack's registry; the \
-         overlay pass measured nothing"
-    );
-}
 
-/// No glyph run escapes the container it was painted into, and no two runs in
-/// the same container overlap.
-///
-/// The container is the clip rectangle the rendering stack attached to the
-/// shape, which is exactly the region the shell composed the run inside.
-/// Overlap is compared within a container rather than across the frame,
-/// because two runs in different clipped regions cannot collide.
-fn check_no_text_clips_or_overlaps(frames: &[PaintedFrame]) -> usize {
-    let mut measured = 0_usize;
-    let mut scrolled_out_of_view = 0_usize;
-    let mut defects: BTreeSet<String> = BTreeSet::new();
-
-    for frame in frames {
-        let label = format!("{:?} {:?}", frame.viewport, frame.context);
-        // The two chrome bands the shell composes with no scroll region inside
-        // them. A run painted into one of these has nowhere to go: if it does
-        // not fit, it is cut, and there is no gesture that reveals the rest.
-        let fixed_bands: Vec<egui::Rect> =
-            [ShellRegionId::ContextLine, ShellRegionId::IdentityHeader]
-                .into_iter()
-                .map(|id| {
-                    let rect = frame.observation.region(id).rect();
-                    egui::Rect::from_min_max(
-                        egui::pos2(rect.min_x(), rect.min_y()),
-                        egui::pos2(rect.max_x(), rect.max_y()),
-                    )
-                })
-                .collect();
-
-        let mut by_container: BTreeMap<String, Vec<&PaintedRun>> = BTreeMap::new();
-        for run in &frame.runs {
-            if run.content.trim().is_empty() {
-                continue;
-            }
-            measured += 1;
-            let contained = run.clip.contains_rect(run.rect);
-            if !contained {
-                scrolled_out_of_view += 1;
-                if fixed_bands.contains(&run.clip) {
-                    defects.insert(format!(
-                        "{label}: clipped — {:?} at {:?} escapes the fixed band {:?}",
-                        run.content, run.rect, run.clip
-                    ));
-                }
-                // A run that does not fit its container is not compared for
-                // overlap: it is already partly out of view, and where its
-                // remainder lands says nothing about whether two readable runs
-                // collide.
-                continue;
-            }
-            by_container
-                .entry(format!("{:?}", run.clip))
-                .or_default()
-                .push(run);
-        }
-
-        for (container, runs) in &by_container {
-            for (index, first) in runs.iter().enumerate() {
-                for second in runs.iter().skip(index + 1) {
-                    let overlap = first.rect.intersect(second.rect);
-                    if overlap.width() > 0.0 && overlap.height() > 0.0 {
-                        defects.insert(format!(
-                            "{label}: overlapping — {:?} at {:?} and {:?} at {:?} inside {container}",
-                            first.content, first.rect, second.content, second.rect
-                        ));
-                    }
-                }
+    // The gallery pair declares no fader geometry, so it earns no pixel
+    // exemption of that kind. gallery.js's one declared allowance is the
+    // FontFaceSet.check probe string: the CSS Font Loading API's font
+    // shorthand makes a size syntactically mandatory, and the probe gathers
+    // the typeface-resolution evidence this proof demands — it paints no
+    // extent. A pixel anywhere outside a `fonts.check(` call still fails.
+    for (name, source) in [("gallery.css", &gallery_css), ("gallery.js", &gallery_js)] {
+        for line in source.lines() {
+            let code = line.split("/*").next().unwrap_or(line);
+            let has_raw_px = code
+                .char_indices()
+                .filter(|(_, character)| character.is_ascii_digit())
+                .any(|(index, _)| code[index + 1..].starts_with("px"));
+            if has_raw_px {
+                assert!(
+                    name == "gallery.js" && code.contains("fonts.check("),
+                    "{name} sets a raw pixel extent outside the declared font-probe allowance: {line}"
+                );
             }
         }
     }
 
-    assert!(
-        measured > 50,
-        "only {measured} glyph runs were measured for clipping and overlap"
-    );
-    assert!(
-        defects.is_empty(),
-        "the production shell painted {} clipped or overlapping text run(s):\n{}",
-        defects.len(),
-        defects.iter().cloned().collect::<Vec<_>>().join("\n")
-    );
-    scrolled_out_of_view
+    // The document itself styles nothing: no inline style, no style
+    // attribute; paint enters only through the two linked stylesheets.
+    assert!(!index_html.contains("<style"));
+    assert!(!index_html.contains("style=\""));
+    assert!(index_html.contains("tokens.css") && index_html.contains("page.css"));
 }
 
 // ===========================================================================
 // T037 — state exhaustiveness, non-color legibility, page totality
 // ===========================================================================
 
-/// The state vocabulary is closed at nine and exhaustive iteration yields every
-/// one of them.
+/// The state vocabulary is closed at nine and exhaustive iteration yields
+/// every one of them.
 fn check_state_set_is_closed_and_exhaustive() {
     assert_eq!(COMPONENT_STATE_COUNT, 9);
     assert_eq!(ALL_COMPONENT_STATES.len(), COMPONENT_STATE_COUNT);
 
-    // The match is exhaustive with no wildcard arm, so a tenth variant fails to
-    // compile here; naming every variant is what makes the count load-bearing.
+    // The match is exhaustive with no wildcard arm, so a tenth variant fails
+    // to compile here; naming every variant is what makes the count
+    // load-bearing.
     let mut named = BTreeSet::new();
     for state in ALL_COMPONENT_STATES {
         let name = match state {
@@ -1767,120 +1242,14 @@ fn check_state_set_is_closed_and_exhaustive() {
         );
     }
     assert_eq!(named.len(), COMPONENT_STATE_COUNT);
-}
 
-/// Every state announces itself with something a player could read with no
-/// color vision at all.
-///
-/// Asserted on the painted output of the production primitives, not on the
-/// declaration: a specimen that dropped its mark fails here even though the
-/// declaration still carries one.
-fn check_every_state_is_legible_without_color() {
-    let typed_failure = "ENGINE UNAVAILABLE";
-    for state in ALL_COMPONENT_STATES {
-        // Exhaustive with no wildcard arm, for the same reason the vocabulary
-        // is: a tenth state must fail to compile here rather than fall through
-        // to "carries no detail".
-        let detail = match state {
-            ComponentState::Loading => StatusDetail::Progress(LoadingPhase::Preparing),
-            ComponentState::Error => StatusDetail::Failure(typed_failure),
-            ComponentState::Resting
-            | ComponentState::Focused
-            | ComponentState::Adjusting
-            | ComponentState::Disabled
-            | ComponentState::Muted
-            | ComponentState::Soloed
-            | ComponentState::Selected => StatusDetail::None,
-        };
-        let (texts, fills) = paint_state_specimen(state, detail);
-        let joined = texts.join(" | ");
-        let name = state.canonical_name();
-
-        match state {
-            ComponentState::Focused | ComponentState::Adjusting => assert!(
-                texts.iter().any(|text| text == focus::CURSOR_GLYPH),
-                "{name} painted no {:?} cursor; it painted {joined}",
-                focus::CURSOR_GLYPH
-            ),
-            ComponentState::Disabled => assert!(
-                texts.iter().any(|text| text == "Locked"),
-                "{name} painted no word; it painted {joined}"
-            ),
-            ComponentState::Loading => assert!(
-                texts.iter().any(|text| text == LOADING_PROGRESS_WORDS[0]),
-                "{name} painted no progress word; it painted {joined}"
-            ),
-            ComponentState::Error => assert!(
-                texts.iter().any(|text| text == typed_failure),
-                "{name} painted no typed failure; it painted {joined}"
-            ),
-            ComponentState::Muted => assert!(
-                texts.iter().any(|text| text == "M ON"),
-                "{name} painted no M ON; it painted {joined}"
-            ),
-            ComponentState::Soloed => assert!(
-                texts.iter().any(|text| text == "S ON"),
-                "{name} painted no S ON; it painted {joined}"
-            ),
-            ComponentState::Selected => {
-                assert!(
-                    fills
-                        .iter()
-                        .any(|(_, fill)| *fill == SemanticColor::BgSelected.resolve()),
-                    "{name} painted no row fill"
-                );
-                assert!(
-                    fills
-                        .iter()
-                        .any(|(_, fill)| *fill == SemanticColor::TextPrimary.resolve()),
-                    "{name} painted no selection mark distinct from its fill"
-                );
-            }
-            // Resting is the baseline the other eight read against. It carries
-            // no mark of its own by declaration, so what is asserted is that it
-            // stays the absence: no cursor, no word, no fill.
-            ComponentState::Resting => {
-                assert!(
-                    !texts.iter().any(|text| text == focus::CURSOR_GLYPH),
-                    "{name} drew the focus cursor"
-                );
-                assert_eq!(
-                    state.appearance().signal,
-                    NonColorSignal::Shape,
-                    "{name} is no longer the declared baseline"
-                );
-            }
-        }
-
-        // Every value run reaches the screen in every state, so no state is a
-        // blank row.
-        assert!(
-            texts.iter().any(|text| text == "0.750"),
-            "{name} painted no value; it painted {joined}"
-        );
-    }
-
-    // The loading vocabulary is the structural-edit vocabulary, not a second
-    // one, and both phases reach the screen.
-    for (phase, word) in [
-        (LoadingPhase::Preparing, LOADING_PROGRESS_WORDS[0]),
-        (LoadingPhase::Activating, LOADING_PROGRESS_WORDS[1]),
-    ] {
-        let (texts, _) =
-            paint_state_specimen(ComponentState::Loading, StatusDetail::Progress(phase));
-        assert!(
-            texts.iter().any(|text| text == word),
-            "the {phase:?} phase painted no {word}"
-        );
-    }
-
-    // No two states are told apart by color alone: their painted colorless
+    // No two states are told apart by color alone: their declared colorless
     // evidence differs.
     for (index, first) in ALL_COMPONENT_STATES.iter().enumerate() {
         for second in &ALL_COMPONENT_STATES[index + 1..] {
             let a = first.appearance();
             let b = second.appearance();
-            let shape_of = |appearance: crest_synth::shell::visual::StateAppearance| {
+            let shape_of = |appearance: crest_synth::shell::component_state::StateAppearance| {
                 (
                     format!("{}", appearance.keyline_px),
                     appearance.draws_halo,
@@ -1897,25 +1266,215 @@ fn check_every_state_is_legible_without_color() {
     }
 }
 
-/// Every gallery page is reachable — by its digit binding where one exists, and
-/// by stepping in every case.
+/// The row states the committed render script can derive from a document
+/// (`controlState` in `webview-page/page.js`), pinned exactly.
+const PAGE_ROW_STATES: [&str; 7] = [
+    "resting",
+    "focused",
+    "adjusting",
+    "disabled",
+    "loading",
+    "error",
+    "unknown",
+];
+
+/// The fader states the committed render script can derive from the mixer
+/// document (`faderState` in `webview-page/page.js`), pinned exactly.
+const PAGE_FADER_STATES: [&str; 6] = ["focused", "error", "disabled", "muted", "soloed", "resting"];
+
+/// Every state the webview surface can carry announces itself with something
+/// a player could read with no color vision at all, and every treatment
+/// resolves from the token vocabulary.
 ///
-/// This replaces the "exactly one digit binding per page" rule, which is now
-/// false by design: there are fifteen declared pages and ten digits, so five
-/// pages carry no binding and are reached by stepping. The rule that survives is
-/// reachability, and the two halves of it are asserted separately — a page
-/// reachable by neither would be a page nobody can see.
-///
-/// **This function is WP08 T045's, and it was written here by WP07 only because
-/// growing the page set is a compile-level change to it.** WP07 owns
-/// `src/testing/component_gallery_scene.rs` and `src/shell/window_input.rs`; the
-/// page count could not grow without this target failing to build, and a target
-/// that does not build takes the whole suite with it.
-///
-/// WP08 completed it by stating the disjunction directly. Stepping reaching all
-/// fifteen implies per-page reachability, but only to a reader who notices; the
-/// union below says it, with a denominator on each route, so a page reachable by
-/// neither is a named failure rather than an inference nobody draws.
+/// The evidence is the committed page contract: the script's derivable state
+/// sets (pinned — a gained or lost state fails here), the vocabulary words
+/// the script paints beside a row, and the stylesheet treatments that carry
+/// each state's keyline/halo shape. The DOM-level proof that each treatment
+/// actually paints is the live target's; the recorded limitation is that
+/// `Selected` is production-unprojected on the webview surfaces.
+fn check_every_page_state_is_legible_without_color() {
+    let page_css = page_source("page.css");
+    let page_js = page_source("page.js");
+
+    // The pinned derivable sets are exactly what the script can emit.
+    for state in PAGE_ROW_STATES {
+        assert!(
+            page_js.contains(&format!("name: \"{state}\"")),
+            "page.js can no longer derive the {state} row state"
+        );
+    }
+    for state in PAGE_FADER_STATES {
+        assert!(
+            page_js.contains(&format!("return \"{state}\"")),
+            "page.js can no longer derive the {state} fader state"
+        );
+    }
+
+    // The recorded limitation, falsifiably: every declared ComponentState
+    // except Selected is derivable on the page; Selected is exactly the one
+    // that is not. A page that gains it (or loses another) fails here and
+    // the recorded limitation must be revisited.
+    for state in ALL_COMPONENT_STATES {
+        let name = state.canonical_name().to_ascii_lowercase();
+        let derivable =
+            PAGE_ROW_STATES.contains(&name.as_str()) || PAGE_FADER_STATES.contains(&name.as_str());
+        assert_eq!(
+            derivable,
+            state != ComponentState::Selected,
+            "{name}: the page's derivable state set changed; revisit the recorded \
+             Selected limitation"
+        );
+    }
+
+    // Every state that declares a fixed word carries that word onto the page
+    // as painted text — the vocabulary's word, not one the page invents.
+    for state in ALL_COMPONENT_STATES {
+        if let NonColorSignal::Word(word) = state.appearance().signal {
+            assert!(
+                !word.trim().is_empty(),
+                "{} declares an empty word",
+                state.canonical_name()
+            );
+            assert!(
+                page_js.contains(&format!(">{word}<")),
+                "{}'s word {word:?} is painted nowhere in the render script",
+                state.canonical_name()
+            );
+        }
+    }
+
+    // The loading vocabulary is the structural-edit vocabulary, not a second
+    // one: the page paints the document's own lifecycle word, and the
+    // production preparing document carries exactly the declared word (in
+    // the projection's display case).
+    assert!(
+        page_js.contains("status.label"),
+        "the loading treatment must paint the document's own lifecycle word"
+    );
+    let preparing = preparing_patch_document();
+    let engine = preparing
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+        .and_then(|surface| surface.get("controls").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .find(|control| {
+            control
+                .pointer("/path/controlId/id")
+                .and_then(Value::as_str)
+                == Some("patch.engine")
+        })
+        .expect("the preparing document carries the engine row");
+    assert_eq!(
+        engine.pointer("/status/kind").and_then(Value::as_str),
+        Some("preparing")
+    );
+    assert_eq!(
+        engine.pointer("/status/label").and_then(Value::as_str),
+        Some(LOADING_PROGRESS_WORDS[0].to_ascii_uppercase().as_str()),
+        "the document's lifecycle word must be the declared loading vocabulary"
+    );
+
+    // Error and unknown rows say so in text: the typed failure label and the
+    // explicit ?state marker.
+    assert!(
+        page_js.contains("error.label"),
+        "the error treatment must paint the typed failure text"
+    );
+    assert!(
+        page_js.contains("\"?\" + String("),
+        "an unknown state or value kind must read as an explicit ? marker"
+    );
+
+    // Focus and adjustment carry the authored keyline-and-halo shape from
+    // the token vocabulary — and differ in shape, not only color: the focus
+    // treatments draw the halo, the adjusting treatment draws none.
+    let rule_block = |selector: &str| -> String {
+        let start = page_css
+            .find(selector)
+            .unwrap_or_else(|| panic!("page.css declares {selector}"));
+        let body = &page_css[start..];
+        let end = body.find('}').expect("the rule block closes");
+        body[..end].to_owned()
+    };
+    for focus_selector in [".column.focused", ".prow[data-state=\"focused\"]"] {
+        let block = rule_block(focus_selector);
+        for token in [
+            "var(--keyline-emphasis)",
+            "var(--color-accent-focus)",
+            "var(--focus-halo-radius)",
+            "var(--focus-halo-spread)",
+            "var(--focus-halo-opacity)",
+        ] {
+            assert!(
+                block.contains(token),
+                "{focus_selector} must resolve {token}"
+            );
+        }
+    }
+    let adjusting = rule_block(".prow[data-state=\"adjusting\"]");
+    assert!(adjusting.contains("var(--keyline-emphasis)"));
+    assert!(adjusting.contains("var(--color-accent-adjust)"));
+    assert!(
+        !adjusting.contains("box-shadow"),
+        "adjustment is distinguished from focus by shape: no halo"
+    );
+
+    // The muted, soloed, disabled, and error fader treatments resolve from
+    // the token vocabulary.
+    for (selector, token) in [
+        (
+            ".level-fader[data-state=\"muted\"]",
+            "var(--color-accent-warning)",
+        ),
+        (
+            ".level-fader[data-state=\"soloed\"]",
+            "var(--color-accent-positive)",
+        ),
+        (
+            ".level-fader[data-state=\"disabled\"]",
+            "var(--color-border-strong)",
+        ),
+        (
+            ".level-fader[data-state=\"error\"]",
+            "var(--color-accent-warning)",
+        ),
+    ] {
+        let block = rule_block(selector);
+        assert!(block.contains(token), "{selector} must resolve {token}");
+    }
+
+    // Resting stays the baseline: the stylesheet declares no resting
+    // override, and the vocabulary still declares it the shape baseline.
+    assert!(
+        !page_css.contains("[data-state=\"resting\"]"),
+        "resting is the baseline the other states read against"
+    );
+    assert_eq!(
+        ComponentState::Resting.appearance().signal,
+        NonColorSignal::Shape,
+        "Resting is no longer the declared baseline"
+    );
+
+    // Focus is also carried as text beyond any treatment: the header
+    // annotation, the section annotation, and the footer breadcrumb.
+    for needle in [
+        "data-role=\"focus-annotation\"",
+        "data-role=\"section-annotation\"",
+        "data-role=\"breadcrumb\"",
+    ] {
+        assert!(
+            page_js.contains(needle),
+            "the page must carry focus as text ({needle})"
+        );
+    }
+}
+
+/// Every gallery page is reachable — by its digit binding where one exists,
+/// and by stepping in every case.
 fn check_every_gallery_page_is_reachable() {
     assert_eq!(ALL_GALLERY_PAGES.len(), GALLERY_PAGE_COUNT);
     assert_eq!(GALLERY_PAGE_COUNT, 15);
@@ -1965,8 +1524,8 @@ fn check_every_gallery_page_is_reachable() {
     );
     assert_eq!(names.len(), GALLERY_PAGE_COUNT);
 
-    // The digit labels are exactly 1..=9 then 0, so the on-screen index and the
-    // binding cannot disagree.
+    // The digit labels are exactly 1..=9 then 0, so the on-screen index and
+    // the binding cannot disagree.
     let mut expected: Vec<String> = (1..=9).map(|digit| digit.to_string()).collect();
     expected.push("0".to_owned());
     expected.sort();
@@ -1990,10 +1549,8 @@ fn check_every_gallery_page_is_reachable() {
     );
 
     // The rule itself, stated as a disjunction with a denominator on each
-    // route. A shape scan cannot tell a page that was culled from a page that
-    // was never declared, so what is counted is what each route *supplied*: ten
-    // pages carry a binding, fifteen are stepped to, and their union is exactly
-    // the declared set.
+    // route: ten pages carry a binding, fifteen are stepped to, and their
+    // union is exactly the declared set.
     let by_digit: BTreeSet<&str> = ALL_GALLERY_PAGES
         .into_iter()
         .filter(|page| page.digit().is_some())
@@ -2023,8 +1580,8 @@ fn check_every_gallery_page_is_reachable() {
     );
 
     // No key outside the declared bindings reaches a page: an unbound key
-    // normalizes to `Other`, a mapped semantic key binds nothing here, and the
-    // two step keys move rather than select.
+    // normalizes to `Other`, a mapped semantic key binds nothing here, and
+    // the two step keys move rather than select.
     for key in [
         crest_synth::shell::window_input::WindowKey::Other,
         crest_synth::shell::window_input::WindowKey::Q,
@@ -2041,10 +1598,11 @@ fn check_every_gallery_page_is_reachable() {
 }
 
 // ===========================================================================
-// T038 — the typed typeface failure
+// T038 — the typed typeface failure and the served faces
 // ===========================================================================
 
-/// An unavailable face is a typed error naming the face, never a substitution.
+/// An unavailable face is a typed error naming the face, never a
+/// substitution.
 fn check_missing_typeface_is_a_typed_failure() {
     let missing = repository_root().join("vendor/no-such-typeface-for-component-vocabulary");
     assert!(
@@ -2107,60 +1665,53 @@ fn check_missing_typeface_is_a_typed_failure() {
     std::fs::remove_dir_all(&empty).ok();
 }
 
-/// The success path: all four weights register and all eight styles resolve to
-/// a registered authored family.
-fn check_the_authored_typeface_registers_completely() {
+/// The success path, on the webview surface: all four authored weights load
+/// from the vendored directory, and the page declares exactly those four
+/// faces — authored family, authored numeric weights, vendored files, no
+/// fallback stack anywhere.
+fn check_the_authored_typeface_serves_completely() {
     let typeface = AuthoredTypeface::load().expect("the vendored faces are present");
     assert_eq!(typeface.registered_weights(), ALL_WEIGHTS.to_vec());
 
-    let definitions = typeface.font_definitions();
-    for weight in ALL_WEIGHTS {
-        let name = family_name(weight);
-        assert!(
-            definitions.font_data.contains_key(&name),
-            "{name} carries no face data"
-        );
-        assert!(
-            definitions
-                .families
-                .contains_key(&egui::FontFamily::Name(name.clone().into())),
-            "{name} has no family entry"
-        );
-    }
-    for (style, name, ..) in AUTHORED_TYPE_STYLES {
-        assert!(
-            definitions.families.contains_key(&family_for(style)),
-            "{name} resolves to an unregistered family"
-        );
-    }
-
-    // The stack's defaults resolve to the authored face, so no run can fall
-    // through to a system font without anyone noticing.
-    let regular = family_name(ALL_WEIGHTS[0]);
+    let page_css = page_source("page.css");
     assert_eq!(
-        definitions.families.get(&egui::FontFamily::Proportional),
-        Some(&vec![regular.clone()])
+        page_css.matches("@font-face").count(),
+        ALL_WEIGHTS.len(),
+        "the page declares one face per authored weight"
     );
-    assert_eq!(
-        definitions.families.get(&egui::FontFamily::Monospace),
-        Some(&vec![regular])
+    assert!(
+        !page_css.contains(&format!("\"{AUTHORED_FAMILY}\",")),
+        "the authored family must carry no fallback stack"
     );
-
-    // And it takes in a real context: the production installer is what the
-    // binary calls, and after it the authored families are the registered ones.
-    // The font store only exists once a pass has run, so one is run first.
-    let context = egui::Context::default();
-    install_authored_typeface(&context).expect("the authored typeface installs");
-    context.begin_pass(raw_input([1_920.0, 1_080.0], Vec::new()));
-    let _ = context.end_pass();
-    let families = context.fonts(|fonts| fonts.families());
     for weight in ALL_WEIGHTS {
         assert!(
-            families.contains(&egui::FontFamily::Name(family_name(weight).into())),
-            "{} is absent from the installed context",
-            family_name(weight)
+            page_css.contains(&format!("font-weight: {};", weight.numeric())),
+            "the authored numeric weight {} is not declared on the page",
+            weight.numeric()
         );
+        let face = family_name(weight)
+            .strip_prefix(AUTHORED_FAMILY)
+            .expect("the family name carries the authored prefix")
+            .trim()
+            .to_owned();
+        let file = format!("AzeretMono-{face}.ttf");
+        assert!(
+            page_css.contains(&format!("url(\"fonts/{file}\")")),
+            "the {face} face is not loaded from the served fonts"
+        );
+        let vendored = repository_root().join("vendor/azeret-mono").join(&file);
+        let bytes = std::fs::read(&vendored)
+            .unwrap_or_else(|error| panic!("{} must exist: {error}", vendored.display()));
+        assert!(!bytes.is_empty(), "{file} must carry face bytes");
     }
+    // The page binds text to the authored family, verbatim, exactly once per
+    // face plus the body binding.
+    assert_eq!(
+        page_css
+            .matches(&format!("font-family: \"{AUTHORED_FAMILY}\";"))
+            .count(),
+        ALL_WEIGHTS.len() + 1
+    );
 }
 
 // ===========================================================================
@@ -2173,12 +1724,18 @@ fn every_declared_value_equals_its_authored_counterpart() {
 }
 
 #[test]
-fn the_production_render_path_paints_only_authored_values() {
-    let frames = paint_production_frames(false);
-    check_painted_colors_are_authored(&frames);
-    check_painted_type_is_authored(&frames);
-    check_painted_keylines_are_authored(&frames);
-    check_painted_halo_is_authored(&frames);
+fn the_generated_token_table_carries_every_authored_value() {
+    check_generated_tokens_carry_every_authored_value();
+}
+
+#[test]
+fn the_density_policy_geometry_reaches_the_page() {
+    check_density_policy_geometry_reaches_the_page();
+}
+
+#[test]
+fn the_page_sources_spell_no_visual_value() {
+    check_page_sources_spell_no_visual_value();
 }
 
 #[test]
@@ -2195,8 +1752,14 @@ fn the_literal_guard_reads_the_delivered_tree() {
     assert!(
         sources
             .iter()
-            .any(|path| path == "src/adapter/eframe_graphical_window.rs"),
-        "the guard did not scan the production graphical adapter"
+            .any(|path| path == "src/shell/webview/window.rs"),
+        "the guard did not scan the webview window adapter"
+    );
+    assert!(
+        sources
+            .iter()
+            .any(|path| path == "src/shell/webview/token_export.rs"),
+        "the guard did not scan the token generator"
     );
     assert!(
         sources
@@ -2224,9 +1787,12 @@ fn the_literal_guard_reports_a_planted_literal() {
     // A guard that has never failed is indistinguishable from no guard. Each
     // family is planted, and each must be reported with file, line, and kind.
     let planted = concat!(
-        "use eframe::egui::Color32;\n",
+        "use ",
+        "efr",
+        "ame::eg",
+        "ui::Color32;\n",
         "pub const ACCENT: Color32 = Color32::from_rgb(0x65, 0xe5, 0xff);\n",
-        "pub fn paint(ui: &mut egui::Ui) {\n",
+        "pub fn paint(ui: &mut Ui) {\n",
         "    ui.add_space(12.0);\n",
         "    let id = FontId::new(14.0, FontFamily::Proportional);\n",
         "    let hex = Color32::from_hex(\"#0c1015\");\n",
@@ -2261,16 +1827,17 @@ fn the_literal_guard_reports_a_planted_literal() {
     );
 
     // The retired palette is caught too: reintroducing the pre-mission focus
-    // green is exactly the regression this guard exists to stop.
+    // green is exactly the regression this guard exists to stop — including
+    // in the webview shell sources the scan now covers.
     let regression = "let focus = Color32::from_rgb(110, 205, 174);\n";
-    let caught = scan_source("src/adapter/regression.rs", regression);
+    let caught = scan_source("src/shell/webview/regression.rs", regression);
     assert!(
         caught.iter().any(|violation| violation.kind == "color"),
         "the guard accepted a raw-channel color: {caught:?}"
     );
     let retired_hex = "// nothing here\nconst OLD: &str = \"#6ecdae\";\n";
     assert!(
-        scan_source("src/adapter/retired.rs", retired_hex)
+        scan_source("src/shell/webview/retired.rs", retired_hex)
             .iter()
             .any(|violation| violation.kind == "palette"),
         "the guard accepted the retired focus green spelled as hex"
@@ -2280,14 +1847,14 @@ fn the_literal_guard_reports_a_planted_literal() {
 #[test]
 fn the_literal_guard_allows_what_the_vocabulary_permits() {
     // Named constants, the transparent sentinel, resolved tokens, zero, and
-    // narration in comments are not literals. A guard that flagged these would
-    // be turned off within a week, which is the other way a guard stops
-    // guarding.
+    // narration in comments are not literals. A guard that flagged these
+    // would be turned off within a week, which is the other way a guard
+    // stops guarding.
     let permitted = concat!(
         "//! The retired #6ecdae green and Color32::from_rgb(0x65, 0xe5, 0xff) are\n",
         "//! narrated here as history, which is not a value the shell paints.\n",
-        "use crate::shell::visual::{SemanticColor, SpacingStep, MIN_INTERACTIVE_TARGET_PX};\n",
-        "pub fn paint(ui: &mut egui::Ui) {\n",
+        "use crate::shell::tokens::{SemanticColor, SpacingStep, MIN_INTERACTIVE_TARGET_PX};\n",
+        "pub fn paint(ui: &mut Ui) {\n",
         "    ui.add_space(SpacingStep::S12.resolve());\n",
         "    let clear = Color32::TRANSPARENT;\n",
         "    let halo = Color32::from_rgba_unmultiplied(o.r(), o.g(), o.b(), alpha());\n",
@@ -2311,23 +1878,9 @@ fn the_literal_guard_allows_what_the_vocabulary_permits() {
 }
 
 #[test]
-fn both_authored_viewports_render_intact() {
-    let frames = paint_production_frames(false);
-    check_viewport_integrity(&frames);
-    check_no_text_clips_or_overlaps(&frames);
-}
-
-#[test]
-fn no_interactive_target_is_below_the_authored_minimum() {
-    let frames = paint_production_frames(false);
-    let overlay = paint_production_frames(true);
-    check_no_target_is_below_the_authored_minimum(&frames, &overlay);
-}
-
-#[test]
 fn the_state_vocabulary_is_closed_exhaustive_and_legible_without_color() {
     check_state_set_is_closed_and_exhaustive();
-    check_every_state_is_legible_without_color();
+    check_every_page_state_is_legible_without_color();
 }
 
 #[test]
@@ -2338,25 +1891,23 @@ fn every_gallery_page_is_reachable_by_digit_or_by_stepping() {
 #[test]
 fn an_unavailable_typeface_is_a_typed_visible_failure() {
     check_missing_typeface_is_a_typed_failure();
-    check_the_authored_typeface_registers_completely();
+    check_the_authored_typeface_serves_completely();
 }
 
 /// The declared acceptance target.
 ///
 /// Every check above runs here, in order, and the marker
-/// `validation.component_vocabulary` asserts on is printed strictly after the
-/// last of them returns. A failing check panics before the print, so the marker
-/// cannot appear on a red run. The checks are also exposed individually so a
-/// failure names which claim broke rather than only that something did.
+/// `validation.component_vocabulary` asserts on is printed strictly after
+/// the last of them returns. A failing check panics before the print, so the
+/// marker cannot appear on a red run. The checks are also exposed
+/// individually so a failure names which claim broke rather than only that
+/// something did.
 #[test]
 fn component_vocabulary_acceptance() {
     check_declared_values_match_the_authored_table();
-
-    let frames = paint_production_frames(false);
-    check_painted_colors_are_authored(&frames);
-    check_painted_type_is_authored(&frames);
-    check_painted_keylines_are_authored(&frames);
-    check_painted_halo_is_authored(&frames);
+    check_generated_tokens_carry_every_authored_value();
+    check_density_policy_geometry_reaches_the_page();
+    check_page_sources_spell_no_visual_value();
 
     let (sources, lines, violations) = scan_delivered_tree();
     assert!(
@@ -2373,22 +1924,21 @@ fn component_vocabulary_acceptance() {
             .join("\n")
     );
 
-    check_viewport_integrity(&frames);
-    let scrolled = check_no_text_clips_or_overlaps(&frames);
-    let overlay = paint_production_frames(true);
-    check_no_target_is_below_the_authored_minimum(&frames, &overlay);
-
     check_state_set_is_closed_and_exhaustive();
-    check_every_state_is_legible_without_color();
+    check_every_page_state_is_legible_without_color();
     check_every_gallery_page_is_reachable();
 
     check_missing_typeface_is_a_typed_failure();
-    check_the_authored_typeface_registers_completely();
+    check_the_authored_typeface_serves_completely();
 
+    let token_declarations = token_export::tokens_css()
+        .lines()
+        .filter(|line| line.trim_start().starts_with("--"))
+        .count();
     println!(
         "CREST_COMPONENT_VOCABULARY_OBSERVATION colors={} type_styles={} spacing_steps={} \
-         radii={} states={} pages={} density_policies={} frames={} glyph_runs={} \
-         runs_scrolled_out_of_view={} sources_scanned={} lines_scanned={}",
+         radii={} states={} pages={} density_policies={} token_declarations={} \
+         sources_scanned={} lines_scanned={}",
         ALL_COLORS.len(),
         ALL_TYPE_STYLES.len(),
         ALL_SPACING_STEPS.len(),
@@ -2396,9 +1946,7 @@ fn component_vocabulary_acceptance() {
         COMPONENT_STATE_COUNT,
         GALLERY_PAGE_COUNT,
         ALL_DENSITY_POLICIES.len(),
-        frames.len(),
-        frames.iter().map(|frame| frame.runs.len()).sum::<usize>(),
-        scrolled,
+        token_declarations,
         sources.len(),
         lines,
     );

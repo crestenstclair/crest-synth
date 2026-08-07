@@ -63,6 +63,31 @@ pub const EFFECTS_AND_BUSES_TOTAL_TIMEOUT: Duration = Duration::from_secs(240);
 /// deliberately absent from every registry.
 pub const ABSENT_ENTRY_ID: &str = "effect.absent";
 
+/// The frozen pre-journey topology checkpoint-identity baseline (spec C-001,
+/// reasserted across the webview shell cutover by C-004): the exact ordered
+/// identity sequence the phase gate froze before the journey rework. The
+/// declared transition sequence must preserve these byte-identically and in
+/// this order; every other declared identity is a pure insertion.
+pub const FROZEN_TOPOLOGY_IDENTITY_BASELINE: [&str; 17] = [
+    "Slot.startupOccupantCleared",
+    "SlotFill.first",
+    "SlotFill.second",
+    "SlotFill.third",
+    "SlotOrder.exchangeFirst",
+    "SlotOrder.exchangeSecond",
+    "SlotTwin.sameEntry",
+    "Send.towardDestinations",
+    "Return.contentChanged",
+    "Return.emptyOccupied",
+    "Topology.refused",
+    "Topology.recoveredAfterRefusal",
+    "Reroute.chainFollows",
+    "Slot.startupOccupantRestored",
+    "Slot.secondCleared",
+    "Slot.thirdCleared",
+    "Return.emptyRestored",
+];
+
 /// One support item executed before or after a topology transition: either a
 /// semantic event that must be accepted, or a projection verification that
 /// must match exactly. Support items are pacing and audibility setup — the
@@ -949,6 +974,20 @@ pub fn from_installed_state(tree: &StateTree) -> Result<LiveDemoScene, LiveDemoS
             LiveTopologyAudibleWitness::DryContinuity,
         ),
     ];
+    // C-004 (mission webview-shell-cutover): the frozen pre-journey topology
+    // checkpoint-identity baseline survives the shell cutover byte-identically
+    // and in order; every other identity declared above (the journey-era
+    // Cycle insertions and any later webview-era addition) must be a pure
+    // insertion around its members. Asserted at declaration time so every
+    // deterministic twin and live run fails at scene construction — before
+    // rig time is spent — if the frozen identity set regresses.
+    assert!(
+        crate::testing::live_demo_scene::frozen_identity_baseline_is_preserved(
+            transitions.iter().map(LiveTopologyTransition::identifier),
+            &FROZEN_TOPOLOGY_IDENTITY_BASELINE,
+        ),
+        "the frozen topology checkpoint-identity baseline must be preserved byte-identically and in order",
+    );
 
     Ok(base.with_topology_extension(
         EFFECTS_AND_BUSES_SCENE_NAME,

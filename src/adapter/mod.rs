@@ -9,7 +9,6 @@ pub mod corridors_midi_event_source;
 pub mod cpal_audio_output;
 pub mod delay_capability;
 pub mod delay_preparer;
-pub mod eframe_graphical_window;
 pub mod hidef_soundfont_asset;
 pub mod hidef_soundfont_capability;
 pub mod hidef_soundfont_preparer;

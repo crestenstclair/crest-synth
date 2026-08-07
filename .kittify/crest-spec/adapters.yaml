@@ -70,88 +70,6 @@ adapters:
       soundfont_audio: provides the bank/program/percussion identity used to configure every Patch
       soundfont_preset_selection: provides normalized numeric source identities for exact catalog resolution
         without supplying display names
-  EframeGraphicalWindow:
-    implements: AppWindow
-    layer: infrastructure
-    profile:
-      kind: ui
-      surfaces:
-      - keyboard
-      - context_line
-      - identity_header
-      - main_workspace
-      - utility_or_inspector
-      - footer
-    meta:
-      framework: eframe/egui + egui_extras
-      rules:
-      - render GraphicalShellProjection and its embedded SemanticGraphicalViewModel as one structural
-        composition containing the context/status line, identity header, central context workspace, persistent
-        Utility or Inspector side region, and footer; PATCH and MIXER remain reducer-owned projections
-        and no region is an adapter-owned tab or context
-      - when MIXER is visible, render T00 through T0F from the canonical semantic model and pair each
-        track only with the same MixerTrackId entry from the latest fixed AudioObservationSnapshot; a
-        missing or stale observation renders a zero/stale meter state and never changes canonical values
-        or focus
-      - at 1920x1080 use the authored 48 px context line, 72 px identity header, 64 px footer, and approximately
-        1500:420 workspace split; at 1280x800 retain every band and side region with controlled vertical
-        density, at least 320 px for Utility/Inspector, bounded proportional widths, and no overlap or
-        hidden required label
-      - use egui panels and matching-version egui_extras layout utilities; image/SVG loaders are available
-        for later graphical assets, but this phase adds no waveform, Sample capability, browser, component
-        library, or alternate GUI runtime
-      - render the semantic surfaces, focused path, Navigate/Adjust state, status, typed errors, and valid-action
-        footer from the embedded model; retain TextProjection only as read-only diagnostic content and
-        never use it to infer focus or actions
-      - use only a small private Phase 1 shell palette and type setup sufficient to distinguish structural
-        bands; do not define the reusable Crest token/component API reserved for Phase 4
-      - normalize egui key presses, releases, and focus loss into WindowInput and delegate every 1/2/W/S/A/D/K
-        decision to KeyboardInputTranslator
-      - do not retain a second private keyboard state machine or duplicate the translator in tests
-      - key handling emits SemanticActions only and never mutates view focus, mode, return path, Patch
-        values, AppState, snapshots, event logs, or audio
-      - the focused SemanticControlViewModel receives the only focus/adjust treatment, side SurfaceRoot
-        receives surface focus, and labels/hints come from GraphicalShellProjection; let the reducer alone
-        interpret every semantic action
-      - the headless adapter contract drives real egui RawInput through an egui Context and EframeGraphicalApplication.update
-        with the production on_input callback wired to AppLoop.dispatchAction, then runs the next frame
-        from AppLoop.currentGraphicalShell; capturing a callback without applying it is not acceptance
-        evidence
-      - the next frame must prove the event-log record, accepted generation, FocusPath, mode, return path,
-        valid actions, shell context/status/identity/footer, selected diagnostic value, every unrelated
-        value, SemanticGraphicalViewModel, GraphicalShellProjection and TextProjection hashes, and selected-line
-        scroll target all reflect that same dispatched GUI action
-      - the graphical shell acceptance renders 1920x1080 and 1280x800 frames and inspects production-recorded
-        region rectangles plus egui output for exact visible labels, containment, ordering, non-overlap,
-        and persistent side-region identity; calling only a layout helper or rendering an unrelated supplied
-        projection is insufficient
-      - in every live mode including --demo-live-sixteen-track-mixer-routing, invoke the injected tick
-        without blocking, then render only the newest AppLoop.currentGraphicalShell projection plus injected
-        fixed AudioObservationSnapshot; the adapter never receives LiveDemoScene, LiveDemoReport, mutable
-        AppState, mixer buffers, or a device owner
-      - schedule the next idle repaint after 16 ms instead of requesting an immediate perpetual repaint;
-        native input and window events may wake the event loop sooner
-      - when the injected tick returns false after a completed live report, send a viewport-close command
-        immediately and do not request another projection or repaint
-      - also send a viewport-close command when the injected tick returns false for an already-retained
-        fatal runtime failure
-    contributesTo:
-      graphical_application_shell: implements the authored structural shell and responsive desktop/Steam
-        Deck composition
-      one_way_parameter_control: implements the passive graphical screen and exact keyboard vocabulary
-      sixteen_track_mixer_routing: paints fixed track controls and meter observations without UI-owned
-        values
-      schema_driven_patch_page: renders PATCH and MIXER projections without owning their page state or
-        schema
-      soundfont_preset_selection: renders exact authored preset labels and generic structural lifecycle
-        state without owning catalog or selection behavior
-      static_patch_effect: renders the read-only Chorus identity and generic editable Amount/Depth rows
-        without owning effect state or schema
-      observable_demo_scene: shares its production input translator with the deterministic scene
-      live_observable_demo: renders each accepted live generation and closes on the owner's completed-report
-        tick
-      semantic_graphical_view_model: renders the canonical multi-layout model and emits only its semantic
-        actions
   TauriWebviewWindow:
     implements: AppWindow
     layer: infrastructure
@@ -167,34 +85,61 @@ adapters:
     meta:
       framework: tauri v2 (wry system webview)
       rules:
-      - is an explicitly selected peer of EframeGraphicalWindow behind the same AppWindow contract; egui
-        remains the default shell and selecting the webview shell is a launch-time decision, never a
-        fallback
+      - is the sole production shell behind the AppWindow contract; no alternate renderer exists, and
+        webview or page initialization failure is a typed startup error that ends the process — never
+        a blank window, silent retry, or fallback
+      - render every shipped surface of both top-level contexts — PATCH and MIXER workspaces, context/status
+        line, identity header, persistent Utility or Inspector side region, footer, and hint rows; all
+        remain reducer-owned projections and no region is an adapter-owned tab or context
       - push each accepted GraphicalShellProjection to the page as the serde serialization of its embedded
         SemanticGraphicalViewModel — one schema, no webview-specific variant — and push decimated latest-value
         AudioObservationSnapshot meter frames separately; neither channel carries mutable state, and
         lost meter frames degrade display only
+      - when MIXER is visible, pair each of T00 through T0F only with the same MixerTrackId entry from
+        the latest fixed AudioObservationSnapshot; a missing or stale observation renders a zero/stale
+        meter state and never changes canonical values or focus
       - the page is a projection surface — it renders the received document deterministically, holds
         no state between documents beyond presentation-only animation, captures no input, and invents
-        no field
-      - normalize physical key presses, releases, and focus loss on the Rust side through the same KeyboardInputTranslator
-        path the eframe window uses; the webview DOM receives no input responsibility
+        no field; a page render exception is surfaced as a typed error, never a frozen window
+      - normalize physical key presses, releases, and focus loss on the Rust side through the production
+        KeyboardInputTranslator path; the webview DOM receives no input responsibility and the adapter
+        retains no second private keyboard state machine
       - resolve every color, type style, spacing step, and geometry value in the page from a token table
         generated from the authored Rust vocabulary; a hand-copied or drifted value is a defect, and
         the generation is part of the build, not a manual step
-      - webview or page initialization failure is a typed startup error that ends the process; render
-        this mission's MIXER context only, with PATCH and modals arriving in a successor mission
-      - window close drives the same owned shutdown as the egui shell — stream release, worker completion,
-        graph ownership collection, normal exit — and adds no work to the real-time callback
+      - after painting a supplied projection the page acknowledges it, and the adapter forwards that
+        painted acknowledgment as a ShellFrameObservation copying the projection's semantic identity
+        exactly; live reports credit only qualifying forwarded frames
+      - honor the authored responsive composition at both reference viewports; every structural band
+        and the persistent side region remain visible and non-overlapping at 1920x1080 and 1280x800
+        with the authored band extents and bounded proportional workspace split
+      - in every live mode invoke the injected tick without blocking, then render only the newest
+        AppLoop.currentGraphicalShell projection plus injected fixed AudioObservationSnapshot; the
+        adapter never receives LiveDemoScene, LiveDemoReport, mutable AppState, mixer buffers, or a
+        device owner
+      - when the injected tick returns false after a completed live report or an already-retained fatal
+        runtime failure, close the window and do not push another document
+      - window close drives the owned shutdown — stream release, worker completion, graph ownership
+        collection, normal exit — and adds no work to the real-time callback; a close failure is retried
+        or surfaced, never ignored
     contributesTo:
-      graphical_application_shell: renders the authored MIXER composition through a webview projection
-        surface while the shell's structural bands and passivity are unchanged
+      graphical_application_shell: renders the authored structural shell and responsive composition
+        through the sole webview projection surface
       semantic_graphical_view_model: consumes the one serialized canonical model and introduces no second
         schema of it
       sixteen_track_mixer_routing: animates the sixteen fixed meters from decimated latest-value observations
         without feeding them back into domain state
       one_way_parameter_control: keeps the disposable webview outside application state with input normalized
         on the Rust side
+      schema_driven_patch_page: renders PATCH and MIXER projections without owning their page state or
+        schema
+      soundfont_preset_selection: renders exact authored preset labels and generic structural lifecycle
+        state without owning catalog or selection behavior
+      static_patch_effect: renders effect identities and generic editable rows without owning effect
+        state or schema
+      observable_demo_scene: shares its production input translator with the deterministic scene
+      live_observable_demo: renders each accepted live generation, forwards painted-frame observations,
+        and closes on the owner's completed-report tick
   CpalAudioOutput:
     implements: AudioOutput
     layer: infrastructure

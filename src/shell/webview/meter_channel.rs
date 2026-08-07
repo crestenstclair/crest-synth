@@ -2,7 +2,7 @@
 //! [`AudioObservationSnapshot`] frames to the page.
 //!
 //! The window's event loop feeds the channel the latest snapshot each tick —
-//! read through the same `AudioObservationCallback` accessor the eframe
+//! read through the same `AudioObservationCallback` accessor the retired native
 //! window paints its meters from — and the channel emits at most one frame
 //! per [`METER_INTERVAL`] on the [`METER_EVENT`] named event. This realizes
 //! DESIGN.md's meter transport semantics ("latest-value snapshots,
@@ -31,10 +31,10 @@
 //!
 //! The channel runs on the window's event thread and reads the control side's
 //! copy of the last completed render block's evidence — the same
-//! atomically-published snapshot the eframe window reads every frame. It
+//! atomically-published snapshot the retired native window read every frame. It
 //! installs nothing into the audio callback, allocates nothing inside it,
 //! and shares no lock the callback could contend on; the render path's
-//! measured bounds are unchanged from the egui-shell baseline (crest-spec
+//! measured bounds are unchanged from the pre-cutover shell baseline (crest-spec
 //! `requirement.serialized_projection_transport`; measured in WP06).
 
 use crate::real_time::AudioObservationSnapshot;

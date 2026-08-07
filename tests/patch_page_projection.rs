@@ -1,7 +1,4 @@
 use crest_synth::adapter::braids_capability::BraidsCapability;
-use crest_synth::adapter::eframe_graphical_window::{
-    install_authored_typeface, EframeGraphicalApplication,
-};
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::adapter::production_instruments::{
@@ -33,6 +30,8 @@ use crest_synth::real_time::structural_graph_boundary::{
 };
 use crest_synth::real_time::{GraphHandoffStatus, GraphRevision};
 use crest_synth::shell::app_window::{AppInputCallback, ProjectionCallback, TickCallback};
+use crest_synth::shell::window_input::{WindowInput, WindowKey};
+use crest_synth::shell::KeyboardInputTranslator;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
     CapabilityId, InstrumentConfig, InstrumentPreparationError, InstrumentPreparer,
@@ -40,8 +39,6 @@ use crest_synth::synth::{
     VoiceEnvelope, VoiceEnvelopeParameter,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
-use eframe::egui;
-use eframe::App;
 use serde_json::Value;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
@@ -201,48 +198,36 @@ fn installed_state(patches: Vec<Patch>) -> AppState {
     state
 }
 
-fn key_event(key: egui::Key) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::default(),
-    }
+fn key_event(key: WindowKey) -> WindowInput {
+    WindowInput::key_down(key)
 }
 
-fn key_release(key: egui::Key) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: false,
-        repeat: false,
-        modifiers: egui::Modifiers::default(),
-    }
+fn key_release(key: WindowKey) -> WindowInput {
+    WindowInput::key_up(key)
 }
 
-fn raw_input(events: Vec<egui::Event>, time_seconds: f64) -> egui::RawInput {
-    egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(1_400.0, 400.0),
-        )),
-        time: Some(time_seconds),
-        events,
-        ..Default::default()
-    }
+/// The window's key pipeline, composed exactly as `TauriWebviewWindow::run`
+/// wires it: normalized [`WindowInput`] through the shared production
+/// [`KeyboardInputTranslator`] into the adapter's input callback, then the
+/// tick and its immutable projection fetch — no adapter-owned state in
+/// between.
+struct KeyPipeline {
+    translator: KeyboardInputTranslator,
+    on_input: AppInputCallback,
+    projection: ProjectionCallback,
+    on_tick: TickCallback,
 }
 
-fn run_frame(
-    application: &mut EframeGraphicalApplication,
-    context: &egui::Context,
-    frame: &mut eframe::Frame,
-    events: Vec<egui::Event>,
-    time_seconds: f64,
-) {
-    context.begin_pass(raw_input(events, time_seconds));
-    application.update(context, frame);
-    let _ = context.end_pass();
+impl KeyPipeline {
+    fn run_frame(&mut self, inputs: Vec<WindowInput>) {
+        for input in inputs {
+            if let Some(action) = self.translator.translate(input) {
+                (self.on_input)(action);
+            }
+        }
+        assert!((self.on_tick)(std::time::Duration::from_millis(16)));
+        let _ = (self.projection)();
+    }
 }
 
 fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
@@ -594,20 +579,14 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     let projection: ProjectionCallback =
         Box::new(move || projection_loop.borrow().current_graphical_shell());
     let on_tick: TickCallback = Box::new(|_| true);
-    let mut application =
-        EframeGraphicalApplication::new(on_input, projection, on_tick, Box::new(|_| {}));
-    let context = egui::Context::default();
-    install_authored_typeface(&context)
-        .expect("the authored typeface installs into the test context");
-    let mut frame = eframe::Frame::_new_kittest();
+    let mut pipeline = KeyPipeline {
+        translator: KeyboardInputTranslator::new(),
+        on_input,
+        projection,
+        on_tick,
+    };
 
-    run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        vec![key_event(egui::Key::Num2)],
-        0.0,
-    );
+    pipeline.run_frame(vec![key_event(WindowKey::Digit2)]);
 
     let (after_parameters, patch_tree, patch_page, patch_text, patch_generation) = {
         let app_loop = shared.borrow();
@@ -693,15 +672,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         );
     }
 
-    let mut frame_time = 0.25;
-    run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        vec![key_event(egui::Key::W), key_release(egui::Key::W)],
-        frame_time,
-    );
-    frame_time += 0.25;
+    pipeline.run_frame(vec![key_event(WindowKey::W), key_release(WindowKey::W)]);
 
     let baseline_envelope = *patches[0].envelope();
     let mut focus_parameters = None;
@@ -714,14 +685,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     .into_iter()
     .enumerate()
     {
-        run_frame(
-            &mut application,
-            &context,
-            &mut frame,
-            vec![key_event(egui::Key::S), key_release(egui::Key::S)],
-            frame_time,
-        );
-        frame_time += 0.25;
+        pipeline.run_frame(vec![key_event(WindowKey::S), key_release(WindowKey::S)]);
 
         {
             let app_loop = shared.borrow();
@@ -766,8 +730,8 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         }
 
         let boundary_key = match parameter {
-            VoiceEnvelopeParameter::AttackMilliseconds => Some(egui::Key::A),
-            VoiceEnvelopeParameter::Sustain => Some(egui::Key::D),
+            VoiceEnvelopeParameter::AttackMilliseconds => Some(WindowKey::A),
+            VoiceEnvelopeParameter::Sustain => Some(WindowKey::D),
             VoiceEnvelopeParameter::DecayMilliseconds
             | VoiceEnvelopeParameter::ReleaseMilliseconds => None,
         };
@@ -782,19 +746,12 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
                     tree["interaction"]["activeFocus"].clone(),
                 )
             };
-            run_frame(
-                &mut application,
-                &context,
-                &mut frame,
-                vec![
-                    key_event(egui::Key::K),
-                    key_event(key),
-                    key_release(key),
-                    key_release(egui::Key::K),
-                ],
-                frame_time,
-            );
-            frame_time += 0.25;
+            pipeline.run_frame(vec![
+                key_event(WindowKey::K),
+                key_event(key),
+                key_release(key),
+                key_release(WindowKey::K),
+            ]);
             let app_loop = shared.borrow();
             let after_tree: Value =
                 serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
@@ -811,33 +768,26 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         let baseline = baseline_envelope.value(parameter);
         let edits = if parameter == VoiceEnvelopeParameter::Sustain {
             [
-                (egui::Key::A, baseline - descriptor.fine_step()),
-                (egui::Key::D, baseline),
-                (egui::Key::S, baseline - descriptor.coarse_step()),
-                (egui::Key::W, baseline),
+                (WindowKey::A, baseline - descriptor.fine_step()),
+                (WindowKey::D, baseline),
+                (WindowKey::S, baseline - descriptor.coarse_step()),
+                (WindowKey::W, baseline),
             ]
         } else {
             [
-                (egui::Key::D, baseline + descriptor.fine_step()),
-                (egui::Key::A, baseline),
-                (egui::Key::W, baseline + descriptor.coarse_step()),
-                (egui::Key::S, baseline),
+                (WindowKey::D, baseline + descriptor.fine_step()),
+                (WindowKey::A, baseline),
+                (WindowKey::W, baseline + descriptor.coarse_step()),
+                (WindowKey::S, baseline),
             ]
         };
         for (key, expected) in edits {
-            run_frame(
-                &mut application,
-                &context,
-                &mut frame,
-                vec![
-                    key_event(egui::Key::K),
-                    key_event(key),
-                    key_release(key),
-                    key_release(egui::Key::K),
-                ],
-                frame_time,
-            );
-            frame_time += 0.25;
+            pipeline.run_frame(vec![
+                key_event(WindowKey::K),
+                key_event(key),
+                key_release(key),
+                key_release(WindowKey::K),
+            ]);
 
             let app_loop = shared.borrow();
             let page = app_loop.current_patch_page().unwrap();
@@ -877,40 +827,14 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     let focus_parameters = focus_parameters.unwrap();
     assert_eq!(*shared.borrow().patches()[0].envelope(), baseline_envelope);
 
-    run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        vec![key_event(egui::Key::S), key_release(egui::Key::S)],
-        frame_time,
-    );
-    frame_time += 0.25;
-    run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        vec![key_event(egui::Key::W), key_release(egui::Key::W)],
-        frame_time,
-    );
-    frame_time += 0.25;
-    run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        vec![key_event(egui::Key::S), key_release(egui::Key::S)],
-        frame_time,
-    );
-    frame_time += 0.25;
-    run_frame(
-        &mut application,
-        &context,
-        &mut frame,
+    pipeline.run_frame(vec![key_event(WindowKey::S), key_release(WindowKey::S)]);
+    pipeline.run_frame(vec![key_event(WindowKey::W), key_release(WindowKey::W)]);
+    pipeline.run_frame(vec![key_event(WindowKey::S), key_release(WindowKey::S)]);
+    pipeline.run_frame(
         (0..5)
-            .flat_map(|_| [key_event(egui::Key::W), key_release(egui::Key::W)])
+            .flat_map(|_| [key_event(WindowKey::W), key_release(WindowKey::W)])
             .collect(),
-        frame_time,
     );
-    frame_time += 0.25;
     assert_eq!(
         shared
             .borrow()
@@ -922,19 +846,12 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
 
     let generation_before_request = shared.borrow().current_state_tree().generation();
     let records_before_request = shared.borrow().event_log_ref().records().len();
-    run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        vec![
-            key_event(egui::Key::K),
-            key_event(egui::Key::D),
-            key_release(egui::Key::D),
-            key_release(egui::Key::K),
-        ],
-        frame_time,
-    );
-    frame_time += 0.25;
+    pipeline.run_frame(vec![
+        key_event(WindowKey::K),
+        key_event(WindowKey::D),
+        key_release(WindowKey::D),
+        key_release(WindowKey::K),
+    ]);
     assert_eq!(
         rejections.borrow().as_slice(),
         &[
@@ -977,13 +894,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         |published| published.audio_values_equal(shared.borrow().current_parameters())
     ));
 
-    run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        vec![key_event(egui::Key::Num1)],
-        frame_time,
-    );
+    pipeline.run_frame(vec![key_event(WindowKey::Digit1)]);
     {
         let app_loop = shared.borrow();
         let recovered: Value = serde_json::from_str(app_loop.current_state_tree().json()).unwrap();

@@ -1,0 +1,12 @@
+T012 forced first-render throw (shipped binary, CREST_WEBVIEW_PAGE variant)
+variant: /var/folders/n9/zvd4dwmn5_xc0snmzg_62ssc0000gn/T/crest-wp06-webview-acceptance/wp03-t012-forced-throw-index.html
+exit: Some(1) after 1.2s
+
+--- stdout ---
+
+--- stderr ---
+Error: standalone execution failed
+
+Caused by:
+    0: application window failed: webview page render failed: {"generation":20,"message":"null is not an object (evaluating 'doc.getElementById(\"workspace\").innerHTML =\n      model.context === \"patch\"\n        ? patchWorkspaceHtml(model)\n        : mixerWorkspaceHtml(model, columns)')","name":"TypeError","stateHash":"0d8b964ed5ffe65e"}
+    1: webview page render failed: {"generation":20,"message":"null is not an object (evaluating 'doc.getElementById(\"workspace\").innerHTML =\n      model.context === \"patch\"\n        ? patchWorkspaceHtml(model)\n        : mixerWorkspaceHtml(model, columns)')","name":"TypeError","stateHash":"0d8b964ed5ffe65e"}

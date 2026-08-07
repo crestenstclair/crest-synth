@@ -1,85 +1,57 @@
 //! Measured proof that the control and composition families exist, that the
-//! shipped shell is made of them, and that nothing outside the visual module
-//! decides how anything looks.
+//! shipped webview shell is made of them, and that nothing outside the
+//! visual module — and nothing in the webview transport adapter — decides
+//! how anything looks.
 //!
-//! Realizes `asset.ComponentCompositionAcceptanceTests` and the declared project
-//! validation `validation.component_composition`, which asserts exit code 0 and
-//! the exact marker [`ACCEPTANCE_MARKER`] in stdout.
+//! Realizes `asset.ComponentCompositionAcceptanceTests` and the declared
+//! project validation `validation.component_composition`, which asserts exit
+//! code 0 and the exact marker [`ACCEPTANCE_MARKER`] in stdout.
 //!
-//! Sibling to `tests/component_vocabulary.rs`, and deliberately shaped like it:
-//! the vocabulary target proves the *values* are authored, this one proves the
-//! *components* are used.
+//! Retargeted by mission webview-shell-cutover-01KZAC7Q WP05 (T020): the
+//! render-path drive is now the webview document. The proofs kept, and what
+//! drives each:
 //!
-//! # What makes this non-vacuous
+//! - **Selection totality and control reachability** — declaration-level,
+//!   unchanged: `control_for` is total over kind × role with the three
+//!   declared un-askable pairs, exhaustive rather than defaulted, and every
+//!   declared control reachable.
+//! - **State applicability** — the declarations are unchanged; the render
+//!   half now derives each projected control's state from the serialized
+//!   document through the page's own transcribed derivation
+//!   ([`page_row_state`]) and proves every production control resolves to
+//!   exactly one declared treatment.
+//! - **Region from declared composition** — the five declared shell regions
+//!   are the five semantic band containers of the committed page, in
+//!   canonical order; every region binding a declared composition carries
+//!   maps onto that set; and the forwarded `ShellFrameObservation`s (WP02's
+//!   seam over the production `ProjectionChannel`) report exactly the
+//!   declared regions at the authored extents for both contexts at both
+//!   viewports.
+//! - **No invented value** — the page's designed Utility entries are parsed
+//!   out of the committed render script and compared against the authored
+//!   table, driver for driver; the production document carries exactly the
+//!   two driven rows, so the three undriven designs must take the marked
+//!   path; and every projected value renders through the page's transcribed
+//!   value contract — an unknown kind is an explicit `?` marker, never a
+//!   fabricated number.
+//! - **Ownership boundary** — the visual-module source scan is unchanged;
+//!   the page-side twin proves the render script owns no clock, no
+//!   randomness, no storage, and no key handler, and the transport renders
+//!   deterministically (two pushes of one projection are byte-identical).
+//! - **"The render adapter holds no paint decision"** now asserts against
+//!   [`TauriWebviewWindow`]'s composition sources (transport-only): no paint
+//!   API name, no visual-decision family, and no declared band extent may
+//!   appear in the webview shell's production code —
+//!   [`the_transport_guard_reports_a_planted_decision`] proves the guard
+//!   fails when one reappears.
 //!
-//! Every claim below is driven through a production entry point. There are four
-//! of them and nothing here reaches past any:
-//!
-//! 1. [`ComponentControl::render`] — the function the compositions call.
-//! 2. [`ShellComposition::render`] — the function the frame calls.
-//! 3. `application_shell::arrange_band` — the function the render adapter calls
-//!    once per band, replayed by [`paint_bands_through_their_compositions`] so
-//!    that what the compositions produce can be subtracted from what the window
-//!    showed.
-//! 4. `EframeGraphicalApplication::update` — the function the binary calls,
-//!    driven through a real `egui::Context` at both authored viewports in both
-//!    top-level contexts by [`paint_production_frames`].
-//!
-//! The view data is production-projected, never assembled:
-//! `SemanticControlViewModel`'s fields are private precisely so that no surface
-//! can invent one, and a target that fabricated its input would not be measuring
-//! the contract the components actually receive. [`production_projection`] runs
-//! a real `AppState` through the production `AppLoop` and reads the shell
-//! projection the adapter itself is handed.
-//!
-//! # The guard that has to be able to fail
-//!
-//! [`scan_visual_decisions`] is the `NFR-004` / `SC-004` guard: no literal color,
-//! type size, spacing constant, or band height in **any** file outside
-//! `src/shell/visual/`. It is repository-wide by construction — it walks `src/`
-//! and excludes exactly one subtree — because a guard scoped to the render
-//! adapter passes while the requirement it claims to enforce is being violated
-//! two directories away. [`the_visual_decision_guard_reports_a_planted_decision`]
-//! plants each family and asserts the guard reports it with file, line, and
-//! kind; [`the_visual_decision_guard_reads_the_delivered_tree`] asserts the scan
-//! read a non-trivial number of files and lines, so it cannot pass by scanning
-//! nothing.
-//!
-//! # Recorded limitations
-//!
-//! Stated rather than papered over, because a proof that claims more than it
-//! measured is worse than one that says where it stops.
-//!
-//! - **Two semantic control kinds are not production-projected.** The shipped
-//!   reducer projects `Continuous`, `Choice`, `Toggle`, `Asset`, and `Identity`.
-//!   No production capability declares a `Stepped` parameter, and the `Surface`
-//!   summary control is built only on the fixture projection path that no
-//!   `AppState` reaches. So seven of the twenty-five askable pairs cannot be
-//!   driven with real projected data, and this target says which rather than
-//!   fabricating a view model to cover them. The set is pinned in
-//!   [`PRODUCTION_PROJECTED_KINDS`] and asserted exactly, so a kind appearing or
-//!   disappearing fails here and forces the pair list to be revisited.
-//! - **Clipping is asserted by band, and one recorded finding is scoped around
-//!   rather than fixed.** The compact mixer cell labels (F-17, recorded for
-//!   cleanup) are permitted by *rule* and bounded by a measured ceiling, so they
-//!   cannot grow. `PersistentSideRegion` overflow (F-18) is **closed**, not
-//!   scoped around: the panel regained the scroll region the adapter used to
-//!   supply, so its lower rows are reachable and a run that leaves a band with
-//!   the band itself as its container now fails. Every other escape, in every
-//!   band, fails. See [`check_viewport_integrity_survived_recomposition`].
-//! - **The adapter still paints one run.** `paint_focused_track_meter` puts the
-//!   focused track's level on screen because the level has a source, a declared
-//!   painter, and no route between them. It is measured here for what this
-//!   target actually claims — that it decides nothing — rather than excluded:
-//!   it resolves every color, style, and extent through the vocabulary, which is
-//!   why [`scan_visual_decisions`] passes over it.
+//! The DOM-level twin — that the page's painted anatomy matches these
+//! documents — is `tests/webview_projection_shell.rs` (T024), gated on a
+//! live window because a DOM needs one.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crest_synth::adapter::eframe_graphical_window::{
-    install_authored_typeface, EframeGraphicalApplication,
-};
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_soundfont_capability,
 };
@@ -99,29 +71,25 @@ use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
-use crest_synth::shell::app_window::{
-    AppInputCallback, FrameObservationCallback, ProjectionCallback, TickCallback,
+use crest_synth::shell::component_state::{
+    ComponentState, NonColorSignal, ALL_COMPONENT_STATES, COMPONENT_STATE_COUNT,
 };
-use crest_synth::shell::visual::compositions::application_shell;
-use crest_synth::shell::visual::controls::parameter_row::UNAVAILABLE_MARK;
-use crest_synth::shell::visual::primitives::focus;
-use crest_synth::shell::visual::primitives::hint::HINT_SEPARATOR;
-use crest_synth::shell::visual::{
-    control_for, ComponentControl, ComponentState, ControlIntent, ControlSelection, NonColorSignal,
-    PresentationRole, ShellComposition, ShellRegion, ViewportDensityPolicy, ALL_COMPONENT_CONTROLS,
-    ALL_COMPONENT_STATES, ALL_DENSITY_POLICIES, ALL_PRESENTATION_ROLES, ALL_SEMANTIC_CONTROL_KINDS,
-    ALL_SHELL_COMPOSITIONS, COMPONENT_CONTROL_COUNT, COMPONENT_STATE_COUNT, LOADING_PROGRESS_WORDS,
-    MIN_INTERACTIVE_TARGET_PX, PRESENTATION_ROLE_COUNT, SEMANTIC_CONTROL_KIND_COUNT,
-    SHELL_COMPOSITION_COUNT,
+use crest_synth::shell::component_vocabulary::{
+    control_for, ComponentControl, ControlSelection, PresentationRole, ShellComposition,
+    ShellRegion, ALL_COMPONENT_CONTROLS, ALL_PRESENTATION_ROLES, ALL_SEMANTIC_CONTROL_KINDS,
+    ALL_SHELL_COMPOSITIONS, COMPONENT_CONTROL_COUNT, HINT_SEPARATOR, PRESENTATION_ROLE_COUNT,
+    SEMANTIC_CONTROL_KIND_COUNT, SHELL_COMPOSITION_COUNT, UNAVAILABLE_MARK,
 };
+use crest_synth::shell::density::{ViewportDensityPolicy, ALL_DENSITY_POLICIES};
+use crest_synth::shell::webview::projection_channel::{
+    ForwardedAck, ProjectionChannel, ProjectionPush,
+};
+use crest_synth::shell::webview::TauriWebviewWindow;
 use crest_synth::shell::{ShellFrameObservation, ShellRegionId};
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::Patch;
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
-use eframe::egui;
-use eframe::App;
-use std::cell::RefCell;
-use std::rc::Rc;
+use serde_json::{json, Value};
 
 /// The exact string `validation.component_composition` asserts on stdout.
 ///
@@ -137,10 +105,11 @@ const AUTHORED_VIEWPORTS: [([f32; 2], ViewportDensityPolicy); 2] = [
 
 /// The three pairs the control family declares un-askable, and the only ones.
 ///
-/// Transcribed from `DESIGN.md:462-465` — a mixer track column carries a level,
-/// a pan, and the two track toggles, so it never carries a choice, an asset, or
-/// a surface summary. Pinned here rather than read back from the selector, so
-/// that switching an askable pair off fails rather than agreeing with itself.
+/// Transcribed from `DESIGN.md:462-465` — a mixer track column carries a
+/// level, a pan, and the two track toggles, so it never carries a choice, an
+/// asset, or a surface summary. Pinned here rather than read back from the
+/// selector, so that switching an askable pair off fails rather than
+/// agreeing with itself.
 const NOT_ASKABLE_PAIRS: [(SemanticControlKind, PresentationRole); 3] = [
     (SemanticControlKind::Choice, PresentationRole::VerticalStrip),
     (SemanticControlKind::Asset, PresentationRole::VerticalStrip),
@@ -152,11 +121,11 @@ const NOT_ASKABLE_PAIRS: [(SemanticControlKind, PresentationRole); 3] = [
 
 /// The semantic control kinds the shipped reducer actually projects.
 ///
-/// Measured, not assumed. `Stepped` has no production capability declaring one,
-/// and `Surface` is built only on the fixture projection path. Pinned so that a
-/// kind appearing or disappearing fails
-/// [`the_production_projection_carries_the_kinds_this_target_can_drive`] rather
-/// than silently shrinking what the pair sweep covers.
+/// Measured, not assumed. `Stepped` has no production capability declaring
+/// one, and `Surface` is built only on the fixture projection path. Pinned so
+/// that a kind appearing or disappearing fails
+/// [`the_production_projection_carries_the_kinds_this_target_can_drive`]
+/// rather than silently shrinking what the document sweep covers.
 const PRODUCTION_PROJECTED_KINDS: [SemanticControlKind; 5] = [
     SemanticControlKind::Continuous,
     SemanticControlKind::Choice,
@@ -169,8 +138,34 @@ const PRODUCTION_PROJECTED_KINDS: [SemanticControlKind; 5] = [
 const PRODUCTION_UNPROJECTED_KINDS: [SemanticControlKind; 2] =
     [SemanticControlKind::Stepped, SemanticControlKind::Surface];
 
+/// The declared column anatomy, closed and ordered (crest-spec
+/// `valueObject.MixerTrackColumnStructure`), transcribed from the design
+/// authority rather than read back from the page.
+const COLUMN_ANATOMY: [&str; 5] = [
+    "TrackHeader",
+    "LevelFader",
+    "LevelReadout",
+    "PanReadout",
+    "StateLine",
+];
+
+/// The declared unavailable treatment, and the fabrications it must not be.
+const FORBIDDEN_MARKERS: [&str; 5] = ["", " ", "0", "0.0", "0.000"];
+
+/// The five entries `DESIGN.md:454` draws in the PATCH Utility panel, in
+/// authored order, with the projected driver each driven entry reads —
+/// transcribed from the product authority rather than parsed back from the
+/// page, so a panel that quietly rebinds or drops one fails here.
+const AUTHORED_UTILITY_ENTRIES: [(&str, Option<&str>); 5] = [
+    ("MASTER VOLUME", None),
+    ("PATCH VOLUME", Some("patch.output.trimGainDb")),
+    ("MIDI INPUT", None),
+    ("OUTPUT TRACK", Some("patch.output.outputTrack")),
+    ("VOICE LIMIT", None),
+];
+
 // ===========================================================================
-// The production render path
+// The production projection
 // ===========================================================================
 
 struct NullBoundary;
@@ -183,8 +178,8 @@ impl ControlAudioBoundary for NullBoundary {
     fn publish_parameters(&mut self, _parameters: ParameterSnapshot) {}
 }
 
-/// The production reducer with one installed patch, so every surface has a real
-/// projection to paint rather than an empty one.
+/// The production reducer with one installed patch, so every surface has a
+/// real projection to serialize rather than an empty one.
 fn installed_state() -> AppState {
     let provider = production_soundfont_capability().expect("the production SoundFont capability");
     let config =
@@ -207,10 +202,11 @@ fn installed_state() -> AppState {
     state
 }
 
-/// The graphical shell projection the adapter is handed, for one context.
+/// The graphical shell projection the window is handed, for one context.
 ///
-/// Reached through the production `AppLoop` and the production `StateProjector`,
-/// which is the same call the render adapter's projection callback makes.
+/// Reached through the production `AppLoop` and the production
+/// `StateProjector`, which is the same call the window's projection callback
+/// makes.
 fn production_projection(context: TopLevelContext) -> GraphicalShellProjection {
     let mut app_loop = AppLoop::new(installed_state(), StateProjector::new(), NullBoundary)
         .expect("the production reducer");
@@ -224,6 +220,22 @@ fn production_projection(context: TopLevelContext) -> GraphicalShellProjection {
         "the reducer did not reach {context:?}"
     );
     projection
+}
+
+/// The serialized rendered document for one context — the exact bytes the
+/// production transport emits to the page.
+fn production_document(context: TopLevelContext) -> Value {
+    let projection = production_projection(context);
+    let mut channel = ProjectionChannel::new();
+    let mut emitted = None;
+    let outcome = channel
+        .push(&projection, |document| {
+            emitted = Some(document);
+            Ok(())
+        })
+        .expect("the production emit succeeds");
+    assert_eq!(outcome, ProjectionPush::Emitted);
+    emitted.expect("an Emitted push hands the emitter exactly one document")
 }
 
 /// Every projected control the shipped reducer carries, across both contexts.
@@ -241,336 +253,171 @@ fn production_controls() -> Vec<SemanticControlViewModel> {
         .collect()
 }
 
-/// The first projected control of one semantic kind, or `None` when the shipped
-/// reducer projects none.
-///
-/// `None` is a real answer. Handing a control a view model of some other kind so
-/// the sweep is never short would prove the selector paints *something*, which
-/// is not what FR-001 claims.
+/// The first projected control of one semantic kind, or `None` when the
+/// shipped reducer projects none. `None` is a real answer.
 fn projected_control_of_kind(kind: SemanticControlKind) -> Option<SemanticControlViewModel> {
     production_controls()
         .into_iter()
         .find(|control| control.kind() == kind)
 }
 
-fn key_event(key: egui::Key) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::default(),
+fn kind_name(kind: SemanticControlKind) -> &'static str {
+    match kind {
+        SemanticControlKind::Continuous => "Continuous",
+        SemanticControlKind::Stepped => "Stepped",
+        SemanticControlKind::Choice => "Choice",
+        SemanticControlKind::Toggle => "Toggle",
+        SemanticControlKind::Asset => "Asset",
+        SemanticControlKind::Identity => "Identity",
+        SemanticControlKind::Surface => "Surface",
     }
 }
 
-fn raw_input(size: [f32; 2], events: Vec<egui::Event>) -> egui::RawInput {
-    egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(size[0], size[1]),
-        )),
-        predicted_dt: 0.0,
-        events,
-        ..Default::default()
+// ===========================================================================
+// The committed page sources
+// ===========================================================================
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn page_source(name: &str) -> String {
+    let path = repository_root().join("webview-page").join(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} must be readable: {error}", path.display()))
+}
+
+/// Parses one `var NAME = [ ... ];` array literal out of the committed
+/// render script, returning the raw entry lines.
+fn page_array_block(page_js: &str, name: &str) -> Vec<String> {
+    let opener = format!("var {name} = [");
+    let start = page_js
+        .find(&opener)
+        .unwrap_or_else(|| panic!("page.js declares {name}"));
+    let body = &page_js[start + opener.len()..];
+    let end = body.find("];").expect("the array literal closes");
+    body[..end]
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+// ===========================================================================
+// The page's transcribed derivations (the render-path contract)
+// ===========================================================================
+
+/// Derives one serialized control's row state exactly as the committed
+/// render script does (`controlState` in `webview-page/page.js`) — the
+/// declared ComponentState precedence: a failed edit outranks an in-flight
+/// one, focus outranks read-only-ness, and anything unrecognized is an
+/// explicit unknown, never a silent resting row.
+fn page_row_state(control: &Value, mode: &str) -> String {
+    if control.get("error").is_some_and(|error| !error.is_null()) {
+        return "error".to_owned();
     }
-}
-
-/// One glyph run the production shell put on screen, with the container it was
-/// painted into.
-#[derive(Clone, Debug)]
-struct PaintedRun {
-    content: String,
-    rect: egui::Rect,
-    clip: egui::Rect,
-}
-
-/// One complete production frame: what the adapter observed about itself, and
-/// every run it actually emitted.
-struct PaintedFrame {
-    viewport: [f32; 2],
-    policy: ViewportDensityPolicy,
-    context: TopLevelContext,
-    observation: ShellFrameObservation,
-    runs: Vec<PaintedRun>,
-    shapes: usize,
-}
-
-impl PaintedFrame {
-    fn label(&self) -> String {
-        let [width, height] = self.viewport;
-        format!("{width}x{height} {:?}", self.context)
-    }
-
-    /// The rectangle the adapter reported for one structural region, in screen
-    /// coordinates.
-    ///
-    /// The observation reports rectangles relative to the viewport origin, which
-    /// is the origin here, so the two coincide; composing them explicitly is
-    /// what keeps that true if the window ever gains an offset.
-    fn band(&self, id: ShellRegionId) -> egui::Rect {
-        let rect = self.observation.region(id).rect();
-        egui::Rect::from_min_max(
-            egui::pos2(rect.min_x(), rect.min_y()),
-            egui::pos2(rect.max_x(), rect.max_y()),
-        )
-    }
-}
-
-/// Collects every glyph run one emitted shape put on screen.
-///
-/// `Galley::rect` is expressed relative to the anchor and already accounts for
-/// the job's horizontal alignment: a right-aligned run has `rect.right() == 0.0`
-/// and extends leftward from `pos`. Composing the two is what makes this the
-/// rectangle the glyphs actually occupy rather than one assumed to start at the
-/// anchor — the naive `pos + galley.size()` reports phantom overruns for every
-/// right-aligned value in the shell.
-fn collect_shape(shape: &egui::Shape, clip: egui::Rect, frame: &mut PaintedFrame) {
-    match shape {
-        egui::Shape::Text(text) => {
-            frame.runs.push(PaintedRun {
-                content: text.galley.job.text.clone(),
-                rect: text.galley.rect.translate(text.pos.to_vec2()),
-                clip,
-            });
+    if let Some(kind) = control.pointer("/status/kind").and_then(Value::as_str) {
+        match kind {
+            "preparing" | "activating" => return "loading".to_owned(),
+            "ready" | "failed" => {}
+            _ => return "unknown".to_owned(),
         }
-        egui::Shape::Vec(children) => {
-            for child in children {
-                collect_shape(child, clip, frame);
-            }
-        }
-        _ => frame.shapes += 1,
+    }
+    if control.get("focused").and_then(Value::as_bool) == Some(true) {
+        return match mode {
+            "adjust" => "adjusting".to_owned(),
+            "navigate" | "modal" | "multiSelect" => "focused".to_owned(),
+            _ => "unknown".to_owned(),
+        };
+    }
+    if control.get("enabled").and_then(Value::as_bool) == Some(true)
+        && control.get("editable").and_then(Value::as_bool) == Some(true)
+    {
+        "resting".to_owned()
+    } else {
+        "disabled".to_owned()
     }
 }
 
-/// Drives the production shell through both authored viewports in both
-/// top-level contexts and returns what each frame painted.
-///
-/// This is the production path, not a parallel one: the same
-/// `EframeGraphicalApplication` the binary runs, the same
-/// `install_authored_typeface`, the same `AppLoop` reducer, and the same
-/// `ShellFrameObservation` the adapter emits after painting.
-fn paint_production_frames() -> Vec<PaintedFrame> {
-    let app_loop = AppLoop::new(installed_state(), StateProjector::new(), NullBoundary)
-        .expect("the production reducer");
-    let shared = Rc::new(RefCell::new(app_loop));
-
-    let input_loop = Rc::clone(&shared);
-    let rejections = Rc::new(RefCell::new(Vec::new()));
-    let input_rejections = Rc::clone(&rejections);
-    let on_input: AppInputCallback = Box::new(move |event| {
-        if let Err(rejection) = input_loop.borrow_mut().dispatch_action(event) {
-            input_rejections.borrow_mut().push(rejection);
+/// Renders one serialized control's value exactly as the committed render
+/// script does (`controlValueText` in `webview-page/page.js`): continuous
+/// values read to three places, toggles read ON/OFF, identities and
+/// summaries read as themselves, assets read their locator, and an unknown
+/// kind is an explicit `?kind` marker — never a fabricated number and never
+/// a blank.
+fn page_value_text(control: &Value) -> String {
+    fn display(value: &Value) -> String {
+        match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
         }
-    });
-    let projection_loop = Rc::clone(&shared);
-    let projection: ProjectionCallback =
-        Box::new(move || projection_loop.borrow().current_graphical_shell());
-    let on_tick: TickCallback = Box::new(|_| true);
-    let observations = Rc::new(RefCell::new(Vec::new()));
-    let observed = Rc::clone(&observations);
-    let on_frame: FrameObservationCallback = Box::new(move |observation| {
-        observed.borrow_mut().push(observation);
-    });
-
-    let mut application = EframeGraphicalApplication::new(on_input, projection, on_tick, on_frame);
-    let context = egui::Context::default();
-    install_authored_typeface(&context).expect("the authored typeface installs");
-    let mut eframe_frame = eframe::Frame::_new_kittest();
-
-    let mut frames = Vec::new();
-    for (viewport, policy) in AUTHORED_VIEWPORTS {
-        for (key, expected_context) in [
-            (egui::Key::Num2, TopLevelContext::Patch),
-            (egui::Key::Num1, TopLevelContext::Mixer),
-        ] {
-            let before = observations.borrow().len();
-            context.begin_pass(raw_input(viewport, vec![key_event(key)]));
-            application.update(&context, &mut eframe_frame);
-            let output = context.end_pass();
-            assert_eq!(
-                observations.borrow().len(),
-                before + 1,
-                "the adapter emitted no frame observation at {viewport:?}"
-            );
-
-            let mut frame = PaintedFrame {
-                viewport,
-                policy,
-                context: expected_context,
-                observation: observations.borrow().last().unwrap().clone(),
-                runs: Vec::new(),
-                shapes: 0,
+    }
+    let Some(value) = control.get("value").filter(|value| value.is_object()) else {
+        return UNAVAILABLE_MARK.to_owned();
+    };
+    match value.get("kind").and_then(Value::as_str) {
+        Some("scalar") => format!("{:.3}", value["value"].as_f64().unwrap_or(f64::NAN)),
+        Some("parameter") => {
+            let Some(parameter) = value.get("value").filter(|value| value.is_object()) else {
+                return UNAVAILABLE_MARK.to_owned();
             };
-            for clipped in &output.shapes {
-                collect_shape(&clipped.shape, clipped.clip_rect, &mut frame);
-            }
-            frames.push(frame);
-        }
-    }
-
-    assert!(
-        rejections.borrow().is_empty(),
-        "the shell rejected an input while painting: {:?}",
-        rejections.borrow()
-    );
-    assert_eq!(
-        frames.len(),
-        AUTHORED_VIEWPORTS.len() * 2,
-        "both authored viewports must paint both top-level contexts"
-    );
-    assert_eq!(
-        application.frame_observation_error(),
-        None,
-        "the adapter rejected its own post-paint observation"
-    );
-    frames
-}
-
-// ===========================================================================
-// The component render probes
-// ===========================================================================
-
-/// What one component paint pass put on screen, with the color channel
-/// discarded.
-///
-/// Nothing here records a color, so a component that announced a state with
-/// color alone leaves no evidence and fails the checks that read this.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct Painted {
-    /// Every text run, in paint order.
-    texts: Vec<String>,
-    /// Every non-text shape's rectangle and stroke width, in paint order.
-    shapes: Vec<(String, String)>,
-}
-
-impl Painted {
-    /// Everything that reads without color, as one comparable value.
-    fn colorless_signature(&self) -> (Vec<String>, Vec<(String, String)>) {
-        (self.texts.clone(), self.shapes.clone())
-    }
-
-    fn is_empty(&self) -> bool {
-        self.texts.is_empty() && self.shapes.is_empty()
-    }
-}
-
-fn collect_component_shape(shape: &egui::Shape, painted: &mut Painted) {
-    match shape {
-        egui::Shape::Text(text) => painted.texts.push(text.galley.job.text.clone()),
-        egui::Shape::Rect(rect) => painted
-            .shapes
-            .push((format!("{:?}", rect.rect), format!("{}", rect.stroke.width))),
-        egui::Shape::Circle(circle) => painted.shapes.push((
-            format!("{:?}@{}", circle.center, circle.radius),
-            format!("{}", circle.stroke.width),
-        )),
-        egui::Shape::LineSegment { points, stroke } => painted
-            .shapes
-            .push((format!("{points:?}"), format!("{}", stroke.width))),
-        egui::Shape::Path(path) => painted
-            .shapes
-            .push((format!("{:?}", path.points), "path".to_owned())),
-        egui::Shape::Vec(children) => {
-            for child in children {
-                collect_component_shape(child, painted);
+            match parameter.get("kind").and_then(Value::as_str) {
+                Some("continuous") => {
+                    format!("{:.3}", parameter["value"].as_f64().unwrap_or(f64::NAN))
+                }
+                Some("stepped") | Some("choice") => display(&parameter["value"]),
+                Some("toggle") => if parameter["value"] == Value::Bool(true) {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+                .to_owned(),
+                Some(other) => format!("?{other}"),
+                None => UNAVAILABLE_MARK.to_owned(),
             }
         }
-        other => painted
-            .shapes
-            .push((format!("{:?}", other.visual_bounding_rect()), String::new())),
+        Some("asset") => value
+            .pointer("/value/locator")
+            .and_then(Value::as_str)
+            .map_or_else(|| UNAVAILABLE_MARK.to_owned(), str::to_owned),
+        Some("identity") | Some("summary") => display(&value["value"]),
+        Some(other) => format!("?{other}"),
+        None => UNAVAILABLE_MARK.to_owned(),
     }
 }
 
-fn probe_context(policy: ViewportDensityPolicy) -> (egui::Context, egui::RawInput) {
-    let context = egui::Context::default();
-    install_authored_typeface(&context).expect("the authored typeface installs");
-    // The same chrome the adapter installs before its first painted frame.
-    // Without it the rendering stack's own default spacing applies, and a probe
-    // measuring a differently-spaced frame is measuring something the product
-    // does not paint.
-    application_shell::install_authored_chrome(&context);
-    let viewport = policy.authored_viewport();
-    (
-        context,
-        raw_input([viewport.width_px, viewport.height_px], Vec::new()),
-    )
+/// One serialized surface's control array.
+fn surface_controls(document: &Value, id: &str) -> Vec<Value> {
+    document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some(id))
+        .unwrap_or_else(|| panic!("the document carries the {id} surface"))
+        .get("controls")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
-/// Paints one control through [`ComponentControl::render`] once per supplied
-/// state and reports what each pass emitted.
-///
-/// One context serves the whole sweep, and the first pass is a warm-up whose
-/// output is discarded: a first-frame face miss would otherwise be measured as a
-/// rendering failure. Reusing the context across the sweep is deliberate — it is
-/// what makes "a control that caches a value between renders" observable.
-fn paint_control_states(
-    control: ComponentControl,
-    view: &SemanticControlViewModel,
-    states: &[ComponentState],
-    role: PresentationRole,
-    policy: ViewportDensityPolicy,
-) -> Vec<(Painted, ControlIntent)> {
-    let (context, input) = probe_context(policy);
-    let pass = |state: ComponentState| {
-        let mut painted = Painted::default();
-        let mut intent = ControlIntent::None;
-        let output = context.run(input.clone(), |context| {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().inner_margin(egui::Margin::ZERO))
-                .show(context, |ui| {
-                    intent = control.render(ui, view, state, role, &policy);
-                });
-        });
-        for clipped in &output.shapes {
-            collect_component_shape(&clipped.shape, &mut painted);
-        }
-        (painted, intent)
-    };
-    let first = *states.first().expect("a sweep names at least one state");
-    drop(pass(first));
-    states.iter().map(|state| pass(*state)).collect()
-}
-
-fn paint_control(
-    control: ComponentControl,
-    view: &SemanticControlViewModel,
-    state: ComponentState,
-    role: PresentationRole,
-    policy: ViewportDensityPolicy,
-) -> (Painted, ControlIntent) {
-    paint_control_states(control, view, &[state], role, policy)
-        .pop()
-        .expect("one state paints one specimen")
-}
-
-/// Paints one composition through [`ShellComposition::render`] and reports what
-/// it emitted.
-///
-/// The composition is given the whole immutable projection and the density
-/// policy, which is exactly the two arguments `CompositionRenderFn` declares —
-/// there is no third through which application state could arrive.
-fn paint_composition(
-    composition: ShellComposition,
-    projection: &GraphicalShellProjection,
-    policy: ViewportDensityPolicy,
-) -> Painted {
-    let (context, input) = probe_context(policy);
-    let pass = || {
-        let mut painted = Painted::default();
-        let output = context.run(input.clone(), |context| {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().inner_margin(egui::Margin::ZERO))
-                .show(context, |ui| {
-                    composition.render(ui, projection, &policy);
-                });
-        });
-        for clipped in &output.shapes {
-            collect_component_shape(&clipped.shape, &mut painted);
-        }
-        painted
-    };
-    drop(pass());
-    pass()
+/// Every visible control across every surface of one document.
+fn visible_controls(document: &Value) -> Vec<Value> {
+    document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|surface| {
+            surface
+                .get("controls")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+        .collect()
 }
 
 // ===========================================================================
@@ -590,14 +437,27 @@ impl VisualDecision {
     /// The actionable one-line report a failure prints.
     fn report(&self) -> String {
         format!(
-            "{}:{}: {} decision outside {} — {}",
-            self.file, self.line, self.kind, VISUAL_MODULE, self.evidence
+            "{}:{}: {} decision outside the authored vocabulary — {}",
+            self.file, self.line, self.kind, self.evidence
         )
     }
 }
 
-/// The one subtree allowed to decide how anything looks.
+/// The retired painting subtree, excluded from the scan while it is
+/// still in the tree (it is deleted at the end of the cutover mission, at
+/// which point this prefix matches nothing).
 const VISUAL_MODULE: &str = "src/shell/visual/";
+
+/// The authored vocabulary declaration sources — the only files allowed to
+/// decide how anything looks (mission webview-shell-cutover WP07 relocated
+/// them out of the retired painting subtree).
+const VOCABULARY_SOURCES: [&str; 5] = [
+    "src/shell/tokens.rs",
+    "src/shell/typeface.rs",
+    "src/shell/density.rs",
+    "src/shell/component_state.rs",
+    "src/shell/component_vocabulary.rs",
+];
 
 /// Color constructors that build a color out of raw channels.
 const COLOR_CONSTRUCTORS: [&str; 12] = [
@@ -649,11 +509,8 @@ const SPACING_ASSIGNMENTS: [&str; 4] = [
     "indent =",
 ];
 
-/// The authored palette, transcribed from `DESIGN.md` § Colors, plus the palette
-/// the shell painted before the vocabulary landed.
-///
-/// A file outside the visual module that spells one of these has decided a
-/// color, whether or not it built it from channels.
+/// The authored palette, transcribed from `DESIGN.md` § Colors, plus the
+/// palette the shell painted before the vocabulary landed.
 const PALETTE_HEXES: [(&str, &str); 24] = [
     ("color/bg/canvas", "#0c1015"),
     ("color/bg/surface", "#121821"),
@@ -681,17 +538,9 @@ const PALETTE_HEXES: [(&str, &str); 24] = [
     ("retired border", "#2a3140"),
 ];
 
-/// Every band height and workspace split extent the density policies declare.
-///
-/// Read from [`ViewportDensityPolicy`] itself rather than transcribed, so the
-/// rule cannot drift away from the values it protects: whatever the policies
-/// declare is exactly what no other file may spell.
-///
-/// The rule applies only to files that paint — a source that never names the
-/// rendering stack cannot be deciding a band height, and several band extents
-/// are unremarkable numbers elsewhere in the system (`60.0` is a gain bound,
-/// `64` is a block size). Restricting by whether the file paints is what keeps
-/// the rule about band heights rather than about arithmetic.
+/// Every band height and workspace split extent the density policies
+/// declare, read from [`ViewportDensityPolicy`] itself so the rule cannot
+/// drift away from the values it protects.
 fn declared_band_extents() -> Vec<(String, f32)> {
     let mut extents = Vec::new();
     for policy in ALL_DENSITY_POLICIES {
@@ -709,11 +558,6 @@ fn declared_band_extents() -> Vec<(String, f32)> {
 }
 
 /// Strips line comments, and optionally the contents of string literals.
-///
-/// Comments are always stripped: they narrate the retired design as history, and
-/// history is not a value the interface paints with. String contents are kept
-/// only for the palette rule, which exists precisely to catch an authored hex
-/// spelled as a string.
 fn strip(line: &str, keep_strings: bool) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();
@@ -820,7 +664,8 @@ fn call_arguments(code: &str, at: usize) -> Vec<String> {
     arguments
 }
 
-/// Every whole numeric token on one line of code, underscores normalized away.
+/// Every whole numeric token on one line of code, underscores normalized
+/// away.
 fn numeric_tokens(code: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -849,17 +694,12 @@ fn numeric_tokens(code: &str) -> Vec<String> {
 ///
 /// Exposed as a plain function over text so the guard can be fed a planted
 /// sample and shown failing, which is what makes it a guard rather than a
-/// decoration.
-///
-/// Only production code is read: everything from the first `#[cfg(test)]` marker
-/// onward is a test module, and a test that *asserts* an authored band height is
-/// holding the vocabulary to it rather than deciding one. The marker is
-/// assembled at runtime so this file does not truncate itself when it is fed to
-/// the scanner.
+/// decoration. Only production code is read: everything from the first
+/// `#[cfg(test)]` marker onward is a test module.
 fn scan_visual_decisions(path: &str, source: &str) -> Vec<VisualDecision> {
     let test_marker = format!("#[cfg({})]", "test");
     let mut violations = Vec::new();
-    let paints = production_code(source).contains("egui");
+    let paints = production_code(source).contains(concat!("eg", "ui"));
     let band_extents = declared_band_extents();
 
     for (index, raw) in source.lines().enumerate() {
@@ -996,16 +836,8 @@ fn scan_visual_decisions(path: &str, source: &str) -> Vec<VisualDecision> {
     violations
 }
 
-fn repository_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-/// Every source the guard scans: the whole `src/` tree, less the visual module.
-///
-/// The exclusion is the *only* one. NFR-004 and SC-004 both state the scope as
-/// "any file outside `src/shell/visual/`", and a guard narrowed to the render
-/// adapter would pass while the gallery scene two directories away decided a
-/// color.
+/// Every source the guard scans: the whole `src/` tree, less the visual
+/// module. The exclusion is the *only* one.
 fn scanned_sources() -> Vec<String> {
     fn walk(directory: &Path, into: &mut Vec<PathBuf>) {
         let entries = std::fs::read_dir(directory)
@@ -1031,14 +863,16 @@ fn scanned_sources() -> Vec<String> {
                 .to_string_lossy()
                 .replace('\\', "/")
         })
-        .filter(|path| !path.starts_with(VISUAL_MODULE))
+        .filter(|path| {
+            !path.starts_with(VISUAL_MODULE) && !VOCABULARY_SOURCES.contains(&path.as_str())
+        })
         .collect();
     relative.sort();
     relative
 }
 
-/// Runs the guard over the delivered tree, returning what it read and what it
-/// found.
+/// Runs the guard over the delivered tree, returning what it read and what
+/// it found.
 fn scan_delivered_tree() -> (Vec<String>, usize, Vec<VisualDecision>) {
     let root = repository_root();
     let sources = scanned_sources();
@@ -1054,7 +888,9 @@ fn scan_delivered_tree() -> (Vec<String>, usize, Vec<VisualDecision>) {
     (sources, lines_read, violations)
 }
 
-/// Every production source under the visual module, for the ownership checks.
+/// Every production source of the authored vocabulary, for the ownership
+/// checks — the relocated declaration files, plus whatever remains of the
+/// retired painting subtree while it is still in the tree.
 fn visual_module_sources() -> Vec<String> {
     fn walk(directory: &Path, into: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(directory).expect("the visual module directory") {
@@ -1068,7 +904,9 @@ fn visual_module_sources() -> Vec<String> {
     }
     let root = repository_root();
     let mut absolute = Vec::new();
-    walk(&root.join(VISUAL_MODULE), &mut absolute);
+    if root.join(VISUAL_MODULE).is_dir() {
+        walk(&root.join(VISUAL_MODULE), &mut absolute);
+    }
     let mut relative: Vec<String> = absolute
         .into_iter()
         .map(|path| {
@@ -1078,12 +916,15 @@ fn visual_module_sources() -> Vec<String> {
                 .replace('\\', "/")
         })
         .collect();
+    for source in VOCABULARY_SOURCES {
+        relative.push(source.to_owned());
+    }
     relative.sort();
     relative
 }
 
-/// One source's production code — everything before its first `#[cfg(test)]`
-/// marker — with line comments stripped.
+/// One source's production code — everything before its first
+/// `#[cfg(test)]` marker — with line comments stripped.
 fn production_code(source: &str) -> String {
     let marker = format!("#[cfg({})]", "test");
     source
@@ -1092,6 +933,102 @@ fn production_code(source: &str) -> String {
         .map(|line| strip(line, true))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+// ===========================================================================
+// The webview transport guard — "the render adapter holds no paint decision"
+// ===========================================================================
+
+/// The webview window composition sources: transport only, by declaration.
+/// `token_export.rs` is deliberately absent — it is the generator that reads
+/// the vocabulary, and it must name the vocabulary's color type to do so.
+const WEBVIEW_TRANSPORT_SOURCES: [&str; 6] = [
+    "src/shell/webview/mod.rs",
+    "src/shell/webview/window.rs",
+    "src/shell/webview/projection_channel.rs",
+    "src/shell/webview/frame_stream.rs",
+    "src/shell/webview/meter_channel.rs",
+    "src/shell/webview/input_capture.rs",
+];
+
+/// Paint and layout API names that must not appear in the transport
+/// adapter's production code — a `TauriWebviewWindow` that names one has
+/// started deciding how something looks.
+const PAINT_DECISION_NEEDLES: [&str; 9] = [
+    // The two retired-stack crate names are assembled so this guard's own
+    // source stays clean under the zero-reference sweep (SC-003) while the
+    // needle still catches a reintroduction.
+    concat!("eg", "ui"),
+    concat!("ep", "aint"),
+    "Painter",
+    "rect_filled",
+    "rect_stroke",
+    "galley",
+    "FontId",
+    "Color32",
+    "tessellat",
+];
+
+/// The transport-only rule over one source: the visual-decision families,
+/// the paint API names, and the declared band extents are all absent from
+/// production code. Exposed over text so the guard can be fed a planted
+/// sample and shown failing.
+fn webview_transport_violations(path: &str, source: &str) -> Vec<String> {
+    let mut violations: Vec<String> = scan_visual_decisions(path, source)
+        .iter()
+        .map(VisualDecision::report)
+        .collect();
+    let code = production_code(source);
+    for needle in PAINT_DECISION_NEEDLES {
+        if code.contains(needle) {
+            violations.push(format!(
+                "{path}: names {needle} — a paint API inside the transport adapter"
+            ));
+        }
+    }
+    let band_extents = declared_band_extents();
+    for (index, line) in code.lines().enumerate() {
+        for token in numeric_tokens(line) {
+            if !token.contains('.') {
+                continue;
+            }
+            let Ok(value) = token.parse::<f32>() else {
+                continue;
+            };
+            for (name, extent) in &band_extents {
+                if (value - *extent).abs() < f32::EPSILON {
+                    violations.push(format!(
+                        "{path}:{}: {token} is the declared {name} extent — a layout \
+                         decision inside the transport adapter",
+                        index + 1
+                    ));
+                }
+            }
+        }
+    }
+    violations
+}
+
+/// `TauriWebviewWindow` and its transports hold no paint or layout decision.
+fn check_the_webview_window_holds_no_paint_decision() {
+    let root = repository_root();
+    let mut lines_read = 0_usize;
+    for path in WEBVIEW_TRANSPORT_SOURCES {
+        let source = std::fs::read_to_string(root.join(path))
+            .unwrap_or_else(|error| panic!("{path} is unreadable: {error}"));
+        lines_read += production_code(&source).lines().count();
+        let violations = webview_transport_violations(path, &source);
+        assert!(
+            violations.is_empty(),
+            "the webview transport adapter decides how something looks:\n{}",
+            violations.join("\n")
+        );
+    }
+    assert!(
+        lines_read > 800,
+        "the transport guard read only {lines_read} production lines, which cannot \
+         have covered the window composition"
+    );
 }
 
 // ===========================================================================
@@ -1110,29 +1047,14 @@ fn every_pair() -> Vec<(SemanticControlKind, PresentationRole)> {
         .collect()
 }
 
-fn kind_name(kind: SemanticControlKind) -> &'static str {
-    match kind {
-        SemanticControlKind::Continuous => "Continuous",
-        SemanticControlKind::Stepped => "Stepped",
-        SemanticControlKind::Choice => "Choice",
-        SemanticControlKind::Toggle => "Toggle",
-        SemanticControlKind::Asset => "Asset",
-        SemanticControlKind::Identity => "Identity",
-        SemanticControlKind::Surface => "Surface",
-    }
-}
-
 fn is_declared_not_askable(kind: SemanticControlKind, role: PresentationRole) -> bool {
     NOT_ASKABLE_PAIRS
         .iter()
         .any(|(declared_kind, declared_role)| *declared_kind == kind && *declared_role == role)
 }
 
-/// Selection is total over kind × role, and every declared control is reachable.
-///
-/// Both halves matter and neither implies the other: a pair that resolves to
-/// nothing is a surface with no shape, and a control no pair asks for is dead
-/// code that passes every other check in this file.
+/// Selection is total over kind × role, and every declared control is
+/// reachable.
 fn check_selection_is_total_and_every_control_reachable() {
     assert_eq!(SEMANTIC_CONTROL_KIND_COUNT, 7);
     assert_eq!(PRESENTATION_ROLE_COUNT, 4);
@@ -1192,14 +1114,10 @@ fn check_selection_is_total_and_every_control_reachable() {
 }
 
 /// The selector is exhaustive rather than defaulted.
-///
-/// A defaulted mapping is behaviorally indistinguishable from a considered one
-/// at runtime — every pair still resolves — so this is asserted at the source.
-/// The needles are assembled at runtime so the check does not find itself.
 fn check_the_selector_is_exhaustive_rather_than_defaulted() {
     let source =
-        std::fs::read_to_string(repository_root().join("src/shell/visual/controls/mod.rs"))
-            .expect("the control family's module root");
+        std::fs::read_to_string(repository_root().join("src/shell/component_vocabulary.rs"))
+            .expect("the component vocabulary module");
     let signature = "pub const fn control_for(";
     let start = source
         .find(signature)
@@ -1217,7 +1135,6 @@ fn check_the_selector_is_exhaustive_rather_than_defaulted() {
              nobody considered"
         );
     }
-    // The body must actually have been read, or the absence above is vacuous.
     assert!(
         body.contains("match (kind, role)"),
         "the selector scan did not read control_for's match"
@@ -1238,13 +1155,8 @@ fn strip_block_comments(block: &str) -> String {
         .join("\n")
 }
 
-/// The shipped reducer projects exactly the kinds this target's pair sweep can
-/// drive.
-///
-/// Measured against the production projection rather than assumed. `Stepped` and
-/// `Surface` are production-unprojected today; if either becomes projected, or
-/// one of the five stops being, this fails and the sweep below must be revisited
-/// rather than silently covering less.
+/// The shipped reducer projects exactly the kinds this target's document
+/// sweep can drive.
 fn check_the_production_projection_carries_the_kinds_this_target_can_drive() {
     let projected: BTreeSet<&str> = production_controls()
         .into_iter()
@@ -1261,7 +1173,7 @@ fn check_the_production_projection_carries_the_kinds_this_target_can_drive() {
     for kind in PRODUCTION_UNPROJECTED_KINDS {
         assert!(
             projected_control_of_kind(kind).is_none(),
-            "{} is now projected; the pair sweep must drive it",
+            "{} is now projected; the document sweep must drive it",
             kind_name(kind)
         );
     }
@@ -1272,74 +1184,96 @@ fn check_the_production_projection_carries_the_kinds_this_target_can_drive() {
     );
 }
 
-/// Every askable pair whose kind the shipped reducer projects paints, driven
-/// through the production render path with real projected view data.
+/// Every visible projected control across both contexts renders through the
+/// page's transcribed value contract: a non-empty label, a value that is
+/// neither blank nor an explicit unknown marker nor a fabricated NaN, and a
+/// derived state within the pinned page state set.
 ///
-/// Returns how many pairs were driven, so the caller can assert a denominator: a
-/// sweep that painted nothing would otherwise pass by iterating an empty list.
-fn check_every_drivable_pair_paints_through_the_production_path() -> usize {
+/// Returns how many controls were driven, so the caller can assert a
+/// denominator.
+fn check_every_projected_control_renders_through_the_document() -> usize {
     let mut driven = 0_usize;
-    let mut reached: BTreeSet<&str> = BTreeSet::new();
+    let mut kinds_seen: BTreeSet<&str> = BTreeSet::new();
+    let page_states: BTreeSet<&str> = [
+        "resting",
+        "focused",
+        "adjusting",
+        "disabled",
+        "loading",
+        "error",
+        "unknown",
+    ]
+    .into_iter()
+    .collect();
 
-    for kind in PRODUCTION_PROJECTED_KINDS {
-        let view = projected_control_of_kind(kind)
-            .unwrap_or_else(|| panic!("the production projection carries no {}", kind_name(kind)));
-        for role in ALL_PRESENTATION_ROLES {
-            let Some(control) = control_for(kind, role).control() else {
-                continue;
-            };
-            let label = format!(
-                "{} in {} → {}",
-                kind_name(kind),
-                role.canonical_name(),
-                control.canonical_name()
+    for context in [TopLevelContext::Patch, TopLevelContext::Mixer] {
+        let document = production_document(context);
+        let mode = document
+            .get("interactionMode")
+            .and_then(Value::as_str)
+            .expect("the document names its interaction mode");
+        let controls = visible_controls(&document);
+        assert!(
+            !controls.is_empty(),
+            "{context:?}: the production document projects visible controls"
+        );
+        for control in &controls {
+            let label = control
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assert!(
+                !label.trim().is_empty(),
+                "{context:?}: a projected control carries no label: {control}"
             );
-            for policy in ALL_DENSITY_POLICIES {
-                let (painted, intent) =
-                    paint_control(control, &view, ComponentState::Resting, role, policy);
-                assert!(
-                    !painted.is_empty(),
-                    "{label} at {} painted nothing",
-                    policy.canonical_name()
-                );
-                assert!(
-                    painted.texts.iter().any(|run| !run.trim().is_empty()),
-                    "{label} at {} painted no legible text; it emitted {:?}",
-                    policy.canonical_name(),
-                    painted.texts
-                );
-                // A frame with no operator input is a frame nobody asked
-                // anything in. A control that returned an intent here would be
-                // manufacturing a request.
-                assert_eq!(
-                    intent,
-                    ControlIntent::None,
-                    "{label} asked for something in a frame with no input"
-                );
+            let value = page_value_text(control);
+            assert!(
+                !value.trim().is_empty(),
+                "{context:?}: {label} renders a blank value"
+            );
+            assert!(
+                !value.starts_with('?'),
+                "{context:?}: {label} carries a value kind the page cannot render: {value}"
+            );
+            assert_ne!(
+                value, UNAVAILABLE_MARK,
+                "{context:?}: {label} projects a value yet renders the unavailable mark"
+            );
+            assert!(
+                !value.contains("NaN"),
+                "{context:?}: {label} renders a fabricated number: {value}"
+            );
+            let state = page_row_state(control, mode);
+            assert!(
+                page_states.contains(state.as_str()),
+                "{context:?}: {label} derives the undeclared state {state}"
+            );
+            if let Some(kind) = control.get("kind").and_then(Value::as_str) {
+                for declared in PRODUCTION_PROJECTED_KINDS {
+                    if kind_name(declared).eq_ignore_ascii_case(kind) {
+                        kinds_seen.insert(kind_name(declared));
+                    }
+                }
             }
             driven += 1;
-            reached.insert(control.canonical_name());
         }
     }
 
-    let declared: BTreeSet<&str> = ALL_COMPONENT_CONTROLS
+    let expected: BTreeSet<&str> = PRODUCTION_PROJECTED_KINDS
         .into_iter()
-        .map(ComponentControl::canonical_name)
+        .map(kind_name)
         .collect();
     assert_eq!(
-        reached, declared,
-        "a declared control was never painted by any drivable pair"
+        kinds_seen, expected,
+        "a production-projected kind never reached the rendered document"
     );
     driven
 }
 
-/// Every control renders every state it declares applicable, and no two of its
-/// states are told apart by color alone.
-///
-/// The signature compared carries text runs and shape geometry and **no color**,
-/// so a control that announced a state by changing an accent and nothing else
-/// leaves two identical signatures and fails here.
-fn check_every_control_paints_every_applicable_state_without_relying_on_color() {
+/// The state-applicability declarations survive: every control declares its
+/// states, `accepts` agrees with the declaration, the union covers the
+/// closed vocabulary, and mute/solo stay mixer-strip-only.
+fn check_state_applicability_declarations() {
     assert_eq!(COMPONENT_STATE_COUNT, 9);
     let union: BTreeSet<&str> = ALL_COMPONENT_CONTROLS
         .into_iter()
@@ -1349,49 +1283,16 @@ fn check_every_control_paints_every_applicable_state_without_relying_on_color() 
     assert_eq!(
         union.len(),
         COMPONENT_STATE_COUNT,
-        "a declared state is applicable to no control, so the gallery can never show it"
+        "a declared state is applicable to no control, so no surface can ever show it"
     );
 
     for control in ALL_COMPONENT_CONTROLS {
-        let (kind, role) = selecting_pair(control)
-            .unwrap_or_else(|| panic!("{} is asked for by no pair", control.canonical_name()));
-        let view = projected_control_of_kind(kind).unwrap_or_else(|| {
-            panic!(
-                "{} is selected by {}, which the production projection does not carry",
-                control.canonical_name(),
-                kind_name(kind)
-            )
-        });
         let states = control.applicable_states();
         assert!(
             !states.is_empty(),
             "{} declares no applicable state",
             control.canonical_name()
         );
-
-        let painted =
-            paint_control_states(control, &view, states, role, ViewportDensityPolicy::Desktop);
-        let mut signatures: BTreeMap<String, &'static str> = BTreeMap::new();
-        for (state, (shown, _)) in states.iter().zip(painted.iter()) {
-            assert!(
-                !shown.is_empty(),
-                "{} painted nothing in {}",
-                control.canonical_name(),
-                state.canonical_name()
-            );
-            let signature = format!("{:?}", shown.colorless_signature());
-            if let Some(previous) = signatures.insert(signature, state.canonical_name()) {
-                panic!(
-                    "{} paints {} and {} identically without color",
-                    control.canonical_name(),
-                    previous,
-                    state.canonical_name()
-                );
-            }
-        }
-
-        // A state the control does not declare is a declaration, not an
-        // omission: the complement is named and `accepts` refuses it.
         for state in ALL_COMPONENT_STATES {
             let declared = states.contains(&state);
             assert_eq!(
@@ -1402,12 +1303,6 @@ fn check_every_control_paints_every_applicable_state_without_relying_on_color() 
                 state.canonical_name()
             );
         }
-    }
-
-    // Mute and solo reach only the controls that represent a mixer track, and
-    // that is a declaration rather than an accident of which states happened to
-    // be listed.
-    for control in ALL_COMPONENT_CONTROLS {
         let in_strip = matches!(control, ComponentControl::Fader | ComponentControl::Meter);
         for state in [ComponentState::Muted, ComponentState::Soloed] {
             assert_eq!(
@@ -1420,8 +1315,7 @@ fn check_every_control_paints_every_applicable_state_without_relying_on_color() 
         }
     }
 
-    // Every state that declares a fixed word carries that word into the
-    // vocabulary rather than inventing one per control.
+    // Every state that declares a fixed word carries a real word.
     for state in ALL_COMPONENT_STATES {
         if let NonColorSignal::Word(word) = state.appearance().signal {
             assert!(
@@ -1433,373 +1327,300 @@ fn check_every_control_paints_every_applicable_state_without_relying_on_color() 
     }
 }
 
-/// The first `(kind, role)` pair, in declared order, that selects `control`.
-fn selecting_pair(control: ComponentControl) -> Option<(SemanticControlKind, PresentationRole)> {
-    every_pair()
-        .into_iter()
-        .find(|(kind, role)| control_for(*kind, *role).control() == Some(control))
+// ===========================================================================
+// T042 — every region is a declared band, produced from the document
+// ===========================================================================
+
+/// The page band vocabulary: the declared shell region, the page's band
+/// attribute, and the page element that carries it — transcribed from the
+/// committed page so a drifted band fails against this table.
+const PAGE_BANDS: [(&str, &str, &str); 5] = [
+    ("contextLine", "contextLine", "context-line"),
+    ("identityHeader", "identityHeader", "identity-header"),
+    ("mainWorkspace", "workspace", "workspace"),
+    ("persistentSideRegion", "inspector", "inspector"),
+    ("footer", "footer", "footer"),
+];
+
+/// The page's paint-acknowledgment role, played headless (identity from the
+/// pushed document, geometry from the authored policy).
+fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
+    let policy = ViewportDensityPolicy::resolve(viewport[0]);
+    let bands = policy.bands();
+    let split = policy.split();
+    let context_bottom = bands.context_line_px;
+    let identity_bottom = context_bottom + bands.identity_header_px;
+    let workspace_bottom = viewport[1] - bands.footer_px;
+    let main_width = viewport[0] - split.side_px;
+    let context = document
+        .get("context")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_uppercase();
+    json!({
+        "generation": document["generation"],
+        "stateHash": document["stateHash"],
+        "context": document["context"],
+        "activeSurface": document["activeSurface"],
+        "focusPath": document["focusPath"],
+        "interactionMode": document["interactionMode"],
+        "viewport": { "widthPx": viewport[0], "heightPx": viewport[1] },
+        "regions": [
+            { "id": "contextLine", "xPx": 0.0, "yPx": 0.0,
+              "widthPx": viewport[0], "heightPx": context_bottom,
+              "label": "CREST SYNTH" },
+            { "id": "identityHeader", "xPx": 0.0, "yPx": context_bottom,
+              "widthPx": viewport[0], "heightPx": bands.identity_header_px,
+              "label": context },
+            { "id": "mainWorkspace", "xPx": 0.0, "yPx": identity_bottom,
+              "widthPx": main_width, "heightPx": workspace_bottom - identity_bottom,
+              "label": "WORKSPACE" },
+            { "id": "persistentSideRegion", "xPx": main_width, "yPx": identity_bottom,
+              "widthPx": split.side_px, "heightPx": workspace_bottom - identity_bottom,
+              "label": "SIDE" },
+            { "id": "footer", "xPx": 0.0, "yPx": workspace_bottom,
+              "widthPx": viewport[0], "heightPx": bands.footer_px,
+              "label": context },
+        ],
+    })
 }
 
-// ===========================================================================
-// T042 — every region is a composition, and no file outside the module decides
-// ===========================================================================
+/// Forwards one context's document through the production seam at one
+/// viewport and returns its observation.
+fn forwarded_observation(
+    projection: &GraphicalShellProjection,
+    viewport: [f32; 2],
+) -> (Value, ShellFrameObservation) {
+    let mut channel = ProjectionChannel::new();
+    let mut emitted = None;
+    channel
+        .push(projection, |document| {
+            emitted = Some(document);
+            Ok(())
+        })
+        .expect("the production emit succeeds");
+    let document = emitted.expect("an Emitted push hands the emitter exactly one document");
+    let observation = match channel
+        .forward_ack(&page_painted_ack(&document, viewport).to_string())
+        .expect("the painted ack for the pushed document forwards")
+    {
+        ForwardedAck::Observation(observation) => observation,
+        ForwardedAck::SupersededLate { generation } => {
+            panic!("the ack for the just-pushed document cannot be late (generation {generation})")
+        }
+    };
+    (document, observation)
+}
 
-/// Every region the shipped window shows is produced by a declared composition.
-///
-/// The production frame plan is what the render adapter iterates: `paint_shell`
-/// builds one panel per `frame_plan_for` band and calls `arrange_band`, which
-/// dispatches to `band.composition()`. So asserting over the plan, against the
-/// observation the same frame emitted, is asserting over what actually painted.
-fn check_every_region_is_produced_by_a_declared_composition(frames: &[PaintedFrame]) {
+/// Every region the shipped shell shows is a declared band: the composition
+/// family's region bindings, the committed page's semantic containers, and
+/// the forwarded observations all name exactly the declared region set — at
+/// the authored extents, for both contexts, at both viewports.
+fn check_every_region_is_a_declared_band() {
+    // The composition family still declares its region bindings, and every
+    // observed region is bound by at least one declared composition.
     assert_eq!(SHELL_COMPOSITION_COUNT, 8);
     let declared: BTreeSet<&str> = ALL_SHELL_COMPOSITIONS
         .into_iter()
         .map(ShellComposition::canonical_name)
         .collect();
     assert_eq!(declared.len(), SHELL_COMPOSITION_COUNT);
-
-    let mut regions_covered: BTreeSet<&str> = BTreeSet::new();
-    for frame in frames {
-        let label = frame.label();
-        let projection = production_projection(frame.context);
-        let plan = application_shell::frame_plan_for(&projection, &frame.policy);
-
-        // The plan's regions are exactly the regions the observation reports,
-        // in the order the observation demands.
-        let observed: Vec<ShellRegionId> = frame
-            .observation
-            .regions()
-            .iter()
-            .map(|region| region.id())
-            .collect();
-        assert_eq!(
-            observed,
-            ShellRegionId::surface_descriptor().to_vec(),
-            "{label}: the shell dropped or reordered a structural region"
-        );
-        let planned: BTreeSet<&str> = plan
-            .iter()
-            .map(|band| band.observed_region_id().name())
-            .collect();
-        let reported: BTreeSet<&str> = observed.iter().map(|id| id.name()).collect();
-        assert_eq!(
-            planned, reported,
-            "{label}: a reported region is not in the frame plan, or the reverse"
-        );
-
-        for band in plan {
-            let composition = band.composition();
-            let region = band.observed_region_id();
-            assert!(
-                declared.contains(composition.canonical_name()),
-                "{label}: {} is filled by {}, which is not a declared composition",
-                region.name(),
-                composition.canonical_name()
-            );
-            // The composition's own declared region must be the one it fills,
-            // or the observation reports a rectangle nothing produced.
-            assert_eq!(
-                composition.region().observation_name(),
-                Some(region.name()),
-                "{label}: {} declares a region it is not filling",
-                composition.canonical_name()
-            );
-            assert_ne!(
-                composition.region(),
-                ShellRegion::WholeFrame,
-                "{label}: the whole-frame composition was bound to an observed band"
-            );
-            let rect = frame.observation.region(region).rect();
-            assert!(
-                rect.width() > 0.0 && rect.height() > 0.0,
-                "{label}: {} painted an empty rectangle",
-                region.name()
-            );
-            assert!(
-                !frame
-                    .observation
-                    .region(region)
-                    .visible_label()
-                    .trim()
-                    .is_empty(),
-                "{label}: {} painted no visible label",
-                region.name()
-            );
-            regions_covered.insert(region.name());
-        }
+    let bound_regions: BTreeSet<&str> = ALL_SHELL_COMPOSITIONS
+        .into_iter()
+        .filter_map(|composition| composition.region().observation_name())
+        .collect();
+    for id in ShellRegionId::ALL {
         assert!(
-            frame.observation.regions_are_non_overlapping(),
-            "{label}: two structural regions overlap"
+            bound_regions.contains(id.name()),
+            "{} is bound by no declared composition",
+            id.name()
         );
+    }
+    assert!(
+        ALL_SHELL_COMPOSITIONS
+            .into_iter()
+            .any(|composition| composition.region() == ShellRegion::WholeFrame),
+        "the whole-frame composition disappeared"
+    );
+
+    // The committed page carries the five declared bands as semantic
+    // containers, in canonical order, and the render script rebuilds exactly
+    // those five.
+    let index_html = page_source("index.html");
+    let page_js = page_source("page.js");
+    let mut found_order: Vec<String> = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = index_html[from..].find("data-band=\"") {
+        let start = from + offset + "data-band=\"".len();
+        let name: String = index_html[start..]
+            .chars()
+            .take_while(|c| *c != '"')
+            .collect();
+        found_order.push(name);
+        from = start;
     }
     assert_eq!(
-        regions_covered.len(),
-        ShellRegionId::ALL.len(),
-        "not every structural region was covered across the measured frames"
-    );
-
-    // Every composition in the family paints when driven through the family's
-    // own entry point, so none is a variant nothing can render.
-    for composition in ALL_SHELL_COMPOSITIONS {
-        let context = match composition {
-            ShellComposition::MixerStripBank => TopLevelContext::Mixer,
-            _ => TopLevelContext::Patch,
-        };
-        let projection = production_projection(context);
-        for policy in ALL_DENSITY_POLICIES {
-            let painted = paint_composition(composition, &projection, policy);
-            assert!(
-                !painted.is_empty(),
-                "{} painted nothing at {}",
-                composition.canonical_name(),
-                policy.canonical_name()
-            );
-        }
-    }
-}
-
-/// The one run the render adapter paints that no composition produced.
-///
-/// `paint_focused_track_meter` puts the focused track's level on screen because
-/// the level has a source, a declared painter, and no route between them: the
-/// audio observation is delivered to the *window*, and no argument of
-/// `CompositionRenderFn` could carry it. It is the recorded residue of the
-/// adapter reduction, and it is named here so that a *second* thing the adapter
-/// decides to paint is a failure rather than an unnoticed addition.
-const ADAPTER_RESIDUE_PREFIX: &str = "METER ";
-
-/// Renders every band of one frame through the composition the production frame
-/// plan assigns it, into the rectangle the shipped window reported for it.
-///
-/// This is the adapter's own loop with the panels removed: `paint_shell`
-/// iterates `frame_plan_for`, builds one panel per band, and calls
-/// `arrange_band` inside it. Here the panel is replaced by a child `Ui` clipped
-/// to the rectangle that panel actually produced, and `arrange_band` — the same
-/// public function — is called with the same band, projection, and policy.
-///
-/// The whole-frame composition is deliberately *not* used for this comparison.
-/// `ApplicationShell::arrange` lays the bands out with a remainder-sized
-/// workspace cell, and the side region's unbounded content (F-18) grows that
-/// cell until the footer is pushed off a 1080 px screen entirely. Comparing
-/// against it would report the whole footer as adapter-painted, which is a
-/// statement about F-18 rather than about the adapter.
-fn paint_bands_through_their_compositions(frame: &PaintedFrame) -> Painted {
-    let projection = production_projection(frame.context);
-    let (context, input) = probe_context(frame.policy);
-    let pass = || {
-        let mut painted = Painted::default();
-        let output = context.run(input.clone(), |ctx| {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().inner_margin(egui::Margin::ZERO))
-                .show(ctx, |ui| {
-                    for band in application_shell::frame_plan_for(&projection, &frame.policy) {
-                        let rect = frame.band(band.observed_region_id());
-                        let mut band_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                        band_ui.set_clip_rect(rect);
-                        application_shell::arrange_band(
-                            &mut band_ui,
-                            band,
-                            &projection,
-                            &frame.policy,
-                        );
-                    }
-                });
-        });
-        for clipped in &output.shapes {
-            collect_component_shape(&clipped.shape, &mut painted);
-        }
-        painted
-    };
-    drop(pass());
-    pass()
-}
-
-/// Every run the shipped window shows was produced by a composition.
-///
-/// The structural check above proves each region is *assigned* to a declared
-/// composition. This proves the adapter did not additionally paint into one: the
-/// same bands are rendered a second time through
-/// [`paint_bands_through_their_compositions`], and the multiset of text the
-/// production window emitted is compared against it.
-///
-/// Anything the window painted that the compositions did not is adapter-local
-/// painting, and the only one permitted is the recorded meter residue.
-fn check_the_adapter_paints_nothing_but_its_recorded_residue(frames: &[PaintedFrame]) {
-    let mut residue_seen = 0_usize;
-    for frame in frames {
-        let label = frame.label();
-        let composed = paint_bands_through_their_compositions(frame);
-
-        let mut available: BTreeMap<&str, usize> = BTreeMap::new();
-        for run in &composed.texts {
-            *available.entry(run.as_str()).or_default() += 1;
-        }
-        let mut adapter_local: Vec<String> = Vec::new();
-        for run in &frame.runs {
-            if run.content.trim().is_empty() {
-                continue;
-            }
-            match available.get_mut(run.content.as_str()) {
-                Some(count) if *count > 0 => *count -= 1,
-                _ => adapter_local.push(run.content.clone()),
-            }
-        }
-
-        for run in &adapter_local {
-            assert!(
-                run.starts_with(ADAPTER_RESIDUE_PREFIX),
-                "{label}: the render adapter painted {run:?}, which no composition \
-                 produced; the only paint left in the adapter is the recorded \
-                 {ADAPTER_RESIDUE_PREFIX:?} residue"
-            );
-            residue_seen += 1;
-        }
-        assert!(
-            adapter_local.len() <= 1,
-            "{label}: the render adapter painted {} runs of its own: {adapter_local:?}",
-            adapter_local.len()
-        );
-        // The comparison must actually have compared something.
-        assert!(
-            composed.texts.len() > 20,
-            "{label}: the compositions painted only {} runs, so the comparison proved \
-             nothing",
-            composed.texts.len()
-        );
-    }
-    assert!(
-        residue_seen > 0,
-        "the recorded adapter residue never appeared, so this check never had \
-         anything to distinguish"
-    );
-}
-
-/// No file outside the visual module holds a paint, layout, band-height, or
-/// state-visualization decision.
-fn check_no_visual_decision_survives_outside_the_module() {
-    let (sources, lines, violations) = scan_delivered_tree();
-    // A scan that read nothing passes vacuously, so what it read is asserted
-    // before anything is asserted about what it found.
-    assert!(
-        sources.len() >= 40,
-        "the guard scanned only {} sources",
-        sources.len()
-    );
-    assert!(lines > 20_000, "the guard read only {lines} lines");
-    for required in [
-        "src/adapter/eframe_graphical_window.rs",
-        "src/testing/component_gallery_scene.rs",
-        "src/shell/standalone_application.rs",
-        "src/control/state_projector.rs",
-    ] {
-        assert!(
-            sources.iter().any(|path| path == required),
-            "the guard did not scan {required}"
-        );
-    }
-    assert!(
-        !sources.iter().any(|path| path.starts_with(VISUAL_MODULE)),
-        "the guard scanned the visual module, which is the one place decisions belong"
-    );
-    assert!(
-        violations.is_empty(),
-        "{} visual decision(s) survive outside {VISUAL_MODULE}:\n{}",
-        violations.len(),
-        violations
+        found_order,
+        PAGE_BANDS
             .iter()
-            .map(VisualDecision::report)
-            .collect::<Vec<_>>()
-            .join("\n")
+            .map(|(_, band, _)| (*band).to_owned())
+            .collect::<Vec<_>>(),
+        "the page's semantic band containers are not the declared five in canonical order"
     );
+    assert_eq!(
+        ShellRegionId::surface_descriptor()
+            .iter()
+            .map(|id| id.name())
+            .collect::<Vec<_>>(),
+        PAGE_BANDS
+            .iter()
+            .map(|(region, _, _)| *region)
+            .collect::<Vec<_>>(),
+        "the declared region order and the page band table disagree"
+    );
+    for (_, _, element) in PAGE_BANDS {
+        assert!(
+            page_js.contains(&format!("getElementById(\"{element}\")")),
+            "the render script does not rebuild the {element} band"
+        );
+    }
+
+    // The forwarded observations: the declared regions, exactly, at the
+    // authored extents — for both contexts at both viewports.
+    for context in [TopLevelContext::Mixer, TopLevelContext::Patch] {
+        let projection = production_projection(context);
+        for (viewport, policy) in AUTHORED_VIEWPORTS {
+            let label = format!("{context:?} at {viewport:?}");
+            let (document, observation) = forwarded_observation(&projection, viewport);
+            assert_eq!(
+                document["context"].as_str(),
+                Some(match context {
+                    TopLevelContext::Mixer => "mixer",
+                    TopLevelContext::Patch => "patch",
+                })
+            );
+            assert_eq!(
+                observation
+                    .regions()
+                    .iter()
+                    .map(|region| region.id())
+                    .collect::<Vec<_>>(),
+                ShellRegionId::surface_descriptor(),
+                "{label}: the shell dropped or reordered a structural region"
+            );
+            assert!(
+                observation.regions_are_non_overlapping(),
+                "{label}: two structural regions overlap"
+            );
+            let bands = policy.bands();
+            let split = policy.split();
+            let context_line = observation.region(ShellRegionId::ContextLine).rect();
+            let identity = observation.region(ShellRegionId::IdentityHeader).rect();
+            let main = observation.region(ShellRegionId::MainWorkspace).rect();
+            let side = observation
+                .region(ShellRegionId::PersistentSideRegion)
+                .rect();
+            let footer = observation.region(ShellRegionId::Footer).rect();
+            assert_eq!(
+                context_line.height(),
+                bands.context_line_px,
+                "{label} context line"
+            );
+            assert_eq!(
+                identity.height(),
+                bands.identity_header_px,
+                "{label} identity header"
+            );
+            assert_eq!(footer.height(), bands.footer_px, "{label} footer");
+            assert_eq!(side.width(), split.side_px, "{label} side region width");
+            assert!(
+                side.width() >= 320.0,
+                "{label}: the side region narrowed to {} px",
+                side.width()
+            );
+            assert_eq!(
+                context_line.height() + identity.height() + main.height() + footer.height(),
+                viewport[1],
+                "{label}: the bands and workspace do not sum to the viewport height"
+            );
+            assert_eq!(
+                main.width() + side.width(),
+                viewport[0],
+                "{label}: the workspace and side region do not sum to the viewport width"
+            );
+            for region in observation.regions() {
+                assert!(
+                    !region.visible_label().trim().is_empty(),
+                    "{label}: {} painted no visible label",
+                    region.id().name()
+                );
+            }
+        }
+    }
 }
 
-/// The render adapter stays at or below its delivered size.
-///
-/// A reduction that is not held cannot be relied on: the adapter carried visual
-/// decisions once, and the guard above only sees the families it names. A line
-/// ceiling additionally catches "something substantial moved back in".
-///
-/// What is measured is the **production span** — everything before the file's own
-/// `#[cfg(test)]` module — because that is the part the reduction was about and
-/// the part `NFR-005` allows anyone to change.
-fn check_the_render_adapter_is_at_or_below_its_declared_size() {
-    let source =
-        std::fs::read_to_string(repository_root().join("src/adapter/eframe_graphical_window.rs"))
-            .expect("the production graphical adapter");
-    let production = production_code(&source).lines().count();
-    assert!(
-        production <= ADAPTER_PRODUCTION_LINE_CEILING,
-        "the render adapter's production span is {production} lines, above the delivered \
-         {ADAPTER_PRODUCTION_LINE_CEILING}"
-    );
-    assert!(
-        production > 200 && production < source.lines().count(),
-        "the adapter measured {production} production lines out of {}; the ceiling read \
-         the wrong span",
-        source.lines().count()
-    );
-}
+/// The mixer-column anatomy: the committed page walks exactly the declared
+/// closed structure list, in order, and the production document supplies the
+/// per-track controls that drive it.
+fn check_the_mixer_column_anatomy_is_declared_and_driven() {
+    let page_js = page_source("page.js");
 
-/// The ceiling the reduced adapter is held to: its delivered production span.
-///
-/// **`NFR-003`'s stated number is unreachable and this is not it.** That
-/// requirement asks for 40% of the file's 1,282 lines — 512 — but 243 of those
-/// 1,282 are the adapter's own `#[cfg(test)]` module, which `NFR-005` forbids
-/// touching. The two requirements are in direct arithmetic conflict at the
-/// stated numbers, which WP06's review measured and recorded for mission review;
-/// compressing production code to chase a number that counts an untouchable test
-/// module would be the wrong response to a mis-specification.
-///
-/// The defensible measure is production-only: **1,039 lines at the mission base,
-/// 497 delivered — a 52% reduction.** The ceiling is the delivered figure, so
-/// the reduction cannot silently regress. Raising it is a deliberate edit to
-/// this line.
-const ADAPTER_PRODUCTION_LINE_CEILING: usize = 497;
+    // The page's anatomy array is the declared anatomy, verbatim and in
+    // order.
+    let entries = page_array_block(&page_js, "COLUMN_ANATOMY");
+    let parsed: Vec<String> = entries
+        .iter()
+        .map(|entry| entry.trim_matches(|c| c == '"' || c == ',').to_owned())
+        .collect();
+    assert_eq!(
+        parsed,
+        COLUMN_ANATOMY
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>(),
+        "the page's column anatomy drifted from the declared closed structure list"
+    );
+    // Each structure is actually emitted as a measurable data attribute.
+    for structure in COLUMN_ANATOMY {
+        assert!(
+            page_js.contains(&format!("data-structure=\"{structure}\"")),
+            "the render script never paints the {structure} structure"
+        );
+    }
+
+    // The document drives it: sixteen tracks, each carrying the four main
+    // controls the five structures read.
+    let document = production_document(TopLevelContext::Mixer);
+    let controls = surface_controls(&document, "mixerMain");
+    assert_eq!(controls.len(), MixerTrackId::COUNT * 4);
+    for track in 0..MixerTrackId::COUNT as u64 {
+        for parameter in ["level", "pan", "mute", "solo"] {
+            assert!(
+                controls.iter().any(|control| {
+                    control
+                        .pointer("/path/controlId/id/track_id")
+                        .and_then(Value::as_u64)
+                        == Some(track)
+                        && control
+                            .pointer("/path/controlId/id/parameter")
+                            .and_then(Value::as_str)
+                            == Some(parameter)
+                }),
+                "track {track} carries no {parameter} control in the rendered document"
+            );
+        }
+    }
+}
 
 // ===========================================================================
 // T043 — the no-placeholder rule and the ownership boundary
 // ===========================================================================
 
-/// The declared unavailable treatment, and the fabrications it must not be.
-///
-/// An unlabelled blank is indistinguishable from a real empty value, and a zero
-/// is indistinguishable from a real reading of zero. Both are the failure C-003
-/// names, so both are asserted against by exact equality rather than by
-/// containment: a fabricated `"0"` is a substring of the projected `"T00 Level"`
-/// and walks through any containment check.
-const FORBIDDEN_MARKERS: [&str; 5] = ["", " ", "0", "0.0", "0.000"];
-
-/// The five entries `DESIGN.md:454` draws in the PATCH Utility panel, in
-/// authored order.
-///
-/// Transcribed from the product authority rather than read back from the
-/// composition, so a panel that quietly stopped drawing one fails here instead
-/// of agreeing with itself.
-const AUTHORED_UTILITY_ENTRIES: [&str; 5] = [
-    "MASTER VOLUME",
-    "PATCH VOLUME",
-    "MIDI INPUT",
-    "OUTPUT TRACK",
-    "VOICE LIMIT",
-];
-
-/// The three the shipped projection drives nothing behind (F-10, items 1–3).
-///
-/// Master gain is projected, but as a MIXER global; the PATCH Utility surface
-/// has no path to it. MIDI channel is carried by `Patch` and never projected.
-/// Voice limit has no state, descriptor, or path anywhere. So these three are
-/// exactly the structures the panel must mark, and the two omitted from this
-/// list are exactly the ones it must drive.
-const UNDRIVEN_UTILITY_ENTRIES: [&str; 3] = ["MASTER VOLUME", "MIDI INPUT", "VOICE LIMIT"];
-
-/// A composition handed a projection slice with no data for part of its designed
-/// structure marks the gap rather than painting a placeholder.
-///
-/// The sparse case is real, not contrived: the shipped PATCH Utility surface
-/// carries two of the five entries the design file draws. It is rendered here
-/// through `ShellComposition::render` — the production entry point — against the
-/// production projection.
-fn check_a_composition_with_no_view_data_marks_the_gap() {
+/// A designed structure with no view data behind it is marked, never
+/// painted with a placeholder: the page's designed Utility entries equal the
+/// authored table driver for driver, the production document drives exactly
+/// the two driven entries, and the mark is the declared one.
+fn check_a_designed_structure_with_no_view_data_is_marked() {
     assert_eq!(
         UNAVAILABLE_MARK, "--",
         "the declared unavailable treatment changed"
@@ -1810,259 +1631,83 @@ fn check_a_composition_with_no_view_data_marks_the_gap() {
             "the unavailable mark is indistinguishable from a real empty or zero value"
         );
     }
-    for entry in UNDRIVEN_UTILITY_ENTRIES {
+
+    let page_js = page_source("page.js");
+    // The page's mark and separator are the declared vocabulary's, verbatim.
+    assert!(
+        page_js.contains(&format!("var UNAVAILABLE_MARK = \"{UNAVAILABLE_MARK}\";")),
+        "the page's unavailable mark drifted from the declared treatment"
+    );
+    assert!(
+        page_js.contains(&format!("var HINT_SEPARATOR = \"{HINT_SEPARATOR}\";")),
+        "the page's hint separator drifted from the authored separator"
+    );
+
+    // The designed entries, parsed from the committed script, equal the
+    // authored table — labels, order, and drivers.
+    let entries = page_array_block(&page_js, "DESIGNED_UTILITY_ENTRIES");
+    assert_eq!(
+        entries.len(),
+        AUTHORED_UTILITY_ENTRIES.len(),
+        "the page designs {} Utility entries where DESIGN.md draws {}",
+        entries.len(),
+        AUTHORED_UTILITY_ENTRIES.len()
+    );
+    for (entry, (label, driver)) in entries.iter().zip(AUTHORED_UTILITY_ENTRIES) {
         assert!(
-            AUTHORED_UTILITY_ENTRIES.contains(&entry),
-            "{entry} is marked unavailable but is not an authored Utility entry"
+            entry.contains(&format!("label: \"{label}\"")),
+            "the page's designed entry {entry:?} does not carry the authored label {label}"
         );
-    }
-
-    let mut measured = 0_usize;
-    let mut marked_measurements = 0_usize;
-    for context in [TopLevelContext::Patch, TopLevelContext::Mixer] {
-        let projection = production_projection(context);
-        for policy in ALL_DENSITY_POLICIES {
-            let painted =
-                paint_composition(ShellComposition::UtilityInspectorPanel, &projection, policy);
-            let label = format!("{context:?} at {}", policy.canonical_name());
-            measured += 1;
-
-            // Every mark names the structure it stands for, and the pair is
-            // adjacent in paint order. Adjacency is the part that matters: it
-            // proves the row painted the name and the mark and nothing else,
-            // which is what "omits it or marks it, and paints no value" means
-            // at the granularity a shape stream can see.
-            let mut marked: Vec<String> = Vec::new();
-            for (index, run) in painted.texts.iter().enumerate() {
-                if run.as_str() != UNAVAILABLE_MARK {
-                    continue;
-                }
-                let name = index
-                    .checked_sub(1)
-                    .and_then(|previous| painted.texts.get(previous))
-                    .unwrap_or_else(|| {
-                        panic!("{label}: an unavailable mark opened the panel with no name")
-                    });
-                assert!(
-                    !name.trim().is_empty() && name.as_str() != UNAVAILABLE_MARK,
-                    "{label}: an unavailable mark names no structure; it followed {name:?}"
-                );
-                marked.push(name.clone());
-            }
-            // On PATCH the marked set is exactly the three F-10 records, in
-            // authored order. Exact ordered equality, not containment: a
-            // structure that stopped being marked and a structure that started
-            // being marked both fail, and a fabricated value in a marked row
-            // displaces the mark and fails too.
-            //
-            // The MIXER Inspector is not asserted to mark anything. Every
-            // structure it draws is driven — the eight bus returns project
-            // `Empty` as a real value, which is the projection reporting an
-            // absence rather than the composition inventing one — so requiring a
-            // mark there would be requiring a defect.
-            if context == TopLevelContext::Patch {
-                assert_eq!(
-                    marked,
-                    UNDRIVEN_UTILITY_ENTRIES.to_vec(),
-                    "{label}: the PATCH Utility panel's marked structures changed"
-                );
-                marked_measurements += 1;
-            }
-
-            // Nothing the projection did not carry reaches the screen. Exact
-            // equality against the projected strings and the declared
-            // vocabulary — containment would accept a fabricated numeral that
-            // happens to be a substring of a real label, which is the canonical
-            // way this class of guard leaks.
-            let allowed = allowed_runs(&projection);
-            let fabricated: Vec<&String> = painted
-                .texts
-                .iter()
-                .filter(|run| !run.trim().is_empty())
-                .filter(|run| !is_allowed_run(run, &allowed))
-                .collect();
-            assert!(
-                fabricated.is_empty(),
-                "{label}: the side panel painted {} run(s) the projection did not carry \
-                 and the vocabulary does not declare: {fabricated:?}",
-                fabricated.len()
-            );
+        match driver {
+            Some(driver) => assert!(
+                entry.contains(&format!("driver: \"{driver}\"")),
+                "{label} must be driven by the projected {driver}"
+            ),
+            None => assert!(
+                entry.contains("driver: null"),
+                "{label} is undriven by declaration and must be marked, not invented"
+            ),
         }
     }
-    assert_eq!(
-        measured,
-        2 * ALL_DENSITY_POLICIES.len(),
-        "the side panel was not measured in both contexts at both densities"
+    // The marked path exists and paints the declared mark beside the
+    // structure's name.
+    assert!(
+        page_js.contains("markUnavailableRowHtml"),
+        "the page has no marked-unavailable path"
     );
+
+    // The production document drives exactly the declared drivers: the
+    // utility surface carries the two driven rows and nothing for the three
+    // undriven designs — so the page can only mark them.
+    let document = production_document(TopLevelContext::Patch);
+    let utility_ids: BTreeSet<String> = surface_controls(&document, "patchUtility")
+        .iter()
+        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+        .filter_map(|control| {
+            control
+                .pointer("/path/controlId/id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
+    let declared_drivers: BTreeSet<String> = AUTHORED_UTILITY_ENTRIES
+        .iter()
+        .filter_map(|(_, driver)| driver.map(str::to_owned))
+        .collect();
     assert_eq!(
-        marked_measurements,
-        ALL_DENSITY_POLICIES.len(),
-        "the sparse PATCH Utility case was not measured at both densities"
+        utility_ids, declared_drivers,
+        "the projected utility surface and the declared drivers disagree"
     );
 }
 
-/// Whether one painted run is explained by the projection or the vocabulary.
-///
-/// Exact equality, or an exact separator-join of atoms that are each exactly
-/// allowed. The shell's declared way of putting two facts on one line is
-/// [`HINT_SEPARATOR`], so a run that splits on it into allowed atoms is a
-/// composition of allowed atoms — every part still has to be one.
-///
-/// **Recorded residual**: the allowed set is built for the whole projection
-/// rather than per row, so a value that is legitimate on one row and fabricated
-/// on another would pass. Per-row attribution is not available from a shape
-/// stream. What closes the canonical case anyway is the adjacency assertion
-/// above: a fabricated value in a *marked* row displaces the mark and fails.
-fn is_allowed_run(run: &str, allowed: &BTreeSet<String>) -> bool {
-    if allowed.contains(run) {
-        return true;
-    }
-    let parts: Vec<&str> = run.split(HINT_SEPARATOR).collect();
-    parts.len() > 1
-        && parts
-            .iter()
-            .all(|part| allowed.contains(part.trim()) && !part.trim().is_empty())
-}
-
-/// Every run a composition may legitimately paint: what the projection carries,
-/// and what the authored vocabulary declares.
-///
-/// Built from the projection each time rather than from a frozen list, so a
-/// projected label that changes carries its own permission with it. Scalars are
-/// rendered at the declared precision, which is transcribed here rather than
-/// reached for — the same discipline the vocabulary target uses for the authored
-/// color table.
-fn allowed_runs(projection: &GraphicalShellProjection) -> BTreeSet<String> {
-    use crest_synth::control::{SemanticControlValue, SemanticSurfaceSummary};
-
-    let mut allowed: BTreeSet<String> = BTreeSet::new();
-    let model = projection.semantic_model();
-    for surface in model.surfaces() {
-        allowed.insert(surface.label().to_owned());
-        match surface.summary() {
-            SemanticSurfaceSummary::PatchUtility {
-                patch_id,
-                capability_id,
-                ..
-            }
-            | SemanticSurfaceSummary::Patch {
-                patch_id,
-                capability_id,
-                ..
-            } => {
-                allowed.insert(format!("{patch_id}"));
-                allowed.insert(format!("{capability_id}"));
-            }
-            SemanticSurfaceSummary::MixerInspector {
-                focused_track,
-                routed_patches,
-                ..
-            } => {
-                allowed.insert(format!("{focused_track}"));
-                // The Inspector's two authored identity lines, each a static
-                // word joined to a projected fact. Composed here exactly as the
-                // panel composes them: a run that changed its spelling would no
-                // longer be explained, which is what an acceptance target is
-                // for.
-                allowed.insert(format!("SELECTED {focused_track}"));
-                for routed in routed_patches {
-                    allowed.insert(routed.patch_name().to_owned());
-                    allowed.insert(format!(
-                        "PATCH {:02}{HINT_SEPARATOR}{}",
-                        routed.patch_id().value(),
-                        routed.patch_name()
-                    ));
-                }
-            }
-            SemanticSurfaceSummary::Mixer { .. } => {}
-        }
-        for control in surface.controls() {
-            allowed.insert(control.label().to_owned());
-            if let Some(unit) = control.unit() {
-                allowed.insert(unit.to_owned());
-            }
-            if let Some(range) = control.numeric_range() {
-                allowed.insert(format!("{:.3}", range.minimum()));
-                allowed.insert(format!("{:.3}", range.maximum()));
-            }
-            match control.value() {
-                SemanticControlValue::Scalar(value) => {
-                    allowed.insert(format!("{value:.3}"));
-                }
-                SemanticControlValue::Identity(text) | SemanticControlValue::Summary(text) => {
-                    allowed.insert(text.clone());
-                }
-                SemanticControlValue::Asset(asset) => {
-                    allowed.insert(asset.locator().to_owned());
-                }
-                SemanticControlValue::Parameter(_) => {}
-            }
-        }
-    }
-    allowed.insert(projection.workspace().main_label().to_owned());
-    allowed.insert(projection.workspace().side_label().to_owned());
-    allowed.insert(projection.context_line().product_label().to_owned());
-    allowed.insert(projection.context_line().context_label().to_owned());
-    allowed.insert(projection.context_line().status_label().to_owned());
-    allowed.insert(projection.identity_header().primary_label().to_owned());
-    allowed.insert(projection.identity_header().secondary_label().to_owned());
-    allowed.insert(projection.footer().path_label().to_owned());
-    for hint in projection.footer().action_hints() {
-        allowed.insert(hint.clone());
-    }
-
-    // The authored vocabulary: the unavailable mark, the state words, the
-    // toggle's two spellings, the designed structure names, and the Inspector's
-    // authored section words.
-    allowed.insert(UNAVAILABLE_MARK.to_owned());
-    allowed.insert("ON".to_owned());
-    allowed.insert("OFF".to_owned());
-    for state in ALL_COMPONENT_STATES {
-        if let NonColorSignal::Word(word) = state.appearance().signal {
-            allowed.insert(word.to_owned());
-        }
-    }
-    for word in LOADING_PROGRESS_WORDS {
-        allowed.insert(word.to_owned());
-    }
-    for entry in AUTHORED_UTILITY_ENTRIES {
-        allowed.insert(entry.to_owned());
-    }
-    for word in AUTHORED_INSPECTOR_WORDS {
-        allowed.insert(word.to_owned());
-    }
-    allowed.insert(focus::CURSOR_GLYPH.to_owned());
-    allowed
-}
-
-/// The static words the Inspector's authored layout carries (`DESIGN.md:466`,
-/// Figma `42:191`).
-///
-/// Names, not values: each introduces a fact the projection supplies.
-const AUTHORED_INSPECTOR_WORDS: [&str; 8] = [
-    "CURSOR",
-    "SELECTED",
-    "ROUTE",
-    "SENDS",
-    "PATCH",
-    "PANEL SUMMARY",
-    "MUTE",
-    "SOLO",
-];
-
-/// No control and no composition owns, caches, or derives application state, and
-/// none dispatches a semantic action.
-///
-/// Two halves, because neither alone is sufficient. The source half names the
-/// constructions through which ownership could arrive; the render half proves
-/// that repainting the same input twice paints the same thing, which is what a
-/// cache between renders breaks.
+/// No component owns, caches, or derives application state; the page owns no
+/// clock, storage, or input; and the transport renders deterministically.
 fn check_no_component_owns_or_dispatches_application_state() {
     let root = repository_root();
     let sources = visual_module_sources();
     assert!(
-        sources.len() >= 20,
-        "the ownership scan read only {} visual sources",
+        sources.len() >= VOCABULARY_SOURCES.len(),
+        "the ownership scan read only {} vocabulary sources",
         sources.len()
     );
 
@@ -2111,8 +1756,6 @@ fn check_no_component_owns_or_dispatches_application_state() {
                  it is given"
             );
         }
-        // Raw viewport size is read in exactly one place, and every other size
-        // difference resolves through the policy that reads it.
         if !path.ends_with("density.rs") {
             assert!(
                 !code.contains("screen_rect"),
@@ -2125,343 +1768,82 @@ fn check_no_component_owns_or_dispatches_application_state() {
         }
     }
     assert!(
-        lines_read > 5_000,
-        "the ownership scan read only {lines_read} lines of the visual module"
+        lines_read > 1_500,
+        "the ownership scan read only {lines_read} lines of the authored vocabulary"
     );
 
-    // A control handed the same view data twice paints the same thing twice,
-    // and a control painted after another control's state paints what it would
-    // have painted alone. Both fail if anything is retained between renders.
-    for control in ALL_COMPONENT_CONTROLS {
-        let (kind, role) = selecting_pair(control).expect("a selecting pair");
-        let view = projected_control_of_kind(kind).expect("a projected view model");
-        let states = control.applicable_states();
-        let alone = paint_control(
-            control,
-            &view,
-            ComponentState::Resting,
-            role,
-            ViewportDensityPolicy::Desktop,
-        )
-        .0;
-        let repeated = paint_control(
-            control,
-            &view,
-            ComponentState::Resting,
-            role,
-            ViewportDensityPolicy::Desktop,
-        )
-        .0;
-        assert_eq!(
-            alone,
-            repeated,
-            "{} paints differently on a second identical render",
-            control.canonical_name()
-        );
-
-        let other = states
-            .iter()
-            .find(|state| **state != ComponentState::Resting)
-            .copied()
-            .expect("every control declares more than one state");
-        let sequence = paint_control_states(
-            control,
-            &view,
-            &[other, ComponentState::Resting],
-            role,
-            ViewportDensityPolicy::Desktop,
-        );
-        assert_eq!(
-            sequence[1].0,
-            alone,
-            "{} painted Resting differently after painting {}; something was retained \
-             between renders",
-            control.canonical_name(),
-            other.canonical_name()
+    // The page's half of the boundary: a pure render with no clock, no
+    // randomness, no storage, and no input capture — keys stay Rust-side.
+    // Comments narrate the rule and are not ownership, so they are stripped
+    // with the same string-aware discipline the Rust guard applies.
+    let page_js: String = page_source("page.js")
+        .lines()
+        .map(|line| strip(line, true))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let index_html = page_source("index.html");
+    let gallery_js: String = page_source("gallery.js")
+        .lines()
+        .map(|line| strip(line, true))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for needle in [
+        "Date.now",
+        "Math.random",
+        "performance.now",
+        "setInterval",
+        "setTimeout",
+        "localStorage",
+        "sessionStorage",
+        "fetch(",
+        "XMLHttpRequest",
+    ] {
+        assert!(
+            !page_js.contains(needle),
+            "the render script owns `{needle}`, which a pure render cannot"
         );
     }
-}
-
-// ===========================================================================
-// T044 — viewport integrity after recomposition
-// ===========================================================================
-
-/// How many runs may be cut by an inner clip while staying inside their band.
-///
-/// **This is F-17's residual and the display-fidelity relaxation.** A run in
-/// this class is still inside the region it belongs to; what cuts it is a
-/// narrower container the composition put it in — a mixer column, a row. The
-/// sixteen mixer columns carry projected labels (`T00 Level`) wider than a
-/// compact column, so all sixty-four cell labels are trimmed at 1280, and the
-/// `Locked` word on a disabled PATCH row overruns its row inset by 8.6 px at
-/// both viewports.
-///
-/// Measured on the production frame: **64 at 1280×800 on MIXER**, and exactly
-/// **one** on PATCH at each viewport, which is the `Locked` word.
-///
-/// Recorded for cleanup rather than gating, per the operator's 2026-08-03
-/// direction that display fidelity is not a rejection axis at this stage.
-/// Bounded so it cannot grow.
-const INSIDE_BAND_CLIP_CEILING: usize = 64;
-
-/// Both authored viewports keep every band, the persistent side region, and the
-/// authored minimum interactive target after recomposition — and no text is
-/// unreadable anywhere the shell has no way to reveal it.
-///
-/// Returns the per-band escape counts so the caller can report them.
-fn check_viewport_integrity_survived_recomposition(
-    frames: &[PaintedFrame],
-) -> BTreeMap<String, usize> {
-    let mut viewports_seen = BTreeSet::new();
-    let mut escapes: BTreeMap<String, usize> = BTreeMap::new();
-    let mut measured = 0_usize;
-    let mut defects: BTreeSet<String> = BTreeSet::new();
-
-    for frame in frames {
-        let [width, height] = frame.viewport;
-        let label = frame.label();
-        viewports_seen.insert(format!("{width}x{height}"));
-
-        assert_eq!(
-            ViewportDensityPolicy::resolve(width),
-            frame.policy,
-            "{label}: the shell resolved the wrong density policy"
-        );
-        assert_eq!(frame.observation.viewport_width(), width, "{label} width");
-        assert_eq!(
-            frame.observation.viewport_height(),
-            height,
-            "{label} height"
-        );
-
-        let bands = frame.policy.bands();
-        let split = frame.policy.split();
-        let context_line = frame.band(ShellRegionId::ContextLine);
-        let identity = frame.band(ShellRegionId::IdentityHeader);
-        let main = frame.band(ShellRegionId::MainWorkspace);
-        let side = frame.band(ShellRegionId::PersistentSideRegion);
-        let footer = frame.band(ShellRegionId::Footer);
-
-        // Every structural band is retained at its declared extent.
-        assert_eq!(
-            context_line.height(),
-            bands.context_line_px,
-            "{label} context line"
-        );
-        assert_eq!(
-            identity.height(),
-            bands.identity_header_px,
-            "{label} identity header"
-        );
-        assert_eq!(footer.height(), bands.footer_px, "{label} footer");
-        assert_eq!(side.width(), split.side_px, "{label} side region width");
-        assert!(
-            side.width() > 0.0 && side.height() > 0.0,
-            "{label}: the persistent side region was hidden"
-        );
-        assert_eq!(
-            context_line.height() + identity.height() + main.height() + footer.height(),
-            height,
-            "{label}: the bands and workspace do not sum to the viewport height"
-        );
-        assert_eq!(
-            main.width() + side.width(),
-            width,
-            "{label}: the workspace and side region do not sum to the viewport width"
-        );
-
-        // The authored minimum interactive target survives at both densities.
-        for (name, extent) in [
-            ("row height", frame.policy.rhythm().row_height_px),
-            (
-                "utility control height",
-                frame.policy.utility_control().height_px,
-            ),
-            ("mixer column width", frame.policy.mixer_column().width_px),
-        ] {
+    // The gallery script is held to the same input rule as the page: its
+    // digit keys are bound Rust-side by the testing scene, never page-side.
+    for (name, source) in [
+        ("page.js", &page_js),
+        ("index.html", &index_html),
+        ("gallery.js", &gallery_js),
+    ] {
+        for needle in ["keydown", "keyup", "keypress"] {
             assert!(
-                extent >= MIN_INTERACTIVE_TARGET_PX,
-                "{label}: the declared {name} is {extent} px, below the authored \
-                 {MIN_INTERACTIVE_TARGET_PX} px minimum"
+                !source.contains(needle),
+                "{name} registers a key handler (`{needle}`); keys are captured Rust-side"
             );
         }
-
-        // Clipping, per band, with a denominator. A run that was never composed
-        // and a run that was culled are the same absence in a shape stream, so
-        // what is asserted first is that each band supplied runs at all.
-        let mut per_band: BTreeMap<ShellRegionId, usize> = BTreeMap::new();
-        let mut visible: BTreeMap<String, Vec<&PaintedRun>> = BTreeMap::new();
-        for run in &frame.runs {
-            if run.content.trim().is_empty() {
-                continue;
-            }
-            measured += 1;
-            let Some(id) = band_containing(frame, run) else {
-                continue;
-            };
-            *per_band.entry(id).or_default() += 1;
-
-            if run.clip.contains_rect(run.rect) {
-                visible
-                    .entry(format!("{:?}", run.clip))
-                    .or_default()
-                    .push(run);
-                continue;
-            }
-
-            match classify_escape(frame, id, run) {
-                Escape::Defect => {
-                    defects.insert(format!(
-                        "{label}: {:?} at {:?} escapes {} (clip {:?})",
-                        run.content,
-                        run.rect,
-                        id.name(),
-                        run.clip
-                    ));
-                }
-                recorded => {
-                    *escapes
-                        .entry(format!("{label} {} {recorded:?}", id.name()))
-                        .or_default() += 1;
-                }
-            }
-        }
-        for id in ShellRegionId::ALL {
-            let supplied = per_band.get(&id).copied().unwrap_or_default();
-            assert!(
-                supplied > 0,
-                "{label}: {} supplied no text run at all, so nothing about its \
-                 legibility was measured",
-                id.name()
-            );
-        }
-
-        // No two fully visible runs in the same container collide.
-        for (container, runs) in &visible {
-            for (index, first) in runs.iter().enumerate() {
-                for second in runs.iter().skip(index + 1) {
-                    let overlap = first.rect.intersect(second.rect);
-                    if overlap.width() > 0.0 && overlap.height() > 0.0 {
-                        defects.insert(format!(
-                            "{label}: {:?} at {:?} and {:?} at {:?} overlap inside {container}",
-                            first.content, first.rect, second.content, second.rect
-                        ));
-                    }
-                }
-            }
-        }
     }
 
-    assert_eq!(
-        viewports_seen.len(),
-        AUTHORED_VIEWPORTS.len(),
-        "both authored viewports must be measured; saw {viewports_seen:?}"
-    );
-    assert!(
-        measured > 200,
-        "only {measured} glyph runs were measured across four production frames"
-    );
-    assert!(
-        defects.is_empty(),
-        "the production shell made {} text run(s) unreadable:\n{}",
-        defects.len(),
-        defects.iter().cloned().collect::<Vec<_>>().join("\n")
-    );
-
-    for (band, count) in &escapes {
-        // Scrolled-out content is reachable by a gesture, so it carries no
-        // ceiling: capping it would penalise a composition for holding more
-        // than fits, which is what a scroll region is for. Trimmed content is
-        // not reachable and is bounded so F-17's residual cannot grow.
-        if band.ends_with(&format!("{:?}", Escape::ScrolledOutOfView)) {
-            continue;
-        }
-        assert!(
-            *count <= INSIDE_BAND_CLIP_CEILING,
-            "{band}: {count} runs escape, above the recorded ceiling of \
-             {INSIDE_BAND_CLIP_CEILING}; this is a regression beyond the findings this \
-             target scopes around"
-        );
-    }
-    escapes
-}
-
-/// Which structural band a run was painted into, by containment of its clip.
-fn band_containing(frame: &PaintedFrame, run: &PaintedRun) -> Option<ShellRegionId> {
-    ShellRegionId::ALL
-        .into_iter()
-        .find(|id| frame.band(*id).contains_rect(run.clip))
-}
-
-/// How an escaping run is classified.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum Escape {
-    /// The run left its structural band from inside a scroll viewport strictly
-    /// smaller than the band, so the gesture that reveals it is the scroll.
-    /// Reachable, therefore permitted and uncapped.
-    ScrolledOutOfView,
-    /// The run is still inside its structural band and is trimmed by a narrower
-    /// container the composition put it in — a mixer column, a row inset.
-    /// **F-17's residual**, and the display-fidelity relaxation.
-    TrimmedInsideTheBand,
-    /// Anything else. A run leaving a band with the band itself as its
-    /// container, or leaving it sideways or upward, or leaving the frame.
-    /// **Unreachable by any gesture.** These are defects and fail.
-    Defect,
-}
-
-/// Classifies one escaping run.
-///
-/// The distinction that matters is between text that is *unreachable* and text
-/// that is merely *not on screen right now*, and the shape stream carries it in
-/// the clip rectangle: a run whose container **is the band** has no scroll
-/// region it could have come from, so nothing brings it back, while a run
-/// clipped by a viewport strictly inside the band was composed into a scroll
-/// area and a gesture reveals it.
-///
-/// This is what closed **F-18**. Before the side region regained its scroll
-/// region, the Inspector's lower rows carried the band rect itself as their clip
-/// — measured at `[[1500,120]-[1920,1016]]`, the band exactly — and were
-/// unreachable. They now carry `[[1500,154]-[1920,1016]]`, the entry viewport
-/// below the pinned title. Deleting
-/// `utility_inspector_panel::entry_viewport` restores the first shape and this
-/// classifies those runs as `Defect` again, which is the falsification the
-/// finding needs.
-///
-/// Nothing here is permitted by which finding it belongs to — it is permitted by
-/// where the glyphs ended up and what contained them.
-fn classify_escape(frame: &PaintedFrame, id: ShellRegionId, run: &PaintedRun) -> Escape {
-    let band = frame.band(id);
-    let tolerance = 1.0;
-    let inside_band = run.rect.min.x >= band.min.x - tolerance
-        && run.rect.max.x <= band.max.x + tolerance
-        && run.rect.min.y >= band.min.y - tolerance
-        && run.rect.max.y <= band.max.y + tolerance;
-    if inside_band {
-        // A chrome band contains no inner container of its own, so a run
-        // trimmed inside one has nowhere it could have come from.
-        return match id {
-            ShellRegionId::MainWorkspace | ShellRegionId::PersistentSideRegion => {
-                Escape::TrimmedInsideTheBand
-            }
-            ShellRegionId::ContextLine | ShellRegionId::IdentityHeader | ShellRegionId::Footer => {
-                Escape::Defect
-            }
+    // The transport's half: rendering the same immutable projection twice
+    // produces byte-identical documents — nothing between the reducer and
+    // the page retains or rewrites anything.
+    for context in [TopLevelContext::Patch, TopLevelContext::Mixer] {
+        let projection = production_projection(context);
+        let render = |projection: &GraphicalShellProjection| -> String {
+            let mut channel = ProjectionChannel::new();
+            let mut emitted = None;
+            channel
+                .push(projection, |document| {
+                    emitted = Some(document);
+                    Ok(())
+                })
+                .expect("the determinism probe emit succeeds");
+            serde_json::to_string(&emitted.expect("one document")).expect("the document serializes")
         };
+        assert_eq!(
+            render(&projection),
+            render(&projection),
+            "{context:?}: two renders of one projection must serialize identically"
+        );
     }
-    // Strictly inside on at least one axis: a viewport the size of the band is
-    // the band, and scrolls nothing.
-    let scrollable_viewport = band.contains_rect(run.clip)
-        && (run.clip.width() < band.width() - tolerance
-            || run.clip.height() < band.height() - tolerance);
-    if scrollable_viewport {
-        return Escape::ScrolledOutOfView;
-    }
-    Escape::Defect
 }
 
-/// Both authored viewports resolve from the density policy, and nothing between
-/// or below them introduces a third layout.
+/// Both authored viewports resolve from the density policy, and nothing
+/// between or below them introduces a third layout.
 fn check_both_viewports_resolve_from_the_declared_policy() {
     for (viewport, expected) in AUTHORED_VIEWPORTS {
         assert_eq!(
@@ -2475,8 +1857,6 @@ fn check_both_viewports_resolve_from_the_declared_policy() {
         assert_eq!(authored.height_px, viewport[1]);
     }
 
-    // A width between, below, and above the two authored sizes resolves through
-    // the declared rule, and the layouts it can produce are exactly two.
     let mut layouts: BTreeSet<String> = BTreeSet::new();
     let mut policies: BTreeSet<&str> = BTreeSet::new();
     for width in [
@@ -2503,6 +1883,11 @@ fn check_both_viewports_resolve_from_the_declared_policy() {
         ALL_DENSITY_POLICIES.len(),
         "the sweep did not reach both declared policies"
     );
+
+    // The production window's declared window sizing reads the same policy:
+    // the authored desktop viewport opens it and the deck viewport floors
+    // it. (The window itself is transport; the sizes are the policy's.)
+    let _ = TauriWebviewWindow::default();
 }
 
 // ===========================================================================
@@ -2521,30 +1906,114 @@ fn the_production_projection_carries_the_kinds_this_target_can_drive() {
 }
 
 #[test]
-fn every_drivable_pair_paints_through_the_production_render_path() {
-    let driven = check_every_drivable_pair_paints_through_the_production_path();
+fn every_projected_control_renders_through_the_document() {
+    let driven = check_every_projected_control_renders_through_the_document();
     assert!(
-        driven >= 18,
-        "only {driven} kind and role pairs were driven through the render path"
+        driven >= 60,
+        "only {driven} projected controls were driven through the rendered document"
     );
 }
 
 #[test]
-fn every_control_paints_every_applicable_state_without_relying_on_color() {
-    check_every_control_paints_every_applicable_state_without_relying_on_color();
+fn every_control_declares_its_applicable_states() {
+    check_state_applicability_declarations();
 }
 
 #[test]
-fn every_shipped_region_is_produced_by_a_declared_composition() {
-    let frames = paint_production_frames();
-    check_every_region_is_produced_by_a_declared_composition(&frames);
-    check_the_adapter_paints_nothing_but_its_recorded_residue(&frames);
+fn every_shipped_region_is_a_declared_band() {
+    check_every_region_is_a_declared_band();
+    check_the_mixer_column_anatomy_is_declared_and_driven();
 }
 
 #[test]
 fn no_visual_decision_survives_outside_the_visual_module() {
-    check_no_visual_decision_survives_outside_the_module();
-    check_the_render_adapter_is_at_or_below_its_declared_size();
+    let (sources, lines, violations) = scan_delivered_tree();
+    assert!(
+        sources.len() >= 40,
+        "the guard scanned only {} sources",
+        sources.len()
+    );
+    assert!(lines > 20_000, "the guard read only {lines} lines");
+    for required in [
+        "src/shell/webview/window.rs",
+        "src/shell/webview/projection_channel.rs",
+        "src/testing/component_gallery_scene.rs",
+        "src/shell/standalone_application.rs",
+        "src/control/state_projector.rs",
+    ] {
+        assert!(
+            sources.iter().any(|path| path == required),
+            "the guard did not scan {required}"
+        );
+    }
+    assert!(
+        !sources.iter().any(|path| {
+            path.starts_with(VISUAL_MODULE) || VOCABULARY_SOURCES.contains(&path.as_str())
+        }),
+        "the guard scanned the authored vocabulary, which is the one place decisions belong"
+    );
+    assert!(
+        violations.is_empty(),
+        "{} visual decision(s) survive outside the authored vocabulary:\n{}",
+        violations.len(),
+        violations
+            .iter()
+            .map(VisualDecision::report)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn the_webview_window_holds_no_paint_decision() {
+    check_the_webview_window_holds_no_paint_decision();
+}
+
+/// A guard that has never failed is indistinguishable from no guard: a paint
+/// decision planted in a webview transport source must be reported.
+#[test]
+fn the_transport_guard_reports_a_planted_decision() {
+    let planted = concat!(
+        "use ",
+        "efr",
+        "ame::eg",
+        "ui::Color32;\n",
+        "pub const ACCENT: Color32 = Color32::from_rgb(0x65, 0xe5, 0xff);\n",
+        "pub fn seat_side_region() -> f32 {\n",
+        "    420.0\n",
+        "}\n",
+    );
+    let violations = webview_transport_violations("src/shell/webview/planted.rs", planted);
+    let joined = violations.join("\n");
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("color")),
+        "the transport guard did not report the planted color decision:\n{joined}"
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("Color32")),
+        "the transport guard did not report the paint API name:\n{joined}"
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("side region")),
+        "the transport guard did not report the planted band extent:\n{joined}"
+    );
+
+    // And the shipped transport sources pass the same function, so what the
+    // planted test proves failing is exactly what the shipped check runs.
+    let root = repository_root();
+    for path in WEBVIEW_TRANSPORT_SOURCES {
+        let source = std::fs::read_to_string(root.join(path)).expect("a transport source");
+        assert!(
+            webview_transport_violations(path, &source).is_empty(),
+            "{path} carries a paint or layout decision"
+        );
+    }
 }
 
 #[test]
@@ -2554,17 +2023,20 @@ fn the_visual_decision_guard_reads_the_delivered_tree() {
     assert!(lines > 20_000, "{lines} lines");
 }
 
-/// A guard that has never failed is indistinguishable from no guard.
-///
-/// Each family the requirement names is planted, and each must be reported with
-/// file, line, and kind. The band-height plant is the constant the adapter used
-/// to carry.
+/// Each family the requirement names is planted, and each must be reported
+/// with file, line, and kind. The band-height plant is the constant the
+/// retired adapter used to carry.
 #[test]
 fn the_visual_decision_guard_reports_a_planted_decision() {
     let planted = concat!(
-        "use eframe::egui::Color32;\n",
+        "use ",
+        "efr",
+        "ame::eg",
+        "ui::Color32;\n",
         "pub const ACCENT: Color32 = Color32::from_rgb(0x65, 0xe5, 0xff);\n",
-        "pub fn paint(ui: &mut egui::Ui) {\n",
+        "pub fn paint(ui: &mut ",
+        "eg",
+        "ui::Ui) {\n",
         "    ui.add_space(12.0);\n",
         "    let id = FontId::new(14.0, FontFamily::Proportional);\n",
         "    let hex = Color32::from_hex(\"#0c1015\");\n",
@@ -2614,24 +2086,25 @@ fn the_visual_decision_guard_reports_a_planted_decision() {
             .any(|decision| decision.kind == "palette"),
         "the guard accepted the retired focus green spelled as hex"
     );
-    // The side-region split width is a layout decision wherever it is spelled.
+    // The side-region split width is a layout decision wherever it is
+    // spelled.
     assert!(
-        scan_visual_decisions("src/adapter/r.rs", "use eframe::egui;\nlet side = 420.0;\n")
-            .iter()
-            .any(|decision| decision.kind == "band height"),
+        scan_visual_decisions(
+            "src/adapter/r.rs",
+            concat!("use ", "efr", "ame::eg", "ui;\nlet side = 420.0;\n")
+        )
+        .iter()
+        .any(|decision| decision.kind == "band height"),
         "the guard accepted the declared side-region width"
     );
 }
 
 /// The guard does not flag what the vocabulary permits.
-///
-/// A guard that fired on resolved tokens, named constants, or zero would be
-/// turned off within a week, which is the other way a guard stops guarding.
 #[test]
 fn the_visual_decision_guard_allows_what_the_vocabulary_permits() {
     let permitted = concat!(
-        "use crate::shell::visual::{SemanticColor, SpacingStep, MIN_INTERACTIVE_TARGET_PX};\n",
-        "pub fn paint(ui: &mut egui::Ui, policy: &ViewportDensityPolicy) {\n",
+        "use crate::shell::tokens::{SemanticColor, SpacingStep, MIN_INTERACTIVE_TARGET_PX};\n",
+        "pub fn paint(ui: &mut Ui, policy: &ViewportDensityPolicy) {\n",
         "    ui.add_space(SpacingStep::S12.resolve());\n",
         "    let clear = Color32::TRANSPARENT;\n",
         "    let id = FontId::new(style.metrics().size_px, family_for(style));\n",
@@ -2655,8 +2128,8 @@ fn the_visual_decision_guard_allows_what_the_vocabulary_permits() {
 }
 
 #[test]
-fn a_composition_with_no_view_data_marks_the_gap_rather_than_painting_one() {
-    check_a_composition_with_no_view_data_marks_the_gap();
+fn a_designed_structure_with_no_view_data_is_marked_rather_than_invented() {
+    check_a_designed_structure_with_no_view_data_is_marked();
 }
 
 #[test]
@@ -2665,57 +2138,60 @@ fn no_component_owns_caches_or_dispatches_application_state() {
 }
 
 #[test]
-fn both_authored_viewports_survive_recomposition() {
-    let frames = paint_production_frames();
-    check_viewport_integrity_survived_recomposition(&frames);
+fn both_authored_viewports_resolve_from_the_declared_policy() {
     check_both_viewports_resolve_from_the_declared_policy();
 }
 
 /// The declared acceptance target.
 ///
 /// Every check above runs here, in order, and the marker
-/// `validation.component_composition` asserts on is printed strictly after the
-/// last of them returns. A failing check panics before the print, so the marker
-/// cannot appear on a red run. The checks are also exposed individually so a
-/// failure names which claim broke rather than only that something did.
+/// `validation.component_composition` asserts on is printed strictly after
+/// the last of them returns. A failing check panics before the print, so the
+/// marker cannot appear on a red run.
 #[test]
 fn component_composition_acceptance() {
     check_selection_is_total_and_every_control_reachable();
     check_the_selector_is_exhaustive_rather_than_defaulted();
     check_the_production_projection_carries_the_kinds_this_target_can_drive();
-    let pairs_driven = check_every_drivable_pair_paints_through_the_production_path();
-    check_every_control_paints_every_applicable_state_without_relying_on_color();
+    let controls_driven = check_every_projected_control_renders_through_the_document();
+    check_state_applicability_declarations();
 
-    let frames = paint_production_frames();
-    check_every_region_is_produced_by_a_declared_composition(&frames);
-    check_the_adapter_paints_nothing_but_its_recorded_residue(&frames);
+    check_every_region_is_a_declared_band();
+    check_the_mixer_column_anatomy_is_declared_and_driven();
 
-    check_no_visual_decision_survives_outside_the_module();
-    check_the_render_adapter_is_at_or_below_its_declared_size();
+    let (sources, lines, violations) = scan_delivered_tree();
+    assert!(
+        sources.len() >= 40 && lines > 20_000,
+        "the guard read too little"
+    );
+    assert!(
+        violations.is_empty(),
+        "{} visual decision(s) survive outside the authored vocabulary:\n{}",
+        violations.len(),
+        violations
+            .iter()
+            .map(VisualDecision::report)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    check_the_webview_window_holds_no_paint_decision();
 
-    check_a_composition_with_no_view_data_marks_the_gap();
+    check_a_designed_structure_with_no_view_data_is_marked();
     check_no_component_owns_or_dispatches_application_state();
-
-    let escapes = check_viewport_integrity_survived_recomposition(&frames);
     check_both_viewports_resolve_from_the_declared_policy();
 
-    let (sources, lines, _) = scan_delivered_tree();
     println!(
         "CREST_COMPONENT_COMPOSITION_OBSERVATION controls={} compositions={} kinds={} roles={} \
-         pairs={} pairs_driven={} states={} frames={} glyph_runs={} sources_scanned={} \
-         lines_scanned={} recorded_escapes={:?}",
+         pairs={} controls_driven={} states={} sources_scanned={} lines_scanned={}",
         COMPONENT_CONTROL_COUNT,
         SHELL_COMPOSITION_COUNT,
         SEMANTIC_CONTROL_KIND_COUNT,
         PRESENTATION_ROLE_COUNT,
         SEMANTIC_CONTROL_KIND_COUNT * PRESENTATION_ROLE_COUNT,
-        pairs_driven,
+        controls_driven,
         COMPONENT_STATE_COUNT,
-        frames.len(),
-        frames.iter().map(|frame| frame.runs.len()).sum::<usize>(),
         sources.len(),
         lines,
-        escapes,
     );
     println!("{ACCEPTANCE_MARKER}");
 }

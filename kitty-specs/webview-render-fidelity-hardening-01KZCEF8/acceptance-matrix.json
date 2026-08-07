@@ -1,0 +1,199 @@
+{
+  "mission_slug": "webview-render-fidelity-hardening-01KZCEF8",
+  "mission_number": "",
+  "mission_type": "software-dev",
+  "overall_verdict": "pass",
+  "criteria": [
+    {
+      "criterion_id": "FR-001",
+      "description": "Fader fill and position-indicator geometry applied without JS-built inline style attributes; paints correctly under the production policy",
+      "proof_type": "automated_test",
+      "evidence": "T011 painted-geometry proof (tests/webview_projection_shell.rs) under production PAGE_CSP; zero style=\" substrings in webview-page/page.js; WP01 review-cycle-1 probes",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "WP01 commit 22e3c50; data-attr + CSSOM setProperty per research D1"
+    },
+    {
+      "criterion_id": "FR-002",
+      "description": "Acceptance harness serves the page through the production response path, asserted equal to what production ships",
+      "proof_type": "automated_test",
+      "evidence": "prove_protocol_policy_parity: served /index.html CSP header == exported PAGE_CSP constant; single register_uri_scheme_protocol via crest_synth::shell::webview::protocol_response; no restated CSP literal in the test",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "WP02 exported seam (9a48772) + WP03 harness cutover (d30250f)"
+    },
+    {
+      "criterion_id": "FR-003",
+      "description": "Determinism, latency, and screenshot evidence re-collected under the production policy and committed",
+      "proof_type": "automated_test",
+      "evidence": "kitty-specs/webview-render-fidelity-hardening-01KZCEF8/evidence/acceptance-live-run.log (skipped: none), t011-*.png x3; T024 determinism PASS both viewports; latency p50 8.1/p95 8.9/max 11.7 ms",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Evidence commit 89df0ca; reviewer independently reproduced (p95 9.0 ms)"
+    },
+    {
+      "criterion_id": "FR-004",
+      "description": "A named proof fails if painted fader geometry stops reflecting the level variable under the shipped policy",
+      "proof_type": "automated_test",
+      "evidence": "Kill test: applyDynamicGeometry neutered in scratch -> T011 fails with RISK-1 signature naming all 16 LevelFader elements, suite exits nonzero; recorded in evidence README and WP03 review-cycle-1",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Exercised by implementer and independently by reviewer"
+    },
+    {
+      "criterion_id": "FR-005",
+      "description": "Page emits crest://render-error with typed payload on render throw and unhandled rejection; false comment corrected",
+      "proof_type": "automated_test",
+      "evidence": "T012: first-render throw, update-render throw after credited ack, and unhandledrejection each emit exactly one typed payload {name,message,generation,stateHash}, no ack; healthy-page negative control zero emissions; comment corrected at page.js projection listener",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "WP01 boundary + latch; analysis finding C1 (update-render variant) covered"
+    },
+    {
+      "criterion_id": "FR-006",
+      "description": "Forced render throw makes the shell exit nonzero with typed PageRenderFailed, proven falsifiably",
+      "proof_type": "automated_test",
+      "evidence": "T012 subprocess variant: exit 1 via WebviewShellError::PageRenderFailed with typed JSON payload (kitty-specs/webview-render-fidelity-hardening-01KZCEF8/evidence/t012-forced-first-render-throw.log); try/catch removed in scratch -> T012 fails (old silent-stale mode)",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Shell path traced RenderError->record_render_failure->nonzero exit (WP02 review)"
+    },
+    {
+      "criterion_id": "FR-007",
+      "description": "No-input-handler scan and style-literal scan include gallery.js and gallery.css",
+      "proof_type": "automated_test",
+      "evidence": "tests/component_composition.rs + tests/component_vocabulary.rs extended (446c39f); 6 injection probes all failed as required (WP04 review-cycle-1); both suites green 15/15 and 11/11",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Two exact-keyed narrated allowances (transparent sentinel, fonts.check) scrutinized and accepted"
+    },
+    {
+      "criterion_id": "NFR-001",
+      "description": "Final policy contains no unsafe-inline anywhere, is at least as restrictive as shipped, adds base-uri 'none'; form-action 'none'",
+      "proof_type": "automated_test",
+      "evidence": "Programmatic old-vs-new comparison: byte-identical directives + exactly the two denials appended (WP02 review); T009 pins hardened string and rejects unsafe-inline/unsafe-eval/wildcards per directive; weaken-CSP probe failed the pin test",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "C-004 held; policy single-sourced at src/shell/webview/window.rs PAGE_CSP"
+    },
+    {
+      "criterion_id": "NFR-002",
+      "description": "Reducer state change visible within 50 ms p95 under paced live demo workload, measured with production policy served",
+      "proof_type": "automated_test",
+      "evidence": "150-edit paced workload under PAGE_CSP: p50 8.1 / p95 8.9 / max 11.7 ms (kitty-specs/webview-render-fidelity-hardening-01KZCEF8/evidence/acceptance-live-run.log); reviewer re-run p50 7.8 / p95 9.0 / max 11.9 ms",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Well under the 50 ms budget; no CSSOM-pass regression"
+    },
+    {
+      "criterion_id": "NFR-003",
+      "description": "Rendered-document determinism proof produces identical output across repeated runs with production policy served",
+      "proof_type": "automated_test",
+      "evidence": "T024 PASS at 1920x1080 and 1280x800 (MIXER + 3 PATCH docs) under the served production policy; CSSOM geometry double-measured identical (T011)",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "60 s meter soak: 29.45 Hz, 0 lost, 1767/1767"
+    },
+    {
+      "criterion_id": "C-001",
+      "description": "Blast radius: page-, harness-, and transport-side only; no reducer, RT, or projection schema changes",
+      "proof_type": "automated_test",
+      "evidence": "Union of lane diffs touches only webview-page/page.js, src/shell/webview/{window.rs,mod.rs}, tests/{webview_projection_shell,component_vocabulary,component_composition}.rs + evidence; verified per-WP by reviewers",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "All four review-cycle-1 records confirm owned_files-only diffs"
+    },
+    {
+      "criterion_id": "C-002",
+      "description": "Frozen baselines, token single-source rule, and input-boundary rules unchanged and passing",
+      "proof_type": "automated_test",
+      "evidence": "WP03 review: deletion side of harness diff is only the bare closure; no baseline file changed, no assertion loosened; guard suites green throughout",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Pre-review regression gates reported no new failures on every WP"
+    },
+    {
+      "criterion_id": "C-003",
+      "description": "Structural/dead-code open items (RISK-3/4/5, DRIFT-3) untouched",
+      "proof_type": "automated_test",
+      "evidence": "WP02 review traced close_window_once_with_retry, Destroyed arm, false-tick close path unchanged; only latch extraction in RenderError arm; no other WP touched those seams",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Deferred to the separate hygiene mission per spec"
+    },
+    {
+      "criterion_id": "C-004",
+      "description": "No directive gains unsafe-inline, unsafe-eval, wildcards, or any loosening",
+      "proof_type": "automated_test",
+      "evidence": "Same programmatic additive-only comparison as NFR-001; T009 per-directive rejection list; probes failed as required",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Duplicate-graded with NFR-001 deliberately: constraint vs requirement views"
+    },
+    {
+      "criterion_id": "SC-001",
+      "description": "Shipped application shows every fader fill and position indicator matching its readout, all sixteen tracks, under the production policy",
+      "proof_type": "automated_test",
+      "evidence": "T011 at both viewports: 16/16 proportional fills (hex-73 fixture ~90% beside '73' readouts); zero fixture measures zero WITH --level applied; screenshots kitty-specs/webview-render-fidelity-hardening-01KZCEF8/evidence/t011-*.png visually confirmed by reviewer",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Value-zero vs never-applied distinguished by inverse guard"
+    },
+    {
+      "criterion_id": "SC-002",
+      "description": "Forced page render failure ends the application with typed nonzero exit in 100% of forced-failure runs",
+      "proof_type": "automated_test",
+      "evidence": "T012: all three variants (first-render throw, update-render throw, unhandled rejection) produced the typed path in every run; subprocess exit 1 with PageRenderFailed; zero silent-stale outcomes",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Negative control: zero render-errors across healthy sections"
+    },
+    {
+      "criterion_id": "SC-003",
+      "description": "All affected acceptance evidence exists re-collected under the production policy; deliberate paint regression fails a named proof",
+      "proof_type": "automated_test",
+      "evidence": "kitty-specs/webview-render-fidelity-hardening-01KZCEF8/evidence/README.md indexes 6 artifacts to proof sections and requirements; both falsifiability spot-checks recorded; kill test reproduced independently in review",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Cutover mission evidence left immutable per research D5"
+    },
+    {
+      "criterion_id": "SC-004",
+      "description": "Gallery sources inside both executable guard scans; introducing a violation fails the suite",
+      "proof_type": "automated_test",
+      "evidence": "WP04 probes: keydown handler, hex color, non-sentinel rgba, px extents -> each failed naming the gallery source; suites green on clean tree",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "FR-007 evidence; allowances exact-keyed to gallery.js only"
+    },
+    {
+      "criterion_id": "SC-005",
+      "description": "Re-running mission-review checks for RISK-1, RISK-2, DRIFT-1, DRIFT-2 finds all four resolved, no new findings in touched seams",
+      "proof_type": "automated_test",
+      "evidence": "RISK-1: T011+screenshots; RISK-2: T012 typed exits; DRIFT-1: prove_protocol_policy_parity + evidence re-run; DRIFT-2: WP04 scans. Four independent cycle-1 reviews (WP01 4204f20, WP02, WP03 800c90f, WP04 6e4cce7) found no new findings in the touched seams",
+      "pass_fail": "pass",
+      "verified_by": "claude (implement-review loop; reviewer-renata cycle-1 reviews WP01-WP04)",
+      "verified_at": "2026-08-06T23:55:00Z",
+      "notes": "Formal post-merge confirmation belongs to /spec-kitty mission-review after merge"
+    }
+  ],
+  "negative_invariants": []
+}

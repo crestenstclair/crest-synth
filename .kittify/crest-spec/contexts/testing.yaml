@@ -385,7 +385,7 @@ valueObjects:
       ownedGraphsRemaining: u32
     invariants:
     - every field is measured from the production reducer, projector, snapshot transport, prepared renderer,
-      mixer buffers, audio observation, eframe window, and physical stream rather than copied from expected
+      mixer buffers, audio observation, webview window, and physical stream rather than copied from expected
       data
     - the live marker is emitted only after semantic cleanup, stream release, worker shutdown, graph collection,
       window close, and successful parent-process return

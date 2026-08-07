@@ -38,6 +38,7 @@ use crate::shell::audio_output::{
     AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
     AudioOutputError, AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
 };
+use crate::shell::webview::TauriWebviewWindow;
 use crate::synth::effect_slot_id::EffectSlotIndex;
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
@@ -73,6 +74,20 @@ const SMOKE_TICK_COUNT: usize = 256;
 const SMOKE_TICK_DURATION: Duration = Duration::from_millis(20);
 const LIVE_EVENT_LOG_CAPACITY: usize = 65_536;
 const LIVE_FIXTURE_EVENT_ALLOWANCE: usize = 60_000;
+
+/// The native title of the autonomous live window — unchanged across the
+/// webview shell cutover.
+const LIVE_DEMO_WINDOW_TITLE: &str = "crest-synth — autonomous live demo";
+
+/// Composes the one shell window every retained live scene runs on (mission
+/// webview-shell-cutover WP03, crest-spec
+/// `context.Shell.StandaloneApplication`: "runLiveDemo uses the exact normal
+/// startup order, real TauriWebviewWindow, physical CpalAudioOutput ..."):
+/// the same `TauriWebviewWindow` construction the interactive composition
+/// root uses, carrying the autonomous live title.
+fn live_demo_window() -> TauriWebviewWindow {
+    TauriWebviewWindow::new(LIVE_DEMO_WINDOW_TITLE)
+}
 const CHANNEL_SEPARATOR: &str = "------------------------------------------------------------";
 
 /// Fixed startup values shared by normal and headless execution.
@@ -120,12 +135,12 @@ impl Default for ApplicationConfig {
     }
 }
 
-/// Forwards the `AppWindow` port through a boxed window so the composition
-/// root can select the shell implementation at launch (one match on
-/// `crate::shell::webview::ShellSelection`, `--shell <egui|webview>`) while
-/// `StandaloneApplication` stays generic over exactly one window type. Pure
-/// forwarding: behavior is the boxed implementation's, unchanged, and no
-/// code path substitutes one shell for another after selection.
+/// Forwards the `AppWindow` port through a boxed window, so a composition
+/// that owns its window behind the port's trait object still satisfies
+/// `StandaloneApplication`'s single generic window type. Pure forwarding:
+/// behavior is the boxed implementation's, unchanged. The production
+/// composition root constructs the one shell (`TauriWebviewWindow`)
+/// directly and no code path substitutes another window for it.
 impl<Window: AppWindow + ?Sized> AppWindow for Box<Window> {
     fn run(
         &self,
@@ -954,8 +969,12 @@ where
         )
     }
 
-    /// Runs the selected retained scene through the normal physical audio and
-    /// native-window lifetime. The callbacks execute only on the control side.
+    /// Runs the selected retained scene through the normal physical audio
+    /// and native-window lifetime, hosted on the webview shell (mission
+    /// webview-shell-cutover WP03): live mode composes its own disposable
+    /// [`TauriWebviewWindow`] here — the scenes keep their shape, the shell
+    /// under them changes. The injected interactive window hosts only
+    /// [`Self::run`]. The callbacks execute only on the control side.
     pub fn run_live_demo_scene<OnCheckpoint, OnComplete>(
         self,
         scene_kind: LiveSceneKind,
@@ -966,13 +985,34 @@ where
         OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
         OnComplete: FnOnce(&LiveDemoReport) + 'static,
     {
+        self.host_live_demo_scene(live_demo_window(), scene_kind, on_checkpoint, on_complete)
+    }
+
+    /// Hosts the selected retained scene on `live_window` — the seam the
+    /// deterministic live twins drive with a harness window while
+    /// [`Self::run_live_demo_scene`] composes the production webview window.
+    /// Live ownership is window-shape-agnostic: identical injected tick,
+    /// projection callback, observation snapshot injection, forwarded-frame
+    /// callback, and shutdown ordering for every host.
+    fn host_live_demo_scene<LiveWindow, OnCheckpoint, OnComplete>(
+        self,
+        live_window: LiveWindow,
+        scene_kind: LiveSceneKind,
+        on_checkpoint: OnCheckpoint,
+        on_complete: OnComplete,
+    ) -> Result<GraphicalShellLiveObservation, ApplicationError>
+    where
+        LiveWindow: AppWindow,
+        OnCheckpoint: FnMut(&LiveCheckpoint) + 'static,
+        OnComplete: FnOnce(&LiveDemoReport) + 'static,
+    {
         let Self {
             boundary,
             instruments,
             structural,
             observation,
             source,
-            window,
+            window: _,
             audio_output,
             config,
         } = self;
@@ -1061,7 +1101,8 @@ where
         let on_tick = live_tick_callback(Rc::clone(&runtime));
         let on_frame = live_frame_callback(Rc::clone(&runtime));
 
-        let window_result = window.run(on_input, projection, audio_observation, on_tick, on_frame);
+        let window_result =
+            live_window.run(on_input, projection, audio_observation, on_tick, on_frame);
         let runtime_error = {
             let mut runtime = runtime.borrow_mut();
             if runtime.runner.completed_report().is_none() {
@@ -2030,7 +2071,9 @@ fn channels_are_round_robin(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplicationConfig, ApplicationError, DegenerateMode, StandaloneApplication};
+    use super::{
+        ApplicationConfig, ApplicationError, DegenerateMode, LiveSceneKind, StandaloneApplication,
+    };
     use crate::adapter::atomic_audio_observation::AtomicAudioObservation;
     use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
     use crate::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
@@ -2668,21 +2711,29 @@ mod tests {
         .unwrap()
     }
 
+    /// Composes the live application plus its deterministic harness window.
+    /// The harness window is returned separately and handed to
+    /// `host_live_demo_scene` — mirroring production, where live hosting
+    /// composes its own webview window and the injected interactive window
+    /// (a plain placeholder here) takes no part in the live run.
     fn live_application(
         due: Vec<TargetedMidiEvent>,
         engine_state: Arc<Mutex<EngineState>>,
         witness: LiveWindowWitness,
-    ) -> TestApplication<LiveTestWindow, LiveTestOutput> {
+    ) -> (TestApplication<TestWindow, LiveTestOutput>, LiveTestWindow) {
         let render = Arc::new(Mutex::new(None));
         let bus = Arc::new(Mutex::new(Bus {
             commands: VecDeque::new(),
             parameters: parameters(),
             parameter_publications: 0,
         }));
-        StandaloneApplication::new_with_effects(
-            TestBoundary {
-                bus: Arc::clone(&bus),
-            },
+        let live_window = LiveTestWindow {
+            render: Arc::clone(&render),
+            bus: Arc::clone(&bus),
+            witness,
+        };
+        let application = StandaloneApplication::new_with_effects(
+            TestBoundary { bus },
             providers(),
             preparers(engine_state),
             crate::adapter::production_effects::production_effect_providers().unwrap(),
@@ -2694,10 +2745,8 @@ mod tests {
                 due,
                 started: false,
             },
-            LiveTestWindow {
-                render: Arc::clone(&render),
-                bus,
-                witness,
+            TestWindow {
+                projection: Arc::new(Mutex::new(None)),
             },
             LiveTestOutput { render },
             ApplicationConfig::new(
@@ -2706,11 +2755,12 @@ mod tests {
                 ApplicationConfig::default().global_parameters(),
             ),
         )
-        .unwrap()
+        .unwrap();
+        (application, live_window)
     }
 
-    fn early_close_application() -> TestApplication<EarlyCloseWindow, TestOutput> {
-        StandaloneApplication::new_with_effects(
+    fn early_close_application() -> (TestApplication<TestWindow, TestOutput>, EarlyCloseWindow) {
+        let application = StandaloneApplication::new_with_effects(
             TestBoundary {
                 bus: Arc::new(Mutex::new(Bus {
                     commands: VecDeque::new(),
@@ -2729,7 +2779,9 @@ mod tests {
                 due: vec![TargetedMidiEvent::new(0, message())],
                 started: false,
             },
-            EarlyCloseWindow,
+            TestWindow {
+                projection: Arc::new(Mutex::new(None)),
+            },
             TestOutput,
             ApplicationConfig::new(
                 48_000.0,
@@ -2737,14 +2789,18 @@ mod tests {
                 ApplicationConfig::default().global_parameters(),
             ),
         )
-        .unwrap()
+        .unwrap();
+        (application, EarlyCloseWindow)
     }
 
     fn stalled_live_application(
         witness: StalledLiveWitness,
         tick_duration: Duration,
-    ) -> TestApplication<StalledLiveWindow, StalledLiveOutput> {
-        StandaloneApplication::new_with_effects(
+    ) -> (
+        TestApplication<TestWindow, StalledLiveOutput>,
+        StalledLiveWindow,
+    ) {
+        let application = StandaloneApplication::new_with_effects(
             TestBoundary {
                 bus: Arc::new(Mutex::new(Bus {
                     commands: VecDeque::new(),
@@ -2763,9 +2819,8 @@ mod tests {
                 due: vec![TargetedMidiEvent::new(0, message())],
                 started: false,
             },
-            StalledLiveWindow {
-                close_requests: Arc::clone(&witness.close_requests),
-                tick_duration,
+            TestWindow {
+                projection: Arc::new(Mutex::new(None)),
             },
             StalledLiveOutput {
                 released: Arc::clone(&witness.stream_released),
@@ -2776,7 +2831,12 @@ mod tests {
                 ApplicationConfig::default().global_parameters(),
             ),
         )
-        .unwrap()
+        .unwrap();
+        let live_window = StalledLiveWindow {
+            close_requests: Arc::clone(&witness.close_requests),
+            tick_duration,
+        };
+        (application, live_window)
     }
 
     #[test]
@@ -2830,6 +2890,17 @@ mod tests {
     }
 
     #[test]
+    fn live_scenes_compose_the_webview_shell_window() {
+        // Mission webview-shell-cutover WP03 (T010): the production live
+        // entry composes the webview shell — `live_demo_window()` returns
+        // the concrete `TauriWebviewWindow` (compile-time fact) carrying the
+        // unchanged autonomous live title. Since WP07 the interactive
+        // composition root constructs the same shell directly.
+        let window: crate::shell::webview::TauriWebviewWindow = super::live_demo_window();
+        assert_eq!(window.title(), "crest-synth — autonomous live demo");
+    }
+
+    #[test]
     fn standalone_live_demo_composition_isolates_input_and_closes_on_completion() {
         let engine_state = Arc::new(Mutex::new(EngineState::default()));
         let witness = LiveWindowWitness::default();
@@ -2837,12 +2908,14 @@ mod tests {
         let checkpoints_for_callback = Arc::clone(&checkpoints);
         let reports_for_callback = Arc::clone(&witness.reports);
 
-        let teardown = live_application(
+        let (application, live_window) = live_application(
             vec![TargetedMidiEvent::new(0, message())],
             Arc::clone(&engine_state),
             witness.clone(),
-        )
-        .run_live_demo(
+        );
+        let teardown = application.host_live_demo_scene(
+            live_window,
+            LiveSceneKind::SixteenTrackMixerRouting,
             move |checkpoint| {
                 checkpoints_for_callback
                     .lock()
@@ -2958,8 +3031,11 @@ mod tests {
         let checkpoints_for_callback = Arc::clone(&checkpoints);
         let reports_for_callback = Arc::clone(&reports);
 
-        let error = early_close_application()
-            .run_live_demo(
+        let (application, live_window) = early_close_application();
+        let error = application
+            .host_live_demo_scene(
+                live_window,
+                LiveSceneKind::SixteenTrackMixerRouting,
                 move |_| *checkpoints_for_callback.lock().unwrap() += 1,
                 move |_| *reports_for_callback.lock().unwrap() += 1,
             )
@@ -2975,8 +3051,15 @@ mod tests {
         let witness = StalledLiveWitness::default();
         let reports_for_callback = Arc::clone(&witness.reports);
 
-        let error = stalled_live_application(witness.clone(), Duration::from_secs(1))
-            .run_live_demo(|_| {}, move |_| *reports_for_callback.lock().unwrap() += 1)
+        let (application, live_window) =
+            stalled_live_application(witness.clone(), Duration::from_secs(1));
+        let error = application
+            .host_live_demo_scene(
+                live_window,
+                LiveSceneKind::SixteenTrackMixerRouting,
+                |_| {},
+                move |_| *reports_for_callback.lock().unwrap() += 1,
+            )
             .unwrap_err();
 
         assert!(matches!(
@@ -2997,8 +3080,15 @@ mod tests {
         let witness = StalledLiveWitness::default();
         let reports_for_callback = Arc::clone(&witness.reports);
 
-        let error = stalled_live_application(witness.clone(), LIVE_DEMO_TOTAL_TIMEOUT)
-            .run_live_demo(|_| {}, move |_| *reports_for_callback.lock().unwrap() += 1)
+        let (application, live_window) =
+            stalled_live_application(witness.clone(), LIVE_DEMO_TOTAL_TIMEOUT);
+        let error = application
+            .host_live_demo_scene(
+                live_window,
+                LiveSceneKind::SixteenTrackMixerRouting,
+                |_| {},
+                move |_| *reports_for_callback.lock().unwrap() += 1,
+            )
             .unwrap_err();
 
         assert!(matches!(

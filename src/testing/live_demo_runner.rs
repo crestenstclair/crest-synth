@@ -41,6 +41,14 @@ use std::time::Duration;
 pub const LIVE_DEMO_NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum elapsed control time for the complete autonomous live scene.
 pub const LIVE_DEMO_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// How many recent per-generation projections the runner retains so an
+/// asynchronously forwarded painted frame (mission webview-shell-cutover
+/// WP03) can be correlated against the exact projection it painted. The
+/// webview shell acks within a frame or two of each push, so the live
+/// cadence stays one or two generations behind at most; eight mirrors the
+/// forwarding side's own bounded in-flight tracker. A frame superseded past
+/// this window degrades observation only.
+const RECENT_PROJECTION_CAPACITY: usize = 8;
 
 /// Control-thread state machine for the real-window live scene.
 pub struct LiveDemoRunner<Source, Observation> {
@@ -51,12 +59,31 @@ pub struct LiveDemoRunner<Source, Observation> {
     elapsed: Duration,
     last_progress_at: Duration,
     deferred_fixture_elapsed: Duration,
-    tick_index: u64,
+    /// The newest painted accepted generation observed through the shell's
+    /// forwarded frame seam (mission webview-shell-cutover WP03). Monotone:
+    /// a painted document proves its generation and every earlier one were
+    /// produced and displayed, so visible-projection checkpoints gate on
+    /// `painted_generation >= dispatched generation` — real paint evidence,
+    /// never a tick count or wall-clock stand-in.
+    painted_generation: u64,
+    /// The accepted generation of the most recent semantic-tail step whose
+    /// projection has not yet been proven painted. The retired shell painted
+    /// every tick, so "one step per tick" implicitly meant "one step per
+    /// painted frame"; on the webview shell the next tail step dispatches
+    /// only after the forwarded frame seam proves the previous one visible
+    /// (mission webview-shell-cutover WP03). Dispatch stalls, the fixture
+    /// holds, and the frozen generation is always the page's newest — the
+    /// same await-the-paint rule the parameter checkpoints use.
+    awaiting_step_paint: Option<u64>,
     pending_checkpoint: Option<PendingCheckpoint>,
     checkpoints: Vec<LiveCheckpoint>,
     coverage: LiveDemoCoverage,
     shell_coverage: LiveShellCoverage,
-    latest_shell: Option<GraphicalShellProjection>,
+    /// The bounded per-generation window of recent canonical projections,
+    /// newest at the back. Painted-frame correlation looks a frame's own
+    /// generation up here, because forwarded webview acks arrive after the
+    /// control side may have accepted a newer generation.
+    recent_shells: std::collections::VecDeque<GraphicalShellProjection>,
     engine_transition_index: usize,
     engine_phase: LiveEnginePhase,
     topology_transition_index: usize,
@@ -100,12 +127,13 @@ where
             elapsed: Duration::ZERO,
             last_progress_at: Duration::ZERO,
             deferred_fixture_elapsed: Duration::ZERO,
-            tick_index: 0,
+            painted_generation: 0,
+            awaiting_step_paint: None,
             pending_checkpoint: None,
             checkpoints: Vec::new(),
             coverage,
             shell_coverage: LiveShellCoverage::default(),
-            latest_shell: None,
+            recent_shells: std::collections::VecDeque::new(),
             engine_transition_index: 0,
             engine_phase: LiveEnginePhase::SelectPatch,
             topology_transition_index: 0,
@@ -138,7 +166,6 @@ where
 
         self.elapsed = self.elapsed.saturating_add(elapsed);
         self.deferred_fixture_elapsed = self.deferred_fixture_elapsed.saturating_add(elapsed);
-        self.tick_index = self.tick_index.saturating_add(1);
 
         if self.elapsed >= self.scene.total_timeout() {
             return Err(LiveDemoError::TotalTimeout {
@@ -149,7 +176,17 @@ where
         }
 
         let result = self.advance_current(app_loop);
-        self.latest_shell = Some(app_loop.current_graphical_shell());
+        let shell = app_loop.current_graphical_shell();
+        if self
+            .recent_shells
+            .back()
+            .is_none_or(|recent| recent.generation() != shell.generation())
+        {
+            if self.recent_shells.len() == RECENT_PROJECTION_CAPACITY {
+                self.recent_shells.pop_front();
+            }
+            self.recent_shells.push_back(shell);
+        }
         if result.is_ok()
             && self.completed_report.is_none()
             && !self.aborted
@@ -170,6 +207,23 @@ where
 
     /// Correlates one production-painted shell frame with canonical state and
     /// the latest bounded production-path audio observation.
+    ///
+    /// On the webview shell (mission webview-shell-cutover WP03) frames
+    /// arrive through WP02's forwarded-observation seam: the window
+    /// constructs each observation from a painted ack the projection channel
+    /// already matched field for field against the pushed document, then
+    /// hands it to the port's frame callback, which lands here. Forwarding
+    /// is asynchronous, so an ack may arrive after the control side has
+    /// already accepted a newer generation: such a superseded painted frame
+    /// is correlated against the retained canonical projection of its own
+    /// generation and credited under the asynchronous audio rule (the
+    /// callback can legitimately have consumed a newer parameter generation
+    /// by then). A frame superseded past the bounded retention window is
+    /// display evidence only — it advances the painted-generation seam and
+    /// the projection-visibility measure, exactly like a lost meter frame
+    /// degrades display only. A frame claiming a generation the control
+    /// side has not produced remains fabricated evidence and stays a typed
+    /// rejection.
     pub fn observe_shell_frame(
         &mut self,
         frame: ShellFrameObservation,
@@ -178,21 +232,52 @@ where
             return Err(LiveDemoError::UnexpectedShellFrame);
         }
         if let Some(pending) = &mut self.pending_projection_measure {
-            if pending.resolved.is_none() {
+            // The NFR-008 window counts frames painted AFTER the acceptance.
+            // Generations are monotone and documents are pushed and acked in
+            // order, so a post-acceptance paint always carries a generation
+            // at or above the accepted one; an asynchronously forwarded
+            // straggler below it is a pre-acceptance paint (WP03) and is not
+            // part of the window. A shell that painted a stale document
+            // after acceptance would never resolve this measure and fails
+            // the run through the no-progress guard.
+            if pending.resolved.is_none() && frame.generation() >= pending.generation {
                 pending.frames_seen = pending.frames_seen.saturating_add(1);
-                if frame.generation() >= pending.generation {
-                    pending.resolved = Some(pending.frames_seen);
-                }
+                pending.resolved = Some(pending.frames_seen);
             }
         }
-        let shell = self
-            .latest_shell
-            .as_ref()
-            .ok_or(LiveDemoError::MissingShellProjection)?;
+        let latest_generation = self
+            .recent_shells
+            .back()
+            .ok_or(LiveDemoError::MissingShellProjection)?
+            .generation();
+        if frame.generation() > latest_generation {
+            // A frame for a generation the control side has not produced
+            // cannot be painted evidence of any pushed document.
+            return Err(LiveDemoError::ShellFrameMismatch);
+        }
         let audio = self.observation.read_latest_on_control();
-        if shell_frame_qualifies(&frame, shell, audio)? {
+        let qualifies = if frame.generation() == latest_generation {
+            let shell = self
+                .recent_shells
+                .back()
+                .expect("the retained window was just read");
+            shell_frame_qualifies(&frame, shell, audio)?
+        } else if let Some(shell) = self
+            .recent_shells
+            .iter()
+            .rev()
+            .find(|shell| shell.generation() == frame.generation())
+        {
+            superseded_shell_frame_qualifies(&frame, shell, audio)?
+        } else {
+            // Superseded past the bounded retention window: authentic paint
+            // evidence too old to correlate — observation degrades only.
+            false
+        };
+        if qualifies {
             self.shell_coverage.mark_qualifying_frame(&frame);
         }
+        self.painted_generation = self.painted_generation.max(frame.generation());
         Ok(())
     }
 
@@ -219,6 +304,22 @@ where
             return self.advance_topology(app_loop);
         }
 
+        // The semantic visibility tail (the steps after the scalar phase)
+        // is where surface, mode, and return-trip coverage is harvested,
+        // and several of its states last exactly one accepted generation.
+        // Before advancing past one, the shell must have painted it: stall
+        // (fixture held, generation frozen as the page's newest) until the
+        // forwarded frame seam confirms the paint. No sleep — the stall is
+        // the event loop's own cadence, bounded by the no-progress guard.
+        if self.step_index >= self.scene.scalar_step_count() {
+            if let Some(generation) = self.awaiting_step_paint {
+                if self.painted_generation < generation {
+                    return Ok(None);
+                }
+                self.awaiting_step_paint = None;
+            }
+        }
+
         if self.step_index == self.scene.steps().len() {
             self.try_complete(app_loop)?;
             return Ok(None);
@@ -238,7 +339,14 @@ where
     fn progress_stage(&self) -> &'static str {
         if let Some(pending) = &self.pending_checkpoint {
             return if pending.checkpoint.is_some() {
-                "parameter projection dwell"
+                if self.painted_generation < pending.record.generation_after() {
+                    // Awaiting the forwarded painted frame that proves the
+                    // dispatched projection is visible (WP03): a stall here
+                    // is a shell that stopped painting, named as such.
+                    "parameter projection paint confirmation"
+                } else {
+                    "parameter projection dwell"
+                }
             } else if pending.predicate.is_patch_effect() {
                 "Patch effect audio observation"
             } else {
@@ -267,6 +375,12 @@ where
         }
         if self.topology_transition_index < self.scene.expected_topology_transitions().len() {
             return self.topology_phase.stage_name();
+        }
+        if self.awaiting_step_paint.is_some() {
+            // Awaiting the forwarded painted frame proving the last
+            // semantic-tail state visible (WP03): a stall here is a shell
+            // that stopped painting, named as such.
+            return "semantic step paint confirmation";
         }
         if self.step_index < self.scene.steps().len() {
             return "semantic note cleanup dispatch";
@@ -360,12 +474,15 @@ where
                 audio_sequence_before,
                 predicate: parameter.audio_predicate(),
                 dispatched_at: self.elapsed,
-                dispatched_tick: self.tick_index,
                 checkpoint: None,
             });
         } else {
             if step.is_cleanup() {
                 self.cleanup_sequence_before = Some(audio_sequence_before);
+            } else if self.step_index >= self.scene.scalar_step_count() {
+                // Semantic-tail visibility gate (WP03): the next tail step
+                // waits until this accepted state has provably painted.
+                self.awaiting_step_paint = Some(record.generation_after());
             }
             self.step_index += 1;
         }
@@ -429,10 +546,17 @@ where
             .pending_checkpoint
             .as_ref()
             .expect("fixture ticking does not clear pending state");
-        let frame_rendered = self.tick_index > pending.dispatched_tick;
+        // The visible-projection gate (mission webview-shell-cutover WP03):
+        // the checkpoint completes only after the shell's forwarded frame
+        // seam has proven a painted document covering the dispatched
+        // generation. No tick count or wall-clock pause stands in for paint
+        // confirmation; the dwell below is deliberate scene rhythm, not a
+        // paint proxy. A paint that never arrives stalls this stage into the
+        // typed no-progress timeout.
+        let projection_painted = self.painted_generation >= pending.record.generation_after();
         let dwell_complete = self.elapsed.saturating_sub(pending.dispatched_at)
             >= self.scene.minimum_parameter_dwell();
-        if !frame_rendered || !dwell_complete {
+        if !projection_painted || !dwell_complete {
             return Ok(None);
         }
 
@@ -1562,7 +1686,9 @@ where
 
         let installed: Vec<_> = self.scene.patch_ids().collect();
         if !self.shell_coverage.is_complete() {
-            return Err(LiveDemoError::MissingShellCoverage);
+            return Err(LiveDemoError::MissingShellCoverage(
+                self.shell_coverage.clone(),
+            ));
         }
         let active_graph_revision = tree.graph_revision();
         let graphical_shell = app_loop.current_graphical_shell();
@@ -1638,7 +1764,6 @@ struct PendingCheckpoint {
     audio_sequence_before: u64,
     predicate: crate::testing::live_demo_scene::LiveAudioPredicate,
     dispatched_at: Duration,
-    dispatched_tick: u64,
     checkpoint: Option<LiveDemoCheckpoint>,
 }
 
@@ -2227,11 +2352,13 @@ fn audio_is_finite(observation: AudioObservationSnapshot) -> bool {
         && observation.non_finite_samples() == 0
 }
 
-fn shell_frame_qualifies(
+/// Proves one painted frame is display evidence of exactly `shell`: full
+/// semantic identity equality, non-overlapping regions, and the five
+/// declared regions in order with visible-label evidence.
+fn shell_frame_matches_projection(
     frame: &ShellFrameObservation,
     shell: &GraphicalShellProjection,
-    audio: AudioObservationSnapshot,
-) -> Result<bool, LiveDemoError> {
+) -> Result<(), LiveDemoError> {
     if frame.generation() != shell.generation()
         || frame.state_hash() != shell.state_hash()
         || frame.context() != shell.context()
@@ -2255,31 +2382,36 @@ fn shell_frame_qualifies(
         return Err(LiveDemoError::OverlappingShellRegions);
     }
 
-    let expected = [
-        (
-            ShellRegionId::ContextLine,
-            shell.context_line().context_label(),
-        ),
-        (
-            ShellRegionId::IdentityHeader,
-            shell.identity_header().primary_label(),
-        ),
-        (ShellRegionId::MainWorkspace, shell.workspace().main_label()),
-        (
-            ShellRegionId::PersistentSideRegion,
-            shell.workspace().side_label(),
-        ),
-        (ShellRegionId::Footer, shell.footer().path_label()),
-    ];
+    // The five declared shell regions, in order, each carrying visible-label
+    // evidence. The exact painted text is shell presentation: each AppWindow
+    // adapter owns how a band renders the canonical document (the webview
+    // page paints its authored composition, the retired shell painted the band
+    // projections' strings), and the frame's semantic identity was already
+    // required to equal the canonical projection's above — so qualification
+    // demands measured evidence that every declared band is visible with
+    // content, never one adapter's band vocabulary (mission
+    // webview-shell-cutover WP03).
     if frame
         .regions()
         .iter()
-        .zip(expected)
-        .any(|(actual, (id, label))| actual.id() != id || actual.visible_label() != label)
+        .zip(ShellRegionId::ALL)
+        .any(|(actual, id)| actual.id() != id || actual.visible_label().trim().is_empty())
     {
         return Err(LiveDemoError::ShellFrameMismatch);
     }
+    Ok(())
+}
 
+/// The synchronous crediting rule: the frame paints the current canonical
+/// projection, so the audio callback can never have consumed a parameter
+/// generation newer than the painted one — if it has, the frame is stale
+/// fabricated evidence.
+fn shell_frame_qualifies(
+    frame: &ShellFrameObservation,
+    shell: &GraphicalShellProjection,
+    audio: AudioObservationSnapshot,
+) -> Result<bool, LiveDemoError> {
+    shell_frame_matches_projection(frame, shell)?;
     if audio.sequence() == 0 {
         return Ok(false);
     }
@@ -2288,6 +2420,31 @@ fn shell_frame_qualifies(
             frame: frame.generation(),
             audio: audio.parameter_generation(),
         });
+    }
+    if !audio_is_finite(audio) {
+        return Err(LiveDemoError::NonFiniteAudioObservation);
+    }
+    if audio.active_graph_revision() != frame.status().graph_revision() {
+        return Ok(false);
+    }
+    Ok(audio.output_rms() > 0.0 || audio.left_peak() > 0.0 || audio.right_peak() > 0.0)
+}
+
+/// The asynchronous-forwarding crediting rule (mission webview-shell-cutover
+/// WP03): the frame paints a retained superseded projection, so by ack time
+/// the audio callback may legitimately have consumed a newer parameter
+/// generation — that ordering is not an error here. Every other requirement
+/// is the synchronous rule's: exact identity against the frame's own
+/// generation's canonical projection, matching active graph revision, and
+/// finite nonzero physical audio at observation time.
+fn superseded_shell_frame_qualifies(
+    frame: &ShellFrameObservation,
+    shell: &GraphicalShellProjection,
+    audio: AudioObservationSnapshot,
+) -> Result<bool, LiveDemoError> {
+    shell_frame_matches_projection(frame, shell)?;
+    if audio.sequence() == 0 {
+        return Ok(false);
     }
     if !audio_is_finite(audio) {
         return Err(LiveDemoError::NonFiniteAudioObservation);
@@ -2338,7 +2495,7 @@ pub enum LiveDemoError {
         frame: u64,
         audio: u64,
     },
-    MissingShellCoverage,
+    MissingShellCoverage(LiveShellCoverage),
     UnexpectedShellFrame,
     MissingCleanupObservation,
     MissingPatchProjection,
@@ -2442,8 +2599,9 @@ impl fmt::Display for LiveDemoError {
                 formatter,
                 "live shell frame generation {frame} trails audio generation {audio}"
             ),
-            Self::MissingShellCoverage => formatter.write_str(
-                "live demo completed its control scene without qualifying PATCH and MIXER frames",
+            Self::MissingShellCoverage(coverage) => write!(
+                formatter,
+                "live demo completed its control scene without qualifying PATCH and MIXER frames: {coverage:?}",
             ),
             Self::UnexpectedShellFrame => {
                 formatter.write_str("live shell frame arrived after completion or cancellation")
@@ -2507,7 +2665,9 @@ impl std::error::Error for LiveDemoError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{audio_is_finite, shell_frame_qualifies, LiveDemoError};
+    use super::{
+        audio_is_finite, shell_frame_qualifies, superseded_shell_frame_qualifies, LiveDemoError,
+    };
     use crate::control::{
         GraphicalShellProjection, ShellContextLine, ShellFooter, ShellIdentityHeader,
         TextProjection, TopLevelContext,
@@ -2665,5 +2825,47 @@ mod tests {
         let current = frame(&shell, 7, regions(&shell));
         assert!(!shell_frame_qualifies(&current, &shell, audio(7, 0.0)).unwrap());
         assert!(shell_frame_qualifies(&current, &shell, audio(7, 0.2)).unwrap());
+    }
+
+    /// The webview page paints its authored band composition, so the
+    /// measured visible labels are the page's vocabulary, not the retired-era
+    /// band strings (mission webview-shell-cutover WP03). Qualification
+    /// demands identity equality plus visible content in every declared
+    /// region — a differently worded but visibly labeled band qualifies.
+    #[test]
+    fn shell_frame_credit_accepts_the_painting_shells_own_band_vocabulary() {
+        let shell = shell();
+        let mut page_vocabulary = regions(&shell);
+        page_vocabulary[0] = ShellRegionObservation::new(
+            ShellRegionId::ContextLine,
+            page_vocabulary[0].rect(),
+            "PATCH",
+        );
+        page_vocabulary[4] = ShellRegionObservation::new(
+            ShellRegionId::Footer,
+            page_vocabulary[4].rect(),
+            "PATCH / patch.engine · 1 MIXER",
+        );
+        let painted = frame(&shell, 7, page_vocabulary);
+        assert!(shell_frame_qualifies(&painted, &shell, audio(7, 0.2)).unwrap());
+    }
+
+    /// Asynchronously forwarded webview acks can land after the callback has
+    /// consumed a newer parameter generation (WP03): for a frame correlated
+    /// against its own generation's retained projection that ordering is
+    /// legitimate — audio ahead does not reject, silence still refuses
+    /// credit, and identity drift still rejects.
+    #[test]
+    fn superseded_frames_credit_under_the_asynchronous_audio_rule() {
+        let shell = shell();
+        let painted = frame(&shell, 7, regions(&shell));
+        assert!(superseded_shell_frame_qualifies(&painted, &shell, audio(9, 0.2)).unwrap());
+        assert!(!superseded_shell_frame_qualifies(&painted, &shell, audio(9, 0.0)).unwrap());
+
+        let drifted = frame(&shell, 6, regions(&shell));
+        assert!(matches!(
+            superseded_shell_frame_qualifies(&drifted, &shell, audio(9, 0.2)),
+            Err(LiveDemoError::ShellFrameMismatch)
+        ));
     }
 }

@@ -116,7 +116,7 @@ goals:
     - exhaustive_current_surface
     - schema_derived_surface
     - faithful_audio_observation
-    - egui_context_verification
+    - headless_shell_event_verification
     - seam_mutation_falsifiability
   observe_live_synth:
     description: The maintainer can launch the real standalone UI and audio device, watch a paced autonomous
@@ -249,7 +249,7 @@ goals:
     - observable_demo_scene
     - live_observable_demo
     requirements:
-    - selected_egui_stack
+    - selected_webview_stack
     - immutable_graphical_shell_projection
     - authored_shell_composition
     - responsive_shell_blockout

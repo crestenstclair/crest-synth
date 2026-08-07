@@ -579,6 +579,34 @@ impl LiveDemoStep {
     }
 }
 
+/// The frozen live engine-transition checkpoint-identity baseline: the exact
+/// ordered identities the retained scenes have emitted since the engine
+/// lifecycle was frozen. Across the webview shell cutover (spec C-004) this
+/// set survives byte-identically and in order; any later-era identity must
+/// be a pure insertion between its members.
+pub const FROZEN_ENGINE_TRANSITION_IDENTITY_BASELINE: [&str; 3] = [
+    "SoundFontPresetToNext",
+    "SoundFontToBraids",
+    "BraidsToDescriptorDefaultSoundFont",
+];
+
+/// True when `declared` preserves `baseline` byte-identically and in order:
+/// every baseline identity appears, unaltered, in baseline order, and every
+/// other declared identity is a pure insertion around them (spec C-004).
+pub(crate) fn frozen_identity_baseline_is_preserved<'a>(
+    declared: impl IntoIterator<Item = &'a str>,
+    baseline: &[&str],
+) -> bool {
+    let mut awaited = baseline.iter();
+    let mut next = awaited.next();
+    for identity in declared {
+        if next.is_some_and(|frozen| *frozen == identity) {
+            next = awaited.next();
+        }
+    }
+    next.is_none()
+}
+
 /// A bounded descriptor-derived scene for the installed production fixture.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveDemoScene {
@@ -801,6 +829,21 @@ impl LiveDemoScene {
                 soundfont,
             ),
         ];
+        // C-004 (mission webview-shell-cutover): the frozen engine
+        // checkpoint-identity baseline survives the shell cutover
+        // byte-identically and in order; anything else declared here must be
+        // a pure insertion. Asserted at declaration time so every
+        // deterministic twin and live run fails at scene construction —
+        // before rig time is spent — if the frozen identity set regresses.
+        assert!(
+            frozen_identity_baseline_is_preserved(
+                expected_engine_transitions
+                    .iter()
+                    .map(LiveEngineTransition::identifier),
+                &FROZEN_ENGINE_TRANSITION_IDENTITY_BASELINE,
+            ),
+            "the frozen live engine-transition identity baseline must be preserved byte-identically and in order",
+        );
         steps.extend([
             LiveDemoStep::accepted_event(AppEvent::Midi {
                 patch_id: first.patch_id,
@@ -2321,8 +2364,48 @@ impl std::error::Error for LiveDemoSceneError {}
 
 #[cfg(test)]
 mod tests {
-    use super::LiveAudioPredicate;
+    use super::{frozen_identity_baseline_is_preserved, LiveAudioPredicate};
     use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
+
+    /// The C-004 guard the scenes assert at declaration time: the frozen
+    /// identity baseline must survive byte-identically and in order, and
+    /// only pure insertions are tolerated around it.
+    #[test]
+    fn frozen_identity_baselines_admit_only_pure_insertions() {
+        let baseline = ["first", "second", "third"];
+        // Byte-identical and in order.
+        assert!(frozen_identity_baseline_is_preserved(
+            ["first", "second", "third"],
+            &baseline,
+        ));
+        // Pure insertions between, before, and after baseline members.
+        assert!(frozen_identity_baseline_is_preserved(
+            [
+                "zeroth",
+                "first",
+                "firstCycle1",
+                "second",
+                "third",
+                "fourth"
+            ],
+            &baseline,
+        ));
+        // A dropped baseline identity is a regression.
+        assert!(!frozen_identity_baseline_is_preserved(
+            ["first", "third"],
+            &baseline,
+        ));
+        // A reordered baseline is a regression.
+        assert!(!frozen_identity_baseline_is_preserved(
+            ["second", "first", "third"],
+            &baseline,
+        ));
+        // A renamed (non-byte-identical) baseline identity is a regression.
+        assert!(!frozen_identity_baseline_is_preserved(
+            ["first", "second-renamed", "third"],
+            &baseline,
+        ));
+    }
 
     #[allow(clippy::too_many_arguments)]
     fn observation(

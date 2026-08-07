@@ -41,6 +41,13 @@ observe: ## Print the structured headless behavioral observation
 demo: ## Run the exhaustive GUI demo and structured trace
 	cargo run --bin crest-synth -- --smoke --observe --demo-scene
 
+# The four retained live targets below (and the demo-live alias) run on the
+# webview shell: every --demo-live-* mode composes its own TauriWebviewWindow
+# inside StandaloneApplication::run_live_demo_scene (mission
+# webview-shell-cutover WP03). Since WP07 the webview shell is the product's
+# only shell — the interactive and headless targets compose the same
+# TauriWebviewWindow directly and no renderer flag exists. Target names are
+# frozen by the ROADMAP retention contract.
 demo-live: demo-live-effects-and-buses ## Run the newest optimized graphical live demo
 
 demo-live-effects-and-buses: ## Run the cumulative effects-and-buses demo with a real window and physical audio

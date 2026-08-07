@@ -1,6 +1,34 @@
-use crest_synth::adapter::eframe_graphical_window::{
-    install_authored_typeface, EframeGraphicalApplication,
-};
+//! Acceptance for the graphical application shell (crest-spec
+//! `validation.graphical_application_shell`, asset
+//! `GraphicalShellAcceptanceTests`).
+//!
+//! Retargeted by mission webview-shell-cutover-01KZAC7Q WP05 (T018): the
+//! retired raw-input/tessellation mechanics are gone. The shell contract is
+//! proven through the webview projection path:
+//!
+//! - normalized [`WindowInput`] drives the production
+//!   [`KeyboardInputTranslator`] into the production adapter callback wired
+//!   to `AppLoop::dispatch_action` — the exact `KeyPipeline` wiring
+//!   `TauriWebviewWindow::run` composes;
+//! - each tick fetches the immutable projection and pushes it through the
+//!   production [`ProjectionChannel`] (the WP03 transport), capturing the
+//!   exact serialized document the window would emit to the page;
+//! - the page's paint-acknowledgment role is played headless: identity
+//!   copied verbatim from the pushed document, band geometry from the
+//!   authored [`ViewportDensityPolicy`], and WP02's `forward_ack` seam
+//!   constructs the one [`ShellFrameObservation`] per painted document,
+//!   recorded onto the production window's [`QualifyingFrameStream`].
+//!
+//! Structure, identity, ordering, bounds, and non-overlap are asserted on
+//! the forwarded observation; content is asserted on the serialized rendered
+//! document itself. Adapter-owned context/focus/mode/return state is
+//! rejected by construction: the emitted document must be byte-identical to
+//! the projector's own serialization, so nothing between the reducer and the
+//! page can own or rewrite any of it. The DOM-level measurement of the same
+//! bands on the real page is `tests/webview_projection_shell.rs` (T024);
+//! the owned close path is the window run loop's, held by WP02's window
+//! tests and the live shutdown-parity section of the same target.
+
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_soundfont_capability,
 };
@@ -23,22 +51,29 @@ use crest_synth::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary}
 use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::real_time::{AudioObservationSnapshot, PatchAudioBlock};
-use crest_synth::shell::app_window::{
-    AppInputCallback, FrameObservationCallback, ProjectionCallback, TickCallback,
+use crest_synth::shell::app_window::{AppInputCallback, ProjectionCallback};
+use crest_synth::shell::density::ViewportDensityPolicy;
+use crest_synth::shell::tokens::{SemanticColor, ALL_WEIGHTS};
+use crest_synth::shell::typeface::{family_name, AUTHORED_FAMILY};
+use crest_synth::shell::webview::frame_stream::FrameExpectation;
+use crest_synth::shell::webview::meter_channel::{MeterChannel, MeterEmit, METER_INTERVAL};
+use crest_synth::shell::webview::projection_channel::{
+    ForwardedAck, ProjectionChannel, ProjectionPush,
 };
-use crest_synth::shell::visual::{
-    SemanticColor, ViewportDensityPolicy, ALL_TYPE_STYLES, AUTHORED_FAMILY,
+use crest_synth::shell::webview::token_export;
+use crest_synth::shell::webview::TauriWebviewWindow;
+use crest_synth::shell::{
+    KeyboardInputTranslator, ShellFrameObservation, ShellRegionId, WindowInput, WindowKey,
 };
-use crest_synth::shell::{ShellFrameObservation, ShellRegionId};
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::Patch;
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
-use eframe::egui;
-use eframe::App;
+use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::Instant;
 
 #[derive(Default)]
 struct BoundaryObservations {
@@ -86,76 +121,161 @@ fn installed_state() -> AppState {
     state
 }
 
-fn key_event(key: egui::Key) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::default(),
+fn key_stroke(key: WindowKey) -> Vec<WindowInput> {
+    vec![WindowInput::key_down(key), WindowInput::key_up(key)]
+}
+
+/// The page's per-band first visible text, derived from the pushed document
+/// exactly as the committed page derives it (`webview-page/page.js`).
+fn page_band_labels(document: &Value) -> [String; 5] {
+    let context = document
+        .get("context")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let surface_label = |id: &str| -> String {
+        document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|surface| surface.get("label").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let workspace = if context == "mixer" {
+        "LEVEL / PAN / MUTE / SOLO".to_owned()
+    } else {
+        surface_label("patchMain")
+    };
+    let side = if context == "mixer" {
+        "CURSOR".to_owned()
+    } else {
+        surface_label("patchUtility")
+    };
+    [
+        "CREST SYNTH".to_owned(),
+        context.to_uppercase(),
+        workspace,
+        side,
+        context.to_uppercase(),
+    ]
+}
+
+/// The page's paint-acknowledgment role, played headless: identity copied
+/// verbatim from the pushed document (the page contract — `paintedEvidence`
+/// echoes the received document, never re-derives), band geometry from the
+/// authored density policy for the viewport. `forward_ack` rejects any ack
+/// whose identity is not a verbatim copy of an in-flight pushed document's,
+/// so this role cannot render a separately supplied projection.
+fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
+    let policy = ViewportDensityPolicy::resolve(viewport[0]);
+    let bands = policy.bands();
+    let split = policy.split();
+    let context_bottom = bands.context_line_px;
+    let identity_bottom = context_bottom + bands.identity_header_px;
+    let workspace_bottom = viewport[1] - bands.footer_px;
+    let main_width = viewport[0] - split.side_px;
+    let labels = page_band_labels(document);
+    json!({
+        "generation": document["generation"],
+        "stateHash": document["stateHash"],
+        "context": document["context"],
+        "activeSurface": document["activeSurface"],
+        "focusPath": document["focusPath"],
+        "interactionMode": document["interactionMode"],
+        "viewport": { "widthPx": viewport[0], "heightPx": viewport[1] },
+        "regions": [
+            { "id": "contextLine", "xPx": 0.0, "yPx": 0.0,
+              "widthPx": viewport[0], "heightPx": context_bottom,
+              "label": labels[0] },
+            { "id": "identityHeader", "xPx": 0.0, "yPx": context_bottom,
+              "widthPx": viewport[0], "heightPx": bands.identity_header_px,
+              "label": labels[1] },
+            { "id": "mainWorkspace", "xPx": 0.0, "yPx": identity_bottom,
+              "widthPx": main_width, "heightPx": workspace_bottom - identity_bottom,
+              "label": labels[2] },
+            { "id": "persistentSideRegion", "xPx": main_width, "yPx": identity_bottom,
+              "widthPx": split.side_px, "heightPx": workspace_bottom - identity_bottom,
+              "label": labels[3] },
+            { "id": "footer", "xPx": 0.0, "yPx": workspace_bottom,
+              "widthPx": viewport[0], "heightPx": bands.footer_px,
+              "label": labels[4] },
+        ],
+    })
+}
+
+/// The headless webview shell frame loop: the production translator into the
+/// production dispatch callback, the production projection transport, and
+/// the production painted-ack forwarding onto the production window's
+/// qualifying-frame stream.
+struct WebviewShellHarness {
+    translator: KeyboardInputTranslator,
+    on_input: AppInputCallback,
+    projection: ProjectionCallback,
+    channel: ProjectionChannel,
+    window: TauriWebviewWindow,
+    forwarded: Vec<ShellFrameObservation>,
+}
+
+impl WebviewShellHarness {
+    fn new(on_input: AppInputCallback, projection: ProjectionCallback) -> Self {
+        Self {
+            translator: KeyboardInputTranslator::new(),
+            on_input,
+            projection,
+            channel: ProjectionChannel::new(),
+            window: TauriWebviewWindow::new("crest-synth acceptance"),
+            forwarded: Vec::new(),
+        }
     }
-}
 
-fn key_release(key: egui::Key) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: false,
-        repeat: false,
-        modifiers: egui::Modifiers::default(),
+    /// One frame: feed normalized inputs through the shared production key
+    /// state machine (the `KeyPipeline` wiring, verbatim), then tick — fetch
+    /// the immutable projection, push it through the generation-gated
+    /// transport, and forward the page's painted ack for whatever document
+    /// was actually emitted. Returns the emitted document and its forwarded
+    /// observation, or `None` when the generation gate emitted nothing.
+    fn frame(
+        &mut self,
+        viewport: [f32; 2],
+        inputs: Vec<WindowInput>,
+    ) -> Option<(Value, ShellFrameObservation)> {
+        for input in inputs {
+            if let Some(action) = self.translator.translate(input) {
+                (self.on_input)(action);
+            }
+        }
+        let projection = (self.projection)();
+        let mut emitted = None;
+        let outcome = self
+            .channel
+            .push(&projection, |document| {
+                emitted = Some(document);
+                Ok(())
+            })
+            .expect("the tick's projection push succeeds");
+        match outcome {
+            ProjectionPush::Unchanged => None,
+            ProjectionPush::Emitted => {
+                let document =
+                    emitted.expect("an Emitted push hands the emitter exactly one document");
+                let observation = match self
+                    .channel
+                    .forward_ack(&page_painted_ack(&document, viewport).to_string())
+                    .expect("the painted ack for the pushed document forwards")
+                {
+                    ForwardedAck::Observation(observation) => observation,
+                    ForwardedAck::SupersededLate { generation } => panic!(
+                        "the ack for the just-pushed document cannot be late (generation {generation})"
+                    ),
+                };
+                self.window.frame_stream().record(observation.clone());
+                self.forwarded.push(observation.clone());
+                Some((document, observation))
+            }
+        }
     }
-}
-
-fn raw_input(size: [f32; 2], events: Vec<egui::Event>) -> egui::RawInput {
-    egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(size[0], size[1]),
-        )),
-        predicted_dt: 0.0,
-        events,
-        ..Default::default()
-    }
-}
-
-fn run_frame(
-    application: &mut EframeGraphicalApplication,
-    context: &egui::Context,
-    frame: &mut eframe::Frame,
-    size: [f32; 2],
-    events: Vec<egui::Event>,
-) -> egui::FullOutput {
-    context.begin_pass(raw_input(size, events));
-    application.update(context, frame);
-    context.end_pass()
-}
-
-fn shape_contains_text(shape: &egui::Shape, expected: &str) -> bool {
-    match shape {
-        egui::Shape::Text(text) => text.galley.job.text == expected,
-        egui::Shape::Vec(children) => children
-            .iter()
-            .any(|child| shape_contains_text(child, expected)),
-        _ => false,
-    }
-}
-
-fn output_contains_text(output: &egui::FullOutput, expected: &str) -> bool {
-    output
-        .shapes
-        .iter()
-        .any(|shape| shape_contains_text(&shape.shape, expected))
-}
-
-fn assert_close_command(output: &egui::FullOutput, expected: usize) {
-    let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
-    assert_eq!(
-        commands
-            .iter()
-            .filter(|command| matches!(command, egui::ViewportCommand::Close))
-            .count(),
-        expected
-    );
 }
 
 fn assert_rect(observation: &ShellFrameObservation, id: ShellRegionId, expected: [f32; 4]) {
@@ -172,7 +292,7 @@ fn assert_rect(observation: &ShellFrameObservation, id: ShellRegionId, expected:
 fn assert_frame(
     observation: &ShellFrameObservation,
     projection: &GraphicalShellProjection,
-    output: &egui::FullOutput,
+    document: &Value,
     viewport: [f32; 2],
 ) {
     assert_eq!(observation.viewport_width(), viewport[0]);
@@ -180,6 +300,18 @@ fn assert_frame(
     assert_eq!(observation.generation(), projection.generation());
     assert_eq!(observation.state_hash(), projection.state_hash());
     assert_eq!(observation.context(), projection.context());
+
+    // Adapter-owned context/focus/mode/return state is rejected wholesale:
+    // the emitted document must be the projector's own serialization,
+    // byte-identical — no transport-side struct, trimmed field, or rewritten
+    // value can survive this.
+    let independent = serde_json::to_value(projection.semantic_model())
+        .expect("the projector's model serializes");
+    assert_eq!(
+        document, &independent,
+        "the rendered document must be the projector's serialization, verbatim"
+    );
+
     assert!(
         observation.regions_are_non_overlapping(),
         "{:?}",
@@ -194,9 +326,10 @@ fn assert_frame(
         ShellRegionId::surface_descriptor()
     );
 
-    // Every band and split the shell paints resolves from the density policy
-    // for this viewport, so this asserts the authored geometry rather than a
-    // second copy of the constants the adapter used to carry.
+    // Every band and split resolves from the density policy for this
+    // viewport, so this asserts the authored geometry itself: a policy whose
+    // bands stopped tiling the viewport fails the exact-rect and non-overlap
+    // assertions here before any page could seat it.
     let policy = ViewportDensityPolicy::resolve(viewport[0]);
     let bands = policy.bands();
     let context_bottom = bands.context_line_px;
@@ -237,10 +370,39 @@ fn assert_frame(
             >= 320.0
     );
 
-    for region in observation.regions() {
-        assert!(output_contains_text(output, region.visible_label()));
+    // Region visibility: every region carries the visible label the page
+    // derives from this document, and the identity/footer chrome names the
+    // active context.
+    let labels = page_band_labels(document);
+    for (region, expected) in observation.regions().iter().zip(&labels) {
+        assert!(!region.visible_label().trim().is_empty());
+        assert_eq!(region.visible_label(), expected, "{:?}", region.id());
     }
+    assert_eq!(
+        observation
+            .region(ShellRegionId::IdentityHeader)
+            .visible_label(),
+        match projection.context() {
+            TopLevelContext::Patch => "PATCH",
+            TopLevelContext::Mixer => "MIXER",
+        }
+    );
     assert!(!projection.workspace().diagnostic().body().is_empty());
+}
+
+/// One serialized surface's control array.
+fn surface_controls(document: &Value, id: &str) -> Vec<Value> {
+    document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some(id))
+        .unwrap_or_else(|| panic!("the document carries the {id} surface"))
+        .get("controls")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
 #[test]
@@ -254,11 +416,9 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
         },
     )
     .unwrap();
-    let initial_tree: serde_json::Value =
-        serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
+    let initial_tree: Value = serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
     let shared = Rc::new(RefCell::new(app_loop));
     let rejections = Rc::new(RefCell::new(Vec::new()));
-    let frames = Rc::new(RefCell::new(Vec::new()));
 
     let input_loop = Rc::clone(&shared);
     let input_rejections = Rc::clone(&rejections);
@@ -270,41 +430,34 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
     let projection_loop = Rc::clone(&shared);
     let projection: ProjectionCallback =
         Box::new(move || projection_loop.borrow().current_graphical_shell());
-    let on_tick: TickCallback = Box::new(|_| true);
-    let observed_frames = Rc::clone(&frames);
-    let on_frame: FrameObservationCallback = Box::new(move |observation| {
-        observed_frames.borrow_mut().push(observation);
-    });
-    let mut application = EframeGraphicalApplication::new(on_input, projection, on_tick, on_frame);
-    let context = egui::Context::default();
-    install_authored_typeface(&context)
-        .expect("the authored typeface installs into the test context");
-    let mut frame = eframe::Frame::_new_kittest();
+    let mut harness = WebviewShellHarness::new(on_input, projection);
 
     let cases = [
         ([1_920.0, 1_080.0], None, TopLevelContext::Mixer),
         (
             [1_920.0, 1_080.0],
-            Some(egui::Key::Num2),
+            Some(WindowKey::Digit2),
             TopLevelContext::Patch,
         ),
         (
             [1_280.0, 800.0],
-            Some(egui::Key::Num1),
+            Some(WindowKey::Digit1),
             TopLevelContext::Mixer,
         ),
         (
             [1_280.0, 800.0],
-            Some(egui::Key::Num2),
+            Some(WindowKey::Digit2),
             TopLevelContext::Patch,
         ),
     ];
 
     for (viewport, key, expected_context) in cases {
-        let before = frames.borrow().len();
-        let events = key.map_or_else(Vec::new, |key| vec![key_event(key)]);
-        let output = run_frame(&mut application, &context, &mut frame, viewport, events);
-        assert_eq!(frames.borrow().len(), before + 1);
+        let before = harness.forwarded.len();
+        let inputs = key.map_or_else(Vec::new, key_stroke);
+        let (document, observation) = harness
+            .frame(viewport, inputs)
+            .expect("an accepted generation forwards exactly one observation");
+        assert_eq!(harness.forwarded.len(), before + 1);
         let projection = shared.borrow().current_graphical_shell();
         assert_eq!(projection.context(), expected_context);
         assert_eq!(
@@ -314,32 +467,74 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
                 TopLevelContext::Mixer => ShellSideRegion::Inspector,
             }
         );
-        assert_frame(
-            frames.borrow().last().unwrap(),
-            &projection,
-            &output,
-            viewport,
-        );
+        assert_frame(&observation, &projection, &document, viewport);
+
+        // Full-surface generation agreement: document, semantic model, shell
+        // projection, text projection, state tree, event record, and
+        // parameter snapshot all report the same accepted generation.
+        {
+            let app_loop = shared.borrow();
+            let tree = app_loop.current_state_tree();
+            let text = app_loop.current_text();
+            assert_eq!(
+                document["generation"].as_u64(),
+                Some(tree.generation()),
+                "the rendered document names the accepted generation"
+            );
+            assert_eq!(document["stateHash"].as_str(), Some(tree.state_hash()));
+            assert_eq!(text.state_hash(), tree.state_hash());
+            assert_eq!(projection.generation(), tree.generation());
+            assert_eq!(projection.state_hash(), tree.state_hash());
+            if key.is_some() {
+                let records = app_loop.event_log_ref().records().to_vec();
+                let record = records.last().expect("the accepted key left a record");
+                assert_eq!(record.outcome(), EventOutcome::Accepted);
+                assert_eq!(record.generation_after(), tree.generation());
+                assert_eq!(record.state_hash_after(), tree.state_hash());
+                assert_eq!(record.parameter_generation(), tree.generation());
+                assert_eq!(record.projection_state_hash(), tree.state_hash());
+            }
+        }
+
         match expected_context {
             TopLevelContext::Mixer => {
-                for track_id in MixerTrackId::ALL {
+                // The stable sixteen-track index reaches the rendered
+                // document: every track's level row serializes, in full.
+                let controls = surface_controls(&document, "mixerMain");
+                assert_eq!(
+                    controls.len(),
+                    MixerTrackId::COUNT * 4,
+                    "the horizontal strip must retain every track's four main controls"
+                );
+                for track in 0..MixerTrackId::COUNT as u64 {
                     assert!(
-                        output_contains_text(&output, &track_id.to_string()),
-                        "{track_id} must remain visible in the stable mixer index at {viewport:?}"
+                        controls.iter().any(|control| {
+                            control
+                                .pointer("/path/controlId/id/track_id")
+                                .and_then(Value::as_u64)
+                                == Some(track)
+                                && control
+                                    .pointer("/path/controlId/id/parameter")
+                                    .and_then(Value::as_str)
+                                    == Some("level")
+                        }),
+                        "track {track} must remain in the rendered document at {viewport:?}"
                     );
                 }
+                // The page's meter and Inspector key on a focused mixer
+                // track; the document names one.
+                assert_eq!(
+                    document
+                        .pointer("/focusPath/controlId/id/kind")
+                        .and_then(Value::as_str),
+                    Some("track"),
+                    "the MIXER document's focus names a track"
+                );
                 let main = projection
                     .semantic_model()
                     .surface(crest_synth::control::SurfaceId::MixerMain)
                     .unwrap();
-                assert_eq!(
-                    main.controls().len(),
-                    MixerTrackId::COUNT * 4,
-                    "the horizontal strip must retain every track's four main controls"
-                );
-                assert!(output_contains_text(&output, "METER 0.000"));
-                assert!(output_contains_text(&output, "SELECTED T00"));
-                assert!(output_contains_text(&output, "PATCH 01 · Graphical Shell"));
+                assert_eq!(main.controls().len(), MixerTrackId::COUNT * 4);
                 let inspector = projection
                     .semantic_model()
                     .surface(SurfaceId::MixerInspector)
@@ -378,17 +573,22 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
                     )));
             }
             TopLevelContext::Patch => {
-                assert!(output_contains_text(&output, "Trim Gain"));
-                assert!(output_contains_text(&output, "Output Track"));
+                let utility = surface_controls(&document, "patchUtility");
+                for label in ["Trim Gain", "Output Track"] {
+                    assert!(
+                        utility.iter().any(|control| {
+                            control.get("label").and_then(Value::as_str) == Some(label)
+                        }),
+                        "the PATCH document's utility surface carries {label}"
+                    );
+                }
             }
         }
     }
 
     assert!(rejections.borrow().is_empty());
-    assert_eq!(application.frame_observation_error(), None);
     let app_loop = shared.borrow();
-    let final_tree: serde_json::Value =
-        serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
+    let final_tree: Value = serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
     for path in [
         "/patches",
         "/global",
@@ -414,173 +614,203 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
         .iter()
         .map(|snapshot| {
             let mut value = serde_json::to_value(snapshot).unwrap();
-            value["generation"] = serde_json::Value::Null;
+            value["generation"] = Value::Null;
             value
         })
         .collect::<Vec<_>>();
     assert!(parameter_values.windows(2).all(|pair| pair[0] == pair[1]));
+    drop(app_loop);
+
+    // The qualifying-frame stream — the seam live scenes block on instead of
+    // sleeping — serves the final accepted identity from any handle cloned
+    // off the production window.
+    let last = harness.forwarded.last().unwrap().clone();
+    let expectation = FrameExpectation::new(
+        last.generation(),
+        last.state_hash(),
+        last.context(),
+        last.active_surface(),
+    );
+    assert!(harness.window.frame_stream().poll(&expectation).is_some());
+    // A stale identity does not qualify.
+    let stale = FrameExpectation::new(
+        last.generation() + 1_000,
+        last.state_hash(),
+        last.context(),
+        last.active_surface(),
+    );
+    assert!(harness.window.frame_stream().poll(&stale).is_none());
 
     println!("CREST_ACCEPTANCE graphical_application_shell passed");
 }
 
-/// Collects every color the frame puts on screen, as fill or as stroke.
-fn painted_colors(shape: &egui::Shape, into: &mut Vec<egui::Color32>) {
-    match shape {
-        egui::Shape::Rect(rect) => {
-            into.push(rect.fill);
-            into.push(rect.stroke.color);
-        }
-        egui::Shape::Text(text) => {
-            into.push(text.fallback_color);
-            for section in &text.galley.job.sections {
-                into.push(section.format.color);
-            }
-        }
-        egui::Shape::Circle(circle) => {
-            into.push(circle.fill);
-            into.push(circle.stroke.color);
-        }
-        egui::Shape::Path(path) => {
-            into.push(path.fill);
-            if let egui::epaint::ColorMode::Solid(color) = path.stroke.color {
-                into.push(color);
-            }
-        }
-        egui::Shape::LineSegment { stroke, .. } => into.push(stroke.color),
-        egui::Shape::Vec(children) => {
-            for child in children {
-                painted_colors(child, into);
-            }
-        }
-        // Meshes, callbacks, and ellipses carry no flat color this frame; a
-        // color that only reached the screen through one of them would be
-        // invisible to this scan, so nothing is asserted about them.
-        _ => {}
-    }
-}
-
-/// Collects the font family and size of every text run the frame paints.
-fn painted_fonts(shape: &egui::Shape, into: &mut Vec<(egui::FontFamily, f32)>) {
-    match shape {
-        egui::Shape::Text(text) => {
-            for section in &text.galley.job.sections {
-                into.push((
-                    section.format.font_id.family.clone(),
-                    section.format.font_id.size,
-                ));
-            }
-        }
-        egui::Shape::Vec(children) => {
-            for child in children {
-                painted_fonts(child, into);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The production render path paints the authored vocabulary and nothing else.
+/// The served page paints only through the generated token table.
 ///
-/// This is the mission's user-visible outcome, asserted on the shapes the real
-/// adapter emits through a real `egui::Context` rather than described. It
-/// falsifies three distinct regressions: the pre-mission palette surviving,
-/// the authored typeface silently failing to register, and an unauthored point
-/// size reaching a glyph run.
+/// The webview twin of "the production render path paints the authored
+/// palette and typeface": every value the page can paint with resolves from
+/// `tokens.css` — proven byte-fresh against the authored vocabulary — and
+/// the page sources spell no color of their own, resolve no token the table
+/// does not declare, and load exactly the four authored faces with no
+/// fallback stack.
 #[test]
-fn production_render_paints_the_authored_palette_and_typeface() {
-    let app_loop = AppLoop::new(
-        installed_state(),
-        StateProjector::new(),
-        ProbeBoundary {
-            observations: Arc::new(Mutex::new(BoundaryObservations::default())),
-        },
-    )
-    .unwrap();
-    let shared = Rc::new(RefCell::new(app_loop));
-    let input_loop = Rc::clone(&shared);
-    let on_input: AppInputCallback = Box::new(move |event| {
-        let _ = input_loop.borrow_mut().dispatch_action(event);
-    });
-    let projection_loop = Rc::clone(&shared);
-    let projection: ProjectionCallback =
-        Box::new(move || projection_loop.borrow().current_graphical_shell());
-    let mut application =
-        EframeGraphicalApplication::new(on_input, projection, Box::new(|_| true), Box::new(|_| {}));
-    let context = egui::Context::default();
-    install_authored_typeface(&context)
-        .expect("the authored typeface installs into the test context");
-    let mut frame = eframe::Frame::_new_kittest();
+fn the_served_page_paints_only_through_the_generated_token_table() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |name: &str| {
+        std::fs::read_to_string(root.join("webview-page").join(name))
+            .unwrap_or_else(|error| panic!("webview-page/{name} must be readable: {error}"))
+    };
+    let tokens = read("tokens.css");
+    let page_css = read("page.css");
+    let page_js = read("page.js");
+    let index_html = read("index.html");
 
-    // PATCH, so the frame carries focused parameter rows and their keylines.
-    let output = run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        [1_920.0, 1_080.0],
-        vec![key_event(egui::Key::Num2)],
-    );
+    // The committed table is byte-fresh generator output, so page values are
+    // the authored vocabulary's values by construction.
+    token_export::committed_tokens_are_fresh(&tokens)
+        .expect("committed tokens.css must match the authored vocabulary");
 
-    let mut colors = Vec::new();
-    let mut fonts = Vec::new();
-    for shape in &output.shapes {
-        painted_colors(&shape.shape, &mut colors);
-        painted_fonts(&shape.shape, &mut fonts);
-    }
-    assert!(!colors.is_empty(), "the frame painted nothing");
-    assert!(!fonts.is_empty(), "the frame painted no text");
+    // The two values that changed most in the component mission are present
+    // at their authored resolutions.
+    let hex = |color: SemanticColor| {
+        let resolved = color.resolve();
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            resolved.r(),
+            resolved.g(),
+            resolved.b()
+        )
+    };
+    assert!(tokens.contains(&format!(
+        "--color-accent-focus: {};",
+        hex(SemanticColor::AccentFocus)
+    )));
+    assert!(tokens.contains(&format!(
+        "--color-bg-canvas: {};",
+        hex(SemanticColor::BgCanvas)
+    )));
 
-    // The single most visible change in the mission: focus is cyan, and the
-    // green the adapter used to paint it in is gone from the whole frame.
-    let pre_mission_green = egui::Color32::from_rgb(110, 205, 174);
-    assert!(
-        !colors.contains(&pre_mission_green),
-        "the pre-mission focus green is still painted"
-    );
-    assert!(
-        colors.contains(&SemanticColor::AccentFocus.resolve()),
-        "the authored cyan focus accent is painted nowhere"
-    );
-    assert!(
-        colors.contains(&SemanticColor::BgCanvas.resolve()),
-        "the authored canvas background is painted nowhere"
-    );
+    // The retired pre-mission palette is nowhere in the served page.
     for retired in [
-        egui::Color32::from_rgb(16, 18, 22),
-        egui::Color32::from_rgb(24, 27, 32),
-        egui::Color32::from_rgb(29, 33, 39),
-        egui::Color32::from_rgb(230, 234, 239),
-        egui::Color32::from_rgb(150, 158, 169),
-        egui::Color32::from_rgb(232, 174, 76),
+        "#6ecdae", "#101216", "#181b20", "#1d2127", "#e6eaef", "#969ea9", "#e8ae4c",
     ] {
-        assert!(
-            !colors.contains(&retired),
-            "the retired adapter constant {retired:?} is still painted"
-        );
+        for (name, source) in [
+            ("tokens.css", &tokens),
+            ("page.css", &page_css),
+            ("page.js", &page_js),
+            ("index.html", &index_html),
+        ] {
+            assert!(
+                !source.to_lowercase().contains(retired),
+                "the retired {retired} survives in {name}"
+            );
+        }
     }
 
-    // The typeface actually took. egui falls back silently on a family-name
-    // mismatch, so a run left on a default family means registration failed.
-    let authored_sizes: Vec<f32> = ALL_TYPE_STYLES
-        .iter()
-        .map(|style| style.metrics().size_px)
-        .collect();
-    for (family, size) in &fonts {
-        match family {
-            egui::FontFamily::Name(name) => assert!(
-                name.starts_with(AUTHORED_FAMILY),
-                "a run painted in {name}, which is not the authored family"
-            ),
-            other => panic!("a run fell back to {other:?} instead of an authored family"),
-        }
+    // The composition stylesheet spells no color: no hex literal, no
+    // rgb()/hsl() constructor. (Selectors like `#footer` scan as one or two
+    // hex digits and are not colors.)
+    for line in page_css.lines() {
+        let code = line.split("/*").next().unwrap_or(line);
         assert!(
-            authored_sizes.contains(size),
-            "a run painted at {size} px, which no authored type style declares"
+            !code.contains("rgb(") && !code.contains("hsl(") && !code.contains("rgba("),
+            "page.css builds a color of its own: {line}"
         );
+        let bytes: Vec<char> = code.chars().collect();
+        for (index, character) in bytes.iter().enumerate() {
+            if *character != '#' {
+                continue;
+            }
+            let run = bytes[index + 1..]
+                .iter()
+                .take_while(|c| c.is_ascii_hexdigit())
+                .count();
+            assert!(
+                !matches!(run, 3 | 4 | 6 | 8),
+                "page.css spells a hex color: {line}"
+            );
+        }
+    }
+
+    // Every custom property the page resolves is declared — by the generated
+    // table or by the page's own declared fader-geometry block — so no token
+    // reference can silently resolve to nothing.
+    let mut declared: Vec<String> = Vec::new();
+    for source in [&tokens, &page_css] {
+        for line in source.lines() {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("--") {
+                if let Some(colon) = rest.find(':') {
+                    declared.push(format!("--{}", &rest[..colon]));
+                }
+            }
+        }
+    }
+    let mut references = 0_usize;
+    let mut from = 0;
+    while let Some(offset) = page_css[from..].find("var(--") {
+        let start = from + offset + "var(".len();
+        let name: String = page_css[start..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        // `var(--x, fallback)` is a per-element document-value binding the
+        // render script writes (e.g. the fader's `--level`); its explicit
+        // fallback means it can never silently resolve to nothing. A bare
+        // `var(--x)` must resolve to a declared token.
+        let has_fallback = page_css[start + name.len()..].trim_start().starts_with(',');
+        assert!(
+            has_fallback || declared.iter().any(|property| property == &name),
+            "page.css resolves {name}, which no token table declares"
+        );
+        references += 1;
+        from = start;
+    }
+    assert!(
+        references > 80,
+        "page.css resolved only {references} custom properties; the page is not \
+         painting through the token table"
+    );
+
+    // The authored typeface, exactly: four @font-face declarations for the
+    // authored family at the four authored numeric weights, each loading a
+    // vendored face that exists, and no fallback stack anywhere.
+    assert_eq!(page_css.matches("@font-face").count(), ALL_WEIGHTS.len());
+    assert_eq!(
+        page_css
+            .matches(&format!("font-family: \"{AUTHORED_FAMILY}\";"))
+            .count(),
+        ALL_WEIGHTS.len() + 1,
+        "each face plus the body binding names the authored family, verbatim"
+    );
+    assert!(
+        !page_css.contains(&format!("\"{AUTHORED_FAMILY}\",")),
+        "the authored family must carry no fallback stack"
+    );
+    for weight in ALL_WEIGHTS {
+        assert!(
+            page_css.contains(&format!("font-weight: {};", weight.numeric())),
+            "the authored numeric weight {} is not declared",
+            weight.numeric()
+        );
+        let face = family_name(weight)
+            .strip_prefix(AUTHORED_FAMILY)
+            .expect("the family name carries the authored prefix")
+            .trim()
+            .to_owned();
+        let file = format!("AzeretMono-{face}.ttf");
+        assert!(
+            page_css.contains(&format!("url(\"fonts/{file}\")")),
+            "the {face} face is not loaded from the served fonts"
+        );
+        let vendored = root.join("vendor/azeret-mono").join(&file);
+        let bytes = std::fs::read(&vendored)
+            .unwrap_or_else(|error| panic!("{} must exist: {error}", vendored.display()));
+        assert!(!bytes.is_empty(), "{file} must carry face bytes");
     }
 }
 
 #[test]
-fn mixer_frame_reads_one_compatible_immutable_audio_observation() {
+fn mixer_meter_frame_carries_one_compatible_immutable_audio_observation() {
     let state = installed_state();
     let projector = StateProjector::new();
     let parameters = projector.parameter_snapshot(&state).unwrap();
@@ -613,35 +843,47 @@ fn mixer_frame_reads_one_compatible_immutable_audio_observation() {
         mix,
     );
 
-    let observation_reads = Rc::new(Cell::new(0_u32));
-    let reads = Rc::clone(&observation_reads);
-    let mut application = EframeGraphicalApplication::new_with_audio_observation(
-        Box::new(|_| panic!("passive meter render emitted input")),
-        Box::new(move || shell.clone()),
-        Box::new(move || {
-            reads.set(reads.get() + 1);
-            observation
+    // The webview meter transport: one latest-value slot, the newest
+    // observation wins, and the due emit hands the page exactly the one
+    // immutable snapshot — untouched.
+    let mut channel = MeterChannel::new();
+    channel.observe(observation);
+    let mut emitted: Vec<AudioObservationSnapshot> = Vec::new();
+    let now = Instant::now();
+    assert!(matches!(
+        channel.emit_if_due(now, |frame| {
+            emitted.push(frame);
+            Ok(())
         }),
-        Box::new(|_| true),
-        Box::new(|_| {}),
-    );
-    let context = egui::Context::default();
-    install_authored_typeface(&context)
-        .expect("the authored typeface installs into the test context");
-    let mut frame = eframe::Frame::_new_kittest();
-    let rendered = run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        [1_280.0, 800.0],
-        Vec::new(),
+        MeterEmit::Emitted
+    ));
+    assert_eq!(emitted.len(), 1, "exactly one meter frame per due emit");
+    let frame = serde_json::to_value(emitted[0]).expect("the meter frame serializes");
+    assert_eq!(
+        frame,
+        serde_json::to_value(observation).expect("the observation serializes"),
+        "the emitted frame is the one immutable observation, untouched"
     );
 
-    assert_eq!(observation_reads.get(), 1);
-    assert!(output_contains_text(
-        &rendered,
-        &format!("METER {:.3}", mix.track(track).rms())
+    // The page's compatibility rule keys on the frame's parameter generation
+    // matching the document on screen; both derive from the same accepted
+    // state here, so the reading is displayable.
+    let document =
+        serde_json::to_value(shell.semantic_model()).expect("the projector's model serializes");
+    assert_eq!(frame["parameterGeneration"], document["generation"]);
+    let reading = frame["mix"]["tracks"][0]["rms"]
+        .as_f64()
+        .or_else(|| frame["tracks"][0]["rms"].as_f64())
+        .expect("the frame carries the focused track's rms");
+    assert!((reading - f64::from(mix.track(track).rms())).abs() < 1.0e-6);
+
+    // One observation is consumed exactly once: the next due emit is idle.
+    assert!(matches!(
+        channel.emit_if_due(now + METER_INTERVAL, |_| Ok(())),
+        MeterEmit::Idle
     ));
+
+    // The passive meter render mutated nothing.
     assert_eq!(projector.project(&state).unwrap().0.json(), state_before);
 }
 
@@ -670,46 +912,40 @@ fn patch_utility_controls_dispatch_through_the_same_semantic_callback() {
     let projection_loop = Rc::clone(&shared);
     let projection: ProjectionCallback =
         Box::new(move || projection_loop.borrow().current_graphical_shell());
-    let mut application =
-        EframeGraphicalApplication::new(on_input, projection, Box::new(|_| true), Box::new(|_| {}));
-    let context = egui::Context::default();
-    install_authored_typeface(&context)
-        .expect("the authored typeface installs into the test context");
-    let mut frame = eframe::Frame::_new_kittest();
+    let mut harness = WebviewShellHarness::new(on_input, projection);
+    let viewport = [1_280.0, 800.0];
 
-    run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        [1_280.0, 800.0],
-        vec![key_event(egui::Key::Num2)],
-    );
-    let utility = run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        [1_280.0, 800.0],
-        vec![key_event(egui::Key::D), key_release(egui::Key::D)],
-    );
-    assert!(output_contains_text(&utility, "Trim Gain"));
-    assert!(output_contains_text(&utility, "Output Track"));
+    harness
+        .frame(viewport, key_stroke(WindowKey::Digit2))
+        .expect("selecting PATCH renders a document");
+    let (utility_document, _) = harness
+        .frame(viewport, key_stroke(WindowKey::D))
+        .expect("entering the utility surface renders a document");
+    let utility_rows = surface_controls(&utility_document, "patchUtility");
+    for label in ["Trim Gain", "Output Track"] {
+        assert!(
+            utility_rows
+                .iter()
+                .any(|control| control.get("label").and_then(Value::as_str) == Some(label)),
+            "the rendered utility surface carries {label}"
+        );
+    }
     assert_eq!(
         shared.borrow().current_semantic_model().active_surface(),
         SurfaceId::PatchUtility
     );
 
-    let adjusted = run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        [1_280.0, 800.0],
-        vec![
-            key_event(egui::Key::K),
-            key_event(egui::Key::D),
-            key_release(egui::Key::D),
-            key_release(egui::Key::K),
-        ],
-    );
+    let (adjusted_document, _) = harness
+        .frame(
+            viewport,
+            vec![
+                WindowInput::key_down(WindowKey::K),
+                WindowInput::key_down(WindowKey::D),
+                WindowInput::key_up(WindowKey::D),
+                WindowInput::key_up(WindowKey::K),
+            ],
+        )
+        .expect("the K+D chord renders a document");
     let app_loop = shared.borrow();
     let expected_trim = initial_output.trim_gain_db()
         + PatchOutputParameter::TrimGain
@@ -750,7 +986,23 @@ fn patch_utility_controls_dispatch_through_the_same_semantic_callback() {
         trim_control.value(),
         &SemanticControlValue::Scalar(expected_trim as f64)
     );
-    assert!(output_contains_text(&adjusted, "Trim Gain"));
+    // The accepted edit reached the rendered document itself: the serialized
+    // trim row carries the exact accepted value.
+    let adjusted_rows = surface_controls(&adjusted_document, "patchUtility");
+    let trim_row = adjusted_rows
+        .iter()
+        .find(|control| {
+            control
+                .pointer("/path/controlId/id")
+                .and_then(Value::as_str)
+                == Some("patch.output.trimGainDb")
+        })
+        .expect("the rendered document carries the trim row");
+    let rendered_trim = trim_row
+        .pointer("/value/value")
+        .and_then(Value::as_f64)
+        .expect("the trim row serializes a scalar");
+    assert!((rendered_trim - f64::from(expected_trim)).abs() < 1.0e-6);
     assert!(app_loop.event_log_ref().records().iter().any(|record| {
         record.outcome() == EventOutcome::Accepted
             && matches!(
@@ -786,61 +1038,52 @@ fn patch_utility_controls_dispatch_through_the_same_semantic_callback() {
     );
 }
 
+/// The webview idle economy, replacing the retired repaint-delay and false-tick
+/// assertions: every tick fetches the immutable projection (the port
+/// invariant), but an unchanged accepted generation emits nothing — no
+/// serialization, no push, no observation. The close-once ordering on a
+/// false tick is the window run loop's own behavior, held by the WP02 window
+/// tests and the live shutdown-parity section of
+/// `tests/webview_projection_shell.rs`.
 #[test]
-fn false_tick_closes_once_without_projection_frame_or_repaint() {
-    let shell = StateProjector::new()
-        .project_with_shell(&installed_state())
-        .unwrap()
-        .3;
-    let input_count = Rc::new(Cell::new(0));
-    let projection_count = Rc::new(Cell::new(0));
-    let tick_count = Rc::new(Cell::new(0));
-    let frame_count = Rc::new(Cell::new(0));
-
-    let inputs = Rc::clone(&input_count);
-    let on_input: AppInputCallback = Box::new(move |_| inputs.set(inputs.get() + 1));
-    let projections = Rc::clone(&projection_count);
+fn an_unchanged_generation_tick_emits_no_document() {
+    let app_loop = AppLoop::new(
+        installed_state(),
+        StateProjector::new(),
+        ProbeBoundary {
+            observations: Arc::new(Mutex::new(BoundaryObservations::default())),
+        },
+    )
+    .unwrap();
+    let shared = Rc::new(RefCell::new(app_loop));
+    let fetches = Rc::new(Cell::new(0_usize));
+    let projection_loop = Rc::clone(&shared);
+    let fetch_count = Rc::clone(&fetches);
     let projection: ProjectionCallback = Box::new(move || {
-        projections.set(projections.get() + 1);
-        shell.clone()
+        fetch_count.set(fetch_count.get() + 1);
+        projection_loop.borrow().current_graphical_shell()
     });
-    let ticks = Rc::clone(&tick_count);
-    let on_tick: TickCallback = Box::new(move |_| {
-        ticks.set(ticks.get() + 1);
-        false
-    });
-    let frame_observations = Rc::clone(&frame_count);
-    let on_frame: FrameObservationCallback = Box::new(move |_| {
-        frame_observations.set(frame_observations.get() + 1);
-    });
-    let mut application = EframeGraphicalApplication::new(on_input, projection, on_tick, on_frame);
-    let context = egui::Context::default();
-    install_authored_typeface(&context)
-        .expect("the authored typeface installs into the test context");
-    let mut frame = eframe::Frame::_new_kittest();
 
-    let first = run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        [1_280.0, 800.0],
-        Vec::new(),
-    );
-    assert_close_command(&first, 1);
-    let second = run_frame(
-        &mut application,
-        &context,
-        &mut frame,
-        [1_280.0, 800.0],
-        vec![key_event(egui::Key::Num2)],
-    );
-    assert_close_command(&second, 0);
-    assert_eq!(input_count.get(), 0);
-    assert_eq!(projection_count.get(), 0);
-    assert_eq!(tick_count.get(), 1);
-    assert_eq!(frame_count.get(), 0);
-    assert_eq!(
-        first.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
-        Duration::ZERO
-    );
+    let mut channel = ProjectionChannel::new();
+    let mut emits = 0_usize;
+    for tick in 0..4 {
+        let current = projection();
+        let outcome = channel
+            .push(&current, |_| {
+                emits += 1;
+                Ok(())
+            })
+            .expect("an idle tick's push succeeds");
+        if tick == 0 {
+            assert_eq!(outcome, ProjectionPush::Emitted);
+        } else {
+            assert_eq!(
+                outcome,
+                ProjectionPush::Unchanged,
+                "an unchanged generation must emit nothing on tick {tick}"
+            );
+        }
+    }
+    assert_eq!(fetches.get(), 4, "every tick fetches the projection");
+    assert_eq!(emits, 1, "one accepted generation, one emitted document");
 }

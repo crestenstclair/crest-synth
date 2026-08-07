@@ -21,12 +21,12 @@ evidence:
     - witness.engine_selection_workflow
   graphical_application_shell_contract:
     kind: behavioral
-    description: the canonical shell projection, eframe/egui adapter, headless region witness, production
+    description: the canonical shell projection, webview projection adapter, headless region witness, production
       live target, physical audio lifecycle, and complete teardown agree on one passive graphical application
       shell
     validations:
     - graphical_application_shell
-    - egui_context
+    - validation.shell_event_dispatch
     - live_demo
     - test
     witnesses:
@@ -87,7 +87,7 @@ evidence:
     validations:
     - demo_scene
     - schema_surface
-    - egui_context
+    - validation.shell_event_dispatch
     - test
     witnesses:
     - witness.exhaustive_demo_scene
@@ -136,7 +136,7 @@ evidence:
     - test
   patch_page_contract:
     kind: behavioral
-    description: the production input translator, reducer, serializer, context projector, graphical eframe
+    description: the production input translator, reducer, serializer, context projector, graphical webview
       adapter with retained diagnostic, and audio boundary prove exact two-context selection, descriptor-derived
       instrument/effect rows, dynamic Engine-plus-ADSR-plus-structural-choice-plus-effect-scalar focus,
       canonical ADSR/effect edits, and reducer-owned structural status
@@ -146,12 +146,12 @@ evidence:
     - per_voice_envelope
     - soundfont_preset_selection
     - schema_surface
-    - egui_context
+    - validation.shell_event_dispatch
     - engine_selection_workflow
     - test
   semantic_graphical_view_model_contract:
     kind: behavioral
-    description: the canonical focus/action types, reducer, descriptor-driven projector, passive eframe
+    description: the canonical focus/action types, reducer, descriptor-driven projector, passive webview
       shell, headless recovery proof, cumulative physical live scene, and teardown agree on one semantic
       graphical model
     validations:
@@ -159,7 +159,7 @@ evidence:
     - graphical_application_shell
     - validation.patch_page_projection
     - schema_surface
-    - egui_context
+    - validation.shell_event_dispatch
     - demo_scene
     - live_demo
     - test
@@ -235,7 +235,7 @@ evidence:
     - component_vocabulary
     - component_composition
     - graphical_application_shell
-    - egui_context
+    - validation.shell_event_dispatch
     - test
     witnesses:
     - witness.component_gallery

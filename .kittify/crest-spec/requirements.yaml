@@ -111,7 +111,7 @@ requirements:
     kind: nonfunctional
     description: KeyboardInputTranslator and future passive components emit only the closed SemanticAction
       union; AppLoop converts user actions to AppEvents before AppState.apply, system and MIDI events
-      retain their existing AppEvent entry, and no view, eframe adapter, component, demo, or input adapter
+      retain their existing AppEvent entry, and no view, window adapter, component, demo, or input adapter
       mutates focus, mode, return path, session, runtime, graph, or audio state directly
     goals:
     - use_semantic_graphical_view_model
@@ -371,29 +371,33 @@ requirements:
     - live_observable_demo
     - asynchronous_engine_selection
     - realtime_execution
-  selected_egui_stack:
+  selected_webview_stack:
     kind: nonfunctional
-    description: The default production desktop UI uses eframe and egui, with the matching egui_extras
-      companion for layout and image/SVG loading; Crest owns the shell, state, semantic behavior, and
-      component APIs. The Tauri webview projection shell is the one declared alternate runtime, introduced
-      as an explicitly selected peer behind the same AppWindow port while egui remains the default and
-      its proofs remain in force; no other GUI runtime or third-party component system is introduced,
-      and retiring the egui stack is a deliberate future declaration, not a side effect
+    description: The production desktop UI is the Tauri v2 webview projection shell behind the AppWindow
+      port — the sole GUI runtime, declared by the deliberate retirement of the eframe/egui stack
+      (webview-shell-cutover mission, 2026-08-06); Crest owns the shell, state, semantic behavior,
+      component vocabulary, and the build-generated token table; no other GUI runtime or third-party
+      component system is introduced, and reintroducing an alternate shell is a deliberate future
+      declaration, not a side effect
     goals:
     - use_graphical_shell
     capabilities:
     - graphical_application_shell
   webview_projection_shell:
     kind: functional
-    description: The application can launch with an explicitly selected Tauri v2 window whose webview
-      renders the MIXER context of the canonical serialized SemanticGraphicalViewModel at authored-design
-      parity — context line, identity header, sixteen-column strip bank, focused-column emphasis, Inspector,
-      hint rows — resolving every color, type style, spacing step, and geometry value from a token table
-      generated from the authored Rust vocabulary, never hand-copied; the page captures no input and
-      owns no navigation, focus, or value state; physical input stays normalized on the Rust side through
-      KeyboardInputTranslator; webview initialization failure is a typed startup error ending the process
-      with no silent fallback to another shell; window close drives the same owned shutdown as the egui
-      shell
+    description: The application launches a Tauri v2 window whose webview renders every shipped surface
+      of the canonical serialized SemanticGraphicalViewModel at authored-design parity — both top-level
+      contexts (PATCH and MIXER), context line, identity header, main workspace, focused-control emphasis,
+      persistent Utility/Inspector region, footer, hint rows — resolving every color, type style, spacing
+      step, and geometry value from a token table generated from the authored Rust vocabulary, never
+      hand-copied; the page's dynamic geometry (fader fills, position indicators) paints correctly under
+      the production content security policy without JS-built inline style attributes, and parity is
+      never bought by weakening that policy; the page captures no input and owns no navigation, focus,
+      or value state; physical input stays normalized on the Rust side through KeyboardInputTranslator;
+      webview initialization failure is a typed startup error ending the process with no silent fallback
+      to another shell; a page render exception or unhandled rejection after successful load surfaces
+      through the typed render-error channel and ends the process nonzero, never a silently stale
+      document; window close drives the owned shutdown path
     goals:
     - use_graphical_shell
     capabilities:
@@ -403,10 +407,11 @@ requirements:
     kind: nonfunctional
     description: The webview consumes exactly the serde serialization of SemanticGraphicalViewModel the
       projector already emits — one schema, no webview-specific variant, no page-invented field; a reducer
-      state change is visible in the webview within 50 ms at p95 under the paced live demo workload;
+      state change is visible in the webview within 50 ms at p95 under the paced live demo workload
+      with the page served under the production content security policy;
       meter observations reach the page as decimated latest-value traffic sustaining 30 Hz without queue
       growth over a five-minute render, and their loss degrades display only; the real-time callback's
-      measured bounds are unchanged from the egui-shell baseline
+      measured bounds are unchanged from the recorded pre-cutover baseline
     goals:
     - use_graphical_shell
     capabilities:
@@ -446,10 +451,10 @@ requirements:
     - graphical_application_shell
   passive_graphical_window:
     kind: nonfunctional
-    description: EframeGraphicalWindow normalizes physical input through KeyboardInputTranslator, emits
-      only SemanticAction, paints only its immutable projection, schedules an idle frame after 16 ms,
-      and owns no context, focus, mode, return path, Patch value, lifecycle, parameter, graph, engine,
-      mixer, or audio state
+    description: TauriWebviewWindow normalizes physical input through KeyboardInputTranslator, emits
+      only SemanticAction, pushes only its immutable serialized projection to the page, and owns no
+      context, focus, mode, return path, Patch value, lifecycle, parameter, graph, engine, mixer, or
+      audio state
     goals:
     - use_graphical_shell
     capabilities:
@@ -468,9 +473,13 @@ requirements:
     - observable_demo_scene
   graphical_shell_behavioral_proof:
     kind: functional
-    description: A named headless egui acceptance target proves exact region identity, non-overlap, responsive
+    description: A named headless shell acceptance target proves exact region identity, non-overlap, responsive
       geometry, projection-generation coherence, input dispatch, and audio-neutral context switching at
-      both reference viewports; the retained release-mode make demo-live-graphical-shell target proves
+      both reference viewports through the production webview projection path (rendered-document and
+      frame-observation assertions), serving the page under the identical content security policy the
+      production window ships — policy parity asserted from the single policy source, painted fader
+      geometry proven to reflect the level value under it, and a forced page render throw proven to
+      exit nonzero with the typed page-render-failure error; the retained release-mode make demo-live-graphical-shell target proves
       the real window, fixture, physical audio, visible context sequence, semantic cleanup, resource teardown,
       and normal parent exit
     goals:
@@ -483,7 +492,7 @@ requirements:
     kind: functional
     description: A named headless production-path target proves exact action/event mapping, focus/mode/return/action/status/error
       projection, descriptor polymorphism, schema recovery, responsive focus invariance, generation coherence,
-      passive egui rendering, and audio neutrality; the retained release-mode make demo-live-semantic-view-model
+      passive shell rendering, and audio neutrality; the retained release-mode make demo-live-semantic-view-model
       target proves healthy physical traversal, focus recovery, audio continuity, cleanup, and normal
       exit
     goals:
@@ -845,7 +854,7 @@ requirements:
   deterministic_demo_scene:
     kind: functional
     description: A headless demo scene drives the same normalized 1/2/W/S/A/D/K input translator and production
-      AppLoop as EframeGraphicalWindow, with deterministic checkpoints and no native window or physical
+      AppLoop as TauriWebviewWindow, with deterministic checkpoints and no native window or physical
       audio device
     goals:
     - observe_synth
@@ -894,12 +903,12 @@ requirements:
     capabilities:
     - observable_demo_scene
     - global_mix
-  egui_context_verification:
+  headless_shell_event_verification:
     kind: functional
-    description: A headless egui Context processes real egui key/focus events through EframeGraphicalApplication
-      update with its callback wired to AppLoop, then proves the next frame, EventLog, accepted state,
-      exact GraphicalShellProjection and retained TextProjection values, region geometry, and scroll target
-      all reflect that event without opening a native window
+    description: The production shell adapter's event path processes normalized key/focus events headlessly
+      with its callback wired to AppLoop, then proves the next serialized document, EventLog, accepted
+      state, exact GraphicalShellProjection and retained TextProjection values, frame-observation region
+      geometry, and scroll target all reflect that event without opening a native window
     goals:
     - observe_synth
     - use_graphical_shell
@@ -919,7 +928,7 @@ requirements:
   separate_live_demo:
     kind: functional
     description: make demo-live-graphical-shell retains the Phase 1 optimized physical witness; make demo-live-semantic-view-model
-      invokes the newest bounded release scene in the normal eframe window and CPAL stream, emits completed
+      invokes the newest bounded release scene in the normal webview window and CPAL stream, emits completed
       semantic/shell/lifecycle evidence, closes, and returns; make demo-live aliases that cumulative Phase
       2 scene and make demo retains its exact headless command and behavior
     goals:

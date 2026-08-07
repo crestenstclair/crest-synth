@@ -39,7 +39,7 @@ capabilities:
         evidence:
         - evidence.engine_selection_workflow
   graphical_application_shell:
-    description: Project and render the application through a passive eframe/egui shell with canonical
+    description: Project and render the application through a passive webview projection shell with canonical
       semantic interaction, identity, workspace, persistent Utility/Inspector, and footer regions
     goals:
     - use_graphical_shell
@@ -50,7 +50,7 @@ capabilities:
         actor: maintainer
         steps:
         - action: launch the normal standalone application
-          observes: the selected eframe/egui adapter renders the context line, identity header, main workspace,
+          observes: the webview projection adapter renders the context line, identity header, main workspace,
             persistent Utility or Inspector region, and footer from one immutable graphical projection
         - action: select PATCH and MIXER through normalized input
           observes: AppState.apply remains the only mutation path, every visible region changes to the
@@ -107,7 +107,7 @@ capabilities:
     - use_semantic_graphical_view_model
     acceptance:
       canonical_semantic_navigation:
-        description: the reducer, projector, passive eframe shell, deterministic proof, and physical live
+        description: the reducer, projector, passive webview shell, deterministic proof, and physical live
           scene agree on one semantic interaction model
         actor: maintainer
         steps:
@@ -426,7 +426,7 @@ capabilities:
         actor: player
         steps:
         - action: run make demo-live
-          observes: the normal eframe window and physical CPAL output open with HiDef.sf2 and the existing
+          observes: the normal webview window and physical CPAL output open with HiDef.sf2 and the existing
             Corridors of Time fixture
         - action: watch and listen to the paced scene
           observes: fixture MIDI remains responsive while every editable parameter instance changes through

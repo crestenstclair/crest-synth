@@ -26,7 +26,7 @@ valueObjects:
       live_observable_demo: lets the control-side live report credit only qualifying rendered PATCH and
         MIXER frames
   WindowInput:
-    description: a normalized window-boundary input used by both eframe and deterministic GUI scenes
+    description: a normalized window-boundary input used by both the webview window and deterministic GUI scenes
     state:
       kind:
       - KeyDown
@@ -56,7 +56,7 @@ valueObjects:
       surfaceDescriptor: typed exhaustive descriptors for every valid normalized kind/key combination,
         including key-down, key-up, focus loss, and unrelated input
     invariants:
-    - platform key codes are normalized at the eframe boundary before translation
+    - platform key codes are normalized at the window-adapter boundary before translation
     - WindowInput is shell data and never enters AppState or the audio boundary
     - the deterministic demo feeds the same values to the same translator as the real window
     - surfaceDescriptor is defined beside WindowInput and is the only GUI-input vocabulary consumed by
@@ -100,8 +100,8 @@ valueObjects:
       spacing constant; a guard proves the absence rather than trusting convention
     - the vocabulary is closed, so a surface needing an undeclared value adds it here and to the product
       design authority instead of introducing a local literal
-    - resolving a token performs no allocation per frame beyond what egui already owns and never reads
-      the filesystem after startup
+    - token resolution is a build-time generation into the page's token table plus startup-time registration;
+      nothing resolves tokens per frame or reads the filesystem after startup
     contributesTo:
       component_vocabulary: is the single source every rendered value resolves through
       graphical_application_shell: replaces the adapter-owned constants the shell previously painted from
@@ -564,7 +564,7 @@ applicationServices:
     contributesTo:
       one_way_parameter_control: keeps physical keyboard normalization outside the reducer
       schema_driven_patch_page: maps direct page keys to semantic context events without reading AppState
-      observable_demo_scene: is the single translator shared by the eframe window and exhaustive scene
+      observable_demo_scene: is the single translator shared by the webview window and exhaustive scene
         runner
       semantic_graphical_view_model: makes physical Edit press/release and directional intent explicit
         before AppEvent mapping
@@ -646,7 +646,7 @@ applicationServices:
         providers, preparers, DescriptorDefaultConfigFactory, GraphPreparationWorker port, graph builder,
         structural coordinator, reducer, projector, and renderer; only the deterministic headless harness
         manually advances its worker adapter while live uses ThreadedGraphPreparationWorker
-      - runLiveDemo uses the exact normal startup order, real EframeGraphicalWindow, physical CpalAudioOutput,
+      - runLiveDemo uses the exact normal startup order, real TauriWebviewWindow, physical CpalAudioOutput,
         HiDef.sf2, pinned Braids adapter, and Corridors of Time fixture, then starts LiveDemoRunner on
         the control side and advances it from the existing window-tick callback
       - runLiveDemo injects the same AppLoop into AutomaticMidiTest, LiveDemoRunner, and immutable projection
