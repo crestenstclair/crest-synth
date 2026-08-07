@@ -1,6 +1,8 @@
 {
+  "accept_commit": "73ec0c31ccce7d33300868a38b1aea4de1c9b93f",
   "acceptance_history": [
     {
+      "accept_commit": "73ec0c31ccce7d33300868a38b1aea4de1c9b93f",
       "acceptance_mode": "pr",
       "accepted_at": "2026-08-07T01:14:53.347486+00:00",
       "accepted_by": "crestenstclair",
