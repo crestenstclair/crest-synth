@@ -217,6 +217,22 @@ assets:
       engine and effect-slot rows, persistent Utility region, footer, hint rows — from the same serialized
       model and token table; the browser layout engine, not hand arithmetic, seats the composition at
       both authored viewports.
+    - Present the PATCH main workspace as the declared PatchStrip composition — an identity-and-routing
+      header, the instrument selector, the envelope group, and one titled group per ordered effect slot
+      with that slot's occupant parameters nested beneath it — not as a flat run of every projected control.
+      A group with no view data behind it is marked unavailable inside its own group.
+    - Render each numeric row's projected range and unit, and each row's own projected valid actions as
+      its right-hand hint. A row carrying a requested value shows both the active and the requested value
+      while the edit is in flight. Every label painted is the projected label; the page derives no label
+      of its own and never falls back to a field key.
+    - Present the persistent Utility region as the five declared rows plus the authored hint line, seated
+      within the side region at both authored viewports without a scroll affordance, since the row set is
+      bounded by declaration rather than by what fits.
+    - Present the subordinate detail surface as the declared CapabilityDetailShell — one composition serving
+      instrument and effect subjects alike, arranging the projected sections and controls of whichever
+      capability the model names, with a read-only section marked by text or shape as well as colour and
+      a mid-preparation capability shown through its projected lifecycle status. The page branches on no
+      subject kind and declares no section list.
     - Render the gallery pages through the same vocabulary and token table so every declared state,
       control, and composition specimen is browsable at both authored densities without a second styling
       source.
@@ -369,18 +385,27 @@ assets:
       run --bin crest-synth -- --smoke --observe --demo-scene), demo-live-graphical-shell (cargo run --release
       --bin crest-synth -- --demo-live-graphical-shell), demo-live-semantic-view-model (cargo run --release
       --bin crest-synth -- --demo-live-semantic-view-model), demo-live-sixteen-track-mixer-routing (cargo
-      run --release --bin crest-synth -- --demo-live-sixteen-track-mixer-routing), demo-live as an alias
-      of the newest sixteen-track routing scene, and clean (cargo clean).'
+      run --release --bin crest-synth -- --demo-live-sixteen-track-mixer-routing), demo-live-effects-and-buses
+      (cargo run --release --bin crest-synth -- --demo-live-effects-and-buses), demo-live as an alias
+      of the newest cumulative effects-and-buses scene, and clean (cargo clean).'
     - Provide play and ui as documented aliases for run because normal startup automatically plays the
       fixed MIDI fixture in the graphical window.
     - 'Provide demo-live-component-library (cargo run --release --bin crest-synth --
       --demo-live-component-library). Unlike every other demo-live target it is browsable rather than
       autonomous: it opens the gallery, accepts digit keys to change page, and exits when the operator
       closes the window. It makes no exact-generation claim and is not an alias target for demo-live.'
+    - 'Provide demo-live-patch-editor (cargo run --release --bin crest-synth --
+      --demo-live-patch-editor). It opens the real graphical window and physical audio device, navigates
+      from one installed Patch to another through the SelectPatch gesture on screen, then performs a full
+      focus-verified effect-slot occupancy journey and an audible occupant parameter edit on the second
+      instrument, emitting checkpoints that correlate the patch switch, the resulting focus path, and the
+      audible consequence. It is additive rather than an alias target: it does not subsume the cumulative
+      effects-and-buses proof, so demo-live keeps pointing at that scene.'
     - Keep demo exactly headless and deterministic. Retain demo-live-graphical-shell as the Phase 1 witness
-      and demo-live-semantic-view-model as the Phase 2 witness. demo-live-sixteen-track-mixer-routing
+      and demo-live-semantic-view-model as the Phase 2 witness. demo-live-effects-and-buses
       cumulatively opens the real graphical window and physical audio device, displays all sixteen tracks,
-      proves shared-track routing, Patch trim/reroute, track controls and meters, retains the semantic/scalar/preset/engine
+      proves shared-track routing, Patch trim/reroute, track controls and meters, ordered Patch effect
+      slots and bus returns, retains the semantic/scalar/preset/engine
       proof, then emits final evidence once, closes, releases the stream, and returns success. demo-live
       points to this newest cumulative scene.
     - Use portable Make syntax and declare non-file targets phony. Do not reference removed proof binaries,
@@ -877,7 +902,10 @@ assets:
       object, --demo-scene only with --smoke --observe to run the exhaustive current-GUI scene, --demo-live-graphical-shell
       by itself to retain the Phase 1 physical witness, --demo-live-semantic-view-model by itself to retain
       the Phase 2 semantic scene, --demo-live-sixteen-track-mixer-routing by itself to run the cumulative
-      corrective routing scene, --demo-live as a compatibility alias of that newest routing scene, and
+      corrective routing scene, --demo-live-effects-and-buses by itself to run the newest cumulative scene,
+      --demo-live-patch-editor by itself to run the Phase 5 functional Patch editor scene, which accepts
+      the additional --defeat-patch-selection flag only as the declared controlled negative and exits
+      nonzero under it, --demo-live as a compatibility alias of the newest cumulative scene, and
       verification-only --degenerate-audio or --degenerate-control only with --smoke --observe for behavioral
       falsification. Reject duplicate, mixed, or other options; every live spelling is mutually exclusive
       with every headless, observation, demo-scene, and degenerate flag.
@@ -1341,3 +1369,78 @@ assets:
       component_vocabulary: is the deterministic proof that the controls and compositions exist and that
         the shipped shell actually uses them
       graphical_application_shell: proves the recomposition preserved the shell's structure and passivity
+  FunctionalPatchEditorAcceptanceTests:
+    kind: rust-integration-tests
+    description: tests/functional_patch_editor.rs, the non-vacuous production-path acceptance for patch
+      selection on screen, the composed PATCH strip, the bounded Utility surface, the canonical voice limit,
+      per-row intent, and the polymorphic detail shell
+    profile:
+      kind: verification_harness
+      witness: every installed Patch is reachable and editable through the production reducer and render
+        path, and each new PATCH structure carries a real canonical value
+      failurePolicy: a patch switch that wraps, spans more than one generation, or leaves a schema mismatch;
+        a flat PATCH control run; a Utility row that is unavailable, duplicated, or labelled with a serialization
+        key; a numeric row with no rendered range or unit; a per-row action list disagreeing with the model-level
+        list at the focused row; a requested value on a settled row; a second detail surface identity; a
+        detail return landing anywhere but the exact origin; or a voice limit that allocates, steals, refuses
+        a note-off, or fails to bite
+    targets:
+    - SurfaceId
+    - PatchDetailSubject
+    - PatchControlId
+    - ReturnPath
+    - InteractionState
+    - SemanticControlViewModel
+    - SemanticSurfaceViewModel
+    - ShellComposition
+    - VoiceLimit
+    - Patch
+    - AppState
+    - AudioRenderer
+    prompts:
+    - Create tests/functional_patch_editor.rs with ordinary assertion-bearing tests and emit CREST_ACCEPTANCE
+      functional_patch_editor passed only after every declared check holds.
+    - Prove SelectPatch reprojects identity, MIDI channel, engine, envelope, capability rows, effect slots,
+      and every Utility value from the destination Patch in exactly one advanced generation, that focus
+      recovers against the destination's own descriptor schema, that no intermediate projection pairs one
+      Patch's identity with another's schema, and that a request at either end of the installed order is
+      a typed unchanged rejection leaving the projection identical. Drive it with a fixture installing more
+      than two Patches across both engines; a test that switches once between two Patches of the same capability
+      is vacuous.
+    - Prove an in-flight structural edit stays correlated to the Patch it was started on across a switch,
+      and that an open subordinate surface is left before the switch rather than carried.
+    - Prove the PATCH main workspace is produced by the PatchStrip composition as grouped structure — identity
+      and routing header, instrument selector, envelope group, and one group per ordered effect slot with
+      its occupant parameters nested — and that a flat run of every projected control fails the check. Prove
+      a group with no view data is marked unavailable rather than invented.
+    - Prove PATCH Utility resolves exactly five rows in the declared order, each with a real typed value,
+      that none is marked unavailable, that the authored hint line is present, and that no projected label
+      on any surface equals a serialization key. Prove the guard fails when a key is reintroduced as a label.
+    - Prove PATCH Utility master volume and MIXER Inspector master gain read and write the one canonical
+      GlobalParameters value through the one canonical descriptor, and that no second master-volume value
+      exists in state, snapshot, or projection.
+    - Prove the MIDI input row edits the focused Patch's own channel, that the Patch then responds on the
+      new channel and not the old one, and that identity, config, envelope, effects, routing, and active
+      graph revision are unchanged by the edit.
+    - Prove every projected numeric control carries a rendered range and unit on the production render path,
+      not merely a projected one.
+    - Prove each control's valid-action list is computed by the same pure resolver as the model-level list
+      and agrees with it exactly at the focused row, and that a requested value is present exactly while
+      a correlated structural edit is in flight and absent on every settled row.
+    - Prove one PatchDetail surface identity serves both an instrument subject and an effect subject, that
+      its title, accent, sections, controls, ranges, units, and status come from the installed descriptor
+      alone with no branch on subject kind, that entry is refused from an empty slot and from a Utility row,
+      that it refuses to nest with the persistent side surface, and that return lands on the exact originating
+      row after reprojection. Prove a capability-declared read-only section is marked read-only in text or
+      shape, and that a mid-preparation capability shows its lifecycle status rather than an empty section
+      set.
+    - Prove VoiceLimit is bounded to 1..=64, seeded at installation from the active engine's declared polyphony
+      ceiling, edited as a Stepped control through the canonical reducer, and carried on the parameter snapshot.
+      Prove the callback refuses a note-on beyond the limit, never truncates a latched voice, never refuses
+      a note-off or all-notes-off, counts each refusal in the bounded observation, and allocates and destroys
+      nothing. Prove the guard fails when the limit is defeated — a run that reports zero refusals under
+      a fixture that must exceed the limit fails.
+    contributesTo:
+      functional_patch_editor: is the deterministic proof that every installed Patch is reachable and editable
+        and that each new PATCH structure carries a real value
+      schema_driven_patch_page: proves the widened PATCH surface stayed descriptor-driven

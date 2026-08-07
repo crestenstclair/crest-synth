@@ -3277,3 +3277,243 @@ witnesses:
     - field: window_closed
       op: eq
       value: true
+  functional_patch_editor:
+    scope: goal
+    goal: edit_every_installed_patch
+    capability: functional_patch_editor
+    resources:
+    - SurfaceId
+    - PatchDetailSubject
+    - PatchControlId
+    - ReturnPath
+    - InteractionState
+    - SemanticControlViewModel
+    - SemanticSurfaceViewModel
+    - SemanticGraphicalViewModel
+    - ShellComposition
+    - VoiceLimit
+    - Patch
+    - AppState
+    - StateProjector
+    - AppLoop
+    - ParameterSnapshot
+    - AudioObservationSnapshot
+    - AudioRenderer
+    - LiveDemoScene
+    - LiveDemoCheckpoint
+    - FunctionalPatchEditorObservation
+    - LiveDemoRunner
+    - TauriWebviewWindow
+    - WebviewProjectionPage
+    - StandaloneApplication
+    - CrestSynthMain
+    - BuildMakefile
+    repairResources:
+    - PatchControlId
+    - InteractionState
+    - SemanticControlViewModel
+    - VoiceLimit
+    - Patch
+    - AppState
+    - StateProjector
+    - AppLoop
+    - ParameterSnapshot
+    - AudioRenderer
+    - LiveDemoRunner
+    - TauriWebviewWindow
+    - WebviewProjectionPage
+    evidence:
+    - evidence.functional_patch_editor_contract
+    command:
+    - make
+    - demo-live-patch-editor
+    negativeCommand:
+    - cargo
+    - run
+    - --release
+    - --bin
+    - crest-synth
+    - --
+    - --demo-live-patch-editor
+    - --defeat-patch-selection
+    negativeExpectedExitCode: 1
+    timeout: 300s
+    artifacts:
+    - target/release/crest-synth
+    observation:
+      kind: json_stdout
+      marker: 'CREST_FUNCTIONAL_PATCH_EDITOR_LIVE_OBSERVATION '
+      schema:
+        patches_installed: number
+        patches_focused: number
+        patch_switch_generations_exact: bool
+        patch_switch_schema_mismatch_projections: number
+        patch_switch_refused_at_end: bool
+        second_patch_id_distinct: bool
+        strip_groups_painted: number
+        strip_flat_control_run: bool
+        utility_rows_projected: number
+        utility_rows_unavailable: number
+        utility_serialization_key_labels: number
+        master_volume_single_owner: bool
+        midi_input_rechannelled: bool
+        numeric_rows_missing_range_or_unit: number
+        per_row_valid_actions_agree_at_focus: bool
+        requested_value_present_while_in_flight: bool
+        requested_value_present_when_settled: number
+        second_patch_slots_visited: number
+        second_patch_occupancy_transitions: number
+        second_patch_focus_verified_transitions: number
+        second_patch_audible_edit_delta: number
+        first_patch_audible_edit_delta: number
+        checkpoints_correlating_switch_focus_audio: number
+        detail_subjects_served: number
+        detail_surface_identities: number
+        detail_return_exact: bool
+        detail_entry_refused_from_empty_slot: bool
+        voice_limit_refusals: number
+        voice_limit_truncated_latched_voices: number
+        note_offs_refused: number
+        events_dropped: number
+        callback_allocations: number
+        callback_destructions: number
+        qualifying_webview_frames: number
+        projection_generation_gaps: number
+        physical_audio_nonzero: bool
+        desktop_viewport_painted: bool
+        steam_deck_viewport_painted: bool
+        clipped_or_overlapping_rows: number
+        active_notes_after_cleanup: number
+        window_closed: bool
+        stream_released: bool
+        owned_graphs_remaining: number
+    predicates:
+    - field: patches_installed
+      op: gt
+      value: 1
+    - field: patches_focused
+      op: gt
+      value: 1
+    - field: patch_switch_generations_exact
+      op: eq
+      value: true
+    - field: patch_switch_schema_mismatch_projections
+      op: eq
+      value: 0
+    - field: patch_switch_refused_at_end
+      op: eq
+      value: true
+    - field: second_patch_id_distinct
+      op: eq
+      value: true
+    - field: strip_groups_painted
+      op: gt
+      value: 1
+    - field: strip_flat_control_run
+      op: eq
+      value: false
+    - field: utility_rows_projected
+      op: eq
+      value: 5
+    - field: utility_rows_unavailable
+      op: eq
+      value: 0
+    - field: utility_serialization_key_labels
+      op: eq
+      value: 0
+    - field: master_volume_single_owner
+      op: eq
+      value: true
+    - field: midi_input_rechannelled
+      op: eq
+      value: true
+    - field: numeric_rows_missing_range_or_unit
+      op: eq
+      value: 0
+    - field: per_row_valid_actions_agree_at_focus
+      op: eq
+      value: true
+    - field: requested_value_present_while_in_flight
+      op: eq
+      value: true
+    - field: requested_value_present_when_settled
+      op: eq
+      value: 0
+    - field: second_patch_slots_visited
+      op: eq
+      value: 3
+    - field: second_patch_occupancy_transitions
+      op: gt
+      value: 1
+    - field: second_patch_focus_verified_transitions
+      op: gt
+      value: 1
+    - field: second_patch_audible_edit_delta
+      op: gt
+      value: 0
+    - field: first_patch_audible_edit_delta
+      op: eq
+      value: 0
+    - field: checkpoints_correlating_switch_focus_audio
+      op: gt
+      value: 0
+    - field: detail_subjects_served
+      op: eq
+      value: 2
+    - field: detail_surface_identities
+      op: eq
+      value: 1
+    - field: detail_return_exact
+      op: eq
+      value: true
+    - field: detail_entry_refused_from_empty_slot
+      op: eq
+      value: true
+    - field: voice_limit_refusals
+      op: gt
+      value: 0
+    - field: voice_limit_truncated_latched_voices
+      op: eq
+      value: 0
+    - field: note_offs_refused
+      op: eq
+      value: 0
+    - field: events_dropped
+      op: eq
+      value: 0
+    - field: callback_allocations
+      op: eq
+      value: 0
+    - field: callback_destructions
+      op: eq
+      value: 0
+    - field: qualifying_webview_frames
+      op: gt
+      value: 0
+    - field: projection_generation_gaps
+      op: eq
+      value: 0
+    - field: physical_audio_nonzero
+      op: eq
+      value: true
+    - field: desktop_viewport_painted
+      op: eq
+      value: true
+    - field: steam_deck_viewport_painted
+      op: eq
+      value: true
+    - field: clipped_or_overlapping_rows
+      op: eq
+      value: 0
+    - field: active_notes_after_cleanup
+      op: eq
+      value: 0
+    - field: window_closed
+      op: eq
+      value: true
+    - field: stream_released
+      op: eq
+      value: true
+    - field: owned_graphs_remaining
+      op: eq
+      value: 0

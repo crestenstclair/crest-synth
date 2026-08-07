@@ -326,3 +326,26 @@ goals:
     - browsable_component_gallery
     - silent_component_gallery
     - component_vocabulary_behavioral_proof
+  edit_every_installed_patch:
+    description: The player reaches every installed Patch from the controller and edits it — its instrument,
+      its envelope, its ordered effects, its routing, and its Utility values — instead of reaching only
+      the first one the fixture installed
+    priority: required
+    actors:
+    - player
+    - maintainer
+    dependsOn:
+    - goal.inspect_patch
+    - goal.build_from_component_vocabulary
+    - goal.expand_effects_and_buses
+    capabilities:
+    - functional_patch_editor
+    requirements:
+    - composed_patch_strip
+    - on_screen_patch_selection
+    - bounded_patch_utility_surface
+    - canonical_voice_limit
+    - projected_row_intent
+    - polymorphic_capability_detail_shell
+    - authored_control_presentation
+    - functional_patch_editor_behavioral_proof

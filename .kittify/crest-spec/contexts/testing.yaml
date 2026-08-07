@@ -188,9 +188,23 @@ valueObjects:
     - the healthy physical plan requires errors to be explicitly empty; deterministic headless coverage
       alone drives a typed Failed projection and recovery without treating an injected failure as physical
       acceptance
+    - the functional Patch editor plan is not pinned to the first installed Patch. It selects a second
+      Patch through SemanticAction.SelectPatch, checkpoints the switch against the destination PatchId
+      and the resulting FocusPath, and thereafter derives its editable targets, effect slot journey, and
+      audible probes from that second Patch's own descriptors. A plan whose subject remains patches.first()
+      does not satisfy it, and neither does one that switches without then editing what it switched to
+    - that plan's effect-slot journey visits every declared position on the second Patch, checkpointing
+      the focus path before and after each occupancy transition, and its parameter edit measures the audible
+      delta on the second Patch's own output while requiring the first Patch's output to be unchanged;
+      an edit that moved both is credited to neither
+    - that plan additionally proves the controlled negative — with patch selection defeated, the scene's
+      own predicates fail and the process exits nonzero, so the demonstration cannot pass by a route that
+      never left the first instrument
     contributesTo:
       live_observable_demo: declares the bounded human-paced scalar and engine-switching production-path
         scene without weakening the exhaustive headless scene
+      functional_patch_editor: declares the bounded plan that reaches a second instrument and edits it
+        audibly
       asynchronous_engine_selection: declares both successful directions and their lifecycle/audio checkpoints
         for the physical demo
       soundfont_preset_selection: declares one visible and audible adjacent catalog choice through the
@@ -391,6 +405,68 @@ valueObjects:
       window close, and successful parent-process return
     contributesTo:
       sixteen_track_mixer_routing: is the structured headless and physical acceptance result
+  FunctionalPatchEditorObservation:
+    description: the focused machine-readable result of the Phase 5 functional Patch editor live acceptance
+    state:
+      schemaVersion: u32
+      patchesInstalled: u32
+      patchesFocused: u32
+      patchSwitchGenerationsExact: bool
+      patchSwitchSchemaMismatchProjections: u32
+      patchSwitchRefusedAtEnd: bool
+      secondPatchIdDistinct: bool
+      stripGroupsPainted: u32
+      stripFlatControlRun: bool
+      utilityRowsProjected: u32
+      utilityRowsUnavailable: u32
+      utilitySerializationKeyLabels: u32
+      masterVolumeSingleOwner: bool
+      midiInputRechannelled: bool
+      numericRowsMissingRangeOrUnit: u32
+      perRowValidActionsAgreeAtFocus: bool
+      requestedValuePresentWhileInFlight: bool
+      requestedValuePresentWhenSettled: u32
+      secondPatchSlotsVisited: u32
+      secondPatchOccupancyTransitions: u32
+      secondPatchFocusVerifiedTransitions: u32
+      secondPatchAudibleEditDelta: f32
+      firstPatchAudibleEditDelta: f32
+      checkpointsCorrelatingSwitchFocusAudio: u32
+      detailSubjectsServed: u32
+      detailSurfaceIdentities: u32
+      detailReturnExact: bool
+      detailEntryRefusedFromEmptySlot: bool
+      voiceLimitRefusals: u64
+      voiceLimitTruncatedLatchedVoices: u32
+      noteOffsRefused: u64
+      eventsDropped: u64
+      callbackAllocations: u64
+      callbackDestructions: u64
+      qualifyingWebviewFrames: u32
+      projectionGenerationGaps: u32
+      physicalAudioNonzero: bool
+      desktopViewportPainted: bool
+      steamDeckViewportPainted: bool
+      clippedOrOverlappingRows: u32
+      activeNotesAfterCleanup: u32
+      windowClosed: bool
+      streamReleased: bool
+      ownedGraphsRemaining: u32
+    invariants:
+    - every field is measured from the production reducer, projector, snapshot transport, prepared renderer,
+      audio observation, webview window, and physical stream rather than copied from expected data
+    - the audible-edit deltas are measured on each Patch's own output, so an edit made on the second Patch
+      that moved the first Patch's signal fails rather than counting; the pair is what distinguishes reaching
+      a second instrument from re-editing the first through a renamed path
+    - patchesFocused counts distinct PatchIds that actually held focus during the run, so a scene that
+      switched and switched back credits one reach rather than two
+    - detailSurfaceIdentities counts the distinct surface identities that served a detail subject; two
+      subjects served by one identity is the claim, and any other pairing fails
+    - the live marker is emitted only after semantic cleanup, stream release, worker shutdown, graph collection,
+      window close, and successful parent-process return
+    contributesTo:
+      functional_patch_editor: is the structured physical acceptance result closing the demonstration half
+        of the single-instrument limitation
   StaticPatchEffectObservation:
     description: the focused machine-readable evidence emitted by the named first Patch-effect acceptance
     state:

@@ -308,14 +308,20 @@ here rather than silently inherited.
 | 6. Inspector three-line help block, incl. "SELECT enters multi-select" | Phase 8 | The reducer has no multi-select; the help line cannot be made true here. |
 | 7. `MixerControlId::Track` unreachable from `mixer_inspector_paths` | Phase 6 | MIXER-owned; this mission does not touch the Inspector's path set. |
 | 9. The mixer meter is not drivable | Phase 6 | Requires an audio-observation path to a MIXER composition. |
-| 10. Sub-band constants without a density accessor | Retired | The `ViewportDensityPolicy` these constants belonged to went out with the egui layer at the webview cutover; confirm during crest-spec authoring and record the retirement rather than carrying a dead item. |
+| 10. Sub-band constants without a density accessor | **Retired (confirmed 2026-08-07)** | `WORKSPACE_TITLE_ROW_PX` and `MIXER_TRACK_MIN_WIDTH_PX` no longer exist anywhere in `src/`; they went out with the egui adapter at the webview cutover. `ViewportDensityPolicy` remains declared. There is nothing left to give an accessor to, so the item is closed rather than carried. |
 | 12. The `M`/`S` label divergence | Phase 6 | MIXER-owned. |
 | The persistent side region lost its scroll — **MIXER half** | Phase 6 | The Inspector's row set is unbounded (eight sends, eight returns, occupant rows, globals); the remedy is a decision about that surface, and that decision belongs with the phase that owns it. |
 
-**Folded in from the previous mission's LOW follow-ups** (only where this mission
-already changes the code): to be settled during crest-spec authoring against the
-five items in `kitty-specs/shell-hygiene-01KZD0KR/semantic-acceptance.md`
-("New findings"). Any item whose code this mission does not touch stays filed.
+**Folded in from the previous mission's LOW follow-ups** (settled 2026-08-07 against
+`kitty-specs/shell-hygiene-01KZD0KR/semantic-acceptance.md`, "New findings"):
+
+| Follow-up | Disposition |
+|---|---|
+| WP02 OBS-A — `retire()`'s de-duplication guard is load-bearing but unproven (`src/shell/webview/projection_channel.rs:564`); the reviewer left the proving test ready to paste | **Folded in.** This mission drives far more projection churn through that channel — a whole-surface reprojection per patch switch, plus the detail surface appearing and disappearing — so a stale identity shadowing a current one is squarely in this mission's blast radius. The guard gets its test. |
+| WP04 — `PAINTED_ACK_IDENTITY_FIELDS`'s doc claims two consumers, has one | **Closed.** The constant no longer exists in `src/`; it went out with the frame-stream residue removal. Nothing to correct. |
+| WP03 — the two unconsumed residues above | **Closed** by the two rows above. |
+| WP01 F4 — `std::env::set_var` in `window.rs` tests races `var_os` in the same test binary | **Stays filed.** This mission does not change `src/shell/webview/window.rs`; folding it in would be a change outside the mission's domain, which is what the deferral rule exists to prevent. |
+| Pre-existing soak flake — `receive_phase("meters")` fails roughly 1 run in 5 under load | **Stays filed.** Mixer-side and established as pre-existing; this mission touches neither the meters phase nor the soak harness. |
 
 ## Success Criteria *(mandatory)*
 

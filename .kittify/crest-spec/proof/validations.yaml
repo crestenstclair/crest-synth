@@ -1307,6 +1307,60 @@ projectValidations:
       requirements cannot go silently ungraded as it did in two consecutive missions; the script verifies
       its required tools are present before scanning and exits non-zero naming any missing tool, so absent
       tooling can never read as a pass
+  functional_patch_editor:
+    scope: project
+    kind: integration
+    command:
+    - cargo
+    - test
+    - --test
+    - functional_patch_editor
+    - --
+    - --nocapture
+    assertions:
+    - type: exit-code
+      equals: 0
+    - type: stdout-contains
+      value: CREST_ACCEPTANCE functional_patch_editor passed
+    timeout: 180s
+    resources:
+    - SurfaceId
+    - PatchDetailSubject
+    - PatchControlId
+    - ReturnPath
+    - InteractionState
+    - SemanticControlViewModel
+    - SemanticSurfaceViewModel
+    - SemanticGraphicalViewModel
+    - ShellComposition
+    - VoiceLimit
+    - Patch
+    - ParameterSnapshot
+    - AudioObservationSnapshot
+    - AudioRenderer
+    - AppState
+    - StateProjector
+    - FunctionalPatchEditorAcceptanceTests
+    capabilities:
+    - functional_patch_editor
+    - schema_driven_patch_page
+    - component_vocabulary
+    goals:
+    - edit_every_installed_patch
+    description: the production reducer and render path prove that SelectPatch reprojects the entire PATCH
+      surface against the destination Patch's own descriptor schema in exactly one generation and refuses
+      at either end of the installed order without wrapping; that the PATCH main workspace is produced by
+      the PatchStrip composition as grouped structure rather than a flat control run; that PATCH Utility
+      resolves exactly the five declared rows with real canonical values, that its master volume and MIXER
+      Inspector's master gain are the same value through the same descriptor, and that no projected label
+      is a serialization key; that every projected numeric control carries a rendered range and unit; that
+      each control carries its own valid-action list agreeing with the model-level list at the focused row,
+      and carries a requested value exactly while a correlated structural edit is in flight; that one PatchDetail
+      surface serves instrument and effect subjects from descriptor content alone, refuses entry from an
+      empty slot or a Utility row, refuses to nest with the persistent side surface, and restores the exact
+      originating row; and that VoiceLimit is bounded, seeded from the engine ceiling, enforced at note-on
+      by refusal rather than stealing, never applied to a note-off, counted in the bounded observation, and
+      enforced without allocation or voice destruction in the callback
 attachedValidations:
   service.mix_engine_global_mix:
     attachedTo: MixEngine
@@ -2355,3 +2409,11 @@ attachedValidations:
       value: CREST_ACCEPTANCE static_patch_effect passed
     description: the named Chorus target exists, executes assertions, and emits its marker only after
       structured predicates pass
+  asset.make_demo_live_patch_editor:
+    attachedTo: BuildMakefile
+    kind: custom
+    command:
+    - make
+    - -n
+    - demo-live-patch-editor
+    description: the Phase 5 functional Patch editor live scene has its own stable human command
