@@ -1749,10 +1749,6 @@ where
     pub const fn is_aborted(&self) -> bool {
         self.aborted
     }
-
-    pub const fn step_index(&self) -> usize {
-        self.step_index
-    }
 }
 
 struct PendingCheckpoint {

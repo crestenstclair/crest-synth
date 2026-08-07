@@ -10,7 +10,7 @@
 //! [`meter_channel`] (30 Hz latest-value meter frames). The cutover mission
 //! adds the painted-ack → `ShellFrameObservation` forwarding
 //! ([`projection_channel::ProjectionChannel::forward_ack`]), the
-//! qualifying-frame await seam ([`frame_stream`]), the restrictive page CSP,
+//! qualifying-frame seam ([`frame_stream`]), the restrictive page CSP,
 //! release-gating of the page override, and typed render-exception and
 //! window-close surfacing.
 //!
@@ -25,20 +25,18 @@
 //!
 //! # The qualifying-frame seam (WP02 T006)
 //!
-//! Scenes and harnesses block on "a qualifying frame for accepted
-//! generation N was painted" through [`frame_stream::QualifyingFrameStream`]
-//! (a handle from [`TauriWebviewWindow::frame_stream`]), never on wall-clock
-//! sleeps. A forwarded observation qualifies for a
+//! Scenes and harnesses ask "was a qualifying frame for accepted generation
+//! N painted?" through [`frame_stream::QualifyingFrameStream`] (a handle
+//! from [`TauriWebviewWindow::frame_stream`]), never by waiting out a
+//! wall-clock sleep. A forwarded observation qualifies for a
 //! [`frame_stream::FrameExpectation`] when its generation and stateHash
 //! equal the awaited accepted generation's and its context and activeSurface
 //! equal the expectation's — the identity gate the retained live scenes'
 //! crediting has always started from. The non-blocking poll answers from
-//! inside the tick loop; the blocking variant parks on a condition variable
-//! until a qualifying observation is forwarded or the caller's timeout
-//! passes, and a timeout is a typed
-//! [`frame_stream::FrameAwaitError::Timeout`] naming the awaited identity —
-//! it means no honest painted ack for that identity ever arrived, not that
-//! a frame may be assumed.
+//! inside the tick loop, and it answers only from observations the
+//! forwarding actually built out of a painted ack: a poll that finds nothing
+//! means no honest ack for that identity has arrived yet, not that a frame
+//! may be assumed.
 //!
 //! # Deterministic init-failure hook (debug builds only)
 //!

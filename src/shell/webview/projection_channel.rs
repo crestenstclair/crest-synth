@@ -57,6 +57,22 @@
 //! degrade observation only, exactly like the retired native adapter dropping an
 //! unpainted frame.
 //!
+//! # The verbatim-copy rule holds in every window (FR-003)
+//!
+//! Being consumed as a lost frame is not being consumed unchecked. A dropped
+//! document leaves its serialized identity behind in a second bounded window
+//! ([`RETAINED_RETIRED_IDENTITIES`]), fed by both ways a document retires —
+//! capacity eviction on push, and the drain of the acked document and every
+//! older one on a successful ack. A late ack naming a generation still inside
+//! that window is held to the same field-for-field comparison an in-flight ack
+//! is, through the same single implementation, and a rewritten identity is the
+//! same typed [`PaintedAckError::IdentityMismatch`] in either window. Only
+//! once an ack outlives the retained window does the channel stop making a
+//! claim: it holds nothing to compare against, so the ack stays a lost frame
+//! rather than becoming a false rejection. What never changes is that a
+//! superseded-late ack constructs no [`ShellFrameObservation`] at all,
+//! validated or not.
+//!
 //! # Nothing here touches the real-time callback
 //!
 //! The channel runs on the window's event thread and reads only the immutable
@@ -101,6 +117,20 @@ pub const RENDER_ERROR_EVENT: &str = "crest://render-error";
 /// tracker is full the oldest unacked document is dropped — a lost frame
 /// degrades observation only.
 pub const MAX_IN_FLIGHT_DOCUMENTS: usize = 8;
+
+/// How many retired documents' identities stay comparable after the document
+/// itself is gone.
+///
+/// A document leaves [`ProjectionChannel::in_flight`] two ways — evicted by
+/// the capacity bound, or drained when an ack consumes it and everything
+/// older — and both throw the document away. Its *identity* is kept here so a
+/// late ack naming an already-retired generation can still be held to the
+/// verbatim-copy rule (FR-003). Defined as the in-flight bound because the
+/// same generation churn drives both windows: retiring more than
+/// [`MAX_IN_FLIGHT_DOCUMENTS`] identities means the acks for the oldest are
+/// already hopeless. Bounded for the same reason `in_flight` is — retaining
+/// every identity would grow without limit across a long session.
+const RETAINED_RETIRED_IDENTITIES: usize = MAX_IN_FLIGHT_DOCUMENTS;
 
 /// The serialized identity fields a painted ack must copy verbatim from its
 /// document, in the order they are tracked (crest-spec
@@ -287,6 +317,17 @@ struct InFlightDocument {
     semantic: SemanticGraphicalViewModel,
 }
 
+/// One retired document's correlation key and serialized identity, kept after
+/// the document itself was dropped. The semantic model is deliberately not
+/// kept: a retired generation can never construct a [`ShellFrameObservation`]
+/// again, so the identity is exactly enough to hold its late ack to the
+/// verbatim-copy rule and nothing more.
+#[derive(Debug)]
+struct RetiredIdentity {
+    generation: u64,
+    identity: [Value; ACK_IDENTITY_FIELDS.len()],
+}
+
 /// Generation-gated push channel from accepted projections to the page,
 /// plus the receive side of the page's painted acks.
 ///
@@ -299,6 +340,21 @@ struct InFlightDocument {
 pub struct ProjectionChannel {
     last_emitted_generation: Option<u64>,
     in_flight: VecDeque<InFlightDocument>,
+    /// The serialized identities of the most recently retired documents, in
+    /// retirement order (oldest at the front).
+    ///
+    /// Every document that leaves `in_flight` — evicted by the capacity bound
+    /// in `push`, or drained by the ack that consumed it and everything older
+    /// in `forward_ack` — retires its identity here. That is what lets a late
+    /// ack for an already-dropped document still be held to the verbatim-copy
+    /// rule instead of being consumed unchecked (FR-003 / RISK-4).
+    ///
+    /// Bounded at [`RETAINED_RETIRED_IDENTITIES`] with the same `pop_front`
+    /// eviction discipline as `in_flight`, so a long session cannot grow it.
+    /// It lives entirely on the shell side of the boundary: `ProjectionChannel`
+    /// runs on the window's event thread and nothing here is reachable from
+    /// the real-time callback.
+    retired_identities: VecDeque<RetiredIdentity>,
 }
 
 impl ProjectionChannel {
@@ -308,6 +364,7 @@ impl ProjectionChannel {
         Self {
             last_emitted_generation: None,
             in_flight: VecDeque::new(),
+            retired_identities: VecDeque::new(),
         }
     }
 
@@ -339,9 +396,13 @@ impl ProjectionChannel {
         self.last_emitted_generation = Some(generation);
         // Track the emitted document so its painted ack can correlate. The
         // tracker is bounded: when full, the oldest unacked document is a
-        // lost frame — dropped, degrading observation only.
+        // lost frame — dropped, degrading observation only. Retirement path
+        // one: the dropped document's identity is retired, not discarded, so
+        // its late ack is still held to the verbatim-copy rule (FR-003).
         if self.in_flight.len() == MAX_IN_FLIGHT_DOCUMENTS {
-            self.in_flight.pop_front();
+            if let Some(evicted) = self.in_flight.pop_front() {
+                self.retire(evicted);
+            }
         }
         self.in_flight.push_back(InFlightDocument {
             generation,
@@ -373,7 +434,23 @@ impl ProjectionChannel {
     /// document's own semantic model with the ack's measured geometry, so an
     /// observation can never be built from expectations alone. A successful
     /// ack consumes its document and every older unacked one (superseded —
-    /// lost frames degrade observation only).
+    /// lost frames degrade observation only), retiring each one's identity.
+    ///
+    /// An ack that correlates with no in-flight document is one of three
+    /// things (FR-003):
+    ///
+    /// - newer than every emission — fabricated evidence, rejected as
+    ///   [`PaintedAckError::UnknownDocument`];
+    /// - naming a retired generation still inside the retained identity
+    ///   window — held to the *same* verbatim-copy rule as an in-flight ack,
+    ///   so a rewritten identity is [`PaintedAckError::IdentityMismatch`] and
+    ///   a faithful one is [`ForwardedAck::SupersededLate`];
+    /// - naming a generation older than that window — a lost frame the
+    ///   channel can no longer speak to, consumed as
+    ///   [`ForwardedAck::SupersededLate`].
+    ///
+    /// No superseded-late ack constructs an observation in any of those
+    /// cases.
     pub fn forward_ack(&mut self, payload: &str) -> Result<ForwardedAck, PaintedAckError> {
         let ack: Value =
             serde_json::from_str(payload).map_err(|error| PaintedAckError::Malformed {
@@ -399,6 +476,25 @@ impl ProjectionChannel {
                 .last_emitted_generation
                 .is_some_and(|newest| generation <= newest)
             {
+                // The document is gone, but its identity may still be inside
+                // the retained window. If it is, the ack answers to exactly
+                // the same verbatim-copy rule as an in-flight one: the
+                // guarantee holds in every window, not only where the channel
+                // happens to still hold the document (FR-003).
+                if let Some(retired) = self
+                    .retired_identities
+                    .iter()
+                    .find(|retired| retired.generation == generation)
+                {
+                    verify_ack_identity(&ack, &retired.identity, generation)?;
+                }
+                // A miss means the ack outlived the retained window. That
+                // window is finite by design — retaining every identity for
+                // the life of the session was rejected — so the channel holds
+                // nothing to compare against and makes no claim either way:
+                // today's lost-frame behavior stands. Do not "tighten" this
+                // into a rejection; an honest ack delayed past the window
+                // would then fail a healthy run.
                 Ok(ForwardedAck::SupersededLate { generation })
             } else {
                 Err(PaintedAckError::UnknownDocument { generation })
@@ -406,12 +502,7 @@ impl ProjectionChannel {
         };
 
         let document = &self.in_flight[index];
-        for (field, expected) in ACK_IDENTITY_FIELDS.iter().zip(&document.identity) {
-            let supplied = ack.get(*field).unwrap_or(&Value::Null);
-            if supplied != expected {
-                return Err(PaintedAckError::IdentityMismatch { generation, field });
-            }
-        }
+        verify_ack_identity(&ack, &document.identity, generation)?;
 
         let viewport = ack
             .get("viewport")
@@ -453,9 +544,66 @@ impl ProjectionChannel {
 
         // The ack consumed its document. Everything older was superseded
         // without ever acking — dropped, degrading observation only.
-        self.in_flight.drain(..=index);
+        // Retirement path two: this drops a *range*, so every document in it
+        // retires its identity, oldest first, not just the acked one —
+        // otherwise the superseded documents (the common retirement) would
+        // escape validation entirely (FR-003).
+        for _ in 0..=index {
+            let retired = self
+                .in_flight
+                .pop_front()
+                .expect("the drained range was located by position within this deque");
+            self.retire(retired);
+        }
         Ok(ForwardedAck::Observation(observation))
     }
+
+    /// Moves one dropped document's identity into the bounded retained
+    /// window, evicting the oldest retained identity when full — the same
+    /// `pop_front` discipline `in_flight` uses.
+    fn retire(&mut self, document: InFlightDocument) {
+        // Generations are monotone in production, but a channel re-pushed at
+        // an already-retired generation must not leave two entries for it:
+        // a duplicate wastes a slot in the window and could let a stale
+        // identity shadow the current one.
+        if let Some(stale) = self
+            .retired_identities
+            .iter()
+            .position(|retired| retired.generation == document.generation)
+        {
+            self.retired_identities.remove(stale);
+        }
+        if self.retired_identities.len() == RETAINED_RETIRED_IDENTITIES {
+            self.retired_identities.pop_front();
+        }
+        self.retired_identities.push_back(RetiredIdentity {
+            generation: document.generation,
+            identity: document.identity,
+        });
+    }
+}
+
+/// Holds one ack to the verbatim-copy rule against the identity of the
+/// document it named.
+///
+/// This is the single place the rule is spelled: both windows call it — the
+/// in-flight window, where the document is still tracked, and the retained
+/// retired window, where only the identity survives. One implementation is
+/// the point; two copies of an identity rule drift (FR-003). A field the ack
+/// omits entirely compares as `Value::Null`, so omission is a mismatch rather
+/// than a pass.
+fn verify_ack_identity(
+    ack: &Value,
+    identity: &[Value; ACK_IDENTITY_FIELDS.len()],
+    generation: u64,
+) -> Result<(), PaintedAckError> {
+    for (field, expected) in ACK_IDENTITY_FIELDS.iter().zip(identity) {
+        let supplied = ack.get(*field).unwrap_or(&Value::Null);
+        if supplied != expected {
+            return Err(PaintedAckError::IdentityMismatch { generation, field });
+        }
+    }
+    Ok(())
 }
 
 /// Copies the serialized identity fields the painted ack must echo out of a
@@ -508,6 +656,7 @@ mod tests {
     use super::{
         ForwardedAck, PaintedAckError, ProjectionChannel, ProjectionChannelError, ProjectionPush,
         MAX_IN_FLIGHT_DOCUMENTS, PAINTED_EVENT, PROJECTION_EVENT, RENDER_ERROR_EVENT,
+        RETAINED_RETIRED_IDENTITIES,
     };
     use crate::control::{
         GraphicalShellProjection, SemanticGraphicalViewModel, ShellContextLine, ShellFooter,
@@ -870,6 +1019,203 @@ mod tests {
             .forward_ack(&ack_for(&advanced(&base, count)).to_string())
             .expect("the newest document still correlates");
         assert!(matches!(newest, ForwardedAck::Observation(_)));
+    }
+
+    // ------------------------------------------------------------------
+    // The verbatim-copy rule in the superseded-late window (FR-003 / RISK-4)
+    // ------------------------------------------------------------------
+
+    /// Pushes `1..=newest` so the ack-consumption path can retire a range.
+    fn pushed_through(
+        channel: &mut ProjectionChannel,
+        base: &GraphicalShellProjection,
+        newest: u64,
+    ) {
+        push_ok(channel, base);
+        for generation in 2..=newest {
+            push_ok(channel, &advanced(base, generation));
+        }
+    }
+
+    #[test]
+    fn a_drained_document_still_holds_its_late_ack_to_the_verbatim_rule() {
+        // Retirement path one: ack consumption. The successor's ack drains
+        // its own document *and* the older unacked one, retiring both.
+        let mut channel = ProjectionChannel::new();
+        let first = projection(7, "state-7");
+        let second = advanced(&first, 8);
+        push_ok(&mut channel, &first);
+        push_ok(&mut channel, &second);
+        channel
+            .forward_ack(&ack_for(&second).to_string())
+            .expect("the successor's ack becomes its one observation");
+        assert_eq!(channel.in_flight_documents(), 0);
+
+        // Two different rewritten fields: the comparison is the whole
+        // identity, not one privileged field.
+        for (field, rewritten) in [
+            ("stateHash", Value::from("state-invented")),
+            ("activeSurface", Value::from("inventedSurface")),
+        ] {
+            let mut ack = ack_for(&first);
+            ack[field] = rewritten;
+            let error = channel
+                .forward_ack(&ack.to_string())
+                .expect_err("a superseded-late ack that rewrites identity must be rejected");
+            match error {
+                PaintedAckError::IdentityMismatch {
+                    generation,
+                    field: named,
+                } => {
+                    assert_eq!(generation, 7);
+                    assert_eq!(named, field);
+                }
+                other => panic!("expected an identity mismatch on {field}, got {other:?}"),
+            }
+        }
+
+        // The acked document retires too: replaying its own ack with a
+        // rewritten identity is rejected on the same rule.
+        let mut replay = ack_for(&second);
+        replay["interactionMode"] = Value::from("inventedMode");
+        let error = channel
+            .forward_ack(&replay.to_string())
+            .expect_err("the consumed document's identity is retired too");
+        assert!(matches!(
+            error,
+            PaintedAckError::IdentityMismatch {
+                generation: 8,
+                field: "interactionMode"
+            }
+        ));
+    }
+
+    #[test]
+    fn a_capacity_evicted_document_still_holds_its_late_ack_to_the_verbatim_rule() {
+        // Retirement path two: capacity eviction. Pushing one past the bound
+        // drops the oldest unacked document and retires its identity.
+        let mut channel = ProjectionChannel::new();
+        let base = projection(1, "state-1");
+        pushed_through(&mut channel, &base, MAX_IN_FLIGHT_DOCUMENTS as u64 + 1);
+        assert_eq!(channel.in_flight_documents(), MAX_IN_FLIGHT_DOCUMENTS);
+
+        let mut ack = ack_for(&base);
+        ack["context"] = Value::from("INVENTED");
+        let error = channel
+            .forward_ack(&ack.to_string())
+            .expect_err("an evicted document's rewritten late ack must be rejected");
+        match error {
+            PaintedAckError::IdentityMismatch { generation, field } => {
+                assert_eq!(generation, 1);
+                assert_eq!(field, "context");
+            }
+            other => panic!("expected an identity mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_faithful_superseded_late_ack_is_consumed_exactly_as_before() {
+        // Nothing this mission adds narrows what already worked: a late ack
+        // that copies its retired document's identity verbatim is still the
+        // quiet lost frame it was, from either retirement path.
+        let mut evicted = ProjectionChannel::new();
+        let base = projection(1, "state-1");
+        pushed_through(&mut evicted, &base, MAX_IN_FLIGHT_DOCUMENTS as u64 + 1);
+        let late = evicted
+            .forward_ack(&ack_for(&base).to_string())
+            .expect("a faithful late ack for an evicted document is consumed quietly");
+        assert_eq!(late, ForwardedAck::SupersededLate { generation: 1 });
+
+        let mut drained = ProjectionChannel::new();
+        let first = projection(7, "state-7");
+        let second = advanced(&first, 8);
+        push_ok(&mut drained, &first);
+        push_ok(&mut drained, &second);
+        drained
+            .forward_ack(&ack_for(&second).to_string())
+            .expect("the successor's ack becomes its one observation");
+        for (projection, generation) in [(&first, 7), (&second, 8)] {
+            let late = drained
+                .forward_ack(&ack_for(projection).to_string())
+                .expect("a faithful late ack for a drained document is consumed quietly");
+            assert_eq!(late, ForwardedAck::SupersededLate { generation });
+        }
+    }
+
+    #[test]
+    fn an_ack_older_than_the_retained_window_stays_a_lost_frame() {
+        let mut channel = ProjectionChannel::new();
+        let base = projection(1, "state-1");
+        // Strictly more retirements than the window retains: this evicts
+        // generations 1..=RETAINED_RETIRED_IDENTITIES + 1, so generation 1
+        // has fallen out of the retained window and generation 2 — the
+        // oldest still retained — has not.
+        let count = (MAX_IN_FLIGHT_DOCUMENTS + RETAINED_RETIRED_IDENTITIES) as u64 + 1;
+        pushed_through(&mut channel, &base, count);
+        assert_eq!(channel.in_flight_documents(), MAX_IN_FLIGHT_DOCUMENTS);
+
+        // Outside the window the channel holds nothing to compare against and
+        // makes no claim either way. Both a faithful and a rewritten ack stay
+        // lost frames: rejecting here would fail an honest ack merely delayed
+        // past the window.
+        let faithful = channel
+            .forward_ack(&ack_for(&base).to_string())
+            .expect("an ack older than the retained window is still a lost frame");
+        assert_eq!(faithful, ForwardedAck::SupersededLate { generation: 1 });
+
+        let mut rewritten = ack_for(&base);
+        rewritten["stateHash"] = Value::from("state-invented");
+        let outside = channel
+            .forward_ack(&rewritten.to_string())
+            .expect("outside the retained window a rewritten ack is not a rejection");
+        assert_eq!(outside, ForwardedAck::SupersededLate { generation: 1 });
+    }
+
+    #[test]
+    fn the_retained_window_holds_exactly_its_bound_of_identities() {
+        // The same overflowing run as the test above, read from the other
+        // side: generation 1 fell out of the window, and generation 2 — the
+        // oldest identity still inside it — did not. That is where the bound
+        // puts the boundary, and the window never grows past it.
+        let mut channel = ProjectionChannel::new();
+        let base = projection(1, "state-1");
+        let count = (MAX_IN_FLIGHT_DOCUMENTS + RETAINED_RETIRED_IDENTITIES) as u64 + 1;
+        pushed_through(&mut channel, &base, count);
+
+        let mut oldest_retained = ack_for(&advanced(&base, 2));
+        oldest_retained["stateHash"] = Value::from("state-invented");
+        let error = channel
+            .forward_ack(&oldest_retained.to_string())
+            .expect_err("the oldest retained identity still validates its late ack");
+        assert!(matches!(
+            error,
+            PaintedAckError::IdentityMismatch {
+                generation: 2,
+                field: "stateHash"
+            }
+        ));
+    }
+
+    #[test]
+    fn a_superseded_late_ack_never_constructs_an_observation() {
+        // The invariant that keeps RISK-4 latent survives the new validation:
+        // whatever a superseded-late ack carries, it is consumed or rejected,
+        // never turned into painted evidence.
+        let mut channel = ProjectionChannel::new();
+        let first = projection(7, "state-7");
+        let second = advanced(&first, 8);
+        push_ok(&mut channel, &first);
+        push_ok(&mut channel, &second);
+        channel
+            .forward_ack(&ack_for(&second).to_string())
+            .expect("the successor's ack becomes its one observation");
+
+        for ack in [ack_for(&first), ack_for(&second)] {
+            match channel.forward_ack(&ack.to_string()) {
+                Ok(ForwardedAck::SupersededLate { .. }) => {}
+                other => panic!("a superseded-late ack must construct nothing, got {other:?}"),
+            }
+        }
     }
 
     #[test]

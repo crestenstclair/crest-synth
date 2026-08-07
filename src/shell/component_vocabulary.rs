@@ -11,14 +11,16 @@
 //!   kind × role selector ([`control_for`]);
 //! - the closed composition family ([`ShellComposition`]) and its region
 //!   binding ([`ShellRegion`]);
-//! - the typed intent a control or composition returns
-//!   ([`ControlIntent`], [`CompositionIntent`]);
 //! - the authored non-color signals: hint tones, status marks, the focus
 //!   cursor, and the unavailable mark.
 //!
-//! Nothing here paints, and nothing here decides. A control's intent carries
-//! no `SemanticAction`; mapping intent onto an action needs focus and the
-//! reducer, which live on the other side of this boundary.
+//! Nothing here paints, and nothing here decides. A component source owns no
+//! state and caches none: it may not name `AppState`, and it may not convert
+//! an input into a `SemanticAction`. Deciding what an input means needs
+//! focus, the active context, and the reducer's notion of what is valid right
+//! now, all of which live on the other side of this boundary. That passivity
+//! is the boundary this module exists to hold, and
+//! `tests/component_composition.rs` proves it of every component source.
 //!
 //! Realizes `valueObject.Shell.ComponentControl`,
 //! `valueObject.Shell.ShellComposition`,
@@ -27,7 +29,7 @@
 
 use serde::Serialize;
 
-use crate::control::{FocusPath, SemanticControlKind};
+use crate::control::SemanticControlKind;
 use crate::shell::component_state::{
     ComponentState, NonColorSignal, ALL_COMPONENT_STATES, COMPONENT_STATE_COUNT,
     LOADING_PROGRESS_WORDS,
@@ -310,62 +312,6 @@ pub const fn control_for(kind: SemanticControlKind, role: PresentationRole) -> C
     }
 }
 
-/// Which way an adjustment was asked to move.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AdjustDirection {
-    /// Toward the minimum, or the previous option.
-    Decrease,
-    /// Toward the maximum, or the next option.
-    Increase,
-}
-
-/// How far one adjustment step moves.
-///
-/// Which number that is belongs to the parameter descriptor the view data
-/// carries, not to the control: a control reports that a fine or a coarse step
-/// was asked for and never resolves it to a value.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AdjustGranularity {
-    /// One fine step.
-    Fine,
-    /// One coarse step.
-    Coarse,
-}
-
-/// What a control asks for.
-///
-/// This is a request, never a decision. It carries no `SemanticAction`, and
-/// nothing in this module turns it into one: mapping an intent onto an action
-/// requires focus, the active context, and the reducer's notion of what is
-/// valid right now, all of which live on the other side of this boundary. A
-/// control that could build an action could dispatch one, and then the loop
-/// physical input → semantic action → `AppState::apply` → projection would no
-/// longer be true of the render path.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ControlIntent {
-    /// The control asks for nothing. Painting produced no request.
-    None,
-    /// The operator addressed this control and it asks to become the focus
-    /// target. It does not know whether that is allowed.
-    FocusRequested,
-    /// The operator asked to move this control's value one step.
-    AdjustRequested {
-        /// Which way to move.
-        direction: AdjustDirection,
-        /// How far one step is.
-        granularity: AdjustGranularity,
-    },
-    /// The operator asked to see this control's options — the nested modal, or
-    /// the asset browser.
-    OptionListRequested,
-    /// The operator asked to commit this control — flip a toggle, choose a
-    /// modal entry.
-    ActivateRequested,
-}
-
 /// The mark a reserved region shows when its data did not arrive.
 ///
 /// A reserved region that is simply left blank reads as "there is nothing
@@ -510,81 +456,6 @@ impl ShellComposition {
             Self::UtilityInspectorPanel => ShellRegion::PersistentSideRegion,
             Self::Footer => ShellRegion::Footer,
         }
-    }
-}
-
-/// One control's request, carried with the path that identifies which control
-/// made it.
-///
-/// The intent alone is not actionable — "increase by one fine step" means
-/// nothing without knowing what asked — so a composition pairs each intent with
-/// the focus path of the view data it handed the control. The path is identity,
-/// not state: the composition read it from the immutable projection and passes
-/// it back unchanged.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ControlRequest {
-    path: FocusPath,
-    intent: ControlIntent,
-}
-
-impl ControlRequest {
-    /// Pairs an intent with the control that asked.
-    pub const fn new(path: FocusPath, intent: ControlIntent) -> Self {
-        Self { path, intent }
-    }
-
-    /// Which control asked.
-    pub const fn path(&self) -> &FocusPath {
-        &self.path
-    }
-
-    /// What it asked for.
-    pub const fn intent(&self) -> ControlIntent {
-        self.intent
-    }
-}
-
-/// What a composition asks for, aggregated from the controls it arranged.
-///
-/// A composition collects rather than decides: it does not rank competing
-/// requests, resolve them against what is currently valid, or turn any of them
-/// into an action. All of that needs focus and the reducer, which live on the
-/// other side of this boundary.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct CompositionIntent {
-    requests: Vec<ControlRequest>,
-}
-
-impl CompositionIntent {
-    /// A composition that asked for nothing.
-    pub const fn none() -> Self {
-        Self {
-            requests: Vec::new(),
-        }
-    }
-
-    /// Records what one arranged control asked for, dropping the empty asks so
-    /// that a frame in which nothing happened aggregates to nothing.
-    pub fn record(&mut self, path: &FocusPath, intent: ControlIntent) {
-        if intent != ControlIntent::None {
-            self.requests
-                .push(ControlRequest::new(path.clone(), intent));
-        }
-    }
-
-    /// Folds a nested composition's requests into this one.
-    pub fn absorb(&mut self, other: Self) {
-        self.requests.extend(other.requests);
-    }
-
-    /// Everything the arranged controls asked for, in arrangement order.
-    pub fn requests(&self) -> &[ControlRequest] {
-        &self.requests
-    }
-
-    /// Whether anything was asked for at all.
-    pub fn is_empty(&self) -> bool {
-        self.requests.is_empty()
     }
 }
 
@@ -807,9 +678,6 @@ const fn declared_word(signal: NonColorSignal) -> &'static str {
         NonColorSignal::Shape | NonColorSignal::ProgressWord | NonColorSignal::TypedFailure => "",
     }
 }
-
-/// The glyph the design file places before a focused row's label.
-pub const CURSOR_GLYPH: &str = ">";
 
 /// Whether this state's declared keyline paints as a frame.
 ///
@@ -1183,14 +1051,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_composition_intent_records_nothing() {
-        let intent = CompositionIntent::none();
-        assert!(intent.is_empty());
-        assert!(intent.requests().is_empty());
-        assert_eq!(intent, CompositionIntent::default());
-    }
-
-    #[test]
     fn the_four_declared_tones_are_visually_distinct() {
         assert_eq!(ALL_HINT_TONES.len(), 4);
         let colors: HashSet<_> = ALL_HINT_TONES.iter().map(|tone| tone.color()).collect();
@@ -1421,7 +1281,6 @@ mod tests {
         // cyan keyline and nothing else.
         assert!(draws_cursor(ComponentState::Focused));
         assert!(draws_cursor(ComponentState::Adjusting));
-        assert_eq!(CURSOR_GLYPH, ">");
     }
 
     #[test]

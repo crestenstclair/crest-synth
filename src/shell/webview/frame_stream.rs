@@ -1,15 +1,14 @@
-//! The qualifying-frame stream: the control-side seam scenes block on
-//! instead of sleeping (mission webview-shell-cutover WP02, T006).
+//! The qualifying-frame stream: the control-side seam that answers "has a
+//! qualifying frame for this accepted identity been painted?" from recorded
+//! evidence instead of from a sleep (mission webview-shell-cutover WP02,
+//! T006).
 //!
 //! The window's painted-ack forwarding records every forwarded
 //! [`ShellFrameObservation`] here, right where it also hands the observation
-//! to the `AppWindow` port's frame callback. Control-side consumers (the
-//! WP03 scene hosting) hold a [`QualifyingFrameStream`] handle cloned from
-//! [`TauriWebviewWindow::frame_stream`] before the window runs, and ask it
-//! "has a qualifying frame for this accepted identity been painted?" —
-//! either as a non-blocking [`poll`] from inside the tick loop, or as a
-//! blocking [`await_qualifying`] with a caller-supplied timeout from a
-//! harness thread.
+//! to the `AppWindow` port's frame callback. Control-side consumers hold a
+//! [`QualifyingFrameStream`] handle cloned from
+//! [`TauriWebviewWindow::frame_stream`] before the window runs and put that
+//! question to it as a non-blocking [`poll`] from inside their tick loop.
 //!
 //! # What qualifies
 //!
@@ -23,15 +22,14 @@
 //!
 //! # No sleeps, bounded memory
 //!
-//! [`await_qualifying`] parks on a condition variable and wakes when a frame
-//! is recorded or the deadline passes — there is no polling loop and no
-//! sleep anywhere in this module. The stream retains only the most recent
-//! [`RECENT_OBSERVATION_CAPACITY`] observations; an observation superseded
-//! past that window is display evidence already consumed, and losing it
-//! degrades observation only.
+//! There is no polling loop and no sleep anywhere in this module: a poll
+//! answers immediately from what the forwarding already recorded, and a
+//! consumer that is not yet satisfied simply asks again on its next tick.
+//! The stream retains only the most recent [`RECENT_OBSERVATION_CAPACITY`]
+//! observations; an observation superseded past that window is display
+//! evidence already consumed, and losing it degrades observation only.
 //!
 //! [`poll`]: QualifyingFrameStream::poll
-//! [`await_qualifying`]: QualifyingFrameStream::await_qualifying
 //! [`TauriWebviewWindow::frame_stream`]: crate::shell::webview::TauriWebviewWindow::frame_stream
 
 use crate::control::{SurfaceId, TopLevelContext};
@@ -39,7 +37,6 @@ use crate::shell::ShellFrameObservation;
 use core::fmt;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
 
 /// How many recent forwarded observations the stream retains for polling.
 ///
@@ -117,34 +114,6 @@ impl fmt::Display for FrameExpectation {
     }
 }
 
-/// A typed await failure naming the identity that never painted.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FrameAwaitError {
-    /// No qualifying observation was forwarded within the caller's timeout.
-    Timeout {
-        /// The awaited identity that never received a qualifying frame.
-        expectation: FrameExpectation,
-        /// How long the caller waited.
-        waited: Duration,
-    },
-}
-
-impl fmt::Display for FrameAwaitError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Timeout {
-                expectation,
-                waited,
-            } => write!(
-                formatter,
-                "no qualifying webview frame for {expectation} within {waited:?}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for FrameAwaitError {}
-
 #[derive(Debug, Default)]
 struct StreamShared {
     recent: Mutex<VecDeque<ShellFrameObservation>>,
@@ -154,7 +123,7 @@ struct StreamShared {
 /// Shared handle onto the window's forwarded-observation stream.
 ///
 /// Clones share one underlying stream: the window records into it, any
-/// number of control-side consumers poll or await on it.
+/// number of control-side consumers poll it.
 #[derive(Clone, Debug, Default)]
 pub struct QualifyingFrameStream {
     shared: Arc<StreamShared>,
@@ -199,67 +168,15 @@ impl QualifyingFrameStream {
             .find(|observation| expectation.matches(observation))
             .cloned()
     }
-
-    /// Blocks until a qualifying observation has been forwarded or `timeout`
-    /// passes, whichever comes first. The timeout path is a typed
-    /// [`FrameAwaitError::Timeout`] naming the awaited identity.
-    ///
-    /// The wait parks on a condition variable — no sleeping, no poll loop.
-    /// Never call this on the window's event thread: the forwarding that
-    /// would satisfy it runs there. It is for harness/control threads that
-    /// hold a cloned handle.
-    pub fn await_qualifying(
-        &self,
-        expectation: &FrameExpectation,
-        timeout: Duration,
-    ) -> Result<ShellFrameObservation, FrameAwaitError> {
-        let started = Instant::now();
-        let mut recent = self
-            .shared
-            .recent
-            .lock()
-            .expect("the frame stream lock is never poisoned");
-        loop {
-            if let Some(observation) = recent
-                .iter()
-                .rev()
-                .find(|observation| expectation.matches(observation))
-            {
-                return Ok(observation.clone());
-            }
-            let waited = started.elapsed();
-            let Some(remaining) = timeout.checked_sub(waited) else {
-                return Err(FrameAwaitError::Timeout {
-                    expectation: expectation.clone(),
-                    waited,
-                });
-            };
-            if remaining.is_zero() {
-                return Err(FrameAwaitError::Timeout {
-                    expectation: expectation.clone(),
-                    waited,
-                });
-            }
-            let (guard, _timed_out) = self
-                .shared
-                .arrived
-                .wait_timeout(recent, remaining)
-                .expect("the frame stream lock is never poisoned");
-            recent = guard;
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FrameAwaitError, FrameExpectation, QualifyingFrameStream, RECENT_OBSERVATION_CAPACITY,
-    };
+    use super::{FrameExpectation, QualifyingFrameStream, RECENT_OBSERVATION_CAPACITY};
     use crate::control::TopLevelContext;
     use crate::shell::{
         ShellFrameObservation, ShellRegionId, ShellRegionObservation, ShellRegionRect,
     };
-    use std::time::Duration;
 
     fn observation(generation: u64, state_hash: &str) -> ShellFrameObservation {
         ShellFrameObservation::try_new(
@@ -309,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn a_recorded_qualifying_observation_satisfies_poll_and_await() {
+    fn a_recorded_qualifying_observation_satisfies_poll() {
         let stream = QualifyingFrameStream::new();
         let painted = observation(7, "state-7");
         let expectation = expectation_for(&painted);
@@ -320,13 +237,6 @@ mod tests {
 
         let polled = stream.poll(&expectation).expect("poll sees the frame");
         assert_eq!(polled, painted);
-
-        // Already satisfied: the await returns immediately without waiting
-        // out the timeout.
-        let awaited = stream
-            .await_qualifying(&expectation, Duration::from_secs(5))
-            .expect("an already-painted frame satisfies the await");
-        assert_eq!(awaited, painted);
     }
 
     #[test]
@@ -353,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_recorded_from_another_thread_wakes_the_await() {
+    fn a_frame_recorded_through_one_clone_is_visible_through_another() {
         let stream = QualifyingFrameStream::new();
         let painted = observation(9, "state-9");
         let expectation = expectation_for(&painted);
@@ -363,34 +273,15 @@ mod tests {
             let painted = painted.clone();
             std::thread::spawn(move || stream.record(painted))
         };
-
-        let awaited = stream
-            .await_qualifying(&expectation, Duration::from_secs(10))
-            .expect("the recorded frame satisfies the await");
-        assert_eq!(awaited, painted);
         recorder.join().expect("the recorder thread completes");
-    }
 
-    #[test]
-    fn the_timeout_path_is_a_typed_error_naming_the_awaited_identity() {
-        let stream = QualifyingFrameStream::new();
-        let expectation = expectation_for(&observation(11, "state-11"));
-
-        let error = stream
-            .await_qualifying(&expectation, Duration::from_millis(20))
-            .expect_err("an empty stream must time out");
-        match &error {
-            FrameAwaitError::Timeout {
-                expectation: named,
-                waited,
-            } => {
-                assert_eq!(named, &expectation);
-                assert!(*waited >= Duration::from_millis(20));
-            }
-        }
-        let text = error.to_string();
-        assert!(text.contains("generation 11"), "{text}");
-        assert!(text.contains("state-11"), "{text}");
+        // Clones share one underlying stream: the window records into its
+        // handle, and a control-side consumer holding a different clone sees
+        // the same observation.
+        let polled = stream
+            .poll(&expectation)
+            .expect("the clone's recording is visible to the original handle");
+        assert_eq!(polled, painted);
     }
 
     #[test]

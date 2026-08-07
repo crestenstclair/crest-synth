@@ -38,8 +38,11 @@
 //! qualifying-frame stream, and a thrown page render failure
 //! (`crest://render-error`) is a typed
 //! [`WebviewShellError::PageRenderFailed`] on the same fatal runtime path a
-//! startup failure uses. A failed `window.close()` is retried once and then
-//! surfaced typed through the shutdown path — never swallowed.
+//! startup failure uses. A failed `window.close()` is retried once; a second
+//! failure is recorded typed and ends the event loop directly, so the
+//! shutdown path surfaces it — never swallowed, and never a loop left
+//! waiting on a close that is not going to happen (mission shell-hygiene
+//! RISK-3).
 
 use crate::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
@@ -78,6 +81,27 @@ const WINDOW_LABEL: &str = "main";
 /// not exist in a release binary (WP02 T007).
 #[cfg(debug_assertions)]
 const PAGE_OVERRIDE_ENV: &str = "CREST_WEBVIEW_PAGE";
+
+/// The deterministic double-close-failure hook consumed by the acceptance
+/// tests: when set, every close attempt the shell makes reports failure
+/// instead of being issued, so the window stays open and the exhausted-retry
+/// path below is reached on demand. Without it that path is reachable only
+/// from a window server that refuses the same close twice in a row, and
+/// FR-001 has to be provable.
+///
+/// Debug builds only: release builds compile this constant and the branch
+/// that reads it out entirely (`cfg(debug_assertions)`), exactly as
+/// [`PAGE_OVERRIDE_ENV`] does, so the forced-failure path does not exist in
+/// a release binary.
+#[cfg(debug_assertions)]
+const CLOSE_FAILURE_OVERRIDE_ENV: &str = "CREST_WEBVIEW_FORCE_CLOSE_FAILURE";
+
+/// The exit code the shell requests when it ends the event loop itself
+/// (see [`close_window_once_with_retry`]). Zero on purpose: the terminal
+/// outcome is the typed error already recorded on the first-error slot,
+/// which the existing post-`run_return` path surfaces, and the exit code
+/// must not become a second, competing failure signal.
+const REQUESTED_EXIT_CODE: i32 = 0;
 
 /// The restrictive Content-Security-Policy attached to the served document
 /// (foundation review open item 5, WP02 T007; hardened by mission
@@ -314,10 +338,93 @@ fn record_render_failure(payload: &str, first_error: &RefCell<Option<WindowError
         }));
 }
 
-/// Closes the single webview window, retrying a failed close once. A second
-/// failure is recorded as a typed [`WebviewShellError::WindowClose`] on the
-/// first-error slot so the shutdown path surfaces it rather than swallowing
-/// it (foundation RISK-2); shutdown ordering is unchanged.
+/// What one close-once-with-retry sequence decided about how the event loop
+/// ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloseOutcome {
+    /// A close was issued: the ordinary
+    /// `CloseRequested → Destroyed → ExitRequested` teardown carries
+    /// `run_return` out on its own, exactly as it always has.
+    Teardown,
+    /// Both attempts failed. Nothing is going to close the window, so
+    /// nothing is going to end the loop either — the caller must.
+    RetriesExhausted,
+}
+
+/// The synthetic close failure the debug-only forced-failure seam
+/// substitutes for a real `window.close()`, or `None` when the shell must
+/// issue the real close.
+///
+/// This is a test seam, not a product surface: release builds always return
+/// `None` because [`CLOSE_FAILURE_OVERRIDE_ENV`], the environment read, and
+/// the substitution are compiled out (`cfg(debug_assertions)`), mirroring
+/// the `CREST_WEBVIEW_PAGE` page override. The acceptance harness arms it
+/// around a single live run to prove FR-001: with both closes failing the
+/// window never goes away, so the loop can only end through the exit edge
+/// in [`close_window_once_with_retry`].
+fn forced_close_failure() -> Option<tauri::Error> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os(CLOSE_FAILURE_OVERRIDE_ENV).is_some() {
+        return Some(tauri::Error::Anyhow(anyhow::anyhow!(
+            "forced close failure ({CLOSE_FAILURE_OVERRIDE_ENV})"
+        )));
+    }
+    None
+}
+
+/// Runs the close-once-with-retry sequence against `attempt` and reports
+/// what it decided.
+///
+/// Exactly two attempts on the failure path — the close and one retry, never
+/// a bounded loop and never a backoff. A second failure is recorded as a
+/// typed [`WebviewShellError::WindowClose`] carrying the failure verbatim,
+/// through `get_or_insert`, so an error already on the slot still wins: the
+/// `PageSignal::RenderError` arm records its `PageRenderFailed` and only
+/// then asks the window to close, and the operator must be told the page
+/// render failed — the close failure is a consequence, not the cause.
+///
+/// Split out from [`close_window_once_with_retry`] so the exhausted-retry
+/// decision and the latch ordering are provable without a tauri runtime.
+fn close_with_retry(
+    mut attempt: impl FnMut() -> Result<(), tauri::Error>,
+    first_error: &RefCell<Option<WindowError>>,
+) -> CloseOutcome {
+    if attempt().is_ok() {
+        return CloseOutcome::Teardown;
+    }
+    match attempt() {
+        Ok(()) => CloseOutcome::Teardown,
+        Err(retry_failure) => {
+            first_error.borrow_mut().get_or_insert(WindowError::from(
+                WebviewShellError::WindowClose(retry_failure),
+            ));
+            CloseOutcome::RetriesExhausted
+        }
+    }
+}
+
+/// Closes the single webview window, retrying a failed close once, and ends
+/// the event loop itself when both attempts fail.
+///
+/// A second failure is recorded as a typed
+/// [`WebviewShellError::WindowClose`] on the first-error slot so the
+/// shutdown path surfaces it rather than swallowing it (foundation RISK-2)
+/// — and then [`tauri::AppHandle::exit`] requests loop termination, because
+/// nothing else will. Recording alone left `run_return` waiting on a close
+/// that was never going to happen, so a correctly recorded fatal error never
+/// reached the operator (mission shell-hygiene RISK-3, FR-001).
+///
+/// The exit request reports nothing itself: the recorded first error is
+/// surfaced by the existing post-`run_return` path, unchanged and
+/// un-duplicated, which is why the requested code is
+/// [`REQUESTED_EXIT_CODE`]. The edge lives here rather than at the call
+/// sites so every caller of this function gets it — all four arms of the
+/// event-loop callback close through exactly this helper.
+///
+/// Shutdown ordering is unchanged wherever a close succeeds: a first close
+/// or a retry that succeeds still runs the ordinary
+/// `CloseRequested → Destroyed → ExitRequested` teardown, still records
+/// nothing, and still requests no exit.
 fn close_window_once_with_retry(
     handle: &tauri::AppHandle,
     first_error: &RefCell<Option<WindowError>>,
@@ -327,15 +434,15 @@ fn close_window_once_with_retry(
         // flight; there is nothing left to close.
         return;
     };
-    if window.close().is_ok() {
-        return;
-    }
-    if let Err(retry_failure) = window.close() {
-        first_error
-            .borrow_mut()
-            .get_or_insert(WindowError::from(WebviewShellError::WindowClose(
-                retry_failure,
-            )));
+    let outcome = close_with_retry(
+        || match forced_close_failure() {
+            Some(forced) => Err(forced),
+            None => window.close(),
+        },
+        first_error,
+    );
+    if outcome == CloseOutcome::RetriesExhausted {
+        handle.exit(REQUESTED_EXIT_CODE);
     }
 }
 
@@ -838,6 +945,168 @@ mod tests {
             render_error_detail("not-json plain text"),
             "not-json plain text"
         );
+    }
+
+    /// A synthetic `tauri::Error` standing in for a failed `window.close()`.
+    /// The runtime dispatch failure a real close produces has no public
+    /// constructor, so these tests use the transparent `Anyhow` variant the
+    /// debug seam also uses: what is under test is the typed `WindowClose`
+    /// payload and the decision around it, not tauri's own variant.
+    fn synthetic_close_failure() -> tauri::Error {
+        tauri::Error::Anyhow(anyhow::anyhow!("synthetic close failure"))
+    }
+
+    /// The close path's decision, at the seam where it is made. A close that
+    /// succeeds — first attempt or retry — records nothing and leaves the
+    /// ordinary `CloseRequested → Destroyed → ExitRequested` teardown to end
+    /// the loop, exactly as before (FR-002). Both attempts failing is a
+    /// *terminating* decision rather than a silent return, because nothing
+    /// else is going to end a loop whose window refuses to close (mission
+    /// shell-hygiene RISK-3, FR-001), and the second failure is still
+    /// recorded as the typed `WindowClose` carrying the failure verbatim.
+    #[test]
+    fn a_close_that_fails_twice_terminates_and_records_the_typed_failure() {
+        use super::{close_with_retry, CloseOutcome};
+        use crate::shell::app_window::WindowError;
+        use crate::shell::webview::WebviewShellError;
+        use std::cell::{Cell, RefCell};
+
+        // A first close that succeeds: one attempt, nothing recorded,
+        // ordinary teardown.
+        let attempts = Cell::new(0_u32);
+        let first_error = RefCell::new(None);
+        let outcome = close_with_retry(
+            || {
+                attempts.set(attempts.get() + 1);
+                Ok(())
+            },
+            &first_error,
+        );
+        assert_eq!(outcome, CloseOutcome::Teardown);
+        assert_eq!(attempts.get(), 1, "a close that succeeds is never retried");
+        assert!(first_error.borrow().is_none());
+
+        // One failure then a successful retry: exactly two attempts, still
+        // nothing recorded, still the ordinary teardown.
+        let attempts = Cell::new(0_u32);
+        let first_error = RefCell::new(None);
+        let outcome = close_with_retry(
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    Err(synthetic_close_failure())
+                } else {
+                    Ok(())
+                }
+            },
+            &first_error,
+        );
+        assert_eq!(outcome, CloseOutcome::Teardown);
+        assert_eq!(attempts.get(), 2, "a failed close is retried exactly once");
+        assert!(
+            first_error.borrow().is_none(),
+            "a retry that succeeds records nothing"
+        );
+
+        // Both failing: still exactly two attempts — never a third — the
+        // typed WindowClose recorded, and the terminating decision.
+        let attempts = Cell::new(0_u32);
+        let first_error = RefCell::new(None);
+        let outcome = close_with_retry(
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(synthetic_close_failure())
+            },
+            &first_error,
+        );
+        assert_eq!(
+            outcome,
+            CloseOutcome::RetriesExhausted,
+            "an exhausted retry must terminate the loop, not return quietly"
+        );
+        assert_eq!(attempts.get(), 2, "the retry is never turned into a loop");
+        assert_eq!(
+            first_error.borrow().clone(),
+            Some(WindowError::from(WebviewShellError::WindowClose(
+                synthetic_close_failure()
+            ))),
+            "the second failure is recorded as the typed WindowClose"
+        );
+    }
+
+    /// First error wins across kinds, which is exactly the interleaving the
+    /// `PageSignal::RenderError` arm produces: it records the page render
+    /// failure and then asks the window to close, so when both closes fail
+    /// the operator must still be told the page render failed — the close
+    /// failure is a consequence, not the cause (FR-002). The expectation is
+    /// built from the typed variants rather than a formatted literal so a
+    /// latch inversion cannot hide behind matching prose.
+    #[test]
+    fn a_recorded_render_failure_still_wins_over_a_later_close_failure() {
+        use super::{close_with_retry, record_render_failure, CloseOutcome};
+        use crate::shell::app_window::WindowError;
+        use crate::shell::webview::WebviewShellError;
+        use std::cell::RefCell;
+
+        let first_error = RefCell::new(None);
+        record_render_failure("\"TypeError: renderMixer is not a function\"", &first_error);
+        let outcome = close_with_retry(|| Err(synthetic_close_failure()), &first_error);
+
+        // The close still failed twice, so the loop still terminates ...
+        assert_eq!(outcome, CloseOutcome::RetriesExhausted);
+        // ... and the latch still holds the render failure, not the close
+        // failure that followed it.
+        assert_eq!(
+            first_error.borrow().clone(),
+            Some(WindowError::from(WebviewShellError::PageRenderFailed {
+                detail: "TypeError: renderMixer is not a function".to_owned(),
+            })),
+            "the first recorded error must win over the later close failure"
+        );
+        assert_ne!(
+            first_error.borrow().clone(),
+            Some(WindowError::from(WebviewShellError::WindowClose(
+                synthetic_close_failure()
+            ))),
+        );
+    }
+
+    /// The debug-only forced-close-failure seam is armed by its environment
+    /// variable and by nothing else, so every other debug run — the rest of
+    /// this module, the acceptance harness's ordinary sections, and
+    /// `make demo-live` — issues real closes.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_debug_seam_forces_a_close_failure_only_when_armed() {
+        use super::{forced_close_failure, CLOSE_FAILURE_OVERRIDE_ENV};
+
+        assert!(
+            forced_close_failure().is_none(),
+            "an unarmed seam must leave the real close in place"
+        );
+        std::env::set_var(CLOSE_FAILURE_OVERRIDE_ENV, "1");
+        let forced = forced_close_failure().expect("the armed seam forces a close failure");
+        assert!(
+            forced.to_string().contains(CLOSE_FAILURE_OVERRIDE_ENV),
+            "the forced failure must name the seam that produced it, got {forced}"
+        );
+        std::env::remove_var(CLOSE_FAILURE_OVERRIDE_ENV);
+        assert!(forced_close_failure().is_none());
+    }
+
+    /// Release builds compile the forced-close-failure seam out entirely:
+    /// `CLOSE_FAILURE_OVERRIDE_ENV` and the environment read exist only
+    /// under `cfg(debug_assertions)` — referencing the constant from
+    /// non-debug code fails the release compile, which is the compile-time
+    /// assertion that the seam is absent — so an armed environment variable
+    /// has no effect on a release binary and the shell can only ever issue
+    /// real closes.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_builds_compile_the_forced_close_failure_seam_out() {
+        std::env::set_var("CREST_WEBVIEW_FORCE_CLOSE_FAILURE", "1");
+        assert!(super::forced_close_failure().is_none());
+        std::env::remove_var("CREST_WEBVIEW_FORCE_CLOSE_FAILURE");
     }
 
     /// The debug-only deterministic init-failure trigger still works (the
