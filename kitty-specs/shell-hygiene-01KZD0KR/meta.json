@@ -13,5 +13,7 @@
   "purpose_tldr": "Sweep the deferred non-blocking findings from the two webview post-merge reviews before Phase 5 begins.",
   "slug": "shell-hygiene-01KZD0KR",
   "target_branch": "feat/shell-hygiene",
-  "topology": "coord"
+  "topology": "coord",
+  "vcs": "git",
+  "vcs_locked_at": "2026-08-07T03:02:02.945108+00:00"
 }

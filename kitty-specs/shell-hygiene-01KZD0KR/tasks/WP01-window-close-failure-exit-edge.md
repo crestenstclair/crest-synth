@@ -10,6 +10,9 @@ requirement_refs:
 planning_base_branch: feat/shell-hygiene
 merge_target_branch: feat/shell-hygiene
 branch_strategy: Planning artifacts for this mission were generated on feat/shell-hygiene. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/shell-hygiene unless the human explicitly redirects the landing branch.
+base_branch: kitty/mission-shell-hygiene-01KZD0KR
+base_commit: 09a688873166b9af1c746c0789505ec8db683ced
+created_at: '2026-08-07T03:02:04.587764+00:00'
 subtasks:
 - T001
 - T002
