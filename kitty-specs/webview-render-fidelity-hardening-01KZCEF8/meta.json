@@ -24,6 +24,7 @@
   "purpose_context": "Post-merge review of the webview shell cutover returned FAIL on two HIGH findings: the production Content-Security-Policy silently blocks the JS-built inline styles that paint fader fills and position indicators, and the typed page-render-failure channel has a listener but no emitter, so page render exceptions vanish silently. Both shipped because the acceptance harness measured a laxer policy than production and no proof exercised the error path. This mission fixes exactly those two defects and hardens the proofs so neither can regress unseen, leaving the review's structural and dead-code items to a separate hygiene mission.",
   "purpose_tldr": "Fix the shipped webview's CSP-blocked fader rendering and silent page render failures, and close the two proof gaps that let both ship.",
   "slug": "webview-render-fidelity-hardening-01KZCEF8",
+  "status_phase": "1",
   "target_branch": "feat/webview-shell-cutover",
   "topology": "single_branch",
   "vcs": "git",
