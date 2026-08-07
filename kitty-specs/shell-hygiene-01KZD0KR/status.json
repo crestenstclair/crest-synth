@@ -2,7 +2,7 @@
   "event_count": 35,
   "last_event_id": "01KZD8Y6YB4APB36FCM2T613JK",
   "materialized_at": "2026-08-07T04:50:39.691040+00:00",
-  "mission_number": "4",
+  "mission_number": "",
   "mission_slug": "shell-hygiene-01KZD0KR",
   "mission_type": "software-dev",
   "summary": {
@@ -20,127 +20,52 @@
     "WP01": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZD8Y2PQFYSSMN006P9P86X2",
       "last_transition_at": "2026-08-07T04:50:35.351429+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Exit edge landed via AppHandle::exit on the exhausted-retry branch; debug-only CREST_WEBVIEW_FORCE_CLOSE_FAILURE seam added for WP04. cargo test --lib 634 passed; webview_projection_shell/component_vocabulary/component_composition green; clippy clean; no new fmt diffs. Live probe: with edge exit=1 in 61s with typed error, without edge hung past demo completion until SIGALRM at 131s.",
-        "Review passed: exit edge verified structurally sound, probes reproduced independently"
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 88697,
-      "shell_pid_created_at": "1786073126.935404",
-      "subtasks": {
-        "T001": "done",
-        "T002": "done",
-        "T003": "done"
-      }
+      "shell_pid": 40998,
+      "shell_pid_created_at": "1786071719.679679"
     },
     "WP02": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZD8Y3T8M2JGDNC9QEE1F2T3",
       "last_transition_at": "2026-08-07T04:50:36.488097+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Bounded retired-identity window; both retirement paths feed it; shared verify_ack_identity helper. cargo test --lib 637 passed; 3 headless suites green; live acceptance layer passed with zero skips. Bypass probes recorded.",
-        "Review passed (cycle 1): mechanically verified both retirement feeds, drain->loop equivalence, one shared identity helper, bound holds at 8 under 216 measured live retirements, 13/13 pre-existing tests byte-identical, full live run skipped:none with 0/216 ack rejections. 3 non-blocking observations recorded."
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 73621,
-      "shell_pid_created_at": "1786072652.212729",
-      "subtasks": {
-        "T004": "done",
-        "T005": "done",
-        "T006": "done",
-        "T007": "done"
-      }
+      "shell_pid": 41830,
+      "shell_pid_created_at": "1786071733.231204"
     },
     "WP03": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZD8Y4VE702YYCV54BTG8MJS",
       "last_transition_at": "2026-08-07T04:50:37.550628+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Four verified-dead items deleted; net -256 lines in src/; full cargo test green; live demo ran to completion",
-        "Review passed: step_index field provably intact, no proof lost, C-002 ordering holds, scope exact"
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 84668,
-      "shell_pid_created_at": "1786072995.045912",
-      "subtasks": {
-        "T008": "done",
-        "T009": "done",
-        "T010": "done",
-        "T011": "done",
-        "T012": "done"
-      }
+      "shell_pid": 42485,
+      "shell_pid_created_at": "1786071746.347852"
     },
     "WP04": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZD8Y5WNVXX7VDBMF5AMC9YF",
       "last_transition_at": "2026-08-07T04:50:38.613500+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review: T013/T014/T015 added, all three disable-the-mechanism probes recorded"
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 59681,
-      "shell_pid_created_at": "1786076409.660103",
-      "subtasks": {
-        "T013": "done",
-        "T014": "done",
-        "T015": "done",
-        "T016": "done"
-      }
+      "shell_pid": 23708,
+      "shell_pid_created_at": "1786074234.862659"
     },
     "WP05": {
       "actor": "merge",
       "agent": "claude",
-      "agent_profile": "reviewer-renata",
-      "agent_profile_version": "1.0",
       "force_count": 0,
       "lane": "done",
       "last_event_id": "01KZD8Y6YB4APB36FCM2T613JK",
       "last_transition_at": "2026-08-07T04:50:39.691040+00:00",
-      "model": "__resolved_model_absent__",
-      "notes": [
-        "Ready for review",
-        "Review passed"
-      ],
-      "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
-      "shell_pid": 28926,
-      "shell_pid_created_at": "1786074521.806396",
-      "subtasks": {
-        "T017": "done",
-        "T018": "done",
-        "T019": "done",
-        "T020": "done",
-        "T021": "done"
-      }
+      "shell_pid": 6031,
+      "shell_pid_created_at": "1786073571.996653"
     }
   }
 }

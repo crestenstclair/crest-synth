@@ -1,4 +1,5 @@
 {
+  "baseline_merge_commit": "cb69be42b2279607c6ea45f3c96a27e3ae54830c",
   "coordination_branch": "kitty/mission-shell-hygiene-01KZD0KR",
   "created_at": "2026-08-07T02:25:08.242861+00:00",
   "crest_spec_impact": "structural",
@@ -12,6 +13,7 @@
   "purpose_context": "Two post-merge reviews (webview-shell-cutover, webview-render-fidelity-hardening) deferred a set of non-blocking findings to a hygiene mission so the fix missions could stay surgical: a double close-failure that freezes the recorded fatal error and never surfaces it, a superseded-late acknowledgement consumed without identity validation, dead code including the orphaned ControlIntent vocabulary family where the crest-spec and the code disagree, a gallery testing scene that serves its page without the production security policy, a page source missing from a guard scan, and documentation residue. This mission discharges them and changes no product behavior.",
   "purpose_tldr": "Sweep the deferred non-blocking findings from the two webview post-merge reviews before Phase 5 begins.",
   "slug": "shell-hygiene-01KZD0KR",
+  "status_phase": "1",
   "target_branch": "feat/shell-hygiene",
   "topology": "coord",
   "vcs": "git",
