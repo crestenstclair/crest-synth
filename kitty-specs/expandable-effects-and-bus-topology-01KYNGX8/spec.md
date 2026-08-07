@@ -2,7 +2,7 @@
 
 **Mission Branch**: `feat/expandable-effects-and-bus-topology`
 **Created**: 2026-07-28
-**Status**: Draft
+**Status**: Complete — accepted 2026-07-31 (`a68c5b0`) and merged; deterministic acceptance pass across all recorded criteria. Post-merge mission review verdict **PASS WITH NOTES** (see `mission-review.md`, including its two addenda).
 **Input**: User description: "open up the phase 3 mission with the arch reconciliation section" — Roadmap Phase 3, "Expandable effects and bus topology".
 
 ## Overview
@@ -81,54 +81,54 @@ A player attempts a topology change that cannot be honored. The attempt is refus
 
 | ID | Title | User Story | Priority | Status |
 |----|-------|------------|----------|--------|
-| FR-001 | Three ordered effect slots | As a player, I want up to three ordered effect slots on a Patch so that I can shape its sound beyond a single fixed effect. | High | Open |
-| FR-002 | Slot occupancy selection | As a player, I want to cycle an effect slot through the available effects and empty, using the same gesture that changes the engine, so that I do not learn a second vocabulary. | High | Open |
-| FR-003 | Descriptor-driven slot parameters | As a player, I want each configured effect to present its own parameters for editing so that no effect requires bespoke screen logic. | High | Open |
-| FR-004 | Order-faithful processing | As a player, I want effects applied in slot order so that rearranging the chain changes the result predictably. | High | Open |
-| FR-005 | Independent instance state | As a player, I want each configured effect instance to own its internal state so that two instances of one effect never share or truncate each other's tails. | High | Open |
-| FR-006 | Explicit bus identities | As a maintainer, I want buses, sends, and returns to be explicit validated identities so that routing is addressable rather than implied by hardcoded fields. | High | Open |
-| FR-007 | Eight bus returns | As a player, I want eight shared wet destinations so that I can build more than the two fixed sends available today. | High | Open |
-| FR-008 | Sends address bus identities | As a player, I want each track send to name the destination it feeds so that destinations can change without changing the send. | High | Open |
-| FR-009 | Reverb and delay as registry effects | As a maintainer, I want the existing reverb and delay to become ordinary registry effects occupying the first two destinations so that one effect model governs both roles. | High | Open |
-| FR-010 | Configurable return contents | As a player, I want to change which effect occupies a destination using the same gesture as a Patch slot so that shared processing is not fixed. | Medium | Open |
-| FR-011 | Preserved send semantics | As a player, I want sends to remain after the fader and after the mute/solo gate so that a silenced track cannot keep feeding a wet destination. | High | Open |
-| FR-012 | Prepared topology exchange | As a maintainer, I want every topology change prepared away from the audio path and exchanged complete, so that the render path never assembles or grows a graph. | High | Open |
-| FR-013 | Validated rejection | As a player, I want an impossible topology change refused outright so that the running configuration is never left partly applied. | High | Open |
-| FR-014 | Observable topology state | As a player, I want pending, accepted, and refused topology changes to be visible with their reason so that I can tell what the instrument is doing. | Medium | Open |
-| FR-015 | Recovery after rejection | As a player, I want a valid change to succeed immediately after a refused one so that a mistake does not require a restart. | Medium | Open |
-| FR-016 | Superseded graph retirement | As a maintainer, I want superseded topologies disposed of away from the audio path so that nothing is destroyed inside the render callback or leaked at exit. | High | Open |
-| FR-017 | Focus survival across topology change | As a player, I want my place on the surface preserved when slots appear or disappear so that editing does not lose my position. | Medium | Open |
-| FR-018 | Patch-owned chain across rerouting | As a player, I want a Patch's effect chain to follow the Patch when I reroute it so that routing and sound design stay independent. | Medium | Open |
-| FR-019 | Retained live demo scene | As a maintainer, I want a retained named live demo for this phase so that its evidence cannot be replaced by later work. | High | Open |
+| FR-001 | Three ordered effect slots | As a player, I want up to three ordered effect slots on a Patch so that I can shape its sound beyond a single fixed effect. | High | Accepted |
+| FR-002 | Slot occupancy selection | As a player, I want to cycle an effect slot through the available effects and empty, using the same gesture that changes the engine, so that I do not learn a second vocabulary. | High | Accepted |
+| FR-003 | Descriptor-driven slot parameters | As a player, I want each configured effect to present its own parameters for editing so that no effect requires bespoke screen logic. | High | Accepted |
+| FR-004 | Order-faithful processing | As a player, I want effects applied in slot order so that rearranging the chain changes the result predictably. | High | Accepted |
+| FR-005 | Independent instance state | As a player, I want each configured effect instance to own its internal state so that two instances of one effect never share or truncate each other's tails. | High | Accepted |
+| FR-006 | Explicit bus identities | As a maintainer, I want buses, sends, and returns to be explicit validated identities so that routing is addressable rather than implied by hardcoded fields. | High | Accepted |
+| FR-007 | Eight bus returns | As a player, I want eight shared wet destinations so that I can build more than the two fixed sends available today. | High | Accepted |
+| FR-008 | Sends address bus identities | As a player, I want each track send to name the destination it feeds so that destinations can change without changing the send. | High | Accepted |
+| FR-009 | Reverb and delay as registry effects | As a maintainer, I want the existing reverb and delay to become ordinary registry effects occupying the first two destinations so that one effect model governs both roles. | High | Accepted |
+| FR-010 | Configurable return contents | As a player, I want to change which effect occupies a destination using the same gesture as a Patch slot so that shared processing is not fixed. | Medium | Accepted |
+| FR-011 | Preserved send semantics | As a player, I want sends to remain after the fader and after the mute/solo gate so that a silenced track cannot keep feeding a wet destination. | High | Accepted |
+| FR-012 | Prepared topology exchange | As a maintainer, I want every topology change prepared away from the audio path and exchanged complete, so that the render path never assembles or grows a graph. | High | Accepted |
+| FR-013 | Validated rejection | As a player, I want an impossible topology change refused outright so that the running configuration is never left partly applied. | High | Accepted |
+| FR-014 | Observable topology state | As a player, I want pending, accepted, and refused topology changes to be visible with their reason so that I can tell what the instrument is doing. | Medium | Accepted |
+| FR-015 | Recovery after rejection | As a player, I want a valid change to succeed immediately after a refused one so that a mistake does not require a restart. | Medium | Accepted |
+| FR-016 | Superseded graph retirement | As a maintainer, I want superseded topologies disposed of away from the audio path so that nothing is destroyed inside the render callback or leaked at exit. | High | Accepted |
+| FR-017 | Focus survival across topology change | As a player, I want my place on the surface preserved when slots appear or disappear so that editing does not lose my position. | Medium | Accepted |
+| FR-018 | Patch-owned chain across rerouting | As a player, I want a Patch's effect chain to follow the Patch when I reroute it so that routing and sound design stay independent. | Medium | Accepted |
+| FR-019 | Retained live demo scene | As a maintainer, I want a retained named live demo for this phase so that its evidence cannot be replaced by later work. | High | Accepted |
 
 ### Non-Functional Requirements
 
 | ID | Title | Requirement | Category | Priority | Status |
 |----|-------|-------------|----------|----------|--------|
-| NFR-001 | Render-path safety | Zero allocations, locks, blocking calls, file or network access, logging, panics, or destructor work occur on the audio render path, including during topology change. Measured occurrences must be exactly 0. | Reliability | High | Open |
-| NFR-002 | Bounded topology capacity | Capacity for three slots per active Patch and eight returns is reserved ahead of rendering; 0 dynamic growth events occur at render time under any configuration reachable in this mission. | Performance | High | Open |
-| NFR-003 | Atomic activation | A topology change becomes effective exactly at a block boundary; 0 rendered blocks may observe a partially applied topology. | Reliability | High | Open |
-| NFR-004 | Audio continuity | 0 dropouts, underruns, or discontinuities attributable to a topology change across the full live demo scene. | Performance | High | Open |
-| NFR-005 | Deterministic evidence | Two runs of the deterministic scene produce logically identical observations, with 0 differing checkpoints. | Reliability | High | Open |
-| NFR-006 | Clean teardown | At scene end: 0 active notes, 0 retained topology owners, 0 leaked audio or worker resources, and a normal parent-process exit. | Reliability | High | Open |
-| NFR-007 | Routing isolation | With one send raised toward one destination, every non-target destination measures below −60 dBFS attributable to that source. | Reliability | Medium | Open |
-| NFR-008 | Edit responsiveness | An accepted edit is reflected in the visible surface within 1 frame of acceptance, and its audible effect within 1 render block of activation. | Performance | Medium | Open |
+| NFR-001 | Render-path safety | Zero allocations, locks, blocking calls, file or network access, logging, panics, or destructor work occur on the audio render path, including during topology change. Measured occurrences must be exactly 0. | Reliability | High | Accepted |
+| NFR-002 | Bounded topology capacity | Capacity for three slots per active Patch and eight returns is reserved ahead of rendering; 0 dynamic growth events occur at render time under any configuration reachable in this mission. | Performance | High | Accepted |
+| NFR-003 | Atomic activation | A topology change becomes effective exactly at a block boundary; 0 rendered blocks may observe a partially applied topology. | Reliability | High | Accepted |
+| NFR-004 | Audio continuity | 0 dropouts, underruns, or discontinuities attributable to a topology change across the full live demo scene. | Performance | High | Accepted |
+| NFR-005 | Deterministic evidence | Two runs of the deterministic scene produce logically identical observations, with 0 differing checkpoints. | Reliability | High | Accepted |
+| NFR-006 | Clean teardown | At scene end: 0 active notes, 0 retained topology owners, 0 leaked audio or worker resources, and a normal parent-process exit. | Reliability | High | Accepted |
+| NFR-007 | Routing isolation | With one send raised toward one destination, every non-target destination measures below −60 dBFS attributable to that source. | Reliability | Medium | Accepted |
+| NFR-008 | Edit responsiveness | An accepted edit is reflected in the visible surface within 1 frame of acceptance, and its audible effect within 1 render block of activation. | Performance | Medium | Accepted |
 
 ### Constraints
 
 | ID | Title | Constraint | Category | Priority | Status |
 |----|-------|------------|----------|----------|--------|
-| C-001 | Slot ceiling | At most three ordered effect slots per Patch; the product maximum recorded in `DESIGN.md` must not be exceeded. | Technical | High | Open |
-| C-002 | Return ceiling | At most eight bus returns in the prepared topology. | Technical | High | Open |
-| C-003 | Two top-level contexts | PATCH and MIXER remain the only top-level contexts. | Technical | High | Open |
-| C-004 | No new processing dependencies | This mission introduces no new third-party audio processing; it reuses existing processing in new roles. | Technical | High | Open |
-| C-005 | Send position fixed | Sends remain post-fader and post-gate; mute always wins and solo exclusion suppresses wet contribution. | Technical | High | Open |
-| C-006 | No arbitrary cycles | Feedback exists only inside bounded effect implementations, never as a routing cycle. | Technical | High | Open |
-| C-007 | Sixteen fixed tracks | The canonical sixteen-track mixer bank and Patch route/trim ownership established by the corrective gate are preserved unchanged. | Technical | High | Open |
-| C-008 | No choice modal | Topology is edited in place; modal choice surfaces belong to Phase 7 and are out of scope. | Technical | Medium | Open |
-| C-009 | Spec reconciliation is not deferrable | The architecture spec and `DESIGN.md` must be updated during planning, before implementation, because this mission contradicts their current declarations. | Technical | High | Open |
-| C-010 | Live demo gate | The phase is incomplete until its retained live scene has been run successfully with a real window, physical audio, and the real MIDI fixture. | Business | High | Open |
-| C-011 | Roster deferred | The twelve-effect roster is out of scope; this mission must leave those additions as registry entries requiring no architectural change. | Business | High | Open |
+| C-001 | Slot ceiling | At most three ordered effect slots per Patch; the product maximum recorded in `DESIGN.md` must not be exceeded. | Technical | High | Accepted |
+| C-002 | Return ceiling | At most eight bus returns in the prepared topology. | Technical | High | Accepted |
+| C-003 | Two top-level contexts | PATCH and MIXER remain the only top-level contexts. | Technical | High | Accepted |
+| C-004 | No new processing dependencies | This mission introduces no new third-party audio processing; it reuses existing processing in new roles. | Technical | High | Accepted |
+| C-005 | Send position fixed | Sends remain post-fader and post-gate; mute always wins and solo exclusion suppresses wet contribution. | Technical | High | Accepted |
+| C-006 | No arbitrary cycles | Feedback exists only inside bounded effect implementations, never as a routing cycle. | Technical | High | Accepted |
+| C-007 | Sixteen fixed tracks | The canonical sixteen-track mixer bank and Patch route/trim ownership established by the corrective gate are preserved unchanged. | Technical | High | Accepted |
+| C-008 | No choice modal | Topology is edited in place; modal choice surfaces belong to Phase 7 and are out of scope. | Technical | Medium | Accepted |
+| C-009 | Spec reconciliation is not deferrable | The architecture spec and `DESIGN.md` must be updated during planning, before implementation, because this mission contradicts their current declarations. | Technical | High | Accepted |
+| C-010 | Live demo gate | The phase is incomplete until its retained live scene has been run successfully with a real window, physical audio, and the real MIDI fixture. | Business | High | Accepted |
+| C-011 | Roster deferred | The twelve-effect roster is out of scope; this mission must leave those additions as registry entries requiring no architectural change. | Business | High | Accepted |
 
 ### Key Entities
 
