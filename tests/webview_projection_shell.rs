@@ -70,13 +70,14 @@
 //!
 //! - T013 forced double-close failure (live): with WP01's debug-only
 //!   `CREST_WEBVIEW_FORCE_CLOSE_FAILURE` seam armed on the shipped binary so
-//!   no close can succeed, the event loop still ends and the recorded typed
-//!   error reaches the operator — the recorded `PageRenderFailed` when one
-//!   was already latched (the `WindowClose` recorded second does not
-//!   surface), and the typed `WindowClose` itself when nothing was (FR-001,
-//!   FR-002). Each run is bounded, so the pre-WP01 behavior — a correctly
-//!   recorded fatal error the loop then waits forever to surface — fails as a
-//!   named timeout instead of an ambiguous stall.
+//!   no close can succeed, the event loop still ends and the typed
+//!   `WindowClose` reaches the operator carrying the forced cause verbatim
+//!   (FR-001, FR-002). The run is bounded, so the pre-WP01 behavior — a
+//!   correctly recorded fatal error the loop then waits forever to surface —
+//!   fails as a named timeout instead of an ambiguous stall. The
+//!   already-latched-`PageRenderFailed` arm is deliberately *not* asserted
+//!   here: it is byte-for-byte indistinguishable with the seam disarmed, so
+//!   it cannot fail; see the section's own notes.
 //! - T014 superseded-late ack identity (headless): a late ack naming an
 //!   already-retired generation answers to the same verbatim-copy rule as an
 //!   in-flight one, through BOTH ways a document retires (capacity eviction
@@ -224,7 +225,7 @@ fn main() {
             "T011 painted-geometry fidelity (CSSOM-applied fader/position geometry measured against document values at both viewports under the production policy)",
             "T012 forced render failure (first-render throw subprocess, update-render throw, unhandled rejection -> typed crest://render-error and nonzero typed exit)",
             "T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak)",
-            "T013 forced double-close failure (shipped-binary subprocesses with every close forced to fail: the recorded PageRenderFailed surfaces and the WindowClose does not, and with no prior error the typed WindowClose itself surfaces -- each ending the process nonzero rather than hanging)",
+            "T013 forced double-close failure (a shipped-binary subprocess with every close forced to fail: with no prior error recorded the typed WindowClose itself surfaces carrying the forced cause verbatim, ending the process nonzero rather than hanging)",
         ]
     };
 
@@ -3808,12 +3809,13 @@ fn force_page_failures(
 /// document with its workspace band removed, so the production render path
 /// dereferences a missing element under the production policy.
 ///
-/// One definition, two callers by design — T012 runs it with the close seam
-/// disarmed (the render failure reaches the operator through an ordinary
-/// close) and WP04 T013 runs it with the seam armed (the same failure must
-/// still reach the operator when no close can succeed). Two privately built
-/// variants could drift into testing different pages, and then the pair would
-/// no longer be a controlled comparison.
+/// T012 is now its only caller: it runs the variant with the close seam
+/// disarmed, so the render failure reaches the operator through an ordinary
+/// close. T013 used to run the same variant with the seam armed, until the
+/// shell-hygiene post-merge review (RISK-2) measured the two runs as
+/// byte-identical and removed the armed one — closing succeeds or fails
+/// without changing anything a subprocess can observe, so that pair was never
+/// the controlled comparison it read as.
 fn forced_throw_page_variant(manifest: &Path, file_name: &str) -> PathBuf {
     let committed = std::fs::read_to_string(manifest.join("webview-page/index.html"))
         .expect("the committed index document is readable");
