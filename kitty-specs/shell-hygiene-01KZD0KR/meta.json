@@ -1,4 +1,16 @@
 {
+  "acceptance_history": [
+    {
+      "acceptance_mode": "pr",
+      "accepted_at": "2026-08-07T05:30:38.188768+00:00",
+      "accepted_by": "crestenstclair",
+      "accepted_from_commit": "9c98d894f9acc28275064c104d925db9507210e6"
+    }
+  ],
+  "acceptance_mode": "pr",
+  "accepted_at": "2026-08-07T05:30:38.188768+00:00",
+  "accepted_by": "crestenstclair",
+  "accepted_from_commit": "9c98d894f9acc28275064c104d925db9507210e6",
   "baseline_merge_commit": "cb69be42b2279607c6ea45f3c96a27e3ae54830c",
   "coordination_branch": "kitty/mission-shell-hygiene-01KZD0KR",
   "created_at": "2026-08-07T02:25:08.242861+00:00",
