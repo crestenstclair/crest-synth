@@ -64,6 +64,31 @@
 //!   zero render-errors across the whole suite (FR-006, spec US3 and the
 //!   first-vs-update-render edge case).
 //!
+//! Mission shell-hygiene-01KZD0KR WP04 adds the two error-path proofs the
+//! crest-spec's deepened `validation.webview_projection_shell` names, both
+//! over the production path:
+//!
+//! - T013 forced double-close failure (live): with WP01's debug-only
+//!   `CREST_WEBVIEW_FORCE_CLOSE_FAILURE` seam armed on the shipped binary so
+//!   no close can succeed, the event loop still ends and the recorded typed
+//!   error reaches the operator — the recorded `PageRenderFailed` when one
+//!   was already latched (the `WindowClose` recorded second does not
+//!   surface), and the typed `WindowClose` itself when nothing was (FR-001,
+//!   FR-002). Each run is bounded, so the pre-WP01 behavior — a correctly
+//!   recorded fatal error the loop then waits forever to surface — fails as a
+//!   named timeout instead of an ambiguous stall.
+//! - T014 superseded-late ack identity (headless): a late ack naming an
+//!   already-retired generation answers to the same verbatim-copy rule as an
+//!   in-flight one, through BOTH ways a document retires (capacity eviction
+//!   and ack-consumption drain); a faithful late ack is still consumed as a
+//!   lost frame, and past the bounded retained window even a rewritten
+//!   identity stays a lost frame rather than a false rejection (FR-003).
+//! - T015 (live): every real painted ack the healthy live sections produce is
+//!   fed back through the production `ProjectionChannel::forward_ack` that
+//!   pushed it, and zero are rejected — the negative control that FR-003's
+//!   validation did not start rejecting honest evidence (NFR-001). Asserted
+//!   last, beside the render-error control it mirrors.
+//!
 //! # Harness shape (`harness = false`)
 //!
 //! T024/T026 open a real Tauri window, which macOS only permits on the main
@@ -103,7 +128,8 @@ use crest_synth::shell::webview::meter_channel::{
     MeterChannel, MeterEmit, METER_EVENT, METER_INTERVAL, METER_RATE_HZ,
 };
 use crest_synth::shell::webview::projection_channel::{
-    ProjectionChannel, ProjectionPush, PROJECTION_EVENT, RENDER_ERROR_EVENT,
+    ForwardedAck, PaintedAckError, ProjectionChannel, ProjectionPush, MAX_IN_FLIGHT_DOCUMENTS,
+    PROJECTION_EVENT, RENDER_ERROR_EVENT,
 };
 use crest_synth::shell::webview::token_export;
 use crest_synth::shell::webview::{protocol_response, PAGE_CSP};
@@ -147,6 +173,24 @@ const SHELL_REGION_IDS: [&str; 5] = [
     "footer",
 ];
 
+/// The serialized identity fields a painted ack must copy verbatim from the
+/// document it claims to have painted (crest-spec
+/// `valueObject.Shell.ShellFrameObservation`: "copies semantic identity
+/// exactly"). The page copies exactly these out of the document it rendered
+/// (`webview-page/page.js` `paintedEvidence`) and the production
+/// `ProjectionChannel` compares exactly these — in-flight and, since mission
+/// shell-hygiene WP02, retired-but-retained alike. One list in this file:
+/// the WP01 ack-identity section and the T014 corrupted-ack section must not
+/// be able to disagree about which fields are identity.
+const PAINTED_ACK_IDENTITY_FIELDS: [&str; 6] = [
+    "generation",
+    "stateHash",
+    "context",
+    "activeSurface",
+    "focusPath",
+    "interactionMode",
+];
+
 fn main() {
     // libtest-style arguments (`--nocapture`, filters) are accepted and
     // ignored: output is unconditionally visible under `harness = false`.
@@ -168,6 +212,7 @@ fn main() {
     let fidelity = prove_serialized_schema_fidelity();
     prove_token_table_freshness();
     prove_protocol_policy_parity();
+    prove_superseded_late_ack_identity();
     prove_typed_startup_failure();
 
     let skips: Vec<&str> = if live {
@@ -179,6 +224,7 @@ fn main() {
             "T011 painted-geometry fidelity (CSSOM-applied fader/position geometry measured against document values at both viewports under the production policy)",
             "T012 forced render failure (first-render throw subprocess, update-render throw, unhandled rejection -> typed crest://render-error and nonzero typed exit)",
             "T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak)",
+            "T013 forced double-close failure (shipped-binary subprocesses with every close forced to fail: the recorded PageRenderFailed surfaces and the WindowClose does not, and with no prior error the typed WindowClose itself surfaces -- each ending the process nonzero rather than hanging)",
         ]
     };
 
@@ -618,7 +664,10 @@ fn track_level_fractions(document: &Value, label: &str) -> Vec<(u64, f64)> {
         .unwrap_or_default()
         .iter()
         .filter(|control| {
-            control.pointer("/path/controlId/id/kind").and_then(Value::as_str) == Some("track")
+            control
+                .pointer("/path/controlId/id/kind")
+                .and_then(Value::as_str)
+                == Some("track")
                 && control
                     .pointer("/path/controlId/id/parameter")
                     .and_then(Value::as_str)
@@ -1193,6 +1242,395 @@ fn prove_protocol_policy_parity() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// T014 — superseded-late ack identity (headless; the production
+// ProjectionChannel, both retirement paths)
+// ---------------------------------------------------------------------------
+
+/// Builds the painted ack the page would emit for one pushed document: the
+/// six identity fields copied VERBATIM out of the document (exactly what
+/// `webview-page/page.js` `paintedEvidence` copies), plus the measured
+/// viewport and the five declared region rectangles with visible labels, in
+/// the declared region order.
+///
+/// The identity comes from the real document the production channel pushed —
+/// never hand-written — so what these acks exercise is the production
+/// verbatim-copy rule, not a hand-tuned JSON that happens to satisfy it. The
+/// geometry is synthetic because no window paints here: the five bands are
+/// stacked inside the authored desktop viewport, which is what a real paint
+/// reports (bounds inside the viewport, a nonempty label each) and what
+/// `ShellFrameObservation::try_new_semantic` requires.
+fn painted_ack_for(document: &Value) -> Value {
+    let viewport = ViewportDensityPolicy::Desktop.authored_viewport();
+    let width = f64::from(viewport.width_px);
+    let height = f64::from(viewport.height_px);
+    let band = height / SHELL_REGION_IDS.len() as f64;
+    let regions: Vec<Value> = SHELL_REGION_IDS
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            serde_json::json!({
+                "id": id,
+                "xPx": 0.0,
+                "yPx": band * index as f64,
+                "widthPx": width,
+                "heightPx": band,
+                "label": format!("{id} painted"),
+            })
+        })
+        .collect();
+    let mut ack = serde_json::json!({
+        "viewport": { "widthPx": width, "heightPx": height },
+        "regions": regions,
+    });
+    for field in PAINTED_ACK_IDENTITY_FIELDS {
+        ack[field] = document.get(field).cloned().unwrap_or(Value::Null);
+    }
+    ack
+}
+
+/// The same ack with exactly one identity field rewritten — the corruption
+/// FR-003 exists to catch. The rewrite is type-preserving (a string stays a
+/// string, an array stays an array) so nothing but the *value* differs: a
+/// rejection here cannot be a JSON-shape accident.
+fn ack_with_corrupted_field(document: &Value, field: &str) -> Value {
+    let mut ack = painted_ack_for(document);
+    let corrupted = match ack.get(field) {
+        Some(Value::String(text)) => Value::String(format!("{text}-rewritten")),
+        Some(Value::Array(items)) => {
+            let mut items = items.clone();
+            items.push(Value::String("rewritten".to_owned()));
+            Value::Array(items)
+        }
+        _ => Value::String("rewritten".to_owned()),
+    };
+    ack[field] = corrupted;
+    ack
+}
+
+/// The same ack with one identity field omitted entirely — the page dropping
+/// a field rather than rewriting it. It must be a mismatch, not a pass.
+fn ack_without_field(document: &Value, field: &str) -> Value {
+    let mut ack = painted_ack_for(document);
+    ack.as_object_mut()
+        .expect("the constructed ack is a JSON object")
+        .remove(field);
+    ack
+}
+
+/// Forwards one ack through the production entry point — `forward_ack`, what
+/// the window's event loop calls — and asserts it was typed-rejected as an
+/// identity mismatch naming `field`. Asserted on the typed variant and its
+/// `field`, never on a `Display` string.
+fn expect_identity_mismatch(
+    channel: &mut ProjectionChannel,
+    ack: &Value,
+    generation: u64,
+    field: &str,
+    label: &str,
+) {
+    let payload = serde_json::to_string(ack).expect("the ack serializes");
+    match channel.forward_ack(&payload) {
+        Err(PaintedAckError::IdentityMismatch {
+            generation: rejected,
+            field: named,
+        }) => {
+            assert_eq!(
+                rejected, generation,
+                "{label}: the rejection must name the correlated generation"
+            );
+            assert_eq!(
+                named, field,
+                "{label}: the rejection must name the corrupted identity field"
+            );
+        }
+        other => panic!(
+            "{label}: a superseded-late ack whose {field} is not a verbatim copy must be \
+             typed-rejected as PaintedAckError::IdentityMismatch; got {other:?}"
+        ),
+    }
+}
+
+/// Forwards one ack and asserts it was consumed as a lost late frame — the
+/// pre-WP02 behavior that must survive unchanged for every ack that is not a
+/// rewritten identity (NFR-001).
+fn expect_superseded_late(
+    channel: &mut ProjectionChannel,
+    ack: &Value,
+    generation: u64,
+    label: &str,
+) {
+    let payload = serde_json::to_string(ack).expect("the ack serializes");
+    match channel.forward_ack(&payload) {
+        Ok(ForwardedAck::SupersededLate {
+            generation: consumed,
+        }) => {
+            assert_eq!(
+                consumed, generation,
+                "{label}: the lost frame must name the superseded generation"
+            );
+        }
+        other => panic!(
+            "{label}: this ack must be consumed as ForwardedAck::SupersededLate — a lost \
+             frame, no observation and no error; got {other:?}"
+        ),
+    }
+}
+
+/// Advances the fixture one accepted reducer edit, projects it, and pushes it
+/// through the production [`ProjectionChannel`] — the same
+/// project → push path the window's event loop runs, with the tauri emit
+/// injected (the channel takes it as a closure precisely so the transport
+/// logic is provable without a runtime). Returns the pushed generation and
+/// the exact document the page would have received.
+fn push_one_fixture_document(
+    projector: &StateProjector,
+    channel: &mut ProjectionChannel,
+    state: &mut AppState,
+    index: usize,
+) -> (u64, Value) {
+    // Alternating coarse adjusts, the same pacing pattern the live NFR-001
+    // section uses: every edit is accepted (neither bound is approached) so
+    // every push is a new generation.
+    let direction = if index % 2 == 1 {
+        Direction::Down
+    } else {
+        Direction::Up
+    };
+    state
+        .apply(AppEvent::Adjust(direction))
+        .expect("the fixture coarse adjust is accepted by the production reducer");
+    let projection = projector
+        .project_with_shell(state)
+        .expect("the production projector accepts the fixture state")
+        .3;
+    let generation = projection.generation();
+    let mut document = Value::Null;
+    let push = channel
+        .push(&projection, |payload| {
+            document = payload;
+            Ok(())
+        })
+        .expect("the production channel pushes the fixture projection");
+    assert_eq!(
+        push,
+        ProjectionPush::Emitted,
+        "each fixture edit must emit a new generation"
+    );
+    (generation, document)
+}
+
+/// T014 (FR-003, US2 acceptance scenarios 1-3, RISK-4): a superseded-late ack
+/// naming an already-retired generation answers to the SAME verbatim-copy rule
+/// as an in-flight one, in BOTH ways a document retires, and only that.
+///
+/// Headless by construction: the proof is entirely about what the production
+/// `ProjectionChannel` decides, and the channel takes its emit as a closure,
+/// so no window and no gate are involved. It therefore adds no skip-list
+/// entry — only window-bearing sections belong there.
+///
+/// Four claims, in order:
+///
+/// 1. **Capacity-eviction retirement** (`push` dropping the oldest unacked
+///    document): a rewritten identity for the evicted generation is
+///    `PaintedAckError::IdentityMismatch` naming the field.
+/// 2. **Ack-consumption retirement** (`forward_ack` draining the acked
+///    document and everything older): the same rule, on generations retired
+///    the other way. Covering one path would leave the other unvalidated —
+///    the same partial-enforcement shape RISK-4 was.
+/// 3. **The well-formed negative control**: the identical setup with a
+///    faithful ack is consumed exactly as before — `SupersededLate`, a lost
+///    frame. This is what proves the rule rejects only what it should, and it
+///    must keep passing when the comparison is bypassed.
+/// 4. **Beyond the retained window**: an ack older than the retained window
+///    stays a lost frame even when its identity is rewritten. The window is
+///    finite by design; a false rejection there would fail a healthy run,
+///    which is the NFR-001 failure mode.
+fn prove_superseded_late_ack_identity() {
+    let projector = StateProjector::new();
+
+    // ---- 1. capacity-eviction retirement ---------------------------------
+    let mut state = production_mixer_state();
+    let mut channel = ProjectionChannel::new();
+    let mut pushed: Vec<(u64, Value)> = Vec::new();
+    for index in 0..=MAX_IN_FLIGHT_DOCUMENTS {
+        pushed.push(push_one_fixture_document(
+            &projector,
+            &mut channel,
+            &mut state,
+            index,
+        ));
+    }
+    // The forced condition really occurred: one more document than the
+    // tracker holds was pushed with nothing acked, so the oldest left
+    // `in_flight` through the capacity bound and retired.
+    assert_eq!(
+        channel.in_flight_documents(),
+        MAX_IN_FLIGHT_DOCUMENTS,
+        "pushing past the tracker bound must evict the oldest unacked document"
+    );
+    let (evicted, evicted_document) = pushed[0].clone();
+
+    expect_identity_mismatch(
+        &mut channel,
+        &ack_with_corrupted_field(&evicted_document, "stateHash"),
+        evicted,
+        "stateHash",
+        "T014 evicted/stateHash",
+    );
+    expect_identity_mismatch(
+        &mut channel,
+        &ack_with_corrupted_field(&evicted_document, "focusPath"),
+        evicted,
+        "focusPath",
+        "T014 evicted/focusPath",
+    );
+    // Omission is not a pass: a field the ack never carries compares as null.
+    expect_identity_mismatch(
+        &mut channel,
+        &ack_without_field(&evicted_document, "activeSurface"),
+        evicted,
+        "activeSurface",
+        "T014 evicted/activeSurface omitted",
+    );
+    // The negative control on this path: faithful copy, consumed as before.
+    expect_superseded_late(
+        &mut channel,
+        &painted_ack_for(&evicted_document),
+        evicted,
+        "T014 evicted/well-formed",
+    );
+
+    // ---- 2. ack-consumption retirement -----------------------------------
+    let mut state = production_mixer_state();
+    let mut channel = ProjectionChannel::new();
+    let drained = 4_usize;
+    assert!(
+        drained <= MAX_IN_FLIGHT_DOCUMENTS,
+        "this half must retire through the drain, never through the capacity bound"
+    );
+    let mut pushed: Vec<(u64, Value)> = Vec::new();
+    for index in 0..drained {
+        pushed.push(push_one_fixture_document(
+            &projector,
+            &mut channel,
+            &mut state,
+            index,
+        ));
+    }
+    assert_eq!(
+        channel.in_flight_documents(),
+        drained,
+        "every pushed document must still be in flight before the drain"
+    );
+    let (newest, newest_document) = pushed[drained - 1].clone();
+    let newest_ack =
+        serde_json::to_string(&painted_ack_for(&newest_document)).expect("the ack serializes");
+    match channel.forward_ack(&newest_ack) {
+        Ok(ForwardedAck::Observation(observation)) => {
+            assert_eq!(
+                observation.generation(),
+                newest,
+                "the observation must be built against the document the ack named"
+            );
+        }
+        other => panic!(
+            "T014 drain: a well-formed ack for an in-flight document must become exactly \
+             one observation; got {other:?}"
+        ),
+    }
+    // The forced condition really occurred: the acked document AND every
+    // older unacked one left `in_flight` through the drain, retiring their
+    // identities by the second path.
+    assert_eq!(
+        channel.in_flight_documents(),
+        0,
+        "an ack must consume its document and every older unacked one"
+    );
+    let (superseded, superseded_document) = pushed[0].clone();
+
+    expect_identity_mismatch(
+        &mut channel,
+        &ack_with_corrupted_field(&superseded_document, "context"),
+        superseded,
+        "context",
+        "T014 drained/context",
+    );
+    expect_identity_mismatch(
+        &mut channel,
+        &ack_with_corrupted_field(&superseded_document, "interactionMode"),
+        superseded,
+        "interactionMode",
+        "T014 drained/interactionMode",
+    );
+    // The negative control on this path too.
+    expect_superseded_late(
+        &mut channel,
+        &painted_ack_for(&superseded_document),
+        superseded,
+        "T014 drained/well-formed",
+    );
+
+    // ---- 4. beyond the retained window -----------------------------------
+    // The retained window is bounded, so the target must fall out of it under
+    // continued churn. Found by probing the production entry point rather
+    // than by asserting a private capacity: what matters is the behavior on
+    // each side of the boundary, not the number. The bound below is a
+    // liveness guard on this loop — a retention window that never evicts
+    // would grow without limit, which is the thing the bound rules out.
+    let corrupted_target = ack_with_corrupted_field(&superseded_document, "stateHash");
+    let corrupted_payload = serde_json::to_string(&corrupted_target).expect("the ack serializes");
+    let mut churn = 0_usize;
+    let inside_window = loop {
+        match channel.forward_ack(&corrupted_payload) {
+            Err(PaintedAckError::IdentityMismatch { field, .. }) => {
+                assert_eq!(field, "stateHash", "the probe corrupts stateHash");
+            }
+            Ok(ForwardedAck::SupersededLate { generation }) => {
+                assert_eq!(generation, superseded, "the probe names one generation");
+                break churn;
+            }
+            other => panic!("T014 window probe: unexpected outcome {other:?}"),
+        }
+        assert!(
+            churn < 128,
+            "the retained identity window must be bounded: generation {superseded} was \
+             still comparable after {churn} further retirements"
+        );
+        push_one_fixture_document(&projector, &mut channel, &mut state, churn);
+        churn += 1;
+    };
+    assert!(
+        inside_window > 0,
+        "the just-retired generation must start out inside the retained window, or the \
+         mismatch cases above proved nothing"
+    );
+    // Past the window the channel holds nothing to compare against and makes
+    // no claim either way: today's lost-frame behavior stands, for a rewritten
+    // identity as well as a faithful one.
+    expect_superseded_late(
+        &mut channel,
+        &corrupted_target,
+        superseded,
+        "T014 beyond-window/corrupted",
+    );
+    expect_superseded_late(
+        &mut channel,
+        &painted_ack_for(&superseded_document),
+        superseded,
+        "T014 beyond-window/well-formed",
+    );
+
+    println!(
+        "T014 superseded-late ack identity: PASS (both retirement paths — capacity \
+         eviction and ack-consumption drain — hold a retired generation's late ack to \
+         the verbatim-copy rule: 5 rewritten/omitted identity fields typed-rejected as \
+         IdentityMismatch, well-formed late acks still consumed as SupersededLate, and \
+         past the retained window ({inside_window} further retirements) even a rewritten \
+         identity stays a lost frame rather than a false rejection)"
+    );
+}
+
 /// One painted ack: the echoed generation, its arrival instant, and the full
 /// post-paint evidence payload.
 type PaintedAcks = Arc<Mutex<Vec<(u64, Instant, Value)>>>;
@@ -1201,6 +1639,76 @@ type PaintedAcks = Arc<Mutex<Vec<(u64, Instant, Value)>>>;
 /// order (WP03 T012): zero across the healthy suite, exactly one per forced
 /// fault.
 type RenderErrors = Arc<Mutex<Vec<Value>>>;
+
+/// T015 (FR-003, US2 acceptance scenario 3): what the production
+/// `ProjectionChannel` decided about every REAL painted ack a healthy live
+/// section produced.
+///
+/// The healthy live sections push their documents through a production
+/// channel and the real page acks them; this records what happens when those
+/// same acks are handed back to the same channel's `forward_ack` — the exact
+/// round trip the shipped window's event loop performs on each
+/// `crest://painted` payload. `rejections` must be empty: WP02's retired-
+/// identity validation rejecting an ack a healthy run legitimately produced
+/// would be a product behavior change (NFR-001).
+#[derive(Debug, Default)]
+struct AckAudit {
+    /// Acks handed to `forward_ack` (a healthy section's own generations only).
+    forwarded: usize,
+    /// Acks that became exactly one `ShellFrameObservation`.
+    observations: usize,
+    /// Acks consumed as lost late frames — legitimate, never a rejection.
+    superseded_late: usize,
+    /// Every typed rejection, named. Must stay empty across healthy sections.
+    rejections: Vec<String>,
+    /// The high-water mark of the channel's bounded in-flight tracker.
+    max_in_flight: usize,
+}
+
+/// Feeds every painted ack that arrived since `cursor`, for a generation this
+/// section actually pushed, back through the SAME production channel that
+/// pushed it — what `src/shell/webview/window.rs` does with each
+/// `PageSignal::PaintedAck` — and records the channel's decision.
+///
+/// Only this section's own pushed generations are forwarded, and the cursor
+/// only ever moves forward: acks belonging to sections that drive the page
+/// directly (which push through no channel) and acks produced after the page
+/// is deliberately broken are excluded BY CONSTRUCTION, never subtracted out
+/// afterwards — the same discipline the render-error control uses by keeping
+/// the forced-failure subprocess separate from the healthy sections it counts.
+fn audit_arrived_acks(
+    channel: &mut ProjectionChannel,
+    painted: &PaintedAcks,
+    cursor: &mut usize,
+    pushed: &HashSet<u64>,
+    audit: &mut AckAudit,
+    label: &str,
+) {
+    let arrived = painted.lock().expect("painted acks lock").clone();
+    for (generation, _, ack) in arrived.iter().skip(*cursor) {
+        if !pushed.contains(generation) {
+            continue;
+        }
+        let payload = serde_json::to_string(ack).expect("the observed ack re-serializes");
+        audit.forwarded += 1;
+        match channel.forward_ack(&payload) {
+            Ok(ForwardedAck::Observation(observation)) => {
+                audit.observations += 1;
+                assert_eq!(
+                    observation.generation(),
+                    *generation,
+                    "{label}: the forwarded observation must carry the acked generation"
+                );
+            }
+            Ok(ForwardedAck::SupersededLate { .. }) => audit.superseded_late += 1,
+            Err(error) => audit
+                .rejections
+                .push(format!("{label}: generation {generation}: {error}")),
+        }
+        audit.max_in_flight = audit.max_in_flight.max(channel.in_flight_documents());
+    }
+    *cursor = arrived.len();
+}
 
 fn evidence_dir() -> PathBuf {
     let dir = std::env::temp_dir().join("crest-wp06-webview-acceptance");
@@ -1337,6 +1845,7 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
 
     prove_forced_render_throw_on_the_shipped_binary();
     prove_shutdown_parity_on_real_runs();
+    prove_forced_double_close_failure_on_the_shipped_binary();
 }
 
 fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
@@ -1896,6 +2405,10 @@ fn drive_live_window(
 
     let document_a: &str = &fidelity.document_a;
     let patch_documents: &[(&'static str, String)] = &fidelity.patch_documents;
+    // T015: what the production channel decides about every real painted ack
+    // the healthy sections below produce. Asserted at the very end, after
+    // every healthy section has run and before the page is broken.
+    let mut ack_audit = AckAudit::default();
 
     let window = handle
         .get_webview_window("main")
@@ -2083,6 +2596,10 @@ fn drive_live_window(
     let mut channel = ProjectionChannel::new();
     let pushes = 150_usize;
     let mut emits: Vec<(u64, Instant)> = Vec::with_capacity(pushes);
+    // T015: this section's own pushed generations and its starting point in
+    // the ack log, so only acks this section produced are ever forwarded.
+    let mut paced_generations: HashSet<u64> = HashSet::with_capacity(pushes);
+    let mut paced_cursor = painted.lock().expect("painted acks lock").len();
     for index in 0..pushes {
         if index > 0 {
             let direction = if index % 2 == 1 {
@@ -2105,10 +2622,22 @@ fn drive_live_window(
                 tauri::Emitter::emit(handle, PROJECTION_EVENT, payload)
             })
             .map_err(|error| format!("paced push failed: {error}"))?;
+        paced_generations.insert(generation);
         if index == 20 {
             screenshot("t026-live-mixer-render.png");
         }
         std::thread::sleep(METER_INTERVAL);
+        // T015: forward the acks that landed during this beat, while the
+        // documents they name are still in flight — the production
+        // push/ack interleaving, not a batch replay after the fact.
+        audit_arrived_acks(
+            &mut channel,
+            painted,
+            &mut paced_cursor,
+            &paced_generations,
+            &mut ack_audit,
+            "T026 NFR-001 paced reducer edits",
+        );
     }
     let final_generation = emits.last().map(|(generation, _)| *generation).unwrap_or(0);
 
@@ -2126,6 +2655,17 @@ fn drive_live_window(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    // T015: the acks that landed after the last push, forwarded on the same
+    // channel so no healthy ack goes unexamined.
+    audit_arrived_acks(
+        &mut channel,
+        painted,
+        &mut paced_cursor,
+        &paced_generations,
+        &mut ack_audit,
+        "T026 NFR-001 paced reducer edits (trailing)",
+    );
+
     let acks = painted.lock().expect("painted acks lock").clone();
     let mut latencies: Vec<Duration> = Vec::with_capacity(pushes);
     for (generation, emitted_at) in &emits {
@@ -2193,6 +2733,7 @@ fn drive_live_window(
         ("patch-braids", production_patch_braids_state()),
     ];
     let mut patch_channel = ProjectionChannel::new();
+    let mut patch_generations: HashSet<u64> = HashSet::with_capacity(patch_states.len());
     let mut pushed_documents: Vec<(&str, Value)> = Vec::with_capacity(patch_states.len());
     for (state_label, state) in &patch_states {
         let projection = projector
@@ -2205,6 +2746,7 @@ fn drive_live_window(
                 tauri::Emitter::emit(handle, PROJECTION_EVENT, payload)
             })
             .map_err(|error| format!("{state_label}: push failed: {error}"))?;
+        patch_generations.insert(projection.generation());
         std::thread::sleep(METER_INTERVAL);
     }
     // The rebuilt states serialize to the exact documents the fidelity
@@ -2238,6 +2780,17 @@ fn drive_live_window(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    // T015: the three PATCH acks, forwarded on the channel that pushed them.
+    let mut patch_cursor = pre_push_count;
+    audit_arrived_acks(
+        &mut patch_channel,
+        painted,
+        &mut patch_cursor,
+        &patch_generations,
+        &mut ack_audit,
+        "WP01 paint-acknowledgment identity",
+    );
+
     let all_acks = painted.lock().expect("painted acks lock").clone();
     if all_acks.len() != expected_acks {
         return Err(format!(
@@ -2447,10 +3000,18 @@ fn drive_live_window(
         ));
     }
 
-    // ---- WP03 T012: negative control, update-render throw, rejection ------
+    // ---- WP03 T012 / WP04 T015: negative controls, then the forced faults --
     // Deliberately last: every healthy section above must have produced zero
-    // render-errors before the page is deliberately broken.
-    force_page_failures(&window, handle, receiver, painted, render_errors)?;
+    // render-errors AND zero ack rejections before the page is deliberately
+    // broken.
+    force_page_failures(
+        &window,
+        handle,
+        receiver,
+        painted,
+        render_errors,
+        &ack_audit,
+    )?;
 
     Ok(())
 }
@@ -2684,7 +3245,10 @@ fn assert_patch_geometry(observation: &Value, document: &Value, label: &str) {
                 "{label}: row {control} {key} --position must equal the data attribute"
             );
         }
-        let rail = entry.get("railWidth").and_then(Value::as_f64).unwrap_or(0.0);
+        let rail = entry
+            .get("railWidth")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
         let fill = entry
             .get("fillWidth")
             .and_then(Value::as_f64)
@@ -2970,6 +3534,7 @@ fn force_page_failures(
     receiver: &mpsc::Receiver<Value>,
     painted: &PaintedAcks,
     render_errors: &RenderErrors,
+    ack_audit: &AckAudit,
 ) -> Result<(), String> {
     let healthy_errors = render_errors.lock().expect("render errors lock").len();
     if healthy_errors != 0 {
@@ -2981,6 +3546,44 @@ fn force_page_failures(
     println!(
         "T012 negative control: PASS (zero crest://render-error events across every \
          healthy live section)"
+    );
+
+    // ---- WP04 T015: suite-wide zero-ack-rejection control ------------------
+    // Same shape and same position as the render-error control above: every
+    // healthy live section fed its own real painted acks back through the
+    // production ProjectionChannel that pushed them, and none may have been
+    // rejected. A nonzero count means WP02's retired-identity validation
+    // rejected an ack a healthy run legitimately produced — a product
+    // behavior change (NFR-001), not a test failure to be tuned away.
+    if !ack_audit.rejections.is_empty() {
+        return Err(format!(
+            "T015 negative control failed: the production ProjectionChannel rejected {} \
+             painted ack(s) that healthy live sections produced — WP02's validation \
+             rejected honest post-paint evidence (NFR-001 product behavior change): {}",
+            ack_audit.rejections.len(),
+            ack_audit.rejections.join("; ")
+        ));
+    }
+    // A control that could only ever read zero is not a control: the acks
+    // really were forwarded, and they really did reach the observation path.
+    if ack_audit.forwarded == 0 || ack_audit.observations == 0 {
+        return Err(format!(
+            "T015 negative control is inert: {} ack(s) forwarded, {} observation(s) — a \
+             zero-rejection count means nothing unless healthy acks actually travelled \
+             the production forward_ack path",
+            ack_audit.forwarded, ack_audit.observations
+        ));
+    }
+    println!(
+        "T015 ack-rejection negative control: PASS ({} real painted acks from the healthy \
+         live sections forwarded through the production ProjectionChannel::forward_ack — \
+         {} became observations, {} were consumed as lost late frames, {} rejected; \
+         bounded in-flight tracker peaked at {} of {MAX_IN_FLIGHT_DOCUMENTS})",
+        ack_audit.forwarded,
+        ack_audit.observations,
+        ack_audit.superseded_late,
+        ack_audit.rejections.len(),
+        ack_audit.max_in_flight,
     );
 
     let projector = StateProjector::new();
@@ -3201,8 +3804,17 @@ fn force_page_failures(
 /// nonzero by itself. Had the failed document been acked instead, the
 /// process would have kept running (timeout) or died on the distinct
 /// ack-rejection path — either of which fails this section.
-fn prove_forced_render_throw_on_the_shipped_binary() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+/// Writes the page variant whose FIRST render throws: the committed index
+/// document with its workspace band removed, so the production render path
+/// dereferences a missing element under the production policy.
+///
+/// One definition, two callers by design — T012 runs it with the close seam
+/// disarmed (the render failure reaches the operator through an ordinary
+/// close) and WP04 T013 runs it with the seam armed (the same failure must
+/// still reach the operator when no close can succeed). Two privately built
+/// variants could drift into testing different pages, and then the pair would
+/// no longer be a controlled comparison.
+fn forced_throw_page_variant(manifest: &Path, file_name: &str) -> PathBuf {
     let committed = std::fs::read_to_string(manifest.join("webview-page/index.html"))
         .expect("the committed index document is readable");
     let start = committed
@@ -3219,8 +3831,14 @@ fn prove_forced_render_throw_on_the_shipped_binary() {
         &committed[end..]
     );
     assert_ne!(variant, committed, "the variant must differ from the page");
-    let variant_path = evidence_dir().join("wp03-t012-forced-throw-index.html");
+    let variant_path = evidence_dir().join(file_name);
     std::fs::write(&variant_path, &variant).expect("the forced-throw variant writes");
+    variant_path
+}
+
+fn prove_forced_render_throw_on_the_shipped_binary() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let variant_path = forced_throw_page_variant(manifest, "wp03-t012-forced-throw-index.html");
 
     let started = Instant::now();
     let child = Command::new(env!("CARGO_BIN_EXE_crest-synth"))
@@ -3323,6 +3941,243 @@ fn prove_forced_render_throw_on_the_shipped_binary() {
          {elapsed:.1?}; exactly one typed PageRenderFailed whose detail is the page's \
          typed payload — name TypeError, message, generation, stateHash — no ack \
          credited, no fallback shell)",
+        output.status.code()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WP04 T013 — forced double-close failure on the shipped binary
+// ---------------------------------------------------------------------------
+
+/// The debug-only seam WP01 left for this section (`src/shell/webview/
+/// window.rs`): with it set, every close attempt the shell makes reports
+/// failure instead of being issued, so the window never goes away and the
+/// event loop can only end through the exhausted-retry exit edge.
+const CLOSE_FAILURE_SEAM_ENV: &str = "CREST_WEBVIEW_FORCE_CLOSE_FAILURE";
+
+/// How long a forced run may take before the section calls it a hang.
+///
+/// The two runs below complete in roughly 10 s (page-throw) and 65 s (the
+/// graphical-shell scene runs ~62 s, then the forced close). WP01's
+/// disable-the-edge probe was still running at 150 s with nothing on either
+/// stream, so these bounds are ~2x the healthy time and comfortably inside
+/// the hang. Exceeding one is a loud, named failure — never an ambiguous
+/// stall under some outer harness timeout, which is the exact failure mode
+/// (RISK-3) this section exists to make visible.
+const FORCED_CLOSE_PAGE_THROW_LIMIT: Duration = Duration::from_secs(120);
+const FORCED_CLOSE_SCENE_LIMIT: Duration = Duration::from_secs(150);
+
+/// Renders the typed `WebviewShellError` displays this section matches on
+/// **from the variants themselves**, so the section can never accept a
+/// `WindowClose` masquerading as a `PageRenderFailed` (or the reverse)
+/// because a literal in this file drifted from the error type. Returns
+/// `(PageRenderFailed prefix, WindowClose prefix)`.
+fn typed_shell_error_prefixes() -> (String, String) {
+    use crest_synth::shell::webview::WebviewShellError;
+
+    let render = WebviewShellError::PageRenderFailed {
+        detail: String::new(),
+    }
+    .to_string();
+    let cause = "probe-close-cause";
+    let close = WebviewShellError::WindowClose(tauri::Error::from(std::io::Error::other(cause)))
+        .to_string();
+    let close = close
+        .strip_suffix(cause)
+        .expect("the WindowClose display ends with its verbatim cause")
+        .to_owned();
+    (render, close)
+}
+
+/// Runs the shipped binary once with the forced-close seam armed and returns
+/// its transcript, keeping the transcript on the evidence wall either way.
+fn run_with_forced_close_failure(
+    manifest: &Path,
+    label: &str,
+    log_name: &str,
+    limit: Duration,
+    configure: impl FnOnce(&mut Command),
+) -> (std::process::Output, Duration) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_crest-synth"));
+    command
+        .env(CLOSE_FAILURE_SEAM_ENV, "1")
+        .current_dir(manifest)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure(&mut command);
+    let started = Instant::now();
+    let child = command.spawn().expect("the shipped binary spawns");
+    // A hang fails HERE, by name, within the bound — it never becomes an
+    // ambiguous suite-wide stall.
+    let output = wait_with_timeout(child, limit, label);
+    let elapsed = started.elapsed();
+    let log_path = evidence_dir().join(log_name);
+    let _ = std::fs::write(
+        &log_path,
+        format!(
+            "{label} (shipped binary, {CLOSE_FAILURE_SEAM_ENV}=1)\nexit: {:?} after \
+             {elapsed:.1?}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ),
+    );
+    println!("  evidence transcript: {}", log_path.display());
+    (output, elapsed)
+}
+
+/// WP04 T013 (FR-001 / FR-002 / SC-001, spec US1 acceptance scenarios 1-2):
+/// when BOTH close attempts fail, the shell ends the process itself carrying
+/// the recorded typed error. It does not hang, and the error is not
+/// swallowed.
+///
+/// Two runs on the shipped binary, both with WP01's debug-only forced-close
+/// seam armed so no close can succeed and the event loop can only end through
+/// the exhausted-retry exit edge:
+///
+/// - **prior error recorded** — a page whose first render throws records
+///   `PageRenderFailed` first, then asks the window to close. The operator
+///   must be told the page render failed; the close failure is a consequence,
+///   not the cause. The recorded error must surface and the `WindowClose`
+///   recorded second must not (FR-002's latch precedence, end to end).
+/// - **no prior error** — the `--demo-live-graphical-shell` scene runs to
+///   completion and closes through the ordinary end-of-scene path with a
+///   clean first-error slot. Here the `WindowClose` itself is what the
+///   operator sees, verbatim, carrying the forced cause. That verbatim cause
+///   is also this section's proof that the seam really armed and that BOTH
+///   attempts failed: the typed error does not exist until the retry is
+///   exhausted.
+///
+/// The paired disarmed control for the first run is
+/// [`prove_forced_render_throw_on_the_shipped_binary`], which drives the same
+/// page variant through the same binary without the seam — so the only
+/// difference between the two is whether closing can succeed, and the
+/// surfaced typed error is the same either way (NFR-001).
+///
+/// Falsifiability: with WP01's `handle.exit(...)` removed, neither run can
+/// end — the window is still open and nothing else will stop the loop — and
+/// both fail here as a named timeout rather than a silent stall. That is also
+/// what proves the seam armed: if it had not, removing the exit edge would
+/// change nothing.
+fn prove_forced_double_close_failure_on_the_shipped_binary() {
+    // The seam is `cfg(debug_assertions)` in the shipped binary, and
+    // CARGO_BIN_EXE_* resolves to the same profile this test was built with.
+    // In a release build the seam does not exist, so this section cannot
+    // prove anything — it must say so loudly rather than pass quietly.
+    #[cfg(not(debug_assertions))]
+    panic!(
+        "T013 needs the debug-only {CLOSE_FAILURE_SEAM_ENV} seam, which a release build \
+         compiles out of the shipped binary: this section cannot run here and must not \
+         report a pass"
+    );
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let (render_failed_prefix, window_close_prefix) = typed_shell_error_prefixes();
+
+    // ---- 1. a recorded PageRenderFailed outlives the forced close ---------
+    let variant_path = forced_throw_page_variant(manifest, "wp04-t013-forced-throw-index.html");
+    let label = "T013 forced double-close failure with a recorded render failure";
+    let (output, elapsed) = run_with_forced_close_failure(
+        manifest,
+        label,
+        "t013-forced-close-with-recorded-render-failure.log",
+        FORCED_CLOSE_PAGE_THROW_LIMIT,
+        |command| {
+            command.env("CREST_WEBVIEW_PAGE", &variant_path);
+        },
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "{label}: the process must end nonzero carrying the recorded failure \
+         (got {:?}):\n{stderr}",
+        output.status
+    );
+    // The surfaced error is the recorded PageRenderFailed, matched on the
+    // typed variant's own rendering and on its typed JSON detail — never on a
+    // fuzzy search of console noise.
+    let detail = stderr
+        .split_once(&render_failed_prefix)
+        .map(|(_, rest)| rest.lines().next().unwrap_or("").trim())
+        .unwrap_or_else(|| {
+            panic!("{label}: the recorded PageRenderFailed must surface on stderr:\n{stderr}")
+        });
+    let payload: Value = serde_json::from_str(detail).unwrap_or_else(|error| {
+        panic!(
+            "{label}: the surfaced error must be the recorded PageRenderFailed carrying \
+             the page's typed payload ({error}); detail: {detail}"
+        )
+    });
+    assert_eq!(
+        payload.get("name").and_then(Value::as_str),
+        Some("TypeError"),
+        "{label}: the recorded payload must name the thrown error: {payload}"
+    );
+    assert!(
+        payload.get("generation").and_then(Value::as_u64).is_some()
+            && payload
+                .get("stateHash")
+                .and_then(Value::as_str)
+                .is_some_and(|hash| !hash.is_empty()),
+        "{label}: the recorded payload must carry the failing document's identity: {payload}"
+    );
+    // FR-002's precedence, end to end: the WindowClose recorded second lost
+    // the latch and never reaches the operator.
+    assert!(
+        !stderr.contains(&window_close_prefix),
+        "{label}: the close failure is a consequence, not the cause — no typed \
+         WindowClose may surface once a PageRenderFailed is recorded:\n{stderr}"
+    );
+    println!(
+        "T013 forced double-close failure (prior error recorded): PASS (shipped binary \
+         exit={:?} after {elapsed:.1?} with every close forced to fail; the recorded \
+         PageRenderFailed surfaced with its typed payload and the second-recorded \
+         WindowClose did not)",
+        output.status.code()
+    );
+
+    // ---- 2. no prior error: the WindowClose itself is what surfaces -------
+    let label = "T013 forced double-close failure with no prior error";
+    let (output, elapsed) = run_with_forced_close_failure(
+        manifest,
+        label,
+        "t013-forced-close-with-no-prior-error.log",
+        FORCED_CLOSE_SCENE_LIMIT,
+        |command| {
+            command.arg("--demo-live-graphical-shell");
+        },
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("CREST_LIVE_SUMMARY"),
+        "{label}: the scene must reach its ordinary end-of-scene close, so the \
+         first-error slot really is empty when the close is attempted:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(&render_failed_prefix),
+        "{label}: no page render failure may have been recorded first, or this is not \
+         the no-prior-error case:\n{stderr}"
+    );
+    assert!(
+        !output.status.success(),
+        "{label}: a close that fails twice must end the process nonzero rather than \
+         leave the loop waiting on a close that is not going to happen (got {:?}):\n{stderr}",
+        output.status
+    );
+    // The typed WindowClose, rendered from the variant itself, carrying the
+    // forced cause verbatim: the retry was exhausted, which is what makes
+    // this error exist at all.
+    let expected = format!("{window_close_prefix}forced close failure ({CLOSE_FAILURE_SEAM_ENV})");
+    assert!(
+        stderr.contains(&expected),
+        "{label}: the typed WindowClose must surface carrying the failure verbatim \
+         (expected {expected:?}):\n{stderr}"
+    );
+    println!(
+        "T013 forced double-close failure (no prior error): PASS (shipped binary \
+         exit={:?} after {elapsed:.1?}; the scene completed, both closes were forced to \
+         fail, and the typed WindowClose surfaced verbatim instead of the loop hanging)",
         output.status.code()
     );
 }

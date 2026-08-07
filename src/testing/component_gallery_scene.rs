@@ -3080,6 +3080,45 @@ impl ComponentGalleryScene {
         })
         .map_err(|error| ComponentGalleryError::Window(format!("input capture failed: {error}")))?;
 
+        // FR-006 / OBS-1 — this handler attaches `Content-Type` and NO
+        // content security policy, and that is a recorded decision, not an
+        // oversight. Do not "fix" it by adding a CSP here.
+        //
+        // Why it is safe: the shipped window cannot load gallery sources at
+        // all. `page_asset` — the production asset table in
+        // `src/shell/webview/window.rs` — enumerates the index document,
+        // `tokens.css`, `page.css`, `page.js`, and the four Azeret faces, and
+        // has NO gallery entry; every other path is a 404 with no fallback.
+        // That table is the reachability precondition, and it is checkable:
+        // read it and confirm no gallery asset appears.
+        //
+        // What this must NOT be confused with: DRIFT-1 of the
+        // webview-shell-cutover mission review — the acceptance harness
+        // re-implementing the `crest://` response privately without the
+        // production CSP, which made the harness measure under a laxer policy
+        // than production and hid RISK-1, a shipped paint-fidelity defect
+        // (the CSP blocked the page's inline `style` attributes, so every
+        // fader fill rendered empty in the real app while the harness saw it
+        // paint). The two shapes look identical — a policy-free `crest://`
+        // handler in a testing surface. The difference is reachability: that
+        // harness served the PRODUCTION page, so its policy had to match
+        // production's; this scene serves only gallery assets that production
+        // can never request. That is why the production seam is now a single
+        // exported source (`protocol_response`/`PAGE_CSP`) with two callers.
+        //
+        // What would have to change if that stopped being true: the moment
+        // `page_asset` gains a gallery entry — or this scene serves any
+        // production asset — this handler must serve through
+        // `crate::shell::webview::protocol_response` so the gallery is
+        // measured under `PAGE_CSP` exactly as the acceptance harness is.
+        //
+        // Why full CSP parity was not done now (research.md D5, operator
+        // decision 2026-08-06): it was drafted and reversed. It would require
+        // converting the gallery's JS-built inline-style painting and
+        // re-homing 48 gallery-borne proof references in
+        // `component_vocabulary`, for no product gain. The risk was never the
+        // missing policy — it was that a reader could not tell whether the
+        // omission was deliberate. This comment is the fix.
         let app = tauri::Builder::default()
             .register_uri_scheme_protocol("crest", move |_context, request| {
                 match gallery_asset(request.uri().path()) {

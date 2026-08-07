@@ -1,0 +1,265 @@
+{
+  "mission_slug": "shell-hygiene-01KZD0KR",
+  "mission_number": null,
+  "mission_type": "software-dev",
+  "overall_verdict": "pass",
+  "criteria": [
+    {
+      "criterion_id": "FR-001",
+      "description": "When both window-close attempts fail, the loop terminates and the first recorded typed error is surfaced rather than retained unreported",
+      "proof_type": "automated_test",
+      "evidence": "T013 prove_forced_double_close_failure_on_the_shipped_binary (tests/webview_projection_shell.rs), two shipped-binary subprocesses under the CREST_WEBVIEW_FORCE_CLOSE_FAILURE seam: exit 1 after 668ms with a prior PageRenderFailed recorded, exit 1 after 61.1s with the typed WindowClose and no prior error. Falsified: with handle.exit removed the section fails 'the process did not exit within 120s'",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP01 cycle-1 (structural exit-path trace); WP04 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "WP01 lane 70c0261 (fix + debug-only seam), WP04 lane e6689df (proof). Sole regression guard on RISK-3: the unit suite stays green 13/13 with the edge deleted"
+    },
+    {
+      "criterion_id": "FR-002",
+      "description": "The single-close-failure retry, the typed WindowClose error, and the get_or_insert first-error latch behave exactly as before",
+      "proof_type": "automated_test",
+      "evidence": "Unit tests a_close_that_fails_twice_terminates_and_records_the_typed_failure and a_recorded_render_failure_still_wins_over_a_later_close_failure (src/shell/webview/window.rs); reviewer verified by direct blob diff that base[343-839] == new[450-946] byte-identical (whole run_return callback, Destroyed arm, all four call sites) and record_render_failure untouched; T013 asserts PageRenderFailed precedence end to end with no WindowClose on stderr",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP01 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Assertions 42 -> 66 by pure addition; two close() attempts and WindowClose(retry_failure) verbatim"
+    },
+    {
+      "criterion_id": "FR-003",
+      "description": "A superseded-late ack is validated against its claimed identity and typed-rejected on mismatch, matching the documented verbatim-or-typed-rejected rule; well-formed acks unaffected",
+      "proof_type": "automated_test",
+      "evidence": "Bounded retired-identity store (RETAINED_RETIRED_IDENTITIES = MAX_IN_FLIGHT_DOCUMENTS = 8) fed by both retirement paths, sharing verify_ack_identity with the in-flight path (src/shell/webview/projection_channel.rs); 6 unit tests; T014 prove_superseded_late_ack_identity (headless, unconditional) rejecting on stateHash/focusPath/omitted activeSurface via eviction and context/interactionMode via drain",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP02 cycle-1 (6 probes incl. off-by-one and bound removal); WP04 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "WP02 lane a0e351d, WP04 lane e6689df. First acceptance-layer coverage of forward_ack, which had zero before this mission"
+    },
+    {
+      "criterion_id": "FR-004",
+      "description": "The control-intent declarations are retired in the crest-spec before their code is deleted",
+      "proof_type": "artifact_inspection",
+      "evidence": "Crest-spec commit 7c7f1cf precedes WP03 lane commit 8937281; retired the 'return typed semantic UI intent' clause from requirement.component_state_ownership_boundary, its proof/invariants.yaml twin, and requirement.configurable_control_family, while keeping and sharpening the passivity boundary. spec-kitty crest-spec doctor OK",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP03 cycle-1 (verified implementer did not edit the crest-spec; lane diff is 4 files, none under .kittify/)",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "C-002 satisfied by construction, not by discipline"
+    },
+    {
+      "criterion_id": "FR-005",
+      "description": "await_qualifying, FrameAwaitError, the step_index accessor, and the ControlIntent/ControlRequest/CompositionIntent family are absent with no dangling reference; CURSOR_GLYPH's single-source claim is made true or removed",
+      "proof_type": "automated_test",
+      "evidence": "Per-deletion caller search before and dangling-reference search after, all zero; grep ControlIntent|ControlRequest|CompositionIntent across src/ tests/ returns zero hits after WP05 T018 corrected the last assertion message; step_index FIELD survives at all 14 sites, confirmed by a real-hardware make demo-live-graphical-shell run (105/105 parameters, 0 dropped, exit 0)",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP03 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "AdjustDirection/AdjustGranularity also removed; reviewer confirmed 4 total pre-deletion hits, all inside ControlIntent::AdjustRequested, and T010 step 2 names both explicitly"
+    },
+    {
+      "criterion_id": "FR-006",
+      "description": "The gallery scene's policy-free serving is recorded as a deliberate, narrated property naming why it is unreachable from the shipped window and what would change if that stopped being true",
+      "proof_type": "artifact_inspection",
+      "evidence": "39 comment lines above register_uri_scheme_protocol (src/testing/component_gallery_scene.rs) stating the decision, the reachability precondition (page_asset in src/shell/webview/window.rs, enumerated, no gallery entry, no fallback), the DRIFT-1/RISK-1 defect class it must not be confused with, the invalidating trigger, and why parity was reversed",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP05 cycle-1 (verified the page_asset claim is exactly true against the actual function)",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Comment-only diff +39/-0. Operator reversed the retirement option; C-003 pins retention"
+    },
+    {
+      "criterion_id": "FR-007",
+      "description": "The purity-needle scan binds every page source it is meant to cover, with no source silently outside the scanned set, and a planted violation fails by name",
+      "proof_type": "automated_test",
+      "evidence": "check_no_component_owns_or_dispatches_application_state (tests/component_composition.rs) now binds page.js, index.html, and gallery.js; reviewer's own 6 planted-violation probes each failed naming source and needle, with a negative control confirming comment-narration passes",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP05 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "strip_html_comments verified NOT load-bearing: raw index.html has zero needle hits, so binding it unstripped would have passed anyway. One recorded blind spot (legacy <script><!--code--></script>), mitigated by script-src 'self' forbidding inline script in production"
+    },
+    {
+      "criterion_id": "FR-008",
+      "description": "The NFR-002 leak bound is quantified or recorded unquantified-by-decision, stale migration terminology removed, and no completed mission's spec still reads Draft/Open",
+      "proof_type": "artifact_inspection",
+      "evidence": "Commit f34b5be: leak bound quantified with an explicit post-hoc disclaimer placed before any figure; 19 + 38 requirement rows Open -> Accepted, each traced to its mission's acceptance record; cutover Status line now names the FAIL verdict and the follow-on mission; migrated -> re-hosted at 4 sites per finding I1's own wording",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP05 cycle-1 (per-item verdict on all six edits; confirmed the record now reads worse and truer, not better)",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Touches only 3 spec/plan files; no mission-review, acceptance-matrix, evidence, or status file altered. Residual Draft in webview-render-fidelity-hardening spec.md recorded as out of declared scope"
+    },
+    {
+      "criterion_id": "NFR-001",
+      "description": "No product behavior change: the live acceptance suite passes with skipped: none and latency stays within the declared 50 ms p95",
+      "proof_type": "measurement",
+      "evidence": "CREST_WEBVIEW_TESTS=1 full gated run reports CREST_ACCEPTANCE webview_projection_shell passed (skipped: none), exit 0. Projection-to-paint p95 measured 10.5 ms (WP04), 14.0 ms (WP02 reviewer), 13.3 ms (WP02) against the unchanged 50 ms threshold. Meter soak 29.48 Hz, 0 lost. Full make demo-live-graphical-shell on real hardware: 105/105 parameters, 2038 qualifying frames, 0 dropped, 0 callback allocations, exit 0",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP01/WP02/WP04 cycle-1 (each re-ran the live layer independently)",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Threshold never adjusted"
+    },
+    {
+      "criterion_id": "NFR-002",
+      "description": "No frozen baseline, threshold, skip list, or assertion loosened, and no declared validation stops executing except where it retires with its declaration",
+      "proof_type": "artifact_inspection",
+      "evidence": "WP04 added exactly one skip entry with all five pre-existing entries byte-identical (no deletion line for any); WP02 had zero test-module deletions with 13/13 pre-existing test bodies hash-identical; WP03's 2 retired tests targeted only deleted symbols and its 3 narrowings preserved every surviving assertion, with the incidental clone-sharing proof relocated and verified still failing if Clone stopped sharing the Arc; WP05 broadened the scan 1 -> 3 sources with all nine needles byte-identical",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata cycle-1 on all five WPs",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "The clone-sharing relocation was the single most dangerous change in the mission and was independently confirmed sound"
+    },
+    {
+      "criterion_id": "C-001",
+      "description": "No reducer, real-time, projection-schema, or product-surface change; shell, testing-scene, test, and document surfaces only",
+      "proof_type": "artifact_inspection",
+      "evidence": "Mission diff touches src/shell/webview/{window,projection_channel,frame_stream,mod}.rs, src/shell/component_vocabulary.rs, src/testing/{live_demo_runner,component_gallery_scene}.rs, tests/{webview_projection_shell,component_composition}.rs. WP02's reviewer verified the retired-identity store is unreachable from the real-time callback by ownership (no Arc/Mutex/spawn in the module; sole construction is a local moved into the event-loop closure)",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata cycle-1 on all five WPs",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "No overlap between any two WPs' owned files"
+    },
+    {
+      "criterion_id": "C-002",
+      "description": "Every retirement is authored in the crest-spec first and deleted second",
+      "proof_type": "artifact_inspection",
+      "evidence": "Crest-spec commit 7c7f1cf (2026-08-07T01:5x) precedes WP03's lane commit 8937281; no WP edited .kittify/crest-spec/ during implementation",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP03 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Satisfied by construction: the declaration landed before any lane was claimed"
+    },
+    {
+      "criterion_id": "C-003",
+      "description": "The component gallery scene, its page assets, its CLI option, and its make target are not deleted, converted, or reduced",
+      "proof_type": "manual_verification",
+      "evidence": "webview-page/gallery.js (22779 b), webview-page/gallery.css (9927 b), src/testing/component_gallery_scene.rs (comment-only +39/-0), --demo-live-component-library at src/bin/crest_synth.rs:325, demo-live-component-library at Makefile:67 \u2014 all present. Reviewer built the release binary and opened the gallery window: 15 pages, both authored densities, 17 color swatches painting",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP05 cycle-1 (ran the gallery); implementer independently ran it",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Retirement was drafted, surfaced to the operator, and deliberately reversed. C-003 exists because this mission deletes elsewhere and momentum is the risk"
+    },
+    {
+      "criterion_id": "C-004",
+      "description": "No Phase 5 product work; the mission adds no feature and re-declares no control-intent vocabulary",
+      "proof_type": "artifact_inspection",
+      "evidence": "No SemanticAction variant, reducer path, projection field, or product surface added. WP03 deliberately did NOT chain-delete StreamShared.arrived (Condvar) despite it losing its only waiter, reporting it as a follow-up instead of expanding scope",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP03 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Scope discipline held under deletion momentum"
+    },
+    {
+      "criterion_id": "SC-001",
+      "description": "A forced double close-failure ends the process with the recorded typed error surfaced, in 100% of forced runs",
+      "proof_type": "measurement",
+      "evidence": "T013: exit 1 in both variants (prior-error and no-prior-error) across the implementer's runs and WP01's reviewer's independent probes A/B/C. Probe C (edge reverted) hung and required SIGKILL at 150s, reproducing RISK-3 exactly",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP01 and WP04 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Reviewer additionally established that wry discards the requested exit code and tao defines ControlFlow::Exit as code 0, so run_return returns 0 regardless; the error slot is read before the code and is provably Some on every path reaching the exit"
+    },
+    {
+      "criterion_id": "SC-002",
+      "description": "A corrupted superseded-late ack is typed-rejected; a full live run records zero rejections",
+      "proof_type": "measurement",
+      "evidence": "T014 rejects on five distinct corrupted fields across both retirement paths. T015 forwards all 153 real painted acks from healthy live sections back through the production forward_ack: 153 observations, 0 superseded-late, 0 rejected, in-flight peak 2 of 8. WP02's reviewer independently instrumented the shipped binary: 216/216 acks became observations, 0 rejections, retired store bound held at exactly 8 across 216 retirements",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP02 and WP04 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "T015 is the durable form of the measurement WP02's reviewer first had to improvise"
+    },
+    {
+      "criterion_id": "SC-003",
+      "description": "No public item in the touched modules lacks a caller, and no surviving crest-spec declaration lacks an implementation",
+      "proof_type": "artifact_inspection",
+      "evidence": "Four dead items removed with before/after caller searches; surviving declarations traced to implementations \u2014 component_state_ownership_boundary to component_composition's passivity scan, configurable_control_family to ComponentControl/control_for proven by component_vocabulary",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP03 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Two residues recorded as follow-ups, both unconsumed rather than unproven-live: StreamShared.arrived (Condvar with no waiter) and Display for FrameExpectation (no formatter)"
+    },
+    {
+      "criterion_id": "SC-004",
+      "description": "A planted purity violation in any scanned page source fails the suite by name",
+      "proof_type": "automated_test",
+      "evidence": "Reviewer's independent probes: page.js/Date.now, gallery.js/Math.random, index.html/inline-script setTimeout, index.html/onclick localStorage \u2014 all failed naming source and needle at tests/component_composition.rs:1839. Negative control (needle inside an HTML comment) passed",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP05 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "Probes run by the reviewer, not merely re-run from the implementer's list"
+    },
+    {
+      "criterion_id": "SC-005",
+      "description": "The full live acceptance run passes with skipped: none after every change, proving no product behavior moved",
+      "proof_type": "measurement",
+      "evidence": "CREST_ACCEPTANCE webview_projection_shell passed (skipped: none) on the WP04 lane carrying all dependencies; independently reproduced by the WP02 reviewer on its lane",
+      "pass_fail": "pass",
+      "verified_by": "reviewer-renata WP02 and WP04 cycle-1",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "One transient soak timeout observed during a probe run (pre-existing NFR-002 meter section, harness-side); not reproduced on subsequent full runs \u2014 assessed in WP04's review"
+    },
+    {
+      "criterion_id": "SC-006",
+      "description": "Re-running the two mission reviews' checks for RISK-3, RISK-4, RISK-5, DRIFT-3, OBS-1 and the SMELL-1 residue finds all resolved, with no new findings in the touched seams",
+      "proof_type": "artifact_inspection",
+      "evidence": "RISK-3 closed by FR-001/FR-002 with a falsifiable guard; RISK-4 by FR-003; RISK-5 by FR-004/FR-005; DRIFT-3 by FR-008; OBS-1 by FR-006; SMELL-1 residue by FR-007. Five cycle-1 reviews, zero rejections, every WP probe-verified",
+      "pass_fail": "pass",
+      "verified_by": "claude (mission owner); confirmed at post-merge mission review",
+      "verified_at": "2026-08-07T02:00:00Z",
+      "notes": "New findings recorded as follow-ups rather than silently absorbed: the unproven dedup guard (WP02 OBS-A), the env-var test hazard (WP01 F4), two unconsumed residues (WP03), and the red validation.format inherited from the previous mission"
+    }
+  ],
+  "negative_invariants": [
+    {
+      "invariant_id": "NI-001",
+      "description": "The retired control-intent vocabulary (ControlIntent / ControlRequest / CompositionIntent) no longer exists in shipped or test code",
+      "verification_method": "grep_absence",
+      "verification_command": "ControlIntent|ControlRequest|CompositionIntent",
+      "scope": "src tests",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits across src/ and tests/ after WP03 deleted the family and WP05 T018 corrected the last assertion message that named it. Crest-spec retirement authored first at 7c7f1cf per C-002."
+    },
+    {
+      "invariant_id": "NI-002",
+      "description": "The dead frame-await surface (await_qualifying / FrameAwaitError) no longer exists",
+      "verification_method": "grep_absence",
+      "verification_command": "await_qualifying|FrameAwaitError",
+      "scope": "src tests",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits after WP03; the stale doc reference in src/shell/webview/mod.rs was removed with them. Caller search before deletion found zero external callers."
+    },
+    {
+      "invariant_id": "NI-003",
+      "description": "CURSOR_GLYPH, whose single-source claim was false because the gallery hardcodes its own glyph, no longer exists",
+      "verification_method": "grep_absence",
+      "verification_command": "CURSOR_GLYPH",
+      "scope": "src tests",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits after WP03 removed the constant and its unit test. The surviving draws_cursor assertions in component_vocabulary are untouched."
+    },
+    {
+      "invariant_id": "NI-004",
+      "description": "The unused LiveDemoRunner::step_index accessor no longer exists (the step_index FIELD survives and drives the runner)",
+      "verification_method": "grep_absence",
+      "verification_command": "pub const fn step_index",
+      "scope": "src",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits for the accessor; the field remains at all 14 sites, confirmed by a real-hardware make demo-live-graphical-shell run (105/105 parameters, 0 dropped, exit 0)."
+    },
+    {
+      "invariant_id": "NI-005",
+      "description": "No JS-built inline style attribute reappears in the production page (the RISK-1 regression signature this mission must not reintroduce)",
+      "verification_method": "grep_absence",
+      "verification_command": "style=\\\"",
+      "scope": "webview-page/page.js",
+      "result": "confirmed_absent",
+      "evidence": "Zero hits; the geometry pass still applies --level/--position via CSSOM. T011 remains green on the merged tree under the production policy."
+    }
+  ],
+  "withdrawn_requirements": [
+    {
+      "requirement_id": "NFR-003",
+      "title": "Net code reduction",
+      "withdrawn_by": "operator (crestenstclair)",
+      "withdrawn_at": "2026-08-07",
+      "measured_outcome": "-256 lines of dead code removed by WP03; ~+1300 net across src/ and tests/ overall",
+      "rationale": "Authored during planning before the proof burden was knowable. Closing RISK-3 and RISK-4 required ~1100 lines of falsifiable proof for two error paths that had zero coverage, so the requirement penalizes exactly what the mission exists to do. Operator judged net line count not a requirement of this work. Recorded as WITHDRAWN, not regraded \u2014 the measurement stands as taken and no result was reinterpreted to pass."
+    }
+  ]
+}

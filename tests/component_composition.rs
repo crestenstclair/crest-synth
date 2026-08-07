@@ -1146,6 +1146,25 @@ fn check_the_selector_is_exhaustive_rather_than_defaulted() {
     );
 }
 
+/// Strips HTML comment spans (`<!-- ... -->`, which may run across lines)
+/// from a served document, so the purity scan reads the markup the window
+/// serves and not the narration describing it.
+fn strip_html_comments(document: &str) -> String {
+    let mut out = String::with_capacity(document.len());
+    let mut rest = document;
+    while let Some(open) = rest.find("<!--") {
+        out.push_str(&rest[..open]);
+        rest = match rest[open..].find("-->") {
+            Some(close) => &rest[open + close + "-->".len()..],
+            // An unterminated comment swallows the rest of the document in a
+            // browser too; reading it as comment matches what ships.
+            None => "",
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Strips line comments from a block of source.
 fn strip_block_comments(block: &str) -> String {
     block
@@ -1739,8 +1758,8 @@ fn check_no_component_owns_or_dispatches_application_state() {
 
         assert!(
             !code.contains(&forbidden_action),
-            "{path} names {forbidden_action}; a component returns ControlIntent and \
-             converts nothing"
+            "{path} names {forbidden_action}; a component presents the immutable view \
+             data it is handed and never converts an input into an action"
         );
         for needle in interior_mutability {
             assert!(
@@ -1787,21 +1806,41 @@ fn check_no_component_owns_or_dispatches_application_state() {
         .map(|line| strip(line, true))
         .collect::<Vec<_>>()
         .join("\n");
-    for needle in [
-        "Date.now",
-        "Math.random",
-        "performance.now",
-        "setInterval",
-        "setTimeout",
-        "localStorage",
-        "sessionStorage",
-        "fetch(",
-        "XMLHttpRequest",
+    // `strip` is a `//` line-comment stripper and does not see HTML comment
+    // syntax, so the served document is stripped span-wise instead. Without
+    // it a document whose header narrates the rule the way `page.js`'s does
+    // ("no Date.now, no Math.random") would read as owning what it forbids.
+    let index_html_markup = strip_html_comments(&index_html);
+    // Every page source this function reads is bound, each failure naming its
+    // source and its needle. `page.js` and `gallery.js` are the two scripts
+    // the render path and the gallery scene serve; `index.html` is in the
+    // loop because an inline `<script>` or an `on*` attribute would own a
+    // clock, a store, or a fetch just as surely as a script file would, and
+    // no other guard in this file would catch it. The stylesheets
+    // (`tokens.css`, `page.css`, `gallery.css`) are deliberately absent:
+    // every needle below is a JavaScript host API that CSS cannot name, and
+    // paint is guarded by the vocabulary scans instead.
+    for (name, source) in [
+        ("page.js", &page_js),
+        ("index.html", &index_html_markup),
+        ("gallery.js", &gallery_js),
     ] {
-        assert!(
-            !page_js.contains(needle),
-            "the render script owns `{needle}`, which a pure render cannot"
-        );
+        for needle in [
+            "Date.now",
+            "Math.random",
+            "performance.now",
+            "setInterval",
+            "setTimeout",
+            "localStorage",
+            "sessionStorage",
+            "fetch(",
+            "XMLHttpRequest",
+        ] {
+            assert!(
+                !source.contains(needle),
+                "{name} owns `{needle}`, which a pure render cannot"
+            );
+        }
     }
     // The gallery script is held to the same input rule as the page: its
     // digit keys are bound Rust-side by the testing scene, never page-side.

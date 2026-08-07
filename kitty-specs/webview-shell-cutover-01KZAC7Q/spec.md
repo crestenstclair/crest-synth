@@ -2,7 +2,7 @@
 
 **Mission**: `webview-shell-cutover-01KZAC7Q`
 **Created**: 2026-08-06
-**Status**: Draft
+**Status**: Complete — accepted 2026-08-06 (`a38abf7`) and merged; deterministic acceptance 25/25 pass. The post-merge mission review returned **FAIL** on RISK-1 and RISK-2 (with DRIFT-1/DRIFT-2 as enablers); those four findings were the entire scope of the follow-on `webview-render-fidelity-hardening-01KZCEF8` mission, which is merged.
 **Target branch**: `feat/webview-shell-cutover` (merges to `main`, PR-bound)
 **Input**: Operator decision (2026-08-05): "absolutely moving all current work over to webview, I want to get rid of egui cruft before we continue implementation." Recorded in `ROADMAP.md` as the "Webview shell cutover gate", which blocks Phase 5.
 
@@ -153,35 +153,35 @@ nonzero exit; grep the tree for any egui code path.
 
 | ID | Title | User Story | Priority | Status |
 |----|-------|------------|----------|--------|
-| FR-001 | PATCH context renders through the webview: every shipped PATCH surface (strip, identity/header, envelope, engine and effect-slot rows, Utility region, footer, hint rows) renders from the canonical serialized view model | US1 | High | Open |
-| FR-002 | The webview shell is the default and only shell; launch-time egui selection is removed with the adapter | US1, US4 | High | Open |
-| FR-003 | Every retained `make demo-live-<scene>` target runs through the webview shell with refreshed committed hardware evidence, before egui deletion lands | US2 | High | Open |
-| FR-004 | Painted-ack → `ShellFrameObservation` forwarding is owned and live reports credit only qualifying webview frames | US2 | High | Open |
-| FR-005 | The component gallery renders through the webview: all pages, both authored densities, keyboard-browsable | US3 | Medium | Open |
-| FR-006 | The egui visual layer (`src/shell/visual/`), the eframe window adapter, and the `eframe`/`egui_extras` dependencies are deleted | US1, US4 | High | Open |
-| FR-007 | The crest-spec authors the retirement first (requirement, adapters, validations) and `DESIGN.md` records the pivot | — | High | Open |
-| FR-008 | An automated key-injection witness drives the full key vocabulary through the production translator into the running webview shell (foundation FR-003 successor item) | US1 | Medium | Open |
+| FR-001 | PATCH context renders through the webview: every shipped PATCH surface (strip, identity/header, envelope, engine and effect-slot rows, Utility region, footer, hint rows) renders from the canonical serialized view model | US1 | High | Accepted |
+| FR-002 | The webview shell is the default and only shell; launch-time egui selection is removed with the adapter | US1, US4 | High | Accepted |
+| FR-003 | Every retained `make demo-live-<scene>` target runs through the webview shell with refreshed committed hardware evidence, before egui deletion lands | US2 | High | Accepted |
+| FR-004 | Painted-ack → `ShellFrameObservation` forwarding is owned and live reports credit only qualifying webview frames | US2 | High | Accepted |
+| FR-005 | The component gallery renders through the webview: all pages, both authored densities, keyboard-browsable | US3 | Medium | Accepted |
+| FR-006 | The egui visual layer (`src/shell/visual/`), the eframe window adapter, and the `eframe`/`egui_extras` dependencies are deleted | US1, US4 | High | Accepted |
+| FR-007 | The crest-spec authors the retirement first (requirement, adapters, validations) and `DESIGN.md` records the pivot | — | High | Accepted |
+| FR-008 | An automated key-injection witness drives the full key vocabulary through the production translator into the running webview shell (foundation FR-003 successor item) | US1 | Medium | Accepted |
 
 ### Non-Functional Requirements
 
 | ID | Title | Requirement | Category | Priority | Status |
 |----|-------|-------------|----------|----------|--------|
-| NFR-001 | Real-time neutrality | Same-workload RT A/B measurement (egui vs webview, taken before deletion) shows the webview shell adds no real-time callback work; migrated scenes record zero `audio_uninterrupted=false` checkpoints | Performance | High | Open |
-| NFR-002 | Sustained stability | One recorded 300 s soak of the webview shell under the live workload completes with no leak growth trend, no dropped-event records, and clean teardown | Reliability | High | Open |
-| NFR-003 | Page hardening | A restrictive CSP is set; `CREST_WEBVIEW_PAGE` is compiled out of release builds (`cfg(debug_assertions)`) | Security | Medium | Open |
-| NFR-004 | Token single source | Zero hand-copied style values in the page: every color, type style, spacing step, and geometry value resolves from the token table generated from the authored Rust vocabulary as part of the build; includes the six fader-specimen px values noted by the foundation review | Maintainability | Medium | Open |
+| NFR-001 | Real-time neutrality | Same-workload RT A/B measurement (egui vs webview, taken before deletion) shows the webview shell adds no real-time callback work; re-hosted scenes record zero `audio_uninterrupted=false` checkpoints | Performance | High | Accepted |
+| NFR-002 | Sustained stability | One recorded 300 s soak of the webview shell under the live workload completes with no leak growth trend, no dropped-event records, and clean teardown. Leak bound (quantified after acceptance, discharging analysis finding A1 — it was not a pre-declared bar at the accept gate): the measured field is process RSS sampled across the soak, and the bound is no monotonic growth across sampling windows. The recorded run declined 107728 → 103904 KiB to a plateau (`evidence/soak-300s-rss.samples.log`) at 29.43 Hz sustained, max gap 44.3 ms, 0 lost records, page-side 8830/8830 lossless (`evidence/soak-300s.log`) | Reliability | High | Accepted |
+| NFR-003 | Page hardening | A restrictive CSP is set; `CREST_WEBVIEW_PAGE` is compiled out of release builds (`cfg(debug_assertions)`) | Security | Medium | Accepted |
+| NFR-004 | Token single source | Zero hand-copied style values in the page: every color, type style, spacing step, and geometry value resolves from the token table generated from the authored Rust vocabulary as part of the build; includes the six fader-specimen px values noted by the foundation review | Maintainability | Medium | Accepted |
 
 ### Constraints
 
 | ID | Title | Constraint | Category | Priority | Status |
 |----|-------|------------|----------|----------|--------|
-| C-001 | Input stays Rust-side | All key press/release/focus-loss normalization goes through the production `KeyboardInputTranslator`; the webview DOM registers no input handlers | Technical | High | Open |
-| C-002 | One schema | The page consumes the serde serialization of `SemanticGraphicalViewModel` and decimated latest-value meter frames; no webview-specific variant of the model exists | Technical | High | Open |
-| C-003 | Boundaries unchanged | One-way loop, immutable projections, owned shutdown, hard real-time callback contract, and no-silent-fallback are preserved exactly | Technical | High | Open |
-| C-004 | Add-only scene identity | Frozen checkpoint baselines (e.g. `FROZEN_TOPOLOGY_IDENTITY_BASELINE`) stay byte-identical and in order; webview-era identities are pure insertions | Proof | High | Open |
-| C-005 | Derivation discipline | Crest-spec authored before plan; no `data-model.md`, no `contracts/` | Process | High | Open |
-| C-006 | Gallery disposition | Operator decision 2026-08-06: rebuild the gallery in the webview (not retired, not deferred) | Product | Medium | Open |
-| C-007 | Ordering | Evidence-refresh commits land before the egui deletion commit; the deletion is the last structural change, so every proof re-run brackets it | Process | High | Open |
+| C-001 | Input stays Rust-side | All key press/release/focus-loss normalization goes through the production `KeyboardInputTranslator`; the webview DOM registers no input handlers | Technical | High | Accepted |
+| C-002 | One schema | The page consumes the serde serialization of `SemanticGraphicalViewModel` and decimated latest-value meter frames; no webview-specific variant of the model exists | Technical | High | Accepted |
+| C-003 | Boundaries unchanged | One-way loop, immutable projections, owned shutdown, hard real-time callback contract, and no-silent-fallback are preserved exactly | Technical | High | Accepted |
+| C-004 | Add-only scene identity | Frozen checkpoint baselines (e.g. `FROZEN_TOPOLOGY_IDENTITY_BASELINE`) stay byte-identical and in order; webview-era identities are pure insertions | Proof | High | Accepted |
+| C-005 | Derivation discipline | Crest-spec authored before plan; no `data-model.md`, no `contracts/` | Process | High | Accepted |
+| C-006 | Gallery disposition | Operator decision 2026-08-06: rebuild the gallery in the webview (not retired, not deferred) | Product | Medium | Accepted |
+| C-007 | Ordering | Evidence-refresh commits land before the egui deletion commit; the deletion is the last structural change, so every proof re-run brackets it | Process | High | Accepted |
 
 ### Key Entities
 

@@ -22,8 +22,8 @@ retirement is already authored (commit `307873e`); this plan derives from it.
 **Target Platform**: macOS desktop (physical rig); authored viewports 1920x1080 and 1280x800 (Steam Deck layout)
 **Project Type**: single Rust crate + embedded `webview-page/` assets served over `crest://`
 **Performance Goals**: reducer state change visible in the webview ≤50 ms p95 under the paced live workload; meter channel sustains 30 Hz for 5 minutes without queue growth; RT callback measured bounds unchanged from the recorded pre-cutover baseline (`requirement.serialized_projection_transport`)
-**Constraints**: hard RT callback (no allocation/locking/blocking/destruction); one-way loop with input Rust-side only; add-only frozen checkpoint identities in migrated scenes (C-004); evidence commits land before the deletion commit (C-007); no `data-model.md`/`contracts/` (C-005)
-**Scale/Scope**: ~17k lines deleted, 4 retained live scenes migrated, 15 gallery pages rebuilt, 8 FRs / 4 NFRs / 7 constraints, net reduction target ≥10k lines (SC-004)
+**Constraints**: hard RT callback (no allocation/locking/blocking/destruction); one-way loop with input Rust-side only; add-only frozen checkpoint identities in re-hosted scenes (C-004); evidence commits land before the deletion commit (C-007); no `data-model.md`/`contracts/` (C-005)
+**Scale/Scope**: ~17k lines deleted, 4 retained live scenes re-hosted, 15 gallery pages rebuilt, 8 FRs / 4 NFRs / 7 constraints, net reduction target ≥10k lines (SC-004)
 
 ## Charter Check
 
@@ -116,7 +116,7 @@ tests/                         # shell_event_dispatch.rs replaces eframe_context
 - **Sequencing/depends-on**: none
 - **Risks**: scenes must block on qualifying frames, not wall-clock sleeps; observation must be constructible only post-paint (crest-spec invariant).
 
-### IC-03 — Retained scene migration + hardware evidence
+### IC-03 — Retained scene re-hosting + hardware evidence
 
 - **Purpose**: all four `make demo-live-<scene>` targets run through the webview shell; RT A/B taken while both shells exist; 300 s soak recorded; evidence committed.
 - **Relevant requirements**: FR-003, NFR-001, NFR-002, C-004, C-007
