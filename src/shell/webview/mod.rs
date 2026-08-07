@@ -59,6 +59,13 @@ pub mod token_export;
 pub mod window;
 
 pub use window::TauriWebviewWindow;
+/// The single-source policy seam (mission webview-render-fidelity-hardening
+/// WP02, research D3): the production window and the acceptance harness
+/// both serve the page through this exact response builder and policy
+/// constant — `requirement.graphical_shell_behavioral_proof` demands
+/// "policy parity asserted from the single policy source", never a
+/// restated copy. Two callers by design, not dead public API.
+pub use window::{protocol_response, PAGE_CSP};
 
 /// The single embedded tauri context for this crate.
 ///

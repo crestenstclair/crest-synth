@@ -1782,6 +1782,11 @@ fn check_no_component_owns_or_dispatches_application_state() {
         .collect::<Vec<_>>()
         .join("\n");
     let index_html = page_source("index.html");
+    let gallery_js: String = page_source("gallery.js")
+        .lines()
+        .map(|line| strip(line, true))
+        .collect::<Vec<_>>()
+        .join("\n");
     for needle in [
         "Date.now",
         "Math.random",
@@ -1798,11 +1803,17 @@ fn check_no_component_owns_or_dispatches_application_state() {
             "the render script owns `{needle}`, which a pure render cannot"
         );
     }
-    for source in [&page_js, &index_html] {
+    // The gallery script is held to the same input rule as the page: its
+    // digit keys are bound Rust-side by the testing scene, never page-side.
+    for (name, source) in [
+        ("page.js", &page_js),
+        ("index.html", &index_html),
+        ("gallery.js", &gallery_js),
+    ] {
         for needle in ["keydown", "keyup", "keypress"] {
             assert!(
                 !source.contains(needle),
-                "the page registers a key handler; keys are captured Rust-side"
+                "{name} registers a key handler (`{needle}`); keys are captured Rust-side"
             );
         }
     }

@@ -38,6 +38,32 @@
 //!   ≤ 50 ms via the `crest://painted` ack) and NFR-002 (30 Hz meter cadence
 //!   over a soak with a structurally bounded pending slot) are measured live.
 //!
+//! Mission webview-render-fidelity-hardening-01KZCEF8 WP03 adds three
+//! sections and re-bases every live proof on the production security policy
+//! (closing the cutover review's DRIFT-1):
+//!
+//! - T010 harness policy parity: the live window serves every asset through
+//!   the exported production seam `crest_synth::shell::webview::
+//!   protocol_response`, and a headless section asserts the served document's
+//!   `Content-Security-Policy` header equals the exported `PAGE_CSP`
+//!   constant — the single policy source, never a restated copy (research
+//!   D3). The CSP text appears nowhere in this file as a literal.
+//! - T011 painted-geometry fidelity: fixtures with known level/position
+//!   values measure ACTUAL painted `.fader-fill` / `.prow-position-fill`
+//!   geometry under the shipped policy, proportional to the document value,
+//!   at both authored viewports — and the inverse guard: any element
+//!   carrying `data-level`/`data-position` without its CSSOM custom property
+//!   applied (the RISK-1 signature) fails by name, distinguishing
+//!   value-zero from variable-never-applied (research D4, FR-004).
+//! - T012 forced render failure: a first-render throw on the shipped binary
+//!   (page-override variant) ends the process nonzero through the typed
+//!   `PageRenderFailed` path with exactly one typed payload; an
+//!   update-render throw after a successful painted ack and an unhandled
+//!   promise rejection each produce exactly one typed `crest://render-error`
+//!   payload and no ack for the failing document; the healthy page emits
+//!   zero render-errors across the whole suite (FR-006, spec US3 and the
+//!   first-vs-update-render edge case).
+//!
 //! # Harness shape (`harness = false`)
 //!
 //! T024/T026 open a real Tauri window, which macOS only permits on the main
@@ -77,9 +103,10 @@ use crest_synth::shell::webview::meter_channel::{
     MeterChannel, MeterEmit, METER_EVENT, METER_INTERVAL, METER_RATE_HZ,
 };
 use crest_synth::shell::webview::projection_channel::{
-    ProjectionChannel, ProjectionPush, PROJECTION_EVENT,
+    ProjectionChannel, ProjectionPush, PROJECTION_EVENT, RENDER_ERROR_EVENT,
 };
 use crest_synth::shell::webview::token_export;
+use crest_synth::shell::webview::{protocol_response, PAGE_CSP};
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{EffectSlotId, InstrumentConfig, Patch};
@@ -140,6 +167,7 @@ fn main() {
 
     let fidelity = prove_serialized_schema_fidelity();
     prove_token_table_freshness();
+    prove_protocol_policy_parity();
     prove_typed_startup_failure();
 
     let skips: Vec<&str> = if live {
@@ -148,6 +176,8 @@ fn main() {
         vec![
             "T024 page render determinism (DOM layer at 1920x1080 and 1280x800, MIXER and PATCH documents)",
             "T024/WP01 paint-acknowledgment identity (one ack per painted document with verbatim semantic identity)",
+            "T011 painted-geometry fidelity (CSSOM-applied fader/position geometry measured against document values at both viewports under the production policy)",
+            "T012 forced render failure (first-render throw subprocess, update-render throw, unhandled rejection -> typed crest://render-error and nonzero typed exit)",
             "T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak)",
         ]
     };
@@ -278,20 +308,61 @@ fn production_patch_braids_state() -> AppState {
     state
 }
 
+/// The MIXER fixture with the focused track's level driven to its exact
+/// range floor through the production reducer (WP03 T011): coarse decreases
+/// are applied until the reducer rejects the clamped no-op, so the projected
+/// fraction is exactly 0 — the "value is zero" half of the zero-vs-
+/// never-applied distinction. The other fifteen tracks keep their nonzero
+/// defaults, so one document carries both cases.
+fn production_mixer_zero_level_state() -> AppState {
+    let mut state = production_mixer_state();
+    let mut steps = 0_u32;
+    while state.apply(AppEvent::Adjust(Direction::Down)).is_ok() {
+        steps += 1;
+        assert!(
+            steps <= 4_096,
+            "the focused level must reach its declared floor within 4096 coarse steps"
+        );
+    }
+    state
+}
+
+/// The PATCH adjust fixture with the focused editable control raised a few
+/// coarse steps (WP03 T011), so the focused row's projected position
+/// fraction is deterministically nonzero and its painted
+/// `.prow-position-fill` width has something to be proportional to.
+fn production_patch_geometry_state() -> AppState {
+    let mut state = production_patch_adjust_state();
+    for _ in 0..3 {
+        let _ = state.apply(AppEvent::Adjust(Direction::Up));
+    }
+    state
+}
+
 // ---------------------------------------------------------------------------
 // T022 — serialized-schema fidelity
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct FidelityEvidence {
     /// State A's exact page-facing document (the bytes the emit path hands
     /// the transport), reused by the live sections so the DOM layer renders
-    /// the very document whose fidelity was proven here.
+    /// the very document whose fidelity was proven here. Its focused track
+    /// sits at the fixture default level — fraction 60/66 ≈ 0.909091, MIDI
+    /// 115 = hex 73, the cutover review's RISK-1 repro value.
     document_a: String,
     /// The three PATCH fixture documents (navigate, adjust, Braids-focused),
     /// labelled, in fidelity-proof order — the same bytes the live sections
     /// render and push so the DOM and ack layers see exactly the documents
     /// whose fidelity was proven here.
     patch_documents: Vec<(&'static str, String)>,
+    /// The WP03 T011 zero-level MIXER document: the focused track's level at
+    /// its exact range floor (projected fraction 0), the other fifteen at
+    /// their nonzero defaults — the zero-vs-never-applied fixture.
+    zero_level_document: String,
+    /// The WP03 T011 PATCH document with the focused editable row raised to
+    /// a deterministically nonzero position fraction.
+    patch_geometry_document: String,
 }
 
 /// Pushes the state's accepted projection through the production
@@ -457,9 +528,27 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
 
     assert_patch_fixture_documents(&patch_navigate, &patch_adjust, &patch_braids);
 
+    // The WP03 T011 geometry fixtures, proven through the identical emit
+    // path so the live geometry section renders exactly the bytes whose
+    // fidelity was proven here.
+    let mut geometry_channel = ProjectionChannel::new();
+    let (_, zero_level_document) = check_state_fidelity(
+        &projector,
+        &mut geometry_channel,
+        &production_mixer_zero_level_state(),
+        "WP03 zero-level MIXER fixture",
+    );
+    let (_, patch_geometry_document) = check_state_fidelity(
+        &projector,
+        &mut geometry_channel,
+        &production_patch_geometry_state(),
+        "WP03 raised-position PATCH fixture",
+    );
+    assert_geometry_fixture_documents(&document_a, &zero_level_document, &patch_geometry_document);
+
     println!(
         "T022 serialized-schema fidelity: PASS \
-         (6 distinct states across both contexts, MIXER generations \
+         (8 distinct states across both contexts, MIXER generations \
          {generation_a}/{generation_b}/{generation_c}, PATCH generations \
          {patch_generation_a}/{patch_generation_b}/{patch_generation_c}, \
          emit path byte-identical + structural round-trip + declared key surface)"
@@ -471,7 +560,181 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
             ("patch-adjust", patch_adjust),
             ("patch-braids", patch_braids),
         ],
+        zero_level_document,
+        patch_geometry_document,
     }
+}
+
+// ---------------------------------------------------------------------------
+// WP03 T011 fixture facts (document-side, headless)
+// ---------------------------------------------------------------------------
+
+/// The innermost numeric value of a projected control, unwrapped exactly as
+/// the page's `innerValue` unwraps it (nested `{ value: ... }` envelopes).
+fn innermost_number(control: &Value) -> Option<f64> {
+    let mut value = control.get("value")?;
+    let mut guard = 0;
+    while value.is_object() && guard < 8 {
+        value = value.get("value")?;
+        guard += 1;
+    }
+    value.as_f64()
+}
+
+/// The page's `fraction(control)` semantics, replicated: (value − min) /
+/// (max − min) clamped into [0, 1]; 0 when the document declares no usable
+/// range or numeric value.
+fn page_fraction(control: &Value) -> f64 {
+    let range = control.get("numericRange");
+    let value = innermost_number(control);
+    match (range, value) {
+        (Some(range), Some(value)) => {
+            let minimum = range.get("minimum").and_then(Value::as_f64).unwrap_or(0.0);
+            let maximum = range.get("maximum").and_then(Value::as_f64).unwrap_or(0.0);
+            if (maximum - minimum).abs() < f64::EPSILON {
+                0.0
+            } else {
+                ((value - minimum) / (maximum - minimum)).clamp(0.0, 1.0)
+            }
+        }
+        _ => 0.0,
+    }
+}
+
+/// The `(track_id, level fraction)` pairs of one MIXER document's level
+/// controls, in the document's declared (first-appearance) order — the same
+/// order `querySelectorAll('[data-level]')` walks the painted columns.
+fn track_level_fractions(document: &Value, label: &str) -> Vec<(u64, f64)> {
+    let fractions: Vec<(u64, f64)> = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("mixerMain"))
+        .unwrap_or_else(|| panic!("{label}: the document carries the mixerMain surface"))
+        .get("controls")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|control| {
+            control.pointer("/path/controlId/id/kind").and_then(Value::as_str) == Some("track")
+                && control
+                    .pointer("/path/controlId/id/parameter")
+                    .and_then(Value::as_str)
+                    == Some("level")
+        })
+        .map(|control| {
+            (
+                control
+                    .pointer("/path/controlId/id/track_id")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_else(|| panic!("{label}: every level control names its track")),
+                page_fraction(control),
+            )
+        })
+        .collect();
+    assert_eq!(
+        fractions.len(),
+        MixerTrackId::COUNT,
+        "{label}: the document projects one level control per mixer track"
+    );
+    fractions
+}
+
+/// The focused PATCH main-surface control's `(control id, fraction)`.
+fn focused_patch_fraction(document: &Value, label: &str) -> (String, f64) {
+    let focused = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+        .unwrap_or_else(|| panic!("{label}: the document carries the patchMain surface"))
+        .get("controls")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|control| control.get("focused").and_then(Value::as_bool) == Some(true))
+        .unwrap_or_else(|| panic!("{label}: the document carries a focused control"));
+    (
+        focused
+            .pointer("/path/controlId/id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        page_fraction(&focused),
+    )
+}
+
+/// Document-side facts the T011 geometry fixtures must carry before any
+/// window opens: the hex-73 repro value on the default document's focused
+/// track, an exact-zero fraction (with nonzero neighbours) in the
+/// zero-level document, and a deterministically nonzero focused position in
+/// the PATCH geometry document.
+fn assert_geometry_fixture_documents(document_a: &str, zero_document: &str, patch_document: &str) {
+    let parse = |bytes: &str, label: &str| -> Value {
+        serde_json::from_str(bytes)
+            .unwrap_or_else(|error| panic!("{label}: the fixture document parses: {error}"))
+    };
+    let document_a = parse(document_a, "T011 default MIXER");
+    let zero = parse(zero_document, "T011 zero-level MIXER");
+    let patch = parse(patch_document, "T011 PATCH geometry");
+
+    // Document A: the focused track sits at the review's hex-73 repro value.
+    let focus_track = document_a
+        .pointer("/focusPath/controlId/id/track_id")
+        .and_then(Value::as_u64)
+        .expect("T011 default MIXER: the document focus path names a track");
+    let default_levels = track_level_fractions(&document_a, "T011 default MIXER");
+    let (_, focused_fraction) = default_levels
+        .iter()
+        .find(|(track, _)| *track == focus_track)
+        .expect("T011 default MIXER: the focused track projects a level");
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let focused_midi = (focused_fraction * 127.0).round() as u32;
+    assert_eq!(
+        focused_midi, 0x73,
+        "T011 default MIXER: the focused default level must read as MIDI hex 73 \
+         (fraction {focused_fraction})"
+    );
+    assert!(
+        (focused_fraction - 60.0 / 66.0).abs() < 1e-6,
+        "T011 default MIXER: the focused fraction must be the default 60/66 \
+         (got {focused_fraction})"
+    );
+
+    // Zero document: the focused track's fraction is exactly 0 (the reducer
+    // clamped onto the declared floor), while at least one other track keeps
+    // a strongly nonzero default — one document carries both cases.
+    let zero_levels = track_level_fractions(&zero, "T011 zero-level MIXER");
+    let zero_focus_track = zero
+        .pointer("/focusPath/controlId/id/track_id")
+        .and_then(Value::as_u64)
+        .expect("T011 zero-level MIXER: the document focus path names a track");
+    let (_, zero_fraction) = zero_levels
+        .iter()
+        .find(|(track, _)| *track == zero_focus_track)
+        .expect("T011 zero-level MIXER: the focused track projects a level");
+    assert_eq!(
+        *zero_fraction, 0.0,
+        "T011 zero-level MIXER: the driven-to-floor level must project fraction exactly 0"
+    );
+    assert!(
+        zero_levels.iter().any(|(_, fraction)| *fraction > 0.5),
+        "T011 zero-level MIXER: another track must keep a strongly nonzero level \
+         (got {zero_levels:?})"
+    );
+
+    // PATCH geometry document: the focused editable row's position fraction
+    // is deterministically nonzero.
+    let (patch_focus_id, patch_fraction) = focused_patch_fraction(&patch, "T011 PATCH geometry");
+    assert!(
+        patch_fraction > 0.005,
+        "T011 PATCH geometry: the raised focused row {patch_focus_id} must project a \
+         nonzero position fraction (got {patch_fraction})"
+    );
 }
 
 /// Structural facts about the three PATCH fixture documents, asserted on the
@@ -784,10 +1047,14 @@ fn prove_typed_startup_failure() {
 // ---------------------------------------------------------------------------
 
 /// The committed projection page's assets, read from the repository. The
-/// production window embeds these same files at compile time
-/// (`src/shell/webview/window.rs`), and its unit tests prove the embedded
-/// copies equal the committed ones, so serving the committed files here
-/// renders the shipped page.
+/// live harness serves through the exported production seam
+/// [`protocol_response`] (WP03 T010, research D3), which returns the
+/// compile-time-embedded copies of every subresource;
+/// [`prove_protocol_policy_parity`] asserts those embedded bytes equal these
+/// committed files, so the seam demonstrably serves the shipped page. The
+/// disk copies exist for that byte comparison and for the index document the
+/// harness passes into the seam (the same committed file the production
+/// build embeds via `include_str!` from this same worktree).
 struct PageAssets {
     index_html: Vec<u8>,
     tokens_css: Vec<u8>,
@@ -841,9 +1108,99 @@ impl PageAssets {
     }
 }
 
+// ---------------------------------------------------------------------------
+// T010 — harness policy parity (headless; the live sections serve through
+// the same seam)
+// ---------------------------------------------------------------------------
+
+/// WP03 T010: the acceptance harness serves the page through the exported
+/// production seam, and the served policy is asserted equal to the exported
+/// constant — the single policy source, never a restated copy (FR-002,
+/// research D3, `requirement.graphical_shell_behavioral_proof`). Runs
+/// headless: [`protocol_response`] is a pure function of the request path,
+/// and the live window registers exactly this function as its one protocol
+/// handler, so what is proven here is what every live section serves.
+fn prove_protocol_policy_parity() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let assets = PageAssets::load(manifest);
+    let index = String::from_utf8(assets.index_html.clone())
+        .expect("the committed index document is UTF-8");
+
+    // Every asset the page references: the seam serves it with the declared
+    // content type and byte-identically to the committed copy — so the
+    // embedded production assets and the committed files cannot drift apart
+    // without failing here.
+    let mut checked = 0_usize;
+    let mut paths: Vec<String> = ["/", "/index.html", "/tokens.css", "/page.css", "/page.js"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    paths.extend(assets.fonts.iter().map(|(path, _)| path.clone()));
+    for path in &paths {
+        let (expected_type, committed_bytes) = assets
+            .resolve(path)
+            .unwrap_or_else(|| panic!("{path} must resolve to a committed asset"));
+        let response = protocol_response(path, &index);
+        assert_eq!(response.status(), 200, "{path} must serve");
+        let content_type = response
+            .headers()
+            .get("Content-Type")
+            .unwrap_or_else(|| panic!("{path} must carry a content type"))
+            .to_str()
+            .expect("the content type is ascii");
+        assert_eq!(content_type, expected_type, "{path} content type");
+        assert_eq!(
+            response.body(),
+            &committed_bytes,
+            "{path}: the production seam's embedded bytes must equal the committed file"
+        );
+
+        // The parity assertion (FR-002): the served document's policy header
+        // IS the exported production constant — compared against the
+        // constant itself, never a restated string — and no non-document
+        // response carries a policy (the production content-type rule,
+        // proven at the harness boundary).
+        let csp = response.headers().get("Content-Security-Policy");
+        if content_type.starts_with("text/html") {
+            let csp = csp
+                .unwrap_or_else(|| panic!("{path} must carry the production CSP header"))
+                .to_str()
+                .expect("the CSP header is ascii");
+            assert_eq!(
+                csp, PAGE_CSP,
+                "{path}: the harness-served policy must equal the exported production \
+                 PAGE_CSP constant exactly"
+            );
+        } else {
+            assert!(
+                csp.is_none(),
+                "{path}: non-document responses must carry no CSP header"
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(
+        protocol_response("/unknown.css", &index).status(),
+        404,
+        "an unreferenced path must be a 404, not a fallback"
+    );
+
+    println!(
+        "T010 harness policy parity: PASS ({checked} assets served through the exported \
+         production seam crest_synth::shell::webview::protocol_response, byte-identical \
+         to the committed page, document CSP equal to the exported PAGE_CSP constant, \
+         no CSP on subresources, unknown path 404)"
+    );
+}
+
 /// One painted ack: the echoed generation, its arrival instant, and the full
 /// post-paint evidence payload.
 type PaintedAcks = Arc<Mutex<Vec<(u64, Instant, Value)>>>;
+
+/// Every typed `crest://render-error` payload the page emitted, in arrival
+/// order (WP03 T012): zero across the healthy suite, exactly one per forced
+/// fault.
+type RenderErrors = Arc<Mutex<Vec<Value>>>;
 
 fn evidence_dir() -> PathBuf {
     let dir = std::env::temp_dir().join("crest-wp06-webview-acceptance");
@@ -865,23 +1222,22 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
 
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let assets = PageAssets::load(manifest);
+    let index_html = String::from_utf8(assets.index_html.clone())
+        .expect("the committed index document is UTF-8");
     let desktop = ViewportDensityPolicy::Desktop.authored_viewport();
 
     let (harness_sender, harness_receiver) = mpsc::channel::<Value>();
     let painted: PaintedAcks = Arc::new(Mutex::new(Vec::new()));
+    let render_errors: RenderErrors = Arc::new(Mutex::new(Vec::new()));
 
+    // WP03 T010: ONE protocol registration for every live section, routed
+    // through the exported production seam — the page, its stylesheets,
+    // script, and fonts are served exactly as the shipped window serves
+    // them, production CSP included (the parity assertion on this seam ran
+    // headless above). No section gets a laxer serving path.
     let app = tauri::Builder::default()
         .register_uri_scheme_protocol("crest", move |_context, request| {
-            match assets.resolve(request.uri().path()) {
-                Some((content_type, body)) => tauri::http::Response::builder()
-                    .header("Content-Type", content_type)
-                    .body(body)
-                    .expect("the committed asset response is well-formed"),
-                None => tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .expect("the empty not-found response is well-formed"),
-            }
+            protocol_response(request.uri().path(), &index_html)
         })
         .build(tauri::generate_context!())
         .expect("the live harness requires a working webview runtime (gate already admitted us)");
@@ -903,6 +1259,16 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
                 .push((generation, at, value));
         });
     }
+    {
+        let render_errors = Arc::clone(&render_errors);
+        app.listen_any(RENDER_ERROR_EVENT, move |event| {
+            let value: Value = serde_json::from_str(event.payload()).unwrap_or(Value::Null);
+            render_errors
+                .lock()
+                .expect("render errors lock")
+                .push(value);
+        });
+    }
 
     let url: tauri::Url = "crest://localhost/index.html"
         .parse()
@@ -921,9 +1287,9 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
             .expect("the live harness window builds");
 
     let handle = app.handle().clone();
-    let document_a = fidelity.document_a.clone();
-    let patch_documents = fidelity.patch_documents.clone();
+    let driver_fidelity = fidelity.clone();
     let driver_painted = Arc::clone(&painted);
+    let driver_render_errors = Arc::clone(&render_errors);
     let outcome: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
     let driver_outcome = Arc::clone(&outcome);
     let driver = std::thread::spawn(move || {
@@ -932,8 +1298,8 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
                 &handle,
                 &harness_receiver,
                 &driver_painted,
-                &document_a,
-                &patch_documents,
+                &driver_render_errors,
+                &driver_fidelity,
             )
         }));
         let posted = match result {
@@ -969,6 +1335,7 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
         "T026 harness window owned shutdown: PASS (run_return = 0 through the owned close path)"
     );
 
+    prove_forced_render_throw_on_the_shipped_binary();
     prove_shutdown_parity_on_real_runs();
 }
 
@@ -1512,17 +1879,23 @@ fn assert_patch_observation_structure(
 
 /// The driver: everything the live window is asked to do, in order — T024's
 /// double-render determinism at both authored viewports for MIXER and PATCH
-/// documents, then the WP01 paint-acknowledgment identity proof, then T026's
-/// NFR measurements. Runs off the main thread; every failure is a returned
-/// error (or panic), never a skip.
+/// documents, then WP03 T011's painted-geometry proof at both viewports,
+/// then the WP01 paint-acknowledgment identity proof, then T026's NFR
+/// measurements, and finally WP03 T012's forced page faults (after the
+/// negative control has counted zero render-errors across every healthy
+/// section). Runs off the main thread; every failure is a returned error
+/// (or panic), never a skip.
 fn drive_live_window(
     handle: &tauri::AppHandle,
     receiver: &mpsc::Receiver<Value>,
     painted: &PaintedAcks,
-    document_a: &str,
-    patch_documents: &[(&'static str, String)],
+    render_errors: &RenderErrors,
+    fidelity: &FidelityEvidence,
 ) -> Result<(), String> {
     use tauri::Manager;
+
+    let document_a: &str = &fidelity.document_a;
+    let patch_documents: &[(&'static str, String)] = &fidelity.patch_documents;
 
     let window = handle
         .get_webview_window("main")
@@ -1697,6 +2070,9 @@ fn drive_live_window(
          {}px desktop / {}px compact floors held)",
         desktop_side, compact_side
     );
+
+    // ---- WP03 T011: painted-geometry proof under the shipped policy -------
+    prove_painted_geometry(&window, receiver, fidelity)?;
 
     // ---- T026: NFR-001 projection-to-paint latency ------------------------
     // Real reducer edits through the production projector and the production
@@ -2071,7 +2447,884 @@ fn drive_live_window(
         ));
     }
 
+    // ---- WP03 T012: negative control, update-render throw, rejection ------
+    // Deliberately last: every healthy section above must have produced zero
+    // render-errors before the page is deliberately broken.
+    force_page_failures(&window, handle, receiver, painted, render_errors)?;
+
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// WP03 T011 — painted-geometry proof under the shipped policy
+// ---------------------------------------------------------------------------
+
+/// Renders one fixture document through the page's own production `render`
+/// path — twice — and measures the painted fader/position geometry each
+/// time: per `[data-level]` host the data attribute, the inline CSSOM
+/// `--level` value, the computed `--level` value, and the measured
+/// `.fader-track`/`.fader-fill` boxes (plus the resolved shoulder inset);
+/// per `[data-position]` fill the same attribute/property triple and the
+/// measured rail/fill widths. An element whose attribute has no applied
+/// CSSOM property lands in `violations` naming itself — the RISK-1
+/// signature.
+fn measure_geometry(
+    window: &tauri::WebviewWindow,
+    receiver: &mpsc::Receiver<Value>,
+    document_json: &str,
+    tag: &str,
+) -> Result<(Value, Value), String> {
+    let script = format!(
+        "(function() {{ \
+         var model = {document_json}; \
+         function collect() {{ \
+           var out = {{ faders: [], positions: [], violations: [] }}; \
+           var hosts = document.querySelectorAll('[data-level]'); \
+           for (var i = 0; i < hosts.length; i += 1) {{ \
+             var host = hosts[i]; \
+             var entry = {{ \
+               attr: host.getAttribute('data-level'), \
+               inline: host.style.getPropertyValue('--level'), \
+               computed: getComputedStyle(host).getPropertyValue('--level').trim() \
+             }}; \
+             if (!entry.inline) {{ \
+               out.violations.push('<' + host.tagName.toLowerCase() + ' data-structure=' + \
+                 (host.getAttribute('data-structure') || '?') + '> carries data-level=' + \
+                 entry.attr + ' but no CSSOM --level property is applied'); \
+             }} \
+             var track = host.querySelector('.fader-track'); \
+             var fill = host.querySelector('.fader-fill'); \
+             if (track && fill) {{ \
+               entry.trackHeight = track.getBoundingClientRect().height; \
+               entry.fillHeight = fill.getBoundingClientRect().height; \
+               entry.shoulderPx = parseFloat(getComputedStyle(fill).bottom); \
+             }} \
+             out.faders.push(entry); \
+           }} \
+           var fills = document.querySelectorAll('[data-position]'); \
+           for (var j = 0; j < fills.length; j += 1) {{ \
+             var el = fills[j]; \
+             var row = el.closest('.prow'); \
+             var position = {{ \
+               control: row ? row.getAttribute('data-control') : '', \
+               attr: el.getAttribute('data-position'), \
+               inline: el.style.getPropertyValue('--position'), \
+               computed: getComputedStyle(el).getPropertyValue('--position').trim(), \
+               railWidth: el.parentElement.getBoundingClientRect().width, \
+               fillWidth: el.getBoundingClientRect().width \
+             }}; \
+             if (!position.inline) {{ \
+               out.violations.push('row ' + position.control + ' carries data-position=' + \
+                 position.attr + ' but no CSSOM --position property is applied'); \
+             }} \
+             out.positions.push(position); \
+           }} \
+           return out; \
+         }} \
+         window.crest.render(model); \
+         var first = collect(); \
+         window.crest.render(model); \
+         var second = collect(); \
+         window.__TAURI__.event.emit('{HARNESS_EVENT}', \
+           {{ phase: '{tag}', first: first, second: second }}); \
+         }})();"
+    );
+    window
+        .eval(&script)
+        .map_err(|error| format!("geometry eval ({tag}) failed: {error}"))?;
+    let message = receive_phase(receiver, tag, Duration::from_secs(10))?;
+    let first = message
+        .get("first")
+        .cloned()
+        .ok_or_else(|| format!("harness phase {tag:?} carried no first geometry observation"))?;
+    let second = message
+        .get("second")
+        .cloned()
+        .ok_or_else(|| format!("harness phase {tag:?} carried no second geometry observation"))?;
+    Ok((first, second))
+}
+
+/// Asserts one MIXER geometry observation against its document: the RISK-1
+/// inverse guard (attribute present ⇒ CSSOM property applied, else fail by
+/// name), one measured fader per projected level control in declared order,
+/// attribute/inline/computed agreement, and painted `.fader-fill` height
+/// proportional to the document's level fraction — strictly nonzero for a
+/// nonzero value, zero for a zero value.
+fn assert_mixer_geometry(observation: &Value, document: &Value, label: &str) {
+    let violations: Vec<String> = observation
+        .get("violations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "{label}: every data-level/data-position attribute must have its CSSOM custom \
+         property applied — attribute present with the property missing is the RISK-1 \
+         regression signature: {violations:?}"
+    );
+    let faders = observation
+        .get("faders")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label}: the geometry observation carries faders"));
+    let expected = track_level_fractions(document, label);
+    assert_eq!(
+        faders.len(),
+        expected.len(),
+        "{label}: one measured fader per projected level control"
+    );
+    for (entry, (track, fraction)) in faders.iter().zip(&expected) {
+        let attr = entry
+            .get("attr")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{label}: track T{track:02X} carries data-level"));
+        let applied: f64 = attr.parse().unwrap_or_else(|error| {
+            panic!("{label}: track T{track:02X} data-level {attr:?} parses: {error}")
+        });
+        assert!(
+            (applied - fraction).abs() < 5e-7,
+            "{label}: track T{track:02X} data-level {attr} must carry the document's \
+             fraction {fraction}"
+        );
+        for key in ["inline", "computed"] {
+            assert_eq!(
+                entry.get(key).and_then(Value::as_str),
+                Some(attr),
+                "{label}: track T{track:02X} {key} --level must equal the data attribute"
+            );
+        }
+        let measure = |key: &str| {
+            entry
+                .get(key)
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| panic!("{label}: track T{track:02X} measures {key}"))
+        };
+        let track_height = measure("trackHeight");
+        let fill_height = measure("fillHeight");
+        let shoulder = measure("shoulderPx");
+        assert!(
+            shoulder.is_finite() && shoulder >= 0.0,
+            "{label}: track T{track:02X} fader shoulder must resolve (got {shoulder})"
+        );
+        let usable = track_height - shoulder;
+        assert!(
+            usable > 10.0,
+            "{label}: track T{track:02X} fader track must have usable height (got {usable:.2}px)"
+        );
+        let expected_px = applied * usable;
+        let tolerance = (usable * 0.01).max(1.5);
+        assert!(
+            (fill_height - expected_px).abs() <= tolerance,
+            "{label}: track T{track:02X} painted fill height {fill_height:.2}px must be \
+             proportional to --level {applied} (expected {expected_px:.2}px of \
+             {usable:.2}px usable, tolerance {tolerance:.2}px)"
+        );
+        if applied > 0.001 {
+            assert!(
+                fill_height > 0.0,
+                "{label}: track T{track:02X} nonzero level {applied} must paint a nonzero fill"
+            );
+        } else {
+            assert!(
+                fill_height <= tolerance,
+                "{label}: track T{track:02X} zero level must measure zero fill \
+                 (got {fill_height:.2}px)"
+            );
+        }
+    }
+}
+
+/// Asserts one PATCH geometry observation against its document: the inverse
+/// guard, attribute/property agreement, painted `.prow-position-fill` width
+/// proportional to each row's fraction, the focused row present at the
+/// document's own (nonzero) fraction, and at least one strongly nonzero
+/// fill painted visibly.
+fn assert_patch_geometry(observation: &Value, document: &Value, label: &str) {
+    let violations: Vec<String> = observation
+        .get("violations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "{label}: every data attribute must have its CSSOM custom property applied \
+         (RISK-1 signature): {violations:?}"
+    );
+    let positions = observation
+        .get("positions")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label}: the geometry observation carries positions"));
+    assert!(
+        !positions.is_empty(),
+        "{label}: the PATCH document paints position rails"
+    );
+    let (focus_id, focus_fraction) = focused_patch_fraction(document, label);
+    let mut strongly_nonzero = 0_usize;
+    let mut focused_seen = false;
+    for entry in positions {
+        let control = entry.get("control").and_then(Value::as_str).unwrap_or("");
+        let attr = entry
+            .get("attr")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{label}: row {control} carries data-position"));
+        let applied: f64 = attr.parse().unwrap_or_else(|error| {
+            panic!("{label}: row {control} data-position {attr:?} parses: {error}")
+        });
+        for key in ["inline", "computed"] {
+            assert_eq!(
+                entry.get(key).and_then(Value::as_str),
+                Some(attr),
+                "{label}: row {control} {key} --position must equal the data attribute"
+            );
+        }
+        let rail = entry.get("railWidth").and_then(Value::as_f64).unwrap_or(0.0);
+        let fill = entry
+            .get("fillWidth")
+            .and_then(Value::as_f64)
+            .unwrap_or(-1.0);
+        assert!(
+            rail > 5.0,
+            "{label}: row {control} position rail must have width (got {rail:.2}px)"
+        );
+        let expected_px = applied * rail;
+        let tolerance = (rail * 0.015).max(1.5);
+        assert!(
+            (fill - expected_px).abs() <= tolerance,
+            "{label}: row {control} painted fill width {fill:.2}px must be proportional \
+             to --position {applied} (expected {expected_px:.2}px of {rail:.2}px rail, \
+             tolerance {tolerance:.2}px)"
+        );
+        if applied >= 0.05 && fill > 1.0 {
+            strongly_nonzero += 1;
+        }
+        if control == focus_id {
+            focused_seen = true;
+            assert!(
+                (applied - focus_fraction).abs() < 5e-7,
+                "{label}: the focused row {control} data-position {attr} must carry the \
+                 document's fraction {focus_fraction}"
+            );
+            assert!(
+                fill > 0.0,
+                "{label}: the focused nonzero row must paint a nonzero fill"
+            );
+        }
+    }
+    assert!(
+        focused_seen,
+        "{label}: the focused row {focus_id} must paint a position rail"
+    );
+    assert!(
+        strongly_nonzero > 0,
+        "{label}: at least one strongly nonzero position must paint visibly"
+    );
+}
+
+/// WP03 T011 (FR-004, research D4): the painted-geometry proof under the
+/// shipped policy. Renders the geometry fixture documents through the
+/// page's production render path and measures ACTUAL painted `.fader-fill`
+/// / `.prow-position-fill` boxes at both authored viewports:
+///
+/// - measured geometry proportional to each document value, strictly
+///   nonzero for the hex-73 fixture — the assertion that was structurally
+///   impossible to fail while the harness served no CSP;
+/// - the zero-level document distinguishes value-zero (attribute present,
+///   CSSOM property applied, geometry legitimately zero) from
+///   variable-never-applied (attribute present, property missing — fails
+///   naming the element);
+/// - every measurement is taken twice and must be identical, folding the
+///   CSSOM-applied geometry into the determinism observation (NFR-003).
+fn prove_painted_geometry(
+    window: &tauri::WebviewWindow,
+    receiver: &mpsc::Receiver<Value>,
+    fidelity: &FidelityEvidence,
+) -> Result<(), String> {
+    let desktop = ViewportDensityPolicy::Desktop.authored_viewport();
+    let compact = ViewportDensityPolicy::SteamDeck.authored_viewport();
+    let parse = |bytes: &str, label: &str| -> Result<Value, String> {
+        serde_json::from_str(bytes).map_err(|error| format!("{label} parses: {error}"))
+    };
+    let zero_document = parse(&fidelity.zero_level_document, "T011 zero-level document")?;
+    let default_document = parse(&fidelity.document_a, "T011 default document")?;
+    let patch_document = parse(&fidelity.patch_geometry_document, "T011 PATCH document")?;
+
+    for (viewport, viewport_tag, viewport_label, zero_shot, level73_shot) in [
+        (
+            desktop,
+            "desktop",
+            "desktop 1920x1080",
+            Some("t011-mixer-level00-desktop-1920x1080.png"),
+            "t011-mixer-level73-desktop-1920x1080.png",
+        ),
+        (
+            compact,
+            "compact",
+            "compact 1280x800",
+            None,
+            "t011-mixer-level73-compact-1280x800.png",
+        ),
+    ] {
+        window
+            .set_size(tauri::LogicalSize::new(
+                f64::from(viewport.width_px),
+                f64::from(viewport.height_px),
+            ))
+            .map_err(|error| format!("T011 resize to {viewport_label} failed: {error}"))?;
+        std::thread::sleep(Duration::from_millis(500));
+        assert_page_viewport_width(
+            window,
+            receiver,
+            viewport.width_px,
+            &format!("t011-viewport-{viewport_tag}"),
+        )?;
+
+        // Zero-level MIXER document: zero paints zero WITH the property
+        // applied; the fifteen nonzero defaults paint proportionally in the
+        // same document.
+        let (first, second) = measure_geometry(
+            window,
+            receiver,
+            &fidelity.zero_level_document,
+            &format!("t011-zero-{viewport_tag}"),
+        )?;
+        if first != second {
+            return Err(format!(
+                "T011 {viewport_label}: two renders of the zero-level document must \
+                 measure identical CSSOM geometry"
+            ));
+        }
+        assert_mixer_geometry(
+            &first,
+            &zero_document,
+            &format!("T011 {viewport_label} zero-level"),
+        );
+        let exact_zero_attrs = first
+            .get("faders")
+            .and_then(Value::as_array)
+            .map(|faders| {
+                faders
+                    .iter()
+                    .filter(|entry| entry.get("attr").and_then(Value::as_str) == Some("0.000000"))
+                    .count()
+            })
+            .unwrap_or(0);
+        if exact_zero_attrs != 1 {
+            return Err(format!(
+                "T011 {viewport_label}: exactly one track must carry data-level=\"0.000000\" \
+                 (got {exact_zero_attrs})"
+            ));
+        }
+        if let Some(zero_shot) = zero_shot {
+            screenshot(zero_shot);
+        }
+
+        // The PATCH document with the raised focused row.
+        let (first, second) = measure_geometry(
+            window,
+            receiver,
+            &fidelity.patch_geometry_document,
+            &format!("t011-patch-{viewport_tag}"),
+        )?;
+        if first != second {
+            return Err(format!(
+                "T011 {viewport_label}: two renders of the PATCH geometry document must \
+                 measure identical CSSOM geometry"
+            ));
+        }
+        assert_patch_geometry(
+            &first,
+            &patch_document,
+            &format!("T011 {viewport_label} PATCH"),
+        );
+
+        // The default document last — every track at the review's hex-73
+        // repro level — so the committed screenshot shows the nonzero fills
+        // beside their readouts (SC-001).
+        let (first, second) = measure_geometry(
+            window,
+            receiver,
+            &fidelity.document_a,
+            &format!("t011-level73-{viewport_tag}"),
+        )?;
+        if first != second {
+            return Err(format!(
+                "T011 {viewport_label}: two renders of the default document must measure \
+                 identical CSSOM geometry"
+            ));
+        }
+        assert_mixer_geometry(
+            &first,
+            &default_document,
+            &format!("T011 {viewport_label} level-73"),
+        );
+        screenshot(level73_shot);
+    }
+
+    window
+        .set_size(tauri::LogicalSize::new(
+            f64::from(desktop.width_px),
+            f64::from(desktop.height_px),
+        ))
+        .map_err(|error| format!("T011 resize back to desktop failed: {error}"))?;
+    std::thread::sleep(Duration::from_millis(500));
+
+    println!(
+        "T011 painted-geometry fidelity: PASS (measured .fader-fill/.prow-position-fill \
+         geometry proportional to document values under the production policy at \
+         1920x1080 and 1280x800; hex-73 fixture strictly nonzero; zero-value fixture \
+         zero WITH its CSSOM property applied; attribute-present-without-property \
+         fails by name; double-measure identical)"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// WP03 T012 — forced render failure → typed payload, no ack, typed exit
+// ---------------------------------------------------------------------------
+
+/// Asserts one `crest://render-error` payload is typed and carries the
+/// failing document's identity: the thrown error's name and a nonempty
+/// message plus the exact generation and stateHash of the document.
+fn assert_render_error_payload(
+    payload: &Value,
+    expected_generation: u64,
+    expected_state_hash: Option<&Value>,
+    label: &str,
+) -> Result<(), String> {
+    if payload.get("name").and_then(Value::as_str) != Some("TypeError") {
+        return Err(format!(
+            "{label}: the typed payload must carry the thrown error's name \
+             (expected TypeError; payload {payload})"
+        ));
+    }
+    let message = payload.get("message").and_then(Value::as_str).unwrap_or("");
+    if message.is_empty() {
+        return Err(format!(
+            "{label}: the typed payload must carry the thrown message (payload {payload})"
+        ));
+    }
+    if payload.get("generation").and_then(Value::as_u64) != Some(expected_generation) {
+        return Err(format!(
+            "{label}: the typed payload must carry the failing document's generation \
+             {expected_generation} (payload {payload})"
+        ));
+    }
+    if payload.get("stateHash") != expected_state_hash {
+        return Err(format!(
+            "{label}: the typed payload must carry the failing document's stateHash \
+             (payload {payload})"
+        ));
+    }
+    Ok(())
+}
+
+/// Waits for a (re)loaded page to install `window.crest`, tolerating eval
+/// failures while the webview is mid-navigation (WP03 T012 reload).
+fn await_page_ready(
+    window: &tauri::WebviewWindow,
+    receiver: &mpsc::Receiver<Value>,
+    limit: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + limit;
+    loop {
+        let _ = window.eval(format!(
+            "if (window.crest && window.__TAURI__ && window.__TAURI__.event) \
+             {{ window.__TAURI__.event.emit('{HARNESS_EVENT}', {{ phase: 'ready' }}); }}"
+        ));
+        match receiver.recv_timeout(Duration::from_millis(200)) {
+            Ok(value) if value.get("phase").and_then(Value::as_str) == Some("ready") => {
+                return Ok(());
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() > deadline {
+                    return Err("the reloaded page never became ready within the limit".to_owned());
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("the harness channel disconnected".to_owned());
+            }
+        }
+    }
+}
+
+/// WP03 T012 in the harness window, deliberately the LAST live acts: the
+/// negative control (zero render-errors across every healthy section), the
+/// update-render throw (a healthy document has painted and acked, then a
+/// subsequent projection's render throws), and the unhandled promise
+/// rejection on a freshly reloaded healthy page. Each fault must produce
+/// exactly one typed `crest://render-error` payload carrying the failing
+/// document's identity, and no painted ack. The payloads travel the same
+/// production channel the shipped binary converts to the typed
+/// `WebviewShellError::PageRenderFailed` nonzero exit — proven end-to-end
+/// by [`prove_forced_render_throw_on_the_shipped_binary`].
+fn force_page_failures(
+    window: &tauri::WebviewWindow,
+    handle: &tauri::AppHandle,
+    receiver: &mpsc::Receiver<Value>,
+    painted: &PaintedAcks,
+    render_errors: &RenderErrors,
+) -> Result<(), String> {
+    let healthy_errors = render_errors.lock().expect("render errors lock").len();
+    if healthy_errors != 0 {
+        return Err(format!(
+            "T012 negative control failed: the healthy page emitted {healthy_errors} \
+             crest://render-error event(s) across the healthy live sections"
+        ));
+    }
+    println!(
+        "T012 negative control: PASS (zero crest://render-error events across every \
+         healthy live section)"
+    );
+
+    let projector = StateProjector::new();
+
+    // ---- update-render throw ---------------------------------------------
+    // Healthy documents painted and acked all suite; now a SUBSEQUENT
+    // projection's render throws (the workspace band is removed out from
+    // under the production render path before the push).
+    let mut state = production_mixer_state();
+    state
+        .apply(AppEvent::Adjust(Direction::Up))
+        .map_err(|rejection| format!("T012 update fixture adjust rejected: {rejection:?}"))?;
+    let projection = projector
+        .project_with_shell(&state)
+        .map_err(|error| format!("T012 update fixture projection failed: {error}"))?
+        .3;
+    let update_generation = projection.generation();
+    let mut channel = ProjectionChannel::new();
+    let acks_before = painted.lock().expect("painted acks lock").len();
+
+    window
+        .eval("document.getElementById('workspace').remove();")
+        .map_err(|error| format!("T012 workspace removal eval failed: {error}"))?;
+    // Confirm the removal landed before pushing: evals execute in order, so
+    // this probe's answer postdates the removal, and the pushed projection's
+    // render is guaranteed to hit the missing band.
+    window
+        .eval(format!(
+            "window.__TAURI__.event.emit('{HARNESS_EVENT}', {{ phase: 'workspace-removed', \
+             removed: !document.getElementById('workspace') }});"
+        ))
+        .map_err(|error| format!("T012 removal probe eval failed: {error}"))?;
+    let removed = receive_phase(receiver, "workspace-removed", Duration::from_secs(10))?;
+    if removed.get("removed").and_then(Value::as_bool) != Some(true) {
+        return Err("T012: the workspace band was not removed before the push".to_owned());
+    }
+    let mut update_document: Option<Value> = None;
+    channel
+        .push(&projection, |payload| {
+            update_document = Some(payload.clone());
+            tauri::Emitter::emit(handle, PROJECTION_EVENT, payload)
+        })
+        .map_err(|error| format!("T012 update push failed: {error}"))?;
+    let update_document =
+        update_document.ok_or_else(|| "T012: the update push must emit".to_owned())?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while render_errors.lock().expect("render errors lock").is_empty() {
+        if Instant::now() > deadline {
+            return Err(
+                "T012 update-render throw produced no crest://render-error within 10s — \
+                 the old silent-stale failure mode"
+                    .to_owned(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // An ack (were one wrongly scheduled) would arrive on the next frame.
+    std::thread::sleep(Duration::from_secs(1));
+    let recorded = render_errors.lock().expect("render errors lock").clone();
+    if recorded.len() != 1 {
+        return Err(format!(
+            "T012: exactly one render-error must be emitted for the update-render throw \
+             (first error wins); got {}",
+            recorded.len()
+        ));
+    }
+    assert_render_error_payload(
+        &recorded[0],
+        update_generation,
+        update_document.get("stateHash"),
+        "T012 update-render throw",
+    )?;
+    let acks_after = painted.lock().expect("painted acks lock").len();
+    if acks_after != acks_before {
+        return Err(format!(
+            "T012: a failed render must NOT be acked as painted \
+             ({} new ack(s) arrived for the throwing document)",
+            acks_after - acks_before
+        ));
+    }
+    println!(
+        "T012 update-render throw: PASS (healthy documents painted and acked, then a \
+         subsequent projection's render threw: exactly one typed crest://render-error \
+         carrying the failing document's identity (generation {update_generation}), \
+         and no painted ack for it)"
+    );
+
+    // ---- unhandled promise rejection on a reloaded healthy page ----------
+    window
+        .eval("location.reload();")
+        .map_err(|error| format!("T012 reload eval failed: {error}"))?;
+    await_page_ready(window, receiver, Duration::from_secs(30))?;
+    std::thread::sleep(Duration::from_millis(500));
+
+    // One coarse decrease: the default level sits well above the range
+    // floor, so the edit is always accepted, and the resulting document is
+    // distinct from the update-throw fixture's.
+    let mut rejection_state = production_mixer_state();
+    rejection_state
+        .apply(AppEvent::Adjust(Direction::Down))
+        .map_err(|rejection| format!("T012 rejection fixture adjust rejected: {rejection:?}"))?;
+    let rejection_projection = projector
+        .project_with_shell(&rejection_state)
+        .map_err(|error| format!("T012 rejection fixture projection failed: {error}"))?
+        .3;
+    let rejection_generation = rejection_projection.generation();
+    let mut rejection_channel = ProjectionChannel::new();
+    let mut rejection_document: Option<Value> = None;
+    rejection_channel
+        .push(&rejection_projection, |payload| {
+            rejection_document = Some(payload.clone());
+            tauri::Emitter::emit(handle, PROJECTION_EVENT, payload)
+        })
+        .map_err(|error| format!("T012 rejection push failed: {error}"))?;
+    let rejection_document =
+        rejection_document.ok_or_else(|| "T012: the rejection push must emit".to_owned())?;
+
+    // The reloaded page must paint and ack the healthy document first.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let acks = painted.lock().expect("painted acks lock").clone();
+        if acks.len() > acks_before {
+            let (generation, _, _) = &acks[acks.len() - 1];
+            if *generation != rejection_generation {
+                return Err(format!(
+                    "T012: the reloaded page acked generation {generation}, expected the \
+                     healthy fixture generation {rejection_generation}"
+                ));
+            }
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err(
+                "T012: the reloaded page never acked the healthy pre-rejection document \
+                 within 15s"
+                    .to_owned(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let acks_after_healthy = painted.lock().expect("painted acks lock").len();
+
+    window
+        .eval(
+            "setTimeout(function () { \
+             Promise.reject(new TypeError('crest-synth WP03 forced unhandled rejection')); \
+             }, 0);",
+        )
+        .map_err(|error| format!("T012 rejection eval failed: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while render_errors.lock().expect("render errors lock").len() < 2 {
+        if Instant::now() > deadline {
+            return Err(
+                "T012 unhandled rejection produced no crest://render-error within 10s".to_owned(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let recorded = render_errors.lock().expect("render errors lock").clone();
+    if recorded.len() != 2 {
+        return Err(format!(
+            "T012: exactly one render-error must be emitted for the rejection; \
+             got {} in total",
+            recorded.len()
+        ));
+    }
+    assert_render_error_payload(
+        &recorded[1],
+        rejection_generation,
+        rejection_document.get("stateHash"),
+        "T012 unhandled rejection",
+    )?;
+    let message = recorded[1]
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !message.contains("forced unhandled rejection") {
+        return Err(format!(
+            "T012: the rejection payload must carry the rejected error's message \
+             (got {message:?})"
+        ));
+    }
+    let final_acks = painted.lock().expect("painted acks lock").len();
+    if final_acks != acks_after_healthy {
+        return Err(format!(
+            "T012: an unhandled rejection must not credit any painted ack \
+             ({} new ack(s))",
+            final_acks - acks_after_healthy
+        ));
+    }
+    println!(
+        "T012 unhandled rejection: PASS (reloaded page painted and acked a healthy \
+         document, then an unhandled promise rejection produced exactly one typed \
+         crest://render-error carrying the last-rendered document's identity \
+         (generation {rejection_generation}) and no ack)"
+    );
+    println!(
+        "T012 typed-exit linkage: these payloads travelled the same production \
+         crest://render-error channel the shipped binary converts to the typed \
+         WebviewShellError::PageRenderFailed nonzero exit, proven end-to-end by the \
+         forced first-render throw subprocess section"
+    );
+    Ok(())
+}
+
+/// WP03 T012 end-to-end (FR-006, SC-002): a page whose FIRST render throws
+/// under the production policy ends the shipped binary nonzero through the
+/// typed `PageRenderFailed` path. The variant page is the committed index
+/// with the workspace band removed (derived at runtime, served through the
+/// debug-only `CREST_WEBVIEW_PAGE` override — release builds compile that
+/// seam out, so the variant is unreachable in a release binary), so the
+/// production render path throws a TypeError on the first pushed
+/// projection. Exactly one typed error must surface (first error wins), its
+/// detail must be the page's typed JSON payload (name, message, and the
+/// failing document's generation and stateHash), and the process must end
+/// nonzero by itself. Had the failed document been acked instead, the
+/// process would have kept running (timeout) or died on the distinct
+/// ack-rejection path — either of which fails this section.
+fn prove_forced_render_throw_on_the_shipped_binary() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let committed = std::fs::read_to_string(manifest.join("webview-page/index.html"))
+        .expect("the committed index document is readable");
+    let start = committed
+        .find("<section id=\"workspace\"")
+        .expect("the committed page carries the workspace band");
+    let end = committed[start..]
+        .find("</section>")
+        .map(|offset| start + offset + "</section>".len())
+        .expect("the workspace band closes");
+    let variant = format!(
+        "{}<!-- WP03 T012 forced-failure fixture: the workspace band is removed so the \
+         page's first render throws a TypeError under the production policy. -->{}",
+        &committed[..start],
+        &committed[end..]
+    );
+    assert_ne!(variant, committed, "the variant must differ from the page");
+    let variant_path = evidence_dir().join("wp03-t012-forced-throw-index.html");
+    std::fs::write(&variant_path, &variant).expect("the forced-throw variant writes");
+
+    let started = Instant::now();
+    let child = Command::new(env!("CARGO_BIN_EXE_crest-synth"))
+        .env("CREST_WEBVIEW_PAGE", &variant_path)
+        .current_dir(manifest)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the shipped binary spawns");
+    let output = wait_with_timeout(
+        child,
+        Duration::from_secs(120),
+        "T012 forced first-render throw",
+    );
+    let elapsed = started.elapsed();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Keep the transcript regardless of verdict so a failure is diagnosable
+    // and a pass lands on the evidence wall (T014).
+    let log_path = evidence_dir().join("t012-forced-first-render-throw.log");
+    let transcript = format!(
+        "T012 forced first-render throw (shipped binary, CREST_WEBVIEW_PAGE variant)\n\
+         variant: {}\nexit: {:?} after {elapsed:.1?}\n\n--- stdout ---\n{stdout}\n\
+         --- stderr ---\n{stderr}",
+        variant_path.display(),
+        output.status.code(),
+    );
+    let _ = std::fs::write(&log_path, transcript);
+    println!("  evidence transcript: {}", log_path.display());
+
+    assert!(
+        !output.status.success(),
+        "a page whose first render throws must end the shipped binary nonzero \
+         (got {:?}):\n{stderr}",
+        output.status
+    );
+    // The application's error chain prints the ONE recorded failure once per
+    // chain level ("application window failed: <display>" plus its cause),
+    // so the first-error-wins latch shows up as exactly one DISTINCT typed
+    // detail — a second distinct detail would mean a later render error
+    // overwrote or joined the recorded failure.
+    let prefix = "webview page render failed: ";
+    let mut details: Vec<&str> = Vec::new();
+    let mut search_from = 0_usize;
+    while let Some(offset) = stderr[search_from..].find(prefix) {
+        let start = search_from + offset + prefix.len();
+        let end = stderr[start..]
+            .find('\n')
+            .map_or(stderr.len(), |line| start + line);
+        details.push(stderr[start..end].trim());
+        search_from = end;
+    }
+    assert!(
+        !details.is_empty(),
+        "the typed PageRenderFailed display must surface on stderr:\n{stderr}"
+    );
+    let distinct: HashSet<&str> = details.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        1,
+        "exactly one distinct typed PageRenderFailed may surface (first error wins):\n{stderr}"
+    );
+    assert!(
+        stderr.contains("application window failed: webview page render failed: "),
+        "the typed render failure must surface through the application's fatal window \
+         path:\n{stderr}"
+    );
+    let detail = details[0];
+    let payload: Value = serde_json::from_str(detail).unwrap_or_else(|error| {
+        panic!(
+            "the PageRenderFailed detail must be the page's typed JSON payload \
+             (name, message, identity): {error}; detail: {detail}"
+        )
+    });
+    assert_eq!(
+        payload.get("name").and_then(Value::as_str),
+        Some("TypeError"),
+        "the payload must name the thrown error: {payload}"
+    );
+    let message = payload.get("message").and_then(Value::as_str).unwrap_or("");
+    assert!(
+        !message.is_empty(),
+        "the payload must carry the thrown message: {payload}"
+    );
+    assert!(
+        payload.get("generation").and_then(Value::as_u64).is_some(),
+        "the payload must carry the failing document's generation: {payload}"
+    );
+    assert!(
+        payload
+            .get("stateHash")
+            .and_then(Value::as_str)
+            .is_some_and(|hash| !hash.is_empty()),
+        "the payload must carry the failing document's stateHash: {payload}"
+    );
+
+    println!(
+        "T012 forced first-render throw: PASS (shipped binary exit={:?} after \
+         {elapsed:.1?}; exactly one typed PageRenderFailed whose detail is the page's \
+         typed payload — name TypeError, message, generation, stateHash — no ack \
+         credited, no fallback shell)",
+        output.status.code()
+    );
 }
 
 // ---------------------------------------------------------------------------

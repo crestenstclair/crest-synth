@@ -45,8 +45,9 @@
 //! non-trivial number of files and lines, so it cannot pass by scanning
 //! nothing. The page-side twin
 //! ([`check_page_sources_spell_no_visual_value`]) holds the committed page
-//! itself to the same rule: no hex color, no color constructor, and no raw
-//! pixel extent outside the declared fader block.
+//! and the committed gallery pair to the same rule: no hex color, no color
+//! constructor, and no raw pixel extent outside the declared fader block and
+//! the two narrated gallery allowances.
 //!
 //! # Recorded limitations
 //!
@@ -1096,11 +1097,25 @@ fn check_density_policy_geometry_reaches_the_page() {
 /// The committed page spells no visual value of its own: no hex color, no
 /// color constructor, and no raw pixel extent outside the one declared
 /// fader-geometry block. The page paints with resolved tokens or it does not
-/// paint.
+/// paint. The committed gallery pair (`gallery.css`/`gallery.js`) is held to
+/// the same rule, with exactly two declared allowances — the transparent
+/// read-back sentinel and the font-availability probe — each narrated at its
+/// check below.
 fn check_page_sources_spell_no_visual_value() {
     let page_css = page_source("page.css");
     let page_js = page_source("page.js");
     let index_html = page_source("index.html");
+    let gallery_css = page_source("gallery.css");
+    let gallery_js = page_source("gallery.js");
+
+    // The computed-style serialization of `transparent`. The gallery's
+    // painted-evidence read-back names it solely to SKIP unpainted values —
+    // recognizing that nothing painted declares no color of the gallery's
+    // own. Mirroring the fader-geometry exemption, the allowance is declared
+    // and exact: the sentinel is erased before the scan, so any other color
+    // constructor in gallery.js still fails, and no other source shares the
+    // allowance.
+    const TRANSPARENT_READBACK_SENTINEL: &str = "rgba(0, 0, 0, 0)";
 
     // No hex color and no color constructor in any page source. (A `#id`
     // selector scans as at most two hex digits and is not a color.)
@@ -1108,13 +1123,22 @@ fn check_page_sources_spell_no_visual_value() {
         ("page.css", &page_css),
         ("page.js", &page_js),
         ("index.html", &index_html),
+        ("gallery.css", &gallery_css),
+        ("gallery.js", &gallery_js),
     ] {
         for line in source.lines() {
+            let scanned = if name == "gallery.js" {
+                line.replace(TRANSPARENT_READBACK_SENTINEL, "")
+            } else {
+                line.to_owned()
+            };
             assert!(
-                !line.contains("rgb(") && !line.contains("rgba(") && !line.contains("hsl("),
+                !scanned.contains("rgb(")
+                    && !scanned.contains("rgba(")
+                    && !scanned.contains("hsl("),
                 "{name} builds a color of its own: {line}"
             );
-            let characters: Vec<char> = line.chars().collect();
+            let characters: Vec<char> = scanned.chars().collect();
             for (index, character) in characters.iter().enumerate() {
                 if *character != '#' {
                     continue;
@@ -1154,6 +1178,28 @@ fn check_page_sources_spell_no_visual_value() {
                 code.trim_start().starts_with("--fader-"),
                 "page.css sets a raw pixel extent outside the declared fader block: {line}"
             );
+        }
+    }
+
+    // The gallery pair declares no fader geometry, so it earns no pixel
+    // exemption of that kind. gallery.js's one declared allowance is the
+    // FontFaceSet.check probe string: the CSS Font Loading API's font
+    // shorthand makes a size syntactically mandatory, and the probe gathers
+    // the typeface-resolution evidence this proof demands — it paints no
+    // extent. A pixel anywhere outside a `fonts.check(` call still fails.
+    for (name, source) in [("gallery.css", &gallery_css), ("gallery.js", &gallery_js)] {
+        for line in source.lines() {
+            let code = line.split("/*").next().unwrap_or(line);
+            let has_raw_px = code
+                .char_indices()
+                .filter(|(_, character)| character.is_ascii_digit())
+                .any(|(index, _)| code[index + 1..].starts_with("px"));
+            if has_raw_px {
+                assert!(
+                    name == "gallery.js" && code.contains("fonts.check("),
+                    "{name} sets a raw pixel extent outside the declared font-probe allowance: {line}"
+                );
+            }
         }
     }
 

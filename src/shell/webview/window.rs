@@ -80,7 +80,8 @@ const WINDOW_LABEL: &str = "main";
 const PAGE_OVERRIDE_ENV: &str = "CREST_WEBVIEW_PAGE";
 
 /// The restrictive Content-Security-Policy attached to the served document
-/// (foundation review open item 5, WP02 T007).
+/// (foundation review open item 5, WP02 T007; hardened by mission
+/// webview-render-fidelity-hardening WP02, NFR-001).
 ///
 /// `default-src 'none'` is the baseline; the page is then allowed exactly
 /// what the embedded `crest://` assets need — its own origin's stylesheets
@@ -89,8 +90,24 @@ const PAGE_OVERRIDE_ENV: &str = "CREST_WEBVIEW_PAGE";
 /// The only non-`'self'` source is the tauri IPC loopback (`ipc:` /
 /// `http://ipc.localhost`), which the injected `__TAURI__` API fetches for
 /// event delivery — it never leaves the process.
-const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-     font-src 'self'; connect-src ipc: http://ipc.localhost";
+///
+/// `base-uri` and `form-action` do not inherit from `default-src`, so the
+/// hardened policy denies both explicitly: the document can never rebase
+/// its relative URL resolution and never submits a form anywhere.
+///
+/// `style-src 'self'` blocks parsed inline style attributes; the page
+/// applies its dynamic fader/position geometry through CSSOM
+/// custom-property assignment (`element.style.setProperty`, research D1)
+/// precisely because of that. The policy is never weakened to make the
+/// page paint (C-004).
+///
+/// This constant is the deliberate single source of the served policy
+/// (research D3): both callers of [`protocol_response`] — the production
+/// window and the acceptance harness — ship exactly these directives,
+/// never a restated copy.
+pub const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
+     font-src 'self'; connect-src ipc: http://ipc.localhost; \
+     base-uri 'none'; form-action 'none'";
 
 /// The authored MIXER projection page (WP05, `webview-page/`), embedded at
 /// compile time and served over the registered `crest://` protocol together
@@ -139,7 +156,21 @@ fn page_asset(path: &str, index_html: &str) -> Option<(&'static str, Vec<u8>)> {
 /// the embedded asset with its declared content type — the document
 /// additionally carrying the restrictive [`PAGE_CSP`] — or a 404 for a path
 /// the page never references (no fallback page).
-fn protocol_response(path: &str, index_html: &str) -> tauri::http::Response<Vec<u8>> {
+///
+/// This function is the deliberate SINGLE SOURCE the served policy ships
+/// through, public because it has exactly two callers by design: the
+/// production window's `crest://` protocol handler in
+/// [`TauriWebviewWindow`]'s event loop, and the acceptance harness in
+/// `tests/webview_projection_shell.rs`, which must serve the page EXACTLY
+/// as production does — `requirement.graphical_shell_behavioral_proof`:
+/// "policy parity asserted from the single policy source" (research D3).
+/// The harness once re-implemented this response privately without the CSP
+/// header, and that drift hid a paint-fidelity defect (DRIFT-1/RISK-1);
+/// the export makes that drift structurally impossible. This is a
+/// two-caller seam, not dead public API: do not remove the export, and do
+/// not add harness-only parameters — the harness adapts to production,
+/// never the reverse.
+pub fn protocol_response(path: &str, index_html: &str) -> tauri::http::Response<Vec<u8>> {
     match page_asset(path, index_html) {
         Some((content_type, body)) => {
             let builder = tauri::http::Response::builder().header("Content-Type", content_type);
@@ -258,6 +289,29 @@ fn render_error_detail(payload: &str) -> String {
         Ok(serde_json::Value::String(message)) => message,
         _ => payload.to_owned(),
     }
+}
+
+/// Records a page-reported render failure (`crest://render-error`) as the
+/// typed [`WebviewShellError::PageRenderFailed`] on the window's
+/// first-error slot — the same fatal runtime path a startup failure takes,
+/// so the process ends nonzero (FR-006). The payload's thrown text lands
+/// in `detail` verbatim: the JSON transport encoding is unwrapped, nothing
+/// is parsed out of console output.
+///
+/// First error wins: `get_or_insert` latches the slot, so a later render
+/// error — the page latches its own emission, but the shared channel
+/// cannot know that — never overwrites the recorded failure. The caller
+/// stops draining after the first (teardown is in flight), later signals
+/// are simply dropped with the channel — the latch never blocks the
+/// receiver the painted acks share. A render error is never creditable as
+/// a painted ack: it is a distinct [`PageSignal`] arm that never reaches
+/// the projection channel's ack forwarding.
+fn record_render_failure(payload: &str, first_error: &RefCell<Option<WindowError>>) {
+    first_error
+        .borrow_mut()
+        .get_or_insert(WindowError::from(WebviewShellError::PageRenderFailed {
+            detail: render_error_detail(payload),
+        }));
 }
 
 /// Closes the single webview window, retrying a failed close once. A second
@@ -456,13 +510,7 @@ impl AppWindow for TauriWebviewWindow {
                             }
                         }
                         PageSignal::RenderError(payload) => {
-                            loop_runtime_error
-                                .borrow_mut()
-                                .get_or_insert(WindowError::from(
-                                    WebviewShellError::PageRenderFailed {
-                                        detail: render_error_detail(&payload),
-                                    },
-                                ));
+                            record_render_failure(&payload, &loop_runtime_error);
                             close_requested = true;
                             close_window_once_with_retry(handle, &loop_runtime_error);
                             return;
@@ -690,7 +738,10 @@ mod tests {
     /// The CSP is deny-by-default and allows exactly the asset classes the
     /// shipped page references from its own `crest://` origin — nothing
     /// inline, nothing evaluated, no remote host. The single non-`'self'`
-    /// source is the documented tauri IPC loopback.
+    /// source is the documented tauri IPC loopback. Hardening is pinned at
+    /// directive level (mission webview-render-fidelity-hardening WP02
+    /// T009, NFR-001): a future ADDITIVE hardening passes, any weakening
+    /// of any directive fails.
     #[test]
     fn the_csp_allows_exactly_what_the_shipped_page_needs() {
         assert!(PAGE_CSP.starts_with("default-src 'none'"));
@@ -706,17 +757,87 @@ mod tests {
         ] {
             assert!(PAGE_CSP.contains(directive), "CSP must allow {need}");
         }
-        // Nothing looser: no inline, no eval, no remote host. The page
-        // document itself inlines nothing (its styles and script are
-        // linked), so nothing needs 'unsafe-inline'.
-        assert!(!PAGE_CSP.contains("unsafe-inline"));
-        assert!(!PAGE_CSP.contains("unsafe-eval"));
-        assert!(!PAGE_CSP.contains("https:"));
+        // The hardened denials (NFR-001): `base-uri` and `form-action` do
+        // not inherit from `default-src`, so the policy must deny both
+        // explicitly.
+        for directive in ["base-uri 'none'", "form-action 'none'"] {
+            assert!(PAGE_CSP.contains(directive), "CSP must pin {directive}");
+        }
+        // Nothing looser, checked per directive (C-004): no directive
+        // anywhere may carry 'unsafe-inline', 'unsafe-eval', a wildcard
+        // source, or a remote scheme source. The page document itself
+        // inlines nothing (its styles and script are linked; dynamic
+        // geometry goes through CSSOM), so nothing needs 'unsafe-inline'.
+        for directive in PAGE_CSP.split(';').map(str::trim) {
+            assert!(
+                !directive.contains("unsafe-inline"),
+                "directive {directive:?} must not allow inline sources"
+            );
+            assert!(
+                !directive.contains("unsafe-eval"),
+                "directive {directive:?} must not allow eval"
+            );
+            assert!(
+                !directive.contains('*'),
+                "directive {directive:?} must not carry a wildcard source"
+            );
+            assert!(
+                !directive.contains("https:"),
+                "directive {directive:?} must not allow a remote scheme source"
+            );
+        }
         assert!(!PAGE_INDEX_HTML.contains("<style"));
         assert!(!PAGE_INDEX_HTML.contains("style=\""));
         // The one http token is the in-process tauri IPC loopback.
         assert!(PAGE_CSP.contains("connect-src ipc: http://ipc.localhost"));
         assert_eq!(PAGE_CSP.matches("http").count(), 1);
+    }
+
+    /// A page render failure relayed as `PageSignal::RenderError` is
+    /// recorded typed and first-error-wins (mission
+    /// webview-render-fidelity-hardening WP02 T008, FR-006): the thrown
+    /// text lands in `PageRenderFailed { detail }` verbatim on the same
+    /// `WindowError` slot the fatal runtime path surfaces after the loop,
+    /// and a later render-error signal never overwrites the recorded
+    /// failure.
+    #[test]
+    fn a_render_error_signal_records_the_first_typed_failure_and_latches() {
+        use super::{record_render_failure, render_error_detail, PageSignal};
+        use std::cell::RefCell;
+
+        // Tauri event payloads arrive JSON-encoded, so the page's thrown
+        // text is a JSON string on the wire; synthesize the signals the
+        // shared channel would relay — no live webview involved.
+        let signals = [
+            PageSignal::RenderError("\"TypeError: renderMixer is not a function\"".to_owned()),
+            PageSignal::RenderError("\"later failure that must not win\"".to_owned()),
+        ];
+        let first_error = RefCell::new(None);
+        for signal in signals {
+            match signal {
+                PageSignal::RenderError(payload) => {
+                    record_render_failure(&payload, &first_error);
+                }
+                PageSignal::PaintedAck(_) => {
+                    unreachable!("a render error is never a painted ack")
+                }
+            }
+        }
+        let recorded = first_error.borrow();
+        let error = recorded
+            .as_ref()
+            .expect("the first render error must be recorded");
+        assert_eq!(
+            error.message(),
+            "webview page render failed: TypeError: renderMixer is not a function"
+        );
+
+        // The transport decoding is the JSON unwrap and nothing else: a
+        // payload that is not a bare JSON string is kept verbatim.
+        assert_eq!(
+            render_error_detail("not-json plain text"),
+            "not-json plain text"
+        );
     }
 
     /// The debug-only deterministic init-failure trigger still works (the

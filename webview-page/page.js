@@ -28,6 +28,7 @@
   var PROJECTION_EVENT = "crest://projection";
   var METER_EVENT = "crest://meters";
   var PAINTED_EVENT = "crest://painted";
+  var RENDER_ERROR_EVENT = "crest://render-error";
 
   // Explicit-unavailability mark: a declared structure with no view data
   // behind it says so; it is never painted with a representative value and
@@ -511,7 +512,7 @@
       fader =
         '<div class="structure level-fader" data-structure="LevelFader" data-state="' +
         state +
-        '" style="--level:' +
+        '" data-level="' +
         level +
         '">' +
         '<div class="fader-track"><div class="fader-fill"></div>' +
@@ -679,7 +680,7 @@
         position === null
           ? '<span class="spring"></span>'
           : '<div class="prow-position"><div class="prow-position-fill"' +
-            ' style="--position:' +
+            ' data-position="' +
             position.toFixed(6) +
             '"></div></div>';
     }
@@ -1042,6 +1043,33 @@
 
   // ---- the pure render ---------------------------------------------------
 
+  // CSP: the production policy (style-src 'self', no unsafe-inline) blocks
+  // every parsed inline style attribute, but CSSOM property assignment is
+  // exempt by spec — dynamic geometry must go through here. The rendered
+  // HTML carries the value as a data attribute (data-level / data-position);
+  // this one pass reads those attributes back and applies the custom
+  // properties page.css consumes. A pure function of the DOM — no state, no
+  // memory of prior renders — so the same document still paints the same
+  // geometry (determinism proof target). Absence of the attribute means "no
+  // data", never "zero": unavailable branches emit no attribute and get no
+  // property.
+  function applyDynamicGeometry(doc) {
+    var levels = doc.querySelectorAll("[data-level]");
+    for (var i = 0; i < levels.length; i += 1) {
+      levels[i].style.setProperty(
+        "--level",
+        levels[i].getAttribute("data-level")
+      );
+    }
+    var positions = doc.querySelectorAll("[data-position]");
+    for (var j = 0; j < positions.length; j += 1) {
+      positions[j].style.setProperty(
+        "--position",
+        positions[j].getAttribute("data-position")
+      );
+    }
+  }
+
   // Rebuilds the five shell bands from one deserialized
   // SemanticGraphicalViewModel document. Same document, identical DOM. The
   // context line, identity header, workspace scaffold, side region, and
@@ -1062,6 +1090,10 @@
         : mixerWorkspaceHtml(model, columns);
     doc.getElementById("inspector").innerHTML = sideRegionHtml(model);
     doc.getElementById("footer").innerHTML = footerHtml(model);
+    // Final step, after ALL five region insertions: apply the dynamic
+    // geometry in the same paint, on the initial render and every re-render
+    // alike. render() is the single place projection content enters the DOM.
+    applyDynamicGeometry(doc);
   }
 
   // ---- the structural observation (acceptance harness contract) -----------
@@ -1289,6 +1321,37 @@
     };
   }
 
+  // The page half of the typed render-failure path: one small
+  // JSON-serializable payload — error name, message, and the failing
+  // document's semantic identity (the same generation/stateHash pair the
+  // painted ack leads with) when a document is available — emitted on
+  // crest://render-error, which the shell converts to the fatal typed
+  // PageRenderFailed error. First error wins: the shell treats the first
+  // payload as fatal, so the latch drops every later fault instead of
+  // letting it replace the recorded failure. The boundary itself does no
+  // rendering, no DOM access, and no formatting beyond these strings, so it
+  // cannot throw before emitting.
+  var renderErrorEmitted = false;
+
+  function emitRenderError(error, model) {
+    if (renderErrorEmitted) {
+      return; // first error wins; the shell treats the first payload as fatal
+    }
+    renderErrorEmitted = true;
+    var tauri = window.__TAURI__;
+    if (!tauri || !tauri.event) {
+      return; // headless harness: the throw already propagated to the caller
+    }
+    tauri.event.emit(RENDER_ERROR_EVENT, {
+      name: error && error.name ? String(error.name) : "Error",
+      message: error && error.message ? String(error.message) : String(error),
+      generation:
+        model && model.generation !== undefined ? model.generation : null,
+      stateHash:
+        model && model.stateHash !== undefined ? model.stateHash : null,
+    });
+  }
+
   function attachTransports() {
     var tauri = window.__TAURI__;
     if (!tauri || !tauri.event) {
@@ -1296,12 +1359,17 @@
     }
     tauri.event.listen(PROJECTION_EVENT, function (event) {
       var model = event.payload;
-      // A document that fails to render must NOT ack: render throwing here
-      // skips the acknowledgment below and surfaces the exception to the
-      // adapter's typed render-exception path (WP02).
       latestModel = model;
-      render(model);
-      updateMeter();
+      // A document that fails to render must NOT ack: the catch emits the
+      // typed crest://render-error payload (fatal shell-side) and returns
+      // before the acknowledgment below is ever scheduled.
+      try {
+        render(model);
+        updateMeter();
+      } catch (error) {
+        emitRenderError(error, model);
+        return; // a failed render must NOT ack
+      }
       // Exactly one paint ack per painted document, in paint order: emitted
       // after this frame has painted, carrying the document's own identity
       // with post-paint region evidence.
@@ -1314,6 +1382,26 @@
       updateMeter();
     });
   }
+
+  // Any uncaught page fault after load — including a throw inside the
+  // requestAnimationFrame ack callback (paintedEvidence) — is the same typed
+  // fatal condition. Both handlers share the emitRenderError first-error
+  // latch with the projection listener's boundary. These are fault
+  // reporters, not input capture: the page still registers no key handler.
+  window.addEventListener("error", function (event) {
+    emitRenderError(
+      event.error || { name: "Error", message: event.message },
+      latestModel
+    );
+  });
+  window.addEventListener("unhandledrejection", function (event) {
+    emitRenderError(
+      event.reason instanceof Error
+        ? event.reason
+        : { name: "UnhandledRejection", message: String(event.reason) },
+      latestModel
+    );
+  });
 
   window.crest = { render: render, renderObservation: renderObservation };
   attachTransports();
