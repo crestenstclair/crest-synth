@@ -1,0 +1,46 @@
+{
+  "entries": [
+    {
+      "created_at": "2026-08-07T02:25:20.814792Z",
+      "decision_id": "01KZD0M4DES144WCTKTE6GBVG7",
+      "final_answer": "Retire declarations: delete the dead code and the crest-spec declarations together; Phase 5 re-declares control intent where it lives when it needs it.",
+      "input_key": "controlintent_resolution",
+      "mission_id": "01KZD0KR4G2BZG3GHVA1Y2SZPT",
+      "mission_slug": "shell-hygiene-01KZD0KR",
+      "opened_by": "cli",
+      "options": [],
+      "origin_flow": "specify",
+      "other_answer": true,
+      "question": "Retire the orphaned ControlIntent/ControlRequest/CompositionIntent crest-spec declarations, or wire the code into the live webview path?",
+      "rationale": null,
+      "resolved_at": "2026-08-07T02:25:21.803667Z",
+      "resolved_by": null,
+      "slot_key": "specify.scope.controlintent-resolution",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    },
+    {
+      "created_at": "2026-08-07T02:25:22.899420Z",
+      "decision_id": "01KZD0M6EK6FZM594K3CEVV8H4",
+      "final_answer": "Keep the gallery and declare the exemption (operator, 2026-08-06). Retirement was considered and reversed as not worth the cost: re-homing the 48 gallery-borne proof references in component_vocabulary risked weakening Phase 4 guarantees for no product gain. Record policy-free serving as a narrated property of the testing scene.",
+      "input_key": "gallery_disposition",
+      "mission_id": "01KZD0KR4G2BZG3GHVA1Y2SZPT",
+      "mission_slug": "shell-hygiene-01KZD0KR",
+      "opened_by": "cli",
+      "options": [],
+      "origin_flow": "specify",
+      "other_answer": true,
+      "question": "Gallery scene: declare policy-free serving as an exemption, achieve full CSP parity, or retire the scene?",
+      "rationale": null,
+      "resolved_at": "2026-08-07T02:25:23.875696Z",
+      "resolved_by": null,
+      "slot_key": "specify.scope.gallery-disposition",
+      "status": "resolved",
+      "step_id": null,
+      "summary_json": null
+    }
+  ],
+  "mission_id": "01KZD0KR4G2BZG3GHVA1Y2SZPT",
+  "version": 1
+}
