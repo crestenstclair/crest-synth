@@ -3,7 +3,8 @@ wp_id: WP02
 reviewer_agent: reviewer-renata
 cycle_number: 1
 verdict: approved
-date: 2026-08-06
+mission_slug: webview-render-fidelity-hardening-01KZCEF8
+reviewed_at: 2026-08-06T23:59:00Z
 affected_files:
   - path: src/shell/webview/window.rs
   - path: src/shell/webview/mod.rs
