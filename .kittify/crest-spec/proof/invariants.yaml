@@ -89,10 +89,13 @@ invariantGroups:
       with text or shape in addition to color
     meta:
       rationale: closed unions name every site that must change, and color alone is not an accessible signal
-  - text: components accept immutable view data plus explicit state and return typed semantic UI intent;
-      no component owns or caches Patch values, focus, navigation, reducer state, or audio state
+  - text: components accept immutable view data plus explicit state and render from them alone; no component
+      owns or caches Patch values, focus, navigation, reducer state, or audio state, and none converts an
+      input into a semantic action
     meta:
-      rationale: the one-way state path survives only if the component layer stays passive
+      rationale: the one-way state path survives only if the component layer stays passive; the webview
+        cutover retired the Rust-side typed-intent return, so passivity is held by this boundary rather
+        than by the shape of a returned value
   - text: one mixer track column is the closed, exhaustively matched MixerTrackColumnStructure anatomy
       — track header, level fader, level readout, pan readout, state line — in that order at proportions
       resolved from ViewportDensityPolicy, with the track header its only name and MidiHexadecimal bound

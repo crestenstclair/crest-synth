@@ -1,6 +1,7 @@
 {
   "coordination_branch": "kitty/mission-shell-hygiene-01KZD0KR",
   "created_at": "2026-08-07T02:25:08.242861+00:00",
+  "crest_spec_impact": "structural",
   "flattened": false,
   "friendly_name": "Shell Hygiene Sweep",
   "mission_id": "01KZD0KR4G2BZG3GHVA1Y2SZPT",
