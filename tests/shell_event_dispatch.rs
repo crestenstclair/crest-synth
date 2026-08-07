@@ -788,8 +788,8 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
     assert_eq!(harness.channel.in_flight_documents(), 0);
 
     // The qualifying-frame stream serves the final accepted identity from a
-    // handle cloned off the production window — the seam live scenes block
-    // on instead of sleeping.
+    // handle cloned off the production window — the seam live scenes poll
+    // instead of sleeping.
     let expectation = FrameExpectation::new(
         final_observation.generation(),
         final_observation.state_hash(),

@@ -70,13 +70,14 @@
 //!
 //! - T013 forced double-close failure (live): with WP01's debug-only
 //!   `CREST_WEBVIEW_FORCE_CLOSE_FAILURE` seam armed on the shipped binary so
-//!   no close can succeed, the event loop still ends and the recorded typed
-//!   error reaches the operator — the recorded `PageRenderFailed` when one
-//!   was already latched (the `WindowClose` recorded second does not
-//!   surface), and the typed `WindowClose` itself when nothing was (FR-001,
-//!   FR-002). Each run is bounded, so the pre-WP01 behavior — a correctly
-//!   recorded fatal error the loop then waits forever to surface — fails as a
-//!   named timeout instead of an ambiguous stall.
+//!   no close can succeed, the event loop still ends and the typed
+//!   `WindowClose` reaches the operator carrying the forced cause verbatim
+//!   (FR-001, FR-002). The run is bounded, so the pre-WP01 behavior — a
+//!   correctly recorded fatal error the loop then waits forever to surface —
+//!   fails as a named timeout instead of an ambiguous stall. The
+//!   already-latched-`PageRenderFailed` arm is deliberately *not* asserted
+//!   here: it is byte-for-byte indistinguishable with the seam disarmed, so
+//!   it cannot fail; see the section's own notes.
 //! - T014 superseded-late ack identity (headless): a late ack naming an
 //!   already-retired generation answers to the same verbatim-copy rule as an
 //!   in-flight one, through BOTH ways a document retires (capacity eviction
@@ -224,7 +225,7 @@ fn main() {
             "T011 painted-geometry fidelity (CSSOM-applied fader/position geometry measured against document values at both viewports under the production policy)",
             "T012 forced render failure (first-render throw subprocess, update-render throw, unhandled rejection -> typed crest://render-error and nonzero typed exit)",
             "T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak)",
-            "T013 forced double-close failure (shipped-binary subprocesses with every close forced to fail: the recorded PageRenderFailed surfaces and the WindowClose does not, and with no prior error the typed WindowClose itself surfaces -- each ending the process nonzero rather than hanging)",
+            "T013 forced double-close failure (a shipped-binary subprocess with every close forced to fail: with no prior error recorded the typed WindowClose itself surfaces carrying the forced cause verbatim, ending the process nonzero rather than hanging)",
         ]
     };
 
@@ -3808,12 +3809,13 @@ fn force_page_failures(
 /// document with its workspace band removed, so the production render path
 /// dereferences a missing element under the production policy.
 ///
-/// One definition, two callers by design — T012 runs it with the close seam
-/// disarmed (the render failure reaches the operator through an ordinary
-/// close) and WP04 T013 runs it with the seam armed (the same failure must
-/// still reach the operator when no close can succeed). Two privately built
-/// variants could drift into testing different pages, and then the pair would
-/// no longer be a controlled comparison.
+/// T012 is now its only caller: it runs the variant with the close seam
+/// disarmed, so the render failure reaches the operator through an ordinary
+/// close. T013 used to run the same variant with the seam armed, until the
+/// shell-hygiene post-merge review (RISK-2) measured the two runs as
+/// byte-identical and removed the armed one — closing succeeds or fails
+/// without changing anything a subprocess can observe, so that pair was never
+/// the controlled comparison it read as.
 fn forced_throw_page_variant(manifest: &Path, file_name: &str) -> PathBuf {
     let committed = std::fs::read_to_string(manifest.join("webview-page/index.html"))
         .expect("the committed index document is readable");
@@ -3955,16 +3957,15 @@ fn prove_forced_render_throw_on_the_shipped_binary() {
 /// event loop can only end through the exhausted-retry exit edge.
 const CLOSE_FAILURE_SEAM_ENV: &str = "CREST_WEBVIEW_FORCE_CLOSE_FAILURE";
 
-/// How long a forced run may take before the section calls it a hang.
+/// How long the forced run may take before the section calls it a hang.
 ///
-/// The two runs below complete in roughly 10 s (page-throw) and 65 s (the
-/// graphical-shell scene runs ~62 s, then the forced close). WP01's
-/// disable-the-edge probe was still running at 150 s with nothing on either
-/// stream, so these bounds are ~2x the healthy time and comfortably inside
-/// the hang. Exceeding one is a loud, named failure — never an ambiguous
-/// stall under some outer harness timeout, which is the exact failure mode
-/// (RISK-3) this section exists to make visible.
-const FORCED_CLOSE_PAGE_THROW_LIMIT: Duration = Duration::from_secs(120);
+/// The run below completes in roughly 65 s (the graphical-shell scene runs
+/// ~62 s, then the forced close). WP01's disable-the-edge probe was still
+/// running at 150 s with nothing on either stream, so this bound is ~2x the
+/// healthy time and comfortably inside the hang. Exceeding it is a loud,
+/// named failure — never an ambiguous stall under some outer harness
+/// timeout, which is the exact failure mode (RISK-3) this section exists to
+/// make visible.
 const FORCED_CLOSE_SCENE_LIMIT: Duration = Duration::from_secs(150);
 
 /// Renders the typed `WebviewShellError` displays this section matches on
@@ -4026,39 +4027,58 @@ fn run_with_forced_close_failure(
     (output, elapsed)
 }
 
-/// WP04 T013 (FR-001 / FR-002 / SC-001, spec US1 acceptance scenarios 1-2):
+/// WP04 T013 (FR-001 / FR-002 / SC-001, spec US1 acceptance scenario 2):
 /// when BOTH close attempts fail, the shell ends the process itself carrying
 /// the recorded typed error. It does not hang, and the error is not
 /// swallowed.
 ///
-/// Two runs on the shipped binary, both with WP01's debug-only forced-close
-/// seam armed so no close can succeed and the event loop can only end through
-/// the exhausted-retry exit edge:
+/// One run on the shipped binary, with WP01's debug-only forced-close seam
+/// armed so no close can succeed and the event loop can only end through the
+/// exhausted-retry exit edge: the `--demo-live-graphical-shell` scene runs to
+/// completion and closes through the ordinary end-of-scene path with a clean
+/// first-error slot, so the `WindowClose` itself is what the operator sees,
+/// verbatim, carrying the forced cause. That verbatim cause is this
+/// section's proof that the seam really armed and that BOTH attempts failed:
+/// the typed error does not exist until the retry is exhausted.
 ///
-/// - **prior error recorded** — a page whose first render throws records
-///   `PageRenderFailed` first, then asks the window to close. The operator
-///   must be told the page render failed; the close failure is a consequence,
-///   not the cause. The recorded error must surface and the `WindowClose`
-///   recorded second must not (FR-002's latch precedence, end to end).
-/// - **no prior error** — the `--demo-live-graphical-shell` scene runs to
-///   completion and closes through the ordinary end-of-scene path with a
-///   clean first-error slot. Here the `WindowClose` itself is what the
-///   operator sees, verbatim, carrying the forced cause. That verbatim cause
-///   is also this section's proof that the seam really armed and that BOTH
-///   attempts failed: the typed error does not exist until the retry is
-///   exhausted.
+/// # The run this section used to open with, and why it is gone
 ///
-/// The paired disarmed control for the first run is
-/// [`prove_forced_render_throw_on_the_shipped_binary`], which drives the same
-/// page variant through the same binary without the seam — so the only
-/// difference between the two is whether closing can succeed, and the
-/// surfaced typed error is the same either way (NFR-001).
+/// A first run drove a page whose first render throws — so a
+/// `PageRenderFailed` is already latched when the forced close fails — and
+/// asserted US1 scenario 1 end to end. The shell-hygiene post-merge review
+/// (RISK-2) found it vacuous, and the measurement is unambiguous: run the
+/// shipped binary on that variant with the seam armed and with it disarmed
+/// and the two transcripts are byte-identical — same exit code 1, same typed
+/// `PageRenderFailed` payload, no `WindowClose` on stderr either way.
 ///
-/// Falsifiability: with WP01's `handle.exit(...)` removed, neither run can
-/// end — the window is still open and nothing else will stop the loop — and
-/// both fail here as a named timeout rather than a silent stall. That is also
-/// what proves the seam armed: if it had not, removing the exit edge would
-/// change nothing.
+/// That is not an oversight to patch around, it is FR-002 working as
+/// specified: a `WindowClose` recorded second loses the latch and never
+/// reaches the operator, so "no `WindowClose` on stderr" is equally true when
+/// no close ever failed. Every assertion in that run held with the mechanism
+/// it named switched off, while its PASS line announced "with every close
+/// forced to fail" — a claim it never checked. It read as coverage of
+/// scenario 1 without constraining it, so it was removed rather than left
+/// standing as a proof that cannot fail.
+///
+/// Scenario 1 keeps the coverage that *can* fail:
+///
+/// - the exhausted-retry decision and the first-error-wins latch, with a real
+///   `WindowClose` recorded second, are proven in-module by
+///   `window.rs::a_recorded_render_failure_still_wins_over_a_later_close_failure`
+///   — invert the latch and it dies;
+/// - the exit edge that ends the loop lives in the single
+///   `close_window_once_with_retry` helper every arm closes through, and the
+///   run below exercises it end to end on the shipped binary;
+/// - the end-to-end surfacing of a typed `PageRenderFailed` from the shipped
+///   binary is [`prove_forced_render_throw_on_the_shipped_binary`] (T012),
+///   which is what the removed run was in fact re-proving.
+///
+/// Falsifiability: with WP01's `handle.exit(...)` removed the run below
+/// cannot end — the window is still open and nothing else will stop the loop
+/// — and it fails here as a named timeout rather than a silent stall. A
+/// rename of the product's seam constant is caught the same way round: an
+/// unarmed seam lets the scene close cleanly and exit 0, and the nonzero
+/// assertion below fires.
 fn prove_forced_double_close_failure_on_the_shipped_binary() {
     // The seam is `cfg(debug_assertions)` in the shipped binary, and
     // CARGO_BIN_EXE_* resolves to the same profile this test was built with.
@@ -4074,69 +4094,7 @@ fn prove_forced_double_close_failure_on_the_shipped_binary() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let (render_failed_prefix, window_close_prefix) = typed_shell_error_prefixes();
 
-    // ---- 1. a recorded PageRenderFailed outlives the forced close ---------
-    let variant_path = forced_throw_page_variant(manifest, "wp04-t013-forced-throw-index.html");
-    let label = "T013 forced double-close failure with a recorded render failure";
-    let (output, elapsed) = run_with_forced_close_failure(
-        manifest,
-        label,
-        "t013-forced-close-with-recorded-render-failure.log",
-        FORCED_CLOSE_PAGE_THROW_LIMIT,
-        |command| {
-            command.env("CREST_WEBVIEW_PAGE", &variant_path);
-        },
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "{label}: the process must end nonzero carrying the recorded failure \
-         (got {:?}):\n{stderr}",
-        output.status
-    );
-    // The surfaced error is the recorded PageRenderFailed, matched on the
-    // typed variant's own rendering and on its typed JSON detail — never on a
-    // fuzzy search of console noise.
-    let detail = stderr
-        .split_once(&render_failed_prefix)
-        .map(|(_, rest)| rest.lines().next().unwrap_or("").trim())
-        .unwrap_or_else(|| {
-            panic!("{label}: the recorded PageRenderFailed must surface on stderr:\n{stderr}")
-        });
-    let payload: Value = serde_json::from_str(detail).unwrap_or_else(|error| {
-        panic!(
-            "{label}: the surfaced error must be the recorded PageRenderFailed carrying \
-             the page's typed payload ({error}); detail: {detail}"
-        )
-    });
-    assert_eq!(
-        payload.get("name").and_then(Value::as_str),
-        Some("TypeError"),
-        "{label}: the recorded payload must name the thrown error: {payload}"
-    );
-    assert!(
-        payload.get("generation").and_then(Value::as_u64).is_some()
-            && payload
-                .get("stateHash")
-                .and_then(Value::as_str)
-                .is_some_and(|hash| !hash.is_empty()),
-        "{label}: the recorded payload must carry the failing document's identity: {payload}"
-    );
-    // FR-002's precedence, end to end: the WindowClose recorded second lost
-    // the latch and never reaches the operator.
-    assert!(
-        !stderr.contains(&window_close_prefix),
-        "{label}: the close failure is a consequence, not the cause — no typed \
-         WindowClose may surface once a PageRenderFailed is recorded:\n{stderr}"
-    );
-    println!(
-        "T013 forced double-close failure (prior error recorded): PASS (shipped binary \
-         exit={:?} after {elapsed:.1?} with every close forced to fail; the recorded \
-         PageRenderFailed surfaced with its typed payload and the second-recorded \
-         WindowClose did not)",
-        output.status.code()
-    );
-
-    // ---- 2. no prior error: the WindowClose itself is what surfaces -------
+    // No prior error: the WindowClose itself is what surfaces.
     let label = "T013 forced double-close failure with no prior error";
     let (output, elapsed) = run_with_forced_close_failure(
         manifest,

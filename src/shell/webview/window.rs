@@ -593,9 +593,10 @@ impl AppWindow for TauriWebviewWindow {
                                     // The same control-side seam the retired
                                     // adapter presents: the port's frame
                                     // callback credits live reports, and the
-                                    // qualifying-frame stream lets scenes
-                                    // block on "generation N painted"
-                                    // without sleeping (T006).
+                                    // qualifying-frame stream answers
+                                    // "generation N painted?" from recorded
+                                    // evidence when a scene polls it, instead
+                                    // of the scene sleeping (T006).
                                     frames.record(observation.clone());
                                     on_frame(observation);
                                 }
