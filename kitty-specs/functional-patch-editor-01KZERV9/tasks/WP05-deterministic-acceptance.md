@@ -142,12 +142,22 @@ would pass a naive "the rows are all there" test.
    vanishing, and that a workspace with no focused Patch marks the strip
    unavailable.
 
+5. **Whole-surface unavailable count** (closes analysis finding C2): project the
+   fixture, walk every PATCH surface — strip header, instrument selector,
+   envelope group, all three slot groups, and Utility — and assert the count of
+   rows marked unavailable is **zero**. `spec.md` SC-003 claims this across the
+   whole surface, not just the Utility panel; assert what the criterion claims.
+   Any deliberate exception must be one the Scope Decisions table defers, named
+   explicitly in the assertion rather than tolerated by a loose bound.
+
 **Files**:
 - `tests/functional_patch_editor.rs` (modified, ~150 lines)
 
 **Validation**:
 - [ ] The grouped shape is asserted structurally, not by counting rows
 - [ ] The flat-run negative fires
+- [ ] The whole-surface unavailable count is asserted at zero, with any deferred
+      exception named rather than absorbed
 
 ---
 
@@ -227,6 +237,17 @@ identity serves both" is.
 7. Assert a capability-declared read-only section is marked in text or shape, and
    a mid-preparation capability shows its lifecycle status rather than an empty
    section set.
+8. **Read-only surface summary has a production producer** (closes analysis
+   finding C3): the spec's Scope Decisions table claims FR-012 closes the control
+   kind that "is reachable only on a projection path no application state
+   produces". Assert that a capability-declared read-only detail section produces
+   one on a **production** projection path — mirroring how WP01 T001 asserts the
+   `Stepped` kind now has a producer. Selector reachability is not the claim;
+   production reachability is, and that distinction is exactly what Phase 4
+   recorded as false. If the fixture's installed capabilities declare no
+   read-only section, say so plainly and withdraw the claim from the Scope
+   Decisions table rather than manufacturing a fixture that exists only to
+   satisfy the assertion.
 
 **Files**:
 - `tests/functional_patch_editor.rs` (modified, ~200 lines)
@@ -235,6 +256,8 @@ identity serves both" is.
 - [ ] `detail_surface_identities == 1` while `detail_subjects_served == 2`
 - [ ] Return asserted against a non-first origin row
 - [ ] Both nesting directions refused
+- [ ] A read-only surface summary is produced on a production projection path,
+      or the claim is withdrawn from the spec with a recorded reason
 
 ---
 
