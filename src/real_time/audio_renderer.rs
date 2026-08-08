@@ -29,7 +29,17 @@ pub struct AudioRenderer<Boundary, Structural, Observation = DiscardAudioObserva
     rendered_frames: u64,
     commands_consumed: u64,
     routing_failures: u64,
+    voice_limit_refusals: u64,
     last_unknown_patch_id: Option<PatchId>,
+}
+
+/// Whether this message starts a note.
+///
+/// MIDI spells a note-off two ways, and only the sounding one is subject to the
+/// voice limit: a `NoteOn` at zero velocity releases a note and must never be
+/// refused, exactly like an explicit `NoteOff`.
+fn starts_a_note(message: crate::kernel::midi_message::MidiMessage) -> bool {
+    message.kind() == MidiMessageKind::NoteOn && message.data2() > 0
 }
 
 impl<Boundary, Structural> AudioRenderer<Boundary, Structural, DiscardAudioObservation>
@@ -72,6 +82,7 @@ where
             rendered_frames: 0,
             commands_consumed: 0,
             routing_failures: 0,
+            voice_limit_refusals: 0,
             last_unknown_patch_id: None,
         }
     }
@@ -116,6 +127,33 @@ where
             match command {
                 AudioCommand::PatchMidi { patch_id, message } => {
                     let matching_parameters = self.parameters.patch(patch_id).copied();
+                    // Voice-limit enforcement, ahead of dispatch.
+                    //
+                    // One fixed integer comparison between the Patch's
+                    // snapshot-carried limit and the note count the active-note
+                    // observer already maintains: no scan that grows with
+                    // polyphony, no allocation, no branch on capability. A Patch
+                    // already sounding its limit does not start the note — the
+                    // instrument is never told, and no note bit is set. Nothing
+                    // is stolen, truncated, or ended: ending a latched voice
+                    // here is exactly the destruction the callback contract
+                    // forbids, so the arriving note is refused instead.
+                    //
+                    // Only a sounding note-on is subject to this. Note-off,
+                    // all-notes-off, and every other message fall straight
+                    // through, because a limit that could swallow a note-off
+                    // would strand a latched voice. An identity the snapshot
+                    // does not carry is not tested here at all, so the routing
+                    // failure below stays the one report for it.
+                    if let Some(parameters) = matching_parameters {
+                        if starts_a_note(message)
+                            && self.active_notes.count_patch(patch_id)
+                                >= parameters.voice_limit().active_note_ceiling()
+                        {
+                            self.voice_limit_refusals = self.voice_limit_refusals.saturating_add(1);
+                            continue;
+                        }
+                    }
                     let dispatch_result = matching_parameters.map(|parameters| {
                         let (rack, _, _) = self.active_graph.callback_parts_mut();
                         rack.dispatch(patch_id, message, &parameters)
@@ -213,8 +251,16 @@ where
                 primary_active_notes,
                 patch_effect,
                 mix,
-            ),
+            )
+            .with_voice_limit_refusals(self.voice_limit_refusals),
         );
+    }
+
+    /// Places the refusal counter at an arbitrary point so a test can drive it
+    /// against its ceiling. Saturation is unreachable by rendering alone.
+    #[cfg(test)]
+    fn seed_voice_limit_refusals(&mut self, refusals: u64) {
+        self.voice_limit_refusals = refusals;
     }
 
     pub const fn active_revision(&self) -> GraphRevision {
@@ -1386,6 +1432,409 @@ mod tests {
 
         assert!(stems.is_empty());
         assert_eq!(graph.patch_audio().storage().len(), MAX_PATCHES);
+    }
+
+    // ---- Canonical voice limit enforcement (FR-009) -----------------------
+
+    /// Enforcement measured through the production render path: the Patch's own
+    /// canonical limit is projected by the production `ParameterSnapshot`
+    /// projection, published on the latest-scalar transport, and read by the
+    /// real `AudioRenderer::render`. Nothing here writes a limit straight into a
+    /// snapshot, so a limit that never left the aggregate would fail rather than
+    /// pass.
+    mod voice_limit {
+        use super::*;
+
+        struct LimitFixture {
+            provider: HiDefSoundFontCapability,
+            patches: Vec<Patch>,
+            dispatches: Arc<AtomicUsize>,
+            unused_dispatches: Arc<AtomicUsize>,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl LimitFixture {
+            fn new(limit: u16) -> Self {
+                let provider =
+                    crate::adapter::production_instruments::production_soundfont_capability()
+                        .unwrap();
+                let patch = Patch::new(
+                    PatchId::new(1).unwrap(),
+                    "Limited Patch".to_owned(),
+                    create_soundfont_config(
+                        &provider,
+                        SoundFontInstrument::new(0, 0, false).unwrap(),
+                    )
+                    .unwrap(),
+                    MidiChannel::new(0).unwrap(),
+                    PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
+                )
+                .with_voice_limit(limit)
+                .unwrap();
+                Self {
+                    provider,
+                    patches: vec![patch],
+                    dispatches: Arc::new(AtomicUsize::new(0)),
+                    unused_dispatches: Arc::new(AtomicUsize::new(0)),
+                    drops: Arc::new(AtomicUsize::new(0)),
+                }
+            }
+
+            fn patch_id(&self) -> PatchId {
+                self.patches[0].id()
+            }
+
+            fn dispatched(&self) -> usize {
+                self.dispatches.load(Ordering::Relaxed)
+            }
+
+            /// Projects canonical Patch state through the production
+            /// projection, optionally re-stating the Patch's limit first.
+            fn parameters(&self, generation: u64, limit: Option<u16>) -> ParameterSnapshot {
+                let registry = self.provider.registry().unwrap();
+                let patches: Vec<Patch> = self
+                    .patches
+                    .iter()
+                    .cloned()
+                    .map(|patch| match limit {
+                        Some(value) => patch.with_voice_limit(value).unwrap(),
+                        None => patch,
+                    })
+                    .collect();
+                ParameterSnapshot::project_patches(
+                    generation,
+                    GraphRevision::new(1).unwrap(),
+                    GlobalParameters::new(0.0).unwrap(),
+                    MixerState::default(),
+                    &patches,
+                    &registry,
+                )
+                .unwrap()
+            }
+
+            fn graph(&self) -> PreparedGraph {
+                let registry = self.provider.registry().unwrap();
+                let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer {
+                    capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+                    first_dispatches: Arc::clone(&self.dispatches),
+                    second_dispatches: Arc::clone(&self.unused_dispatches),
+                    drops: Arc::clone(&self.drops),
+                })];
+                PreparedGraphBuilder::new(&registry, &preparers)
+                    .build(
+                        GraphRevision::new(1).unwrap(),
+                        &self.patches,
+                        self.parameters(1, None),
+                        48_000.0,
+                        4,
+                    )
+                    .unwrap()
+            }
+
+            fn note_on(&self, note: u8) -> AudioCommand {
+                self.command(MidiMessageKind::NoteOn, note, 100)
+            }
+
+            fn command(&self, kind: MidiMessageKind, data1: u8, data2: u8) -> AudioCommand {
+                AudioCommand::patch_midi(
+                    self.patch_id(),
+                    MidiMessage::try_new(MidiChannel::new(0).unwrap(), kind, data1, data2).unwrap(),
+                )
+            }
+        }
+
+        /// A wider command bank than the shared `TestBoundary`, so one block can
+        /// carry more note-ons than any limit under test.
+        struct LimitBoundary {
+            commands: [Option<AudioCommand>; 24],
+            next_command: usize,
+            latest: ParameterSnapshot,
+        }
+
+        impl LimitBoundary {
+            fn new(latest: ParameterSnapshot, commands: &[AudioCommand]) -> Self {
+                let mut boundary = Self {
+                    commands: [None; 24],
+                    next_command: 0,
+                    latest,
+                };
+                boundary.reload(latest, commands);
+                boundary
+            }
+
+            fn reload(&mut self, latest: ParameterSnapshot, commands: &[AudioCommand]) {
+                assert!(commands.len() <= self.commands.len());
+                self.commands = [None; 24];
+                for (slot, command) in self.commands.iter_mut().zip(commands) {
+                    *slot = Some(*command);
+                }
+                self.next_command = 0;
+                self.latest = latest;
+            }
+        }
+
+        impl AudioThreadBoundary for LimitBoundary {
+            fn pop_command(&mut self) -> Option<AudioCommand> {
+                let command = self.commands.get_mut(self.next_command)?.take();
+                if command.is_some() {
+                    self.next_command += 1;
+                }
+                command
+            }
+
+            fn read_latest_parameters(&mut self) -> ParameterSnapshot {
+                self.latest
+            }
+        }
+
+        fn renderer(
+            fixture: &LimitFixture,
+            commands: &[AudioCommand],
+            limit: Option<u16>,
+        ) -> AudioRenderer<LimitBoundary, TestStructural, TestObservation> {
+            let boundary = LimitBoundary::new(fixture.parameters(2, limit), commands);
+            AudioRenderer::with_observation(
+                boundary,
+                TestStructural::new(),
+                fixture.graph(),
+                TestObservation::default(),
+            )
+        }
+
+        /// The load-bearing claim. A Patch already sounding its limit does not
+        /// start the arriving note: the instrument is never told, no note bit is
+        /// set, every sounding voice stays latched, and the refusal is counted.
+        ///
+        /// This is the test T006 falsifies. Removing the refusal branch in
+        /// `render_bounded_block` makes it fail on the dispatch count and on the
+        /// refusal count together.
+        #[test]
+        fn a_patch_already_sounding_its_limit_does_not_start_the_note() {
+            let fixture = LimitFixture::new(3);
+            let commands: Vec<AudioCommand> =
+                (60_u8..65).map(|note| fixture.note_on(note)).collect();
+            let mut renderer = renderer(&fixture, &commands, None);
+            let mut output = [0.0_f32; 8];
+
+            renderer.render(&mut output);
+
+            assert_eq!(
+                fixture.dispatched(),
+                3,
+                "only the first three note-ons may reach the prepared instrument"
+            );
+            assert_eq!(
+                renderer.active_notes.count_patch(fixture.patch_id()),
+                3,
+                "a refused note-on must not set a note bit"
+            );
+            assert_eq!(renderer.observation.latest.active_notes(), 3);
+            assert_eq!(
+                renderer.observation.latest.voice_limit_refusals(),
+                2,
+                "both note-ons beyond the limit are counted, once each"
+            );
+            assert_eq!(
+                renderer.observation.latest.commands_consumed(),
+                5,
+                "a refused note-on is still a consumed command"
+            );
+            assert_eq!(renderer.observation.latest.routing_failures(), 0);
+            assert_eq!(
+                fixture.drops.load(Ordering::Relaxed),
+                0,
+                "refusing a start must never destroy a prepared instrument"
+            );
+        }
+
+        /// Both halves of the lowered-limit edge case: voices already sounding
+        /// are untouched by a limit lowered beneath them, and the new limit
+        /// applies at the very next note-on.
+        #[test]
+        fn a_limit_lowered_beneath_the_sounding_count_leaves_those_voices_latched() {
+            let fixture = LimitFixture::new(4);
+            let commands: Vec<AudioCommand> = [60_u8, 62, 64, 65]
+                .iter()
+                .map(|note| fixture.note_on(*note))
+                .collect();
+            let mut renderer = renderer(&fixture, &commands, None);
+            let mut output = [0.0_f32; 8];
+
+            renderer.render(&mut output);
+            assert_eq!(fixture.dispatched(), 4);
+            assert_eq!(renderer.active_notes.count_patch(fixture.patch_id()), 4);
+            assert_eq!(renderer.observation.latest.voice_limit_refusals(), 0);
+
+            renderer
+                .boundary
+                .reload(fixture.parameters(3, Some(2)), &[fixture.note_on(67)]);
+            renderer.render(&mut output);
+
+            assert_eq!(
+                renderer.active_notes.count_patch(fixture.patch_id()),
+                4,
+                "a lowered limit never reaches into the callback to end latched voices"
+            );
+            assert_eq!(
+                fixture.dispatched(),
+                4,
+                "the next note-on is refused under the lowered limit"
+            );
+            assert_eq!(renderer.observation.latest.voice_limit_refusals(), 1);
+            assert_eq!(fixture.drops.load(Ordering::Relaxed), 0);
+        }
+
+        /// A limit that could swallow a note-off would strand a latched voice,
+        /// so every message that is not a sounding note-on falls straight
+        /// through — including a zero-velocity note-on, which is a release.
+        #[test]
+        fn the_limit_never_refuses_a_release_or_any_non_note_message() {
+            let fixture = LimitFixture::new(1);
+            let commands = [
+                fixture.note_on(60),
+                fixture.command(MidiMessageKind::ControlChange, 7, 90),
+                fixture.command(MidiMessageKind::ProgramChange, 3, 0),
+                fixture.command(MidiMessageKind::ChannelPressure, 40, 0),
+                fixture.command(MidiMessageKind::PitchBend, 0, 96),
+                fixture.command(MidiMessageKind::NoteOn, 61, 0),
+                fixture.command(MidiMessageKind::NoteOff, 60, 0),
+                fixture.command(MidiMessageKind::AllNotesOff, 0, 0),
+            ];
+            let mut renderer = renderer(&fixture, &commands, None);
+            let mut output = [0.0_f32; 8];
+
+            renderer.render(&mut output);
+
+            assert_eq!(
+                fixture.dispatched(),
+                commands.len(),
+                "every message reached the instrument; the limit refused none of them"
+            );
+            assert_eq!(
+                renderer.observation.latest.voice_limit_refusals(),
+                0,
+                "nothing but a sounding note-on beyond the limit may be refused"
+            );
+            assert_eq!(
+                renderer.active_notes.count_patch(fixture.patch_id()),
+                0,
+                "the release and the all-notes-off both landed"
+            );
+        }
+
+        /// The limit check must not shadow the routing-failure path: an identity
+        /// the snapshot does not carry is still one preserved routing failure.
+        #[test]
+        fn an_unknown_patch_identity_still_reports_a_routing_failure() {
+            let fixture = LimitFixture::new(1);
+            let unknown = PatchId::new(99).unwrap();
+            let commands = [
+                fixture.note_on(60),
+                AudioCommand::patch_midi(
+                    unknown,
+                    MidiMessage::try_new(
+                        MidiChannel::new(0).unwrap(),
+                        MidiMessageKind::NoteOn,
+                        62,
+                        100,
+                    )
+                    .unwrap(),
+                ),
+                fixture.note_on(64),
+            ];
+            let mut renderer = renderer(&fixture, &commands, None);
+            let mut output = [0.0_f32; 8];
+
+            renderer.render(&mut output);
+
+            assert_eq!(
+                renderer.observation.latest.routing_failures(),
+                1,
+                "the unknown identity is reported as a routing failure, not as a refusal"
+            );
+            assert_eq!(
+                renderer.observation.latest.last_unknown_patch_id(),
+                Some(unknown)
+            );
+            assert_eq!(
+                renderer.observation.latest.voice_limit_refusals(),
+                1,
+                "the known Patch's own second note-on is the one refusal"
+            );
+            assert_eq!(fixture.dispatched(), 1);
+        }
+
+        /// The callback contract holds while the limit is biting: no allocation,
+        /// no deallocation, and no prepared instrument destroyed.
+        #[test]
+        fn enforcing_the_limit_allocates_nothing_and_destroys_nothing() {
+            let fixture = LimitFixture::new(2);
+            let mut renderer = renderer(&fixture, &[], None);
+            let mut output = [0.0_f32; 8];
+
+            // Warm the block once so the measurement covers steady-state
+            // rendering with enforcement, not first-block preparation.
+            renderer.render(&mut output);
+
+            let commands: Vec<AudioCommand> =
+                (60_u8..66).map(|note| fixture.note_on(note)).collect();
+            renderer
+                .boundary
+                .reload(fixture.parameters(3, None), &commands);
+
+            begin_memory_count();
+            renderer.render(&mut output);
+            let (allocations, deallocations) = finish_memory_count();
+
+            assert_eq!(
+                renderer.observation.latest.voice_limit_refusals(),
+                4,
+                "the measured block actually refused notes"
+            );
+            assert_eq!(allocations, 0, "enforcement must not allocate");
+            assert_eq!(deallocations, 0, "enforcement must not deallocate");
+            assert_eq!(
+                fixture.drops.load(Ordering::Relaxed),
+                0,
+                "enforcement must destroy nothing"
+            );
+            assert!(output.iter().all(|sample| sample.is_finite()));
+        }
+
+        /// The refusal counter saturates like every other callback counter,
+        /// rather than wrapping back through zero and reporting a limit that
+        /// never bit.
+        ///
+        /// The counter is placed one below its ceiling and then driven past it
+        /// by three real refusals, so the assertion discriminates three ways at
+        /// once: wrapping would land on 1, an uncounted refusal would leave it
+        /// one short, and a defeated limit would leave it two short.
+        #[test]
+        fn the_refusal_counter_saturates_rather_than_wrapping() {
+            let fixture = LimitFixture::new(1);
+            let mut renderer = renderer(&fixture, &[fixture.note_on(60)], None);
+            let mut output = [0.0_f32; 8];
+
+            renderer.render(&mut output);
+            assert_eq!(renderer.observation.latest.voice_limit_refusals(), 0);
+            assert_eq!(renderer.active_notes.count_patch(fixture.patch_id()), 1);
+
+            renderer.seed_voice_limit_refusals(u64::MAX - 1);
+            let beyond: Vec<AudioCommand> = [62_u8, 64, 65]
+                .iter()
+                .map(|n| fixture.note_on(*n))
+                .collect();
+            renderer
+                .boundary
+                .reload(fixture.parameters(3, None), &beyond);
+            renderer.render(&mut output);
+
+            assert_eq!(
+                renderer.observation.latest.voice_limit_refusals(),
+                u64::MAX,
+                "the counter holds at its ceiling instead of wrapping to zero"
+            );
+        }
     }
 
     // ---- Full-occupancy measurements (C-RT-1/3/7, NFR-001/002/003) --------

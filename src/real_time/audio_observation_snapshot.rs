@@ -17,6 +17,12 @@ pub struct AudioObservationSnapshot {
     commands_consumed: u64,
     active_notes: u32,
     routing_failures: u64,
+    /// How many note-ons the Patch's snapshot-carried voice limit refused.
+    ///
+    /// This is what makes the limit falsifiable: a limit defeated inside the
+    /// callback shows zero refusals under a fixture that must exceed it, which
+    /// is a failing predicate rather than an unnoticed absence of silence.
+    voice_limit_refusals: u64,
     last_unknown_patch_id: Option<PatchId>,
     primary_patch_id: Option<PatchId>,
     primary_patch_rms: f32,
@@ -172,6 +178,7 @@ impl AudioObservationSnapshot {
             commands_consumed,
             active_notes,
             routing_failures,
+            voice_limit_refusals: 0,
             last_unknown_patch_id,
             primary_patch_id,
             primary_patch_rms,
@@ -444,6 +451,7 @@ impl AudioObservationSnapshot {
             commands_consumed,
             active_notes,
             routing_failures,
+            voice_limit_refusals: 0,
             last_unknown_patch_id,
             primary_patch_id,
             primary_patch_rms,
@@ -459,6 +467,17 @@ impl AudioObservationSnapshot {
             non_finite_samples,
             clipped_samples,
         }
+    }
+
+    /// Carries the callback's saturating refusal count onto this observation.
+    ///
+    /// The count travels the same bounded path `routing_failures` uses: a fixed
+    /// numeric field on the copied latest-value observation, with no allocation,
+    /// formatting, logging, or backpressure at the publishing site.
+    #[must_use]
+    pub const fn with_voice_limit_refusals(mut self, voice_limit_refusals: u64) -> Self {
+        self.voice_limit_refusals = voice_limit_refusals;
+        self
     }
 
     pub const fn sequence(self) -> u64 {
@@ -484,6 +503,10 @@ impl AudioObservationSnapshot {
     }
     pub const fn routing_failures(self) -> u64 {
         self.routing_failures
+    }
+    /// Returns how many note-ons the snapshot-carried voice limit refused.
+    pub const fn voice_limit_refusals(self) -> u64 {
+        self.voice_limit_refusals
     }
     pub const fn last_unknown_patch_id(self) -> Option<PatchId> {
         self.last_unknown_patch_id
@@ -567,5 +590,33 @@ mod tests {
         assert_copy::<AudioObservationSnapshot>();
         assert!(!core::mem::needs_drop::<AudioObservationSnapshot>());
         assert_eq!(AudioObservationSnapshot::default().sequence(), 0);
+    }
+
+    /// The refusal count is one more fixed numeric field: it starts at zero,
+    /// carries verbatim, and adding it destroys neither the `Copy` nor the
+    /// destructor-free character of the observation.
+    #[test]
+    fn the_refusal_counter_defaults_to_zero_and_carries_verbatim() {
+        let empty = AudioObservationSnapshot::default();
+        assert_eq!(empty.voice_limit_refusals(), 0);
+
+        let counted = empty.with_voice_limit_refusals(7);
+        assert_eq!(counted.voice_limit_refusals(), 7);
+        assert_eq!(
+            counted.routing_failures(),
+            empty.routing_failures(),
+            "the refusal counter is independent of the routing counter"
+        );
+        assert!(!core::mem::needs_drop::<AudioObservationSnapshot>());
+        assert_eq!(
+            core::mem::size_of_val(&counted),
+            core::mem::size_of::<AudioObservationSnapshot>()
+        );
+        assert_eq!(
+            empty
+                .with_voice_limit_refusals(u64::MAX)
+                .voice_limit_refusals(),
+            u64::MAX
+        );
     }
 }
