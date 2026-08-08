@@ -35,6 +35,7 @@ owned_files:
 - src/bin/crest_synth.rs
 - Makefile
 - ROADMAP.md
+- src/adapter/atomic_audio_observation.rs
 priority: P1
 role: implementer
 status: planned
@@ -104,6 +105,15 @@ refuses rather than degrading. The external LS28AG700N must be awake to run it.
 witness schema exactly.
 
 **Steps**:
+0. **Handoff from WP01**: `src/adapter/atomic_audio_observation.rs` is now yours
+   (it was unowned; assigned after WP01 surfaced it). It is the atomic
+   latest-value transport `routing_failures` uses, and it has no
+   `voice_limit_refusals` field — so WP01's refusal counter currently reads back
+   as **0** through that reader. Add an `AtomicU64` field with store/load
+   mirroring `routing_failures`. Without this, `voiceLimitRefusals` in your
+   observation is structurally incapable of being non-zero, and the witness
+   predicate `voice_limit_refusals > 0` would fail for a reason that has nothing
+   to do with whether the limit works.
 1. Create `src/testing/functional_patch_editor_observation.rs` with every field
    the witness declares, in the declared camelCase-on-the-wire form.
 2. Every field is **measured** from the production reducer, projector, snapshot

@@ -8,6 +8,9 @@ requirement_refs:
 planning_base_branch: feat/functional-patch-editor
 merge_target_branch: feat/functional-patch-editor
 branch_strategy: Planning artifacts for this mission were generated on feat/functional-patch-editor. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/functional-patch-editor unless the human explicitly redirects the landing branch.
+base_branch: kitty/mission-functional-patch-editor-01KZERV9
+base_commit: 0fa3b03713a0b43b6c3f65575a091ae163b408fd
+created_at: '2026-08-08T23:11:26.455259+00:00'
 subtasks:
 - T001
 - T002

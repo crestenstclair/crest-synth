@@ -37,6 +37,7 @@ owned_files:
 - src/control/app_state.rs
 - src/control/serialized_state.rs
 - src/control/semantic_action.rs
+- src/control/state_tree.rs
 priority: P1
 role: implementer
 status: planned
@@ -88,6 +89,50 @@ satisfy, including the non-nesting rule and the cross-switch behaviour.
 - **Final merge target**: `feat/functional-patch-editor`
 - Execution worktrees are allocated per computed lane (see `lanes.json`).
 - Do not create ad-hoc branches outside the lane workflow.
+
+## Handoffs from WP01 — do these first
+
+WP01 built `VoiceLimit` and enforced it in the callback, and raised three items
+that land inside **your** ownership. They are not optional; WP01's own validation
+bullets depend on them and it recorded them honestly rather than reaching outside
+its map.
+
+**H1 — Seed the limit at the production installation site.**
+`src/control/app_state.rs::install_patches` is the only installation site with
+registry access. It must call `patch.seed_voice_limit(descriptor.voice_policy())`
+for each installed Patch. Until it does, a Braids Patch carries the
+engine-managed ceiling of 64 rather than its own 16, and WP01's T002 bullet
+"every fixture Patch has a real limit after installation" is true only at WP01's
+own seam. Prove it here against both real descriptors.
+
+**H2 — Apply the clamp in canonical state on an engine swap.**
+`src/control/app_state.rs:1169` commits an engine swap with
+`patch.set_instrument_config(candidate_config)`. It must call
+`replace_instrument_config(config, policy)` so a narrowing ceiling clamps in
+canonical state and returns the typed `VoiceLimitCarryOver` outcome. WP01
+deliberately did **not** clamp in the preparation worker, because clamping only
+the candidate would put the candidate snapshot and canonical state out of step —
+do not reintroduce that by clamping anywhere but here.
+
+**H3 — Enumerate `voiceLimit` in the leaf descriptor.**
+`src/control/state_tree.rs` is now yours (it was unowned; assigned after WP01
+surfaced it). WP01 implemented snapshot serialization of the limit, hit two
+failures here, and correctly backed the serialization out rather than editing a
+file it did not own — so the limit is currently carried **unserialized**. To
+finish it you must:
+  1. add `parameters.patches[].voiceLimit` to the hardcoded
+     `BASE_SERIALIZED_LEAF_DESCRIPTOR` mirror,
+  2. update the hardcoded expected JSON in
+     `serializes_every_state_text_and_audio_property_with_stable_names`,
+  3. decide on a `StateTree::SCHEMA_VERSION` bump (currently 12) and say why in
+     the commit message either way,
+  4. re-enable the serialization in `src/real_time/parameter_snapshot.rs`.
+
+  That fourth step is in WP01's territory. It is a one-line re-enable of code
+  WP01 already wrote and backed out; make it, and say so in your completion
+  report with a one-line rationale. The alternative — leaving the value carried
+  but unserialized — would mean the exact-match invariant passes because the
+  field is invisible, which is the quiet kind of green this project rejects.
 
 ## Subtasks
 
