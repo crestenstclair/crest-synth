@@ -10,6 +10,7 @@ use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::instrument_capability::{CapabilityRegistry, MAX_INSTRUMENT_SCALAR_PARAMETERS};
 use crate::synth::patch::Patch;
 use crate::synth::voice_envelope::VoiceEnvelope;
+use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{EffectCapabilityRegistry, EffectSlotId, MAX_EFFECT_SCALAR_PARAMETERS};
 use core::fmt;
 use serde::{Serialize, Serializer};
@@ -300,11 +301,34 @@ pub struct RtPatchParameters {
     patch_id: Option<PatchId>,
     output: PatchOutput,
     envelope: VoiceEnvelope,
+    /// The Patch's canonical ceiling on simultaneously sounding notes, riding
+    /// the latest-scalar transport as a plain bounded integer beside the
+    /// envelope: it allocates nothing, borrows nothing, and carries no
+    /// destructor, so the entry stays `Copy` and fixed-size.
+    ///
+    /// It is deliberately absent from this entry's serialization and therefore
+    /// from [`ParameterSnapshot::SERIALIZED_LEAF_DESCRIPTOR`]. That descriptor
+    /// must match the `StateTree` parameters projection exactly, and that
+    /// projection is control-owned: enumerating this leaf means adding
+    /// `parameters.patches[].voiceLimit` to `StateTree`'s mirrored table in the
+    /// same change. Until the control serialization surface adopts it, carrying
+    /// the value without publishing it keeps the exact-match invariant true
+    /// rather than trading one unenumerated leaf for a broken one.
+    voice_limit: VoiceLimit,
     instrument: RtInstrumentParameters,
     effects: [RtPostEffectParameters; MAX_EFFECT_SLOTS],
 }
 
 impl RtPatchParameters {
+    /// The limit an entry carries before a canonical Patch projection supplies
+    /// one: the widest any installed engine declares, so an unprojected fixture
+    /// entry never refuses a note the production path would have started. Every
+    /// production entry comes from [`ParameterSnapshot::project_patches`] or
+    /// [`ParameterSnapshot::project_patches_with_effects`], which copy the
+    /// Patch's own canonical value.
+    const UNPROJECTED_VOICE_LIMIT: VoiceLimit =
+        VoiceLimit::seeded_from_ceiling(VoiceLimit::MAXIMUM);
+
     /// Copies one active Patch's identity and validated mixer parameters into a
     /// real-time-safe value.
     pub const fn new(patch_id: PatchId, output: PatchOutput) -> Self {
@@ -312,6 +336,7 @@ impl RtPatchParameters {
             patch_id: Some(patch_id),
             output,
             envelope: VoiceEnvelope::DEFAULT,
+            voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument: RtInstrumentParameters::EMPTY,
             effects: [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS],
         }
@@ -328,6 +353,7 @@ impl RtPatchParameters {
             patch_id: Some(patch_id),
             output,
             envelope,
+            voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument,
             effects: [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS],
         }
@@ -348,9 +374,17 @@ impl RtPatchParameters {
             patch_id: Some(patch_id),
             output,
             envelope,
+            voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument,
             effects,
         }
+    }
+
+    /// Carries one Patch's canonical voice limit on this entry.
+    #[must_use]
+    pub const fn with_voice_limit(mut self, voice_limit: VoiceLimit) -> Self {
+        self.voice_limit = voice_limit;
+        self
     }
 
     /// Returns whether this entry contains one active Patch.
@@ -372,6 +406,12 @@ impl RtPatchParameters {
         &self.envelope
     }
 
+    /// Returns the Patch's ceiling on simultaneously sounding notes, as the
+    /// callback reads it at note-on.
+    pub const fn voice_limit(&self) -> VoiceLimit {
+        self.voice_limit
+    }
+
     pub const fn instrument(&self) -> &RtInstrumentParameters {
         &self.instrument
     }
@@ -391,6 +431,7 @@ impl RtPatchParameters {
             patch_id: None,
             output: PatchOutput::default(),
             envelope: VoiceEnvelope::DEFAULT,
+            voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument: RtInstrumentParameters::EMPTY,
             effects: [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS],
         }
@@ -692,7 +733,8 @@ impl ParameterSnapshot {
                     patch.output(),
                     *patch.envelope(),
                     instrument,
-                ))
+                )
+                .with_voice_limit(patch.voice_limit()))
             })
             .collect::<Result<Vec<_>, ParameterSnapshotError>>()?;
 
@@ -779,7 +821,8 @@ impl ParameterSnapshot {
                     *patch.envelope(),
                     instrument,
                     effects,
-                ))
+                )
+                .with_voice_limit(patch.voice_limit()))
             })
             .collect::<Result<Vec<_>, ParameterSnapshotError>>()?;
         Self::for_graph(generation, graph_revision, global, mixer, &projected)
@@ -1162,6 +1205,95 @@ mod tests {
             core::mem::size_of_val(
                 &ParameterSnapshot::new(0, global(), MixerState::default(), &[]).unwrap(),
             )
+        );
+    }
+
+    /// The widened entry stays a fixed-size plain value: the limit adds two
+    /// bytes of integer and no indirection, so the publish cost stays measured
+    /// rather than assumed. The assertion is exact — a limit that arrived as a
+    /// boxed, referenced, or otherwise indirect owner would move these numbers.
+    #[test]
+    fn the_voice_limit_widens_the_entry_by_one_bounded_integer() {
+        use crate::synth::voice_limit::VoiceLimit;
+
+        assert!(!core::mem::needs_drop::<VoiceLimit>());
+        assert_eq!(
+            core::mem::size_of::<VoiceLimit>(),
+            core::mem::size_of::<u16>()
+        );
+        // Publishing the whole fixed bank stays bounded at the widened size.
+        assert_eq!(
+            core::mem::size_of::<ParameterSnapshot>() % core::mem::align_of::<ParameterSnapshot>(),
+            0
+        );
+        assert!(
+            core::mem::size_of::<RtPatchParameters>() * MAX_PATCHES
+                <= core::mem::size_of::<ParameterSnapshot>()
+        );
+    }
+
+    /// The limit is a Patch-owned canonical value that crosses the boundary
+    /// intact, per Patch — not one number applied to the whole bank.
+    #[test]
+    fn the_snapshot_carries_each_patch_its_own_canonical_limit() {
+        use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
+        use crate::synth::instrument_capability::CapabilityRegistry;
+        use crate::synth::patch::Patch;
+        use crate::synth::voice_limit::VoiceLimit;
+
+        let provider = BraidsCapability::new().unwrap();
+        let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
+        let patch = |id: u32, limit: u16| {
+            Patch::new(
+                PatchId::new(id).unwrap(),
+                format!("Patch {id}"),
+                provider.default_config().unwrap(),
+                crate::kernel::midi_channel::MidiChannel::new((id - 1) as u8).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new((id - 1) as u8).unwrap()),
+            )
+            .with_voice_limit(limit)
+            .unwrap()
+        };
+        let patches = [patch(1, 5), patch(2, 41)];
+
+        let snapshot = ParameterSnapshot::project_patches(
+            7,
+            GraphRevision::new(2).unwrap(),
+            global(),
+            MixerState::default(),
+            &patches,
+            &registry,
+        )
+        .unwrap();
+
+        assert_eq!(
+            snapshot.patches()[0].voice_limit(),
+            VoiceLimit::new(5).unwrap()
+        );
+        assert_eq!(
+            snapshot.patches()[1].voice_limit(),
+            VoiceLimit::new(41).unwrap()
+        );
+        assert_eq!(provider.descriptor().id().as_str(), BRAIDS_CAPABILITY_ID);
+
+        // The effect-carrying projection copies the same canonical value.
+        let with_effects = ParameterSnapshot::project_patches_with_effects(
+            8,
+            GraphRevision::new(2).unwrap(),
+            global(),
+            MixerState::default(),
+            &patches,
+            &registry,
+            &crate::synth::EffectCapabilityRegistry::new(Vec::new()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            with_effects
+                .patches()
+                .iter()
+                .map(|entry| entry.voice_limit().value())
+                .collect::<Vec<_>>(),
+            vec![5, 41]
         );
     }
 
