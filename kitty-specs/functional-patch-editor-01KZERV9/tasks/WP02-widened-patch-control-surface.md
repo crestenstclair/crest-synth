@@ -37,6 +37,7 @@ owned_files:
 - src/control/app_state.rs
 - src/control/serialized_state.rs
 - src/control/semantic_action.rs
+- src/control/state_tree.rs
 priority: P1
 role: implementer
 status: planned
@@ -88,6 +89,72 @@ satisfy, including the non-nesting rule and the cross-switch behaviour.
 - **Final merge target**: `feat/functional-patch-editor`
 - Execution worktrees are allocated per computed lane (see `lanes.json`).
 - Do not create ad-hoc branches outside the lane workflow.
+
+## Handoffs from WP01 — do these first
+
+WP01 built `VoiceLimit` and enforced it in the callback, and raised three items
+that land inside **your** ownership. They are not optional; WP01's own validation
+bullets depend on them and it recorded them honestly rather than reaching outside
+its map.
+
+**H1 — Seed the limit at the production installation site.**
+`src/control/app_state.rs::install_patches` is the only installation site with
+registry access. It must call `patch.seed_voice_limit(descriptor.voice_policy())`
+for each installed Patch. Until it does, a Braids Patch carries the
+engine-managed ceiling of 64 rather than its own 16, and WP01's T002 bullet
+"every fixture Patch has a real limit after installation" is true only at WP01's
+own seam. Prove it here against both real descriptors.
+
+**H2 — Apply the clamp in canonical state on an engine swap.**
+`src/control/app_state.rs:1169` commits an engine swap with
+`patch.set_instrument_config(candidate_config)`. It must call
+`replace_instrument_config(config, policy)` so a narrowing ceiling clamps in
+canonical state and returns the typed `VoiceLimitCarryOver` outcome. WP01
+deliberately did **not** clamp in the preparation worker, because clamping only
+the candidate would put the candidate snapshot and canonical state out of step —
+do not reintroduce that by clamping anywhere but here.
+
+**H3 — Enumerate `voiceLimit` in the leaf descriptor.**
+`src/control/state_tree.rs` is now yours (it was unowned; assigned after WP01
+surfaced it). WP01 implemented snapshot serialization of the limit, hit two
+failures here, and correctly backed the serialization out rather than editing a
+file it did not own — so the limit is currently carried **unserialized**. To
+finish it you must:
+  1. add `parameters.patches[].voiceLimit` to the hardcoded
+     `BASE_SERIALIZED_LEAF_DESCRIPTOR` mirror,
+  2. update the hardcoded expected JSON in
+     `serializes_every_state_text_and_audio_property_with_stable_names`,
+  3. decide on a `StateTree::SCHEMA_VERSION` bump (currently 12) and say why in
+     the commit message either way,
+  4. re-enable the serialization in `src/real_time/parameter_snapshot.rs`.
+
+  That fourth step is in WP01's territory. It is a one-line re-enable of code
+  WP01 already wrote and backed out; make it, and say so in your completion
+  report with a one-line rationale.
+
+  **Why this is now unambiguous.** WP01's reviewer found that the crest-spec's
+  leaf-descriptor invariant never named `voiceLimit` — the crest-spec was widened
+  to carry the value without amending the enumeration, so WP01's prompt demanded
+  something the declaration did not require. The declaration wins over a prompt,
+  and WP01 was right to back out. That gap has since been closed deliberately in
+  `.kittify/crest-spec/contexts/realtime.yaml`: the enumeration now names
+  `voiceLimit`, on the reasoning that a canonical value which crosses the
+  real-time boundary and changes what is audible must be visible in the trace, or
+  no measured proof can correlate it — and WP06's live scene has to correlate
+  exactly that. Enumerate it.
+
+  **While you are in `parameter_snapshot.rs`**, correct one overclaiming test
+  WP01's reviewer identified: `the_voice_limit_widens_the_entry_by_one_bounded_integer`
+  (around line 1211). Its docstring claims "The assertion is exact — a limit that
+  arrived as a boxed, referenced, or otherwise indirect owner would move these
+  numbers." Both of its assertions are tautologies:
+  `size_of::<T>() % align_of::<T>() == 0` holds for every Rust type, and
+  `size_of::<RtPatchParameters>() * MAX_PATCHES <= size_of::<ParameterSnapshot>()`
+  is trivially true because the snapshot embeds that array plus six other fields.
+  The T003 bullets it claims are genuinely covered by two stronger pre-existing
+  tests that still pass at the widened size, so nothing is uncovered — but a
+  false rigor claim in a test docstring is worse than no test. Either make the
+  assertion exact or delete it and say which in your commit message.
 
 ## Subtasks
 
