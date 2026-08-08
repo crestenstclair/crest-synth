@@ -1,7 +1,7 @@
 {
-  "event_count": 4,
-  "last_event_id": "01KZHT4ZKS7V682WGDKJT9RVQG",
-  "materialized_at": "2026-08-08T23:08:25.082056+00:00",
+  "event_count": 5,
+  "last_event_id": "01KZHT50EGDPJGRCQJAR5WA1D3",
+  "materialized_at": "2026-08-08T23:08:25.936537+00:00",
   "mission_number": "",
   "mission_slug": "functional-patch-editor-01KZERV9",
   "mission_type": "software-dev",
@@ -14,7 +14,7 @@
     "for_review": 0,
     "in_progress": 0,
     "in_review": 0,
-    "planned": 4
+    "planned": 5
   },
   "work_packages": {
     "WP01": {
@@ -44,6 +44,13 @@
       "lane": "planned",
       "last_event_id": "01KZHT4ZKS7V682WGDKJT9RVQG",
       "last_transition_at": "2026-08-08T23:08:25.082056+00:00"
+    },
+    "WP05": {
+      "actor": "finalize-tasks",
+      "force_count": 0,
+      "lane": "planned",
+      "last_event_id": "01KZHT50EGDPJGRCQJAR5WA1D3",
+      "last_transition_at": "2026-08-08T23:08:25.936537+00:00"
     }
   }
 }
