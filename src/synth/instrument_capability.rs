@@ -158,6 +158,28 @@ pub enum VoicePolicy {
     EngineManaged,
 }
 
+impl VoicePolicy {
+    /// Returns how many of one Patch's notes this capability can sound at once.
+    ///
+    /// A `FixedPerPatch` capability declares its own per-Patch capacity
+    /// directly. `EngineManaged` delegates allocation to one Patch-local engine
+    /// instance prepared with
+    /// [`ENGINE_MANAGED_POLYPHONY_CEILING`](crate::synth::voice_limit::ENGINE_MANAGED_POLYPHONY_CEILING)
+    /// voice slots; the variant carries no per-capability number because
+    /// exactly one engine-managed capability is installed, and that constant
+    /// documents the pinning that keeps the two in step.
+    ///
+    /// This is the seeding oracle for [`crate::synth::VoiceLimit`]: each Patch's
+    /// limit comes from its own capability's ceiling, never from a value shared
+    /// across capabilities.
+    pub const fn polyphony_ceiling(self) -> u16 {
+        match self {
+            Self::FixedPerPatch { voices } => voices,
+            Self::EngineManaged => crate::synth::voice_limit::ENGINE_MANAGED_POLYPHONY_CEILING,
+        }
+    }
+}
+
 /// A semantic scalar adjustment independent of keyboard/controller bindings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParameterAdjustment {

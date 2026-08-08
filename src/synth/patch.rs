@@ -3,10 +3,11 @@ use crate::kernel::patch_id::PatchId;
 use crate::mixer::patch_output::PatchOutput;
 use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
 use crate::synth::instrument_capability::{
-    CapabilityDescriptor, CapabilityError, InstrumentConfig, ParameterUpdate,
+    CapabilityDescriptor, CapabilityError, InstrumentConfig, ParameterUpdate, VoicePolicy,
 };
 use crate::synth::parameter_id::ParameterId;
 use crate::synth::voice_envelope::{VoiceEnvelope, VoiceEnvelopeParameter};
+use crate::synth::voice_limit::{VoiceLimit, VoiceLimitError};
 use crate::synth::{EffectSlotId, PostEffectConfig};
 use core::fmt;
 use serde::{Deserialize, Serialize};
@@ -86,10 +87,24 @@ pub struct Patch {
     /// consumer reads positions exactly as they were written and a gapped
     /// chain can never be silently renumbered by a round trip.
     effects: [Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
+    /// The canonical Patch-owned ceiling on simultaneously sounding notes.
+    ///
+    /// Patch-local and following the Patch, exactly like the envelope and the
+    /// output route. It is seeded from the Patch's own capability at
+    /// installation ([`Patch::installed`], [`Patch::seed_voice_limit`]) so no
+    /// Patch starts unlimited-by-omission, and thereafter it changes only
+    /// through the canonical reducer.
+    voice_limit: VoiceLimit,
 }
 
 impl Patch {
-    /// Creates an installed patch from validated domain values.
+    /// Creates a patch whose capability's voice policy is not resolved here.
+    ///
+    /// The limit seeds to the engine-managed ceiling, which is the widest any
+    /// installed engine declares. Installation resolves the Patch's own
+    /// capability against the registry and re-seeds through
+    /// [`Self::seed_voice_limit`]; [`Self::installed`] does both at once when
+    /// the policy is already in hand.
     pub fn new(
         id: PatchId,
         name: String,
@@ -105,7 +120,27 @@ impl Patch {
             envelope: VoiceEnvelope::default(),
             output,
             effects: std::array::from_fn(|_| None),
+            voice_limit: VoiceLimit::seeded_from(VoicePolicy::EngineManaged),
         }
+    }
+
+    /// Creates an installed patch and seeds its voice limit from the declared
+    /// voice policy of its own instrument capability.
+    ///
+    /// A SoundFont Patch seeds from its engine's prepared polyphony ceiling; a
+    /// Braids Patch seeds from its own fixed-per-Patch capacity. The seed is
+    /// per-capability, never a value shared across capabilities.
+    pub fn installed(
+        id: PatchId,
+        name: String,
+        instrument: InstrumentConfig,
+        channel: MidiChannel,
+        output: PatchOutput,
+        policy: VoicePolicy,
+    ) -> Self {
+        let mut patch = Self::new(id, name, instrument, channel, output);
+        patch.seed_voice_limit(policy);
+        patch
     }
 
     /// Returns this patch's stable process-lifetime identity.
@@ -138,6 +173,13 @@ impl Patch {
         self.output
     }
 
+    /// Returns the canonical Patch-owned ceiling on simultaneously sounding
+    /// notes. This is the value carried to the callback on the latest-scalar
+    /// snapshot and enforced there at note-on.
+    pub const fn voice_limit(&self) -> VoiceLimit {
+        self.voice_limit
+    }
+
     /// Returns the canonical ordered effect chain, one entry per position.
     ///
     /// This is the only chain view the aggregate exposes. Slot order is render
@@ -161,6 +203,72 @@ impl Patch {
     pub fn with_envelope(mut self, envelope: VoiceEnvelope) -> Self {
         self.envelope = envelope;
         self
+    }
+
+    /// Supplies an explicit voice limit while constructing a Patch fixture,
+    /// through the same bounds check the reducer uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoiceLimitError::OutOfRange`] when the value falls outside the
+    /// declared bounds. The value is refused, never clamped.
+    pub fn with_voice_limit(mut self, value: u16) -> Result<Self, VoiceLimitError> {
+        self.set_voice_limit(value)?;
+        Ok(self)
+    }
+
+    /// Seeds this Patch's limit from its own capability's declared per-Patch
+    /// polyphony ceiling, returning the seeded value.
+    ///
+    /// This is the installation transition: it runs once, when the Patch's
+    /// capability has been resolved against the immutable registry, so the Patch
+    /// never enters canonical state unlimited-by-omission or carrying a limit
+    /// its own engine could not honour.
+    pub fn seed_voice_limit(&mut self, policy: VoicePolicy) -> VoiceLimit {
+        self.voice_limit = VoiceLimit::seeded_from(policy);
+        self.voice_limit
+    }
+
+    /// Applies the reducer's voice-limit adjustment, validating against the
+    /// declared bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoiceLimitError::OutOfRange`] and leaves the Patch untouched
+    /// when the requested value falls outside the bounds — refused, never
+    /// clamped or wrapped.
+    pub(crate) fn set_voice_limit(&mut self, value: u16) -> Result<VoiceLimit, VoiceLimitError> {
+        let limit = VoiceLimit::new(value)?;
+        self.voice_limit = limit;
+        Ok(limit)
+    }
+
+    /// Replaces the complete instrument configuration for an engine change and
+    /// reconciles the Patch's limit with the new engine's declared ceiling.
+    ///
+    /// The limit survives the swap: an engine replacement replaces the
+    /// `InstrumentConfig`, not the player's chosen limit. If the incoming
+    /// engine's ceiling is lower than the current limit, the limit is narrowed
+    /// to it *here* — at the one point the new ceiling becomes known — and the
+    /// narrowing is reported in the returned outcome rather than left for a
+    /// caller to discover, so the Patch never carries a limit the new engine
+    /// could not honour.
+    pub fn replace_instrument_config(
+        &mut self,
+        config: InstrumentConfig,
+        policy: VoicePolicy,
+    ) -> VoiceLimitCarryOver {
+        self.instrument = config;
+        let ceiling = VoiceLimit::seeded_from(policy);
+        if self.voice_limit <= ceiling {
+            return VoiceLimitCarryOver::Preserved(self.voice_limit);
+        }
+        let previous = self.voice_limit;
+        self.voice_limit = ceiling;
+        VoiceLimitCarryOver::Clamped {
+            previous,
+            limit: ceiling,
+        }
     }
 
     /// Occupies one validated position while constructing a Patch, leaving
@@ -226,6 +334,35 @@ impl Patch {
 
     pub(crate) fn set_instrument_config(&mut self, config: InstrumentConfig) {
         self.instrument = config;
+    }
+}
+
+/// What an engine replacement did to the Patch's voice limit.
+///
+/// The type exists so the narrowing is a reported outcome rather than a silent
+/// mutation a caller has to go looking for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoiceLimitCarryOver {
+    /// The incoming engine honours the existing limit, which crossed unchanged.
+    Preserved(VoiceLimit),
+    /// The incoming engine's ceiling is lower, so the limit was narrowed to it.
+    Clamped {
+        previous: VoiceLimit,
+        limit: VoiceLimit,
+    },
+}
+
+impl VoiceLimitCarryOver {
+    /// Returns the limit the Patch carries after the replacement.
+    pub const fn limit(self) -> VoiceLimit {
+        match self {
+            Self::Preserved(limit) | Self::Clamped { limit, .. } => limit,
+        }
+    }
+
+    /// Returns whether the incoming engine's ceiling narrowed the limit.
+    pub const fn was_clamped(self) -> bool {
+        matches!(self, Self::Clamped { .. })
     }
 }
 
@@ -496,6 +633,169 @@ mod tests {
         assert_eq!(patch.effect_slot(slot(0)), Some(&config(1)));
     }
 
+    // ---- Canonical voice limit (FR-009) -----------------------------------
+
+    /// Seeding is per capability. The two installed engines declare different
+    /// ceilings, and each Patch takes its own — a shared seed would make these
+    /// two assertions the same number.
+    #[test]
+    fn a_soundfont_patch_and_a_braids_patch_seed_from_their_own_ceilings() {
+        use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_FIXED_VOICES};
+        use crate::adapter::hidef_soundfont_capability::HIDEF_POLYPHONY_CEILING;
+        use crate::adapter::production_instruments::production_soundfont_capability;
+        use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
+
+        let soundfont = production_soundfont_capability().unwrap().descriptor();
+        let braids = BraidsCapability::new().unwrap().descriptor();
+
+        let soundfont_patch = installed_patch(1, soundfont.voice_policy());
+        let braids_patch = installed_patch(2, braids.voice_policy());
+
+        assert_eq!(
+            soundfont_patch.voice_limit().value(),
+            HIDEF_POLYPHONY_CEILING
+        );
+        assert_eq!(braids_patch.voice_limit().value(), BRAIDS_FIXED_VOICES);
+        assert_ne!(
+            soundfont_patch.voice_limit(),
+            braids_patch.voice_limit(),
+            "a shared seed would collapse two different engine ceilings into one"
+        );
+    }
+
+    /// No installed Patch is left unlimited-by-omission, and none is left at the
+    /// type's maximum as a stand-in for "unset": a Patch whose engine declares
+    /// sixteen voices carries sixteen.
+    #[test]
+    fn every_installed_patch_carries_its_own_engine_ceiling_not_the_type_maximum() {
+        use crate::adapter::production_instruments::production_capability_registry;
+
+        let registry = production_capability_registry().unwrap();
+        let mut below_maximum = 0;
+        for (index, descriptor) in registry.descriptors().iter().enumerate() {
+            let policy = descriptor.voice_policy();
+            let patch = installed_patch(index as u32 + 1, policy);
+            assert_eq!(
+                patch.voice_limit().value(),
+                policy.polyphony_ceiling().min(VoiceLimit::MAXIMUM),
+                "{} must seed from its own declared ceiling",
+                descriptor.id().as_str()
+            );
+            assert!(patch.voice_limit().value() >= VoiceLimit::MINIMUM);
+            if patch.voice_limit().value() < VoiceLimit::MAXIMUM {
+                below_maximum += 1;
+            }
+        }
+        assert!(
+            below_maximum > 0,
+            "at least one installed engine seeds below the type maximum, so a \
+             blanket maximum default would be visible here"
+        );
+    }
+
+    #[test]
+    fn the_reducer_facing_setter_refuses_values_outside_the_bound() {
+        let mut patch = test_patch();
+        let seeded = patch.voice_limit();
+
+        assert_eq!(patch.set_voice_limit(24).unwrap().value(), 24);
+        assert_eq!(patch.voice_limit().value(), 24);
+
+        assert_eq!(
+            patch.set_voice_limit(0),
+            Err(VoiceLimitError::OutOfRange { value: 0 })
+        );
+        assert_eq!(
+            patch.set_voice_limit(65),
+            Err(VoiceLimitError::OutOfRange { value: 65 })
+        );
+        assert_eq!(
+            patch.voice_limit().value(),
+            24,
+            "a refused adjustment leaves the canonical value untouched"
+        );
+        assert_ne!(seeded.value(), 24, "the fixture actually moved the value");
+    }
+
+    /// An engine replacement replaces the config, not the player's limit — and
+    /// when the incoming engine cannot honour it, the narrowing is reported.
+    #[test]
+    fn an_engine_swap_keeps_the_limit_and_reports_a_narrowing_ceiling() {
+        use crate::adapter::braids_capability::{
+            BraidsCapability, BRAIDS_CAPABILITY_ID, BRAIDS_FIXED_VOICES,
+        };
+        use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
+
+        let braids_policy = BraidsCapability::new().unwrap().descriptor().voice_policy();
+        let braids_config = InstrumentConfig::from_parts(
+            CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        // A limit the incoming engine can honour crosses unchanged.
+        let mut patch = test_patch().with_voice_limit(8).unwrap();
+        let carry_over = patch.replace_instrument_config(braids_config.clone(), braids_policy);
+        assert_eq!(
+            carry_over,
+            VoiceLimitCarryOver::Preserved(VoiceLimit::new(8).unwrap())
+        );
+        assert!(!carry_over.was_clamped());
+        assert_eq!(patch.voice_limit().value(), 8);
+        assert_eq!(patch.instrument_config(), &braids_config);
+
+        // A limit above the incoming engine's ceiling is narrowed at the swap,
+        // and the narrowing is reported rather than silently applied.
+        let mut patch = test_patch().with_voice_limit(48).unwrap();
+        let carry_over = patch.replace_instrument_config(braids_config.clone(), braids_policy);
+        assert_eq!(
+            carry_over,
+            VoiceLimitCarryOver::Clamped {
+                previous: VoiceLimit::new(48).unwrap(),
+                limit: VoiceLimit::new(BRAIDS_FIXED_VOICES).unwrap(),
+            }
+        );
+        assert!(carry_over.was_clamped());
+        assert_eq!(carry_over.limit().value(), BRAIDS_FIXED_VOICES);
+        assert_eq!(patch.voice_limit().value(), BRAIDS_FIXED_VOICES);
+    }
+
+    #[test]
+    fn a_limit_change_touches_nothing_else_the_patch_owns() {
+        let mut patch = test_patch()
+            .with_effect_slot(slot(0), config(1))
+            .with_effect_slot(slot(2), config(3))
+            .with_envelope(VoiceEnvelope::new(5.0, 25.0, 0.5, 125.0).unwrap());
+        patch.set_output(PatchOutput::new(MixerTrackId::new(4).unwrap(), -2.5).unwrap());
+        let before = patch.clone();
+
+        patch.set_voice_limit(11).unwrap();
+
+        assert_eq!(patch.voice_limit().value(), 11);
+        assert_eq!(patch.id(), before.id());
+        assert_eq!(patch.name(), before.name());
+        assert_eq!(patch.channel(), before.channel());
+        assert_eq!(patch.instrument_config(), before.instrument_config());
+        assert_eq!(patch.envelope(), before.envelope());
+        assert_eq!(patch.effect_slots(), before.effect_slots());
+        assert_eq!(patch.output(), before.output());
+    }
+
+    fn installed_patch(id: u32, policy: VoicePolicy) -> Patch {
+        Patch::installed(
+            PatchId::new(id).unwrap(),
+            format!("Patch {id}"),
+            InstrumentConfig::from_parts(
+                CapabilityId::new("instrument.test").unwrap(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            MidiChannel::new((id - 1) as u8).unwrap(),
+            PatchOutput::default(),
+            policy,
+        )
+    }
+
     #[test]
     fn public_api_keeps_configuration_read_only() {
         let _: fn(PatchId, String, InstrumentConfig, MidiChannel, PatchOutput) -> Patch =
@@ -506,6 +806,7 @@ mod tests {
         let _: fn(&Patch) -> MidiChannel = Patch::channel;
         let _: for<'a> fn(&'a Patch) -> &'a VoiceEnvelope = Patch::envelope;
         let _: fn(&Patch) -> PatchOutput = Patch::output;
+        let _: fn(&Patch) -> VoiceLimit = Patch::voice_limit;
         let _: for<'a> fn(&'a Patch) -> &'a [Option<PostEffectConfig>; MAX_EFFECT_SLOTS] =
             Patch::effect_slots;
         let _: fn(Patch, EffectSlotIndex, PostEffectConfig) -> Patch = Patch::with_effect_slot;
