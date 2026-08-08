@@ -9,7 +9,7 @@ requirement_refs:
 - NFR-004
 planning_base_branch: feat/functional-patch-editor
 merge_target_branch: feat/functional-patch-editor
-branch_strategy: Planning artifacts live on feat/functional-patch-editor; completed work merges into feat/functional-patch-editor. Execution worktrees are allocated per computed lane.
+branch_strategy: Planning artifacts for this mission were generated on feat/functional-patch-editor. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into feat/functional-patch-editor unless the human explicitly redirects the landing branch.
 subtasks:
 - T035
 - T036
