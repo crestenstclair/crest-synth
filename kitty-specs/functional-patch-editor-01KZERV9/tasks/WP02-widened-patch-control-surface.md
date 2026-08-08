@@ -130,9 +130,31 @@ finish it you must:
 
   That fourth step is in WP01's territory. It is a one-line re-enable of code
   WP01 already wrote and backed out; make it, and say so in your completion
-  report with a one-line rationale. The alternative — leaving the value carried
-  but unserialized — would mean the exact-match invariant passes because the
-  field is invisible, which is the quiet kind of green this project rejects.
+  report with a one-line rationale.
+
+  **Why this is now unambiguous.** WP01's reviewer found that the crest-spec's
+  leaf-descriptor invariant never named `voiceLimit` — the crest-spec was widened
+  to carry the value without amending the enumeration, so WP01's prompt demanded
+  something the declaration did not require. The declaration wins over a prompt,
+  and WP01 was right to back out. That gap has since been closed deliberately in
+  `.kittify/crest-spec/contexts/realtime.yaml`: the enumeration now names
+  `voiceLimit`, on the reasoning that a canonical value which crosses the
+  real-time boundary and changes what is audible must be visible in the trace, or
+  no measured proof can correlate it — and WP06's live scene has to correlate
+  exactly that. Enumerate it.
+
+  **While you are in `parameter_snapshot.rs`**, correct one overclaiming test
+  WP01's reviewer identified: `the_voice_limit_widens_the_entry_by_one_bounded_integer`
+  (around line 1211). Its docstring claims "The assertion is exact — a limit that
+  arrived as a boxed, referenced, or otherwise indirect owner would move these
+  numbers." Both of its assertions are tautologies:
+  `size_of::<T>() % align_of::<T>() == 0` holds for every Rust type, and
+  `size_of::<RtPatchParameters>() * MAX_PATCHES <= size_of::<ParameterSnapshot>()`
+  is trivially true because the snapshot embeds that array plus six other fields.
+  The T003 bullets it claims are genuinely covered by two stronger pre-existing
+  tests that still pass at the widened size, so nothing is uncovered — but a
+  false rigor claim in a test docstring is worse than no test. Either make the
+  assertion exact or delete it and say which in your commit message.
 
 ## Subtasks
 

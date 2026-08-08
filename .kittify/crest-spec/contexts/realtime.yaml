@@ -107,9 +107,12 @@ valueObjects:
     - choice values are encoded as descriptor indices and snapshots contain no string, vector, asset,
       capability union, engine object, or destructor-bearing owner
     - a production-owned typed leaf descriptor covers generation, graphRevision, patchCount, every active
-      PatchId/output/envelope/scalar parameter, every effect-slot entry, all sixteen track parameter sets
-      including every indexed send, every bus-return entry, and every global parameter and exactly matches
-      the StateTree parameters projection; no leaf of the widened block is unenumerated
+      PatchId/output/envelope/voiceLimit/scalar parameter, every effect-slot entry, all sixteen track
+      parameter sets including every indexed send, every bus-return entry, and every global parameter and
+      exactly matches the StateTree parameters projection; no leaf of the widened block is unenumerated.
+      A canonical value that crosses the real-time boundary and changes what is audible is enumerated
+      here, because a value the trace cannot show is a value no measured proof can correlate — the
+      voice limit is enumerated for exactly that reason rather than left carried-but-invisible
     contributesTo:
       one_way_parameter_control: carries accepted AppState values to audio
       asynchronous_engine_selection: carries the exact descriptor scalar layout for the source or committed
