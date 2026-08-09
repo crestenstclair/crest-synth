@@ -3381,8 +3381,6 @@ witnesses:
         projection_generation_gaps: number
         physical_audio_nonzero: bool
         desktop_viewport_painted: bool
-        steam_deck_viewport_painted: bool
-        clipped_or_overlapping_rows: number
         active_notes_after_cleanup: number
         window_closed: bool
         stream_released: bool
@@ -3499,12 +3497,6 @@ witnesses:
     - field: desktop_viewport_painted
       op: eq
       value: true
-    - field: steam_deck_viewport_painted
-      op: eq
-      value: true
-    - field: clipped_or_overlapping_rows
-      op: eq
-      value: 0
     - field: active_notes_after_cleanup
       op: eq
       value: 0

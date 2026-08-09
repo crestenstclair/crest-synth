@@ -932,3 +932,145 @@ WP04's review approved rather than opening a third cycle, which was proportionat
 blocking two packages over a delimiter would have cost more than it bought. Fixed on
 the consolidated tree at merge, the same way the previous mission handled its
 inherited formatting gate.
+
+## F-44 — I authored a witness with four predicates nothing can produce
+
+**Raised by**: WP06, which stopped rather than build a scene against them
+**Owner**: closed at declaration; two producers assigned to WP06
+
+The `witness.functional_patch_editor` I wrote declares 44 predicates. WP06 traced
+each to a production producer and found four that have none. The live ack payload
+(`webview-page/page.js` `paintedEvidence`) carries exactly six identity fields,
+`window.innerWidth/innerHeight`, and five shell-region rects with labels. Nothing
+else reaches Rust.
+
+| predicate | why it cannot be produced | ruling |
+|---|---|---|
+| `stripGroupsPainted > 1` | grouping is `stripGroups()` in `page.js`, page-side only. `grep group src/control/semantic_graphical_view_model.rs` is empty | **carry it in the ack** |
+| `stripFlatControlRun == false` | same | **carry it in the ack** |
+| `steamDeckViewportPainted == true` | `window.rs:522` opens at the desktop viewport and never calls `set_size`. There is no control-side resize seam; `TickCallback` returns only `bool`. Only the test harness resizes, and that path drives `renderObservation`, not `LiveDemoReport` | **withdrawn** |
+| `clippedOrOverlappingRows == 0` | row geometry exists only in the harness-only `window.crest.renderObservation`. At the ack's region granularity, overlap is already validated in `ShellFrameObservation::try_new_semantic`, so any count is tautologically 0 | **withdrawn** |
+
+**The two withdrawals.** A compact-viewport paint needs a resize seam that does not
+exist, and building one is resolution work — ROADMAP Phase 8 is "Controller and
+resolution hardening", which is where it belongs. The row-overlap count is already
+proven *deterministically* and far better: WP04's T024 and T011 measure every row's
+height, rail, hint run, and label/hint edges at both authored viewports in the
+shipped WebKit. Asserting a tautological zero in the live witness would have added
+the appearance of coverage over evidence that already exists elsewhere.
+
+**The two producers.** Grouping is the substance of FR-001 and T030, so it stays —
+but measured where it is known. ~6 lines in `paintedEvidence` and ~15 in
+`projection_channel.rs` / `ShellFrameObservation` carry what the page painted to
+Rust. WP06 owns this.
+
+The alternative — reimplementing the page's grouping rule Rust-side to measure it —
+is the defect F-25 and F-33 both rejected: a second producer for one fact. That is
+not proof, it is agreement between two copies, and the first divergence is silent.
+
+**This is the fifth crest-spec authoring error this mission has found in my work**
+(F-03, F-07, F-09, F-19's propagation, now this). The pattern in all five: I declared
+what should be true without tracing whether anything could make it true. A witness
+is executable by definition, and I wrote predicates the way one writes prose.
+
+## F-45 — `apply` is transactional but not uniformly so
+
+**Raised by**: WP06, proving rather than assuming F-29's premise
+**Owner**: closed, pinned by tests
+
+F-29's clone halving rests on `AppState::apply` being transactional — a refused
+action must never touch the state it was given. WP06 proved it instead of assuming
+it, and found the guarantee is **total but not uniform**: `apply` has an early MIDI
+branch that mutates `self.generation` *without* cloning. It never does so on a
+rejection, so the property holds — but it holds by case analysis, not by
+construction, and nothing was pinning it.
+
+Two tests now do: one requires every refused action over every reachable fixture
+state to leave its candidate byte-for-byte identical, and asserts refusals actually
+occurred so it cannot pass vacuously; one requires the swept and one-shot
+availability answers to agree everywhere.
+
+That second test matters more than it looks. `accepts_semantic_action` and the
+sweep are now literally the same code, so the per-row answer cannot drift from the
+production reducer — which is the property T013 forbids trading away, preserved
+through an optimization that halves its cost.
+
+## F-46 — F-29 measured: 2960 µs → 2382 µs, and NFR-004 is met
+
+**Raised by**: WP06
+**Owner**: recorded
+
+Release, median of 15, full `project_with_shell` per accepted event:
+
+| surface | rows | before | after |
+|---|---|---|---|
+| MIXER Main | 89 | 2960 µs | **2382 µs** |
+| PATCH Main | 15 | 529 µs | 470 µs |
+
+Per-row sweep alone: 25.79 µs → 20.33 µs. The "before" is a real measurement — WP06
+reverted only the resolver hoist, rebuilt, measured, restored — and it reproduces
+F-30's independently measured 2997 µs within noise, which is what makes the fixture
+credible rather than self-confirming.
+
+**NFR-004 is met at 2382 µs against F-30's 3.00 ms.** F-29 bought 578 µs at no
+fidelity cost, so nothing that narrows what carries a per-row list is needed. The
+option that would have traded proof for speed is not required, which is the outcome
+worth having.
+
+## F-47 — `firstPatchAudibleEditDelta == 0` is unattainable exactly
+
+**Raised by**: WP06, before writing the scene rather than during
+**Owner**: ruled here
+
+An exact zero on a live decaying voice is unattainable — natural RMS drift between
+two observation blocks is nonzero. The only way to force exact zero is to keep the
+first Patch silent across the measured window, which makes that half of the pair
+weak evidence.
+
+**Ruling: keep the pair, and make it a bounded comparison rather than an exact
+zero.** The second Patch's delta must exceed the first Patch's by a declared margin,
+with both measured on their own outputs over the same window. That is the claim the
+gate actually cares about — the edit moved *this* instrument and not *that* one —
+and it is stable against decay in a way an exact zero is not.
+
+The discrimination survives intact, which is the point: under
+`--defeat-patch-selection` the first Patch is the sounding subject, so its delta
+goes nonzero *and* the second Patch's track is silent. The margin inverts, and
+`patchesFocused`, `secondPatchIdDistinct`, and `secondPatchSlotsVisited` fire
+alongside it.
+
+**And the counters must be keyed by PatchId resolved from the final state's
+installed order, never from the scene's own subject.** WP06 caught this and it is
+the sharpest detail in its report: otherwise `secondPatchSlotsVisited == 3` passes
+under defeat, because a defeated scene still visits three slots — just on the wrong
+instrument. A predicate that counts work without checking where the work landed is
+exactly the shape of everything else this mission has found.
+
+## F-48 — F-11/F-14's instruction to WP06 was stale
+
+**Raised by**: WP06, checking rather than doing
+
+F-11 and F-14 told WP06 to restore the two `surface.detail` demo-scene steps by
+hand after WP03 removed the gate. WP03 already put them back
+(`src/testing/demo_scene.rs:665-672`), and `tests/exhaustive_demo_scene.rs:126`
+asserts the coverage identifier. It passes.
+
+Recorded because a stale instruction that says "do this" is worse than none: the
+obedient response is duplicated work, and WP06 checked instead. F-24's warnings
+about inherited churn were likewise already resolved in its base, and T040's
+"correct the stale Makefile alias wording" did not apply — the comments were
+already right.
+
+## F-49 — Two live-runner couplings any new scene must satisfy
+
+**Raised by**: WP06, verified
+**Owner**: WP06
+
+- `LiveDemoRunner::advance_engine` hard-errors via `current_engine_transition()?`
+  (`live_demo_runner.rs:599`) if a scene declares zero engine transitions.
+- `LiveDemoReport::new`'s `complete` requires `runtime_audio.engine_switches() == 3`
+  (`live_demo_report.rs:1147`).
+
+So a new live scene must either perform the base scene's three engine transitions or
+both must be relaxed. Neither is a defect; both are undeclared assumptions that a
+scene author meets by discovering them. Worth knowing before writing 800 lines.

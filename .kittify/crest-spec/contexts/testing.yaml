@@ -464,6 +464,16 @@ valueObjects:
       subjects served by one identity is the claim, and any other pairing fails
     - the live marker is emitted only after semantic cleanup, stream release, worker shutdown, graph collection,
       window close, and successful parent-process return
+    - the observation carries only facts the production paint acknowledgment can produce. Three fields were
+      declared and withdrawn on that ground rather than measured by a second producer — a compact-viewport
+      paint, which no control-side resize seam exists to request; a clipped-or-overlapping row count, which
+      the acknowledgment's region granularity makes tautologically zero; and a page-side grouping count,
+      which only the page knows and which measuring Rust-side would reimplement. A predicate whose only
+      route to a value is a second implementation of the fact is not proof, it is agreement between two
+      copies, and this observation refuses that trade
+    - group structure is instead carried by the acknowledgment itself where it is already known — the page
+      reports what it painted, and the observation copies it. One producer, transported, not two producers
+      compared
     contributesTo:
       functional_patch_editor: is the structured physical acceptance result closing the demonstration half
         of the single-instrument limitation
