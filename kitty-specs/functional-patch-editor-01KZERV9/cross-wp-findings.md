@@ -673,29 +673,33 @@ would have been exactly the defect FR-014 closes.
 Deferred with the gap named: the declaration and the code disagree, and the first
 two-section capability makes it visible.
 
-## F-35 — The display-gated painted assertions are unexercised
+## F-35 — CORRECTED. The display exists; it was asleep.
 
-**Raised by**: WP04
-**Owner**: the accept gate
+**Originally raised by**: WP04, from its own environment failure
+**Corrected by**: WP04's review, which ran the gated tests
+**Owner**: closed
 
-T028's live assertions — instrument-detail and effect-detail fixtures, the
-subject-kind-blind `assert_patch_detail_composition` helper, group/header/hint/
-utility assertions — all sit behind `CREST_WEBVIEW_TESTS=1`, which needs a display
-seating 1920×1080. WP04's machine did not have one. They compile; the headless
-fixture-discrimination guard runs; **the painted assertions have never executed.**
+I recorded that T028's painted assertions and `make demo-live-patch-editor` could
+not run on this rig, and treated it as a hardware gap the mission would have to
+carry to the accept gate.
 
-WP04 substituted browser evidence and was honest that it is Blink, not the shipped
-WebKit: eight documents from the production reducer at both authored viewports,
-measured rather than eyeballed — side region 420/320 px, `scrollableBy` 0 on
-`#inspector`, five Utility rows in projected order, 48 px row minimum, zero
-horizontal overflow, five bands, three slot groups occupied or empty, and
-`READ-ONLY` discriminating SoundFont's `file` from its `preset`.
+Wrong. The LS28AG700N is attached — 3840×2160, "UI Looks like: 1920×1080", main
+display. It was **asleep**. `caffeinate -u` wakes it and the gate passes. WP04's
+review hit the same honest refusal (`no attached display seats the authored
+1920x1080 viewport`), ran `caffeinate -u`, and executed the live sections — which
+is how it found the three defects that rejected the package.
 
-That is real and it is not the same as the gate passing. **This joins
-`make demo-live-patch-editor` as work that cannot complete without the external
-display.** Both must run before the mission can claim its evidence; neither can run
-on the current rig. Recorded here so the gap is visible at the accept gate rather
-than discovered there.
+Verified independently: `system_profiler SPDisplaysDataType` reports the display
+attached and seating 1920×1080.
+
+**The consequence is large.** The gated evidence is producible: T028's painted
+assertions, and `make demo-live-patch-editor` — the mission's exit gate — can both
+run. There is no hardware gap to declare at accept.
+
+The lesson: a harness that refuses is not the same as a capability that is absent,
+and I took an implementer's environment failure as a property of the rig. The
+harness was behaving exactly as designed — it refuses rather than degrading — and
+the correct response to that refusal is to satisfy it, not to record it as a limit.
 
 ## F-36 — The compact viewport already scrolled, and now scrolls more
 
@@ -718,3 +722,52 @@ visibly worse than it was.
 Recorded rather than resolved: whether "seats the surface" tolerates a scrolling
 main workspace is a product question, and the honest answer at mission review is
 the two numbers rather than a verdict dressed as a measurement.
+
+## F-37 — A browser is not the shipped window, and the difference is 62 pixels
+
+**Raised by**: WP04's review, measured in both
+**Owner**: closed by the rejection; the lesson is general
+
+WP04 could not run the gated tests, so it substituted Chrome rendering the
+committed page inside an iframe sized to the authored viewports, and measured
+rather than eyeballed. That was a reasonable substitution and it was diligent.
+
+It was also systematically wrong in one dimension: **the shipped window gives the
+page `innerHeight` 1018, not 1080** (768, not 800, at compact). The iframe granted
+62 px of vertical room the product does not have. So WP04's measured claim — "the
+desktop strip seating without scroll exactly as it did before the grouping" — was
+false in the shipped window: `#strip` is 754/754 at base and 811/754 after.
+
+Desktop went from seating to scrolling. That is a new fact, not an inherited one,
+and it was invisible in the substitute.
+
+The general form is worth keeping past this mission: a substitute runtime that
+differs from the real one in any measured dimension will produce confident,
+precise, wrong numbers. WP04's evidence was better than eyeballing and worse than
+nothing in one specific way — it looked like verification.
+
+## F-38 — Two assertions below the headless gate: one regression, one unsatisfiable
+
+**Raised by**: WP04's review, by execution behind `CREST_WEBVIEW_TESTS=1`
+**Owner**: WP04 cycle 2
+
+The declared gate `cargo test --all-targets` is green: 701 lib tests plus every
+integration target, 0 failed, F-12 quiet. Both defects sit entirely below it.
+
+**A measured regression of a pre-existing assertion.**
+`T011 … patch.envelope.attackMilliseconds position rail must have width (got 4.28px)`.
+The `rail > 5.0` assertion is not WP04's — it predates the package. Running the same
+live section at base `a380235` (neutralising only the Utility assertion WP04 exists
+to change) **passes**. Rails went 1256–1305 px at base → 319–421 px, and 4.28 px on
+the focused row. Cause: `.prow{flex-wrap:wrap}` with `.prow-position{flex:1}` — a
+zero-basis item never forces a wrap, so the hint run eats the rail.
+
+**A new assertion that can never pass.** T025's own check compares
+`split_whitespace()` of the hint run's `textContent` against a `join(" ")` model
+string, but `hintRun` emits adjacent `<span>`s with no separating text. Unsatisfiable
+with more than one hint. This is **not** a Blink/WebKit difference — `textContent`
+is identical in both, so the Chrome harness would have failed it too. It was never
+exercised anywhere.
+
+Both are the same shape as everything else this mission has found: the failure was
+not that a test went red, but that no test ran.
