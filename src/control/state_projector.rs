@@ -1359,7 +1359,12 @@ mod tests {
             let (_, page, text, _, _) = StateProjector::new().project_with_tree(&state).unwrap();
             let page = page.unwrap();
             assert_eq!(page.focused_control_id(), expected_control);
-            assert_eq!(text.selected_line(), index + 4);
+            // The PatchMain rows begin after the header, the identity line,
+            // and the Utility rows. Derived from the projection rather than
+            // pinned, so adding a Utility row moves the marker without
+            // silently invalidating what this test actually checks.
+            let main_rows_begin = 2 + page.output().len();
+            assert_eq!(text.selected_line(), index + main_rows_begin);
             assert_eq!(
                 text.body()
                     .lines()
@@ -1388,8 +1393,14 @@ mod tests {
             crate::control::PatchControlId::Engine
         );
         assert!(!page.engine().editable());
-        assert_eq!(text.selected_line(), 4);
-        assert!(text.body().lines().nth(4).unwrap().starts_with("> ENGINE"));
+        let engine_line = 2 + page.output().len();
+        assert_eq!(text.selected_line(), engine_line);
+        assert!(text
+            .body()
+            .lines()
+            .nth(engine_line)
+            .unwrap()
+            .starts_with("> ENGINE"));
     }
 
     #[test]
@@ -1509,7 +1520,7 @@ mod tests {
                 assert_eq!(page.state_hash(), snapshot.hash());
                 assert_eq!(text.state_hash(), snapshot.hash());
                 assert_eq!(tree.state_hash(), snapshot.hash());
-                assert_eq!(text.selected_line(), focused_index + 4);
+                assert_eq!(text.selected_line(), focused_index + 2 + page.output().len());
                 assert!(text
                     .body()
                     .lines()

@@ -306,14 +306,11 @@ pub struct RtPatchParameters {
     /// envelope: it allocates nothing, borrows nothing, and carries no
     /// destructor, so the entry stays `Copy` and fixed-size.
     ///
-    /// It is deliberately absent from this entry's serialization and therefore
-    /// from [`ParameterSnapshot::SERIALIZED_LEAF_DESCRIPTOR`]. That descriptor
-    /// must match the `StateTree` parameters projection exactly, and that
-    /// projection is control-owned: enumerating this leaf means adding
-    /// `parameters.patches[].voiceLimit` to `StateTree`'s mirrored table in the
-    /// same change. Until the control serialization surface adopts it, carrying
-    /// the value without publishing it keeps the exact-match invariant true
-    /// rather than trading one unenumerated leaf for a broken one.
+    /// It is enumerated in [`ParameterSnapshot::SERIALIZED_LEAF_DESCRIPTOR`]
+    /// and mirrored in `StateTree` as `parameters.patches[].voiceLimit`. A
+    /// canonical value that crosses the real-time boundary and changes what is
+    /// audible has to be visible in the trace, or no measured proof can
+    /// correlate a refused note with the limit that refused it.
     voice_limit: VoiceLimit,
     instrument: RtInstrumentParameters,
     effects: [RtPostEffectParameters; MAX_EFFECT_SLOTS],
@@ -448,6 +445,7 @@ impl Serialize for RtPatchParameters {
         struct SerializablePatchParameters<'a> {
             patch_id: Option<PatchId>,
             envelope: &'a VoiceEnvelope,
+            voice_limit: VoiceLimit,
             instrument: &'a RtInstrumentParameters,
             effects: &'a [RtPostEffectParameters; MAX_EFFECT_SLOTS],
             output: PatchOutput,
@@ -456,6 +454,7 @@ impl Serialize for RtPatchParameters {
         SerializablePatchParameters {
             patch_id: self.patch_id(),
             envelope: self.envelope(),
+            voice_limit: self.voice_limit(),
             instrument: self.instrument(),
             effects: self.effects(),
             output: self.output(),
@@ -547,6 +546,7 @@ impl ParameterSnapshot {
         "patches[].envelope.decayMilliseconds",
         "patches[].envelope.sustain",
         "patches[].envelope.releaseMilliseconds",
+        "patches[].voiceLimit",
         "patches[].instrument.count",
         "patches[].instrument.values[]",
         "patches[].effects[].active",
@@ -1208,29 +1208,17 @@ mod tests {
         );
     }
 
-    /// The widened entry stays a fixed-size plain value: the limit adds two
-    /// bytes of integer and no indirection, so the publish cost stays measured
-    /// rather than assumed. The assertion is exact — a limit that arrived as a
-    /// boxed, referenced, or otherwise indirect owner would move these numbers.
-    #[test]
-    fn the_voice_limit_widens_the_entry_by_one_bounded_integer() {
-        use crate::synth::voice_limit::VoiceLimit;
-
-        assert!(!core::mem::needs_drop::<VoiceLimit>());
-        assert_eq!(
-            core::mem::size_of::<VoiceLimit>(),
-            core::mem::size_of::<u16>()
-        );
-        // Publishing the whole fixed bank stays bounded at the widened size.
-        assert_eq!(
-            core::mem::size_of::<ParameterSnapshot>() % core::mem::align_of::<ParameterSnapshot>(),
-            0
-        );
-        assert!(
-            core::mem::size_of::<RtPatchParameters>() * MAX_PATCHES
-                <= core::mem::size_of::<ParameterSnapshot>()
-        );
-    }
+    // `the_voice_limit_widens_the_entry_by_one_bounded_integer` was deleted
+    // here. Its docstring claimed an exact assertion, but both of its checks
+    // were tautologies: `size_of::<T>() % align_of::<T>() == 0` holds for
+    // every Rust type, and `size_of::<RtPatchParameters>() * MAX_PATCHES <=
+    // size_of::<ParameterSnapshot>()` is trivially true because the snapshot
+    // embeds that array plus six further fields. Nothing is left uncovered:
+    // `snapshot_and_patch_values_need_no_drop_or_dynamic_storage` above is
+    // what actually fails if the limit ever arrives behind indirection — a
+    // boxed owner breaks both `Copy` and `!needs_drop` — and
+    // `voice_limit::tests::the_limit_carries_only_a_bounded_integer` pins the
+    // value at `size_of::<u16>()`.
 
     /// The limit is a Patch-owned canonical value that crosses the boundary
     /// intact, per Patch — not one number applied to the whole bank.

@@ -1,13 +1,14 @@
 use crate::control::{
     AppState, EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind,
-    FocusCapabilityId, FocusPath, MixerControlId, PatchControlId, ReturnPath, SemanticResolver,
-    SurfaceId, TopLevelContext, ValidAction,
+    FocusCapabilityId, FocusPath, MixerControlId, PatchControlId, PatchDetailSubject, ReturnPath,
+    SemanticResolver, SurfaceId, TopLevelContext, ValidAction,
 };
-use crate::kernel::PatchId;
+use crate::kernel::{MidiChannel, PatchId};
 use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::mixer::mixer_track_parameters::{MixerTrackParameter, MixerTrackParameterKind};
 use crate::mixer::patch_output::PatchOutputParameter;
 use crate::real_time::GraphRevision;
+use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
     AssetReference, CapabilityId, ParameterKind, ParameterSpec, ParameterValue, PatchInteraction,
 };
@@ -229,6 +230,9 @@ impl SemanticControlViewModel {
 pub enum SemanticSurfaceRole {
     Main,
     PersistentSide,
+    /// The subordinate PATCH detail surface: present exactly while a detail
+    /// entry is open, never a context's resting place.
+    Detail,
 }
 
 /// Typed, read-only canonical summary for one semantic surface.
@@ -255,6 +259,13 @@ pub enum SemanticSurfaceSummary {
         focused_track: MixerTrackId,
         patch_count: usize,
         routed_patches: Vec<SemanticRoutedPatch>,
+    },
+    /// The open detail surface names only its Patch and its subject: the
+    /// content resolves from the installed descriptor the subject names, so
+    /// the summary is not a second copy of the schema.
+    PatchDetail {
+        patch_id: PatchId,
+        subject: PatchDetailSubject,
     },
 }
 
@@ -1097,35 +1108,93 @@ fn project_patch_surfaces(
     let utility_controls = utility_paths
         .into_iter()
         .map(|path| {
-            let crate::control::SemanticControlId::Patch(PatchControlId::Output(parameter)) =
-                path.control_id()
-            else {
+            let crate::control::SemanticControlId::Patch(control) = path.control_id() else {
                 return Err(SemanticGraphicalViewModelError::InvalidFocusPath);
             };
-            let descriptor = parameter.descriptor();
-            let (kind, value, numeric_range, unit) = match parameter {
-                PatchOutputParameter::TrimGain => (
-                    SemanticControlKind::Continuous,
-                    SemanticControlValue::Scalar(patch.output().trim_gain_db() as f64),
+            // Every row reads its label, bounds, and steps from the same
+            // canonical descriptor the reducer edits through, so the panel
+            // cannot present a range the reducer will not honour.
+            let (label, kind, value, numeric_range, unit) = match control {
+                PatchControlId::Output(parameter) => {
+                    let descriptor = parameter.descriptor();
+                    let (kind, value, numeric_range, unit) = match parameter {
+                        PatchOutputParameter::TrimGain => (
+                            SemanticControlKind::Continuous,
+                            SemanticControlValue::Scalar(patch.output().trim_gain_db() as f64),
+                            Some(SemanticNumericRange::new(
+                                descriptor.minimum().unwrap_or(0.0) as f64,
+                                descriptor.maximum().unwrap_or(0.0) as f64,
+                                descriptor.fine_step().unwrap_or(1.0) as f64,
+                                descriptor.coarse_step().unwrap_or(1.0) as f64,
+                            )),
+                            descriptor.unit().map(str::to_owned),
+                        ),
+                        PatchOutputParameter::OutputTrack => (
+                            SemanticControlKind::Choice,
+                            SemanticControlValue::Identity(patch.output().track_id().to_string()),
+                            None,
+                            None,
+                        ),
+                    };
+                    (descriptor.label().to_owned(), kind, value, numeric_range, unit)
+                }
+                // The one canonical master gain, read through the one global
+                // descriptor — the same value and bounds the MIXER Inspector's
+                // own row projects. PATCH holds no copy of it.
+                PatchControlId::Global(parameter) => {
+                    let descriptor = parameter.descriptor();
+                    (
+                        descriptor.name().to_owned(),
+                        SemanticControlKind::Continuous,
+                        SemanticControlValue::Scalar(state.global_row_value(*parameter) as f64),
+                        Some(SemanticNumericRange::new(
+                            descriptor.minimum() as f64,
+                            descriptor.maximum() as f64,
+                            descriptor.fine_step() as f64,
+                            descriptor.coarse_step() as f64,
+                        )),
+                        None,
+                    )
+                }
+                PatchControlId::MidiInput => (
+                    "MIDI Input".to_owned(),
+                    SemanticControlKind::Stepped,
+                    SemanticControlValue::Scalar(f64::from(patch.channel().value())),
                     Some(SemanticNumericRange::new(
-                        descriptor.minimum().unwrap_or(0.0) as f64,
-                        descriptor.maximum().unwrap_or(0.0) as f64,
-                        descriptor.fine_step().unwrap_or(1.0) as f64,
-                        descriptor.coarse_step().unwrap_or(1.0) as f64,
+                        f64::from(MidiChannel::MIN),
+                        f64::from(MidiChannel::MAX),
+                        1.0,
+                        1.0,
                     )),
-                    descriptor.unit().map(str::to_owned),
-                ),
-                PatchOutputParameter::OutputTrack => (
-                    SemanticControlKind::Choice,
-                    SemanticControlValue::Identity(patch.output().track_id().to_string()),
-                    None,
                     None,
                 ),
+                PatchControlId::VoiceLimit => {
+                    let descriptor = VoiceLimit::descriptor();
+                    (
+                        descriptor.label().to_owned(),
+                        SemanticControlKind::from(descriptor.kind()),
+                        SemanticControlValue::Scalar(f64::from(patch.voice_limit().value())),
+                        Some(SemanticNumericRange::new(
+                            f64::from(descriptor.minimum()),
+                            f64::from(descriptor.maximum()),
+                            f64::from(descriptor.fine_step()),
+                            f64::from(descriptor.coarse_step()),
+                        )),
+                        descriptor.unit().map(str::to_owned),
+                    )
+                }
+                PatchControlId::Engine
+                | PatchControlId::Envelope(_)
+                | PatchControlId::Capability(_)
+                | PatchControlId::EffectSlot(_)
+                | PatchControlId::Effect(..) => {
+                    return Err(SemanticGraphicalViewModelError::InvalidFocusPath);
+                }
             };
             Ok(SemanticControlViewModel {
                 focused: active == &path,
                 path,
-                label: descriptor.label().to_owned(),
+                label,
                 kind,
                 value,
                 numeric_range,
@@ -1139,7 +1208,7 @@ fn project_patch_surfaces(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(vec![
+    let mut surfaces = vec![
         SemanticSurfaceViewModel {
             id: SurfaceId::PatchMain,
             label: SurfaceId::PatchMain.label().to_owned(),
@@ -1154,7 +1223,100 @@ fn project_patch_surfaces(
             controls: utility_controls,
             summary: side_summary,
         },
-    ])
+    ];
+
+    // The detail surface is present exactly while the reducer holds a detail
+    // entry, and absent otherwise: hosts never render a stale one and never
+    // synthesize one. Its whole content resolves from the installed descriptor
+    // the subject names, so this shell branches on no capability.
+    if let Some(subject) = state.interaction().detail_subject() {
+        let detail_paths = resolver
+            .patch_detail_paths(patch_id, subject)
+            .map_err(map_resolver_error)?;
+        let mut detail_controls = Vec::with_capacity(detail_paths.len());
+        for path in detail_paths {
+            let control = match (subject, path.control_id()) {
+                (
+                    PatchDetailSubject::Instrument { capability_id },
+                    crate::control::SemanticControlId::Patch(PatchControlId::Capability(id)),
+                ) => {
+                    let subject_descriptor = state
+                        .capabilities()
+                        .descriptor(capability_id)
+                        .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
+                    let spec = subject_descriptor
+                        .parameter(id)
+                        .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?;
+                    let (enabled, visible) =
+                        parameter_availability(spec, patch.instrument_config());
+                    control_from_parameter(
+                        path.clone(),
+                        spec,
+                        parameter_value(spec, patch.instrument_config())?,
+                        ParameterControlProjection {
+                            enabled,
+                            visible,
+                            focusable: true,
+                            editable: lifecycle_editable,
+                            active,
+                            status: None,
+                            errors,
+                        },
+                    )
+                }
+                (
+                    PatchDetailSubject::Effect {
+                        slot_id,
+                        capability_id,
+                    },
+                    crate::control::SemanticControlId::Patch(PatchControlId::Effect(_, id)),
+                ) => {
+                    let occupant = patch
+                        .effect_slots()
+                        .iter()
+                        .flatten()
+                        .find(|effect| effect.slot_id() == *slot_id)
+                        .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
+                    let subject_descriptor = state
+                        .effects()
+                        .descriptor(capability_id)
+                        .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
+                    let spec = subject_descriptor
+                        .parameter(id)
+                        .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?;
+                    let (enabled, visible) = effect_parameter_availability(spec, occupant);
+                    control_from_parameter(
+                        path.clone(),
+                        spec,
+                        effect_parameter_value(spec, occupant)?,
+                        ParameterControlProjection {
+                            enabled,
+                            visible,
+                            focusable: true,
+                            editable: true,
+                            active,
+                            status: None,
+                            errors,
+                        },
+                    )
+                }
+                _ => return Err(SemanticGraphicalViewModelError::InvalidFocusPath),
+            };
+            detail_controls.push(control);
+        }
+        surfaces.push(SemanticSurfaceViewModel {
+            id: SurfaceId::PatchDetail,
+            label: SurfaceId::PatchDetail.label().to_owned(),
+            role: SemanticSurfaceRole::Detail,
+            controls: detail_controls,
+            summary: SemanticSurfaceSummary::PatchDetail {
+                patch_id,
+                subject: subject.clone(),
+            },
+        });
+    }
+
+    Ok(surfaces)
 }
 
 fn project_mixer_surfaces(

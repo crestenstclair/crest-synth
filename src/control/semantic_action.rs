@@ -107,7 +107,7 @@ impl SemanticActionKind {
     }
 }
 
-const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 17] = [
+const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 18] = [
     SemanticAction::SelectContext(TopLevelContext::Patch),
     SemanticAction::SelectContext(TopLevelContext::Mixer),
     // Only the horizontal pair: moving along the installed Patch order is an
@@ -125,6 +125,7 @@ const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 17] = [
     SemanticAction::SetInteractionMode(InteractionMode::Navigate),
     SemanticAction::SetInteractionMode(InteractionMode::Adjust),
     SemanticAction::EnterSurface(SurfaceId::PatchUtility),
+    SemanticAction::EnterSurface(SurfaceId::PatchDetail),
     SemanticAction::EnterSurface(SurfaceId::MixerInspector),
     SemanticAction::Return,
 ];
@@ -155,10 +156,15 @@ impl SemanticAction {
     }
 
     /// Reports whether the action belongs to the Phase 2 user-intent surface.
+    ///
+    /// `EnterSurface` admits the two persistent sides and the one subordinate
+    /// detail surface; a main surface is where entry *starts*, never where it
+    /// lands. The predicate lives on `SurfaceId` so this vocabulary and the
+    /// reducer's own admission cannot drift apart.
     pub const fn is_phase_two_admitted(&self) -> bool {
         match self {
             Self::SetInteractionMode(mode) => mode.is_phase_two_reachable(),
-            Self::EnterSurface(surface) => surface.is_persistent_side(),
+            Self::EnterSurface(surface) => surface.is_enterable(),
             _ => true,
         }
     }

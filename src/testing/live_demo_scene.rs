@@ -1165,9 +1165,17 @@ fn build_patch_output_steps(
         ),
     );
 
-    steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
-        Direction::Down,
-    )));
+    // Step down from the trim row to the output-track row by the distance the
+    // declared five-row Utility order puts between them — MIDI input sits
+    // between the two — rather than assuming they are adjacent.
+    for _ in 0..utility_rows_between(
+        &PatchControlId::Output(PatchOutputParameter::TrimGain),
+        &PatchControlId::Output(PatchOutputParameter::OutputTrack),
+    ) {
+        steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+            Direction::Down,
+        )));
+    }
     let route = decoded.output.track_id();
     let (direction, next) = if let Ok(next) = route.adjacent(true) {
         (Direction::Right, next)
@@ -1731,19 +1739,35 @@ fn move_probe_patch_to_next_track(steps: &mut Vec<LiveDemoStep>) {
     steps.extend([
         LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Patch)),
         LiveDemoStep::accepted_event(AppEvent::EnterSurface(SurfaceId::PatchUtility)),
-        LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
+    ]);
+    push_navigation_to_output_track(steps);
+    steps.extend([
         LiveDemoStep::accepted_event(AppEvent::Adjust(Direction::Right)),
         LiveDemoStep::accepted_event(AppEvent::Return),
         LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Mixer)),
     ]);
 }
 
+/// Walks from the Utility entry row to the output-track row through the one
+/// declared order, so a scene step cannot silently land on a neighbouring row
+/// and adjust the wrong control.
+fn push_navigation_to_output_track(steps: &mut Vec<LiveDemoStep>) {
+    for _ in 0..utility_rows_between(
+        &PatchControlId::Output(PatchOutputParameter::TrimGain),
+        &PatchControlId::Output(PatchOutputParameter::OutputTrack),
+    ) {
+        steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+            Direction::Down,
+        )));
+    }
+}
+
 fn restore_probe_patch_to_first_track(steps: &mut Vec<LiveDemoStep>) {
     steps.extend([
         LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Patch)),
         LiveDemoStep::accepted_event(AppEvent::EnterSurface(SurfaceId::PatchUtility)),
-        LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
     ]);
+    push_navigation_to_output_track(steps);
     for _ in MixerTrackId::MIN..MixerTrackId::MAX {
         steps.push(LiveDemoStep::accepted_event(AppEvent::Adjust(
             Direction::Left,
@@ -1848,6 +1872,21 @@ fn decimal_scale(step: f32) -> f32 {
         scale *= 10.0;
     }
     scale
+}
+
+/// Returns how many downward navigations separate two declared PATCH Utility
+/// rows, so the scene follows the declared order instead of assuming adjacency.
+fn utility_rows_between(from: &PatchControlId, to: &PatchControlId) -> usize {
+    let order = PatchControlId::utility_surface_descriptor();
+    let index = |control: &PatchControlId| {
+        order
+            .iter()
+            .position(|candidate| candidate == control)
+            .expect("the scene only walks declared Utility rows")
+    };
+    index(to)
+        .checked_sub(index(from))
+        .expect("the scene walks the declared Utility order downward")
 }
 
 pub(crate) fn selected_parameter_value(

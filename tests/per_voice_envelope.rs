@@ -511,13 +511,17 @@ fn prove_patch_control_contract() -> (usize, bool, bool, bool, bool, bool) {
         soundfont_patch(1, 0).with_envelope(envelope),
         braids_patch(2, 1).with_envelope(envelope),
     ];
-    let comparison = patches[1].clone();
     let mut state = AppState::for_graph(
         production_capability_registry().unwrap(),
         globals(),
         GraphRevision::INITIAL,
     );
     state.apply(AppEvent::InstallPatches(patches)).unwrap();
+    // Captured after installation: installation seeds each Patch's voice limit
+    // from its own engine's declared ceiling, so the Braids Patch legitimately
+    // differs from what the constructor built. The isolation this proves is
+    // that editing patch 0's envelope leaves patch 1 alone.
+    let comparison = state.patches()[1].clone();
     let initial = ParameterSnapshot::for_graph(
         0,
         GraphRevision::INITIAL,

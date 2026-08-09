@@ -1,3 +1,5 @@
+use crate::control::semantic_resolver::row_is_visible_and_enabled;
+use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
 use crate::mixer::patch_output::PatchOutputParameter;
 use crate::synth::effect_slot_id::EffectSlotIndex;
 use crate::synth::{
@@ -17,6 +19,14 @@ use std::cmp::Ordering;
 /// the position alone, so the row survives every occupancy change and an
 /// empty slot stays reachable. `Effect` addresses one configured occupant's
 /// scalar row through the stable instance and parameter identities.
+///
+/// `Global` reuses the canonical [`GlobalParameter`] surface descriptor —
+/// the very one [`crate::control::MixerControlId::Global`] uses — so PATCH
+/// Utility's master-volume row and the MIXER Inspector's address one value
+/// through one descriptor with one set of bounds and steps. PATCH owns no
+/// copy of it. `MidiInput` and `VoiceLimit`, by contrast, address the focused
+/// Patch's *own* channel and limit, so both follow the Patch across a patch
+/// selection rather than persisting as surface-local values.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum PatchControlId {
     Engine,
@@ -25,6 +35,9 @@ pub enum PatchControlId {
     Capability(ParameterId),
     EffectSlot(EffectSlotIndex),
     Effect(EffectSlotId, ParameterId),
+    Global(GlobalParameter),
+    MidiInput,
+    VoiceLimit,
 }
 
 impl PatchControlId {
@@ -40,13 +53,37 @@ impl PatchControlId {
         &Self::ALL
     }
 
-    pub const UTILITY: [Self; 2] = [
+    /// The PATCH Utility panel: exactly five rows, in this declared order.
+    ///
+    /// The order is *written*, not derived from any descriptor's iteration
+    /// order, so reordering [`PatchOutputParameter::ALL`] or the global
+    /// descriptor cannot silently reshuffle the panel. The set is bounded by
+    /// declaration rather than by what fits: five rows seat within the
+    /// persistent side region at both authored viewports, so the panel needs
+    /// no scroll affordance and no row is reachable only by a gesture the
+    /// surface does not declare.
+    ///
+    /// None of these controls enters the PatchMain order — [`Self::ALL`] is
+    /// that order's base, and [`Self::resolve`] appends only descriptor rows.
+    pub const UTILITY: [Self; 5] = [
+        Self::Global(GlobalParameter::MasterGainDb),
         Self::Output(PatchOutputParameter::TrimGain),
+        Self::MidiInput,
         Self::Output(PatchOutputParameter::OutputTrack),
+        Self::VoiceLimit,
     ];
 
     pub const fn utility_surface_descriptor() -> &'static [Self] {
         &Self::UTILITY
+    }
+
+    /// Reports whether this identity belongs to the PATCH Utility panel.
+    ///
+    /// The five Utility identities and the PatchMain order are disjoint; this
+    /// predicate is the one place that split is decided, so `FocusPath`
+    /// validation and the resolvers cannot disagree about where a row lives.
+    pub fn is_utility(&self) -> bool {
+        Self::UTILITY.contains(self)
     }
 
     pub fn as_str(&self) -> Cow<'_, str> {
@@ -77,6 +114,12 @@ impl PatchControlId {
             Self::Effect(slot_id, parameter_id) => {
                 Cow::Owned(format!("patch.effect.{slot_id}.{parameter_id}"))
             }
+            // Derived from the canonical global descriptor's own field name,
+            // not spelled again here, so the two surfaces addressing this one
+            // value cannot drift apart in their serialized paths either.
+            Self::Global(parameter) => Cow::Owned(format!("patch.global.{}", parameter.name())),
+            Self::MidiInput => Cow::Borrowed("patch.midiInput"),
+            Self::VoiceLimit => Cow::Borrowed("patch.voiceLimit"),
         }
     }
 
@@ -97,14 +140,8 @@ impl PatchControlId {
     ) -> Vec<Self> {
         let mut controls = Self::surface_descriptor().to_vec();
         for spec in descriptor.parameters() {
-            let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
-                predicate.is_none_or(|predicate| {
-                    config.value(predicate.parameter_id()) == Some(predicate.equals())
-                })
-            };
             if spec.patch_interaction() == PatchInteraction::StructuralChoice
-                && predicate_satisfied(spec.visible_when())
-                && predicate_satisfied(spec.enabled_when())
+                && row_is_visible_and_enabled(spec, |id| config.value(id))
             {
                 controls.push(Self::Capability(spec.id().clone()));
             }
@@ -121,14 +158,8 @@ impl PatchControlId {
                 continue;
             };
             for spec in effect_descriptor.parameters() {
-                let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
-                    predicate.is_none_or(|predicate| {
-                        effect.value(predicate.parameter_id()) == Some(predicate.equals())
-                    })
-                };
                 if spec.patch_interaction() == PatchInteraction::ScalarEdit
-                    && predicate_satisfied(spec.visible_when())
-                    && predicate_satisfied(spec.enabled_when())
+                    && row_is_visible_and_enabled(spec, |id| effect.value(id))
                 {
                     controls.push(Self::Effect(effect.slot_id(), spec.id().clone()));
                 }
@@ -173,6 +204,21 @@ impl FromStr for PatchControlId {
             "patch.envelope.sustain" => Ok(Self::Envelope(VoiceEnvelopeParameter::Sustain)),
             "patch.envelope.releaseMilliseconds" => {
                 Ok(Self::Envelope(VoiceEnvelopeParameter::ReleaseMilliseconds))
+            }
+            "patch.midiInput" => Ok(Self::MidiInput),
+            "patch.voiceLimit" => Ok(Self::VoiceLimit),
+            // Resolved through the canonical global surface descriptor rather
+            // than a locally spelled name table, so PATCH cannot recognise a
+            // global field the one descriptor does not declare.
+            value if value.starts_with("patch.global.") => {
+                let field = value
+                    .strip_prefix("patch.global.")
+                    .expect("the prefix was just matched");
+                GlobalParameters::surface_descriptor()
+                    .iter()
+                    .find(|descriptor| descriptor.name() == field)
+                    .map(|descriptor| Self::Global(descriptor.parameter()))
+                    .ok_or(ParsePatchControlIdError)
             }
             value if value.starts_with("patch.capability.") => {
                 let parameter = value

@@ -13,6 +13,7 @@ use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::{AppState, EventRejection};
 use crest_synth::control::event_record::EventSource;
 use crest_synth::control::state_projector::StateProjector;
+use crest_synth::control::StateTree;
 use crest_synth::control::TopLevelContext;
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::MidiMessageKind;
@@ -203,7 +204,7 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         )
         .unwrap();
     let tree: Value = serde_json::from_str(installed.current_state_tree().json()).unwrap();
-    assert_eq!(tree["schemaVersion"], 12);
+    assert_eq!(tree["schemaVersion"], StateTree::SCHEMA_VERSION);
     assert_eq!(tree["parameters"]["graphRevision"], 1);
     assert_eq!(
         tree["capabilities"]["descriptors"]

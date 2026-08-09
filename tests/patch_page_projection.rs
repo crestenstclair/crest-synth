@@ -420,7 +420,7 @@ fn prove_patch_lifecycle_visibility() {
         page.focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
     );
-    assert_eq!(text.selected_line(), 5);
+    assert_eq!(text.selected_line(), main_row_line(&page, 1));
 
     state
         .apply(AppEvent::EnginePreparationFailed {
@@ -442,7 +442,7 @@ fn prove_patch_lifecycle_visibility() {
         page.focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
     );
-    assert_eq!(text.selected_line(), 5);
+    assert_eq!(text.selected_line(), main_row_line(&page, 1));
 
     state
         .apply(AppEvent::Navigate(crest_synth::control::Direction::Up))
@@ -480,7 +480,7 @@ fn prove_patch_lifecycle_visibility() {
         page.focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::DecayMilliseconds)
     );
-    assert_eq!(text.selected_line(), 6);
+    assert_eq!(text.selected_line(), main_row_line(&page, 2));
     assert_eq!(parameters.graph_revision(), target_revision);
 
     state
@@ -500,7 +500,7 @@ fn prove_patch_lifecycle_visibility() {
         page.focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::DecayMilliseconds)
     );
-    assert_eq!(text.selected_line(), 6);
+    assert_eq!(text.selected_line(), main_row_line(&page, 2));
     assert_eq!(parameters.graph_revision(), target_revision);
 }
 
@@ -698,7 +698,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
                 page.focused_control_id(),
                 PatchControlId::Envelope(parameter)
             );
-            assert_eq!(text.selected_line(), index + 5);
+            assert_eq!(text.selected_line(), main_row_line(&page, index + 1));
             assert!(text
                 .body()
                 .lines()
@@ -995,4 +995,14 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     ));
 
     println!("CREST_ACCEPTANCE patch_page_projection passed");
+}
+
+/// Returns the text line one PatchMain row occupies.
+///
+/// The PATCH text body opens with a header line, the Patch identity line, and
+/// the projected Utility rows; the PatchMain order follows. Derived from the
+/// projection rather than pinned, so adding a Utility row moves these
+/// assertions with it instead of quietly checking the wrong line.
+fn main_row_line(page: &crest_synth::control::PatchPageProjection, row_index: usize) -> usize {
+    2 + page.output().len() + row_index
 }
