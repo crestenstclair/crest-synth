@@ -1651,6 +1651,17 @@ computation gap, and this file should shrink when it lands.
 
 So the residue is three items, all reachable, all recorded rather than implied away.
 
+> **AMENDED after cycle 5's review.** "Three items" undercounts the third. The class
+> is *anything that is not a line of one of the twelve extracted slices*, and it now
+> has **four measured instances**, not one: `controlById` (unwalked), R1 (a module-scope
+> rebinding of `controlIdOf`), D2 (a second declaration spelled `function name (` with
+> a space, which JavaScript hoists and the page calls), and T2 (a `}` appended to a
+> comment, rebalancing a slice truncated by a dedented brace, so `controlValueText`
+> walks 14 lines instead of 56). Each was measured; each leaves all 30 targets green.
+> The count of *classes* is right; the count of ways in is not, and the carve-out
+> saying second declarations are caught while rebindings are not draws the boundary in
+> the wrong place, because neither is caught.
+
 The difference between this and F-64 as I first wrote it is not the amount of work —
 cycle 3 was four fixes of one to eight lines each. It is that the claim is now
 shaped like the evidence. A control described more confidently than it behaves is
@@ -1782,3 +1793,65 @@ sees the passing form learns nothing.
 
 Worth knowing at the accept gate: a green run of this test is not evidence the
 environment was healthy.
+
+## F-76 — The lists converged. The extraction cannot, and that changes what "done" means.
+
+**Raised by**: WP05's cycle-5 review
+**Owner**: WP05 cycle 6, and the accept gate
+
+Five rejections each closed an admission pool that matched more sites than it named:
+substring of any pin, exact line of any pin, exact line of any function's pin, then
+the scaffolding list and the NUL line. Cycle 5 closed the last one and proved the
+partition complete by instrumenting the walk rather than reading it. **That work is
+finished and it converged.**
+
+The extraction will not, and the reason is structural rather than a matter of effort:
+`page_function_body` locates JavaScript with `str::find` over literal strings, and a
+literal string always admits a variant spelling. Cycle 5 asserted the head is unique
+and the slice brace-balanced; the review then defeated both by spelling them
+differently — `function controlIdOf (control)` with one space is hoisted and is the
+declaration the page calls, and a `}` appended to a comment rebalances a slice the
+walk has already truncated. Both leave all 30 targets green. Another cycle buys
+another spelling.
+
+**So the rejection ground is a false sentence, not a missing feature.** The committed
+docstring says "A second declaration of a walked function is caught, because the
+extraction requires the head to be unique." That is false, measured three ways, and
+it is the sentence being quoted into the acceptance record.
+
+The decision rule, which the reviewer wrote and I am adopting: **one bounded fix that
+closes a class rather than a spelling — and if it grows past ~15 lines or wants a
+parser, delete the claim instead.** Retracting the extraction assertions and naming
+the residue honestly is equally approvable. What is not approvable is a sentence that
+claims a guarantee the code does not provide.
+
+This is the distinction the whole mission has been circling, stated cleanly at last:
+a control that converges should be finished, and a control that cannot should be
+*described accurately and stopped*. Six cycles of narrowing were worth it for the
+first kind. A seventh spent chasing the second kind would be the same overclaim in a
+new costume — effort standing in for a guarantee.
+
+## F-77 — Two small instances of the same habit, in the same commit
+
+**Raised by**: WP05's cycle-5 review
+
+- **F-72 was never amended for cycle 5.** It still reads "the residue is three items"
+  and does not mention R1, which cycle 5 itself had measured and named. The finding
+  that records honest residue statements went stale about its own residue. Amended
+  now.
+- **"29 of 161 checked lines" mixes denominators.** `checked` returns **174** on the
+  committed file; 161 is the pre-fix figure from `bf855d7`, where declarations were
+  still absorbed by the `function ` skip. Numerator post-fix, denominator pre-fix.
+
+Neither changes a verdict. Both are the mission's signature failure at small scale —
+a number carried forward from the state it was measured in, into a sentence about a
+different state.
+
+## F-78 — F-75 now has both faces from one commit
+
+**Raised by**: WP05's cycle-5 review
+
+Cycle 5 saw `input_capture_witness` hard-fail; the review saw it pass in its
+`CREST_KEY_WITNESS_PARTIAL` form. Same commit, same rig, both outcomes. That settles
+F-75's shape empirically: it is not load-dependent degradation but a genuine coin
+flip, and a green run of that test is evidence of nothing at all.
