@@ -1,0 +1,3271 @@
+//! The functional PATCH editor, proved through the production reducer, the
+//! production projection, the committed render script, and the real-time
+//! callback.
+//!
+//! Realizes `asset.FunctionalPatchEditorAcceptanceTests` and the declared
+//! project validation `validation.functional_patch_editor`, which asserts exit
+//! code 0 and the exact marker [`ACCEPTANCE_MARKER`] on stdout.
+//!
+//! **Every guard here has been demonstrated to fail when its subject is
+//! defeated.** The mission's recurring defect is unexecuted evidence — a guard
+//! that walks something it cannot fail on, a threshold that passes whatever the
+//! fixture happens to be comfortably above (findings F-28, F-33, F-39, F-42).
+//! So each check below names the mutation that falsifies it, and each of those
+//! mutations was performed and observed rather than reasoned about.
+//!
+//! What drives what:
+//!
+//! - **Reducer** — `AppState::apply` / `apply_semantic_action`. Patch selection,
+//!   focus recovery, boundary refusal, surface entry and return, the voice-limit
+//!   edit, and MIDI rechannelling are all driven as events, never by reaching
+//!   into state.
+//! - **Projection** — `StateProjector::project_with_shell`. The semantic model,
+//!   the PATCH page, and the shell footer are read as the production projector
+//!   emits them.
+//! - **Render path** — the document is taken through the production
+//!   `ProjectionChannel`, which is exactly what the shipped window emits, and
+//!   the committed `webview-page/page.js` derivations are transcribed here
+//!   (`page_*` below) the way `tests/component_composition.rs` transcribes them.
+//!   Each transcription is pinned to the committed source by
+//!   [`check_the_transcribed_page_rules_match_the_committed_script`], so a page
+//!   that stops honouring one fails this target rather than drifting from it.
+//!   The DOM-level twin is `tests/webview_projection_shell.rs`, which needs a
+//!   live window; this file needs none and therefore runs everywhere.
+//! - **Callback** — `AudioRenderer::render`, with this binary's own
+//!   `#[global_allocator]` counting allocation and destruction across the call.
+
+use core::alloc::{GlobalAlloc, Layout};
+use core::cell::Cell;
+use std::alloc::System;
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use crest_synth::adapter::braids_capability::{
+    BraidsCapability, BRAIDS_CAPABILITY_ID, BRAIDS_FIXED_VOICES,
+};
+use crest_synth::adapter::chorus_capability::CHORUS_CAPABILITY_ID;
+use crest_synth::adapter::hidef_soundfont_capability::{
+    HIDEF_CAPABILITY_ID, HIDEF_POLYPHONY_CEILING,
+};
+use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+use crest_synth::adapter::production_effects::{
+    production_chorus_config, production_effect_preparers, production_effect_registry,
+};
+use crest_synth::adapter::production_instruments::{
+    production_capability_registry, production_instrument_preparers,
+    production_soundfont_capability,
+};
+use crest_synth::control::{
+    AppEvent, AppState, Direction, EventRejection, FocusPath, InteractionMode, PatchControlId,
+    PatchDetailSubject, PatchPageProjection, PatchPageSection, PatchPageSlotOccupancy,
+    SemanticControlId, SemanticControlKind, SemanticControlValue, SemanticControlViewModel,
+    SemanticGraphicalViewModel, SemanticResolver, SemanticSurfaceRole, SemanticSurfaceViewModel,
+    StateProjector, SurfaceId, TopLevelContext,
+};
+use crest_synth::kernel::midi_channel::MidiChannel;
+use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
+use crest_synth::kernel::patch_id::PatchId;
+use crest_synth::mixer::global_parameters::{GlobalParameter, GlobalParameters};
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
+use crest_synth::real_time::audio_boundary::{AudioBoundary, ControlAudioBoundary};
+use crest_synth::real_time::audio_command::AudioCommand;
+use crest_synth::real_time::audio_observation::{AudioObservation, ControlAudioObservation};
+use crest_synth::real_time::audio_renderer::AudioRenderer;
+use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
+use crest_synth::real_time::structural_graph_boundary::NoStructuralGraphChanges;
+use crest_synth::real_time::GraphRevision;
+use crest_synth::shell::webview::projection_channel::{ProjectionChannel, ProjectionPush};
+use crest_synth::synth::effect_slot_id::EffectSlotIndex;
+use crest_synth::synth::instrument_capability::ParameterValue;
+use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
+use crest_synth::synth::voice_limit::{VoiceLimit, VoiceLimitError};
+use crest_synth::synth::{EffectSlotId, InstrumentConfig, ParameterKind, Patch, PatchInteraction};
+use crest_synth::testing::automatic_midi_test::create_soundfont_config;
+use serde_json::Value;
+
+/// The exact string `validation.functional_patch_editor` asserts on stdout.
+///
+/// Printed by [`functional_patch_editor_acceptance`] and nowhere else, strictly
+/// after every declared check has returned.
+const ACCEPTANCE_MARKER: &str = "CREST_ACCEPTANCE functional_patch_editor passed";
+
+/// The page's authored unavailable mark, transcribed from
+/// `webview-page/page.js` (`parameter_row::UNAVAILABLE_MARK`) and pinned by
+/// [`check_the_transcribed_page_rules_match_the_committed_script`].
+const UNAVAILABLE_MARK: &str = "--";
+
+/// The strip's declared groups, in declared order, transcribed from
+/// `DESIGNED_STRIP_GROUPS` in `webview-page/page.js`.
+///
+/// `(key, legend, designed)`. A `designed` group with no rows marks itself
+/// unavailable rather than vanishing; `capability` is not designed, so it is
+/// simply absent on an engine that declares no capability rows.
+const DESIGNED_STRIP_GROUPS: [(&str, Option<&str>, bool); 6] = [
+    ("instrument", Some("INSTRUMENT"), true),
+    ("envelope", Some("AMP ENVELOPE"), true),
+    ("capability", None, false),
+    ("slot.0", Some("SLOT 1"), true),
+    ("slot.1", Some("SLOT 2"), true),
+    ("slot.2", Some("SLOT 3"), true),
+];
+
+const SAMPLE_RATE: f32 = 48_000.0;
+const BLOCK_FRAMES: usize = 256;
+const BLOCK_SAMPLES: usize = BLOCK_FRAMES * 2;
+
+// ---------------------------------------------------------------------------
+// Allocation counting for the callback proof
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static COUNT_MEMORY: Cell<bool> = const { Cell::new(false) };
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    static DEALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+struct AcceptanceAllocator;
+
+#[global_allocator]
+static ACCEPTANCE_ALLOCATOR: AcceptanceAllocator = AcceptanceAllocator;
+
+fn record_allocation() {
+    if COUNT_MEMORY.with(Cell::get) {
+        ALLOCATIONS.with(|count| count.set(count.get() + 1));
+    }
+}
+
+fn record_deallocation() {
+    if COUNT_MEMORY.with(Cell::get) {
+        DEALLOCATIONS.with(|count| count.set(count.get() + 1));
+    }
+}
+
+unsafe impl GlobalAlloc for AcceptanceAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        record_allocation();
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        record_allocation();
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        record_deallocation();
+        unsafe { System.dealloc(pointer, layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        record_allocation();
+        record_deallocation();
+        unsafe { System.realloc(pointer, layout, new_size) }
+    }
+}
+
+fn begin_memory_count() {
+    ALLOCATIONS.with(|count| count.set(0));
+    DEALLOCATIONS.with(|count| count.set(0));
+    COUNT_MEMORY.with(|enabled| enabled.set(true));
+}
+
+fn finish_memory_count() -> (usize, usize) {
+    COUNT_MEMORY.with(|enabled| enabled.set(false));
+    (ALLOCATIONS.with(Cell::get), DEALLOCATIONS.with(Cell::get))
+}
+
+// ---------------------------------------------------------------------------
+// The fixture
+// ---------------------------------------------------------------------------
+
+fn soundfont_config(bank: u16, program: u8) -> InstrumentConfig {
+    create_soundfont_config(
+        &production_soundfont_capability().expect("the production SoundFont capability"),
+        SoundFontInstrument::new(bank, program, false).expect("a valid SF2 coordinate"),
+    )
+    .expect("the production SoundFont config")
+}
+
+/// **Four** installed Patches across **both** engines.
+///
+/// More than two, and not all of one capability, because the mission's headline
+/// claim is falsifiable only by a fixture whose schemas actually disagree:
+///
+/// - Patch 1 `Lead` — SoundFont, and the *widest* schema here. It hosts a
+///   `soundfont.preset` `StructuralChoice` row on PATCH Main, a read-only
+///   `soundfont.file` asset row, and **two** occupied effect positions holding
+///   the *same* registry entry at distinct `EffectSlotId`s, which is what makes
+///   "two slots of one entry are two subjects" provable at all.
+/// - Patch 2 `Bass` — Braids. Its three capability rows are all `ReadOnly`, so
+///   it hosts **no** focusable capability row on PATCH Main: the narrower
+///   schema a switch has to recover against.
+/// - Patch 3 `Pad` — SoundFont again, at a different preset and with no
+///   effects, so "the destination's own values" is not satisfiable by the
+///   source's.
+/// - Patch 4 `Sub` — Braids again, so the last position is not the only Braids
+///   one and the end-of-order refusal is not confounded with a capability
+///   change.
+///
+/// A two-Patch same-capability fixture would agree with itself by accident.
+fn fixture_state() -> AppState {
+    let mut state = AppState::new_with_effects(
+        production_capability_registry().expect("the production instrument registry"),
+        production_effect_registry().expect("the production effect registry"),
+        GlobalParameters::new(-3.0).expect("a valid master gain"),
+    );
+    let braids = || {
+        BraidsCapability::new()
+            .expect("the production Braids capability")
+            .default_config()
+            .expect("the Braids descriptor default config")
+    };
+    state
+        .apply(AppEvent::InstallPatches(vec![
+            Patch::new(
+                PatchId::new(1).unwrap(),
+                "Lead".to_owned(),
+                soundfont_config(0, 40),
+                MidiChannel::new(0).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
+            )
+            .with_effect_slot(
+                EffectSlotIndex::ALL[0],
+                production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap(),
+            )
+            .with_effect_slot(
+                EffectSlotIndex::ALL[1],
+                production_chorus_config(EffectSlotId::new(2).unwrap()).unwrap(),
+            ),
+            Patch::new(
+                PatchId::new(2).unwrap(),
+                "Bass".to_owned(),
+                braids(),
+                MidiChannel::new(1).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new(1).unwrap()),
+            ),
+            Patch::new(
+                PatchId::new(3).unwrap(),
+                "Pad".to_owned(),
+                soundfont_config(0, 48),
+                MidiChannel::new(2).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new(2).unwrap()),
+            ),
+            Patch::new(
+                PatchId::new(4).unwrap(),
+                "Sub".to_owned(),
+                braids(),
+                MidiChannel::new(3).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new(3).unwrap()),
+            ),
+        ]))
+        .expect("the fixture installs four Patches across both engines");
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .expect("the PATCH context is reachable with Patches installed");
+    state
+}
+
+fn patch_of(state: &AppState, id: PatchId) -> &Patch {
+    state
+        .patches()
+        .iter()
+        .find(|patch| patch.id() == id)
+        .unwrap_or_else(|| panic!("{id:?} is installed"))
+}
+
+fn focused_patch(state: &AppState) -> &Patch {
+    patch_of(
+        state,
+        state
+            .interaction()
+            .patch_focus()
+            .expect("PATCH always has a focused Patch"),
+    )
+}
+
+fn semantic(state: &AppState) -> SemanticGraphicalViewModel {
+    StateProjector::new()
+        .project_with_shell(state)
+        .expect("the fixture state projects")
+        .3
+        .semantic_model()
+        .clone()
+}
+
+fn page(state: &AppState) -> PatchPageProjection {
+    StateProjector::new()
+        .project_with_shell(state)
+        .expect("the fixture state projects")
+        .1
+        .expect("the PATCH context always projects a page")
+}
+
+/// The exact bytes the shipped window hands the render script.
+///
+/// Taken through the production [`ProjectionChannel`], not serialized here, so
+/// a transport that changed what it emits fails this rather than agreeing with
+/// a second serializer (crest-spec `requirement.serialized_projection_transport`).
+fn document(state: &AppState) -> Value {
+    let projection = StateProjector::new()
+        .project_with_shell(state)
+        .expect("the fixture state projects")
+        .3;
+    let mut channel = ProjectionChannel::new();
+    let mut emitted = None;
+    let outcome = channel
+        .push(&projection, |document| {
+            emitted = Some(document);
+            Ok(())
+        })
+        .expect("the production emit succeeds");
+    assert_eq!(outcome, ProjectionPush::Emitted);
+    emitted.expect("an Emitted push hands the emitter exactly one document")
+}
+
+fn all_controls(model: &SemanticGraphicalViewModel) -> Vec<&SemanticControlViewModel> {
+    model
+        .surfaces()
+        .iter()
+        .flat_map(SemanticSurfaceViewModel::controls)
+        .collect()
+}
+
+fn control_at<'a>(
+    model: &'a SemanticGraphicalViewModel,
+    control: &SemanticControlId,
+) -> &'a SemanticControlViewModel {
+    all_controls(model)
+        .into_iter()
+        .find(|candidate| candidate.path().control_id() == control)
+        .unwrap_or_else(|| panic!("{control:?} must be projected"))
+}
+
+/// Walks the reducer to the row `predicate` names, refusing to loop forever.
+fn navigate_to(state: &mut AppState, predicate: impl Fn(&FocusPath) -> bool) {
+    for direction in [Direction::Down, Direction::Up] {
+        for _ in 0..256 {
+            if predicate(state.interaction().focus_path()) {
+                return;
+            }
+            if state.apply(AppEvent::Navigate(direction)).is_err() {
+                break;
+            }
+        }
+    }
+    panic!("no row on this surface satisfied the predicate");
+}
+
+fn enter_utility_row(state: &mut AppState, control: &PatchControlId) {
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+        .expect("the Utility panel is enterable from PATCH Main");
+    navigate_to(state, |path| {
+        path.control_id() == &SemanticControlId::Patch(control.clone())
+    });
+}
+
+fn set_mode(state: &mut AppState, mode: InteractionMode) {
+    state
+        .apply(AppEvent::SetInteractionMode(mode))
+        .expect("both phase-two modes are reachable");
+}
+
+// ---------------------------------------------------------------------------
+// The committed render script, transcribed
+// ---------------------------------------------------------------------------
+
+/// The render script with its `//` comments removed, so a word that appears
+/// only in a note *about* the vocabulary is not read as the page composing it.
+///
+/// Scanned per line, with quote state reset at each newline. A JavaScript
+/// regex literal can carry an unbalanced quote (`/[&<>"']/g`), so tracking
+/// quotes across the whole file desynchronizes on the first one and silently
+/// stops stripping every comment after it — which would make this guard pass
+/// by blindness rather than by the page being clean.
+fn script_without_comments(script: &str) -> String {
+    let mut out = String::with_capacity(script.len());
+    for line in script.lines() {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        let characters: Vec<char> = line.chars().collect();
+        let mut index = 0;
+        while index < characters.len() {
+            let character = characters[index];
+            match quote {
+                Some(open) => {
+                    if escaped {
+                        escaped = false;
+                    } else if character == '\\' {
+                        escaped = true;
+                    } else if character == open {
+                        quote = None;
+                    }
+                }
+                None => {
+                    if character == '"' || character == '\'' || character == '`' {
+                        quote = Some(character);
+                    } else if character == '/' && characters.get(index + 1) == Some(&'/') {
+                        break;
+                    }
+                }
+            }
+            out.push(character);
+            index += 1;
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn page_source(name: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("webview-page")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path:?} is readable: {error}"))
+}
+
+/// `controlIdOf` — the serialized identity of one projected control.
+fn page_control_id(control: &Value) -> String {
+    control
+        .pointer("/path/controlId/id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// `controlValueText` — one typed document value as finished screen text.
+///
+/// The choice arm is the one this mission changed: it reads the projected
+/// authored name and falls back to the stored id only when the descriptor
+/// declared none, so a choice id can no longer reach the screen through the
+/// value slot (mission finding F-33).
+fn page_value_text(control: &Value) -> String {
+    fn display(value: &Value) -> String {
+        match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        }
+    }
+    let Some(value) = control.get("value").filter(|value| value.is_object()) else {
+        return UNAVAILABLE_MARK.to_owned();
+    };
+    let kind = control.get("kind").and_then(Value::as_str).unwrap_or("");
+    match value.get("kind").and_then(Value::as_str) {
+        Some("scalar") => {
+            let number = value["value"].as_f64().unwrap_or(f64::NAN);
+            if kind == "stepped" {
+                format!("{}", number.round() as i64)
+            } else {
+                format!("{number:.3}")
+            }
+        }
+        Some("parameter") => {
+            let Some(parameter) = value.get("value").filter(|value| value.is_object()) else {
+                return UNAVAILABLE_MARK.to_owned();
+            };
+            match parameter.get("kind").and_then(Value::as_str) {
+                Some("continuous") => {
+                    format!("{:.3}", parameter["value"].as_f64().unwrap_or(f64::NAN))
+                }
+                Some("stepped") => display(&parameter["value"]),
+                Some("choice") => control
+                    .get("selectedLabel")
+                    .filter(|label| !label.is_null())
+                    .map_or_else(|| display(&parameter["value"]), display),
+                Some("toggle") => if parameter["value"] == Value::Bool(true) {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+                .to_owned(),
+                Some(other) => format!("?{other}"),
+                None => UNAVAILABLE_MARK.to_owned(),
+            }
+        }
+        Some("asset") => value
+            .pointer("/value/locator")
+            .and_then(Value::as_str)
+            .map_or_else(|| UNAVAILABLE_MARK.to_owned(), str::to_owned),
+        Some("identity") | Some("summary") => display(&value["value"]),
+        Some(other) => format!("?{other}"),
+        None => UNAVAILABLE_MARK.to_owned(),
+    }
+}
+
+/// The lifecycle band's rendering of an in-flight requested value —
+/// `controlValueText({kind, value: requested, selectedLabel: requestedLabel})`.
+fn page_requested_value_text(control: &Value) -> Option<String> {
+    let requested = control.get("requestedValue").filter(|v| !v.is_null())?;
+    Some(page_value_text(&serde_json::json!({
+        "kind": control.get("kind").cloned().unwrap_or(Value::Null),
+        "value": requested.clone(),
+        "selectedLabel": control.get("requestedLabel").cloned().unwrap_or(Value::Null),
+    })))
+}
+
+/// `rangeEndpointText` + `rangeHtml` — the projected bounds as painted, or
+/// `None` when the document carries none.
+fn page_range_text(control: &Value) -> Option<String> {
+    let range = control.get("numericRange").filter(|r| r.is_object())?;
+    let minimum = range.get("minimum").and_then(Value::as_f64)?;
+    let maximum = range.get("maximum").and_then(Value::as_f64)?;
+    let endpoint = |value: f64| {
+        if control.get("kind").and_then(Value::as_str) == Some("continuous") {
+            format!("{value:.3}")
+        } else {
+            format!("{value}")
+        }
+    };
+    Some(format!(
+        "{}{}{}",
+        endpoint(minimum),
+        " — ",
+        endpoint(maximum)
+    ))
+}
+
+/// `stripGroupKey` — which designed group one control identity joins.
+fn page_strip_group_key(id: &str, open_slot: Option<&str>) -> Option<String> {
+    if id == "patch.engine" {
+        return Some("instrument".to_owned());
+    }
+    if id.starts_with("patch.envelope.") {
+        return Some("envelope".to_owned());
+    }
+    if id.starts_with("patch.capability.") {
+        return Some("capability".to_owned());
+    }
+    if let Some(index) = id.strip_prefix("patch.effectSlot.") {
+        return Some(format!("slot.{index}"));
+    }
+    if id.starts_with("patch.effect.") {
+        return open_slot.map(str::to_owned);
+    }
+    None
+}
+
+#[derive(Debug)]
+struct StripGroup {
+    key: String,
+    legend: Option<String>,
+    designed: bool,
+    unknown: bool,
+    rows: Vec<Value>,
+}
+
+/// `stripGroups` — arranges one surface's visible controls into ordered groups,
+/// including the declared groups the walk never opened.
+fn page_strip_groups(controls: &[Value]) -> Vec<StripGroup> {
+    let declared = |key: &str| {
+        DESIGNED_STRIP_GROUPS
+            .iter()
+            .find(|(candidate, ..)| *candidate == key)
+            .copied()
+    };
+    let mut groups: Vec<StripGroup> = Vec::new();
+    let mut open_slot: Option<String> = None;
+    let push_row = |groups: &mut Vec<StripGroup>, key: &str, unknown: bool, row: &Value| {
+        if let Some(existing) = groups.iter_mut().find(|group| group.key == key) {
+            existing.rows.push(row.clone());
+            return;
+        }
+        let declared = declared(key);
+        groups.push(StripGroup {
+            key: key.to_owned(),
+            legend: declared
+                .and_then(|(_, legend, _)| legend)
+                .map(str::to_owned),
+            designed: declared.is_some_and(|(.., designed)| designed),
+            unknown,
+            rows: vec![row.clone()],
+        });
+    };
+    for control in controls {
+        if control.get("visible") == Some(&Value::Bool(false)) {
+            continue;
+        }
+        let id = page_control_id(control);
+        if let Some(index) = id.strip_prefix("patch.effectSlot.") {
+            open_slot = Some(format!("slot.{index}"));
+        }
+        match page_strip_group_key(&id, open_slot.as_deref()) {
+            Some(key) => push_row(&mut groups, &key, false, control),
+            None => push_row(&mut groups, "?group", true, control),
+        }
+    }
+    // Every designed group the walk never opened lands at its declared
+    // position carrying no rows, so it can mark itself unavailable inside its
+    // own group rather than vanishing.
+    for (index, (key, legend, designed)) in DESIGNED_STRIP_GROUPS.iter().enumerate().rev() {
+        if !designed || groups.iter().any(|group| &group.key == key) {
+            continue;
+        }
+        let at = groups
+            .iter()
+            .position(|group| {
+                DESIGNED_STRIP_GROUPS
+                    .iter()
+                    .position(|(candidate, ..)| *candidate == group.key)
+                    .is_some_and(|position| position > index)
+            })
+            .unwrap_or(groups.len());
+        groups.insert(
+            at,
+            StripGroup {
+                key: (*key).to_owned(),
+                legend: legend.map(str::to_owned),
+                designed: true,
+                unknown: false,
+                rows: Vec::new(),
+            },
+        );
+    }
+    groups
+}
+
+/// `groupHeadControlId` — the row whose projected value names what a group
+/// holds.
+fn page_group_head_control_id(key: &str) -> Option<String> {
+    if key == "instrument" || key == "capability" {
+        return Some("patch.engine".to_owned());
+    }
+    key.strip_prefix("slot.")
+        .map(|index| format!("patch.effectSlot.{index}"))
+}
+
+fn surface_of<'a>(document: &'a Value, id: &str) -> Option<&'a Value> {
+    document
+        .get("surfaces")?
+        .as_array()?
+        .iter()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some(id))
+}
+
+fn surface_controls(document: &Value, id: &str) -> Vec<Value> {
+    surface_of(document, id)
+        .and_then(|surface| surface.get("controls"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// `sideRegionHintLine` — the Utility panel's authored hint line, gathered from
+/// projected actions on both sides of the surface boundary.
+fn page_side_hint_line(document: &Value, surface_id: &str) -> String {
+    let mut seen = BTreeSet::new();
+    let mut spans = Vec::new();
+    for surface in document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        let this = surface.get("id").and_then(Value::as_str) == Some(surface_id);
+        for control in surface
+            .get("controls")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            for action in control
+                .get("validActions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                let kind = action.pointer("/action/kind").and_then(Value::as_str);
+                let payload = action.pointer("/action/payload").and_then(Value::as_str);
+                let enters = kind == Some("enterSurface") && payload == Some(surface_id);
+                let leaves = kind == Some("return") && this;
+                if !enters && !leaves {
+                    continue;
+                }
+                let (Some(hint), Some(label)) = (
+                    action.get("hint").and_then(Value::as_str),
+                    action.get("label").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                if seen.insert(format!("{hint} {label}")) {
+                    spans.push(format!("{hint}:{label}"));
+                }
+            }
+        }
+    }
+    spans.join(" · ")
+}
+
+// ---------------------------------------------------------------------------
+// The serialization-key vocabulary, and every screen string
+// ---------------------------------------------------------------------------
+
+/// Every serialization key this system addresses a value by.
+///
+/// The same set the in-crate label guard builds
+/// (`semantic_graphical_view_model::projection_enrichment_tests::serialization_keys`),
+/// restated here because that helper is `#[cfg(test)]`-private. It carries
+/// F-28's widening: capability and section identities are serialization keys
+/// too — `contexts/control.yaml` defines one as "the name a value carries in
+/// the state tree, the parameter snapshot, or a leaf descriptor", and
+/// `patchPage.sections[].id`, `patchPage.engine.activeCapabilityId`, and
+/// `patchPage.effects[].capabilityId` are all such names — and it also carries
+/// every **choice** identity, which is what F-33 put on screen as a *value*.
+fn serialization_keys(state: &AppState) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    for descriptor in GlobalParameters::surface_descriptor() {
+        keys.insert(descriptor.name().to_owned());
+    }
+    for descriptor in crest_synth::synth::VoiceEnvelope::surface_descriptor() {
+        keys.insert(descriptor.name().to_owned());
+        keys.insert(
+            PatchControlId::Envelope(descriptor.parameter())
+                .as_str()
+                .into_owned(),
+        );
+    }
+    for descriptor in VoiceLimit::surface_descriptor() {
+        keys.insert(descriptor.name().to_owned());
+    }
+    for descriptor in PatchOutput::surface_descriptor() {
+        keys.insert(descriptor.name().to_owned());
+    }
+    for descriptor in
+        crest_synth::mixer::mixer_track_parameters::MixerTrackParameters::surface_descriptor()
+    {
+        keys.insert(descriptor.name().to_owned());
+    }
+    for control in PatchControlId::UTILITY
+        .iter()
+        .cloned()
+        .chain([PatchControlId::Engine])
+    {
+        keys.insert(control.as_str().into_owned());
+    }
+    for descriptor in state.capabilities().descriptors() {
+        keys.insert(descriptor.id().to_string());
+        for section in descriptor.sections() {
+            keys.insert(section.id().to_owned());
+        }
+        for spec in descriptor.parameters() {
+            keys.insert(spec.id().to_string());
+            keys.insert(
+                PatchControlId::Capability(spec.id().clone())
+                    .as_str()
+                    .into_owned(),
+            );
+            keys.extend(spec.choices().iter().map(|choice| choice.id().to_owned()));
+        }
+    }
+    for descriptor in state.effects().descriptors() {
+        keys.insert(descriptor.id().to_string());
+        for section in descriptor.sections() {
+            keys.insert(section.id().to_owned());
+        }
+        for spec in descriptor.parameters() {
+            keys.insert(spec.id().to_string());
+            keys.extend(spec.choices().iter().map(|choice| choice.id().to_owned()));
+        }
+    }
+    for path in SemanticGraphicalViewModel::serialized_leaf_descriptor()
+        .iter()
+        .chain(PatchPageProjection::serialized_leaf_descriptor())
+    {
+        let leaf = path.rsplit('.').next().unwrap_or(path);
+        keys.insert(leaf.trim_end_matches("[]").to_owned());
+    }
+    keys
+}
+
+/// Every string one production projection of `state` puts on screen, tagged
+/// with where it came from.
+///
+/// This walks **labels and values together**, which is the generalization F-33
+/// forced: the in-crate guard walks labels only, so a projected *value* that is
+/// an identity — a choice id, a capability id in the engine row's identity
+/// value, an occupancy row's — reaches the screen with nothing able to fail on
+/// it. Both are screen strings and the vocabulary rule is about screens.
+///
+/// Values are taken through [`page_value_text`], not read raw, so what is
+/// checked is what is painted.
+fn projected_screen_strings(state: &AppState) -> Vec<(String, String)> {
+    let mut strings = Vec::new();
+    let document = document(state);
+    let (_, page, _, shell, _) = StateProjector::new()
+        .project_with_shell(state)
+        .expect("the fixture state projects");
+
+    for surface in document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        let surface_id = surface
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_owned();
+        if let Some(label) = surface.get("label").and_then(Value::as_str) {
+            strings.push((format!("surface {surface_id} label"), label.to_owned()));
+        }
+        for control in surface
+            .get("controls")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let id = page_control_id(&control);
+            if let Some(label) = control.get("label").and_then(Value::as_str) {
+                strings.push((format!("{surface_id} {id} label"), label.to_owned()));
+            }
+            strings.push((
+                format!("{surface_id} {id} painted value"),
+                page_value_text(&control),
+            ));
+            if let Some(text) = page_requested_value_text(&control) {
+                strings.push((format!("{surface_id} {id} painted requested value"), text));
+            }
+            for action in control
+                .get("validActions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                if let Some(label) = action.get("label").and_then(Value::as_str) {
+                    strings.push((format!("{surface_id} {id} action label"), label.to_owned()));
+                }
+            }
+        }
+    }
+    // The strip's group titles: an authored legend, or the projected value of
+    // the row that heads the group. The instrument group's title is the engine
+    // row's value and a slot group's is its occupancy row's, so a capability
+    // identity reverted into either value becomes a group title.
+    let main = surface_controls(&document, "patchMain");
+    for group in page_strip_groups(&main) {
+        let title = group.legend.clone().or_else(|| {
+            page_group_head_control_id(&group.key)
+                .and_then(|head| {
+                    main.iter()
+                        .find(|control| page_control_id(control) == head)
+                        .cloned()
+                })
+                .as_ref()
+                .map(page_value_text)
+        });
+        if let Some(title) = title {
+            strings.push((format!("strip group {} title", group.key), title));
+        }
+    }
+    for segment in shell.footer().path_label().split(" / ") {
+        strings.push((
+            "shell footer pathLabel segment".to_owned(),
+            segment.to_owned(),
+        ));
+    }
+    if let Some(page) = page {
+        strings.push((
+            "page engine active".to_owned(),
+            page.engine().active_label().to_owned(),
+        ));
+        for choice in page.engine().choices() {
+            strings.push(("page engine choice".to_owned(), choice.label().to_owned()));
+        }
+        for row in page.envelope() {
+            strings.push((
+                format!("page envelope {}", row.id()),
+                row.label().to_owned(),
+            ));
+        }
+        for row in page.output() {
+            strings.push((format!("page output {}", row.id()), row.label().to_owned()));
+        }
+        fn push_sections(
+            strings: &mut Vec<(String, String)>,
+            where_: &str,
+            sections: &[PatchPageSection],
+        ) {
+            for section in sections {
+                strings.push((
+                    format!("{where_} section {}", section.id()),
+                    section.label().to_owned(),
+                ));
+                for row in section.parameters() {
+                    let site = format!("{where_} row {}", row.id());
+                    strings.push((site.clone(), row.label().to_owned()));
+                    if let Some(label) = row.selected_label() {
+                        strings.push((format!("{site} selected"), label.to_owned()));
+                    }
+                    if let Some(label) = row.requested_label() {
+                        strings.push((format!("{site} requested"), label.to_owned()));
+                    }
+                    for choice in row.choices() {
+                        strings.push((format!("{site} choice"), choice.label().to_owned()));
+                    }
+                }
+            }
+        }
+        push_sections(&mut strings, "page main", page.sections());
+        for slot in page.effects() {
+            let where_ = format!("page effect slot {}", slot.slot_index().index());
+            if let PatchPageSlotOccupancy::Occupied { label, .. } = slot.occupancy() {
+                strings.push((format!("{where_} occupancy"), label.clone()));
+            }
+            for choice in slot.choices() {
+                strings.push((format!("{where_} choice"), choice.label().to_owned()));
+            }
+            push_sections(&mut strings, &where_, slot.sections());
+        }
+        if let Some(detail) = page.detail() {
+            strings.push(("page detail".to_owned(), detail.label().to_owned()));
+            push_sections(&mut strings, "page detail", detail.sections());
+        }
+    }
+    strings
+}
+
+/// The fixtures the screen-string guard walks, and the surface each opens.
+///
+/// Every surface, both engines, both detail subjects, and a Patch mid-swap, so
+/// no site is unreachable by construction. A guard is only as wide as the
+/// documents it saw — the exact failure F-28 recorded.
+fn screen_string_fixtures() -> Vec<(&'static str, AppState)> {
+    let entered = |surface: SurfaceId| {
+        let mut state = fixture_state();
+        state
+            .apply(AppEvent::EnterSurface(surface))
+            .expect("the fixture surface is enterable");
+        state
+    };
+    let braids = |surface: Option<SurfaceId>| {
+        let mut state = fixture_state();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .expect("the fixture installs a second Patch");
+        assert_eq!(
+            focused_patch(&state)
+                .instrument_config()
+                .capability_id()
+                .as_str(),
+            BRAIDS_CAPABILITY_ID,
+        );
+        if let Some(surface) = surface {
+            state
+                .apply(AppEvent::EnterSurface(surface))
+                .expect("the fixture surface is enterable");
+        }
+        state
+    };
+    let mut effect_detail = fixture_state();
+    navigate_to(&mut effect_detail, |path| {
+        matches!(
+            path.control_id(),
+            SemanticControlId::Patch(PatchControlId::EffectSlot(slot)) if slot.index() == 0
+        )
+    });
+    effect_detail
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("an occupied slot row resolves an effect subject");
+
+    let mut mixer = fixture_state();
+    mixer
+        .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+        .unwrap();
+    let mut inspector = mixer.clone();
+    inspector
+        .apply(AppEvent::EnterSurface(SurfaceId::MixerInspector))
+        .unwrap();
+
+    let mut utility_master = entered(SurfaceId::PatchUtility);
+    navigate_to(&mut utility_master, |path| {
+        matches!(
+            path.control_id(),
+            SemanticControlId::Patch(PatchControlId::Global(_))
+        )
+    });
+
+    vec![
+        ("soundfont PATCH Main", fixture_state()),
+        ("braids PATCH Main", braids(None)),
+        (
+            "soundfont instrument detail",
+            entered(SurfaceId::PatchDetail),
+        ),
+        (
+            "braids instrument detail",
+            braids(Some(SurfaceId::PatchDetail)),
+        ),
+        ("chorus effect detail", effect_detail),
+        ("PATCH Utility", entered(SurfaceId::PatchUtility)),
+        ("PATCH Utility master gain", utility_master),
+        ("preset swap in flight", preset_swap_in_flight().0),
+        ("MIXER Main", mixer),
+        ("MIXER Inspector", inspector),
+    ]
+}
+
+/// The focused SoundFont Patch with a preset swap requested and unresolved.
+///
+/// Returns the state and the row the request rides, so a caller can read both
+/// the active and the requested value on the one row that carries them.
+fn preset_swap_in_flight() -> (AppState, SemanticControlId) {
+    let mut state = fixture_state();
+    let preset = state
+        .capabilities()
+        .descriptor(focused_patch(&state).instrument_config().capability_id())
+        .expect("the focused Patch's descriptor is installed")
+        .parameters()
+        .find(|spec| spec.patch_interaction() == PatchInteraction::StructuralChoice)
+        .expect("the SoundFont descriptor declares a structural choice row")
+        .id()
+        .clone();
+    let control = SemanticControlId::Patch(PatchControlId::Capability(preset));
+    navigate_to(&mut state, |path| path.control_id() == &control);
+    set_mode(&mut state, InteractionMode::Adjust);
+    state
+        .apply(AppEvent::Adjust(Direction::Right))
+        .expect("the preset row accepts an adjacent structural choice");
+    set_mode(&mut state, InteractionMode::Navigate);
+    assert!(
+        state.engine_selection().is_in_flight(),
+        "the fixture must leave a structural edit unresolved"
+    );
+    (state, control)
+}
+
+// ---------------------------------------------------------------------------
+// The transcription is pinned to the committed render script
+// ---------------------------------------------------------------------------
+
+/// Every rule this file transcribes, checked against the source it claims to
+/// transcribe.
+///
+/// A transcription is a substitute runtime, and F-37 recorded what a substitute
+/// that differs from the real one in one dimension costs: confident, precise,
+/// wrong numbers. This does not make the transcription right — only the DOM
+/// twin in `tests/webview_projection_shell.rs` can do that — but it makes a
+/// page that stops honouring one of these rules fail *here*, deterministically,
+/// instead of only under a live window.
+fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
+    let script = page_source("page.js");
+    let required: [(&str, &str); 9] = [
+        (
+            "the unavailable mark",
+            &format!("var UNAVAILABLE_MARK = \"{UNAVAILABLE_MARK}\""),
+        ),
+        ("the range separator", "var RANGE_SEPARATOR = \" — \""),
+        ("the hint separator", "var HINT_SEPARATOR = \" · \""),
+        ("the read-only mark", "var READ_ONLY_MARK = \"READ-ONLY\""),
+        (
+            "the read-only discriminator",
+            "control.patchInteraction === \"readOnly\"",
+        ),
+        (
+            "the authored option label read (F-33)",
+            "control.selectedLabel",
+        ),
+        (
+            "the requested option label read (F-33)",
+            "selectedLabel: control.requestedLabel",
+        ),
+        ("the projected range", "control && control.numericRange"),
+        ("the projected unit", "control.unit"),
+    ];
+    for (what, fragment) in required {
+        assert!(
+            script.contains(fragment),
+            "webview-page/page.js no longer contains {what}: {fragment:?} — the \
+             transcription in this file is describing a page that no longer exists"
+        );
+    }
+    // The designed group table, key for key and legend for legend. A page that
+    // adds, drops, renames or reorders a group makes the strip a different
+    // structure, and this file would otherwise keep asserting the old one.
+    for (key, legend, designed) in DESIGNED_STRIP_GROUPS {
+        let entry = match legend {
+            Some(legend) => {
+                format!("{{ key: \"{key}\", legend: \"{legend}\", designed: {designed} }}")
+            }
+            None => format!("{{ key: \"{key}\", legend: null, designed: {designed} }}"),
+        };
+        assert!(
+            script.contains(&entry),
+            "webview-page/page.js no longer declares the strip group {entry}"
+        );
+    }
+    required.len() + DESIGNED_STRIP_GROUPS.len()
+}
+
+// ---------------------------------------------------------------------------
+// T029 — on-screen patch selection, refusal at the ends, focus recovery
+// ---------------------------------------------------------------------------
+
+/// The fixture composition itself, asserted rather than assumed.
+///
+/// T029's whole claim rests on the schemas actually disagreeing. A fixture that
+/// quietly became two Patches of one capability would make every switch
+/// assertion below pass for the wrong reason.
+fn check_the_fixture_spans_more_than_two_patches_across_both_engines() {
+    let state = fixture_state();
+    assert!(
+        state.patches().len() > 2,
+        "a fixture of {} Patches cannot falsify a switch",
+        state.patches().len()
+    );
+    let capabilities = state
+        .patches()
+        .iter()
+        .map(|patch| {
+            patch
+                .instrument_config()
+                .capability_id()
+                .as_str()
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        capabilities,
+        BTreeSet::from([
+            BRAIDS_CAPABILITY_ID.to_owned(),
+            HIDEF_CAPABILITY_ID.to_owned()
+        ]),
+        "the fixture must install both engines"
+    );
+    // And the two schemas must genuinely differ, or "recovers against the
+    // destination's own schema" is unfalsifiable here.
+    let resolver = SemanticResolver::new(&state);
+    let rows = |id: u32| {
+        resolver
+            .patch_main_paths(PatchId::new(id).unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|path| path.control_id().clone())
+            .collect::<Vec<_>>()
+    };
+    let soundfont = rows(1);
+    let braids = rows(2);
+    assert!(
+        soundfont.len() > braids.len(),
+        "the fixture's two engines must declare different row counts, got {} and {}",
+        soundfont.len(),
+        braids.len()
+    );
+    assert!(
+        soundfont.iter().any(|control| !braids.contains(control)
+            && matches!(
+                control,
+                SemanticControlId::Patch(PatchControlId::Capability(_))
+            )),
+        "the wider schema must host a capability row the narrower one does not"
+    );
+}
+
+/// A switch reprojects **the destination's own** identity, channel, engine,
+/// envelope, capability rows, effect slots, and every Utility value — in
+/// exactly one advanced generation, with no projection pairing one Patch's
+/// identity with another's schema.
+///
+/// Falsified by defeating `select_patch`'s reprojection: with the reducer's
+/// `set_active_main` left on the source Patch, the destination's values never
+/// arrive and the `patchId` agreement check fails.
+fn check_a_switch_reprojects_the_destination_in_one_generation() -> usize {
+    let mut state = fixture_state();
+    let mut switches = 0_usize;
+    // A settled projection of every Patch, read before any switch, so the
+    // comparison is against what that Patch *is*, not against what the switch
+    // produced.
+    let expected = |id: u32| {
+        let mut isolated = fixture_state();
+        for _ in 0..(id - 1) {
+            isolated
+                .apply(AppEvent::SelectPatch(Direction::Right))
+                .unwrap();
+        }
+        document(&isolated)
+    };
+    for target in 2..=4_u32 {
+        let before = semantic(&state).generation();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .expect("the installed order is long enough");
+        switches += 1;
+        let after = semantic(&state);
+        assert_eq!(
+            after.generation() - before,
+            1,
+            "one accepted switch must advance exactly one generation, not {}",
+            after.generation() - before
+        );
+
+        let patch = patch_of(&state, PatchId::new(target).unwrap());
+        assert_eq!(state.interaction().patch_focus(), Some(patch.id()));
+
+        // Identity, channel, engine, envelope, capability rows, effect slots
+        // and every Utility value, compared against that Patch's own settled
+        // projection rather than against a hand-written expectation.
+        let observed = document(&state);
+        let reference = expected(target);
+        for surface in ["patchMain", "patchUtility"] {
+            let observed_rows: Vec<(String, String)> = surface_controls(&observed, surface)
+                .iter()
+                .map(|control| (page_control_id(control), page_value_text(control)))
+                .collect();
+            let reference_rows: Vec<(String, String)> = surface_controls(&reference, surface)
+                .iter()
+                .map(|control| (page_control_id(control), page_value_text(control)))
+                .collect();
+            assert_eq!(
+                observed_rows, reference_rows,
+                "switching to Patch {target} must reproject {surface} from that Patch"
+            );
+        }
+        assert_eq!(
+            observed.pointer("/surfaces/0/summary/patchName"),
+            Some(&Value::String(patch.name().to_owned())),
+            "the strip header names the destination Patch"
+        );
+
+        // No projection pairs one Patch's identity with another's schema.
+        let identities = patch_identities(&observed);
+        assert_eq!(
+            identities,
+            BTreeSet::from([u64::from(patch.id().value())]),
+            "one projected document named more than one Patch: {identities:?}"
+        );
+    }
+    assert_eq!(switches, 3, "the fixture must exercise three switches");
+    switches
+}
+
+/// Every `patchId` a serialized document carries, anywhere in the tree.
+fn patch_identities(document: &Value) -> BTreeSet<u64> {
+    fn walk(value: &Value, found: &mut BTreeSet<u64>) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    if key == "patchId" {
+                        if let Some(id) = child.as_u64() {
+                            found.insert(id);
+                        }
+                    }
+                    walk(child, found);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| walk(item, found)),
+            _ => {}
+        }
+    }
+    let mut found = BTreeSet::new();
+    walk(document, &mut found);
+    found
+}
+
+/// Focus recovers against the **destination's own** descriptor schema.
+///
+/// The cursor is parked on a row only the wider engine hosts, so recovery
+/// cannot succeed by the identity surviving. Falsified by making
+/// `select_patch` recover to the destination's first row: the recovered
+/// control is then `Engine`, which this refuses.
+fn check_focus_recovers_against_the_destination_schema() {
+    let mut state = fixture_state();
+    let preset = SemanticControlId::Patch(PatchControlId::Capability(
+        state
+            .capabilities()
+            .descriptor(focused_patch(&state).instrument_config().capability_id())
+            .unwrap()
+            .parameters()
+            .find(|spec| spec.patch_interaction() == PatchInteraction::StructuralChoice)
+            .unwrap()
+            .id()
+            .clone(),
+    ));
+    navigate_to(&mut state, |path| path.control_id() == &preset);
+
+    let source_order = SemanticResolver::new(&state)
+        .patch_main_paths(PatchId::new(1).unwrap())
+        .unwrap();
+    let held = source_order
+        .iter()
+        .position(|path| path.control_id() == &preset)
+        .expect("the cursor is parked on a row of the source order");
+
+    state
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .expect("the second Patch exists");
+
+    let destination = PatchId::new(2).unwrap();
+    let hosted = SemanticResolver::new(&state)
+        .patch_main_paths(destination)
+        .unwrap();
+    let recovered = state.interaction().focus_path().clone();
+    assert!(
+        hosted.contains(&recovered),
+        "focus recovered to {recovered:?}, which the destination does not host"
+    );
+    assert_ne!(
+        recovered.control_id(),
+        &preset,
+        "the destination cannot host the row only the source declares"
+    );
+    assert_ne!(
+        recovered.control_id(),
+        &SemanticControlId::Patch(PatchControlId::Engine),
+        "recovery is the sibling rule, not a jump to the destination's first row"
+    );
+    // The sibling rule exactly: next-before-previous, walking outward from the
+    // held index through the source order for the nearest control the
+    // destination also hosts.
+    let expected = source_order
+        .iter()
+        .skip(held + 1)
+        .map(FocusPath::control_id)
+        .find(|control| hosted.iter().any(|path| path.control_id() == *control))
+        .expect("the source order continues past the held row");
+    assert_eq!(
+        recovered.control_id(),
+        expected,
+        "recovery must be the one deterministic next-before-previous sibling rule"
+    );
+    // And the projection agrees with the reducer.
+    assert_eq!(
+        semantic(&state)
+            .focused_control()
+            .expect("the recovered row is projected")
+            .path(),
+        &recovered
+    );
+}
+
+/// A request at either end of the installed order is a typed unchanged
+/// rejection, asserted by comparing whole states rather than by the absence of
+/// an error.
+fn check_the_ends_of_the_installed_order_refuse() {
+    let mut state = fixture_state();
+    let before = state.clone();
+    assert_eq!(
+        state.apply(AppEvent::SelectPatch(Direction::Left)),
+        Err(EventRejection::ParameterAtBoundary),
+        "the first position must refuse rather than wrap"
+    );
+    assert_eq!(state, before, "a refused switch leaves the state identical");
+    assert_eq!(
+        document(&state),
+        document(&before),
+        "a refused switch leaves the projection identical"
+    );
+
+    for _ in 0..3 {
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+    }
+    let at_end = state.clone();
+    assert_eq!(
+        state.apply(AppEvent::SelectPatch(Direction::Right)),
+        Err(EventRejection::ParameterAtBoundary),
+        "the last position must refuse rather than wrap"
+    );
+    assert_eq!(state, at_end, "a refused switch leaves the state identical");
+    assert_eq!(document(&state), document(&at_end));
+}
+
+/// An in-flight structural edit stays correlated to the Patch it was started
+/// on, and an open subordinate surface is left rather than carried.
+fn check_an_in_flight_edit_stays_correlated_and_a_subordinate_surface_is_left() {
+    let (mut state, _) = preset_swap_in_flight();
+    let origin = state.interaction().patch_focus().unwrap();
+    assert_eq!(
+        state.engine_selection().correlation().unwrap().patch_id(),
+        Some(origin)
+    );
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("the detail surface opens on the row the swap rides");
+    assert!(state.interaction().detail_subject().is_some());
+
+    let switched = state.apply(AppEvent::SelectPatch(Direction::Right));
+    if switched.is_ok() {
+        assert_eq!(
+            state.engine_selection().correlation().unwrap().patch_id(),
+            Some(origin),
+            "the in-flight edit must stay correlated to the Patch it started on"
+        );
+        assert_eq!(
+            state.interaction().detail_subject(),
+            None,
+            "an open subordinate surface is left before the switch, not carried"
+        );
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
+        assert!(state.interaction().detail_invariant_holds());
+    } else {
+        // A reducer that refuses the switch outright also honours the claim,
+        // but it must do so as a typed unchanged rejection.
+        let before = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Right)),
+            switched,
+            "the refusal must be stable"
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            state.engine_selection().correlation().unwrap().patch_id(),
+            Some(origin)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T030 — the strip is grouped structure, not a flat control run
+// ---------------------------------------------------------------------------
+
+/// The grouped shape, as a predicate that can say **no**.
+///
+/// Returning `Result` rather than asserting is deliberate: the same predicate
+/// has to be run against a flat shape and observed to reject it, and an
+/// assertion that can only panic cannot be used as evidence of its own
+/// discrimination.
+fn grouped_strip_shape(controls: &[Value]) -> Result<Vec<StripGroup>, String> {
+    let groups = page_strip_groups(controls);
+    if groups.len() < 2 {
+        return Err(format!(
+            "the workspace arranged {} group(s): a flat run of every projected \
+             control is not the PatchStrip composition",
+            groups.len()
+        ));
+    }
+    if let Some(unknown) = groups.iter().find(|group| group.unknown) {
+        return Err(format!(
+            "{} control(s) joined no designed group and were arranged under the \
+             explicit unknown marker",
+            unknown.rows.len()
+        ));
+    }
+    // The declared groups appear in declared order.
+    let declared_positions: Vec<usize> = groups
+        .iter()
+        .map(|group| {
+            DESIGNED_STRIP_GROUPS
+                .iter()
+                .position(|(key, ..)| *key == group.key)
+                .ok_or_else(|| format!("{} is not a declared strip group", group.key))
+        })
+        .collect::<Result<_, _>>()?;
+    if declared_positions.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(format!(
+            "the strip arranged its declared groups out of declared order: {:?}",
+            groups.iter().map(|group| &group.key).collect::<Vec<_>>()
+        ));
+    }
+    // Every designed group is present, so one with no view data can mark
+    // itself rather than vanish.
+    for (key, _, designed) in DESIGNED_STRIP_GROUPS {
+        if designed && !groups.iter().any(|group| group.key == key) {
+            return Err(format!("the designed group {key} vanished"));
+        }
+    }
+    // Each group holds the rows its own identity claims, and a slot's occupant
+    // rows are nested under that slot rather than run flat beside it.
+    for group in &groups {
+        for row in &group.rows {
+            let id = page_control_id(row);
+            let expected = if id.starts_with("patch.effect.") {
+                group.key.clone()
+            } else {
+                page_strip_group_key(&id, None).unwrap_or_default()
+            };
+            if expected != group.key {
+                return Err(format!("{id} was arranged into {}", group.key));
+            }
+        }
+        if let Some(index) = group.key.strip_prefix("slot.") {
+            let occupancy = format!("patch.effectSlot.{index}");
+            if !group.rows.is_empty() && page_control_id(&group.rows[0]) != occupancy {
+                return Err(format!(
+                    "{} is headed by {} rather than its own occupancy row",
+                    group.key,
+                    page_control_id(&group.rows[0])
+                ));
+            }
+        }
+    }
+    Ok(groups)
+}
+
+/// The PATCH workspace is the `PatchStrip` composition: an identity-and-routing
+/// header, then ordered groups — instrument selector, envelope group, and one
+/// group per ordered effect slot with its occupant rows nested.
+fn check_the_strip_is_grouped_structure() -> usize {
+    let state = fixture_state();
+    let document = document(&state);
+    let controls = surface_controls(&document, "patchMain");
+    let groups = grouped_strip_shape(&controls)
+        .unwrap_or_else(|error| panic!("the production PATCH workspace is not grouped: {error}"));
+
+    let keys: Vec<&str> = groups.iter().map(|group| group.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        vec![
+            "instrument",
+            "envelope",
+            "capability",
+            "slot.0",
+            "slot.1",
+            "slot.2"
+        ],
+        "the fixture's strip arranges the declared groups in declared order"
+    );
+    // The instrument selector is headed by the engine row, and the envelope
+    // group holds exactly the four declared envelope rows.
+    assert_eq!(
+        groups[0].rows.len(),
+        1,
+        "the instrument selector holds the engine row"
+    );
+    assert_eq!(page_control_id(&groups[0].rows[0]), "patch.engine");
+    assert_eq!(
+        groups[1].rows.len(),
+        crest_synth::synth::VoiceEnvelope::surface_descriptor().len(),
+        "the envelope group holds every declared envelope row"
+    );
+    // Each slot group is headed by its own occupancy row and nests that slot's
+    // occupant rows — the two occupied positions hold two rows each, the empty
+    // one holds only its occupancy row.
+    for (index, group) in groups.iter().skip(3).enumerate() {
+        assert_eq!(group.key, format!("slot.{index}"));
+        assert_eq!(
+            page_control_id(&group.rows[0]),
+            format!("patch.effectSlot.{index}")
+        );
+        let nested: Vec<String> = group.rows[1..].iter().map(page_control_id).collect();
+        assert!(
+            nested.iter().all(|id| id.starts_with("patch.effect.")),
+            "slot {index} nests only its occupant rows, got {nested:?}"
+        );
+    }
+    assert_eq!(groups[3].rows.len(), 3, "slot 1 nests Chorus's two rows");
+    assert_eq!(groups[4].rows.len(), 3, "slot 2 nests Chorus's two rows");
+    assert_eq!(
+        groups[5].rows.len(),
+        1,
+        "the empty slot 3 carries its occupancy row and nothing invented"
+    );
+
+    // The identity-and-routing header's three values are projected, not
+    // composed: the Patch name from the main surface's own summary, and the
+    // channel and track from the two Utility rows that own them.
+    assert_eq!(
+        document.pointer("/surfaces/0/summary/patchName"),
+        Some(&Value::String("Lead".to_owned()))
+    );
+    for routing in ["patch.midiInput", "patch.output.outputTrack"] {
+        assert!(
+            surface_controls(&document, "patchUtility")
+                .iter()
+                .any(|control| page_control_id(control) == routing),
+            "the strip header reads {routing} from the Utility surface"
+        );
+    }
+    groups.len()
+}
+
+/// **The negative.** A flat run of every projected control fails the grouped
+/// check.
+///
+/// The flat shape is built by rewriting each control's identity to one no
+/// designed group claims, then driving the *same* page grouping the production
+/// document goes through — so what is observed is the real arranger refusing a
+/// real flat run, not a hand-built object refusing a hand-built assertion.
+fn check_a_flat_run_fails_the_grouped_check() -> String {
+    let state = fixture_state();
+    let document = document(&state);
+    let flat: Vec<Value> = surface_controls(&document, "patchMain")
+        .into_iter()
+        .map(|mut control| {
+            let id = page_control_id(&control);
+            control["path"]["controlId"]["id"] = Value::String(format!("flat.{id}"));
+            control
+        })
+        .collect();
+    let Err(error) = grouped_strip_shape(&flat) else {
+        panic!("a flat run of every projected control must fail the grouped check");
+    };
+    assert!(
+        error.contains("unknown marker") || error.contains("flat run"),
+        "the flat-run negative fired for the wrong reason: {error}"
+    );
+    // And the same predicate accepts the real thing, so the negative is not
+    // passing because the predicate rejects everything.
+    assert!(grouped_strip_shape(&surface_controls(&document, "patchMain")).is_ok());
+    error
+}
+
+/// A group with no view data marks itself unavailable rather than vanishing,
+/// and a workspace with no focused Patch marks the strip unavailable.
+fn check_an_absent_group_and_an_unfocused_workspace_mark_themselves() {
+    // A Patch with no occupied slot still arranges all three slot groups: the
+    // occupancy rows are projected, so each slot marks its own emptiness.
+    let mut state = fixture_state();
+    state
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .unwrap();
+    let braids = document(&state);
+    let groups = page_strip_groups(&surface_controls(&braids, "patchMain"));
+    for (key, ..) in DESIGNED_STRIP_GROUPS.iter().filter(|(.., d)| *d) {
+        assert!(
+            groups.iter().any(|group| group.key == *key),
+            "the designed group {key} vanished on a Patch that supplies it no rows"
+        );
+    }
+    // Braids declares no structural capability row, so the *undesigned*
+    // `capability` group is simply absent rather than marked — the page marks
+    // designed structures, and inventing an entry for an undesigned one is the
+    // placeholder rule in reverse.
+    assert!(
+        groups.iter().any(|group| group.key == "capability"),
+        "Braids' read-only capability rows are still projected and grouped"
+    );
+
+    // A workspace the projection carried no row for at all marks the strip
+    // unavailable rather than painting an empty container. Driven through the
+    // same arranger with an empty control list, which is the shape
+    // `patchStripHtml` tests with `painted === 0`.
+    let empty = page_strip_groups(&[]);
+    assert!(
+        empty.iter().all(|group| group.rows.is_empty()),
+        "an empty projection paints no row"
+    );
+    assert_eq!(
+        empty.iter().map(|group| group.rows.len()).sum::<usize>(),
+        0,
+        "a workspace with no focused Patch marks the strip unavailable rather \
+         than arranging invented rows"
+    );
+    assert!(
+        empty.iter().all(|group| group.designed),
+        "only the designed groups survive an empty projection, and each marks itself"
+    );
+}
+
+/// **SC-003, across the whole PATCH surface** — the count of rows marked
+/// unavailable is zero.
+///
+/// Walked as the page walks it: the strip header, every strip group, the
+/// Utility panel, and the detail shell when one is open, with each row's value
+/// taken through the render script's own value contract so a row that projects
+/// something the page cannot paint counts as unavailable here.
+///
+/// **The one declared exception, named rather than absorbed.** The Scope
+/// Decisions table's claim that FR-012 closed the read-only surface-summary
+/// *control kind* is withdrawn: `SemanticControlKind::Surface` has exactly one
+/// construction site and it is reachable only from a fixture builder that no
+/// production path calls. So the exception is not "some unavailable rows are
+/// tolerated" — it is that **no `Surface`-kind row exists on a production
+/// projection at all**, and that is asserted here as a zero rather than
+/// excluded from a count. The read-only *fact* FR-012 genuinely supplies is
+/// `patchInteraction`, proved separately by
+/// [`check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself`].
+fn check_the_whole_patch_surface_marks_nothing_unavailable() -> usize {
+    let mut walked = 0_usize;
+    for (fixture, state) in screen_string_fixtures() {
+        if state.context() != TopLevelContext::Patch {
+            continue;
+        }
+        let document = document(&state);
+        for surface in ["patchMain", "patchUtility", "patchDetail"] {
+            for control in surface_controls(&document, surface) {
+                walked += 1;
+                let id = page_control_id(&control);
+                let where_ = format!("{fixture}: {surface} {id}");
+                assert_eq!(
+                    control.get("visible"),
+                    Some(&Value::Bool(true)),
+                    "{where_} is projected invisible"
+                );
+                assert_eq!(
+                    control.get("enabled"),
+                    Some(&Value::Bool(true)),
+                    "{where_} is projected disabled, which the page paints as Locked"
+                );
+                let painted = page_value_text(&control);
+                assert_ne!(
+                    painted, UNAVAILABLE_MARK,
+                    "{where_} projects a value yet paints the unavailable mark"
+                );
+                assert!(
+                    !painted.starts_with('?'),
+                    "{where_} paints a value kind the page cannot render: {painted}"
+                );
+                assert!(!painted.trim().is_empty(), "{where_} paints a blank value");
+                // The declared exception, asserted as a zero.
+                assert_ne!(
+                    control.get("kind").and_then(Value::as_str),
+                    Some("surface"),
+                    "{where_} is a read-only surface-summary row; that control kind \
+                     has no production producer and the spec's claim that FR-012 \
+                     closed it is withdrawn"
+                );
+            }
+        }
+        // Every designed strip group has view data, so none of them marks
+        // itself unavailable.
+        for group in page_strip_groups(&surface_controls(&document, "patchMain")) {
+            assert!(
+                !group.rows.is_empty(),
+                "{fixture}: the strip group {} marks itself unavailable",
+                group.key
+            );
+        }
+        // And the Utility panel's five designed entries each have a driver row.
+        let utility: BTreeSet<String> = surface_controls(&document, "patchUtility")
+            .iter()
+            .map(page_control_id)
+            .collect();
+        for control in PatchControlId::UTILITY {
+            assert!(
+                utility.contains(control.as_str().as_ref()),
+                "{fixture}: the Utility panel marks {} unavailable",
+                control.as_str()
+            );
+        }
+    }
+    assert!(
+        walked > 60,
+        "only {walked} PATCH rows walked — the SC-003 sweep stopped seeing the surface"
+    );
+    walked
+}
+
+// ---------------------------------------------------------------------------
+// T031 — the five Utility rows, one master-gain owner, MIDI rechannelling
+// ---------------------------------------------------------------------------
+
+/// PATCH Utility resolves exactly the five declared rows in the declared
+/// order, each carrying a real typed value, none marked unavailable, with the
+/// panel's authored hint line present.
+fn check_utility_resolves_five_typed_rows_and_its_hint_line() {
+    let state = fixture_state();
+    let model = semantic(&state);
+    let utility = model
+        .surface(SurfaceId::PatchUtility)
+        .expect("PATCH always projects its persistent side surface");
+    assert_eq!(utility.role(), SemanticSurfaceRole::PersistentSide);
+
+    let ordered: Vec<PatchControlId> = utility
+        .controls()
+        .iter()
+        .map(|control| match control.path().control_id() {
+            SemanticControlId::Patch(id) => id.clone(),
+            other => panic!("a Utility row carries the non-PATCH identity {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        ordered,
+        PatchControlId::UTILITY.to_vec(),
+        "the Utility panel resolves the five declared rows in the declared order"
+    );
+
+    for control in utility.controls() {
+        let id = control.path().control_id();
+        // A real typed canonical value, not a summary string standing in for
+        // one. `Summary` is the read-only surface-summary shape, which no
+        // production path produces (see the SC-003 exception).
+        match control.value() {
+            SemanticControlValue::Scalar(value) => assert!(
+                value.is_finite(),
+                "{id:?} carries a non-finite Utility value"
+            ),
+            SemanticControlValue::Identity(text) => {
+                assert!(!text.is_empty(), "{id:?} carries an empty Utility value");
+            }
+            other => panic!("{id:?} carries the non-canonical Utility value {other:?}"),
+        }
+        assert!(control.enabled() && control.visible() && control.focusable());
+        assert!(!control.label().is_empty());
+    }
+    // Four of the five are numeric and carry the descriptor's own bounds; the
+    // output-track row is an adjacent choice and carries none.
+    let bounded = utility
+        .controls()
+        .iter()
+        .filter(|control| control.numeric_range().is_some())
+        .count();
+    assert_eq!(
+        bounded, 4,
+        "every numeric Utility row carries its descriptor's bounds"
+    );
+
+    let hint = page_side_hint_line(&document(&state), "patchUtility");
+    assert!(
+        !hint.is_empty(),
+        "the Utility panel's authored hint line is absent"
+    );
+    assert!(
+        hint.contains(':'),
+        "the hint line pairs each projected hint with its projected label: {hint}"
+    );
+    // Both facts the design authority names: how an operator enters the panel
+    // and how they leave it, each from the side of the boundary that owns it.
+    assert!(
+        page_side_hint_line(&document(&entered_utility()), "patchUtility").contains("Return"),
+        "the panel's own rows must project the action that leaves it"
+    );
+}
+
+fn entered_utility() -> AppState {
+    let mut state = fixture_state();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+        .expect("the Utility panel is enterable");
+    state
+}
+
+/// One canonical master gain, written from either surface and read from both,
+/// with the absence of a second owner asserted structurally rather than by two
+/// equal reads of one accessor.
+fn check_one_master_gain_owner() {
+    let read = |state: &AppState, surface: SurfaceId, control: &SemanticControlId| match control_at(
+        &semantic(state),
+        control,
+    )
+    .value()
+    {
+        SemanticControlValue::Scalar(value) => *value,
+        other => panic!("{surface:?} projects the non-scalar master gain {other:?}"),
+    };
+    let patch_row = SemanticControlId::Patch(PatchControlId::Global(GlobalParameter::MasterGainDb));
+    let mixer_row = SemanticControlId::Mixer(crest_synth::control::MixerControlId::Global {
+        parameter: GlobalParameter::MasterGainDb,
+    });
+
+    // Written from PATCH, read from the MIXER Inspector.
+    let mut state = fixture_state();
+    let patches_before = state.patches().to_vec();
+    enter_utility_row(
+        &mut state,
+        &PatchControlId::Global(GlobalParameter::MasterGainDb),
+    );
+    set_mode(&mut state, InteractionMode::Adjust);
+    state
+        .apply(AppEvent::Adjust(Direction::Right))
+        .expect("the master gain row is editable from PATCH");
+    set_mode(&mut state, InteractionMode::Navigate);
+    let from_patch = read(&state, SurfaceId::PatchUtility, &patch_row);
+
+    let mut inspector = state.clone();
+    inspector
+        .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+        .unwrap();
+    inspector
+        .apply(AppEvent::EnterSurface(SurfaceId::MixerInspector))
+        .unwrap();
+    navigate_to(&mut inspector, |path| path.control_id() == &mixer_row);
+    assert_eq!(
+        read(&inspector, SurfaceId::MixerInspector, &mixer_row),
+        from_patch,
+        "an edit made on PATCH must be the value the MIXER Inspector reads"
+    );
+
+    // Written from MIXER, read from PATCH.
+    set_mode(&mut inspector, InteractionMode::Adjust);
+    inspector
+        .apply(AppEvent::Adjust(Direction::Left))
+        .expect("the master gain row is editable from MIXER");
+    set_mode(&mut inspector, InteractionMode::Navigate);
+    let from_mixer = read(&inspector, SurfaceId::MixerInspector, &mixer_row);
+    assert_ne!(
+        from_mixer, from_patch,
+        "the second edit must actually move the value"
+    );
+    let mut back = inspector.clone();
+    back.apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    back.apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+        .unwrap();
+    navigate_to(&mut back, |path| path.control_id() == &patch_row);
+    assert_eq!(
+        read(&back, SurfaceId::PatchUtility, &patch_row),
+        from_mixer,
+        "an edit made on MIXER must be the value PATCH reads"
+    );
+
+    // Structural: no second owner exists.
+    //
+    // No Patch carries a copy — the two edits above moved a global and left
+    // every installed Patch byte-identical.
+    assert_eq!(
+        back.patches(),
+        patches_before.as_slice(),
+        "an edit to the one global master gain must not touch any Patch"
+    );
+    // The declaration names exactly two serialized leaves for it, and they are
+    // named here rather than counted, so a third appearing fails this.
+    let tree = StateProjector::new()
+        .project_with_shell_tree(&back)
+        .expect("the state projects a tree")
+        .5;
+    let leaves: Vec<&str> = crest_synth::control::StateTree::serialized_leaf_descriptor()
+        .iter()
+        .copied()
+        .filter(|leaf| leaf.rsplit('.').next() == Some("masterGainDb"))
+        .collect();
+    assert_eq!(
+        leaves,
+        vec!["global.masterGainDb", "parameters.global.masterGainDb"],
+        "a third serialized master-gain leaf appeared: every one of these is a \
+         place the value can be stored, and the claim is that there is one owner \
+         plus its snapshot copy"
+    );
+    let json: Value = serde_json::from_str(tree.json()).expect("the tree is JSON");
+    for leaf in &leaves {
+        let pointer = format!("/{}", leaf.replace('.', "/"));
+        let value = json
+            .pointer(&pointer)
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{leaf} is absent from the serialized tree"));
+        assert!(
+            (value - f64::from(back.global().master_gain_db())).abs() < 1e-6,
+            "{leaf} holds {value}, which is not the one canonical master gain"
+        );
+    }
+    // And nothing Patch-shaped carries one at all.
+    assert!(
+        !crest_synth::control::StateTree::serialized_leaf_descriptor()
+            .iter()
+            .any(|leaf| leaf.contains("patches") && leaf.ends_with("masterGainDb")),
+        "a Patch-scoped master gain leaf exists"
+    );
+    assert!(
+        !crest_synth::real_time::parameter_snapshot::ParameterSnapshot::serialized_leaf_descriptor(
+        )
+        .iter()
+        .any(|leaf| leaf.starts_with("patches") && leaf.ends_with("masterGainDb")),
+        "the parameter snapshot carries a per-Patch master gain"
+    );
+}
+
+/// **The screen-string guard.** No string a production projection puts on
+/// screen — a label, a painted value, a painted requested value, a group
+/// title, an action label, or a footer breadcrumb segment — is a serialization
+/// key.
+///
+/// Two widenings past the in-crate guard, both from mutation sweeps rather
+/// than from reasoning:
+///
+/// - the key set carries capability and section identities (F-28: a 17-site
+///   sweep caught 10 and missed 7, all seven because the set could not express
+///   the key), and every **choice** identity;
+/// - the walk carries **values**, not labels only (F-33: the Preset row painted
+///   `sf2.bank-0.program-40` as a value, which the label guard walks past).
+fn check_no_projected_screen_string_is_a_serialization_key() -> usize {
+    let mut checked = 0_usize;
+    let mut covered = BTreeSet::new();
+    for (fixture, state) in screen_string_fixtures() {
+        let keys = serialization_keys(&state);
+        for surface in semantic(&state).surfaces() {
+            covered.insert(format!("{:?}", surface.id()));
+        }
+        for (site, string) in projected_screen_strings(&state) {
+            checked += 1;
+            assert!(
+                !keys.contains(&string),
+                "{fixture}: {site} puts the serialization key {string} on screen"
+            );
+        }
+    }
+    assert_eq!(
+        covered,
+        SurfaceId::ALL
+            .into_iter()
+            .map(|surface| format!("{surface:?}"))
+            .collect::<BTreeSet<_>>(),
+        "the guard must cover every surface, not just the ones that were reported"
+    );
+    assert!(
+        checked > 400,
+        "only {checked} screen strings walked — the guard stopped seeing the projection"
+    );
+    checked
+}
+
+/// The MIDI input row re-targets which incoming part drives the focused Patch,
+/// and changes nothing else.
+///
+/// There is no channel-to-Patch router to drive: the MIDI source emits one
+/// part per channel and the runtime addresses a Patch by identity, so the
+/// channel *is* the fact that says which part drives which Patch. It is
+/// therefore proved where it is owned — the Patch's own channel, the
+/// uniqueness the reducer enforces on it, and the audio command the reducer
+/// emits for a message arriving on it.
+fn check_the_midi_input_row_retargets_the_incoming_part() {
+    let mut state = fixture_state();
+    // The last Patch, because its neighbour channel is free: on any other the
+    // adjacent channel is already taken and the edit would be refused for the
+    // right reason but prove nothing about re-targeting.
+    for _ in 0..3 {
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+    }
+    let patch_id = state.interaction().patch_focus().unwrap();
+    let before = focused_patch(&state).clone();
+    let old_channel = before.channel();
+    let graph_before = state.engine_selection().active_graph_revision();
+
+    enter_utility_row(&mut state, &PatchControlId::MidiInput);
+    set_mode(&mut state, InteractionMode::Adjust);
+    state
+        .apply(AppEvent::Adjust(Direction::Right))
+        .expect("the adjacent channel is free");
+    set_mode(&mut state, InteractionMode::Navigate);
+
+    let after = focused_patch(&state);
+    let new_channel = after.channel();
+    assert_eq!(
+        new_channel.value(),
+        old_channel.value() + 1,
+        "the row edits the focused Patch's own channel by the declared step"
+    );
+    // The Patch answers to the new part and no longer to the old one.
+    assert_eq!(
+        state
+            .patches()
+            .iter()
+            .filter(|patch| patch.channel() == new_channel)
+            .map(Patch::id)
+            .collect::<Vec<_>>(),
+        vec![patch_id],
+        "exactly the edited Patch now answers to the new part"
+    );
+    assert!(
+        state
+            .patches()
+            .iter()
+            .all(|patch| patch.channel() != old_channel),
+        "no installed Patch still answers to the old part"
+    );
+    // And the new part is exclusively this Patch's: another Patch asking for
+    // it is a typed refusal, which is what makes "responds on the new channel
+    // and not the old" a routing fact rather than a field write.
+    let mut collide = state.clone();
+    collide
+        .apply(AppEvent::SelectPatch(Direction::Left))
+        .unwrap();
+    enter_utility_row(&mut collide, &PatchControlId::MidiInput);
+    set_mode(&mut collide, InteractionMode::Adjust);
+    let steps = i32::from(new_channel.value()) - i32::from(collide.patches()[2].channel().value());
+    let guarded = collide.clone();
+    for step in 0..steps {
+        let outcome = collide.apply(AppEvent::Adjust(Direction::Right));
+        if step == steps - 1 {
+            assert_eq!(
+                outcome,
+                Err(EventRejection::DuplicateMidiChannel),
+                "a second Patch cannot take the part the edited one now owns"
+            );
+        } else {
+            outcome.expect("the intervening channels are free");
+        }
+    }
+    assert_eq!(
+        collide.patches()[3].channel(),
+        new_channel,
+        "the refused collision left the edited Patch's part alone"
+    );
+    drop(guarded);
+
+    // A message arriving on the new part reaches this Patch through the
+    // production reducer, and carries the new channel.
+    let outcome = state
+        .apply(AppEvent::Midi {
+            patch_id,
+            message: MidiMessage::try_new(new_channel, MidiMessageKind::NoteOn, 60, 100).unwrap(),
+        })
+        .expect("a message for an installed Patch is accepted");
+    match outcome.audio_command() {
+        Some(AudioCommand::PatchMidi {
+            patch_id: id,
+            message,
+        }) => {
+            assert_eq!(*id, patch_id);
+            assert_eq!(message.channel(), new_channel);
+            assert_ne!(message.channel(), old_channel);
+        }
+        other => panic!("a MIDI event must emit exactly one PatchMidi command, got {other:?}"),
+    }
+
+    // Identity, config, envelope, effects, routing, and the active graph
+    // revision are untouched by a channel edit.
+    let after = focused_patch(&state);
+    assert_eq!(after.id(), before.id());
+    assert_eq!(after.name(), before.name());
+    assert_eq!(after.instrument_config(), before.instrument_config());
+    assert_eq!(after.envelope(), before.envelope());
+    assert_eq!(after.effect_slots(), before.effect_slots());
+    assert_eq!(after.output(), before.output());
+    assert_eq!(after.voice_limit(), before.voice_limit());
+    assert_eq!(
+        state.engine_selection().active_graph_revision(),
+        graph_before
+    );
+    assert!(!state.engine_selection().is_in_flight());
+}
+
+// ---------------------------------------------------------------------------
+// T032 — per-row actions, requested values, painted ranges and units
+// ---------------------------------------------------------------------------
+
+/// Each control's action list is the same resolver's answer for the
+/// counterfactual focus in which that control is focused, and at the row that
+/// really is focused it is the model-level list itself.
+///
+/// The counterfactual is driven through the **reducer**: the cursor is moved
+/// onto each row and the model-level list read there, so a per-row list that
+/// diverged from what the reducer would actually accept fails. That is
+/// strictly stronger than comparing two calls of one function.
+fn check_per_row_actions_agree_with_the_model_level_list() -> usize {
+    let state = fixture_state();
+    let model = semantic(&state);
+    assert_eq!(
+        model
+            .focused_control()
+            .expect("PATCH always focuses a row")
+            .valid_actions(),
+        model.valid_actions(),
+        "at the focused row the two lists are the same value, not two computations"
+    );
+
+    let mut compared = 0_usize;
+    for path in SemanticResolver::new(&state)
+        .patch_main_paths(state.interaction().patch_focus().unwrap())
+        .unwrap()
+    {
+        let advertised = control_at(&model, path.control_id())
+            .valid_actions()
+            .to_vec();
+        let mut moved = fixture_state();
+        navigate_to(&mut moved, |candidate| candidate == &path);
+        let actual = semantic(&moved).valid_actions().to_vec();
+        assert_eq!(
+            advertised,
+            actual,
+            "the row {:?} advertises an action list the reducer does not honour there",
+            path.control_id()
+        );
+        // Ordered and duplicate-free, per the declaration.
+        let kinds: Vec<_> = advertised
+            .iter()
+            .map(|action| format!("{:?}", action.action()))
+            .collect();
+        let unique: BTreeSet<_> = kinds.iter().cloned().collect();
+        assert_eq!(
+            kinds.len(),
+            unique.len(),
+            "a row's action list repeats itself"
+        );
+        compared += 1;
+    }
+    assert!(compared >= 13, "only {compared} rows compared");
+    compared
+}
+
+/// `requestedValue` is `Some` exactly while a correlated structural edit is in
+/// flight, and `None` on every settled row.
+fn check_requested_value_is_present_only_while_an_edit_is_in_flight() {
+    // Settled: the count of rows claiming a requested value is zero, on every
+    // PATCH fixture including both engines and both detail subjects.
+    for (fixture, state) in screen_string_fixtures() {
+        if state.engine_selection().is_in_flight() {
+            continue;
+        }
+        let model = semantic(&state);
+        let claiming: Vec<_> = all_controls(&model)
+            .into_iter()
+            .filter(|control| control.requested_value().is_some())
+            .map(|control| control.path().control_id().clone())
+            .collect();
+        assert_eq!(
+            claiming.len(),
+            0,
+            "{fixture}: {} settled row(s) claim a requested value: {claiming:?}",
+            claiming.len()
+        );
+    }
+
+    // In flight: exactly the correlated row carries one, and it carries the
+    // value the reducer has already agreed to move it toward.
+    let (state, control) = preset_swap_in_flight();
+    let model = semantic(&state);
+    let carrying: Vec<_> = model
+        .surface(SurfaceId::PatchMain)
+        .unwrap()
+        .controls()
+        .iter()
+        .filter(|row| row.requested_value().is_some())
+        .collect();
+    assert_eq!(
+        carrying.len(),
+        1,
+        "exactly the correlated row carries the requested value"
+    );
+    assert_eq!(carrying[0].path().control_id(), &control);
+    let intent_choice = state
+        .engine_selection()
+        .correlation()
+        .unwrap()
+        .intent()
+        .choice_id()
+        .expect("the in-flight intent names a choice")
+        .to_owned();
+    assert_eq!(
+        carrying[0].requested_value(),
+        Some(&SemanticControlValue::Parameter(ParameterValue::Choice(
+            intent_choice
+        ))),
+        "the requested value comes from the correlated lifecycle, never from the input"
+    );
+    // And it is not the active value under another name.
+    assert_ne!(carrying[0].requested_value(), Some(carrying[0].value()));
+}
+
+/// Every projected numeric control's range and unit are **rendered**, not
+/// merely projected.
+///
+/// Read back through the render script's own `rangeHtml` / `rangeEndpointText`
+/// and unit rules rather than off the projection, so a page that stopped
+/// painting either fails here.
+fn check_ranges_and_units_are_rendered() -> usize {
+    let mut rendered = 0_usize;
+    let mut units = 0_usize;
+    for (fixture, state) in screen_string_fixtures() {
+        let document = document(&state);
+        for surface in [
+            "patchMain",
+            "patchUtility",
+            "patchDetail",
+            "mixerMain",
+            "mixerInspector",
+        ] {
+            for control in surface_controls(&document, surface) {
+                let id = page_control_id(&control);
+                let Some(range) = control.get("numericRange").filter(|r| r.is_object()) else {
+                    continue;
+                };
+                let painted = page_range_text(&control).unwrap_or_else(|| {
+                    panic!("{fixture}: {surface} {id} projects a range the page paints nothing for")
+                });
+                let minimum = range["minimum"].as_f64().unwrap();
+                let maximum = range["maximum"].as_f64().unwrap();
+                let (low, high) = painted.split_once(" — ").unwrap_or_else(|| {
+                    panic!("{fixture}: {id} paints {painted} with no separator")
+                });
+                assert_eq!(
+                    low.parse::<f64>().unwrap(),
+                    minimum,
+                    "{fixture}: {id} paints a lower bound the projection does not declare"
+                );
+                assert_eq!(
+                    high.parse::<f64>().unwrap(),
+                    maximum,
+                    "{fixture}: {id} paints an upper bound the projection does not declare"
+                );
+                assert!(
+                    range["fineStep"].as_f64().is_some_and(f64::is_finite)
+                        && range["coarseStep"].as_f64().is_some_and(f64::is_finite),
+                    "{fixture}: {id} projects a range with no step"
+                );
+                rendered += 1;
+                if let Some(unit) = control.get("unit").and_then(Value::as_str) {
+                    assert!(!unit.is_empty(), "{fixture}: {id} projects an empty unit");
+                    units += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        rendered > 100,
+        "only {rendered} numeric rows painted a range"
+    );
+    assert!(units > 0, "no projected unit was painted");
+    rendered
+}
+
+/// The page composes no label and no action label of its own.
+///
+/// Every projected control label, action label and action hint, checked against
+/// the committed render script's own text: none of them appears there as a
+/// literal. A page that hard-coded "Voice Limit", "Preset" or "Adjust" would
+/// paint the right words for the wrong reason, and this is what says so.
+///
+/// Scoped to control and action strings deliberately. Surface labels are
+/// excluded and named: the page carries `"DETAIL"` as the name of a structure
+/// it must still mark when the projection supplies no detail surface at all,
+/// which is the authored no-placeholder behaviour rather than a composed label.
+fn check_the_page_composes_no_label_of_its_own() -> usize {
+    let script = script_without_comments(&page_source("page.js"));
+    let mut checked = 0_usize;
+    let mut vocabulary = BTreeSet::new();
+    for (_, state) in screen_string_fixtures() {
+        let document = document(&state);
+        for surface in document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            for control in surface
+                .get("controls")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                if let Some(label) = control.get("label").and_then(Value::as_str) {
+                    vocabulary.insert(label.to_owned());
+                }
+                for action in control
+                    .get("validActions")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+                {
+                    for key in ["label", "hint"] {
+                        if let Some(text) = action.get(key).and_then(Value::as_str) {
+                            vocabulary.insert(text.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for text in &vocabulary {
+        checked += 1;
+        for quoted in [format!("\"{text}\""), format!("'{text}'")] {
+            assert!(
+                !script.contains(&quoted),
+                "webview-page/page.js composes the projected string {text} itself"
+            );
+        }
+    }
+    assert!(
+        checked > 20,
+        "only {checked} projected strings checked against the render script"
+    );
+    checked
+}
+
+// ---------------------------------------------------------------------------
+// T033 — one detail identity, two subjects, exact return
+// ---------------------------------------------------------------------------
+
+/// Opens the detail surface from the row `predicate` names, and reports the
+/// surface identity and the subject it served.
+fn open_detail(
+    predicate: impl Fn(&FocusPath) -> bool,
+) -> (AppState, SurfaceId, PatchDetailSubject, FocusPath) {
+    let mut state = fixture_state();
+    navigate_to(&mut state, &predicate);
+    let origin = state.interaction().focus_path().clone();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("the origin row resolves a detail subject");
+    let surface = state.interaction().active_surface();
+    let subject = state
+        .interaction()
+        .detail_subject()
+        .expect("an open detail surface holds its subject")
+        .clone();
+    (state, surface, subject, origin)
+}
+
+fn is_control(control: &PatchControlId) -> impl Fn(&FocusPath) -> bool + '_ {
+    move |path: &FocusPath| path.control_id() == &SemanticControlId::Patch(control.clone())
+}
+
+/// **One** `PatchDetail` surface identity serves an instrument subject and an
+/// effect subject, and everything it shows comes from the installed descriptor
+/// with no branch on subject kind.
+fn check_one_detail_identity_serves_two_subjects() -> (usize, usize) {
+    let (instrument_state, instrument_surface, instrument_subject, _) =
+        open_detail(is_control(&PatchControlId::Engine));
+    let (effect_state, effect_surface, effect_subject, _) = open_detail(is_control(
+        &PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]),
+    ));
+
+    let identities: BTreeSet<String> = BTreeSet::from([
+        format!("{instrument_surface:?}"),
+        format!("{effect_surface:?}"),
+    ]);
+    let subjects: BTreeSet<String> = BTreeSet::from([
+        format!("{instrument_subject:?}"),
+        format!("{effect_subject:?}"),
+    ]);
+    assert_eq!(
+        identities.len(),
+        1,
+        "two subjects were served by {} surface identities",
+        identities.len()
+    );
+    assert_eq!(
+        identities.into_iter().next(),
+        Some(format!("{:?}", SurfaceId::PatchDetail))
+    );
+    assert_eq!(subjects.len(), 2, "one surface identity served one subject");
+    assert!(matches!(
+        instrument_subject,
+        PatchDetailSubject::Instrument { .. }
+    ));
+    assert!(matches!(effect_subject, PatchDetailSubject::Effect { .. }));
+
+    // Title, sections, controls, ranges, units and status all come from the
+    // installed descriptor. Asserted by reading the descriptor the subject
+    // names and comparing row for row, both times, with the same code.
+    for (state, subject) in [
+        (&instrument_state, &instrument_subject),
+        (&effect_state, &effect_subject),
+    ] {
+        let page = page(state);
+        let detail = page
+            .detail()
+            .expect("an open detail surface projects a page");
+        let (label, specs): (String, Vec<_>) = match subject {
+            PatchDetailSubject::Instrument { capability_id } => {
+                let descriptor = state.capabilities().descriptor(capability_id).unwrap();
+                (
+                    descriptor.label().to_owned(),
+                    descriptor.parameters().collect(),
+                )
+            }
+            PatchDetailSubject::Effect { capability_id, .. } => {
+                let descriptor = state.effects().descriptor(capability_id).unwrap();
+                (
+                    descriptor.label().to_owned(),
+                    descriptor.parameters().collect(),
+                )
+            }
+        };
+        assert_eq!(detail.label(), label, "the title is the descriptor's own");
+        let projected: Vec<_> = detail
+            .sections()
+            .iter()
+            .flat_map(PatchPageSection::parameters)
+            .collect();
+        assert_eq!(projected.len(), specs.len());
+        for (row, spec) in projected.iter().zip(&specs) {
+            assert_eq!(row.id(), spec.id());
+            assert_eq!(row.label(), spec.label());
+            assert_eq!(row.kind(), spec.kind());
+            assert_eq!(row.range(), spec.range());
+            assert_eq!(row.unit(), spec.unit());
+            assert_eq!(row.patch_interaction(), spec.patch_interaction());
+        }
+        assert_eq!(
+            detail.status(),
+            state.engine_selection().kind(),
+            "the surface reports the one projected lifecycle"
+        );
+        // The semantic model's detail rows agree, so the two documents cannot
+        // disagree about what the same descriptor declared.
+        let model = semantic(state);
+        let rows = model.surface(SurfaceId::PatchDetail).unwrap().controls();
+        assert_eq!(rows.len(), specs.len());
+        for (row, spec) in rows.iter().zip(&specs) {
+            assert_eq!(row.label(), spec.label());
+            assert_eq!(row.patch_interaction(), Some(spec.patch_interaction()));
+            assert_eq!(row.unit(), spec.unit());
+        }
+    }
+    (1, 2)
+}
+
+/// Two positions holding the same registry entry are two subjects.
+fn check_two_slots_of_one_entry_are_distinct_subjects() {
+    let (_, _, first, _) = open_detail(is_control(&PatchControlId::EffectSlot(
+        EffectSlotIndex::ALL[0],
+    )));
+    let (_, _, second, _) = open_detail(is_control(&PatchControlId::EffectSlot(
+        EffectSlotIndex::ALL[1],
+    )));
+    let (
+        PatchDetailSubject::Effect {
+            slot_id: first_slot,
+            capability_id: first_capability,
+        },
+        PatchDetailSubject::Effect {
+            slot_id: second_slot,
+            capability_id: second_capability,
+        },
+    ) = (&first, &second)
+    else {
+        panic!("both fixture positions hold an effect");
+    };
+    assert_eq!(
+        first_capability, second_capability,
+        "the fixture must hold the same registry entry in both positions, or this proves nothing"
+    );
+    assert_eq!(first_capability.as_str(), CHORUS_CAPABILITY_ID);
+    assert_ne!(
+        first_slot, second_slot,
+        "two positions holding one entry must be two subjects"
+    );
+    assert_ne!(first, second);
+}
+
+/// Entry is refused from an empty slot and from a Utility row, as typed
+/// unchanged rejections.
+fn check_detail_entry_is_refused_where_no_subject_exists() {
+    // The empty third position names a position, not a capability, and is
+    // deliberately not repaired into a neighbouring subject.
+    let mut empty = fixture_state();
+    navigate_to(
+        &mut empty,
+        is_control(&PatchControlId::EffectSlot(EffectSlotIndex::ALL[2])),
+    );
+    let before = empty.clone();
+    assert_eq!(
+        empty.apply(AppEvent::EnterSurface(SurfaceId::PatchDetail)),
+        Err(EventRejection::ActionUnavailableInContext),
+        "an empty position resolves no subject"
+    );
+    assert_eq!(empty, before, "a refused entry leaves the state identical");
+    assert_eq!(empty.interaction().detail_subject(), None);
+
+    // A Utility row is not a capability row and never resolves a subject.
+    let mut utility = entered_utility();
+    let before = utility.clone();
+    assert_eq!(
+        utility.apply(AppEvent::EnterSurface(SurfaceId::PatchDetail)),
+        Err(EventRejection::ActionUnavailableInContext),
+        "a Utility row resolves no detail subject"
+    );
+    assert_eq!(utility, before);
+}
+
+/// Subordinate surfaces do not nest, in both directions.
+fn check_subordinate_surfaces_do_not_nest() {
+    let (mut detail, ..) = open_detail(is_control(&PatchControlId::Engine));
+    let before = detail.clone();
+    assert_eq!(
+        detail.apply(AppEvent::EnterSurface(SurfaceId::PatchUtility)),
+        Err(EventRejection::ActionUnavailableInContext),
+        "the persistent side surface cannot open beneath the detail surface"
+    );
+    assert_eq!(detail, before);
+    assert_eq!(
+        detail.interaction().active_surface(),
+        SurfaceId::PatchDetail
+    );
+
+    let mut utility = entered_utility();
+    let before = utility.clone();
+    assert_eq!(
+        utility.apply(AppEvent::EnterSurface(SurfaceId::PatchDetail)),
+        Err(EventRejection::ActionUnavailableInContext),
+        "the detail surface cannot open beneath the persistent side surface"
+    );
+    assert_eq!(utility, before);
+    assert!(utility.interaction().detail_invariant_holds());
+}
+
+/// Return lands on the **exact** originating row after reprojection, proved
+/// from an origin that is not the first row.
+fn check_return_lands_on_the_exact_origin() {
+    let origin_control = PatchControlId::EffectSlot(EffectSlotIndex::ALL[1]);
+    let (mut state, _, _, origin) = open_detail(is_control(&origin_control));
+    let order = SemanticResolver::new(&state)
+        .patch_main_paths(state.interaction().patch_focus().unwrap())
+        .unwrap();
+    assert_ne!(
+        order.first(),
+        Some(&origin),
+        "the origin must not be the first row, or a recomputed default would pass"
+    );
+    assert_eq!(
+        state.interaction().return_path().map(|path| path.origin()),
+        Some(&origin)
+    );
+    state
+        .apply(AppEvent::Return)
+        .expect("an open detail surface can be left");
+    assert_eq!(
+        state.interaction().focus_path(),
+        &origin,
+        "return lands on the exact originating row, not a surface default"
+    );
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
+    assert_eq!(state.interaction().detail_subject(), None);
+    assert!(state.interaction().detail_invariant_holds());
+    // And the projection agrees, after reprojection.
+    assert_eq!(semantic(&state).focused_control().unwrap().path(), &origin);
+}
+
+/// A capability-declared read-only section is marked in text or shape, and a
+/// mid-preparation capability reports its lifecycle rather than emptying its
+/// section set.
+///
+/// The read-only *fact* is `patchInteraction`, which is what the render script
+/// discriminates on (`control.patchInteraction === "readOnly"` → the authored
+/// `READ-ONLY` mark plus a dashed keyline, so the declaration reads in text and
+/// in shape rather than in colour alone). `editable` is uniformly `false` on
+/// every detail row in this phase and therefore discriminates nothing, which is
+/// asserted here so a page that reached for it instead fails.
+fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
+    // Braids declares every one of its rows read-only.
+    let mut braids = fixture_state();
+    braids
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .unwrap();
+    braids
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("the engine row resolves an instrument subject");
+    let braids_document = document(&braids);
+    let rows = surface_controls(&braids_document, "patchDetail");
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter()
+            .all(|row| row.get("patchInteraction").and_then(Value::as_str) == Some("readOnly")),
+        "every Braids row declares itself read-only"
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.get("editable") == Some(&Value::Bool(false))),
+        "no detail row is editable in this phase"
+    );
+
+    // SoundFont's detail carries one structural row beside its read-only file
+    // row, so the mark discriminates rather than being uniformly true.
+    let (soundfont, ..) = open_detail(is_control(&PatchControlId::Engine));
+    let soundfont_document = document(&soundfont);
+    let rows = surface_controls(&soundfont_document, "patchDetail");
+    let interactions: BTreeSet<&str> = rows
+        .iter()
+        .filter_map(|row| row.get("patchInteraction").and_then(Value::as_str))
+        .collect();
+    assert!(
+        interactions.contains("readOnly") && interactions.len() > 1,
+        "the read-only mark must discriminate on one surface, got {interactions:?}"
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.get("editable") == Some(&Value::Bool(false))),
+        "`editable` is uniformly false here and cannot be what marks a read-only row"
+    );
+
+    // A capability mid-preparation reports its typed lifecycle on its own rows
+    // and keeps the section set the installed descriptor declares.
+    let settled = surface_controls(&document(&fixture_state()), "patchMain").len();
+    assert!(settled > 0);
+    let (mut preparing, _) = preset_swap_in_flight();
+    let settled_detail = rows.len();
+    preparing
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("the detail surface opens while a swap is in flight");
+    let preparing_document = document(&preparing);
+    let rows = surface_controls(&preparing_document, "patchDetail");
+    assert_eq!(
+        rows.len(),
+        settled_detail,
+        "preparation must not empty the section set the descriptor declares"
+    );
+    assert!(
+        rows.iter().all(|row| matches!(
+            row.pointer("/status/kind").and_then(Value::as_str),
+            Some("preparing" | "activating")
+        )),
+        "a preparing subject reports its typed lifecycle on its own rows"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T034 — the voice limit: bounded, seeded, enforced, falsifiable
+// ---------------------------------------------------------------------------
+
+/// The bound is `1..=64` and out-of-range construction is refused, not clamped.
+fn check_the_voice_limit_is_bounded_and_refuses_rather_than_clamps() {
+    assert_eq!(VoiceLimit::MINIMUM, 1);
+    assert_eq!(VoiceLimit::MAXIMUM, 64);
+    assert_eq!(VoiceLimit::new(1).map(VoiceLimit::value), Ok(1));
+    assert_eq!(VoiceLimit::new(64).map(VoiceLimit::value), Ok(64));
+    for out_of_range in [0_u16, 65, 128, u16::MAX] {
+        assert_eq!(
+            VoiceLimit::new(out_of_range),
+            Err(VoiceLimitError::OutOfRange {
+                value: out_of_range
+            }),
+            "{out_of_range} must be refused rather than clamped into the bound"
+        );
+    }
+    let descriptor = VoiceLimit::descriptor();
+    assert_eq!(descriptor.minimum(), VoiceLimit::MINIMUM);
+    assert_eq!(descriptor.maximum(), VoiceLimit::MAXIMUM);
+    assert_eq!(descriptor.kind(), ParameterKind::Stepped);
+}
+
+/// Every Patch is seeded from its **own** engine's declared ceiling, and the
+/// two engines seed differently.
+fn check_each_patch_is_seeded_from_its_own_engine_ceiling() {
+    let state = fixture_state();
+    let registry = state.capabilities();
+    for patch in state.patches() {
+        let ceiling = registry
+            .descriptor(patch.instrument_config().capability_id())
+            .expect("every installed Patch names an installed capability")
+            .voice_policy()
+            .polyphony_ceiling();
+        assert_eq!(
+            patch.voice_limit(),
+            VoiceLimit::seeded_from_ceiling(ceiling),
+            "{:?} was not seeded from its own engine's ceiling",
+            patch.id()
+        );
+    }
+    let soundfont = patch_of(&state, PatchId::new(1).unwrap())
+        .voice_limit()
+        .value();
+    let braids = patch_of(&state, PatchId::new(2).unwrap())
+        .voice_limit()
+        .value();
+    assert_eq!(soundfont, HIDEF_POLYPHONY_CEILING);
+    assert_eq!(braids, BRAIDS_FIXED_VOICES);
+    assert_ne!(
+        soundfont, braids,
+        "a fixture whose engines seed the same limit cannot falsify per-engine seeding"
+    );
+}
+
+/// The limit is edited as a `Stepped` control through the canonical reducer,
+/// honouring the descriptor's fine and coarse steps, and refusing at its bound.
+fn check_the_voice_limit_is_edited_as_a_stepped_control() {
+    let descriptor = VoiceLimit::descriptor();
+    let mut state = fixture_state();
+    enter_utility_row(&mut state, &PatchControlId::VoiceLimit);
+    let model = semantic(&state);
+    let row = control_at(
+        &model,
+        &SemanticControlId::Patch(PatchControlId::VoiceLimit),
+    );
+    assert_eq!(row.kind(), SemanticControlKind::Stepped);
+    let range = row
+        .numeric_range()
+        .expect("the limit row carries its bounds");
+    assert_eq!(range.minimum(), f64::from(descriptor.minimum()));
+    assert_eq!(range.maximum(), f64::from(descriptor.maximum()));
+    assert_eq!(range.fine_step(), f64::from(descriptor.fine_step()));
+    assert_eq!(range.coarse_step(), f64::from(descriptor.coarse_step()));
+
+    set_mode(&mut state, InteractionMode::Adjust);
+    let start = focused_patch(&state).voice_limit().value();
+    state.apply(AppEvent::Adjust(Direction::Left)).unwrap();
+    assert_eq!(
+        focused_patch(&state).voice_limit().value(),
+        start - descriptor.fine_step(),
+        "Left moves by the descriptor's fine step"
+    );
+    state.apply(AppEvent::Adjust(Direction::Down)).unwrap();
+    assert_eq!(
+        focused_patch(&state).voice_limit().value(),
+        start - descriptor.fine_step() - descriptor.coarse_step(),
+        "Down moves by the descriptor's coarse step"
+    );
+    state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+    assert_eq!(
+        focused_patch(&state).voice_limit().value(),
+        start - descriptor.fine_step(),
+        "Up moves back by the descriptor's coarse step"
+    );
+
+    // Down to the bound, then a typed unchanged rejection.
+    while focused_patch(&state).voice_limit().value() > descriptor.minimum() {
+        state
+            .apply(AppEvent::Adjust(Direction::Left))
+            .expect("the row edits down to its bound");
+    }
+    let at_bound = state.clone();
+    assert_eq!(
+        state.apply(AppEvent::Adjust(Direction::Left)),
+        Err(EventRejection::ParameterAtBoundary),
+        "the bound refuses rather than wrapping or clamping silently"
+    );
+    assert_eq!(state, at_bound, "a refused edit leaves the state identical");
+}
+
+/// The limit rides the parameter snapshot, per Patch.
+fn check_the_voice_limit_rides_the_parameter_snapshot() {
+    let state = lowered_limit_state(3);
+    let snapshot = StateProjector::for_graph(GraphRevision::INITIAL)
+        .project(&state)
+        .expect("the state projects")
+        .2;
+    for patch in state.patches() {
+        assert_eq!(
+            snapshot
+                .patch(patch.id())
+                .expect("every installed Patch has a snapshot entry")
+                .voice_limit(),
+            patch.voice_limit(),
+            "{:?}'s snapshot entry does not carry its canonical limit",
+            patch.id()
+        );
+    }
+    assert_eq!(
+        snapshot
+            .patch(PatchId::new(1).unwrap())
+            .unwrap()
+            .voice_limit()
+            .value(),
+        3
+    );
+    assert!(
+        crest_synth::real_time::parameter_snapshot::ParameterSnapshot::serialized_leaf_descriptor()
+            .contains(&"patches[].voiceLimit"),
+        "the limit must be visible in the trace, or no measured proof can \
+         correlate a refused note with the limit that refused it"
+    );
+}
+
+/// The focused SoundFont Patch's limit driven down to `target` through the
+/// canonical reducer.
+fn lowered_limit_state(target: u16) -> AppState {
+    let mut state = fixture_state();
+    enter_utility_row(&mut state, &PatchControlId::VoiceLimit);
+    set_mode(&mut state, InteractionMode::Adjust);
+    while focused_patch(&state).voice_limit().value() > target {
+        let remaining = focused_patch(&state).voice_limit().value() - target;
+        let direction = if remaining >= VoiceLimit::descriptor().coarse_step() {
+            Direction::Down
+        } else {
+            Direction::Left
+        };
+        state
+            .apply(AppEvent::Adjust(direction))
+            .expect("the limit row edits down to the target");
+    }
+    assert_eq!(focused_patch(&state).voice_limit().value(), target);
+    set_mode(&mut state, InteractionMode::Navigate);
+    state
+}
+
+/// A lock-free latest-wins observation transport that keeps the field this
+/// target measures.
+///
+/// The shipped `AtomicAudioObservation` does **not** carry
+/// `voiceLimitRefusals` — `AtomicObservationFields` has no such atomic — so a
+/// count read back through it is zero no matter what the callback counted.
+/// Reading the mission's central real-time claim through that adapter would be
+/// exactly the failure this mission keeps finding: a guard walking a value it
+/// cannot fail on. So the *counting* stays where production does it
+/// (`AudioRenderer::render`) and only the transport is local, published the
+/// same way the production one is: two relaxed atomic stores, no allocation,
+/// no lock, no blocking.
+///
+/// That the production adapter drops the field is recorded as a finding rather
+/// than fixed here: `src/adapter/atomic_audio_observation.rs` belongs to WP06,
+/// which is the package that has to correlate a refused note with the limit
+/// that refused it on real hardware.
+#[derive(Clone, Default)]
+struct RefusalObservation {
+    refusals: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    active_notes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+struct RefusalWriter {
+    refusals: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    active_notes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+struct RefusalReader {
+    refusals: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    active_notes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl AudioObservation for RefusalObservation {
+    type CallbackHandle = RefusalWriter;
+    type ControlHandle = RefusalReader;
+
+    fn into_handles(self) -> (Self::CallbackHandle, Self::ControlHandle) {
+        (
+            RefusalWriter {
+                refusals: std::sync::Arc::clone(&self.refusals),
+                active_notes: std::sync::Arc::clone(&self.active_notes),
+            },
+            RefusalReader {
+                refusals: self.refusals,
+                active_notes: self.active_notes,
+            },
+        )
+    }
+}
+
+impl crest_synth::real_time::audio_observation::CallbackAudioObservation for RefusalWriter {
+    fn publish_from_callback(
+        &mut self,
+        snapshot: crest_synth::real_time::audio_observation_snapshot::AudioObservationSnapshot,
+    ) {
+        use std::sync::atomic::Ordering;
+        self.refusals
+            .store(snapshot.voice_limit_refusals(), Ordering::Relaxed);
+        self.active_notes
+            .store(u64::from(snapshot.active_notes()), Ordering::Relaxed);
+    }
+}
+
+/// The trait the transport must satisfy. It hands back a snapshot carrying the
+/// two fields this target measures; every other field is the default, which is
+/// exactly what makes the reconstruction honest — nothing here fabricates a
+/// measurement the callback did not publish.
+impl ControlAudioObservation for RefusalReader {
+    fn read_latest_on_control(
+        &self,
+    ) -> crest_synth::real_time::audio_observation_snapshot::AudioObservationSnapshot {
+        crest_synth::real_time::audio_observation_snapshot::AudioObservationSnapshot::default()
+            .with_voice_limit_refusals(self.refusals())
+    }
+}
+
+impl RefusalReader {
+    fn refusals(&self) -> u64 {
+        self.refusals.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn active_notes(&self) -> u32 {
+        self.active_notes.load(std::sync::atomic::Ordering::Relaxed) as u32
+    }
+}
+
+/// Drives the production callback with `note_count` note-ons on the focused
+/// Patch at a limit of `limit`, then a note-off and an all-notes-off, and
+/// reports `(refusals, allocations, destructions, active_notes_after_onsets)`.
+fn drive_callback_at_limit(limit: u16, note_count: u8) -> (u64, usize, usize, u32) {
+    let state = lowered_limit_state(limit);
+    let patch = focused_patch(&state).clone();
+    let parameters = StateProjector::for_graph(GraphRevision::INITIAL)
+        .project(&state)
+        .expect("the state projects")
+        .2;
+    let graph = PreparedGraphBuilder::new(
+        state.capabilities(),
+        &production_instrument_preparers().expect("the production instrument preparers"),
+    )
+    .with_effects(
+        state.effects(),
+        &production_effect_preparers().expect("the production effect preparers"),
+    )
+    .build(
+        GraphRevision::INITIAL,
+        state.patches(),
+        parameters,
+        SAMPLE_RATE,
+        BLOCK_FRAMES,
+    )
+    .expect("the production graph builds for the fixture");
+
+    let (mut control, audio) = LockFreeAudioBoundary::new(64, parameters).into_handles();
+    let (writer, reader) = RefusalObservation::default().into_handles();
+    let mut renderer =
+        AudioRenderer::with_observation(audio, NoStructuralGraphChanges::new(), graph, writer);
+    let mut output = [0.0_f32; BLOCK_SAMPLES];
+
+    let message = |kind, key, velocity| {
+        MidiMessage::try_new(patch.channel(), kind, key, velocity).expect("a valid MIDI message")
+    };
+    for key in 0..note_count {
+        control
+            .push_command(AudioCommand::patch_midi(
+                patch.id(),
+                message(MidiMessageKind::NoteOn, 60 + key, 100),
+            ))
+            .expect("the command bank holds every note-on");
+    }
+    begin_memory_count();
+    renderer.render(&mut output);
+    let (mut allocations, mut destructions) = finish_memory_count();
+    let active_after_onsets = reader.active_notes();
+
+    // A note-off and an all-notes-off are never refused, at any limit.
+    control
+        .push_command(AudioCommand::patch_midi(
+            patch.id(),
+            message(MidiMessageKind::NoteOff, 60, 0),
+        ))
+        .unwrap();
+    control.push_command(AudioCommand::all_notes_off()).unwrap();
+    begin_memory_count();
+    renderer.render(&mut output);
+    let (more_allocations, more_destructions) = finish_memory_count();
+    allocations += more_allocations;
+    destructions += more_destructions;
+
+    assert_eq!(reader.active_notes(), 0, "all-notes-off is never refused");
+    (
+        reader.refusals(),
+        allocations,
+        destructions,
+        active_after_onsets,
+    )
+}
+
+/// The callback refuses a note-on beyond the limit, never truncates a latched
+/// voice, never refuses a note-off or all-notes-off, counts each refusal, and
+/// allocates and destroys nothing.
+///
+/// **Falsified by defeating the limit.** With the refusal branch removed from
+/// `AudioRenderer::render`'s `PatchMidi` arm, the same fixture reports zero
+/// refusals and five active notes, and the two assertions below fire. That
+/// mutation was performed and its failure text recorded; it is not described.
+fn check_the_callback_enforces_the_limit() -> u64 {
+    let limit = 3_u16;
+    let notes = 5_u8;
+    let (refusals, allocations, destructions, active) = drive_callback_at_limit(limit, notes);
+    assert_eq!(
+        active,
+        u32::from(limit),
+        "the Patch sounds exactly its limit: {active} voices latched under a limit of {limit}"
+    );
+    assert_eq!(
+        refusals,
+        u64::from(notes) - u64::from(limit),
+        "every note-on beyond the limit is refused and counted once"
+    );
+    assert!(
+        refusals > 0,
+        "a fixture that must exceed the limit reported zero refusals — the limit does not bite"
+    );
+    assert_eq!(
+        allocations, 0,
+        "the callback allocated {allocations} time(s) enforcing the limit"
+    );
+    assert_eq!(
+        destructions, 0,
+        "the callback destroyed {destructions} object(s) enforcing the limit"
+    );
+
+    // At a limit the fixture cannot exceed, nothing is refused — so the count
+    // is a measurement of the limit and not of the note count.
+    let (none, ..) = drive_callback_at_limit(u16::from(notes) + 1, notes);
+    assert_eq!(
+        none, 0,
+        "a fixture within its limit must report no refusal at all"
+    );
+    refusals
+}
+
+// ---------------------------------------------------------------------------
+// Named tests, so a failure says which claim broke
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_transcribed_page_rules_match_the_committed_script() {
+    check_the_transcribed_page_rules_match_the_committed_script();
+}
+
+#[test]
+fn the_fixture_spans_more_than_two_patches_across_both_engines() {
+    check_the_fixture_spans_more_than_two_patches_across_both_engines();
+}
+
+#[test]
+fn a_switch_reprojects_the_destination_in_one_generation() {
+    check_a_switch_reprojects_the_destination_in_one_generation();
+}
+
+#[test]
+fn focus_recovers_against_the_destination_schema() {
+    check_focus_recovers_against_the_destination_schema();
+}
+
+#[test]
+fn the_ends_of_the_installed_order_refuse() {
+    check_the_ends_of_the_installed_order_refuse();
+}
+
+#[test]
+fn an_in_flight_edit_stays_correlated_and_a_subordinate_surface_is_left() {
+    check_an_in_flight_edit_stays_correlated_and_a_subordinate_surface_is_left();
+}
+
+#[test]
+fn the_strip_is_grouped_structure() {
+    check_the_strip_is_grouped_structure();
+}
+
+#[test]
+fn a_flat_run_fails_the_grouped_check() {
+    check_a_flat_run_fails_the_grouped_check();
+}
+
+#[test]
+fn an_absent_group_and_an_unfocused_workspace_mark_themselves() {
+    check_an_absent_group_and_an_unfocused_workspace_mark_themselves();
+}
+
+#[test]
+fn the_whole_patch_surface_marks_nothing_unavailable() {
+    check_the_whole_patch_surface_marks_nothing_unavailable();
+}
+
+#[test]
+fn utility_resolves_five_typed_rows_and_its_hint_line() {
+    check_utility_resolves_five_typed_rows_and_its_hint_line();
+}
+
+#[test]
+fn one_master_gain_owner() {
+    check_one_master_gain_owner();
+}
+
+#[test]
+fn no_projected_screen_string_is_a_serialization_key() {
+    check_no_projected_screen_string_is_a_serialization_key();
+}
+
+#[test]
+fn the_midi_input_row_retargets_the_incoming_part() {
+    check_the_midi_input_row_retargets_the_incoming_part();
+}
+
+#[test]
+fn per_row_actions_agree_with_the_model_level_list() {
+    check_per_row_actions_agree_with_the_model_level_list();
+}
+
+#[test]
+fn requested_value_is_present_only_while_an_edit_is_in_flight() {
+    check_requested_value_is_present_only_while_an_edit_is_in_flight();
+}
+
+#[test]
+fn ranges_and_units_are_rendered() {
+    check_ranges_and_units_are_rendered();
+}
+
+#[test]
+fn the_page_composes_no_label_of_its_own() {
+    check_the_page_composes_no_label_of_its_own();
+}
+
+#[test]
+fn one_detail_identity_serves_two_subjects() {
+    check_one_detail_identity_serves_two_subjects();
+}
+
+#[test]
+fn two_slots_of_one_entry_are_distinct_subjects() {
+    check_two_slots_of_one_entry_are_distinct_subjects();
+}
+
+#[test]
+fn detail_entry_is_refused_where_no_subject_exists() {
+    check_detail_entry_is_refused_where_no_subject_exists();
+}
+
+#[test]
+fn subordinate_surfaces_do_not_nest() {
+    check_subordinate_surfaces_do_not_nest();
+}
+
+#[test]
+fn return_lands_on_the_exact_origin() {
+    check_return_lands_on_the_exact_origin();
+}
+
+#[test]
+fn a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
+    check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself();
+}
+
+#[test]
+fn the_voice_limit_is_bounded_and_refuses_rather_than_clamps() {
+    check_the_voice_limit_is_bounded_and_refuses_rather_than_clamps();
+}
+
+#[test]
+fn each_patch_is_seeded_from_its_own_engine_ceiling() {
+    check_each_patch_is_seeded_from_its_own_engine_ceiling();
+}
+
+#[test]
+fn the_voice_limit_is_edited_as_a_stepped_control() {
+    check_the_voice_limit_is_edited_as_a_stepped_control();
+}
+
+#[test]
+fn the_voice_limit_rides_the_parameter_snapshot() {
+    check_the_voice_limit_rides_the_parameter_snapshot();
+}
+
+#[test]
+fn the_callback_enforces_the_limit() {
+    check_the_callback_enforces_the_limit();
+}
+
+/// The declared acceptance target.
+///
+/// Every check above runs here, in declared order, and the marker
+/// `validation.functional_patch_editor` asserts on is printed strictly after
+/// the last of them returns. A failing check panics before the print, so the
+/// marker cannot appear on a red run, and it is emitted from exactly one place.
+#[test]
+fn functional_patch_editor_acceptance() {
+    let transcriptions = check_the_transcribed_page_rules_match_the_committed_script();
+
+    // T029
+    check_the_fixture_spans_more_than_two_patches_across_both_engines();
+    let switches = check_a_switch_reprojects_the_destination_in_one_generation();
+    check_focus_recovers_against_the_destination_schema();
+    check_the_ends_of_the_installed_order_refuse();
+    check_an_in_flight_edit_stays_correlated_and_a_subordinate_surface_is_left();
+
+    // T030
+    let groups = check_the_strip_is_grouped_structure();
+    let flat_run_rejection = check_a_flat_run_fails_the_grouped_check();
+    check_an_absent_group_and_an_unfocused_workspace_mark_themselves();
+    let patch_rows = check_the_whole_patch_surface_marks_nothing_unavailable();
+
+    // T031
+    check_utility_resolves_five_typed_rows_and_its_hint_line();
+    check_one_master_gain_owner();
+    let screen_strings = check_no_projected_screen_string_is_a_serialization_key();
+    check_the_midi_input_row_retargets_the_incoming_part();
+
+    // T032
+    let action_rows = check_per_row_actions_agree_with_the_model_level_list();
+    check_requested_value_is_present_only_while_an_edit_is_in_flight();
+    let ranges = check_ranges_and_units_are_rendered();
+    let authored_strings = check_the_page_composes_no_label_of_its_own();
+
+    // T033
+    let (detail_surface_identities, detail_subjects_served) =
+        check_one_detail_identity_serves_two_subjects();
+    check_two_slots_of_one_entry_are_distinct_subjects();
+    check_detail_entry_is_refused_where_no_subject_exists();
+    check_subordinate_surfaces_do_not_nest();
+    check_return_lands_on_the_exact_origin();
+    check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself();
+
+    // T034
+    check_the_voice_limit_is_bounded_and_refuses_rather_than_clamps();
+    check_each_patch_is_seeded_from_its_own_engine_ceiling();
+    check_the_voice_limit_is_edited_as_a_stepped_control();
+    check_the_voice_limit_rides_the_parameter_snapshot();
+    let refusals = check_the_callback_enforces_the_limit();
+
+    println!(
+        "CREST_FUNCTIONAL_PATCH_EDITOR_OBSERVATION patches={} engines=2 switches={} \
+         strip_groups={} patch_rows={} screen_strings={} action_rows={} ranges_painted={} \
+         authored_strings={} detail_surface_identities={} detail_subjects_served={} \
+         voice_limit_refusals={} page_rules_pinned={}",
+        fixture_state().patches().len(),
+        switches,
+        groups,
+        patch_rows,
+        screen_strings,
+        action_rows,
+        ranges,
+        authored_strings,
+        detail_surface_identities,
+        detail_subjects_served,
+        refusals,
+        transcriptions,
+    );
+    println!("CREST_FUNCTIONAL_PATCH_EDITOR_FLAT_RUN_REJECTED {flat_run_rejection}");
+    println!("{ACCEPTANCE_MARKER}");
+}

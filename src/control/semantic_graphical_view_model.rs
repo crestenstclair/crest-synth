@@ -170,6 +170,7 @@ pub struct SemanticControlViewModel {
     label: String,
     kind: SemanticControlKind,
     value: SemanticControlValue,
+    selected_label: Option<String>,
     numeric_range: Option<SemanticNumericRange>,
     unit: Option<String>,
     enabled: bool,
@@ -180,6 +181,7 @@ pub struct SemanticControlViewModel {
     status: Option<SemanticLifecycleStatus>,
     error: Option<SemanticError>,
     requested_value: Option<SemanticControlValue>,
+    requested_label: Option<String>,
     patch_interaction: Option<PatchInteraction>,
     valid_actions: Vec<ValidAction>,
 }
@@ -199,6 +201,29 @@ impl SemanticControlViewModel {
 
     pub const fn value(&self) -> &SemanticControlValue {
         &self.value
+    }
+
+    /// The authored label the owning descriptor gives the option this row's
+    /// stored choice id names, or `None` on a row whose value is not a choice.
+    ///
+    /// The canonical value stays the stored id — [`Self::value`] still carries
+    /// `ParameterValue::Choice("sf2.bank-0.program-40")`, because that is what
+    /// the config holds and what the reducer edits. This carries the *name*
+    /// beside it, from the one producer that owns it
+    /// ([`ParameterSpec::choices`]), exactly as
+    /// [`crate::control::PatchPageParameterRow::selected_label`] already does.
+    ///
+    /// It exists because without it a choice id was on screen. The webview
+    /// consumes exactly the serde serialization of this model (crest-spec
+    /// `requirement.serialized_projection_transport`), so the PATCH page's
+    /// `selectedLabel` never reached it and the shipped Preset row painted
+    /// `sf2.bank-0.program-40` while `DESIGN.md` calls it "the **authored-name**
+    /// Preset row" and declares SoundFont presets "labeled with exact authored
+    /// SF2 names" (mission finding F-33). FR-014 forbids a serialization key on
+    /// screen as a *label*; this key reached the screen as a *value*, which the
+    /// label guard could not see.
+    pub fn selected_label(&self) -> Option<&str> {
+        self.selected_label.as_deref()
     }
 
     pub const fn numeric_range(&self) -> Option<SemanticNumericRange> {
@@ -245,6 +270,17 @@ impl SemanticControlViewModel {
     /// would break the one-way loop while appearing to work.
     pub const fn requested_value(&self) -> Option<&SemanticControlValue> {
         self.requested_value.as_ref()
+    }
+
+    /// [`Self::selected_label`] for [`Self::requested_value`]: the authored
+    /// name for the choice id an in-flight structural edit is moving this row
+    /// toward, or `None` when the requested value is not a choice.
+    ///
+    /// The lifecycle band renders the requested value through the same value
+    /// presentation the active value uses, so without this the row would paint
+    /// its authored name above and the raw choice id below.
+    pub fn requested_label(&self) -> Option<&str> {
+        self.requested_label.as_deref()
     }
 
     /// The capability-declared interaction this row participates in, or `None`
@@ -557,11 +593,16 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].path.modalId",
         "surfaces[].controls[].path.patchId",
         "surfaces[].controls[].path.surface",
+        "surfaces[].controls[].requestedLabel",
         "surfaces[].controls[].requestedValue",
         "surfaces[].controls[].requestedValue.kind",
         "surfaces[].controls[].requestedValue.value",
         "surfaces[].controls[].requestedValue.value.kind",
         "surfaces[].controls[].requestedValue.value.value",
+        // The authored name for a choice row's stored id. Present on every
+        // control and `null` wherever the value is not a choice, so a fixture
+        // that never opens a choice row still discovers the leaf.
+        "surfaces[].controls[].selectedLabel",
         "surfaces[].controls[].status",
         "surfaces[].controls[].status.graphRevision",
         "surfaces[].controls[].status.kind",
@@ -882,7 +923,9 @@ fn fixture_surfaces(
         status: None,
         error: None,
         requested_value: None,
+        requested_label: None,
         patch_interaction: None,
+        selected_label: None,
         valid_actions: Vec::new(),
     };
     let side_control_path = if active.surface().is_main() {
@@ -991,7 +1034,9 @@ fn project_control_intent(
     let focused_actions = resolver.valid_actions();
     for surface in surfaces.iter_mut() {
         for control in &mut surface.controls {
-            control.requested_value = project_requested_value(state, &control.path)?;
+            let (requested_value, requested_label) = project_requested_value(state, &control.path)?;
+            control.requested_value = requested_value;
+            control.requested_label = requested_label;
             control.valid_actions = if &control.path == focused_path {
                 focused_actions.clone()
             } else {
@@ -1015,12 +1060,17 @@ fn project_control_intent(
 ///
 /// The requested value always carries the same shape as the row's active value,
 /// so a page can show the pair without knowing which control it is looking at.
+///
+/// Returns the value and, when that value is a choice, the authored name for
+/// it — resolved from the *intent's own* capability and parameter, so the
+/// requested name comes from the same descriptor the reducer will edit through
+/// rather than from a search for whichever spec happens to declare that id.
 fn project_requested_value(
     state: &AppState,
     path: &FocusPath,
-) -> Result<Option<SemanticControlValue>, SemanticGraphicalViewModelError> {
+) -> Result<(Option<SemanticControlValue>, Option<String>), SemanticGraphicalViewModelError> {
     let Some(correlation) = state.engine_selection().correlation() else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let occupancy_value = |entry: Option<&crate::synth::EffectCapabilityId>| {
         entry.map_or_else(
@@ -1121,7 +1171,31 @@ fn project_requested_value(
         )?)),
         _ => None,
     };
-    Ok(requested)
+    // The name for the requested choice id, from the descriptor the intent
+    // names. Without it the lifecycle band paints `sf2.bank-0.program-41`
+    // beneath a row whose active value reads "Violin" — the same defect F-33
+    // closes on the active value, one line lower on the same row.
+    let requested_label = match (&requested, correlation.intent()) {
+        (
+            Some(SemanticControlValue::Parameter(ParameterValue::Choice(choice_id))),
+            crate::control::StructuralEditIntent::ReplaceParameterChoice {
+                capability_id,
+                parameter_id,
+                ..
+            },
+        ) => state
+            .capabilities()
+            .descriptor(capability_id)
+            .and_then(|descriptor| descriptor.parameter(parameter_id))
+            .and_then(|spec| {
+                spec.choices()
+                    .iter()
+                    .find(|choice| choice.id() == choice_id)
+                    .map(|choice| choice.label().to_owned())
+            }),
+        _ => None,
+    };
+    Ok((requested, requested_label))
 }
 
 fn project_status(state: &AppState) -> SemanticLifecycleStatus {
@@ -1238,7 +1312,9 @@ fn project_patch_surfaces(
         status: Some(status.clone()),
         error: error_for_path(errors, &engine_path),
         requested_value: None,
+        requested_label: None,
         patch_interaction: None,
+        selected_label: None,
         valid_actions: Vec::new(),
     });
 
@@ -1267,7 +1343,9 @@ fn project_patch_surfaces(
             status: None,
             error: None,
             requested_value: None,
+            requested_label: None,
             patch_interaction: None,
+            selected_label: None,
             valid_actions: Vec::new(),
         });
     }
@@ -1347,7 +1425,9 @@ fn project_patch_surfaces(
             status: targeted.then(|| status.clone()),
             error: error_for_path(errors, &occupancy_path),
             requested_value: None,
+            requested_label: None,
             patch_interaction: None,
+            selected_label: None,
             valid_actions: Vec::new(),
         });
 
@@ -1510,7 +1590,9 @@ fn project_patch_surfaces(
                 status: None,
                 error: None,
                 requested_value: None,
+                requested_label: None,
                 patch_interaction: None,
+                selected_label: None,
                 valid_actions: Vec::new(),
             })
         })
@@ -1726,7 +1808,9 @@ fn project_mixer_surfaces(
                     status: None,
                     error: None,
                     requested_value: None,
+                    requested_label: None,
                     patch_interaction: None,
+                    selected_label: None,
                     valid_actions: Vec::new(),
                 }
             }
@@ -1767,7 +1851,9 @@ fn project_mixer_surfaces(
                     status: targeted.then(|| status.clone()),
                     error: error_for_path(errors, &path),
                     requested_value: None,
+                    requested_label: None,
                     patch_interaction: None,
+                    selected_label: None,
                     valid_actions: Vec::new(),
                 }
             }
@@ -1795,7 +1881,9 @@ fn project_mixer_surfaces(
                     status: None,
                     error: None,
                     requested_value: None,
+                    requested_label: None,
                     patch_interaction: None,
+                    selected_label: None,
                     valid_actions: Vec::new(),
                 }
             }
@@ -1850,7 +1938,9 @@ fn project_mixer_surfaces(
                     status: None,
                     error: None,
                     requested_value: None,
+                    requested_label: None,
                     patch_interaction: None,
+                    selected_label: None,
                     valid_actions: Vec::new(),
                 }
             }
@@ -1934,7 +2024,9 @@ fn track_control(
         status: None,
         error: None,
         requested_value: None,
+        requested_label: None,
         patch_interaction: None,
+        selected_label: None,
         valid_actions: Vec::new(),
     }
 }
@@ -1963,6 +2055,22 @@ fn control_from_parameter(
             spec.coarse_step().unwrap_or(1.0),
         )
     });
+    // The authored name for the stored choice id, from the descriptor that
+    // declared both. The canonical value below stays the id; this carries the
+    // name beside it, the way `PatchPageParameterRow::selected_label` already
+    // does — one producer, `ParameterSpec::choices`, and no second vocabulary.
+    //
+    // Resolved here rather than at each caller because this is the one site
+    // that builds a descriptor-backed row, and therefore the only site whose
+    // value can be a choice at all.
+    let selected_label = match &value {
+        SemanticControlValue::Parameter(ParameterValue::Choice(choice_id)) => spec
+            .choices()
+            .iter()
+            .find(|choice| choice.id() == choice_id)
+            .map(|choice| choice.label().to_owned()),
+        _ => None,
+    };
     SemanticControlViewModel {
         error: error_for_path(projection.errors, &path),
         focused: projection.active == &path,
@@ -1970,6 +2078,7 @@ fn control_from_parameter(
         label: spec.label().to_owned(),
         kind: spec.kind().into(),
         value,
+        selected_label,
         numeric_range,
         unit: spec.unit().map(str::to_owned),
         enabled: projection.enabled,
@@ -1978,6 +2087,7 @@ fn control_from_parameter(
         editable: projection.editable,
         status: projection.status,
         requested_value: None,
+        requested_label: None,
         patch_interaction: Some(spec.patch_interaction()),
         valid_actions: Vec::new(),
     }
@@ -2003,7 +2113,9 @@ fn surface_root_control(
         status: None,
         error: None,
         requested_value: None,
+        requested_label: None,
         patch_interaction: None,
+        selected_label: None,
         valid_actions: Vec::new(),
     }
 }
@@ -2965,6 +3077,32 @@ mod projection_enrichment_tests {
         }
         for descriptor in state.effects().descriptors() {
             keys.extend(descriptor.parameters().map(|spec| spec.id().to_string()));
+        }
+        // Capability and section identities. `contexts/control.yaml` defines a
+        // serialization key as "the name a value carries in the state tree, the
+        // parameter snapshot, or a leaf descriptor", and
+        // `patchPage.sections[].id`, `patchPage.engine.activeCapabilityId`, and
+        // `patchPage.effects[].capabilityId` are all such names — so a label
+        // reverted to one of them is the same defect as `masterGainDb` on a row.
+        //
+        // Without these the guard *walked* seven label sites it could not
+        // *fail* on: three section labels, the engine choice and active labels,
+        // and the two occupancy labels (mission finding F-28, a 17-site
+        // mutation sweep that caught 10 and missed 7). The exact case the first
+        // diagnosis named — a descriptor whose `label()` equalled its `id()` —
+        // was unexpressible in the key set, so widening the *fixtures* bought
+        // nothing for it.
+        for descriptor in state.capabilities().descriptors() {
+            keys.insert(descriptor.id().to_string());
+            for section in descriptor.sections() {
+                keys.insert(section.id().to_owned());
+            }
+        }
+        for descriptor in state.effects().descriptors() {
+            keys.insert(descriptor.id().to_string());
+            for section in descriptor.sections() {
+                keys.insert(section.id().to_owned());
+            }
         }
         for path in SemanticGraphicalViewModel::serialized_leaf_descriptor()
             .iter()
