@@ -219,3 +219,60 @@ about:
 The lesson is not that the reviewer was careless — both findings were real and one
 was a reproduced panic. It is that a fixture which can only see one variant is the
 recurring failure mode in this mission, and it catches reviewers too.
+
+## F-14 — F-11 under-stated the gate's removal cost; ownership widened
+
+**Raised by**: WP02 cycle-2 review
+**Owner**: closed by reassignment; WP03 executes
+
+F-11 recorded three tests coupled to the gate. Removing it actually turns **six**
+red, and two of the files needed were not WP03's:
+
+- `src/control/semantic_focus.rs` holds `is_enterable` — WP02's file.
+- Two demo-scene coverage tests go red with `missing: ["surface.detail"]` and can
+  only be made green by restoring the two `surface.detail` steps in
+  `src/testing/demo_scene.rs` — WP06's set.
+
+WP03 could not have landed a green lane by removing the gate alone. Both files are
+now WP03's: `semantic_focus.rs` transfers from WP02 (approved and closed, so no
+contention), and `demo_scene.rs` is carved out of WP06's set, whose actual work is
+the *live* scene rather than the headless exhaustive one. WP06's `src/testing/**`
+glob is replaced by an explicit list so the carve-out is checkable rather than
+implied. Ownership validation passes with no warnings.
+
+The general lesson: a gate is only honest if some package can afford to remove it.
+Recording the tripwires was necessary but not sufficient — the removal cost has to
+land inside one package's map.
+
+## F-15 — FR-012 is not user-reachable after WP02
+
+**Raised by**: WP02 cycle-2 review
+**Owner**: WP03; then WP05 and mission review
+
+The detail surface is proved at the reducer seam, but the gate means no player can
+enter it until WP03 lands the projection. Same shape as F-01: the work is real and
+the package is done, but the requirement is not satisfied where a user stands.
+Neither WP05 nor the mission review should credit FR-012 to WP02.
+
+## F-16 — `PatchDetailSubject` casing, frozen at schema version 14
+
+**Raised by**: WP02 cycle-2 review
+**Owner**: WP03, folded in
+
+`#[serde(tag, rename_all)]` renames variants, not fields, so `PatchDetailSubject`'s
+fields serialize snake_case inside an otherwise camelCase schema. No declared
+invariant mandates camelCase, and the shape was visible at cycle 1 where the
+reviewer did not flag it, so it is not WP02's to redo. WP03 is already moving the
+semantic leaf descriptor and bumping the version; folding the casing fix in there
+costs one version bump instead of two.
+
+## F-17 — Stale rustdoc links to the deleted `Patch::installed`
+
+**Raised by**: WP02 cycle-2 review
+**Owner**: whoever next touches `src/synth/patch.rs`
+
+Two links at `src/synth/patch.rs:94` and `:106` point at the deleted
+`Patch::installed`; `:106` describes a constructor that no longer exists. Two new
+`broken_intra_doc_links` warnings. Rustdoc is not gated, so this is doc rot rather
+than a break — fix on the next commit touching that file rather than opening one
+for it.

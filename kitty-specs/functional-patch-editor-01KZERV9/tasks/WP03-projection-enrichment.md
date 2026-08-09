@@ -37,6 +37,8 @@ owned_files:
 - src/control/state_projector.rs
 - src/control/text_projection.rs
 - src/shell/webview/projection_channel.rs
+- src/control/semantic_focus.rs
+- src/testing/demo_scene.rs
 priority: P1
 role: implementer
 status: planned
@@ -86,6 +88,55 @@ key was reaching the screen.
 - **Final merge target**: `feat/functional-patch-editor`
 - Execution worktrees are allocated per computed lane (see `lanes.json`).
 - Do not create ad-hoc branches outside the lane workflow.
+
+## You inherit the `PatchDetail` gate — removing it is yours, and it is three coupled changes
+
+WP02 could not let `EnterSurface(PatchDetail)` be offered, because an accepted
+detail state cannot yet be projected and `src/control/app_loop.rs:347` `.expect()`s
+that every accepted state projects. It gated the action out of the vocabulary
+(`SurfaceId::is_enterable` withholds `PatchDetail`) and left the reducer able to
+own, remember, and leave the surface. See finding **F-11** in
+`cross-wp-findings.md`.
+
+**T015 removes that gate. It is not one change and the original sizing was wrong.**
+WP02 measured this and WP02's reviewer independently confirmed it by applying the
+partial fix and re-projecting: fixing only the containment check moves the failure
+from `PatchPage(InvalidInstrumentConfig)` to `StateProjectionError::InvalidSelection`
+at `render_patch_text`'s `selected_line.ok_or(...)`, because `control_id` is `Some`
+only for `StructuralChoice` rows and Braids' three detail rows are
+`ParameterUpdate::Scalar`. All three land together or none does:
+
+1. the containment check at `patch_page_projection.rs::project`,
+2. the detail page content **plus** `render_patch_text`'s selected line,
+3. deleting the `PatchDetail` arm in `SurfaceId::is_enterable`.
+
+**Ownership was widened so you can land a green lane.** Removing the gate turns
+six tests red, and two of the files involved were not originally yours. You now
+own `src/control/semantic_focus.rs` (WP02's, now approved and closed) and
+`src/testing/demo_scene.rs` (carved out of WP06's set). The six tests are three
+named tripwires, a fourth reducer test, and two demo-scene coverage tests that go
+red with `missing: ["surface.detail"]` — those last two need the two
+`surface.detail` scene steps restored in `demo_scene.rs`. That is why you have it.
+
+Do not remove the gate until the projection actually works. A gate removed ahead
+of its projection reintroduces exactly the panic it was built to prevent.
+
+## Two things to fold in while you are in these files
+
+**`PatchDetailSubject` serializes snake_case fields into a camelCase schema.**
+`#[serde(tag, rename_all)]` renames variants, not fields, so the subject's fields
+landed snake_case and are now frozen at `StateTree::SCHEMA_VERSION = 14`. No
+declared invariant mandates camelCase, and it was visible at WP02's cycle 1 where
+the reviewer did not flag it — so it is not WP02's to redo. But you are already
+moving the semantic leaf descriptor and will bump the version anyway. Fold the
+casing fix in rather than paying a second version bump later.
+
+**`VoiceLimitCarryOver`'s discriminant is yours to consume.** F-07 ruled the
+engine-swap carry-over asymmetry deliberate and lossy by design — narrowing clamps,
+widening preserves — and required that the loss be *reported* rather than left for
+a player to discover. The engine-swap status projection is the declared home. A
+swap that narrowed the limit must say so; today the discriminant is bound only
+inside a `debug_assert_eq!`.
 
 ## Subtasks
 
