@@ -382,7 +382,7 @@ impl ShellRegion {
 
 /// The closed family of reusable compositions.
 ///
-/// Each fills one shell region. The set is closed at eight, and adding one is
+/// Each fills one shell region. The set is closed at ten, and adding one is
 /// a compile error at [`ShellComposition::region`] rather than a composition
 /// bound to no region.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
@@ -399,10 +399,19 @@ pub enum ShellComposition {
     Section,
     /// One row of the PATCH strip.
     PatchStripRow,
+    /// The PATCH main workspace: the identity-and-routing header, the
+    /// instrument selector, the envelope group, and one titled group per
+    /// ordered effect slot — groups arranging groups, the way
+    /// [`Self::MixerStripBank`] arranges track columns rather than controls.
+    PatchStrip,
     /// The sixteen fixed mixer track columns, side by side.
     MixerStripBank,
     /// The always-visible Utility/Inspector panel.
     UtilityInspectorPanel,
+    /// The subordinate detail surface for whichever capability the model
+    /// names. One composition, not one per subject kind: the instrument case
+    /// and the effect case differ only in the projection slice handed to it.
+    CapabilityDetailShell,
     /// The current path and the valid control hints.
     Footer,
 }
@@ -414,13 +423,15 @@ pub const ALL_SHELL_COMPOSITIONS: [ShellComposition; SHELL_COMPOSITION_COUNT] = 
     ShellComposition::IdentityHeader,
     ShellComposition::Section,
     ShellComposition::PatchStripRow,
+    ShellComposition::PatchStrip,
     ShellComposition::MixerStripBank,
     ShellComposition::UtilityInspectorPanel,
+    ShellComposition::CapabilityDetailShell,
     ShellComposition::Footer,
 ];
 
 /// How many compositions the family declares.
-pub const SHELL_COMPOSITION_COUNT: usize = 8;
+pub const SHELL_COMPOSITION_COUNT: usize = 10;
 
 impl ShellComposition {
     /// Returns the canonical name of this composition.
@@ -431,28 +442,34 @@ impl ShellComposition {
             Self::IdentityHeader => "IdentityHeader",
             Self::Section => "Section",
             Self::PatchStripRow => "PatchStripRow",
+            Self::PatchStrip => "PatchStrip",
             Self::MixerStripBank => "MixerStripBank",
             Self::UtilityInspectorPanel => "UtilityInspectorPanel",
+            Self::CapabilityDetailShell => "CapabilityDetailShell",
             Self::Footer => "Footer",
         }
     }
 
     /// The shell region this composition fills.
     ///
-    /// `Section`, `PatchStripRow`, and `MixerStripBank` all fill the main
-    /// workspace: a section groups rows, a strip row is one of them, and the
-    /// bank arranges the mixer's sixteen track columns across it. All three are
-    /// main-surface structure. The binding is many-to-one by design and remains
-    /// so — what must hold is that every observed region has a composition, not
-    /// that every composition has a region to itself.
+    /// `Section`, `PatchStripRow`, `PatchStrip`, `MixerStripBank`, and
+    /// `CapabilityDetailShell` all fill the main workspace: a section groups
+    /// rows, a strip row is one of them, the strip and the bank arrange the
+    /// PATCH groups and the mixer's sixteen track columns across it, and the
+    /// detail shell replaces the workspace body while a detail entry is open.
+    /// All five are main-surface structure. The binding is many-to-one by
+    /// design and remains so — what must hold is that every observed region has
+    /// a composition, not that every composition has a region to itself.
     pub const fn region(self) -> ShellRegion {
         match self {
             Self::ApplicationShell => ShellRegion::WholeFrame,
             Self::ContextSwitch => ShellRegion::ContextLine,
             Self::IdentityHeader => ShellRegion::IdentityHeader,
-            Self::Section | Self::PatchStripRow | Self::MixerStripBank => {
-                ShellRegion::MainWorkspace
-            }
+            Self::Section
+            | Self::PatchStripRow
+            | Self::PatchStrip
+            | Self::MixerStripBank
+            | Self::CapabilityDetailShell => ShellRegion::MainWorkspace,
             Self::UtilityInspectorPanel => ShellRegion::PersistentSideRegion,
             Self::Footer => ShellRegion::Footer,
         }
@@ -972,8 +989,8 @@ mod tests {
     }
 
     #[test]
-    fn the_composition_family_holds_exactly_eight_compositions() {
-        assert_eq!(SHELL_COMPOSITION_COUNT, 8);
+    fn the_composition_family_holds_exactly_ten_compositions() {
+        assert_eq!(SHELL_COMPOSITION_COUNT, 10);
         assert_eq!(ALL_SHELL_COMPOSITIONS.len(), SHELL_COMPOSITION_COUNT);
     }
 
@@ -990,8 +1007,10 @@ mod tests {
                 ShellComposition::IdentityHeader => "IdentityHeader",
                 ShellComposition::Section => "Section",
                 ShellComposition::PatchStripRow => "PatchStripRow",
+                ShellComposition::PatchStrip => "PatchStrip",
                 ShellComposition::MixerStripBank => "MixerStripBank",
                 ShellComposition::UtilityInspectorPanel => "UtilityInspectorPanel",
+                ShellComposition::CapabilityDetailShell => "CapabilityDetailShell",
                 ShellComposition::Footer => "Footer",
             };
             assert_eq!(named, composition.canonical_name());
