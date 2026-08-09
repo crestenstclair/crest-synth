@@ -1408,3 +1408,95 @@ One property worth keeping, which WP06 asserted rather than left true by acciden
 run with no edit on the second Patch reports both deltas at zero, and zero does not
 clear the margin — so absent evidence reads as "not isolated" rather than as
 isolation by default.
+
+## F-64 — The completeness claim stopped being a claim about care
+
+**Raised by**: WP05 cycle 2
+**Owner**: doctrine
+
+This is the most useful thing the mission produced, and it came from an agent
+being honest about its own first attempt.
+
+WP05 was told to pin every rule its transcription copies. It did a careful
+line-by-line pass, produced 55 pins, and — in its own words — **would have
+submitted that**. Then it wrote the audit that became
+`check_every_line_of_a_transcribed_page_rule_carries_a_pin`, and the audit named
+**ten body lines the careful pass had missed** — every one a *discriminator* rather
+than an arm body: `value.kind === "scalar"`, `parameter.kind === "choice"`,
+`if (key === null)`, `var openSlot = null`, `controls[c].validActions`, and so on.
+Pinning the choice arm's body while leaving `=== "choice"` unpinned is F-55 in
+miniature, one level down.
+
+So the completeness claim is no longer "I walked it carefully". It is: **the set is
+closed under a check that runs on every test run, and that check has already been
+falsified twice** — a new unpinned arm fails, a stale scaffolding entry fails.
+
+Two enforcement rules now live in the acceptance target rather than in a reviewer's
+head:
+
+- **every anchor must occur exactly once** — the review's own cycle-1 note ("assert
+  each new anchor is unique so the next entry cannot be added blind") turned from a
+  note into an assertion, and it immediately caught one of WP05's own new anchors;
+- **every line of every wholly-transcribed function must carry a pin**, with a
+  13-entry scaffolding list whose *unused* entries also fail, so the list cannot rot
+  into a blanket permit.
+
+F-56 said a guard is unproven until someone has watched it fail, and that the
+obligation does not transfer by being reviewed. This is that lesson taken literally:
+the omission that caused the rejection now fails at the moment it is committed,
+rather than waiting for a reviewer to think of the right mutation.
+
+67 mutations, 67 caught, `page.js` restored byte-for-byte each time.
+
+## F-65 — Two defects the review did not find, and one is a shape worth sweeping
+
+**Raised by**: WP05 cycle 2's own audit
+
+**`page_side_hint_line` was not a transcription at all.** It joined with
+`HINT_SEPARATOR` (` · `) and read `action.label` raw; the page joins hint spans with
+a text space and puts labels through `hintLabel` (lowercase, leading `open`/`move`
+stripped, trailing `mode` stripped). So it copied two rules from nowhere, and the
+`HINT_SEPARATOR` pin defended a rule this file did not transcribe — F-55's condition
+pointing the *other* way, at a pin with no copied rule behind it.
+
+**Its assertion passed for the wrong reason.** `contains("Return")` matched the
+physical hint `A / Return`, not the leave action's label, so it held whatever that
+label said. The painted line is `D:utility A / Return:return`; it now checks the
+`:return` half.
+
+That second one is a shape rather than an instance: **an assertion that passes
+because it matched the wrong half of a composed string.** It is the same family as
+the anchor matching in more places than it names, and it is invisible to every check
+this mission has built, because the assertion does fail when the whole string
+changes — just not when the half it claims to test does.
+
+## F-66 — F-43's NUL is load-bearing, not cosmetic
+
+**Corrected by**: WP05 cycle 2
+**Owner**: the merge step
+
+F-43 recorded the NUL byte in `page.js` as a grep nuisance and assigned "replace with
+a printable separator" to merge. That under-described it.
+
+It is the **dedup-key separator** in `sideRegionHintLine`, and it works precisely
+because no hint or label can contain it. Replacing it is therefore a semantic choice,
+not a cosmetic one: the replacement must be a character no projected hint or label
+can contain, or two distinct hint pairs could collide into one key and a hint would
+silently vanish.
+
+WP05's pins sit either side of the separator and the transcription dedups on the pair,
+so the repair fires neither pin and needs no test update. But whoever makes the change
+at merge must pick the character deliberately rather than reaching for `|`.
+
+## F-67 — The unit half of T032 is thinner than the range half
+
+**Raised by**: WP05 cycle 2, declining to hide it
+
+`check_ranges_and_units_are_rendered` reads `control.unit` off the projection and
+pins only the painting site. The unit's *text* is not read back through a transcribed
+rule the way ranges and values are, because the page paints `String(control.unit)`
+unmodified — there is no rule to transcribe.
+
+That is honest and it is also asymmetric, and WP05 said so rather than manufacturing
+a rule to make the two halves look alike. Recorded so the asymmetry is a known
+property rather than something a later reader mistakes for thoroughness.
