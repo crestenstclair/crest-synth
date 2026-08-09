@@ -2250,6 +2250,11 @@ fn assert_patch_observation_structure(
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("{label}: the document names its interaction mode"));
 
+    // WP04 T024/T025/NFR-003: the painted box geometry of the workspace body,
+    // measured in the shipped window. Reported for both authored viewports and
+    // asserted where the authored band can hold the composition.
+    assert_patch_workspace_geometry(observation, inspector_width_at_least, label);
+
     // WP04 T028: while a detail entry is open the detail composition replaces
     // the workspace body and the strip is not painted, so the strip-shaped
     // assertions below do not apply. The shell bands and the persistent side
@@ -2601,6 +2606,125 @@ fn assert_patch_observation_structure(
     );
 
     assert_patch_utility_panel(observation, document, inspector_width_at_least, label);
+}
+
+/// WP04 T024/T025 (FR-011, FR-013, NFR-003): the painted box geometry of the
+/// PATCH workspace body, measured in the shipped window rather than in a
+/// viewport-sized substitute.
+///
+/// Two facts no text observation can see:
+///
+/// - **The position rail keeps its width with a hint run present.** The rail is
+///   the primary visual readout of a numeric parameter and it is the only
+///   growing item on its line, so anything that shares that line takes the
+///   rail's width rather than its own. Asserted on every painted rail, at both
+///   authored viewports, on every PATCH document — the pre-existing `rail > 5`
+///   check in T011 measures one fixture only, and this package is what put a
+///   nine-action run on every row.
+/// - **What the workspace body got, and what it needed.** Reported at both
+///   viewports; asserted only at the desktop viewport, whose authored band is
+///   the one the composition is sized against. The compact band held less than
+///   the row set before this mission and still does, so the number is printed
+///   rather than graded here.
+fn assert_patch_workspace_geometry(observation: &Value, inspector_width_at_least: f32, label: &str) {
+    // Whichever composition the document selected: the strip's rows, or the
+    // detail shell's. One measurement path serves both.
+    let painted_rows = || {
+        observation
+            .get("rows")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .chain(
+                observation
+                    .pointer("/detail/rows")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten(),
+            )
+    };
+    for row in painted_rows() {
+        // The hint run takes the row's second line, whole. Asserted
+        // structurally — the run's top edge is at or below the label's bottom
+        // edge — rather than as a width threshold, because a threshold is only
+        // as discriminating as the widest fixture that happens to reach it.
+        // Sharing line one is the defect; a number is only its symptom.
+        let (Some(label_bottom), Some(hints_top)) = (
+            row.pointer("/labelEdges/bottomPx").and_then(Value::as_f64),
+            row.pointer("/hintEdges/topPx").and_then(Value::as_f64),
+        ) else {
+            continue; // a row with no valid actions paints no hint run
+        };
+        assert!(
+            hints_top >= label_bottom,
+            "{label}: row {} paints its {}px hint run on the row's first line (run top \
+             {hints_top}px against a label bottom of {label_bottom}px) — the run and the \
+             position rail are competing for one line, and the rail is the item that loses \
+             (rail {}px)",
+            row.get("control").and_then(Value::as_str).unwrap_or("?"),
+            row.get("hintsPx").and_then(Value::as_f64).unwrap_or_default(),
+            row.get("railPx")
+                .and_then(Value::as_f64)
+                .map_or_else(|| "no ".to_owned(), |rail| format!("{rail}")),
+        );
+        if let Some(rail) = row.get("railPx").and_then(Value::as_f64) {
+            assert!(
+                rail > 5.0,
+                "{label}: row {} paints a position rail only {rail:.0}px wide",
+                row.get("control").and_then(Value::as_str).unwrap_or("?"),
+            );
+        }
+    }
+
+    let body = observation
+        .get("workspaceBody")
+        .filter(|body| !body.is_null())
+        .unwrap_or_else(|| panic!("{label}: the observation reports the painted workspace body"));
+    let number = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: the workspace body reports {key}"))
+    };
+    let viewport_height = observation
+        .pointer("/viewport/heightPx")
+        .and_then(Value::as_f64)
+        .unwrap_or_default();
+    // How much of the band the rows themselves claim, at the declared
+    // interactive minimum. When this alone exceeds the band, no rhythm seats
+    // the composition and the honest report is the row count, not the gaps.
+    let row_heights: Vec<f64> = painted_rows()
+        .filter_map(|row| row.get("heightPx").and_then(Value::as_f64))
+        .collect();
+    let rows_px: f64 = row_heights.iter().fold(0.0, |total, height| total + height);
+    let over_minimum = row_heights.iter().filter(|height| **height > 48.0).count();
+    println!(
+        "  {label}: {} rows take {rows_px}px ({over_minimum} above the 48px minimum)",
+        row_heights.len(),
+    );
+    println!(
+        "  {label}: page viewport {}x{}px, #{} composition {}px in a {}px band \
+         (scrolls by {}px)",
+        observation
+            .pointer("/viewport/widthPx")
+            .and_then(Value::as_f64)
+            .unwrap_or_default(),
+        viewport_height,
+        body.get("id").and_then(Value::as_str).unwrap_or_default(),
+        number("contentPx"),
+        number("bandPx"),
+        number("scrollableBy"),
+    );
+    let desktop_side = f64::from(ViewportDensityPolicy::Desktop.split().side_px);
+    if f64::from(inspector_width_at_least) >= desktop_side {
+        assert_eq!(
+            number("scrollableBy"),
+            0.0,
+            "{label}: the desktop workspace band seats the composition without scrolling \
+             ({}px of composition in a {}px band)",
+            number("contentPx"),
+            number("bandPx"),
+        );
+    }
 }
 
 /// The instrument-detail fixture must declare two different interactions on
