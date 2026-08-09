@@ -42,8 +42,8 @@ pub use patch_page_projection::{
 };
 pub use semantic_action::{InteractionMode, SemanticAction, SemanticActionKind, ValidAction};
 pub use semantic_focus::{
-    FocusCapabilityId, FocusPath, FocusPathError, MixerControlId, ReturnPath, SemanticControlId,
-    SurfaceId,
+    FocusCapabilityId, FocusPath, FocusPathError, MixerControlId, PatchDetailSubject, ReturnPath,
+    SemanticControlId, SurfaceId,
 };
 pub use semantic_graphical_view_model::{
     SemanticControlKind, SemanticControlValue, SemanticControlViewModel, SemanticError,

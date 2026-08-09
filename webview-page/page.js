@@ -59,13 +59,58 @@
   // authored order (utility_inspector_panel::DESIGNED_UTILITY_ENTRIES).
   // `driver: null` means the projection carries no identity for the entry at
   // all; it is marked explicitly unavailable rather than omitted or invented.
+  // All five entries are now driven: the reducer carries a canonical value and
+  // a focus identity for every row the design draws.
   var DESIGNED_UTILITY_ENTRIES = [
-    { label: "MASTER VOLUME", driver: null },
+    { label: "MASTER VOLUME", driver: "patch.global.masterGainDb" },
     { label: "PATCH VOLUME", driver: "patch.output.trimGainDb" },
-    { label: "MIDI INPUT", driver: null },
+    { label: "MIDI INPUT", driver: "patch.midiInput" },
     { label: "OUTPUT TRACK", driver: "patch.output.outputTrack" },
-    { label: "VOICE LIMIT", driver: null },
+    { label: "VOICE LIMIT", driver: "patch.voiceLimit" },
   ];
+
+  // The PATCH strip's designed group anatomy, closed and ordered — the PATCH
+  // twin of COLUMN_ANATOMY (crest-spec valueObject.Shell.ShellComposition,
+  // `PatchStrip`: "arranges groups rather than controls ... a flat run erases
+  // which rows belong to which slot").
+  //
+  // `legend` is the authored name of the designed structure, taken from the
+  // design file (SCREEN · Patch Strip · 1920×1080: `Instrument` 36:28,
+  // `AMP ENVELOPE / ADSR PREVIEW` 36:26, `FX 1`/`FX 2`/`FX 3` 36:34/39/44).
+  // It is a static structure name like COLUMN_ANATOMY's entries and
+  // DESIGNED_UTILITY_ENTRIES' labels, never a projected control label and
+  // never a serialization key.
+  //
+  // `designed: true` means the design always draws this group, so a group the
+  // projection supplies no row for is marked explicitly unavailable *inside
+  // its own group* rather than vanishing. `designed: false` marks the one
+  // descriptor-driven group: an instrument that declares no parameters
+  // genuinely has none, which is a projected fact and not missing data.
+  //
+  // The order is the order the projection emits, and it has to be: the
+  // capability's own rows belong to the instrument the engine row names, but
+  // the projection emits them *after* the envelope (DESIGN.md: "Engine,
+  // Attack, Decay, Sustain, Release, descriptor-declared instrument
+  // StructuralChoice rows"), so a group that gathered them under the engine
+  // row would paint them out of the reducer's own order. Grouping is a
+  // presentation change; it does not get to move a row.
+  var DESIGNED_STRIP_GROUPS = [
+    { key: "instrument", legend: "INSTRUMENT", designed: true },
+    { key: "envelope", legend: "AMP ENVELOPE", designed: true },
+    { key: "capability", legend: null, designed: false },
+    { key: "slot.0", legend: "SLOT 1", designed: true },
+    { key: "slot.1", legend: "SLOT 2", designed: true },
+    { key: "slot.2", legend: "SLOT 3", designed: true },
+  ];
+
+  // The authored range separator, the same one the Inspector's own range
+  // reading already uses ("LEVEL 00 — 7F").
+  var RANGE_SEPARATOR = " — ";
+
+  // The non-color mark a capability-declared read-only row carries. The row
+  // also takes a dashed keyline in page.css, so the declaration reads in text
+  // and in shape, not in color alone (ComponentState rule).
+  var READ_ONLY_MARK = "READ-ONLY";
 
   // ---- pure helpers ------------------------------------------------------
 
@@ -161,16 +206,49 @@
     return null;
   }
 
-  // The document's persistent side surface — the Inspector on MIXER, the
-  // Utility region on PATCH — resolved by declared role, not by context fork.
-  function persistentSideSurface(model) {
+  // The document's surface holding one declared role, resolved by that role
+  // rather than by a context fork: `persistentSide` is the Inspector on MIXER
+  // and the Utility region on PATCH, `detail` is the subordinate capability
+  // surface present exactly while a detail entry is open.
+  function surfaceByRole(model, role) {
     var surfaces = model.surfaces || [];
     for (var i = 0; i < surfaces.length; i += 1) {
-      if (surfaces[i].role === "persistentSide") {
+      if (surfaces[i].role === role) {
         return surfaces[i];
       }
     }
     return null;
+  }
+
+  function persistentSideSurface(model) {
+    return surfaceByRole(model, "persistentSide");
+  }
+
+  // The serialized identity of one projected control ("patch.engine",
+  // "patch.effectSlot.0", ...). Used for structure — which group a row joins,
+  // which row heads it — and never painted; the same way the mixer bank
+  // groups its columns by `id.trackId`.
+  function controlIdOf(control) {
+    return String(
+      control && control.path && control.path.controlId
+        ? control.path.controlId.id
+        : ""
+    );
+  }
+
+  // One surface's control by identity, or null.
+  function controlById(surface, id) {
+    var controls = (surface && surface.controls) || [];
+    for (var i = 0; i < controls.length; i += 1) {
+      if (controlIdOf(controls[i]) === id) {
+        return controls[i];
+      }
+    }
+    return null;
+  }
+
+  function startsWith(text, prefix) {
+    return text.lastIndexOf(prefix, 0) === 0;
   }
 
   // Groups the flat mixer-main control list into track columns keyed by
@@ -185,11 +263,11 @@
       if (!id || id.kind !== "track") {
         continue;
       }
-      if (!Object.prototype.hasOwnProperty.call(byTrack, id.track_id)) {
-        byTrack[id.track_id] = { trackId: id.track_id };
-        order.push(byTrack[id.track_id]);
+      if (!Object.prototype.hasOwnProperty.call(byTrack, id.trackId)) {
+        byTrack[id.trackId] = { trackId: id.trackId };
+        order.push(byTrack[id.trackId]);
       }
-      byTrack[id.track_id][id.parameter] = control;
+      byTrack[id.trackId][id.parameter] = control;
     }
     return order;
   }
@@ -258,7 +336,7 @@
     var id =
       model.focusPath && model.focusPath.controlId && model.focusPath.controlId.id;
     if (id && id.kind === "track") {
-      return trackName(id.track_id) + " / " + String(id.parameter).toUpperCase();
+      return trackName(id.trackId) + " / " + String(id.parameter).toUpperCase();
     }
     return "";
   }
@@ -268,7 +346,7 @@
   function focusedTrackId(model) {
     var id =
       model.focusPath && model.focusPath.controlId && model.focusPath.controlId.id;
-    return id && id.kind === "track" ? id.track_id : null;
+    return id && id.kind === "track" ? id.trackId : null;
   }
 
   function statusToneClass(status) {
@@ -290,21 +368,32 @@
       .replace(/\s+mode$/, "");
   }
 
+  // One projected action list as its hint run.
+  //
+  // The hints are separated by a text space, not by the flex gap alone. Every
+  // container that holds a run is a flex container, so a whitespace-only text
+  // node between two items generates no anonymous flex item and the painted
+  // geometry is unchanged — but the run's `textContent` reads "2:patch 1:mixer"
+  // rather than "2:patch1:mixer", which is what a screen reader announces, what
+  // a selection copies, and what an observation can compare against the
+  // projected list. Adjacent spans with no separating text made the run a
+  // single unbroken word in every one of those readings.
   function hintRun(actions) {
-    var html = "";
+    var spans = [];
     for (var i = 0; i < actions.length; i += 1) {
       var action = actions[i];
       if (!action.hint) {
         continue; // null hints never render (spike defect, kept fixed)
       }
-      html +=
+      spans.push(
         '<span class="type-hint focus">' +
-        escapeHtml(action.hint) +
-        ":" +
-        escapeHtml(hintLabel(action)) +
-        "</span>";
+          escapeHtml(action.hint) +
+          ":" +
+          escapeHtml(hintLabel(action)) +
+          "</span>"
+      );
     }
-    return html;
+    return spans.join(" ");
   }
 
   function actionsOfKind(model, kind) {
@@ -372,7 +461,14 @@
       return UNAVAILABLE_MARK;
     }
     if (value.kind === "scalar") {
-      return Number(value.value).toFixed(3);
+      // A `stepped` control is a bounded integer — the MIDI channel and the
+      // voice limit, the kind this mission's reducer newly produces. It rides
+      // the same scalar envelope a continuous value does, so the row's own
+      // declared kind is what tells them apart; without this a channel reads
+      // "0.000" and a voice limit "64.000".
+      return control.kind === "stepped"
+        ? String(Math.round(Number(value.value)))
+        : Number(value.value).toFixed(3);
     }
     if (value.kind === "parameter") {
       var parameter = value.value;
@@ -473,11 +569,18 @@
     if (model.context === "patch") {
       var main = surfaceById(model, "patchMain");
       var summary = (main && main.summary) || null;
+      // The Patch's projected name and the engine's projected *label* — the
+      // engine row's own value, which is the descriptor's authored label.
+      // `summary.capabilityId` used to sit here; it is the capability's
+      // identity, not its name, and an identity on screen is exactly the
+      // defect FR-014 closes (see cross-WP finding F-28, which counts
+      // `activeCapabilityId` a serialization key).
+      var engine = controlById(main, "patch.engine");
       metadata =
         summary && summary.kind === "patch"
-          ? escapeHtml(String(summary.patch_name)) +
+          ? escapeHtml(String(summary.patchName)) +
             HINT_SEPARATOR +
-            escapeHtml(String(summary.capability_id))
+            escapeHtml(engine ? controlValueText(engine) : UNAVAILABLE_MARK)
           : UNAVAILABLE_MARK;
     } else {
       metadata = columns.length + " TRACKS";
@@ -656,17 +759,62 @@
 
   // ---- the PATCH strip ----------------------------------------------------
 
+  // One projected range endpoint in the row's own presentation: a continuous
+  // row reads its bounds to three places exactly as it reads its value, every
+  // other kind reads its bounds as themselves. No bound is inferred and no
+  // unit is formatted the document did not supply.
+  function rangeEndpointText(control, value) {
+    return control.kind === "continuous"
+      ? Number(value).toFixed(3)
+      : String(value);
+  }
+
+  // The projected bounds of a numeric row, or nothing at all when the
+  // document carries none — an absent range is a projected fact, not a gap to
+  // fill (FR-013).
+  function rangeHtml(control) {
+    var range = control && control.numericRange;
+    if (
+      !range ||
+      typeof range.minimum !== "number" ||
+      typeof range.maximum !== "number"
+    ) {
+      return "";
+    }
+    return (
+      '<span class="prow-range type-hint muted" data-role="row-range">' +
+      escapeHtml(rangeEndpointText(control, range.minimum)) +
+      escapeHtml(RANGE_SEPARATOR) +
+      escapeHtml(rangeEndpointText(control, range.maximum)) +
+      "</span>"
+    );
+  }
+
+  // Whether the capability declared this row read-only.
+  //
+  // This is `patchInteraction`, not `editable`. `editable` answers "would the
+  // reducer accept an adjustment here, now" and is uniformly false on every
+  // detail row in this phase, so it discriminates nothing about the
+  // capability's own declaration; `patchInteraction` is that declaration,
+  // projected from its single producer.
+  function readOnly(control) {
+    return control && control.patchInteraction === "readOnly";
+  }
+
   // One projected control as a listed strip row: label left, the state's
-  // non-color mark or the position indicator in the middle, the rendered
-  // value (and unit) right — the shipped parameter-row anatomy. The derived
-  // state rides the row as data plus a class so every treatment resolves
-  // from the token vocabulary in page.css.
+  // non-color mark or the position indicator in the middle, then the rendered
+  // value, its unit, its projected bounds, the capability's read-only
+  // declaration, and the row's own valid actions — the shipped parameter-row
+  // anatomy, widened by the facts FR-011/FR-013 project and nothing painted
+  // it. The derived state rides the row as data plus a class so every
+  // treatment resolves from the token vocabulary in page.css.
   function patchRowHtml(control, mode, role) {
     var state = controlState(control, mode);
-    var id = String(
-      control.path && control.path.controlId ? control.path.controlId.id : ""
-    );
-    var mark = stateMarkHtml(control, state);
+    var id = controlIdOf(control);
+    var locked = readOnly(control);
+    // A read-only row says READ-ONLY rather than the generic "Locked": the
+    // declaration is the more specific fact and both are the same mark slot.
+    var mark = locked ? "" : stateMarkHtml(control, state);
     var middle;
     if (mark) {
       middle =
@@ -689,6 +837,25 @@
         escapeHtml(String(control.unit)) +
         "</span>"
       : "";
+    var lockedMark = locked
+      ? '<span class="prow-readonly type-hint muted" data-role="read-only">' +
+        READ_ONLY_MARK +
+        "</span>"
+      : "";
+    // The row's own accepted actions, presented exactly as the footer
+    // presents the model-level list — same function, same projected labels
+    // and hints. At the focused row the two lists are the same value by
+    // construction, so neither is special-cased against the other. The
+    // Utility rows are excluded: the panel states its affordances once on its
+    // own authored hint line, and a nine-hint run does not seat in a 320 px
+    // side region.
+    var hintRunHtml =
+      role === "panel" ? "" : hintRun(control.validActions || []);
+    var hints = hintRunHtml
+      ? '<span class="prow-hints" data-role="row-hints">' +
+        hintRunHtml +
+        "</span>"
+      : "";
     var row =
       '<div class="prow' +
       (role === "panel" ? " panel" : "") +
@@ -696,7 +863,11 @@
       escapeHtml(id) +
       '" data-state="' +
       state.name +
-      '">' +
+      '"' +
+      (control.patchInteraction
+        ? ' data-interaction="' + escapeHtml(String(control.patchInteraction)) + '"'
+        : "") +
+      ">" +
       '<span class="prow-label type-label">' +
       escapeHtml(String(control.label)) +
       "</span>" +
@@ -705,21 +876,31 @@
       escapeHtml(controlValueText(control)) +
       "</span>" +
       unit +
+      rangeHtml(control) +
+      lockedMark +
+      hints +
       "</div>";
     return row + lifecycleHtml(control, id);
   }
 
-  // The lifecycle band beneath a row reporting a structural edit (error or
-  // in-flight status): the typed failure and/or lifecycle word, the active
-  // and requested graph revisions, and the explicitly unavailable requested
-  // value — the shipped row's readout, verbatim
-  // (patch_strip_row::render_lifecycle). It takes no focus and appears only
-  // while the document reports the edit.
+  // The lifecycle band beneath a row reporting a structural edit (error,
+  // in-flight status, or a requested value): the typed failure and/or
+  // lifecycle word, the active and requested graph revisions, and the
+  // requested value the edit is moving the row toward — the shipped row's
+  // readout (patch_strip_row::render_lifecycle) with the one field it could
+  // only mark unavailable now filled from the projection. It takes no focus
+  // and appears only while the document reports the edit.
+  //
+  // This is the declared structural-edit vocabulary and stays the only one:
+  // the active value never leaves the row above, so active, requested, and
+  // status read together and the active graph stays explicit throughout
+  // (FR-010).
   function lifecycleHtml(control, id) {
     var status = control.status || null;
     var inFlight =
       status && (status.kind === "preparing" || status.kind === "activating");
-    if (!control.error && !inFlight) {
+    var requested = control.requestedValue || null;
+    if (!control.error && !inFlight && !requested) {
       return "";
     }
     var parts = [];
@@ -738,10 +919,16 @@
           : String(status.targetGraphRevision)
       );
     }
-    // Not projected. Marked rather than filled, so an absent requested value
-    // is never mistaken for the active one under another name.
+    // Rendered through the same value presentation the active value uses, so
+    // the two read on the same terms. A row mid-edit that projects no
+    // requested value is still marked rather than filled, so an absent one is
+    // never mistaken for the active value under another name.
     parts.push("REQUESTED VALUE");
-    parts.push(UNAVAILABLE_MARK);
+    parts.push(
+      requested
+        ? controlValueText({ kind: control.kind, value: requested })
+        : UNAVAILABLE_MARK
+    );
     var tone = control.error ? "warning" : "adjust";
     return (
       '<div class="lifecycle type-hint ' +
@@ -771,44 +958,357 @@
     );
   }
 
-  // The PATCH main workspace: the section header content (the surface's own
-  // label left, the focused entry's annotation right) on the shared caption
-  // row, then every visible projected control as one strip row in the
-  // document's declared order. The page inserts, reorders, and hides
-  // nothing; the reducer owns the PATCH focus order.
-  function patchWorkspaceHtml(model) {
+  // Which designed group one projected control belongs to, from its own
+  // identity — the PATCH twin of the mixer bank keying its columns on
+  // `id.trackId`. `openSlot` is the group the most recent occupancy row
+  // opened: the projection emits a slot's occupant rows immediately after
+  // that slot's occupancy row (PatchControlId::resolve), so an occupant joins
+  // its own position without the page mapping slot instance ids to positions.
+  // An identity no designed group claims returns null and is arranged in the
+  // explicit unknown group rather than dropped.
+  function stripGroupKey(id, openSlot) {
+    if (id === "patch.engine") {
+      return "instrument";
+    }
+    if (startsWith(id, "patch.envelope.")) {
+      return "envelope";
+    }
+    if (startsWith(id, "patch.capability.")) {
+      return "capability";
+    }
+    if (startsWith(id, "patch.effectSlot.")) {
+      return "slot." + id.slice("patch.effectSlot.".length);
+    }
+    if (startsWith(id, "patch.effect.")) {
+      return openSlot;
+    }
+    return null;
+  }
+
+  // The row that heads a group: the row whose projected *value* names what
+  // the group holds. The instrument's parameter rows are headed by the engine
+  // row; a slot's occupant rows by that slot's occupancy row. One mapping,
+  // used by the strip (which nests the head row first) and by the detail
+  // shell (whose title is the head row's value) — so neither branches on a
+  // subject kind to learn what it is showing.
+  function groupHeadControlId(key) {
+    if (key === "instrument" || key === "capability") {
+      return "patch.engine";
+    }
+    if (startsWith(key, "slot.")) {
+      return "patch.effectSlot." + key.slice("slot.".length);
+    }
+    return null;
+  }
+
+  // Which strip group owns one control identity, answered by arranging the
+  // main surface exactly as the strip arranges it. This is how the detail
+  // shell learns what it is showing without reading `summary.subject`: a
+  // detail row and its strip twin share an identity, and the strip already
+  // knows which group that identity sits in.
+  function ownerGroupKey(mainControls, id) {
+    var groups = stripGroups(mainControls);
+    for (var g = 0; g < groups.length; g += 1) {
+      for (var r = 0; r < groups[g].rows.length; r += 1) {
+        if (controlIdOf(groups[g].rows[r]) === id) {
+          return groups[g].key;
+        }
+      }
+    }
+    return null;
+  }
+
+  function designedGroup(key) {
+    for (var i = 0; i < DESIGNED_STRIP_GROUPS.length; i += 1) {
+      if (DESIGNED_STRIP_GROUPS[i].key === key) {
+        return DESIGNED_STRIP_GROUPS[i];
+      }
+    }
+    return null;
+  }
+
+  // Arranges one surface's visible controls into ordered groups.
+  //
+  // Groups are created in first-appearance order and rows are appended in the
+  // document's own order, so the painted order equals the projected order by
+  // construction — grouping is a presentation change and the reducer keeps
+  // the focus order. Every designed group the walk never opened is then
+  // inserted at its declared position carrying no rows, so it can mark itself
+  // unavailable inside its own group rather than vanishing.
+  function stripGroups(controls) {
+    var groups = [];
+    var byKey = {};
+    var openSlot = null;
+
+    function group(key) {
+      if (!Object.prototype.hasOwnProperty.call(byKey, key)) {
+        var declared = designedGroup(key);
+        byKey[key] = {
+          key: key,
+          legend: declared ? declared.legend : null,
+          designed: declared ? declared.designed : false,
+          unknown: false,
+          rows: [],
+        };
+        groups.push(byKey[key]);
+      }
+      return byKey[key];
+    }
+
+    for (var i = 0; i < controls.length; i += 1) {
+      var control = controls[i];
+      if (!control.visible) {
+        continue;
+      }
+      var id = controlIdOf(control);
+      if (startsWith(id, "patch.effectSlot.")) {
+        openSlot = stripGroupKey(id, null);
+      }
+      var key = stripGroupKey(id, openSlot);
+      if (key === null) {
+        // An identity no designed group claims: arranged under an explicit
+        // marker, never silently dropped and never folded into a neighbour.
+        var unknown = group("?group");
+        unknown.unknown = true;
+        unknown.rows.push(control);
+        continue;
+      }
+      group(key).rows.push(control);
+    }
+
+    for (var d = DESIGNED_STRIP_GROUPS.length - 1; d >= 0; d -= 1) {
+      var designed = DESIGNED_STRIP_GROUPS[d];
+      if (!designed.designed || byKey[designed.key]) {
+        continue;
+      }
+      // No rows, so where it lands cannot reorder any painted row; it lands
+      // ahead of the first designed group that did appear after it, which is
+      // its declared position.
+      var at = groups.length;
+      for (var g = 0; g < groups.length; g += 1) {
+        var index = -1;
+        for (var e = 0; e < DESIGNED_STRIP_GROUPS.length; e += 1) {
+          if (DESIGNED_STRIP_GROUPS[e].key === groups[g].key) {
+            index = e;
+          }
+        }
+        if (index > d) {
+          at = g;
+          break;
+        }
+      }
+      groups.splice(at, 0, {
+        key: designed.key,
+        legend: designed.legend,
+        designed: true,
+        unknown: false,
+        rows: [],
+      });
+    }
+    return groups;
+  }
+
+  // One group: its authored legend as a title band, then its rows. A designed
+  // group the projection carried no row for marks that structure unavailable
+  // *inside its own group*, so the strip never goes silent about a group it
+  // could not draw (crest-spec PatchStrip, the two-level no-placeholder rule).
+  function stripGroupHtml(group, mode, role, head) {
+    // The authored legend where the design gives the structure one; otherwise
+    // the projected *value* of the row that heads the group — the
+    // instrument's own authored name over its parameter rows, which is the
+    // same relationship a slot's occupancy row has to its occupant rows.
+    var title = group.unknown
+      ? "?" + group.key.slice(1)
+      : group.legend || (head ? controlValueText(head) : null);
+    var head = title
+      ? '<div class="pgroup-title type-label muted" data-role="group-title">' +
+        escapeHtml(String(title)) +
+        "</div>"
+      : "";
+    var rows = "";
+    for (var i = 0; i < group.rows.length; i += 1) {
+      rows += patchRowHtml(group.rows[i], mode, role);
+    }
+    if (group.rows.length === 0) {
+      rows = markUnavailableRowHtml(String(group.legend || group.key));
+    }
+    return (
+      '<div class="pgroup' +
+      (group.rows.length === 0 ? " unavailable" : "") +
+      (group.unknown ? " unknown" : "") +
+      '" data-group="' +
+      escapeHtml(group.key) +
+      '">' +
+      head +
+      '<div class="pgroup-rows">' +
+      rows +
+      "</div></div>"
+    );
+  }
+
+  // The strip's own identity and routing header: which Patch is being edited
+  // and where its sound goes. Informative, not focusable — it allocates no
+  // interactive target and carries no control identity, so it enters no focus
+  // order (the reducer's order is the projected control list, and this header
+  // is not in it).
+  //
+  // Every value is projected: the Patch's name from the main surface's own
+  // summary, the channel and the track from the two Utility rows that own
+  // them, labels included. Nothing is re-derived here — re-deriving a label
+  // is how a serialization key reached the screen in the first place.
+  function stripHeaderHtml(model) {
+    var main = surfaceById(model, "patchMain");
+    var summary = (main && main.summary) || null;
+    var side = persistentSideSurface(model);
+    var name =
+      summary && summary.kind === "patch"
+        ? String(summary.patchName)
+        : UNAVAILABLE_MARK;
+    var parts =
+      '<span class="strip-header-name type-heading" data-role="strip-patch-name">' +
+      escapeHtml(name) +
+      "</span>";
+    var routing = ["patch.midiInput", "patch.output.outputTrack"];
+    for (var i = 0; i < routing.length; i += 1) {
+      var control = controlById(side, routing[i]);
+      parts +=
+        '<span class="strip-header-part type-hint muted" data-routing="' +
+        escapeHtml(routing[i]) +
+        '">' +
+        (control
+          ? escapeHtml(String(control.label)) +
+            " " +
+            escapeHtml(controlValueText(control))
+          : UNAVAILABLE_MARK) +
+        "</span>";
+    }
+    return (
+      '<div class="strip-header" data-role="strip-header">' + parts + "</div>"
+    );
+  }
+
+  // The PATCH main workspace as the declared `PatchStrip` composition: the
+  // identity-and-routing header, then ordered groups each holding an optional
+  // authored title and its rows — groups arranging groups, not one flat run
+  // of every projected control. A workspace with no focused Patch at all
+  // marks the strip unavailable; a group with no view data marks itself
+  // (crest-spec PatchStrip).
+  function patchStripHtml(model) {
     var main = surfaceById(model, "patchMain");
     var controls = (main && main.controls) || [];
     var mode = model.interactionMode;
+    var groups = stripGroups(controls);
+    var painted = 0;
+    for (var g = 0; g < groups.length; g += 1) {
+      painted += groups[g].rows.length;
+    }
+    if (painted === 0) {
+      return (
+        '<div class="strip strip-unavailable" id="strip">' +
+        markUnavailableRowHtml("ENTRIES") +
+        "</div>"
+      );
+    }
+    var body = stripHeaderHtml(model);
+    for (var i = 0; i < groups.length; i += 1) {
+      body += stripGroupHtml(
+        groups[i],
+        mode,
+        "listed",
+        controlById(main, groupHeadControlId(groups[i].key))
+      );
+    }
+    return '<div class="strip" id="strip">' + body + "</div>";
+  }
+
+  // The subordinate detail surface as the declared `CapabilityDetailShell`:
+  // one composition arranging whichever capability the model names.
+  //
+  // It branches on no subject kind. The title is the projected value of the
+  // strip row that owns these rows — the engine row for an instrument
+  // subject, the slot's occupancy row for an effect subject — resolved
+  // through `groupHeadControlId` from the *control identities the detail
+  // surface carries*, never from `summary.subject`. That value is the
+  // capability's authored label; `summary.subject.capabilityId` is its
+  // identity, and an identity on screen is the defect FR-014 closes.
+  //
+  // The surface carries one group's worth of rows: the semantic model
+  // projects the capability's parameters as a flat ordered list and carries
+  // no section identity, so the shell arranges the groups the projection
+  // distinguishes, which is one. Section order therefore is the projected
+  // order.
+  function detailShellHtml(model) {
+    var detail = surfaceByRole(model, "detail");
+    var controls = (detail && detail.controls) || [];
+    var mode = model.interactionMode;
+    var main = surfaceById(model, "patchMain");
+    var head = controls.length
+      ? controlById(
+          main,
+          groupHeadControlId(
+            ownerGroupKey((main && main.controls) || [], controlIdOf(controls[0]))
+          )
+        )
+      : null;
+    var subject = head ? controlValueText(head) : UNAVAILABLE_MARK;
+    // A capability mid-preparation reports its projected lifecycle word here
+    // as well as on its rows, so the shell is never read as a settled one.
+    var status = null;
+    for (var s = 0; s < controls.length; s += 1) {
+      if (controls[s].status) {
+        status = controls[s].status;
+        break;
+      }
+    }
     var rows = "";
-    var arranged = 0;
     for (var i = 0; i < controls.length; i += 1) {
       if (!controls[i].visible) {
         continue;
       }
-      rows += patchRowHtml(controls[i], mode, "listed");
-      arranged += 1;
+      rows += patchRowHtml(controls[i], mode, "detail");
     }
-    var body =
-      arranged > 0
-        ? '<div class="strip" id="strip">' + rows + "</div>"
-        : '<div class="strip strip-unavailable" id="strip">' +
-          markUnavailableRowHtml("ENTRIES") +
-          "</div>";
-    var focused = null;
-    for (var f = 0; f < controls.length; f += 1) {
-      if (controls[f].focused) {
-        focused = controls[f];
-        break;
-      }
+    if (!rows) {
+      rows = markUnavailableRowHtml(String((detail && detail.label) || "DETAIL"));
     }
+    return (
+      '<div class="detail" id="detail">' +
+      '<div class="detail-title" data-role="detail-title">' +
+      '<span class="type-label muted">' +
+      escapeHtml(String((detail && detail.label) || "DETAIL")) +
+      "</span>" +
+      '<span class="type-heading focus" data-role="detail-subject">' +
+      escapeHtml(subject) +
+      "</span>" +
+      (status
+        ? '<span class="type-hint adjust" data-role="detail-status">' +
+          escapeHtml(String(status.label)) +
+          "</span>"
+        : "") +
+      "</div>" +
+      '<div class="detail-section" data-role="detail-section">' +
+      rows +
+      "</div></div>"
+    );
+  }
+
+  // The PATCH main workspace: the section header content (the surface's own
+  // label left, the focused entry's annotation right) on the shared caption
+  // row, then the composition the document's own surface set selects — the
+  // detail shell while a detail entry is open, the grouped strip otherwise.
+  // The shell bands and the persistent side region are untouched either way.
+  function patchWorkspaceHtml(model) {
+    var main = surfaceById(model, "patchMain");
+    var detail = surfaceByRole(model, "detail");
+    var body = detail ? detailShellHtml(model) : patchStripHtml(model);
+    var focused = focusedControl(model);
     var annotation = focused
       ? '<span class="type-hint focus" data-role="section-annotation">FOCUS' +
         HINT_SEPARATOR +
         escapeHtml(String(focused.label)) +
         "</span>"
       : "";
-    var title = escapeHtml(String((main && main.label) || "PATCH"));
+    var surface = detail || main;
+    var title = escapeHtml(String((surface && surface.label) || "PATCH"));
     return workspaceScaffold(
       model,
       '<span class="type-label muted">' + title + "</span>",
@@ -852,20 +1352,72 @@
     );
   }
 
+  // The panel's own authored hint line (design file `Utility Panel` 36:52,
+  // "D-pad Right:enter   D-pad Left:return"): how an operator enters the panel
+  // and how they leave it.
+  //
+  // Both facts are projected, one on each side of the boundary — the action
+  // that enters this surface rides the rows an operator enters it *from*, and
+  // the action that leaves it rides the panel's own rows. So the line is
+  // gathered by walking the document in its declared order and keeping the
+  // `enterSurface`-into-this-surface and `return` actions, deduplicated. The
+  // page composes no action vocabulary of its own: the same `hintRun` renders
+  // the same projected hints and labels the footer renders.
+  function sideRegionHintLine(model, surface) {
+    var actions = [];
+    var seen = {};
+    var surfaces = model.surfaces || [];
+    for (var s = 0; s < surfaces.length; s += 1) {
+      var controls = surfaces[s].controls || [];
+      for (var c = 0; c < controls.length; c += 1) {
+        var valid = controls[c].validActions || [];
+        for (var a = 0; a < valid.length; a += 1) {
+          var action = valid[a];
+          var kind = action.action && action.action.kind;
+          var entersThis =
+            kind === "enterSurface" &&
+            action.action.payload === (surface && surface.id);
+          var leavesThis = kind === "return" && surfaces[s].id === surface.id;
+          if (!entersThis && !leavesThis) {
+            continue;
+          }
+          var key = String(action.hint) + " " + String(action.label);
+          if (seen[key]) {
+            continue;
+          }
+          seen[key] = true;
+          actions.push(action);
+        }
+      }
+    }
+    if (actions.length === 0) {
+      return "";
+    }
+    return (
+      '<span class="panel-hint" data-role="utility-hint">' +
+      hintRun(actions) +
+      "</span>"
+    );
+  }
+
   // The PATCH Utility panel: the surface title, the projected patch identity
-  // caption, then the five designed entries in authored order — each backed
-  // by its projected driver row or marked explicitly unavailable — then any
-  // remaining projected entries the designed set does not name
+  // caption, the authored hint line, then the five designed entries in
+  // authored order — each backed by its projected driver row or marked
+  // explicitly unavailable — then any remaining projected entries the
+  // designed set does not name
   // (utility_inspector_panel::render_patch_utility).
+  //
+  // The row set is bounded by declaration at five, so the panel seats its
+  // entries within the side region with no scroll affordance; `#inspector`
+  // keeps `overflow: hidden` and the rows are sized to fit rather than the
+  // region relaxed to admit them (crest-spec UtilityInspectorPanel).
   function patchUtilityHtml(model, surface, summary) {
     var mode = model.interactionMode;
     var controls = surface.controls || [];
     var byId = {};
     for (var i = 0; i < controls.length; i += 1) {
       var control = controls[i];
-      var id = String(
-        control.path && control.path.controlId ? control.path.controlId.id : ""
-      );
+      var id = controlIdOf(control);
       byId[id] = control;
     }
     var rows = "";
@@ -887,27 +1439,35 @@
     }
     for (var r = 0; r < controls.length; r += 1) {
       var remaining = controls[r];
-      var remainingId = String(
-        remaining.path && remaining.path.controlId
-          ? remaining.path.controlId.id
-          : ""
-      );
+      var remainingId = controlIdOf(remaining);
       if (claimed[remainingId] || !remaining.visible) {
         continue;
       }
       rows += patchRowHtml(remaining, mode, "panel");
     }
+    // The authored identity line (design file 36:51). The Patch number is
+    // projected by this surface's own summary; the name beside it is the main
+    // surface's projected Patch name. `summary.capabilityId` used to stand
+    // there — the capability's identity, not its name, which is the class of
+    // value FR-014 keeps off the screen.
+    var main = surfaceById(model, "patchMain");
+    var mainSummary = (main && main.summary) || null;
     var identity =
       '<span class="type-hint focus" data-role="patch-identity">' +
-      escapeHtml(String(summary.patch_id)) +
+      escapeHtml(String(summary.patchId)) +
       HINT_SEPARATOR +
-      escapeHtml(String(summary.capability_id)) +
+      escapeHtml(
+        mainSummary && mainSummary.kind === "patch"
+          ? String(mainSummary.patchName)
+          : UNAVAILABLE_MARK
+      ) +
       "</span>";
     return (
       '<span class="type-label muted">' +
       escapeHtml(String(surface.label || "UTILITY")) +
       "</span>" +
       identity +
+      sideRegionHintLine(model, surface) +
       rows
     );
   }
@@ -984,7 +1544,7 @@
     for (var c = 0; c < controls.length; c += 1) {
       var control = controls[c];
       var id = control.path.controlId.id;
-      if (!id || id.kind !== "send" || id.track_id !== trackId) {
+      if (!id || id.kind !== "send" || id.trackId !== trackId) {
         continue;
       }
       var label = String(control.label)
@@ -1154,8 +1714,36 @@
       });
     }
 
+    // The painted width of one element inside a row, or null when the row does
+    // not carry it. Rounded, so two renders of one document at one window size
+    // report the identical integer.
+    function widthOf(root, selector) {
+      var el = root.querySelector(selector);
+      return el ? Math.round(el.getBoundingClientRect().width) : null;
+    }
+
+    // The painted top and bottom edges of one element, in the row's own
+    // coordinates — enough to see which of a wrapping row's lines it landed
+    // on, which is the fact a width alone cannot report.
+    function edgesIn(row, selector) {
+      var el = row.querySelector(selector);
+      if (!el) {
+        return null;
+      }
+      var box = el.getBoundingClientRect();
+      var origin = row.getBoundingClientRect().top;
+      return {
+        topPx: Math.round(box.top - origin),
+        bottomPx: Math.round(box.bottom - origin),
+      };
+    }
+
     // The painted PATCH strip rows, in painted order, with the state each
     // row was painted in — the PATCH twin of the mixer column report.
+    //
+    // The painted box widths ride along because the row's parts compete for
+    // one line: a hint run that takes the rail's width leaves the rail a few
+    // pixels, which is a layout fact no text-only observation can see.
     function rowReport(nodes) {
       var out = [];
       for (var r = 0; r < nodes.length; r += 1) {
@@ -1166,11 +1754,68 @@
           label: textOf(rowNode, ".prow-label"),
           value: textOf(rowNode, ".prow-value"),
           mark: textOf(rowNode, '[data-role="state-mark"]'),
+          unit: textOf(rowNode, ".prow-unit"),
+          range: textOf(rowNode, '[data-role="row-range"]'),
+          hints: textOf(rowNode, '[data-role="row-hints"]'),
+          interaction: rowNode.getAttribute("data-interaction"),
+          readOnly: textOf(rowNode, '[data-role="read-only"]'),
+          heightPx: Math.round(rowNode.getBoundingClientRect().height),
+          railPx: widthOf(rowNode, ".prow-position"),
+          hintsPx: widthOf(rowNode, '[data-role="row-hints"]'),
+          labelEdges: edgesIn(rowNode, ".prow-label"),
+          hintEdges: edgesIn(rowNode, '[data-role="row-hints"]'),
         });
       }
       return out;
     }
     var rows = rowReport(doc.querySelectorAll("#strip .prow"));
+
+    // The painted group anatomy of the PATCH strip, in painted order: the
+    // structural evidence that the workspace arranges groups rather than one
+    // flat row run, and that a group with no view data marked itself inside
+    // its own group instead of vanishing.
+    var groups = [];
+    var groupNodes = doc.querySelectorAll("#strip .pgroup");
+    for (var gi = 0; gi < groupNodes.length; gi += 1) {
+      var groupNode = groupNodes[gi];
+      var groupRowNodes = groupNode.querySelectorAll(".prow");
+      var groupRows = [];
+      for (var gr = 0; gr < groupRowNodes.length; gr += 1) {
+        groupRows.push(groupRowNodes[gr].getAttribute("data-control"));
+      }
+      groups.push({
+        key: groupNode.getAttribute("data-group"),
+        title: textOf(groupNode, '[data-role="group-title"]'),
+        unavailable: groupNode.classList.contains("unavailable"),
+        rows: groupRows,
+      });
+    }
+
+    // The painted detail composition, or null when no detail entry is open.
+    var detailNode = doc.getElementById("detail");
+    var detail = detailNode
+      ? {
+          surface: textOf(detailNode, '[data-role="detail-title"] .type-label'),
+          subject: textOf(detailNode, '[data-role="detail-subject"]'),
+          status: textOf(detailNode, '[data-role="detail-status"]'),
+          rows: rowReport(detailNode.querySelectorAll(".prow")),
+        }
+      : null;
+
+    var headerNode = doc.querySelector('[data-role="strip-header"]');
+    var stripHeader = headerNode
+      ? {
+          patchName: textOf(headerNode, '[data-role="strip-patch-name"]'),
+          midiInput: textOf(headerNode, '[data-routing="patch.midiInput"]'),
+          outputTrack: textOf(
+            headerNode,
+            '[data-routing="patch.output.outputTrack"]'
+          ),
+          // The header is informative: it allocates no interactive target, so
+          // it carries no control identity and enters no focus order.
+          controls: headerNode.querySelectorAll("[data-control]").length,
+        }
+      : null;
     var lifecycles = [];
     var lifecycleNodes = doc.querySelectorAll("#workspace .lifecycle");
     for (var l = 0; l < lifecycleNodes.length; l += 1) {
@@ -1194,13 +1839,54 @@
     }
     var utility = rowReport(inspectorElement.querySelectorAll(".prow"));
 
+    // What the workspace body actually got, in the window that actually
+    // shipped it. `window.innerHeight` is the page's real height, which is not
+    // the authored window height — the window decoration (and, on a screen
+    // exactly as tall as the window, the menu bar) takes its cut before the
+    // page sees a pixel. A viewport-sized iframe does not reproduce that, and
+    // a seating claim measured in one is a claim about a different surface.
+    var bodyNode = doc.getElementById("strip") || doc.getElementById("detail");
+    var workspaceBody = null;
+    if (bodyNode) {
+      // The composition's own height, measured from its first child's top to
+      // its last child's bottom. `scrollHeight` cannot answer this: it is
+      // clamped up to the client height, so a composition that seats reports
+      // the band's height rather than its own and the headroom is invisible.
+      var kids = bodyNode.children;
+      var contentPx = 0;
+      if (kids.length > 0) {
+        contentPx = Math.round(
+          kids[kids.length - 1].getBoundingClientRect().bottom -
+            kids[0].getBoundingClientRect().top
+        );
+      }
+      workspaceBody = {
+        id: bodyNode.id,
+        contentPx: contentPx,
+        bandPx: bodyNode.clientHeight,
+        scrollableBy: Math.max(
+          0,
+          bodyNode.scrollHeight - bodyNode.clientHeight
+        ),
+        widthPx: Math.round(bodyNode.getBoundingClientRect().width),
+      };
+    }
+
     var focusedNode = doc.querySelector("#bank .column.focused");
     return {
       generation: model.generation,
       stateHash: model.stateHash,
       bands: bands,
+      viewport: {
+        widthPx: window.innerWidth,
+        heightPx: window.innerHeight,
+      },
+      workspaceBody: workspaceBody,
       columns: columns,
       rows: rows,
+      groups: groups,
+      stripHeader: stripHeader,
+      detail: detail,
       lifecycles: lifecycles,
       sectionAnnotation: textOf(doc, '[data-role="section-annotation"]'),
       patchIdentity: textOf(doc, '[data-role="patch-identity"]'),
@@ -1218,6 +1904,14 @@
         solo: textOf(inspectorElement, '[data-role="solo"]'),
         sends: sends,
         utility: utility,
+        hintLine: textOf(inspectorElement, '[data-role="utility-hint"]'),
+        // The side region seats its entries without a scroll affordance on
+        // PATCH: measured, so a relaxed `overflow` shows up as evidence
+        // rather than as a CSS diff nobody reads.
+        scrollableBy: Math.max(
+          0,
+          inspectorElement.scrollHeight - inspectorElement.clientHeight
+        ),
       },
       meter: textOf(doc, "#meter-readout"),
       anatomy: COLUMN_ANATOMY.slice(),

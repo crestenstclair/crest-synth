@@ -530,6 +530,26 @@ impl StateProjector {
         {
             return Err(StateProjectionError::InvalidSelection);
         }
+        // NFR-005, across the projections rather than within one of them: the
+        // canonical snapshot and the PATCH page assembled beside it must name
+        // the same Patch. A disagreement here is a projection set built from
+        // two accepted states, which is exactly the intermediate a patch switch
+        // must never produce.
+        //
+        // Only the page is compared. `semantic.patch_identity()` resolves to
+        // `state.interaction.active_focus.patch_id()` — literally the
+        // expression on the line below — so checking it compared a value to
+        // itself and could never fire. The model's identity is guarded where it
+        // can actually be wrong: `validate_data` refuses to build a model whose
+        // focus path, surface summaries, and control paths disagree, and the
+        // generation and state-hash equality directly above pins that model to
+        // this snapshot. The page is the one projection assembled on a separate
+        // path (it derives from `patch_focus()`), so it is the one that needs a
+        // cross-check.
+        let snapshot_patch = state.interaction.active_focus.patch_id();
+        if page.is_some_and(|page| Some(page.patch().id()) != snapshot_patch) {
+            return Err(StateProjectionError::InvalidSelection);
+        }
         let status_label = semantic.status().label();
         let context_line = ShellContextLine::new("CREST SYNTH", context.label(), status_label);
         let action_hints = semantic
@@ -554,19 +574,16 @@ impl StateProjector {
                     u16::from(patch.midi_channel().value()) + 1,
                     page.engine().active_label()
                 );
-                let path = match semantic.focus_path().control_id() {
-                    SemanticControlId::Patch(control) => {
-                        format!("PATCH / {}", control.as_str())
-                    }
+                match semantic.focus_path().control_id() {
+                    SemanticControlId::Patch(_) => {}
                     SemanticControlId::SurfaceRoot
-                        if semantic.active_surface() == crate::control::SurfaceId::PatchUtility =>
-                    {
-                        "PATCH / UTILITY".to_owned()
+                        if semantic.active_surface() == crate::control::SurfaceId::PatchUtility => {
                     }
                     SemanticControlId::Mixer(_) | SemanticControlId::SurfaceRoot => {
                         return Err(StateProjectionError::InvalidSelection)
                     }
-                };
+                }
+                let path = footer_path_label(semantic);
                 (
                     ShellIdentityHeader::new(primary, secondary),
                     format!("PATCH WORKSPACE · {}", patch.name()),
@@ -587,49 +604,35 @@ impl StateProjector {
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                let (primary, secondary, path) = match semantic.focus_path().control_id() {
-                    SemanticControlId::Mixer(MixerControlId::Track {
-                        track_id,
-                        parameter,
-                    }) => (
+                let (primary, secondary) = match semantic.focus_path().control_id() {
+                    SemanticControlId::Mixer(
+                        MixerControlId::Track { track_id, .. }
+                        | MixerControlId::Send { track_id, .. },
+                    ) => (
                         format!("MIXER · {track_id}"),
                         format!("ROUTED PATCHES · {}", routed_for(track_id)),
-                        format!("MIXER / {track_id} / {}", parameter.name()),
                     ),
-                    SemanticControlId::Mixer(MixerControlId::Send { track_id, bus }) => (
-                        format!("MIXER · {track_id}"),
-                        format!("ROUTED PATCHES · {}", routed_for(track_id)),
-                        format!("MIXER / {track_id} / send[{}]", bus.index()),
-                    ),
-                    SemanticControlId::Mixer(MixerControlId::ReturnOccupancy { bus }) => (
+                    SemanticControlId::Mixer(
+                        MixerControlId::ReturnOccupancy { .. }
+                        | MixerControlId::ReturnLevel { .. }
+                        | MixerControlId::ReturnEffect { .. },
+                    ) => (
                         "MIXER · RETURNS".to_owned(),
                         format!("{} PATCHES · BUS RETURNS", state.patches.len()),
-                        format!("MIXER / RETURN {bus} / occupancy"),
                     ),
-                    SemanticControlId::Mixer(MixerControlId::ReturnLevel { bus }) => (
-                        "MIXER · RETURNS".to_owned(),
-                        format!("{} PATCHES · BUS RETURNS", state.patches.len()),
-                        format!("MIXER / RETURN {bus} / returnLevel"),
-                    ),
-                    SemanticControlId::Mixer(MixerControlId::ReturnEffect { bus, parameter }) => (
-                        "MIXER · RETURNS".to_owned(),
-                        format!("{} PATCHES · BUS RETURNS", state.patches.len()),
-                        format!("MIXER / RETURN {bus} / {parameter}"),
-                    ),
-                    SemanticControlId::Mixer(MixerControlId::Global { parameter }) => (
+                    SemanticControlId::Mixer(MixerControlId::Global { .. }) => (
                         "MIXER · GLOBAL".to_owned(),
                         format!("{} PATCHES · MASTER OUTPUT", state.patches.len()),
-                        format!("MIXER / GLOBAL / {}", parameter.name()),
                     ),
                     SemanticControlId::SurfaceRoot => (
                         "MIXER · INSPECTOR".to_owned(),
                         format!("{} PATCHES · READ ONLY", state.patches.len()),
-                        "MIXER / INSPECTOR".to_owned(),
                     ),
                     SemanticControlId::Patch(_) => {
                         return Err(StateProjectionError::InvalidSelection)
                     }
                 };
+                let path = footer_path_label(semantic);
                 (
                     ShellIdentityHeader::new(primary, secondary),
                     "MIXER WORKSPACE".to_owned(),
@@ -652,6 +655,30 @@ impl StateProjector {
         )
         .map_err(StateProjectionError::from)
     }
+}
+
+/// The shell footer's breadcrumb: the top-level context, then the **authored
+/// label** of the row the cursor is on.
+///
+/// This used to be composed per control-identity variant out of the identity's
+/// own serialization key — `"MIXER / GLOBAL / masterGainDb"`,
+/// `"PATCH / patch.voiceLimit"` — which is exactly the defect T016 exists to
+/// close, one layer up from the row labels it closed it on. It was harmless
+/// only by accident: the page ignores `pathLabel` and composes its own
+/// breadcrumb from `control.label`. It stops being harmless the moment anything
+/// reads the field.
+///
+/// The per-variant match is gone rather than repaired arm by arm. There is one
+/// composition, one source — [`SemanticGraphicalViewModel::focused_control`] —
+/// and no place left for a key to be spelled, so a future control identity
+/// cannot reintroduce the defect by adding an arm. A focus resting on a surface
+/// root owns no row, so it names the surface, whose label is authored too.
+fn footer_path_label(semantic: &SemanticGraphicalViewModel) -> String {
+    let leaf = semantic.focused_control().map_or_else(
+        || semantic.active_surface().label().to_owned(),
+        |control| control.label().to_owned(),
+    );
+    format!("{} / {leaf}", semantic.context().label())
 }
 
 fn selection_from_serialized(
@@ -936,6 +963,42 @@ fn render_patch_text(
         }
     }
 
+    // The open detail entry, rendered from the same page value the graphical
+    // projection reads. A detail focus lands on a row that exists in exactly
+    // one place — Braids' detail rows are absent from its main order entirely —
+    // so without these lines a detail focus has nothing to select and the whole
+    // projection fails on an accepted state.
+    if let Some(detail) = page.detail() {
+        lines.push(format!(
+            " DETAIL {}",
+            serde_json::to_string(&DetailHeader {
+                subject: detail.subject(),
+                label: detail.label(),
+                status: detail.status(),
+            })
+            .map_err(|_| StateProjectionError::StateSerialization)?
+        ));
+        for section in detail.sections() {
+            lines.push(format!(
+                " DETAIL_SECTION id={} label={}",
+                section.id(),
+                section.label()
+            ));
+            for row in section.parameters().iter().filter(|row| row.visible()) {
+                let selected = row.control_id() == Some(page.focused_control_id());
+                if selected {
+                    selected_line = Some(lines.len());
+                }
+                let marker = if selected { '>' } else { ' ' };
+                lines.push(format!(
+                    "{marker} DETAIL_PARAMETER {}",
+                    serde_json::to_string(row)
+                        .map_err(|_| StateProjectionError::StateSerialization)?
+                ));
+            }
+        }
+    }
+
     let selected_line = selected_line.ok_or(StateProjectionError::InvalidSelection)?;
 
     Ok(TextProjection::for_context(
@@ -944,6 +1007,16 @@ fn render_patch_text(
         selected_line,
         state_hash.to_owned(),
     ))
+}
+
+/// The detail entry's own header line: which capability filled the surface and
+/// what its lifecycle is doing, without a second copy of its schema.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailHeader<'a> {
+    subject: &'a crate::control::PatchDetailSubject,
+    label: &'a str,
+    status: crate::control::EngineSelectionStatusKind,
 }
 
 pub(crate) fn format_instrument_value(
@@ -1359,7 +1432,12 @@ mod tests {
             let (_, page, text, _, _) = StateProjector::new().project_with_tree(&state).unwrap();
             let page = page.unwrap();
             assert_eq!(page.focused_control_id(), expected_control);
-            assert_eq!(text.selected_line(), index + 4);
+            // The PatchMain rows begin after the header, the identity line,
+            // and the Utility rows. Derived from the projection rather than
+            // pinned, so adding a Utility row moves the marker without
+            // silently invalidating what this test actually checks.
+            let main_rows_begin = 2 + page.output().len();
+            assert_eq!(text.selected_line(), index + main_rows_begin);
             assert_eq!(
                 text.body()
                     .lines()
@@ -1388,8 +1466,14 @@ mod tests {
             crate::control::PatchControlId::Engine
         );
         assert!(!page.engine().editable());
-        assert_eq!(text.selected_line(), 4);
-        assert!(text.body().lines().nth(4).unwrap().starts_with("> ENGINE"));
+        let engine_line = 2 + page.output().len();
+        assert_eq!(text.selected_line(), engine_line);
+        assert!(text
+            .body()
+            .lines()
+            .nth(engine_line)
+            .unwrap()
+            .starts_with("> ENGINE"));
     }
 
     #[test]
@@ -1509,7 +1593,10 @@ mod tests {
                 assert_eq!(page.state_hash(), snapshot.hash());
                 assert_eq!(text.state_hash(), snapshot.hash());
                 assert_eq!(tree.state_hash(), snapshot.hash());
-                assert_eq!(text.selected_line(), focused_index + 4);
+                assert_eq!(
+                    text.selected_line(),
+                    focused_index + 2 + page.output().len()
+                );
                 assert!(text
                     .body()
                     .lines()

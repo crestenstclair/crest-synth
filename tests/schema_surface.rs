@@ -294,6 +294,53 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
                 .unwrap();
         },
     ));
+    // Both detail subject variants, because they do not carry the same leaves:
+    // an `Instrument` subject names a capability alone, while an `Effect`
+    // subject also names its exact occupied slot. A fixture that opens only one
+    // of them cannot see the other's leaf, which is how the subject leaves went
+    // undeclared in the first place. `EnterSurface(PatchDetail)` is held out of
+    // the *offered* action vocabulary until WP03 can project the surface, so
+    // these drive the reducer through `AppEvent`, which is the seam the detail
+    // transition is proved at.
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                .unwrap();
+            state
+                .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+                .unwrap();
+            assert!(state.interaction().detail_subject().is_some());
+        },
+    ));
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                .unwrap();
+            navigate_down_until(state, |path| {
+                matches!(
+                    path.control_id(),
+                    crest_synth::control::SemanticControlId::Patch(PatchControlId::EffectSlot(_))
+                )
+            });
+            state
+                .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+                .unwrap();
+            assert_eq!(
+                state
+                    .interaction()
+                    .detail_subject()
+                    .and_then(crest_synth::control::PatchDetailSubject::slot_id),
+                Some(EffectSlotId::new(1).unwrap()),
+                "the effect subject must name the occupied slot's exact identity"
+            );
+        },
+    ));
     trees.push(state_tree_after(
         soundfont_config.clone(),
         braids_config.clone(),
@@ -382,7 +429,17 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
 #[test]
 fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact() {
     let discovered = assert_state_tree_leaf_surface_exact();
-    assert_eq!(StateTree::SCHEMA_VERSION, 12);
+    // Version 13 added the `parameters.patches[].voiceLimit` leaf: a canonical
+    // value that crosses the real-time boundary and changes what is audible
+    // must be visible in the trace, or no measured proof can correlate a
+    // refused note with the limit that refused it. Version 14 added the
+    // `interaction.detailSubject` leaves on the same reasoning: the subject
+    // decides what the detail surface shows, so a trace without it cannot
+    // correlate a detail interaction with its consequence. Version 15 made the
+    // detail surface projectable — `patchPage.detail`, plus per-control
+    // `requestedValue` and `validActions` on the semantic model — and moved
+    // `PatchDetailSubject`'s own fields to camelCase in the same bump.
+    assert_eq!(StateTree::SCHEMA_VERSION, 15);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

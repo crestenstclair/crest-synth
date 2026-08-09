@@ -407,6 +407,19 @@ impl GraphicalShellProjection {
         &self.data.semantic_model
     }
 
+    /// The one Patch identity this shell speaks for, or `None` in MIXER.
+    ///
+    /// Paired with [`Self::generation`] this is what lets a consumer assert
+    /// NFR-005 from the outside: a patch-selection gesture must advance the
+    /// generation by exactly one, and the projection at that generation must
+    /// name the destination Patch and nothing else. Both halves are needed —
+    /// a single advanced generation naming the wrong Patch and two generations
+    /// naming the right one are different defects, and neither is visible from
+    /// the other's evidence alone.
+    pub fn patch_identity(&self) -> Option<crate::kernel::PatchId> {
+        self.data.semantic_model.patch_identity()
+    }
+
     pub fn context_line(&self) -> &ShellContextLine {
         &self.data.context_line
     }

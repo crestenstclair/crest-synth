@@ -117,6 +117,13 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             "context.patch".to_owned(),
             "interactionMode.adjust".to_owned(),
             "interactionMode.navigate".to_owned(),
+            // The subordinate detail surface, entered and left through the
+            // passive action boundary like the two persistent sides. It was
+            // absent for exactly as long as `SurfaceId::is_enterable` withheld
+            // `PatchDetail` — a gated action is a refusal, not a
+            // demonstration — and its presence here is the scene actually
+            // reaching a projected detail state end to end.
+            "surface.detail".to_owned(),
             "surface.inspector".to_owned(),
             "surface.utility".to_owned(),
         ]

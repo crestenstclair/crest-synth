@@ -1,3 +1,4 @@
+use crate::adapter::braids_capability::BRAIDS_FIXED_VOICES;
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::EventRejection;
 use crate::control::event_log::EventLog;
@@ -10,7 +11,7 @@ use crate::control::{
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::global_parameters::GlobalParameters;
+use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
 use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::mixer::mixer_track_parameters::{
     MixerTrackParameter, MixerTrackParameterKind, MixerTrackParameters,
@@ -21,6 +22,7 @@ use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::instrument_capability::{CapabilityRegistry, ParameterValue};
 use crate::synth::patch::{Patch, PatchEditableTarget};
+use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
     EffectCapabilityRegistry, ParameterId, PatchInteraction, PostEffectConfig,
     VoiceEnvelopeParameter,
@@ -657,6 +659,16 @@ fn build_steps(
     push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.entered"));
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.returned"));
+    // The subordinate detail surface, entered and left through the same passive
+    // semantic action boundary as the two persistent sides. Return restores the
+    // exact origin, so the pair leaves the scene's focus where it found it and
+    // every following sweep still starts from the canonical PATCH row.
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::PatchDetail,
+    )));
+    push_checkpoint(&mut steps, DemoCheckpoint::new("surface.detail.entered"));
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+    push_checkpoint(&mut steps, DemoCheckpoint::new("surface.detail.returned"));
     push_key_press(&mut steps, WindowKey::Digit1);
 
     push_patch_output_control_steps(&mut steps, &patches[0], &mut boundary_probed);
@@ -1098,7 +1110,16 @@ fn push_patch_output_control_steps(
         DemoCheckpoint::new(format!("{trim_identifier}.restored")),
     );
 
-    push_key_press(steps, WindowKey::S);
+    // Step down from the entry row to the output-track row by the distance the
+    // declared Utility order actually puts between them, rather than assuming
+    // they are adjacent. Entry focuses TrimGain, and the five-row order seats
+    // MIDI input between the two.
+    for _ in 0..utility_row_distance(
+        &PatchControlId::Output(PatchOutputParameter::TrimGain),
+        &PatchControlId::Output(PatchOutputParameter::OutputTrack),
+    ) {
+        push_key_press(steps, WindowKey::S);
+    }
     let route = PatchOutputParameter::OutputTrack.descriptor();
     debug_assert_eq!(route.kind(), PatchOutputParameterKind::TrackChoice);
     let route_identifier = format!("patch.{}.output.{}", patch.id().value(), route.name());
@@ -1111,9 +1132,94 @@ fn push_patch_output_control_steps(
         DemoCheckpoint::new(format!("{route_identifier}.restored")),
     );
 
+    push_patch_utility_scalar_steps(steps, patch);
+
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("patch.output.contextRestored"));
+}
+
+/// Visits the three PATCH Utility rows the corrective gate added — master
+/// volume, MIDI input, and voice limit — and reversibly edits each.
+///
+/// Every edit is immediately undone, so the scene leaves canonical state
+/// exactly as it found it while still proving each row is reachable and
+/// editable through the production reducer. Master volume is deliberately
+/// included here: reaching the one canonical global value from PATCH is the
+/// claim that would otherwise be provable only by reading the code.
+fn push_patch_utility_scalar_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
+    // Master volume, upward from the output-track row.
+    let master = PatchControlId::Global(GlobalParameter::MasterGainDb);
+    for _ in 0..utility_row_distance(
+        &master,
+        &PatchControlId::Output(PatchOutputParameter::OutputTrack),
+    ) {
+        push_key_press(steps, WindowKey::W);
+    }
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+        WindowKey::K,
+    )));
+    push_key_press(steps, WindowKey::D);
+    push_key_press(steps, WindowKey::A);
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!("patch.{}.global.restored", patch.id().value())),
+    );
+
+    // MIDI input, then the voice limit, walking back down the declared order.
+    for _ in 0..utility_row_distance(&master, &PatchControlId::MidiInput) {
+        push_key_press(steps, WindowKey::S);
+    }
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+        WindowKey::K,
+    )));
+    push_key_press(steps, WindowKey::D);
+    push_key_press(steps, WindowKey::A);
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!("patch.{}.midiInput.restored", patch.id().value())),
+    );
+
+    for _ in 0..utility_row_distance(&PatchControlId::MidiInput, &PatchControlId::VoiceLimit) {
+        push_key_press(steps, WindowKey::S);
+    }
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+        WindowKey::K,
+    )));
+    push_key_press(steps, WindowKey::A);
+    push_key_press(steps, WindowKey::D);
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!("patch.{}.voiceLimit.restored", patch.id().value())),
+    );
+}
+
+/// Returns how many downward steps separate two rows of the declared PATCH
+/// Utility order.
+///
+/// Derived from the one declared order, so inserting a row between two the
+/// scene walks moves the scene with it instead of silently landing the probe
+/// on a neighbour and asserting the wrong control's rejection.
+fn utility_row_distance(from: &PatchControlId, to: &PatchControlId) -> usize {
+    let order = PatchControlId::utility_surface_descriptor();
+    let index = |control: &PatchControlId| {
+        order
+            .iter()
+            .position(|candidate| candidate == control)
+            .expect("the scene only walks declared Utility rows")
+    };
+    index(to)
+        .checked_sub(index(from))
+        .expect("the scene walks the declared Utility order downward")
 }
 
 fn push_route_boundary_probe(
@@ -1750,8 +1856,58 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
         DemoWorkerAdvance::Healthy,
         None,
     );
+    push_voice_limit_restoration_steps(steps, patch);
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("engine.context.restored"));
+}
+
+/// Restores the voice limit the engine journey narrowed.
+///
+/// Swapping to a narrower engine clamps the Patch's limit in canonical state,
+/// and swapping back does **not** widen it again: the carry-over preserves a
+/// limit the new engine can honour rather than second-guessing the player. The
+/// narrowing is therefore one-way by declaration, so the scene restores the
+/// value the same way a player would — through the PATCH Utility voice-limit
+/// row — instead of the restoration check quietly excusing the field.
+fn push_voice_limit_restoration_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
+    let descriptor = VoiceLimit::descriptor();
+    let baseline = patch.voice_limit().value();
+    let narrowed = BRAIDS_FIXED_VOICES.min(baseline);
+    let coarse_presses = baseline
+        .saturating_sub(narrowed)
+        .div_ceil(descriptor.coarse_step());
+    if coarse_presses == 0 {
+        return;
+    }
+
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::PatchUtility,
+    )));
+    for _ in 0..utility_row_distance(
+        &PatchControlId::Output(PatchOutputParameter::TrimGain),
+        &PatchControlId::VoiceLimit,
+    ) {
+        push_key_press(steps, WindowKey::S);
+    }
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
+        WindowKey::K,
+    )));
+    // Coarse steps clamp at the descriptor maximum, so overshooting the exact
+    // baseline is impossible; the last press simply lands on it.
+    for _ in 0..coarse_presses {
+        push_key_press(steps, WindowKey::W);
+    }
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+    push_checkpoint(
+        steps,
+        DemoCheckpoint::new(format!(
+            "patch.{}.voiceLimit.engineRestored",
+            patch.id().value()
+        )),
+    );
 }
 
 /// Exercises the four occupancy lifecycle events through the
@@ -2113,7 +2269,15 @@ fn build_expected_coverage(
             }
             crate::control::app_event::AppEventSurfaceDescriptor::EnterSurface { surface } => {
                 expected.push("event.enterSurface".to_owned());
-                expected.push(format!("surface.{}", surface.label().to_ascii_lowercase()));
+                // Only an *admitted* surface can be exercised by a scene step:
+                // expecting coverage the action vocabulary cannot produce would
+                // make the scene permanently incomplete. `SurfaceId::is_enterable`
+                // is the one predicate that decides admission, so this
+                // expectation follows the vocabulary automatically rather than
+                // being maintained beside it.
+                if surface.is_enterable() {
+                    expected.push(format!("surface.{}", surface.label().to_ascii_lowercase()));
+                }
             }
             crate::control::app_event::AppEventSurfaceDescriptor::Return => {
                 expected.push("event.return".to_owned());
@@ -2784,7 +2948,7 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 41);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            26
+            27
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),

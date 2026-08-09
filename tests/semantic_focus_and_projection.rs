@@ -149,12 +149,21 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
     );
     assert_eq!(state, bottom);
 
-    // C-003: two top-level contexts, four fixed surfaces, no modal focus.
+    // C-003: two top-level contexts, five fixed surfaces — four persistent
+    // plus the one subordinate PATCH detail surface — and no modal focus.
     assert_eq!(
         TopLevelContext::surface_descriptor(),
         &[TopLevelContext::Patch, TopLevelContext::Mixer]
     );
-    assert_eq!(SurfaceId::surface_descriptor().len(), 4);
+    assert_eq!(SurfaceId::surface_descriptor().len(), 5);
+    assert_eq!(
+        SurfaceId::ALL
+            .iter()
+            .filter(|surface| surface.is_subordinate())
+            .count(),
+        1,
+        "exactly one subordinate surface exists"
+    );
     assert!(state.interaction().focus_path().modal_id().is_none());
     assert_eq!(
         InteractionMode::PHASE_TWO,
