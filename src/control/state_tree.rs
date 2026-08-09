@@ -182,11 +182,18 @@ impl StateTree {
     ///
     /// Version 15: the subordinate detail surface became projectable, so the
     /// tree gained `patchPage.detail` and the semantic model's controls gained
-    /// `requestedValue` and their own `validActions`. `PatchDetailSubject`'s
-    /// fields moved to camelCase in the same bump: `#[serde(rename_all)]`
+    /// `requestedValue`, their own `validActions`, and the capability-declared
+    /// `patchInteraction` the detail shell marks read-only rows from. All
+    /// three tagged unions whose fields serialized snake_case inside a
+    /// camelCase schema moved in the same bump — `PatchDetailSubject`,
+    /// `SemanticSurfaceSummary`, and `MixerControlId`: `#[serde(rename_all)]`
     /// renames a tagged enum's variants and not a struct variant's fields, so
-    /// they had been snake_case inside a camelCase schema. Paying that in a
-    /// version this shape was changing anyway costs one bump instead of two.
+    /// `rename_all_fields` was needed on each. Fixing one and not the others
+    /// would have left the schema *mixed* rather than uniformly wrong, which
+    /// is harder to read; paying all three in a version this shape was
+    /// changing anyway costs one bump instead of four. `controlId.id.track_id`
+    /// is now `controlId.id.trackId` in every focus, remembered-focus, and
+    /// return-path leaf.
     ///
     /// Version 14: `interaction` gained the `detailSubject` leaves. The
     /// subject decides what the detail surface shows, so a trace that cannot
@@ -572,7 +579,7 @@ impl StateTree {
                 "interaction.activeFocus.controlId.id.bus",
                 "interaction.activeFocus.controlId.id.kind",
                 "interaction.activeFocus.controlId.id.parameter",
-                "interaction.activeFocus.controlId.id.track_id",
+                "interaction.activeFocus.controlId.id.trackId",
                 "interaction.activeFocus.controlId.kind",
                 "interaction.activeFocus.modalId",
                 "interaction.activeFocus.patchId",
@@ -586,7 +593,7 @@ impl StateTree {
                 "interaction.rememberedMixerMain.context",
                 "interaction.rememberedMixerMain.controlId.id.kind",
                 "interaction.rememberedMixerMain.controlId.id.parameter",
-                "interaction.rememberedMixerMain.controlId.id.track_id",
+                "interaction.rememberedMixerMain.controlId.id.trackId",
                 "interaction.rememberedMixerMain.controlId.kind",
                 "interaction.rememberedMixerMain.modalId",
                 "interaction.rememberedMixerMain.patchId",
@@ -610,7 +617,7 @@ impl StateTree {
                 "interaction.returnPath.origin.controlId.id",
                 "interaction.returnPath.origin.controlId.id.kind",
                 "interaction.returnPath.origin.controlId.id.parameter",
-                "interaction.returnPath.origin.controlId.id.track_id",
+                "interaction.returnPath.origin.controlId.id.trackId",
                 "interaction.returnPath.origin.controlId.kind",
                 "interaction.returnPath.origin.modalId",
                 "interaction.returnPath.origin.patchId",
@@ -1592,7 +1599,7 @@ mod tests {
                         "kind": "mixer",
                         "id": {
                             "kind": "track",
-                            "track_id": 0,
+                            "trackId": 0,
                             "parameter": "level"
                         }
                     },
@@ -1608,7 +1615,7 @@ mod tests {
                         "kind": "mixer",
                         "id": {
                             "kind": "track",
-                            "track_id": 0,
+                            "trackId": 0,
                             "parameter": "level"
                         }
                     },

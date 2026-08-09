@@ -510,7 +510,7 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
                     assert!(
                         controls.iter().any(|control| {
                             control
-                                .pointer("/path/controlId/id/track_id")
+                                .pointer("/path/controlId/id/trackId")
                                 .and_then(Value::as_u64)
                                 == Some(track)
                                 && control

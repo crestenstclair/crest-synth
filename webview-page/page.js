@@ -187,11 +187,11 @@
       if (!id || id.kind !== "track") {
         continue;
       }
-      if (!Object.prototype.hasOwnProperty.call(byTrack, id.track_id)) {
-        byTrack[id.track_id] = { trackId: id.track_id };
-        order.push(byTrack[id.track_id]);
+      if (!Object.prototype.hasOwnProperty.call(byTrack, id.trackId)) {
+        byTrack[id.trackId] = { trackId: id.trackId };
+        order.push(byTrack[id.trackId]);
       }
-      byTrack[id.track_id][id.parameter] = control;
+      byTrack[id.trackId][id.parameter] = control;
     }
     return order;
   }
@@ -260,7 +260,7 @@
     var id =
       model.focusPath && model.focusPath.controlId && model.focusPath.controlId.id;
     if (id && id.kind === "track") {
-      return trackName(id.track_id) + " / " + String(id.parameter).toUpperCase();
+      return trackName(id.trackId) + " / " + String(id.parameter).toUpperCase();
     }
     return "";
   }
@@ -270,7 +270,7 @@
   function focusedTrackId(model) {
     var id =
       model.focusPath && model.focusPath.controlId && model.focusPath.controlId.id;
-    return id && id.kind === "track" ? id.track_id : null;
+    return id && id.kind === "track" ? id.trackId : null;
   }
 
   function statusToneClass(status) {
@@ -477,9 +477,9 @@
       var summary = (main && main.summary) || null;
       metadata =
         summary && summary.kind === "patch"
-          ? escapeHtml(String(summary.patch_name)) +
+          ? escapeHtml(String(summary.patchName)) +
             HINT_SEPARATOR +
-            escapeHtml(String(summary.capability_id))
+            escapeHtml(String(summary.capabilityId))
           : UNAVAILABLE_MARK;
     } else {
       metadata = columns.length + " TRACKS";
@@ -901,9 +901,9 @@
     }
     var identity =
       '<span class="type-hint focus" data-role="patch-identity">' +
-      escapeHtml(String(summary.patch_id)) +
+      escapeHtml(String(summary.patchId)) +
       HINT_SEPARATOR +
-      escapeHtml(String(summary.capability_id)) +
+      escapeHtml(String(summary.capabilityId)) +
       "</span>";
     return (
       '<span class="type-label muted">' +
@@ -986,7 +986,7 @@
     for (var c = 0; c < controls.length; c += 1) {
       var control = controls[c];
       var id = control.path.controlId.id;
-      if (!id || id.kind !== "send" || id.track_id !== trackId) {
+      if (!id || id.kind !== "send" || id.trackId !== trackId) {
         continue;
       }
       var label = String(control.label)

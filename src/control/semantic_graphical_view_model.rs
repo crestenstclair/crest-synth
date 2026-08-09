@@ -180,6 +180,7 @@ pub struct SemanticControlViewModel {
     status: Option<SemanticLifecycleStatus>,
     error: Option<SemanticError>,
     requested_value: Option<SemanticControlValue>,
+    patch_interaction: Option<PatchInteraction>,
     valid_actions: Vec<ValidAction>,
 }
 
@@ -246,6 +247,23 @@ impl SemanticControlViewModel {
         self.requested_value.as_ref()
     }
 
+    /// The capability-declared interaction this row participates in, or `None`
+    /// for a row no descriptor parameter stands behind (the engine row, the
+    /// envelope rows, the slot occupancy rows, the Utility rows).
+    ///
+    /// This is a *different fact* from [`Self::editable`] and is why the
+    /// detail surface needs it. `editable` answers "would the reducer accept
+    /// an adjustment here, now" and is uniformly `false` on every detail row
+    /// in this phase, so it discriminates nothing; `patch_interaction`
+    /// answers "what did the capability declare this parameter to be", which
+    /// is what the detail shell marks a read-only section from. It is
+    /// projected from the same single producer the PATCH page reads
+    /// ([`ParameterSpec::patch_interaction`]) rather than re-derived, so the
+    /// two documents cannot disagree.
+    pub const fn patch_interaction(&self) -> Option<PatchInteraction> {
+        self.patch_interaction
+    }
+
     /// This control's own accepted action list — what the reducer would accept
     /// were this the focused row.
     ///
@@ -267,8 +285,18 @@ pub enum SemanticSurfaceRole {
 }
 
 /// Typed, read-only canonical summary for one semantic surface.
+// `rename_all` renames a tagged enum's *variants*, never a struct variant's
+// fields, so without `rename_all_fields` every summary leaf below serializes
+// snake_case inside an otherwise camelCase schema. The three tagged unions
+// carrying that defect — `PatchDetailSubject`, this one, and `MixerControlId`
+// — moved together rather than one at a time, because a half-fixed schema is
+// harder to read than a uniformly wrong one (mission finding F-18).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SemanticSurfaceSummary {
     Patch {
         patch_id: PatchId,
@@ -466,7 +494,7 @@ impl SemanticGraphicalViewModel {
         "focusPath.controlId.id.bus",
         "focusPath.controlId.id.kind",
         "focusPath.controlId.id.parameter",
-        "focusPath.controlId.id.track_id",
+        "focusPath.controlId.id.trackId",
         "focusPath.controlId.kind",
         "focusPath.modalId",
         "focusPath.patchId",
@@ -482,7 +510,7 @@ impl SemanticGraphicalViewModel {
         "returnPath.origin.controlId.id",
         "returnPath.origin.controlId.id.kind",
         "returnPath.origin.controlId.id.parameter",
-        "returnPath.origin.controlId.id.track_id",
+        "returnPath.origin.controlId.id.trackId",
         "returnPath.origin.controlId.kind",
         "returnPath.origin.modalId",
         "returnPath.origin.patchId",
@@ -515,6 +543,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].numericRange.fineStep",
         "surfaces[].controls[].numericRange.maximum",
         "surfaces[].controls[].numericRange.minimum",
+        "surfaces[].controls[].patchInteraction",
         "surfaces[].controls[].path.capabilityId",
         "surfaces[].controls[].path.capabilityId.id",
         "surfaces[].controls[].path.capabilityId.kind",
@@ -523,7 +552,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].path.controlId.id.bus",
         "surfaces[].controls[].path.controlId.id.kind",
         "surfaces[].controls[].path.controlId.id.parameter",
-        "surfaces[].controls[].path.controlId.id.track_id",
+        "surfaces[].controls[].path.controlId.id.trackId",
         "surfaces[].controls[].path.controlId.kind",
         "surfaces[].controls[].path.modalId",
         "surfaces[].controls[].path.patchId",
@@ -553,20 +582,20 @@ impl SemanticGraphicalViewModel {
         "surfaces[].id",
         "surfaces[].label",
         "surfaces[].role",
-        "surfaces[].summary.capability_id",
-        "surfaces[].summary.effect_count",
-        "surfaces[].summary.focused_control.bus",
-        "surfaces[].summary.focused_control.kind",
-        "surfaces[].summary.focused_control.parameter",
-        "surfaces[].summary.focused_control.track_id",
-        "surfaces[].summary.focused_track",
-        "surfaces[].summary.global_parameter_count",
+        "surfaces[].summary.capabilityId",
+        "surfaces[].summary.effectCount",
+        "surfaces[].summary.focusedControl.bus",
+        "surfaces[].summary.focusedControl.kind",
+        "surfaces[].summary.focusedControl.parameter",
+        "surfaces[].summary.focusedControl.trackId",
+        "surfaces[].summary.focusedTrack",
+        "surfaces[].summary.globalParameterCount",
         "surfaces[].summary.kind",
-        "surfaces[].summary.patch_count",
-        "surfaces[].summary.patch_id",
-        "surfaces[].summary.patch_name",
-        "surfaces[].summary.routed_patches[].patchId",
-        "surfaces[].summary.routed_patches[].patchName",
+        "surfaces[].summary.patchCount",
+        "surfaces[].summary.patchId",
+        "surfaces[].summary.patchName",
+        "surfaces[].summary.routedPatches[].patchId",
+        "surfaces[].summary.routedPatches[].patchName",
         // The open detail surface's subject. `capability_id` and `kind` are
         // discovered for either subject variant; `slot_id` only for `Effect`,
         // which is the variant that names an exact occupied position — so a
@@ -853,6 +882,7 @@ fn fixture_surfaces(
         status: None,
         error: None,
         requested_value: None,
+        patch_interaction: None,
         valid_actions: Vec::new(),
     };
     let side_control_path = if active.surface().is_main() {
@@ -1208,6 +1238,7 @@ fn project_patch_surfaces(
         status: Some(status.clone()),
         error: error_for_path(errors, &engine_path),
         requested_value: None,
+        patch_interaction: None,
         valid_actions: Vec::new(),
     });
 
@@ -1236,6 +1267,7 @@ fn project_patch_surfaces(
             status: None,
             error: None,
             requested_value: None,
+            patch_interaction: None,
             valid_actions: Vec::new(),
         });
     }
@@ -1315,6 +1347,7 @@ fn project_patch_surfaces(
             status: targeted.then(|| status.clone()),
             error: error_for_path(errors, &occupancy_path),
             requested_value: None,
+            patch_interaction: None,
             valid_actions: Vec::new(),
         });
 
@@ -1477,6 +1510,7 @@ fn project_patch_surfaces(
                 status: None,
                 error: None,
                 requested_value: None,
+                patch_interaction: None,
                 valid_actions: Vec::new(),
             })
         })
@@ -1526,13 +1560,23 @@ fn project_patch_surfaces(
         // `editable: false` alike here, so this field discriminates nothing
         // about the capability's own declaration.
         //
-        // The capability-declared read-only fact is a different fact and it has
-        // its own declared home: `PatchInteraction`, carried to the screen at
-        // `patchPage.detail.sections[].parameters[].patchInteraction`
-        // (`PatchPageParameterRow::patch_interaction`). All three Braids rows
-        // and SoundFont's `file` row declare `ReadOnly`; SoundFont's `preset`
-        // declares `StructuralChoice`. A page marking a read-only section "in
-        // text or shape" reads that leaf, never this bool.
+        // The capability-declared read-only fact is a different fact, and it
+        // now rides every descriptor-backed row as `patchInteraction` — the
+        // same single producer `PatchPageParameterRow` reads
+        // (`ParameterSpec::patch_interaction`), projected rather than
+        // re-derived. All three Braids rows and SoundFont's `file` row declare
+        // `ReadOnly`; SoundFont's `preset` declares `StructuralChoice`, so one
+        // detail surface carries both. A page marking a read-only row "in text
+        // or shape" reads that leaf, never this bool.
+        //
+        // WP03 left the fact on `patchPage` alone on the reasoning that it
+        // "already reaches the screen". It does not reach *this* screen: the
+        // webview consumes exactly the serde serialization of
+        // `SemanticGraphicalViewModel` (crest-spec
+        // `requirement.serialized_projection_transport`), and `patchPage`
+        // belongs to the StateTree observation, which no shipped surface
+        // paints. Without this leaf the declared "read-only marked in text or
+        // shape" rule is unrenderable (mission WP04).
         let detail_editable = false;
         let mut detail_controls = Vec::with_capacity(detail_paths.len());
         for path in detail_paths {
@@ -1682,6 +1726,7 @@ fn project_mixer_surfaces(
                     status: None,
                     error: None,
                     requested_value: None,
+                    patch_interaction: None,
                     valid_actions: Vec::new(),
                 }
             }
@@ -1722,6 +1767,7 @@ fn project_mixer_surfaces(
                     status: targeted.then(|| status.clone()),
                     error: error_for_path(errors, &path),
                     requested_value: None,
+                    patch_interaction: None,
                     valid_actions: Vec::new(),
                 }
             }
@@ -1749,6 +1795,7 @@ fn project_mixer_surfaces(
                     status: None,
                     error: None,
                     requested_value: None,
+                    patch_interaction: None,
                     valid_actions: Vec::new(),
                 }
             }
@@ -1803,6 +1850,7 @@ fn project_mixer_surfaces(
                     status: None,
                     error: None,
                     requested_value: None,
+                    patch_interaction: None,
                     valid_actions: Vec::new(),
                 }
             }
@@ -1886,6 +1934,7 @@ fn track_control(
         status: None,
         error: None,
         requested_value: None,
+        patch_interaction: None,
         valid_actions: Vec::new(),
     }
 }
@@ -1929,6 +1978,7 @@ fn control_from_parameter(
         editable: projection.editable,
         status: projection.status,
         requested_value: None,
+        patch_interaction: Some(spec.patch_interaction()),
         valid_actions: Vec::new(),
     }
 }
@@ -1953,6 +2003,7 @@ fn surface_root_control(
         status: None,
         error: None,
         requested_value: None,
+        patch_interaction: None,
         valid_actions: Vec::new(),
     }
 }

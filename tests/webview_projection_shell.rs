@@ -677,7 +677,7 @@ fn track_level_fractions(document: &Value, label: &str) -> Vec<(u64, f64)> {
         .map(|control| {
             (
                 control
-                    .pointer("/path/controlId/id/track_id")
+                    .pointer("/path/controlId/id/trackId")
                     .and_then(Value::as_u64)
                     .unwrap_or_else(|| panic!("{label}: every level control names its track")),
                 page_fraction(control),
@@ -734,7 +734,7 @@ fn assert_geometry_fixture_documents(document_a: &str, zero_document: &str, patc
 
     // Document A: the focused track sits at the review's hex-73 repro value.
     let focus_track = document_a
-        .pointer("/focusPath/controlId/id/track_id")
+        .pointer("/focusPath/controlId/id/trackId")
         .and_then(Value::as_u64)
         .expect("T011 default MIXER: the document focus path names a track");
     let default_levels = track_level_fractions(&document_a, "T011 default MIXER");
@@ -760,7 +760,7 @@ fn assert_geometry_fixture_documents(document_a: &str, zero_document: &str, patc
     // a strongly nonzero default — one document carries both cases.
     let zero_levels = track_level_fractions(&zero, "T011 zero-level MIXER");
     let zero_focus_track = zero
-        .pointer("/focusPath/controlId/id/track_id")
+        .pointer("/focusPath/controlId/id/trackId")
         .and_then(Value::as_u64)
         .expect("T011 zero-level MIXER: the document focus path names a track");
     let (_, zero_fraction) = zero_levels
@@ -2020,7 +2020,7 @@ fn assert_observation_structure(
         "{label}: the observation's focus identity must match the focused column"
     );
     let document_focus_track = document
-        .pointer("/focusPath/controlId/id/track_id")
+        .pointer("/focusPath/controlId/id/trackId")
         .and_then(Value::as_u64)
         .unwrap_or_else(|| panic!("{label}: the document focus path names a track"));
     assert_eq!(
@@ -2056,7 +2056,7 @@ fn assert_observation_structure(
                 .and_then(Value::as_str)
                 == Some("send")
                 && control
-                    .pointer("/path/controlId/id/track_id")
+                    .pointer("/path/controlId/id/trackId")
                     .and_then(Value::as_u64)
                     == Some(focused_track)
         })
