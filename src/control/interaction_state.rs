@@ -488,10 +488,15 @@ mod tests {
         let before = state.clone();
 
         // An Inspector path is not a main path, so it cannot be an origin.
-        let not_a_main_path =
-            FocusPath::mixer_send(MixerTrackId::default(), crate::mixer::bus_id::BusId::default());
+        let not_a_main_path = FocusPath::mixer_send(
+            MixerTrackId::default(),
+            crate::mixer::bus_id::BusId::default(),
+        );
         assert!(state.replace_return_origin(not_a_main_path).is_err());
-        assert_eq!(state, before, "a refused replacement leaves state identical");
+        assert_eq!(
+            state, before,
+            "a refused replacement leaves state identical"
+        );
         assert!(state.return_path().is_some());
         assert!(state.detail_invariant_holds());
     }

@@ -823,11 +823,11 @@ where
     }
 
     /// Returns the immutable capability metadata installed in canonical state.
-    pub const fn capabilities(&self) -> &CapabilityRegistry {
+    pub fn capabilities(&self) -> &CapabilityRegistry {
         self.state.capabilities()
     }
 
-    pub const fn effects(&self) -> &crate::synth::EffectCapabilityRegistry {
+    pub fn effects(&self) -> &crate::synth::EffectCapabilityRegistry {
         self.state.effects()
     }
 

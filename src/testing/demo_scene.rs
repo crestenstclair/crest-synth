@@ -1,3 +1,4 @@
+use crate::adapter::braids_capability::BRAIDS_FIXED_VOICES;
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::EventRejection;
 use crate::control::event_log::EventLog;
@@ -10,9 +11,7 @@ use crate::control::{
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
-use crate::adapter::braids_capability::BRAIDS_FIXED_VOICES;
 use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
-use crate::synth::voice_limit::VoiceLimit;
 use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::mixer::mixer_track_parameters::{
     MixerTrackParameter, MixerTrackParameterKind, MixerTrackParameters,
@@ -23,6 +22,7 @@ use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::instrument_capability::{CapabilityRegistry, ParameterValue};
 use crate::synth::patch::{Patch, PatchEditableTarget};
+use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
     EffectCapabilityRegistry, ParameterId, PatchInteraction, PostEffectConfig,
     VoiceEnvelopeParameter,
@@ -659,13 +659,16 @@ fn build_steps(
     push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.entered"));
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.returned"));
-    // The subordinate detail surface is deliberately absent from this scene.
-    // `SurfaceId::is_enterable` withholds `PatchDetail` from the admitted
-    // action vocabulary until WP03's detail projection (T015) exists, so a
-    // scene step entering it would be a refusal, not a demonstration. WP03
-    // restores the entered/returned pair here when it removes that gate; the
-    // reducer-seam proofs of entry, subject, exact return, and cross-switch
-    // behaviour live in `app_state`'s own tests in the meantime.
+    // The subordinate detail surface, entered and left through the same passive
+    // semantic action boundary as the two persistent sides. Return restores the
+    // exact origin, so the pair leaves the scene's focus where it found it and
+    // every following sweep still starts from the canonical PATCH row.
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::PatchDetail,
+    )));
+    push_checkpoint(&mut steps, DemoCheckpoint::new("surface.detail.entered"));
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+    push_checkpoint(&mut steps, DemoCheckpoint::new("surface.detail.returned"));
     push_key_press(&mut steps, WindowKey::Digit1);
 
     push_patch_output_control_steps(&mut steps, &patches[0], &mut boundary_probed);
@@ -1158,7 +1161,9 @@ fn push_patch_utility_scalar_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch
     )));
     push_key_press(steps, WindowKey::D);
     push_key_press(steps, WindowKey::A);
-    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(WindowKey::K)));
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
     push_checkpoint(
         steps,
         DemoCheckpoint::new(format!("patch.{}.global.restored", patch.id().value())),
@@ -1173,7 +1178,9 @@ fn push_patch_utility_scalar_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch
     )));
     push_key_press(steps, WindowKey::D);
     push_key_press(steps, WindowKey::A);
-    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(WindowKey::K)));
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
     push_checkpoint(
         steps,
         DemoCheckpoint::new(format!("patch.{}.midiInput.restored", patch.id().value())),
@@ -1187,7 +1194,9 @@ fn push_patch_utility_scalar_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch
     )));
     push_key_press(steps, WindowKey::A);
     push_key_press(steps, WindowKey::D);
-    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(WindowKey::K)));
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
     push_checkpoint(
         steps,
         DemoCheckpoint::new(format!("patch.{}.voiceLimit.restored", patch.id().value())),
@@ -1888,7 +1897,9 @@ fn push_voice_limit_restoration_steps(steps: &mut Vec<DemoSceneStep>, patch: &Pa
     for _ in 0..coarse_presses {
         push_key_press(steps, WindowKey::W);
     }
-    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(WindowKey::K)));
+    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
+        WindowKey::K,
+    )));
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     push_checkpoint(
         steps,
@@ -2258,12 +2269,12 @@ fn build_expected_coverage(
             }
             crate::control::app_event::AppEventSurfaceDescriptor::EnterSurface { surface } => {
                 expected.push("event.enterSurface".to_owned());
-                // Only an *admitted* surface can be exercised by a scene step.
-                // `SurfaceId::is_enterable` withholds `PatchDetail` until
-                // WP03's detail projection (T015) can render it, so expecting
-                // `surface.detail` would demand coverage the action vocabulary
-                // cannot produce. Removing that gate restores this expectation
-                // with no edit here.
+                // Only an *admitted* surface can be exercised by a scene step:
+                // expecting coverage the action vocabulary cannot produce would
+                // make the scene permanently incomplete. `SurfaceId::is_enterable`
+                // is the one predicate that decides admission, so this
+                // expectation follows the vocabulary automatically rather than
+                // being maintained beside it.
                 if surface.is_enterable() {
                     expected.push(format!("surface.{}", surface.label().to_ascii_lowercase()));
                 }

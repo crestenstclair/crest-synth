@@ -530,6 +530,19 @@ impl StateProjector {
         {
             return Err(StateProjectionError::InvalidSelection);
         }
+        // NFR-005, across the projections rather than within one of them. The
+        // semantic model already refuses to name two Patches internally; this
+        // is the other half — the model, the canonical snapshot it was derived
+        // from, and the PATCH page assembled beside it must all name the same
+        // one. A disagreement here is a projection set built from two accepted
+        // states, which is exactly the intermediate a patch switch must never
+        // produce.
+        let snapshot_patch = state.interaction.active_focus.patch_id();
+        if semantic.patch_identity() != snapshot_patch
+            || page.is_some_and(|page| Some(page.patch().id()) != snapshot_patch)
+        {
+            return Err(StateProjectionError::InvalidSelection);
+        }
         let status_label = semantic.status().label();
         let context_line = ShellContextLine::new("CREST SYNTH", context.label(), status_label);
         let action_hints = semantic
@@ -936,6 +949,42 @@ fn render_patch_text(
         }
     }
 
+    // The open detail entry, rendered from the same page value the graphical
+    // projection reads. A detail focus lands on a row that exists in exactly
+    // one place — Braids' detail rows are absent from its main order entirely —
+    // so without these lines a detail focus has nothing to select and the whole
+    // projection fails on an accepted state.
+    if let Some(detail) = page.detail() {
+        lines.push(format!(
+            " DETAIL {}",
+            serde_json::to_string(&DetailHeader {
+                subject: detail.subject(),
+                label: detail.label(),
+                status: detail.status(),
+            })
+            .map_err(|_| StateProjectionError::StateSerialization)?
+        ));
+        for section in detail.sections() {
+            lines.push(format!(
+                " DETAIL_SECTION id={} label={}",
+                section.id(),
+                section.label()
+            ));
+            for row in section.parameters().iter().filter(|row| row.visible()) {
+                let selected = row.control_id() == Some(page.focused_control_id());
+                if selected {
+                    selected_line = Some(lines.len());
+                }
+                let marker = if selected { '>' } else { ' ' };
+                lines.push(format!(
+                    "{marker} DETAIL_PARAMETER {}",
+                    serde_json::to_string(row)
+                        .map_err(|_| StateProjectionError::StateSerialization)?
+                ));
+            }
+        }
+    }
+
     let selected_line = selected_line.ok_or(StateProjectionError::InvalidSelection)?;
 
     Ok(TextProjection::for_context(
@@ -944,6 +993,16 @@ fn render_patch_text(
         selected_line,
         state_hash.to_owned(),
     ))
+}
+
+/// The detail entry's own header line: which capability filled the surface and
+/// what its lifecycle is doing, without a second copy of its schema.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailHeader<'a> {
+    subject: &'a crate::control::PatchDetailSubject,
+    label: &'a str,
+    status: crate::control::EngineSelectionStatusKind,
 }
 
 pub(crate) fn format_instrument_value(
@@ -1520,7 +1579,10 @@ mod tests {
                 assert_eq!(page.state_hash(), snapshot.hash());
                 assert_eq!(text.state_hash(), snapshot.hash());
                 assert_eq!(tree.state_hash(), snapshot.hash());
-                assert_eq!(text.selected_line(), focused_index + 2 + page.output().len());
+                assert_eq!(
+                    text.selected_line(),
+                    focused_index + 2 + page.output().len()
+                );
                 assert!(text
                     .body()
                     .lines()
