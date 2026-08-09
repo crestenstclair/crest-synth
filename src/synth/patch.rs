@@ -158,7 +158,10 @@ impl Patch {
         &self.instrument
     }
 
-    /// Returns the immutable MIDI channel assigned by the input adapter.
+    /// Returns the MIDI channel deciding which incoming part drives this Patch.
+    ///
+    /// Seeded at installation and thereafter editable through the reducer's
+    /// PATCH Utility MIDI-input row — see [`Self::set_channel`].
     pub const fn channel(&self) -> MidiChannel {
         self.channel
     }
@@ -330,6 +333,16 @@ impl Patch {
 
     pub(crate) fn set_envelope(&mut self, envelope: VoiceEnvelope) {
         self.envelope = envelope;
+    }
+
+    /// Re-targets which incoming MIDI part drives this Patch.
+    ///
+    /// The channel is already validated into `0..=15` by its own type, so
+    /// there is nothing left to refuse here. Uniqueness across installed
+    /// Patches is a collection-level rule the reducer owns, not one this
+    /// aggregate can see.
+    pub(crate) fn set_channel(&mut self, channel: MidiChannel) {
+        self.channel = channel;
     }
 
     pub(crate) fn set_instrument_config(&mut self, config: InstrumentConfig) {

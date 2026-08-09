@@ -480,7 +480,10 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
                 page.focused_control_id(),
                 PatchControlId::Envelope(parameter)
             );
-            assert_eq!(text.selected_line(), index + 5);
+            // The PatchMain rows follow the header, the identity line, and
+            // the projected Utility rows; derived so adding a Utility row
+            // moves this with it.
+            assert_eq!(text.selected_line(), 2 + page.output().len() + index + 1);
             assert_eq!(
                 text.body()
                     .lines()
@@ -511,7 +514,10 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
                 baseline,
                 "K+D/A/W/S must use the reducer's reversible fine/coarse steps"
             );
-            assert_eq!(text.selected_line(), 5);
+            // Attack is the first row after the header, identity line, and
+            // projected Utility rows.
+            let page = app_loop.current_patch_page().unwrap();
+            assert_eq!(text.selected_line(), 2 + page.output().len() + 1);
             assert_exactly_one_focused_row_is_the_scroll_target(&adjusted_document);
         }
     }
@@ -527,7 +533,9 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
         let text = app_loop.current_text();
         let page = app_loop.current_patch_page().unwrap();
         assert_eq!(page.focused_control_id(), PatchControlId::Engine);
-        assert_eq!(text.selected_line(), 4);
+        // The engine row opens the PatchMain order, directly after the header,
+        // the identity line, and the projected Utility rows.
+        assert_eq!(text.selected_line(), 2 + page.output().len());
         assert_exactly_one_focused_row_is_the_scroll_target(&engine_focus_document);
         assert_eq!(
             engine_focus_document
@@ -597,7 +605,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
             pending_text.state_hash()
         );
         assert_eq!(pending_tree["projection"]["body"], pending_text.body());
-        assert_eq!(pending_text.selected_line(), 4);
+        assert_eq!(pending_text.selected_line(), 2 + page.output().len());
         assert!(pending_text
             .body()
             .lines()

@@ -19,14 +19,15 @@ use crest_synth::adapter::production_instruments::{
 use crest_synth::control::event_record::{EmittedEvent, EventSource};
 use crest_synth::control::{
     AppEvent, AppLoop, AppState, Direction, EngineSelectionEffectKind, EngineSelectionFailure,
-    EngineSelectionRequestId, EngineSelectionStatusKind, EventRejection, SemanticAction,
-    StateProjector, StructuralEditIntent, TopLevelContext,
+    EngineSelectionRequestId, EngineSelectionStatusKind, EventRejection, PatchControlId,
+    SemanticAction, StateProjector, StructuralEditIntent, TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::bus_id::BusId;
 use crest_synth::mixer::global_parameters::GlobalParameters;
+use crest_synth::mixer::patch_output::PatchOutputParameter;
 use crest_synth::mixer::mixer_state::MixerState;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::mixer_track_parameters::MixerTrackParameters;
@@ -771,10 +772,16 @@ fn a_configured_chain_and_its_live_state_follow_the_patch_across_a_reroute() {
             EventSource::Keyboard,
         )
         .unwrap();
-    fixture
-        .app_loop
-        .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
-        .unwrap();
+    // Walk to the output-track row through the declared five-row Utility order
+    // rather than assuming it sits one step below the entry row.
+    for _ in 0..utility_rows_from_entry(&PatchControlId::Output(
+        PatchOutputParameter::OutputTrack,
+    )) {
+        fixture
+            .app_loop
+            .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
+            .unwrap();
+    }
     for _ in 0..5 {
         fixture
             .app_loop
@@ -1616,4 +1623,17 @@ fn the_occupancy_lifecycle_is_deterministic_across_two_runs() {
     let (second_audio, second_state) = run();
     assert_eq!(first_audio, second_audio);
     assert_eq!(first_state, second_state);
+}
+
+/// Returns how many downward steps separate the PATCH Utility entry row
+/// (TrimGain) from `control` in the one declared five-row order.
+fn utility_rows_from_entry(control: &PatchControlId) -> usize {
+    let order = PatchControlId::utility_surface_descriptor();
+    let index = |target: &PatchControlId| {
+        order
+            .iter()
+            .position(|candidate| candidate == target)
+            .expect("the declared Utility order hosts this row")
+    };
+    index(control) - index(&PatchControlId::Output(PatchOutputParameter::TrimGain))
 }

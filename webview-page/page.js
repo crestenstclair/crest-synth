@@ -58,12 +58,14 @@
   // authored order (utility_inspector_panel::DESIGNED_UTILITY_ENTRIES).
   // `driver: null` means the projection carries no identity for the entry at
   // all; it is marked explicitly unavailable rather than omitted or invented.
+  // All five entries are now driven: the reducer carries a canonical value and
+  // a focus identity for every row the design draws.
   var DESIGNED_UTILITY_ENTRIES = [
-    { label: "MASTER VOLUME", driver: null },
+    { label: "MASTER VOLUME", driver: "patch.global.masterGainDb" },
     { label: "PATCH VOLUME", driver: "patch.output.trimGainDb" },
-    { label: "MIDI INPUT", driver: null },
+    { label: "MIDI INPUT", driver: "patch.midiInput" },
     { label: "OUTPUT TRACK", driver: "patch.output.outputTrack" },
-    { label: "VOICE LIMIT", driver: null },
+    { label: "VOICE LIMIT", driver: "patch.voiceLimit" },
   ];
 
   // ---- pure helpers ------------------------------------------------------

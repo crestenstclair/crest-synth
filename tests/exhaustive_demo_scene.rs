@@ -117,6 +117,10 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             "context.patch".to_owned(),
             "interactionMode.adjust".to_owned(),
             "interactionMode.navigate".to_owned(),
+            // The subordinate PATCH detail surface: entered from a PatchMain
+            // row whose control resolves a subject, and left through its exact
+            // remembered origin.
+            "surface.detail".to_owned(),
             "surface.inspector".to_owned(),
             "surface.utility".to_owned(),
         ]

@@ -285,6 +285,26 @@ impl LiveTopologyTransition {
 /// state. The base sixteen-track scene supplies the fixture preconditions:
 /// exactly three registry entries with the startup chorus occupying the first
 /// Patch's first slot, and every other Patch's slot grid empty.
+/// Returns how many downward steps separate the PATCH Utility entry row from
+/// `control` in the one declared five-row order.
+///
+/// Entering PatchUtility focuses `Output(TrimGain)`; deriving the distance
+/// keeps this scene walking the declared order instead of assuming adjacency,
+/// so inserting a row moves the scene with it rather than silently leaving it
+/// adjusting a neighbour.
+fn utility_rows_below_entry(control: &PatchControlId) -> usize {
+    let order = PatchControlId::utility_surface_descriptor();
+    let index = |target: &PatchControlId| {
+        order
+            .iter()
+            .position(|candidate| candidate == target)
+            .expect("the scene only walks declared Utility rows")
+    };
+    index(control)
+        .checked_sub(index(&PatchControlId::Output(PatchOutputParameter::TrimGain)))
+        .expect("the scene walks the declared Utility order downward")
+}
+
 pub fn from_installed_state(tree: &StateTree) -> Result<LiveDemoScene, LiveDemoSceneError> {
     let base = LiveDemoScene::from_installed_state(tree)?;
     let state = decode_state_tree(tree)?;
@@ -836,13 +856,23 @@ pub fn from_installed_state(tree: &StateTree) -> Result<LiveDemoScene, LiveDemoS
                 LiveTopologySupport::Event {
                     event: AppEvent::EnterSurface(SurfaceId::PatchUtility),
                 },
-                LiveTopologySupport::Event {
+            ]
+            .into_iter()
+            // Walk to the output-track row through the declared five-row
+            // Utility order rather than assuming it sits one step below the
+            // entry row: MIDI input is seated between the two.
+            .chain(
+                std::iter::repeat_with(|| LiveTopologySupport::Event {
                     event: AppEvent::Navigate(Direction::Down),
-                },
-                LiveTopologySupport::VerifyPatchFocus {
-                    control: PatchControlId::Output(PatchOutputParameter::OutputTrack),
-                },
-            ],
+                })
+                .take(utility_rows_below_entry(&PatchControlId::Output(
+                    PatchOutputParameter::OutputTrack,
+                ))),
+            )
+            .chain(std::iter::once(LiveTopologySupport::VerifyPatchFocus {
+                control: PatchControlId::Output(PatchOutputParameter::OutputTrack),
+            }))
+            .collect::<Vec<_>>(),
             vec![
                 LiveTopologySupport::Event {
                     event: AppEvent::Adjust(Direction::Left),

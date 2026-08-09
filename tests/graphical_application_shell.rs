@@ -972,14 +972,18 @@ fn patch_utility_controls_dispatch_through_the_same_semantic_callback() {
         app_loop.patches()[0].output()
     );
     let semantic = app_loop.current_semantic_model();
-    let trim_control = &semantic
+    // Found by identity, not by position: the Utility panel declares five rows
+    // and master volume is seated above trim, so an index here would silently
+    // assert against a different control.
+    let trim_id = SemanticControlId::Patch(PatchControlId::Output(PatchOutputParameter::TrimGain));
+    let trim_control = semantic
         .surface(SurfaceId::PatchUtility)
         .unwrap()
-        .controls()[0];
-    assert_eq!(
-        trim_control.path().control_id(),
-        &SemanticControlId::Patch(PatchControlId::Output(PatchOutputParameter::TrimGain))
-    );
+        .controls()
+        .iter()
+        .find(|control| control.path().control_id() == &trim_id)
+        .expect("the Utility panel carries the canonical trim row");
+    assert_eq!(trim_control.path().control_id(), &trim_id);
     assert_eq!(
         trim_control.value(),
         &SemanticControlValue::Scalar(expected_trim as f64)

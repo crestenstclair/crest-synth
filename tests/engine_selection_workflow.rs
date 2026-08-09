@@ -201,7 +201,6 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         MidiChannel::new(1).unwrap(),
         PatchOutput::new(MixerTrackId::new(1).unwrap(), -3.0).unwrap(),
     );
-    let untargeted_before = untargeted_patch.clone();
     let mut state = AppState::for_graph(registry.clone(), globals(), GraphRevision::INITIAL);
     state
         .apply(AppEvent::InstallPatches(vec![
@@ -215,6 +214,17 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
             untargeted_patch,
         ]))
         .unwrap();
+    // Captured from installed state, not from the pre-installation value:
+    // installation seeds each Patch's voice limit from its own engine's
+    // declared ceiling, so a Braids Patch legitimately differs from what
+    // `Patch::new` built. What this observation is about is that the engine
+    // swap leaves the untargeted Patch alone — not that installation does.
+    let untargeted_before = state
+        .patches()
+        .iter()
+        .find(|patch| patch.id() == PatchId::new(2).unwrap())
+        .expect("the untargeted Patch is installed")
+        .clone();
 
     let initial_transport =
         ParameterSnapshot::new(0, globals(), MixerState::default(), &[]).unwrap();
