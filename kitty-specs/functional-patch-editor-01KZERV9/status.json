@@ -1,7 +1,7 @@
 {
-  "event_count": 24,
-  "last_event_id": "01KZJEAF5P5G6MR60179HEQ4W1",
-  "materialized_at": "2026-08-09T05:00:56.374292+00:00",
+  "event_count": 25,
+  "last_event_id": "01KZJEEEKX5EJVZVVYNH80NZXR",
+  "materialized_at": "2026-08-09T05:03:06.877385+00:00",
   "mission_number": "",
   "mission_slug": "functional-patch-editor-01KZERV9",
   "mission_type": "software-dev",
@@ -11,9 +11,9 @@
     "canceled": 0,
     "claimed": 0,
     "done": 0,
-    "for_review": 1,
+    "for_review": 0,
     "in_progress": 0,
-    "in_review": 0,
+    "in_review": 1,
     "planned": 3
   },
   "work_packages": {
@@ -78,14 +78,17 @@
       "agent_profile": "__resolved_profile_absent__",
       "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
-      "lane": "for_review",
-      "last_event_id": "01KZJEAF5P5G6MR60179HEQ4W1",
-      "last_transition_at": "2026-08-09T05:00:56.374292+00:00",
+      "lane": "in_review",
+      "last_event_id": "01KZJEEEKX5EJVZVVYNH80NZXR",
+      "last_transition_at": "2026-08-09T05:03:06.877385+00:00",
       "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: per-row validActions from the one resolver over a counterfactual focus; requestedValue from the correlated lifecycle only (including the voice-limit narrowing, consuming VoiceLimitCarryOver); the PatchDetail entry gate fully removed and verified on a Braids Patch through the passive boundary; authored labels guarded by a serialization-key set across all five surfaces; one-Patch-identity and one-generation checks; retire()'s de-dup guard proved and falsified. Registries shared behind Arc to make per-row availability affordable (measured). Suite green 29/29, clippy clean, fmt clean."
+      ],
       "provider": "__resolved_provider_absent__",
-      "role": "implementer",
-      "shell_pid": 12527,
-      "shell_pid_created_at": "1786247597.663303",
+      "role": "reviewer",
+      "shell_pid": 57564,
+      "shell_pid_created_at": "1786251785.932653",
       "subtasks": {
         "T013": "done",
         "T014": "done",
