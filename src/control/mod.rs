@@ -17,7 +17,9 @@ pub mod text_projection;
 pub mod top_level_context;
 
 pub use app_event::{AppEvent, AppEventPayloadShape, AppEventSurfaceDescriptor, Direction};
-pub use app_state::{AppState, ApplyOutcome, EventRejection, StateAccepted};
+pub use app_state::{
+    AppState, ApplyOutcome, EventRejection, SemanticActionAvailability, StateAccepted,
+};
 pub use engine_selection::{
     EngineSelectionCorrelation, EngineSelectionEffect, EngineSelectionEffectKind,
     EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionRequestIdError,

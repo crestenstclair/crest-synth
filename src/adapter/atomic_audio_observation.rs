@@ -76,6 +76,12 @@ struct AtomicObservationFields {
     commands_consumed: AtomicU64,
     active_notes: AtomicU32,
     routing_failures: AtomicU64,
+    /// WP01's refusal counter. Without this field the callback's count
+    /// is published into `AudioObservationSnapshot` and then discarded by
+    /// this transport, so every control-side reader sees 0 — a witness
+    /// predicate that cannot pass for reasons unrelated to whether the
+    /// voice limit works.
+    voice_limit_refusals: AtomicU64,
     last_unknown_patch_id: AtomicU32,
     primary_patch_id: AtomicU32,
     primary_patch_rms: AtomicU32,
@@ -110,6 +116,7 @@ impl AtomicObservationFields {
             commands_consumed: AtomicU64::new(initial.commands_consumed()),
             active_notes: AtomicU32::new(initial.active_notes()),
             routing_failures: AtomicU64::new(initial.routing_failures()),
+            voice_limit_refusals: AtomicU64::new(initial.voice_limit_refusals()),
             last_unknown_patch_id: AtomicU32::new(
                 initial
                     .last_unknown_patch_id()
@@ -171,6 +178,8 @@ impl AtomicObservationFields {
             .store(snapshot.active_notes(), Ordering::Relaxed);
         self.routing_failures
             .store(snapshot.routing_failures(), Ordering::Relaxed);
+        self.voice_limit_refusals
+            .store(snapshot.voice_limit_refusals(), Ordering::Relaxed);
         self.last_unknown_patch_id.store(
             snapshot
                 .last_unknown_patch_id()
@@ -293,7 +302,8 @@ impl AtomicObservationFields {
                     f32::from_bits(self.wet_output_rms.load(Ordering::Relaxed)),
                     self.non_finite_samples.load(Ordering::Relaxed),
                     self.clipped_samples.load(Ordering::Relaxed),
-                );
+                )
+                .with_voice_limit_refusals(self.voice_limit_refusals.load(Ordering::Relaxed));
             let after = self.version.load(Ordering::Acquire);
             if before == after {
                 return snapshot;
@@ -337,6 +347,19 @@ mod tests {
                 sequence,
             ),
         )
+        .with_voice_limit_refusals(sequence * 2)
+    }
+
+    #[test]
+    fn the_transport_carries_the_voice_limit_refusal_count() {
+        // Falsification for T035 step 0: before this field existed the
+        // callback's refusal count was published into the snapshot and then
+        // dropped here, so this assertion read 0 for any input.
+        let observation = AtomicAudioObservation::default();
+        let (mut writer, reader) = observation.into_handles();
+        assert_eq!(reader.read_latest_on_control().voice_limit_refusals(), 0);
+        writer.publish_from_callback(snapshot(9));
+        assert_eq!(reader.read_latest_on_control().voice_limit_refusals(), 18);
     }
 
     #[test]
@@ -372,6 +395,7 @@ mod tests {
                 crate::real_time::GraphRevision::INITIAL
             );
             assert_eq!(latest.routing_failures(), sequence);
+            assert_eq!(latest.voice_limit_refusals(), sequence * 2);
             assert_eq!(
                 latest
                     .last_unknown_patch_id()

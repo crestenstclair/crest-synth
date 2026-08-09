@@ -1,6 +1,7 @@
 use crate::control::{
     AppState, EventRejection, FocusCapabilityId, FocusPath, MixerControlId, PatchControlId,
-    PatchDetailSubject, SemanticAction, SemanticControlId, SurfaceId, ValidAction,
+    PatchDetailSubject, SemanticAction, SemanticActionAvailability, SemanticControlId, SurfaceId,
+    ValidAction,
 };
 use crate::kernel::PatchId;
 use crate::mixer::bus_id::BusId;
@@ -384,10 +385,17 @@ impl<'a> SemanticResolver<'a> {
 
     /// Returns the ordered duplicate-free action set accepted by the exact
     /// current reducer state.
+    ///
+    /// The sweep reuses one scratch state rather than cloning twice per
+    /// question (see [`SemanticActionAvailability`]). The question asked is
+    /// bit-for-bit the one [`AppState::accepts_semantic_action`] asks —
+    /// literally the same code — so the per-row answer still cannot drift from
+    /// the production reducer.
     pub fn valid_actions(&self) -> Vec<ValidAction> {
+        let mut availability = SemanticActionAvailability::new(self.state);
         SemanticAction::surface_descriptor()
             .iter()
-            .filter(|action| self.state.accepts_semantic_action(action))
+            .filter(|action| availability.accepts(action))
             .cloned()
             .map(|action| {
                 let (label, hint) = action_presentation(&action);
