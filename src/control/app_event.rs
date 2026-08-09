@@ -134,7 +134,7 @@ pub enum AppEventSurfaceDescriptor {
     },
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 26] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 27] = [
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
@@ -179,6 +179,9 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 26] = [
     },
     AppEventSurfaceDescriptor::EnterSurface {
         surface: SurfaceId::PatchUtility,
+    },
+    AppEventSurfaceDescriptor::EnterSurface {
+        surface: SurfaceId::PatchDetail,
     },
     AppEventSurfaceDescriptor::EnterSurface {
         surface: SurfaceId::MixerInspector,
@@ -523,7 +526,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 26);
+        assert_eq!(descriptor.len(), 27);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
@@ -548,7 +551,11 @@ mod tests {
         for mode in InteractionMode::PHASE_TWO {
             assert!(descriptor.contains(&AppEventSurfaceDescriptor::SetInteractionMode { mode }));
         }
-        for surface in [SurfaceId::PatchUtility, SurfaceId::MixerInspector] {
+        for surface in [
+            SurfaceId::PatchUtility,
+            SurfaceId::PatchDetail,
+            SurfaceId::MixerInspector,
+        ] {
             assert!(descriptor.contains(&AppEventSurfaceDescriptor::EnterSurface { surface }));
         }
         assert!(descriptor.contains(&AppEventSurfaceDescriptor::Return));

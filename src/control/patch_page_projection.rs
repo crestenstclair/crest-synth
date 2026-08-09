@@ -7,6 +7,7 @@ use crate::control::{
 use crate::kernel::{MidiChannel, PatchId};
 use crate::mixer::patch_output::{PatchOutputParameter, PatchOutputParameterKind};
 use crate::real_time::GraphRevision;
+use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::instrument_capability::{
     AssetReference, ParameterChoice, ParameterDefault, ParameterKind, ParameterRange,
     ParameterUpdate, ParameterValue, PatchInteraction,
@@ -183,6 +184,78 @@ impl PatchPageOutputRow {
             unit: descriptor.unit().map(str::to_owned),
             editable: true,
         }
+    }
+
+    /// Projects one PATCH Utility row that is not an output parameter.
+    ///
+    /// Master gain reads the one canonical global descriptor and the one
+    /// canonical value — PATCH holds no copy — while MIDI input and the voice
+    /// limit read the focused Patch's own. Every bound and step comes from the
+    /// same descriptor the reducer edits through.
+    fn for_utility_control(
+        control: &PatchControlId,
+        patch: &crate::synth::patch::Patch,
+        global: &crate::mixer::global_parameters::GlobalParameters,
+    ) -> Option<Self> {
+        let row = match control {
+            PatchControlId::Output(parameter) => {
+                return Some(Self::for_parameter(*parameter, patch.output()))
+            }
+            PatchControlId::Global(parameter) => {
+                let descriptor = parameter.descriptor();
+                Self {
+                    control_id: control.clone(),
+                    id: descriptor.name().to_owned(),
+                    label: descriptor.name().to_owned(),
+                    kind: "continuous".to_owned(),
+                    scalar_value: Some(global.master_gain_db()),
+                    choice_value: None,
+                    minimum: Some(descriptor.minimum()),
+                    maximum: Some(descriptor.maximum()),
+                    fine_step: Some(descriptor.fine_step()),
+                    coarse_step: Some(descriptor.coarse_step()),
+                    unit: None,
+                    editable: true,
+                }
+            }
+            PatchControlId::MidiInput => Self {
+                control_id: control.clone(),
+                id: "midiInput".to_owned(),
+                label: "MIDI Input".to_owned(),
+                kind: "choice".to_owned(),
+                scalar_value: None,
+                choice_value: Some(patch.channel().value().to_string()),
+                minimum: Some(f32::from(MidiChannel::MIN)),
+                maximum: Some(f32::from(MidiChannel::MAX)),
+                fine_step: Some(1.0),
+                coarse_step: Some(1.0),
+                unit: None,
+                editable: true,
+            },
+            PatchControlId::VoiceLimit => {
+                let descriptor = VoiceLimit::descriptor();
+                Self {
+                    control_id: control.clone(),
+                    id: descriptor.name().to_owned(),
+                    label: descriptor.label().to_owned(),
+                    kind: "stepped".to_owned(),
+                    scalar_value: Some(f32::from(patch.voice_limit().value())),
+                    choice_value: None,
+                    minimum: Some(f32::from(descriptor.minimum())),
+                    maximum: Some(f32::from(descriptor.maximum())),
+                    fine_step: Some(f32::from(descriptor.fine_step())),
+                    coarse_step: Some(f32::from(descriptor.coarse_step())),
+                    unit: descriptor.unit().map(str::to_owned),
+                    editable: true,
+                }
+            }
+            PatchControlId::Engine
+            | PatchControlId::Envelope(_)
+            | PatchControlId::Capability(_)
+            | PatchControlId::EffectSlot(_)
+            | PatchControlId::Effect(..) => return None,
+        };
+        Some(row)
     }
 
     pub(crate) fn selected_text(
@@ -880,7 +953,20 @@ impl PatchPageProjection {
             .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
         crate::control::app_state::validate_effect_slots(state.effects(), patch.effect_slots())
             .map_err(|_| PatchPageProjectionError::InvalidEffectConfig)?;
-        let resolved_controls = if matches!(focused_control_id, PatchControlId::Output(_)) {
+        // Which order the focused row belongs to is decided by the one
+        // Utility/PatchMain split, so a new Utility row cannot fall through to
+        // the main order and read as an invalid config.
+        //
+        // A focus on the subordinate detail surface belongs to *neither* order
+        // — it is the open subject's own order — and this check rejects it.
+        // That is deliberate and it is why `SurfaceId::is_enterable` withholds
+        // `PatchDetail` from the offered action vocabulary: nothing here
+        // projects a detail surface yet, and the text projection has no
+        // selected line for a detail row either, so a detail focus is not a
+        // projectable state. WP03's T015 owns making it one — page rows, this
+        // containment check, and the text projection's selected line together —
+        // and removing the entry gate is part of the same change.
+        let resolved_controls = if focused_control_id.is_utility() {
             PatchControlId::utility_surface_descriptor().to_vec()
         } else {
             state
@@ -900,9 +986,13 @@ impl PatchPageProjection {
                 label: descriptor.label().to_owned(),
             })
             .collect();
-        let output = PatchOutputParameter::ALL
-            .into_iter()
-            .map(|parameter| PatchPageOutputRow::for_parameter(parameter, patch.output()))
+        // The five declared Utility rows, in the one declared order, so every
+        // focusable Utility row has a projected row to be selected on.
+        let output = PatchControlId::utility_surface_descriptor()
+            .iter()
+            .filter_map(|control| {
+                PatchPageOutputRow::for_utility_control(control, patch, state.global())
+            })
             .collect();
         let engine_selection = state.engine_selection();
         let correlation = engine_selection.correlation();

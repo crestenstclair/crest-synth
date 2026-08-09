@@ -117,6 +117,10 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             "context.patch".to_owned(),
             "interactionMode.adjust".to_owned(),
             "interactionMode.navigate".to_owned(),
+            // `surface.detail` is absent: `SurfaceId::is_enterable` withholds
+            // `PatchDetail` from the admitted action vocabulary until WP03's
+            // detail projection (T015) can render it, so the scene has no
+            // accepted step that enters it. WP03 restores this entry.
             "surface.inspector".to_owned(),
             "surface.utility".to_owned(),
         ]

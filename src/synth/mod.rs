@@ -39,7 +39,7 @@ pub use instrument_capability::{
 pub use instrument_capability_provider::InstrumentCapabilityProvider;
 pub use instrument_composition::{compose_instrument_registry, InstrumentCompositionError};
 pub use instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
-pub use patch::{resolve_patch_editable_targets, Patch, PatchEditableTarget};
+pub use patch::{resolve_patch_editable_targets, Patch, PatchEditableTarget, VoiceLimitCarryOver};
 pub use prepared_engine_rack_builder::{PreparedEngineRackBuilder, RackPreparationError};
 pub use prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
 pub use prepared_post_effect::{PreparedEffectError, PreparedPostEffect};
@@ -49,6 +49,7 @@ pub use prepared_post_effect_rack_builder::{
 pub mod sound_font_instrument;
 pub mod voice_envelope;
 pub mod voice_envelope_state;
+pub mod voice_limit;
 pub use parameter_id::ParameterId;
 pub use sound_font_preset::{
     SoundFontPresetCatalog, SoundFontPresetCatalogEntry, SoundFontPresetCatalogError,
@@ -58,3 +59,7 @@ pub use voice_envelope::{
     VoiceEnvelope, VoiceEnvelopeError, VoiceEnvelopeParameter, VoiceEnvelopeParameterDescriptor,
 };
 pub use voice_envelope_state::{VoiceEnvelopeStage, VoiceEnvelopeState};
+pub use voice_limit::{
+    VoiceLimit, VoiceLimitDescriptor, VoiceLimitError, ENGINE_MANAGED_POLYPHONY_CEILING,
+    VOICE_LIMIT_FIELD,
+};

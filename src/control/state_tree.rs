@@ -180,9 +180,20 @@ struct MidiTreeTemplate {
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
     ///
+    /// Version 14: `interaction` gained the `detailSubject` leaves. The
+    /// subject decides what the detail surface shows, so a trace that cannot
+    /// show which capability a detail surface was opened on cannot correlate a
+    /// detail interaction with its consequence — the same reason `voiceLimit`
+    /// was enumerated in version 13.
+    ///
+    /// Version 13: `parameters.patches[]` gained the `voiceLimit` leaf. A
+    /// canonical value that crosses the real-time boundary and changes what is
+    /// audible must be visible in the trace, or no measured proof can
+    /// correlate a refused note with the limit that refused it.
+    ///
     /// Version 12: the six retired reverb/delay `global` leaves are gone —
     /// return-owned state travels as the indexed top-level `returns` section.
-    pub const SCHEMA_VERSION: u32 = 12;
+    pub const SCHEMA_VERSION: u32 = 14;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -197,6 +208,7 @@ impl StateTree {
         "interaction.rememberedMixerMain",
         "interaction.mode",
         "interaction.returnPath",
+        "interaction.detailSubject",
         "engineSelection.kind",
         "engineSelection.activeGraphRevision",
         "engineSelection.correlation",
@@ -350,6 +362,14 @@ impl StateTree {
         "interaction.returnPath.origin.modalId",
         "interaction.returnPath.enteredSurface",
         "interaction.returnPath",
+        // The open detail surface's subject: `null` with no entry open, and
+        // otherwise the subject's own leaves. `slot_id` belongs to the
+        // `Effect` variant alone, so a tree that only ever opens an instrument
+        // detail entry cannot discover it.
+        "interaction.detailSubject",
+        "interaction.detailSubject.kind",
+        "interaction.detailSubject.capability_id",
+        "interaction.detailSubject.slot_id",
         "engineSelection.kind",
         "engineSelection.activeGraphRevision",
         "engineSelection.correlation",
@@ -495,6 +515,7 @@ impl StateTree {
         "parameters.patches[].envelope.decayMilliseconds",
         "parameters.patches[].envelope.sustain",
         "parameters.patches[].envelope.releaseMilliseconds",
+        "parameters.patches[].voiceLimit",
         "parameters.patches[].instrument.count",
         "parameters.patches[].instrument.values[]",
         "parameters.patches[].effects[].active",
@@ -548,6 +569,10 @@ impl StateTree {
                 "interaction.activeFocus.modalId",
                 "interaction.activeFocus.patchId",
                 "interaction.activeFocus.surface",
+                "interaction.detailSubject",
+                "interaction.detailSubject.capability_id",
+                "interaction.detailSubject.kind",
+                "interaction.detailSubject.slot_id",
                 "interaction.mode",
                 "interaction.rememberedMixerMain.capabilityId",
                 "interaction.rememberedMixerMain.context",
@@ -895,12 +920,21 @@ impl PartialEq for StateTree {
 
 impl MidiTreeTemplate {
     fn from_json(json: &str, generation: u64, state_hash: &str) -> Option<Self> {
-        const ROOT_MARKER: &str = "{\"schemaVersion\":12,\"generation\":";
+        // The version is read out of the document and checked, not pinned as a
+        // literal whose *length* silently drives every offset below it. A
+        // pinned "12" kept working at 13 only because both are two digits.
+        const ROOT_PREFIX: &str = "{\"schemaVersion\":";
+        const GENERATION_KEY: &str = ",\"generation\":";
         const SHELL_MARKER: &str = "\"graphicalShell\":{\"generation\":";
         const SEMANTIC_MARKER: &str = "\"semanticModel\":{\"generation\":";
         const PARAMETER_MARKER: &str = "\"parameters\":{\"generation\":";
 
-        let root_start = ROOT_MARKER.len();
+        let after_prefix = json.strip_prefix(ROOT_PREFIX)?;
+        let version_end = after_prefix.find(GENERATION_KEY)?;
+        if after_prefix.get(..version_end)?.parse::<u32>().ok()? != StateTree::SCHEMA_VERSION {
+            return None;
+        }
+        let root_start = ROOT_PREFIX.len() + version_end + GENERATION_KEY.len();
         let root_end = json.get(root_start..)?.find(',')? + root_start;
         if json.get(root_start..root_end)?.parse::<u64>().ok()? != generation {
             return None;
@@ -1573,7 +1607,8 @@ mod tests {
                     "modalId": null
                 },
                 "mode": "navigate",
-                "returnPath": null
+                "returnPath": null,
+                "detailSubject": null
             })
         );
         assert_eq!(
@@ -1615,6 +1650,10 @@ mod tests {
                     "sustain": 1.0,
                     "releaseMilliseconds": 0.0
                 },
+                // The canonical per-Patch ceiling rides the snapshot beside
+                // the envelope and is published here, so a measured proof can
+                // correlate a refused note with the limit that refused it.
+                "voiceLimit": 64,
                 "instrument": {"count": 0, "values": []},
                 "effects": [inactive_effect.clone(), inactive_effect.clone(), inactive_effect],
                 "output": {
@@ -1649,9 +1688,10 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(first.json(), second.json());
-        assert!(first
-            .json()
-            .starts_with("{\"schemaVersion\":12,\"generation\":42,\"capabilities\":"));
+        assert!(first.json().starts_with(&format!(
+            "{{\"schemaVersion\":{},\"generation\":42,\"capabilities\":",
+            StateTree::SCHEMA_VERSION
+        )));
         assert_eq!(first.clone().into_json(), first.json());
     }
 
