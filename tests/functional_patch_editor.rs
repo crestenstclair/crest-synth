@@ -1283,11 +1283,15 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
 /// hoisted just the same, were the declaration the page called, and were
 /// measured MISSED: `function controlIdOf (control)` with a space before the
 /// paren, `function  controlIdOf(control)` with two after the keyword, and the
-/// same declaration written at file scope. So the count is now over shape —
-/// `function`, any whitespace, this exact name, any whitespace, `(` — and all
-/// three fail. Locating the body still needs the literal, so the sole
-/// declaration respelled fails at the `find` below rather than being read from
-/// the wrong offset.
+/// same declaration written at file scope. The first of those is the one that
+/// decides it — the page's own `stripGroups`, run against a five-row fixture
+/// under it, folds every row into `?group` and leaves every designed group
+/// empty, which is T030's whole claim. The same trick on `stripGroupKey` was
+/// MISSED too, so this is the anchor and not one function. The count is over shape
+/// — `function`, any whitespace, this exact name, any whitespace, `(` — and all
+/// four fail. Locating the body still needs the literal, so the sole declaration
+/// respelled fails at the `find` below rather than being read from the wrong
+/// offset.
 ///
 /// The **end** is the first two-space-indented `}`, which is this function's own
 /// closer only while no inner brace sits at that column. Dedenting one is
@@ -1404,7 +1408,8 @@ fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
 /// between `function`, the name and `(`, at any indentation, is counted; and
 /// the brace count runs over the comment-stripped body, the same text this loop
 /// reads, so a `}` typed into a comment can no longer rebalance a truncated
-/// slice. Four mutations that were MISSED are CAUGHT.
+/// slice. Five mutations that were measured MISSED are CAUGHT: four second
+/// declarations, across two different walked functions, and the comment brace.
 ///
 /// They are text scans and not a parser, and what that leaves is not a smaller
 /// version of the same hunt but one more instance of the residue below.
