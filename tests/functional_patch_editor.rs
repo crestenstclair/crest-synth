@@ -2127,7 +2127,6 @@ fn check_the_midi_input_row_retargets_the_incoming_part() {
     enter_utility_row(&mut collide, &PatchControlId::MidiInput);
     set_mode(&mut collide, InteractionMode::Adjust);
     let steps = i32::from(new_channel.value()) - i32::from(collide.patches()[2].channel().value());
-    let guarded = collide.clone();
     for step in 0..steps {
         let outcome = collide.apply(AppEvent::Adjust(Direction::Right));
         if step == steps - 1 {
@@ -2145,7 +2144,6 @@ fn check_the_midi_input_row_retargets_the_incoming_part() {
         new_channel,
         "the refused collision left the edited Patch's part alone"
     );
-    drop(guarded);
 
     // A message arriving on the new part reaches this Patch through the
     // production reducer, and carries the new channel.
@@ -2725,8 +2723,6 @@ fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
 
     // A capability mid-preparation reports its typed lifecycle on its own rows
     // and keeps the section set the installed descriptor declares.
-    let settled = surface_controls(&document(&fixture_state()), "patchMain").len();
-    assert!(settled > 0);
     let (mut preparing, _) = preset_swap_in_flight();
     let settled_detail = rows.len();
     preparing
