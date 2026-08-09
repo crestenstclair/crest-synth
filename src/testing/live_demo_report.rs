@@ -982,6 +982,25 @@ impl LiveEffectsAndBusesEvidence {
     }
 }
 
+/// Whether this scene is the one that declares the effects-and-buses phase, and
+/// so the one whose topology checkpoints are graded against the eight-destination
+/// bus contract (mission finding F-49).
+///
+/// The gate is load-bearing in both directions and is pinned as such, because a
+/// regression in it is silent rather than loud:
+///
+/// - Narrowed (a renamed or never-matching literal), the effects-and-buses
+///   evidence block vanishes from that scene's report *and takes its `complete`
+///   requirement with it* — the report still says complete, having stopped
+///   asking.
+/// - Widened (any always-true rule), every other scene that reuses the topology
+///   machinery for its own journey — the functional Patch editor's effect-slot
+///   occupancy walk above all — is graded against a bus contract it never
+///   claimed to meet, and reports a shortfall in something it does not do.
+fn scene_declares_the_effects_and_buses_phase(scene: &str) -> bool {
+    scene == crate::testing::EFFECTS_AND_BUSES_SCENE_NAME
+}
+
 fn measure_effects_and_buses(
     checkpoints: &[LiveCheckpoint],
     dsp: &LiveMixerDspEvidence,
@@ -1208,12 +1227,7 @@ impl LiveDemoReport {
             &graphical_shell,
             runtime_audio,
         );
-        // Effects-and-buses evidence is measured for the scene that declares
-        // the effects-and-buses phase. Other scenes reuse the same topology
-        // machinery for their own journeys; grading their checkpoints against
-        // the eight-destination bus contract would report a shortfall in
-        // something they never claimed to do.
-        let effects_and_buses = (scene == crate::testing::EFFECTS_AND_BUSES_SCENE_NAME)
+        let effects_and_buses = scene_declares_the_effects_and_buses_phase(&scene)
             .then(|| measure_effects_and_buses(&checkpoints, &LiveMixerDspEvidence::measure()))
             .flatten();
         let lossless = event_log.dropped_records() == 0
@@ -2076,8 +2090,8 @@ impl std::error::Error for LiveDemoReportError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        measure_effects_and_buses, LiveDemoCoverage, LiveEffectsAndBusesEvidence,
-        LiveMixerRoutingEvidence, TRACK_PARAMETER_CLASSES,
+        measure_effects_and_buses, scene_declares_the_effects_and_buses_phase, LiveDemoCoverage,
+        LiveEffectsAndBusesEvidence, LiveMixerRoutingEvidence, TRACK_PARAMETER_CLASSES,
     };
     use crate::control::event_record::EventOutcome;
     use crate::control::{EngineSelectionRequestId, SemanticAction};
@@ -2275,6 +2289,57 @@ mod tests {
             callback_allocations: 0,
             callback_destructions: 0,
         }
+    }
+
+    /// F-49's gate, pinned in both directions against the shipped scene names.
+    ///
+    /// Both mutations were run rather than argued, and they are not symmetric:
+    ///
+    /// - **Narrowed** to a never-matching literal, `tests/effects_and_buses.rs`
+    ///   already fails ("the cumulative scene retains effects-and-buses
+    ///   evidence"). That direction was covered before this test existed — by
+    ///   the suite that owns the phase, which is why a sweep over the lib,
+    ///   topology, mixer and shell suites misses it.
+    /// - **Widened** to always-true, nothing failed: the `effects_and_buses`,
+    ///   `live_demo_scene`, `topology_change_lifecycle` and
+    ///   `live_patch_editor_scene` suites all stayed green. That is the gap
+    ///   this test closes, and it is the direction that would break *this*
+    ///   package's scene.
+    #[test]
+    fn effects_and_buses_evidence_is_gated_to_the_scene_that_declares_the_phase() {
+        assert!(scene_declares_the_effects_and_buses_phase(
+            crate::testing::EFFECTS_AND_BUSES_SCENE_NAME
+        ));
+        assert!(!scene_declares_the_effects_and_buses_phase(
+            crate::testing::live_patch_editor_scene::PATCH_EDITOR_SCENE_NAME
+        ));
+        assert!(!scene_declares_the_effects_and_buses_phase(
+            "sixteen-track-mixer-routing-live-demo"
+        ));
+        assert!(!scene_declares_the_effects_and_buses_phase(""));
+    }
+
+    /// Why the gate above is load-bearing rather than tidy, executed rather
+    /// than argued: a scene that reuses the topology machinery for its own
+    /// journey — the functional Patch editor's effect-slot occupancy walk —
+    /// produces topology checkpoints that `measure_effects_and_buses` will
+    /// happily grade, and they fail the eight-destination bus contract they
+    /// never claimed to meet. Ungated, that shortfall would land in that
+    /// scene's report and make it incomplete.
+    #[test]
+    fn a_non_effects_scenes_topology_checkpoints_would_fail_the_bus_contract_ungated() {
+        let evidence = measure_effects_and_buses(
+            &[
+                lifecycle_checkpoint("SlotFill.reverbHall"),
+                lifecycle_checkpoint("SlotFill.reverbHall"),
+            ],
+            &dsp_evidence(),
+        )
+        .expect("topology checkpoints of any scene's shape measure to evidence");
+        assert!(
+            !evidence.is_complete(),
+            "an occupancy-walk checkpoint set does not satisfy the bus contract",
+        );
     }
 
     #[test]

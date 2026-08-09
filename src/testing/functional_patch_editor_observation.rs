@@ -93,6 +93,7 @@ pub struct FunctionalPatchEditorObservation {
     second_patch_focus_verified_transitions: u32,
     second_patch_audible_edit_delta: f32,
     first_patch_audible_edit_delta: f32,
+    audible_edit_isolated_to_second_patch: bool,
     checkpoints_correlating_switch_focus_audio: u32,
     detail_subjects_served: u32,
     detail_surface_identities: u32,
@@ -197,12 +198,13 @@ impl FunctionalPatchEditorObservation {
             "second_patch_audible_edit_delta",
         );
         // F-47's bounded comparison stands in for the unattainable exact zero:
-        // the edit moved *this* instrument and not *that* one, measured on
-        // each Patch's own output over the same window.
+        // the edit moved *this* instrument and not *that* one. The verdict is
+        // carried as its own field so the predicate asserts the claim rather
+        // than a proxy for it; both raw deltas stay reported beside it, because
+        // a verdict without its inputs cannot be argued with (F-57).
         require(
-            self.second_patch_audible_edit_delta - self.first_patch_audible_edit_delta
-                >= AUDIBLE_EDIT_DELTA_MARGIN,
-            "first_patch_audible_edit_delta",
+            self.audible_edit_isolated_to_second_patch,
+            "audible_edit_isolated_to_second_patch",
         );
         require(
             self.checkpoints_correlating_switch_focus_audio > 0,
@@ -269,6 +271,10 @@ impl FunctionalPatchEditorObservation {
 
     pub const fn first_patch_audible_edit_delta(&self) -> f32 {
         self.first_patch_audible_edit_delta
+    }
+
+    pub const fn audible_edit_isolated_to_second_patch(&self) -> bool {
+        self.audible_edit_isolated_to_second_patch
     }
 
     pub const fn checkpoints_correlating_switch_focus_audio(&self) -> u32 {
@@ -694,8 +700,17 @@ impl PatchEditorMeasurement {
             utility_rows_unavailable: self.utility_rows_unavailable,
             utility_serialization_key_labels: self.utility_serialization_key_labels,
             master_volume_single_owner: self.master_volume_owner_counts == BTreeSet::from([1]),
-            // Rechannelled means the projected MIDI input value actually took
-            // more than one distinct value during the run.
+            // **The witness field's name is broader than what this measures.**
+            // What is measured is that the projected MIDI-input row took more
+            // than one distinct value across the run — i.e. the row is
+            // Patch-local and re-projects across a switch, so a run that never
+            // left the first instrument projects one value and fails here. It
+            // is *not* a completed re-channelling edit: the fixture packs 15
+            // Patches onto channels 0-14, so every adjacent channel is a
+            // `DuplicateMidiChannel` refusal and no such edit is measurable on
+            // this roster. FR-008 editability is proven in WP05's target. The
+            // field is graded for what it measures; the name is not renamed
+            // mid-mission (mission finding F-57's review).
             midi_input_rechannelled: self.midi_input_values.len() > 1,
             numeric_rows_missing_range_or_unit: self.numeric_rows_missing_range_or_unit,
             per_row_valid_actions_agree_at_focus: self.valid_actions_samples > 0
@@ -707,6 +722,12 @@ impl PatchEditorMeasurement {
             second_patch_focus_verified_transitions: second_focus_verified,
             second_patch_audible_edit_delta: delta_on(second),
             first_patch_audible_edit_delta: delta_on(first),
+            // The isolation verdict itself, not the raw pair it is drawn from.
+            // A run with no edit on the second Patch reports both deltas at
+            // zero, and zero does not clear the margin — so absent evidence
+            // reads as "not isolated" rather than as isolation by default.
+            audible_edit_isolated_to_second_patch: delta_on(second) - delta_on(first)
+                >= AUDIBLE_EDIT_DELTA_MARGIN,
             checkpoints_correlating_switch_focus_audio: self.correlating_checkpoints,
             detail_subjects_served: self.detail_subjects.len() as u32,
             detail_surface_identities: self.detail_surfaces.len() as u32,
@@ -935,13 +956,14 @@ mod tests {
         assert_eq!(observation.second_patch_slots_visited(), 0);
         assert_eq!(observation.second_patch_audible_edit_delta(), 0.0);
         assert!(!observation.second_patch_id_distinct());
+        assert!(!observation.audible_edit_isolated_to_second_patch());
         assert_eq!(observation.patches_focused(), 1);
         for expected in [
             "patches_focused",
             "second_patch_id_distinct",
             "second_patch_slots_visited",
             "second_patch_audible_edit_delta",
-            "first_patch_audible_edit_delta",
+            "audible_edit_isolated_to_second_patch",
         ] {
             assert!(
                 observation.shortfalls().contains(&expected),
@@ -965,6 +987,9 @@ mod tests {
 
     /// An edit that moved both signals is credited to neither: the bounded
     /// comparison is what distinguishes reach from a renamed path (F-47).
+    ///
+    /// Both raw deltas stay reported through the failure, because the verdict
+    /// is only arguable with its inputs in hand (F-57).
     #[test]
     fn an_edit_that_moved_both_patches_fails_the_bounded_comparison() {
         let (first, second) = (patch(1), patch(2));
@@ -978,9 +1003,50 @@ mod tests {
             deltas_by_track: deltas,
         });
         let observation = measurement.resolve(&[first, second], teardown());
+        assert!(!observation.audible_edit_isolated_to_second_patch());
         assert!(observation
             .shortfalls()
-            .contains(&"first_patch_audible_edit_delta"));
+            .contains(&"audible_edit_isolated_to_second_patch"));
+        assert_eq!(observation.second_patch_audible_edit_delta(), 0.05);
+        assert_eq!(observation.first_patch_audible_edit_delta(), 0.05);
+    }
+
+    /// The isolation verdict is the margin comparison and nothing else: a
+    /// second-Patch delta that clears the first's by less than the declared
+    /// margin is not isolation, however large either number is on its own.
+    ///
+    /// Both cases sit clear of the margin rather than on it. An exact-boundary
+    /// case would be asserting a property of f32 rounding — `0.05 + 1.0e-3`
+    /// less `0.05` is `0.000_999_998`, under the margin — and not a property of
+    /// the rule.
+    #[test]
+    fn the_isolation_verdict_is_the_declared_margin_not_the_raw_size() {
+        let (first, second) = (patch(1), patch(2));
+        let gap_of = |gap: f32| {
+            let mut measurement = healthy(first, second);
+            let mut deltas = [0.0; MixerTrackId::COUNT];
+            deltas[0] = 0.05;
+            deltas[1] = 0.05 + gap;
+            measurement.audible_edits.clear();
+            measurement.observe_audible_edit(ObservedAudibleEdit {
+                patch_id: second,
+                deltas_by_track: deltas,
+            });
+            measurement.resolve(&[first, second], teardown())
+        };
+        // Well under the margin: both signals moved together on a large edit,
+        // so the size of either delta buys nothing and neither is credited.
+        let short = gap_of(AUDIBLE_EDIT_DELTA_MARGIN / 10.0);
+        assert!(!short.audible_edit_isolated_to_second_patch());
+        assert!(short
+            .shortfalls()
+            .contains(&"audible_edit_isolated_to_second_patch"));
+        // Well over it: the second Patch moved and the first did not follow.
+        let cleared = gap_of(AUDIBLE_EDIT_DELTA_MARGIN * 10.0);
+        assert!(cleared.audible_edit_isolated_to_second_patch());
+        assert!(!cleared
+            .shortfalls()
+            .contains(&"audible_edit_isolated_to_second_patch"));
     }
 
     /// The counter counts correlating checkpoints. Nothing increments it as a
@@ -1073,7 +1139,7 @@ mod tests {
     /// `witness.functional_patch_editor`'s declared observation schema, in its
     /// declared order. Written out so a field renamed on either side fails
     /// here rather than at acceptance on the rig.
-    const WITNESS_SCHEMA_FIELDS: [&str; 41] = [
+    const WITNESS_SCHEMA_FIELDS: [&str; 42] = [
         "patches_installed",
         "patches_focused",
         "patch_switch_generations_exact",
@@ -1096,6 +1162,7 @@ mod tests {
         "second_patch_focus_verified_transitions",
         "second_patch_audible_edit_delta",
         "first_patch_audible_edit_delta",
+        "audible_edit_isolated_to_second_patch",
         "checkpoints_correlating_switch_focus_audio",
         "detail_subjects_served",
         "detail_surface_identities",
