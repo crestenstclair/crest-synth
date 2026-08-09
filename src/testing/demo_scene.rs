@@ -659,15 +659,13 @@ fn build_steps(
     push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.entered"));
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.returned"));
-    // The subordinate detail surface: entered from the PatchMain engine row,
-    // whose control resolves an Instrument subject, and left through the exact
-    // return the reducer remembered.
-    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
-        SurfaceId::PatchDetail,
-    )));
-    push_checkpoint(&mut steps, DemoCheckpoint::new("surface.detail.entered"));
-    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
-    push_checkpoint(&mut steps, DemoCheckpoint::new("surface.detail.returned"));
+    // The subordinate detail surface is deliberately absent from this scene.
+    // `SurfaceId::is_enterable` withholds `PatchDetail` from the admitted
+    // action vocabulary until WP03's detail projection (T015) exists, so a
+    // scene step entering it would be a refusal, not a demonstration. WP03
+    // restores the entered/returned pair here when it removes that gate; the
+    // reducer-seam proofs of entry, subject, exact return, and cross-switch
+    // behaviour live in `app_state`'s own tests in the meantime.
     push_key_press(&mut steps, WindowKey::Digit1);
 
     push_patch_output_control_steps(&mut steps, &patches[0], &mut boundary_probed);
@@ -2260,7 +2258,15 @@ fn build_expected_coverage(
             }
             crate::control::app_event::AppEventSurfaceDescriptor::EnterSurface { surface } => {
                 expected.push("event.enterSurface".to_owned());
-                expected.push(format!("surface.{}", surface.label().to_ascii_lowercase()));
+                // Only an *admitted* surface can be exercised by a scene step.
+                // `SurfaceId::is_enterable` withholds `PatchDetail` until
+                // WP03's detail projection (T015) can render it, so expecting
+                // `surface.detail` would demand coverage the action vocabulary
+                // cannot produce. Removing that gate restores this expectation
+                // with no edit here.
+                if surface.is_enterable() {
+                    expected.push(format!("surface.{}", surface.label().to_ascii_lowercase()));
+                }
             }
             crate::control::app_event::AppEventSurfaceDescriptor::Return => {
                 expected.push("event.return".to_owned());

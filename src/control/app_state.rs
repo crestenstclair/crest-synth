@@ -2487,9 +2487,44 @@ impl AppState {
         self.interaction
             .replace_remembered_mixer_main(repaired_mixer);
         if let Some(origin) = repaired_return_origin {
-            self.interaction.replace_return_origin(origin);
+            self.interaction
+                .replace_return_origin(origin)
+                .map_err(|_| EventRejection::InvalidSelection)?;
         }
+        self.leave_stale_detail_surface();
         Ok(())
+    }
+
+    /// Leaves an open detail surface whose subject the structural commit just
+    /// invalidated.
+    ///
+    /// From `valueObject.Control.PatchDetailSubject`: a subject whose
+    /// capability leaves the registry, or whose slot is cleared, is *not*
+    /// repaired into a neighbouring subject — the surface is left through the
+    /// deterministic focus resolver back to its origin, because silently
+    /// retargeting a detail view would show one capability's values under
+    /// another's title. The origin restored here is the one
+    /// [`Self::repair_semantic_paths`] has already repaired against the new
+    /// schema, so leaving never lands on a row the destination cannot host.
+    ///
+    /// A detail row that stopped resolving while its subject stayed live — a
+    /// committed parameter choice that hides rows — leaves for the same
+    /// reason: the entry can no longer be shown as it was opened, and the
+    /// exact remembered origin is where the declaration says leaving lands.
+    fn leave_stale_detail_surface(&mut self) {
+        let Some(subject) = self.interaction.detail_subject().cloned() else {
+            return;
+        };
+        let resolver = SemanticResolver::new(self);
+        let live = self
+            .interaction
+            .focus_path()
+            .patch_id()
+            .is_some_and(|patch_id| resolver.detail_subject_is_live(patch_id, &subject))
+            && resolver.resolves(self.interaction.focus_path());
+        if !live {
+            self.interaction.leave_detail_to_origin();
+        }
     }
 
     /// Captures the current MIXER Inspector focus order for the selected
@@ -4181,12 +4216,18 @@ mod tests {
         assert!((after_mixer_edit - 2.0 * step).abs() < 1.0e-6);
     }
 
-    /// T009: no second master-gain owner exists on the PATCH side.
+    /// T009: no PATCH-side type re-declares a master-gain field.
     ///
-    /// Counted over the production sources rather than asserted by
-    /// inspection: a PATCH-side copy would have to declare a field somewhere,
-    /// and the canonical value has exactly one storage owner —
-    /// `GlobalParameters` — that every other mention reads through.
+    /// **This is a text scan of the production sources, not a structural
+    /// proof.** It catches the one shape it names — a second `master_gain_db`
+    /// field appearing on a PATCH-owned type — and it cannot see aliasing,
+    /// shadowing through another name, or two setters over one field. The
+    /// proof that both surfaces reach *one* canonical value is the
+    /// reducer-driven
+    /// `master_gain_is_one_canonical_value_reached_from_patch_and_mixer`
+    /// above, which edits from PATCH and from MIXER through `AppState::apply`
+    /// and reads the same value moving by the same descriptor step. Cite that
+    /// one; this is a cheap tripwire beside it.
     #[test]
     fn exactly_one_master_gain_owner_exists_and_patch_holds_no_copy() {
         // No PATCH-owned type declares the field. These are the three places a
@@ -4632,6 +4673,209 @@ mod tests {
 
         // Detail from an open Utility surface is covered by
         // `detail_entry_from_a_subjectless_row_is_a_typed_unchanged_rejection`.
+    }
+
+    /// B1: the detail surface is reducer-owned but is **not** offered.
+    ///
+    /// `EnterSurface(PatchDetail)` is held out of the admitted semantic action
+    /// vocabulary until WP03's detail projection (T015) exists, so it never
+    /// reaches `validActions` or a footer hint. The reducer transition itself
+    /// is unchanged and still proved through `AppEvent`, which is how every
+    /// other detail test here drives it.
+    #[test]
+    fn the_detail_surface_is_reducer_owned_but_not_offered_until_wp03() {
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        let entry = SemanticAction::EnterSurface(SurfaceId::PatchDetail);
+
+        // Not advertised: not accepted, and absent from the projected actions.
+        assert!(!state.accepts_semantic_action(&entry));
+        assert!(!SemanticResolver::new(&state)
+            .valid_actions()
+            .iter()
+            .any(|valid| valid.action() == &entry));
+
+        // Refused as a typed unchanged rejection through the passive boundary.
+        let before = state.clone();
+        assert_eq!(
+            state.apply_semantic_action(entry),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, before);
+
+        // The reducer transition still exists and still works.
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+    }
+
+    /// B1: exactly why the entry gate exists, measured rather than asserted.
+    ///
+    /// Braids is the discriminating engine: its PatchMain order is
+    /// `[Engine, ADSR…, EffectSlot…]` with no `Capability` row at all, while
+    /// its detail order is entirely `Capability` rows, so the two share
+    /// nothing. On SoundFont the first detail row is
+    /// `Capability(soundfont.preset)`, which is *also* a PatchMain row, so a
+    /// SoundFont-only test cannot tell a working projection from a missing one.
+    ///
+    /// Driven through the reducer-only `AppEvent` seam, a Braids detail state
+    /// is accepted and then fails to project — which is precisely why
+    /// `SurfaceId::is_enterable` withholds the surface from the offered action
+    /// vocabulary. **When WP03's T015 makes a detail focus projectable, this
+    /// test fails**, and fixing it means asserting the projection succeeds and
+    /// deleting the gate. That is the intended coupling: the gate cannot be
+    /// forgotten because the thing that removes it breaks this test.
+    #[test]
+    fn the_entry_gate_exists_because_a_braids_detail_state_cannot_yet_be_projected() {
+        let mut state = mixed_state();
+        state.apply(AppEvent::SelectPatch(Direction::Right)).unwrap();
+        assert_eq!(
+            state.patches()[1]
+                .instrument_config()
+                .capability_id()
+                .as_str(),
+            BRAIDS_CAPABILITY_ID
+        );
+
+        // Not offered: this is the whole user-visible remedy.
+        assert!(
+            !state.accepts_semantic_action(&SemanticAction::EnterSurface(SurfaceId::PatchDetail))
+        );
+
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let focused = state.interaction().patch_control_focus().unwrap();
+        let main_order = state.focused_patch_controls().unwrap();
+        assert!(
+            !main_order
+                .iter()
+                .any(|control| matches!(control, PatchControlId::Capability(_))),
+            "Braids' main order must host no Capability row at all"
+        );
+        assert!(
+            !main_order.contains(&focused),
+            "the discriminating case requires a detail row the main order does not host"
+        );
+
+        assert!(
+            crate::control::StateProjector::new()
+                .project_with_shell_tree(&state)
+                .is_err(),
+            "WP03 T015 makes this succeed; when it does, delete the is_enterable gate"
+        );
+    }
+
+    /// B1a: an engine swap committing under an open detail entry leaves the
+    /// surface rather than showing the old capability's rows under the new
+    /// engine's identity.
+    #[test]
+    fn an_engine_swap_under_an_open_detail_entry_leaves_the_surface() {
+        let mut state = mixed_state();
+        let origin = state.interaction().focus_path().clone();
+        assert_eq!(
+            origin.control_id(),
+            &SemanticControlId::Patch(PatchControlId::Engine)
+        );
+
+        // Request the swap from the engine row, then open detail on the row
+        // that is still showing the *source* capability.
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        assert_eq!(
+            state.interaction().detail_subject(),
+            Some(&PatchDetailSubject::instrument(
+                crate::synth::CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap()
+            ))
+        );
+
+        let target = GraphRevision::new(2).unwrap();
+        state
+            .apply(prepared_event(
+                &state.clone(),
+                target,
+                descriptor_default_config(BRAIDS_CAPABILITY_ID),
+            ))
+            .unwrap();
+
+        // The subject no longer names the Patch's capability, so the surface
+        // was left back to the exact remembered origin.
+        assert_eq!(state.interaction().detail_subject(), None);
+        assert_eq!(state.interaction().return_path(), None);
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
+        assert_eq!(state.interaction().focus_path(), &origin);
+        assert!(state.interaction().detail_invariant_holds());
+        assert!(SemanticResolver::new(&state).resolves(state.interaction().focus_path()));
+        crate::control::StateProjector::new()
+            .project_with_shell_tree(&state)
+            .expect("the state after leaving must project");
+    }
+
+    /// B1b: clearing the subject's slot under an open detail entry leaves the
+    /// surface. The subject names an *exact* slot, so a cleared slot leaves it
+    /// naming nothing — and a neighbouring occupant is deliberately not
+    /// substituted.
+    #[test]
+    fn clearing_the_subject_slot_under_an_open_detail_entry_leaves_the_surface() {
+        let mut state = gapped_effects_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        let patch_id = state.patches()[0].id();
+        let occupied_slot = EffectSlotIndex::new(1).unwrap();
+        let origin = FocusPath::patch_main(
+            patch_id,
+            None,
+            PatchControlId::EffectSlot(occupied_slot),
+        );
+        state.interaction.active_focus = origin.clone();
+
+        // Request the clear, then open detail on the still-occupied slot.
+        state
+            .apply(AppEvent::SetSlotOccupancy {
+                patch_id,
+                slot: occupied_slot,
+                entry: None,
+            })
+            .unwrap();
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        assert_eq!(
+            state.interaction().detail_subject().and_then(
+                crate::control::PatchDetailSubject::slot_id
+            ),
+            Some(EffectSlotId::new(2).unwrap())
+        );
+
+        let correlation = state.engine_selection().correlation().unwrap().clone();
+        let source = correlation.source_graph_revision();
+        state
+            .apply(AppEvent::TopologyPrepared {
+                request_id: correlation.request_id(),
+                intent: correlation.intent().clone(),
+                source_graph_revision: source,
+                target_graph_revision: source.checked_next().unwrap(),
+            })
+            .unwrap();
+
+        assert!(
+            state.patches()[0].effect_slot(occupied_slot).is_none(),
+            "the commit must actually have cleared the slot"
+        );
+        assert_eq!(state.interaction().detail_subject(), None);
+        assert_eq!(state.interaction().return_path(), None);
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
+        assert_eq!(state.interaction().focus_path(), &origin);
+        assert!(state.interaction().detail_invariant_holds());
+        crate::control::StateProjector::new()
+            .project_with_shell_tree(&state)
+            .expect("the state after leaving must project");
     }
 
     /// T012: a patch switch closes any open detail surface, lands on a valid

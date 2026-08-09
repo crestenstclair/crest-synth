@@ -956,6 +956,16 @@ impl PatchPageProjection {
         // Which order the focused row belongs to is decided by the one
         // Utility/PatchMain split, so a new Utility row cannot fall through to
         // the main order and read as an invalid config.
+        //
+        // A focus on the subordinate detail surface belongs to *neither* order
+        // — it is the open subject's own order — and this check rejects it.
+        // That is deliberate and it is why `SurfaceId::is_enterable` withholds
+        // `PatchDetail` from the offered action vocabulary: nothing here
+        // projects a detail surface yet, and the text projection has no
+        // selected line for a detail row either, so a detail focus is not a
+        // projectable state. WP03's T015 owns making it one — page rows, this
+        // containment check, and the text projection's selected line together —
+        // and removing the entry gate is part of the same change.
         let resolved_controls = if focused_control_id.is_utility() {
             PatchControlId::utility_surface_descriptor().to_vec()
         } else {

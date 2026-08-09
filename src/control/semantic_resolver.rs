@@ -139,6 +139,42 @@ impl<'a> SemanticResolver<'a> {
         }
     }
 
+    /// Reports whether a detail subject still names something live on the
+    /// Patch it was opened on.
+    ///
+    /// An `Instrument` subject is live only while it *is* the Patch's active
+    /// instrument capability; an `Effect` subject only while its exact slot is
+    /// still occupied by that exact registry entry. Deliberately not the same
+    /// question as [`Self::resolves`]: the detail order is resolved from the
+    /// subject's own capability id, so a subject left behind by an engine swap
+    /// still resolves to a full row list — one belonging to a capability the
+    /// Patch no longer has.
+    pub fn detail_subject_is_live(&self, patch_id: PatchId, subject: &PatchDetailSubject) -> bool {
+        let Some(patch) = self
+            .state
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+        else {
+            return false;
+        };
+        match subject {
+            PatchDetailSubject::Instrument { capability_id } => {
+                patch.instrument_config().capability_id() == capability_id
+            }
+            PatchDetailSubject::Effect {
+                slot_id,
+                capability_id,
+            } => patch
+                .effect_slots()
+                .iter()
+                .flatten()
+                .any(|effect| {
+                    effect.slot_id() == *slot_id && effect.capability_id() == capability_id
+                }),
+        }
+    }
+
     /// Returns the detail surface's focus order for one subject: the subject
     /// descriptor's visible enabled rows, in descriptor order.
     ///
@@ -503,6 +539,11 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         SemanticAction::SetSlotOccupancy { .. } => ("Set slot occupancy", None),
         SemanticAction::SetReturnOccupancy { .. } => ("Set return occupancy", None),
         SemanticAction::EnterSurface(SurfaceId::PatchUtility) => ("Open Utility", Some("D")),
+        // Presentation for an action that is not currently offered:
+        // `SurfaceId::is_enterable` withholds `PatchDetail` until WP03's
+        // detail projection lands, so this never reaches `valid_actions` or a
+        // footer hint today. It stays so the arm and the gate are removed in
+        // the same place they were added.
         SemanticAction::EnterSurface(SurfaceId::PatchDetail) => ("Open Detail", Some("Return")),
         SemanticAction::EnterSurface(SurfaceId::MixerInspector) => ("Open Inspector", None),
         SemanticAction::EnterSurface(SurfaceId::PatchMain)

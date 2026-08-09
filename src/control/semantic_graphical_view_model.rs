@@ -507,6 +507,13 @@ impl SemanticGraphicalViewModel {
         "surfaces[].summary.patch_name",
         "surfaces[].summary.routed_patches[].patchId",
         "surfaces[].summary.routed_patches[].patchName",
+        // The open detail surface's subject. `capability_id` and `kind` are
+        // discovered for either subject variant; `slot_id` only for `Effect`,
+        // which is the variant that names an exact occupied position — so a
+        // fixture that opens only an instrument detail entry cannot see it.
+        "surfaces[].summary.subject.capability_id",
+        "surfaces[].summary.subject.kind",
+        "surfaces[].summary.subject.slot_id",
         "validActions[].action.kind",
         "validActions[].action.payload",
         "validActions[].hint",
