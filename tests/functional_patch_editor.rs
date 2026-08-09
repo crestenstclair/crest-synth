@@ -1294,32 +1294,51 @@ fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
 /// difference between an omission and a decision.
 ///
 /// **What this covers, stated as it behaves.** The check is over the *set* of
-/// statements each function contains — a statement added or changed without a
-/// pin fails here. It is **not** over the order in which they run, because both
-/// this check and the pin table are set-membership tests over line text. Moving
-/// `stripGroups`' `if (!control.visible) { continue; }` block to the end of the
-/// loop body leaves every pinned fragment contiguous and intact and every
-/// statement present, so the page arranges invisible rows — cycle 1's mutation
-/// #3, reached by reordering rather than by deleting — and nothing here fails.
-/// That is inherent to a set-based check: closing it means requiring each body
-/// to be a *sequence* of pins and scaffolding, a different and much larger
-/// control than this one. It is recorded as a known gap (F-68) rather than
-/// implied away.
+/// statements each function contains, matched whole-line against that
+/// function's **own** pins — a statement added to a walked function, or a
+/// pinned statement changed, fails here. What it does not cover is three
+/// things, and they are named rather than implied away.
 ///
-/// Two further limits worth naming rather than leaving to look covered:
+/// **Not covered — the set's order, and its multiplicity.** Both this check and
+/// the pin table are set-membership tests over line text, so neither can see a
+/// change that leaves the set of lines identical. Two mutations reach through
+/// that, and each collapses grouping in one line:
 ///
-/// - The **head-row resolution** is not pinned. `patchStripHtml`'s *call site*
-///   `controlById(main, groupHeadControlId(groups[i].key))` is pinned, and
-///   `groupHeadControlId` is transcribed whole; `controlById`'s own identity
-///   match is neither, because this file does not transcribe it — it asserts
-///   the head row through `group.rows[0]`. Making `controlById` match every
-///   control is invisible here.
-/// - Functions transcribed only in part — `stripGroupHtml`'s title and
-///   empty-group mark, `patchStripHtml`'s unavailable rule and head-row lookup,
-///   the lifecycle band's requested value, the row's unit span — are pinned by
-///   hand instead, because requiring whole-body coverage there would demand
-///   pins for markup this file does not copy, and a pin with no copied rule
-///   behind it is noise (F-65's `HINT_SEPARATOR`).
+/// - *Order.* Moving `stripGroups`' `if (!control.visible) { continue; }` block
+///   to the end of the loop body leaves every pinned fragment contiguous and
+///   intact and every statement present, so the page arranges invisible rows —
+///   cycle 1's mutation #3, reached by reordering rather than by deleting.
+/// - *Multiplicity.* Inserting `    return null;` at the top of `stripGroupKey`,
+///   which already **ends** with that line, is a duplicate rather than an
+///   addition. The set is unchanged, so nothing fails, and every identity now
+///   maps to no group at all.
+///
+/// Both are inherent to a set-based check and neither is closable by adding
+/// pins: closing them means requiring each body to be a *sequence* of pins and
+/// scaffolding, a different and much larger control than this one. Recorded as
+/// known gaps (F-68, F-74) rather than treated as pending.
+///
+/// **Not covered — functions the walk does not reach.** The **head-row
+/// resolution** is not pinned. `patchStripHtml`'s *call site*
+/// `controlById(main, groupHeadControlId(groups[i].key))` is pinned, and
+/// `groupHeadControlId` is transcribed whole; `controlById`'s own identity
+/// match is neither, because this file does not transcribe it — it asserts the
+/// head row through `group.rows[0]`. Making `controlById` match every control is
+/// invisible here.
+///
+/// **Not covered, and never was — that the Rust computes what the page
+/// computes.** These pins bound the cost of the transcription drifting from the
+/// page's *text*; they say nothing about the two agreeing on a result. Only
+/// F-44's `stripGroupsPainted`, read back from the page's own output, closes
+/// that, and this control should shrink when it lands.
+///
+/// One mechanical note, not a limit: functions transcribed only in part —
+/// `stripGroupHtml`'s title and empty-group mark, `patchStripHtml`'s
+/// unavailable rule and head-row lookup, the lifecycle band's requested value,
+/// the row's unit span — are pinned by hand instead of walked, because
+/// requiring whole-body coverage there would demand pins for markup this file
+/// does not copy, and a pin with no copied rule behind it is noise (F-65's
+/// `HINT_SEPARATOR`).
 fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
     script: &str,
     pins: &[(&str, &str)],
@@ -1339,11 +1358,21 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
         ("hintRun", "page_side_hint_line"),
         ("sideRegionHintLine", "page_side_hint_line"),
     ];
-    /// Lines that carry no rule: accumulators, cursors and loop headers. Each
-    /// is here because the transcription's own loop is not a copy of *this*
+    /// Lines that carry no rule: accumulators, cursors, loop headers, and the
+    /// bare openers and closing literals of a concatenated markup expression.
+    /// Each is here because the transcription's own loop is not a copy of *this*
     /// loop — it walks Rust values — so there is nothing to pin. Every entry is
     /// asserted below to still occur, so this list cannot rot into a permit.
-    const SCAFFOLDING: [&str; 13] = [
+    ///
+    /// The last two are `rangeHtml`'s, and they were **hidden** until the pin
+    /// pool was scoped per function: the flat pool admitted them from
+    /// `sideRegionHintLine`'s *the panel's hint line is its hint run*, which
+    /// opens and closes the same way. Every line of `rangeHtml` that carries a
+    /// rule — the absent-range guard, the `data-role="row-range"` span, both
+    /// bounds and the separator between them — is pinned individually above; a
+    /// pin on the return opener or the closing tag would be a pin with no
+    /// copied rule behind it, which is F-65's `HINT_SEPARATOR`.
+    const SCAFFOLDING: [&str; 15] = [
         "var groups = [];",
         "var byKey = {};",
         "var spans = [];",
@@ -1357,6 +1386,8 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
         "for (var i = 0; i < controls.length; i += 1) {",
         "for (var i = 0; i < actions.length; i += 1) {",
         "for (var a = 0; a < valid.length; a += 1) {",
+        "return (",
+        "\"</span>\"",
     ];
     /// F-43's NUL separator, whose two pins sit either side of it precisely so
     /// the merge step's repair does not fire them. Matched by prefix for the
@@ -1366,7 +1397,24 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
     let mut used = BTreeSet::new();
     let mut checked = 0_usize;
     for (page_function, twin) in TRANSCRIBED_WHOLE {
-        for line in page_function_body(script, page_function).split('\n') {
+        let body = page_function_body(script, page_function);
+        // Only pins that live in *this* function may admit its lines. Matching
+        // against a flat pool of every pin in the file admits a line by its
+        // text alone, so a statement genuinely *added* to a walked function
+        // passes whenever that same text happens to occur inside some unrelated
+        // function's pin: `    return null;` at the top of `stripGroups` — which
+        // arranges no groups at all, T030's whole claim — was admitted by
+        // `designedGroup`'s lookup pin, with `cargo test --all-targets` green
+        // across every target. So were the same line atop `controlValueText`
+        // and `controlIdOf`, neither of which contains it, and `designedGroup`'s
+        // whole lookup body pasted into `stripGroups`. That is an anchor
+        // matching more than the one site it names — what the table above
+        // asserts against — turned inward on the coverage predicate (F-74).
+        let own_pins = pins
+            .iter()
+            .filter(|(_, fragment)| body.contains(*fragment))
+            .collect::<Vec<_>>();
+        for line in body.split('\n') {
             // An inline comment is not a rule; `//` cannot appear inside a
             // string or a regex literal in any of these ten functions.
             let code = line.split(" //").next().unwrap_or(line).trim_end();
@@ -1374,6 +1422,12 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
             if statement.is_empty()
                 || statement.starts_with("//")
                 || statement.starts_with("function ")
+                // A closing brace, a bare `);` or a lone `,` is punctuation and
+                // not a statement: there is no rule in it to pin and none to
+                // defeat. Unscoped, these were being admitted by whichever pin
+                // elsewhere in the file happened to close at the same
+                // indentation, which is why scoping surfaces them at all.
+                || statement.chars().all(|c| "{}()[];,".contains(c))
             {
                 continue;
             }
@@ -1389,7 +1443,10 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
             // collapse the rules those pins defend. That is F-42/F-53/F-55's
             // own mechanism — a predicate matching more than the one thing it
             // names — turned inward on the check built to catch it (F-68).
-            if pins
+            // Whole lines *narrowed* that admission surface from a substring of
+            // any pin to an exact line of any pin; it took the scoping above to
+            // close it, to an exact line of this function's own pins (F-74).
+            if own_pins
                 .iter()
                 .any(|(_, fragment)| fragment.lines().any(|pinned| pinned == code))
             {
