@@ -1110,7 +1110,9 @@ fn preset_swap_in_flight() -> (AppState, SemanticControlId) {
 /// The entries are therefore grouped by the function they defend and named for
 /// the rule rather than for the text, so a rule added to a transcription
 /// without a pin shows up as a gap in its own group. The last group holds the
-/// three constants and two marks the file transcribes directly.
+/// declared group table, the three constants and the two marks this file
+/// transcribes directly — the table as one array literal rather than as six
+/// independent entries, so its *order* is pinned along with its membership.
 ///
 /// **Every anchor occurs exactly once, and that is enforced here rather than
 /// remembered.** F-42, F-53 and F-55 are one failure mode: an anchor that also
@@ -1123,9 +1125,29 @@ fn preset_swap_in_flight() -> (AppState, SemanticControlId) {
 fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
     let script = page_source("page.js");
     let unavailable_mark = format!("var UNAVAILABLE_MARK = \"{UNAVAILABLE_MARK}\"");
-    let required: [(&str, &str); 63] = [
+    // The designed group table as one array literal, rebuilt from the constant
+    // this file transcribes it into — so the *sequence* is pinned along with
+    // the membership. Cycle 2 asserted each of the six entries occurred exactly
+    // once, which pins membership and legends six times over and the order not
+    // at all: swapping the `envelope` and `capability` entries was MISSED
+    // (F-68). The order is a copied rule — `DESIGNED_STRIP_GROUPS` here is
+    // ordered identically, `grouped_strip_shape` asserts declared order off it,
+    // and the page's declared-position re-insertion walks the JS array by index.
+    let designed_strip_groups = format!(
+        "var DESIGNED_STRIP_GROUPS = [\n{}  ];",
+        DESIGNED_STRIP_GROUPS
+            .iter()
+            .map(|(key, legend, designed)| match legend {
+                Some(legend) => format!(
+                    "    {{ key: \"{key}\", legend: \"{legend}\", designed: {designed} }},\n"
+                ),
+                None => format!("    {{ key: \"{key}\", legend: null, designed: {designed} }},\n"),
+            })
+            .collect::<String>()
+    );
+    let required: [(&str, &str); 66] = [
         // `controlIdOf` — [`page_control_id`].
-        ("the control identity read", "      control && control.path && control.path.controlId\n        ? control.path.controlId.id\n        : \"\""),
+        ("the control identity read", "    return String(\n      control && control.path && control.path.controlId\n        ? control.path.controlId.id\n        : \"\"\n    );"),
         // `controlValueText` — [`page_value_text`], arm for arm.
         ("the absent value mark", "    var value = control && control.value;\n    if (!value || typeof value !== \"object\") {\n      return UNAVAILABLE_MARK;"),
         ("the scalar value discriminator", "    if (value.kind === \"scalar\") {"),
@@ -1154,6 +1176,17 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
         ("the painted upper bound", "      escapeHtml(rangeEndpointText(control, range.maximum)) +"),
         // The unit `check_ranges_and_units_are_rendered` reads back.
         ("the painted unit span", "    var unit = control.unit\n      ? '<span class=\"prow-unit type-hint muted\">' +\n        escapeHtml(String(control.unit)) +\n        \"</span>\"\n      : \"\";"),
+        // The two helpers the walked functions call. Neither is markup and
+        // both are rules the transcriptions copy, so F-52 applies to them
+        // literally: `page_strip_group_key` writes `id.starts_with(...)`,
+        // which copies `startsWith`'s *semantics* and not merely the prefix
+        // literal, and `page_strip_groups`' `declared` closure copies
+        // `designedGroup`'s lookup. Cycle 2 left both unpinned, and with
+        // `startsWith` returning `false` — four of `stripGroupKey`'s six arms
+        // dead and the page unable to group anything — `cargo test
+        // --all-targets` passed in full (F-68).
+        ("the prefix test", "    return text.lastIndexOf(prefix, 0) === 0;"),
+        ("the declared group lookup, by key", "    for (var i = 0; i < DESIGNED_STRIP_GROUPS.length; i += 1) {\n      if (DESIGNED_STRIP_GROUPS[i].key === key) {\n        return DESIGNED_STRIP_GROUPS[i];\n      }\n    }\n    return null;"),
         // `stripGroupKey` — [`page_strip_group_key`], arm for arm. This is the
         // identity→group mapping T030's whole claim is about; cycle 1 pinned
         // none of it (F-55).
@@ -1206,7 +1239,8 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
         ("the hint pairs its label with a colon", "        '<span class=\"type-hint focus\">' +\n          escapeHtml(action.hint) +\n          \":\" +\n          escapeHtml(hintLabel(action)) +\n          \"</span>\""),
         ("the hint run's space join", "    return spans.join(\" \");"),
         ("the hint label's authored transform", "    return String(action.label)\n      .toLowerCase()\n      .replace(/^(open|move)\\s+/, \"\")\n      .replace(/\\s+mode$/, \"\");"),
-        // The constants and marks this file transcribes directly.
+        // The constants, tables and marks this file transcribes directly.
+        ("the designed group table, in declared order", designed_strip_groups.as_str()),
         ("the unavailable mark", unavailable_mark.as_str()),
         ("the range separator", "var RANGE_SEPARATOR = \" — \""),
         ("the read-only mark", "var READ_ONLY_MARK = \"READ-ONLY\""),
@@ -1227,24 +1261,8 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
             ),
         }
     }
-    // The designed group table, key for key and legend for legend. A page that
-    // adds, drops, renames or reorders a group makes the strip a different
-    // structure, and this file would otherwise keep asserting the old one.
-    for (key, legend, designed) in DESIGNED_STRIP_GROUPS {
-        let entry = match legend {
-            Some(legend) => {
-                format!("{{ key: \"{key}\", legend: \"{legend}\", designed: {designed} }}")
-            }
-            None => format!("{{ key: \"{key}\", legend: null, designed: {designed} }}"),
-        };
-        assert_eq!(
-            script.matches(&entry).count(),
-            1,
-            "webview-page/page.js must declare the strip group {entry} exactly once"
-        );
-    }
     check_every_line_of_a_transcribed_page_rule_carries_a_pin(&script, &required);
-    required.len() + DESIGNED_STRIP_GROUPS.len()
+    required.len()
 }
 
 /// One `page.js` function's body, from the committed source.
@@ -1261,7 +1279,7 @@ fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
     &body[..end]
 }
 
-/// **The pin set is complete, not merely large.**
+/// **Every statement of a wholly-transcribed function carries a pin.**
 ///
 /// The table above proves every pin still matches. It cannot prove there *is* a
 /// pin for every rule — which is precisely what cycle 1 lacked (F-55), and what
@@ -1269,23 +1287,47 @@ fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
 /// The only thing that reveals it is walking the source.
 ///
 /// So this walks it, mechanically: every line of every `page.js` function this
-/// file transcribes **whole** must either sit inside a pinned fragment or be
-/// named below as scaffolding that carries no rule. A rule added to any of
-/// these functions without a pin fails here, and the only way past is to write
-/// the new line into a list a reviewer reads — which is the difference between
-/// an omission and a decision.
+/// file transcribes **whole** must either sit inside a pinned fragment as a
+/// whole line, or be named below as scaffolding that carries no rule. A rule
+/// added to any of these functions without a pin fails here, and the only way
+/// past is to write the new line into a list a reviewer reads — which is the
+/// difference between an omission and a decision.
 ///
-/// Functions transcribed only in part — `stripGroupHtml`'s title and empty-group
-/// mark, `patchStripHtml`'s unavailable rule and head-row lookup, the lifecycle
-/// band's requested value, the row's unit span — are pinned by hand instead,
-/// because requiring whole-body coverage there would demand pins for markup this
-/// file does not copy, and a pin with no copied rule behind it is noise.
+/// **What this covers, stated as it behaves.** The check is over the *set* of
+/// statements each function contains — a statement added or changed without a
+/// pin fails here. It is **not** over the order in which they run, because both
+/// this check and the pin table are set-membership tests over line text. Moving
+/// `stripGroups`' `if (!control.visible) { continue; }` block to the end of the
+/// loop body leaves every pinned fragment contiguous and intact and every
+/// statement present, so the page arranges invisible rows — cycle 1's mutation
+/// #3, reached by reordering rather than by deleting — and nothing here fails.
+/// That is inherent to a set-based check: closing it means requiring each body
+/// to be a *sequence* of pins and scaffolding, a different and much larger
+/// control than this one. It is recorded as a known gap (F-68) rather than
+/// implied away.
+///
+/// Two further limits worth naming rather than leaving to look covered:
+///
+/// - The **head-row resolution** is not pinned. `patchStripHtml`'s *call site*
+///   `controlById(main, groupHeadControlId(groups[i].key))` is pinned, and
+///   `groupHeadControlId` is transcribed whole; `controlById`'s own identity
+///   match is neither, because this file does not transcribe it — it asserts
+///   the head row through `group.rows[0]`. Making `controlById` match every
+///   control is invisible here.
+/// - Functions transcribed only in part — `stripGroupHtml`'s title and
+///   empty-group mark, `patchStripHtml`'s unavailable rule and head-row lookup,
+///   the lifecycle band's requested value, the row's unit span — are pinned by
+///   hand instead, because requiring whole-body coverage there would demand
+///   pins for markup this file does not copy, and a pin with no copied rule
+///   behind it is noise (F-65's `HINT_SEPARATOR`).
 fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
     script: &str,
     pins: &[(&str, &str)],
 ) -> usize {
     /// `page.js` function → the transcription in this file that copies it whole.
-    const TRANSCRIBED_WHOLE: [(&str, &str); 10] = [
+    const TRANSCRIBED_WHOLE: [(&str, &str); 12] = [
+        ("startsWith", "page_strip_group_key"),
+        ("designedGroup", "page_strip_groups"),
         ("controlIdOf", "page_control_id"),
         ("controlValueText", "page_value_text"),
         ("rangeEndpointText", "page_range_text"),
@@ -1336,7 +1378,21 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
                 continue;
             }
             checked += 1;
-            if pins.iter().any(|(_, fragment)| fragment.contains(code)) {
+            // Whole lines, not substrings. `code` keeps its indentation, so a
+            // deeper-indented pinned line *contains* the same statement at
+            // shallower indentation: with `contains`, `    return openSlot;`
+            // inserted at the top of `stripGroupKey` was admitted by *an
+            // identity no designed group claims has no key*, and
+            // `    return UNAVAILABLE_MARK;` at the top of `controlValueText`
+            // by *the malformed parameter mark* — two pins with nothing to do
+            // with the lines they were admitting, and two mutations that
+            // collapse the rules those pins defend. That is F-42/F-53/F-55's
+            // own mechanism — a predicate matching more than the one thing it
+            // names — turned inward on the check built to catch it (F-68).
+            if pins
+                .iter()
+                .any(|(_, fragment)| fragment.lines().any(|pinned| pinned == code))
+            {
                 continue;
             }
             if statement.starts_with(NUL_SEPARATOR_LINE) {
@@ -1737,6 +1793,13 @@ fn grouped_strip_shape(controls: &[Value]) -> Result<Vec<StripGroup>, String> {
     for group in &groups {
         for row in &group.rows {
             let id = page_control_id(row);
+            // The `patch.effect.` arm is inert by construction: `expected` is
+            // the group's own key, so the comparison below can never fire for
+            // an occupant row. It is written this way because an occupant's
+            // group depends on the open slot rather than on its identity. The
+            // nesting claim is carried by the `rows[0]` occupancy check just
+            // below and by the prefix walk in `check_the_strip_is_grouped_
+            // structure`, not by this branch.
             let expected = if id.starts_with("patch.effect.") {
                 group.key.clone()
             } else {
@@ -2106,10 +2169,13 @@ fn check_utility_resolves_five_typed_rows_and_its_hint_line() {
         !hint.is_empty(),
         "the Utility panel's authored hint line is absent"
     );
-    assert!(
-        hint.contains(':'),
-        "the hint line pairs each projected hint with its projected label: {hint}"
-    );
+    // No assertion here on the colon. The colon in this string is contributed
+    // by this file's own `format!`, unconditionally, so `hint.contains(':')` —
+    // which cycle 2 shipped four lines from here — was satisfied by
+    // construction and could not fail (F-71). The page's colon pairing is a
+    // real rule and it is defended where it can be: by *the hint pairs its
+    // label with a colon*, whose defeat in `page.js` fails the pin table.
+    //
     // Both facts the design authority names: how an operator enters the panel
     // and how they leave it, each from the side of the boundary that owns it.
     //
@@ -2546,6 +2612,19 @@ fn check_requested_value_is_present_only_while_an_edit_is_in_flight() {
 /// Read back through the render script's own `rangeHtml` / `rangeEndpointText`
 /// and unit rules rather than off the projection, so a page that stopped
 /// painting either fails here.
+///
+/// **How much each half is read back is three tiers, not two** (F-70). Values
+/// are read back in full. Ranges are read back only *structurally*: the
+/// comparison below parses the painted endpoint and compares it to
+/// `numericRange.minimum` — which is the number the transcription painted it
+/// from — so it proves the separator and the endpoint arm split, and *not* that
+/// the painted bound carries the projected bound's precision. That precision
+/// rule rides on the pin (*the endpoint's continuous three places*), which does
+/// discriminate: `toFixed(3)` → `toFixed(1)` fails the pin table. Units rest on
+/// the pin alone (*the painted unit span*), because the page paints
+/// `String(control.unit)` unmodified and there is no rule to transcribe —
+/// manufacturing one for symmetry would re-commit F-65's `HINT_SEPARATOR`
+/// defect, a pin standing for a rule this file does not copy.
 fn check_ranges_and_units_are_rendered() -> usize {
     let mut rendered = 0_usize;
     let mut units = 0_usize;
