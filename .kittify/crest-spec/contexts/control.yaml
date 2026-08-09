@@ -459,9 +459,12 @@ valueObjects:
       sibling rule
     - a SelectPatch switch rebuilds rememberedPatchPath and the active path against the destination Patch's
       own descriptor schema, keeping the same control when that Patch offers it and otherwise recovering
-      deterministically to its first valid control; the switch never carries a control identity the
-      destination cannot host, and returnPath is cleared because the subordinate surface belonged to the
-      Patch being left
+      through the same one deterministic next-before-previous sibling rule every other schema change uses.
+      There is exactly one focus-recovery rule in this system and a patch switch is not an exception to
+      it; recovering to "the first valid control" would make the destination's first row a special case
+      no other schema change has, and would throw away the operator's position for no reason. The switch
+      never carries a control identity the destination cannot host, and returnPath is cleared because the
+      subordinate surface belonged to the Patch being left
     - mode is Navigate or Adjust in Phase 2; Modal and MultiSelect remain typed but unreachable until
       their later workflow owns complete entry, trap, and exit behavior
     - the value contains no Patch/config copy, capability descriptor copy, engine, graph, parameter snapshot,
