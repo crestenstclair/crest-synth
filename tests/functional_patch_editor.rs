@@ -650,9 +650,43 @@ fn surface_controls(document: &Value, id: &str) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// `sideRegionHintLine` — the Utility panel's authored hint line, gathered from
-/// projected actions on both sides of the surface boundary.
+/// `sideRegionHintLine` + `hintRun` + `hintLabel` — the Utility panel's
+/// authored hint line, as the text those three put on screen.
+///
+/// Gathered from projected actions on both sides of the surface boundary: the
+/// actions that *enter* this surface from wherever they are projected, and the
+/// actions that *leave* it from its own rows. A repeated hint-and-label pair is
+/// dropped, a null hint never renders, and each surviving action paints
+/// `hint:label` with the label put through `hintLabel` — lowercased, with a
+/// leading `open`/`move` word and a trailing `mode` word removed — joined by a
+/// text space.
+///
+/// The last two rules are transcribed because cycle 2's audit found this
+/// function had invented them: it joined with `HINT_SEPARATOR`, which the hint
+/// run does not use, and read `label` raw, which the page never paints. That is
+/// F-55's defect pointed the other way — a rule copied from nowhere, and a pin
+/// (`HINT_SEPARATOR`) standing for a rule this file did not transcribe.
 fn page_side_hint_line(document: &Value, surface_id: &str) -> String {
+    /// `hintLabel` — `/^(open|move)\s+/` and `/\s+mode$/` off the lowercased
+    /// label, so a run reads "2:patch" rather than "2:Open Patch".
+    fn hint_label(label: &str) -> String {
+        let lowered = label.to_lowercase();
+        let mut text = lowered.as_str();
+        for prefix in ["open", "move"] {
+            if let Some(rest) = text.strip_prefix(prefix) {
+                if rest.starts_with(char::is_whitespace) {
+                    text = rest.trim_start();
+                    break;
+                }
+            }
+        }
+        if let Some(head) = text.strip_suffix("mode") {
+            if head.ends_with(char::is_whitespace) {
+                text = head.trim_end();
+            }
+        }
+        text.to_owned()
+    }
     let mut seen = BTreeSet::new();
     let mut spans = Vec::new();
     for surface in document
@@ -681,19 +715,32 @@ fn page_side_hint_line(document: &Value, surface_id: &str) -> String {
                 if !enters && !leaves {
                     continue;
                 }
-                let (Some(hint), Some(label)) = (
-                    action.get("hint").and_then(Value::as_str),
-                    action.get("label").and_then(Value::as_str),
-                ) else {
+                // The hint-and-label pair, deduped before the null-hint drop,
+                // in the page's own order. Carried as a pair rather than as the
+                // page's concatenated key because the separator that key uses
+                // is F-43's NUL — the merge step replaces it, and the two pins
+                // therefore sit either side of it. A pair is the same
+                // equivalence for any separator neither field can contain,
+                // which is the property the NUL was chosen for.
+                let hint = action.get("hint").and_then(Value::as_str);
+                let label = action.get("label").and_then(Value::as_str);
+                if !seen.insert((
+                    hint.unwrap_or("undefined").to_owned(),
+                    label.unwrap_or("undefined").to_owned(),
+                )) {
+                    continue;
+                }
+                let Some(hint) = hint else {
                     continue;
                 };
-                if seen.insert(format!("{hint} {label}")) {
-                    spans.push(format!("{hint}:{label}"));
-                }
+                spans.push(format!(
+                    "{hint}:{}",
+                    hint_label(label.unwrap_or("undefined"))
+                ));
             }
         }
     }
-    spans.join(" · ")
+    spans.join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,72 +1094,138 @@ fn preset_swap_in_flight() -> (AppState, SemanticControlId) {
 /// twin in `tests/webview_projection_shell.rs` can do that — but it makes a
 /// page that stops honouring one of these rules fail *here*, deterministically,
 /// instead of only under a live window.
+///
+/// **The completeness rule (F-55).** Cycle 1 pinned the strip's group *table*
+/// and left the identity→group *mapping* unpinned, so six mutations to
+/// `page.js` — each breaking a rule [`page_strip_group_key`],
+/// [`page_strip_groups`] or [`page_group_head_control_id`] copies — left this
+/// target green. A transcription with an unpinned rule is a transcription of
+/// nothing. So this table is not assembled by judgement about which rules
+/// matter; it is assembled by one mechanical rule:
+///
+/// > walk each transcribing function line by line, and for every line that
+/// > implements a rule read off `page.js`, pin the `page.js` statement that
+/// > implements it — one pin per copied rule, no pin without a copied rule.
+///
+/// The entries are therefore grouped by the function they defend and named for
+/// the rule rather than for the text, so a rule added to a transcription
+/// without a pin shows up as a gap in its own group. The last group holds the
+/// three constants and two marks the file transcribes directly.
+///
+/// **Every anchor occurs exactly once, and that is enforced here rather than
+/// remembered.** F-42, F-53 and F-55 are one failure mode: an anchor that also
+/// matches somewhere else guards nothing, because the site it names can be
+/// renamed while the pin stays satisfied. This file shipped two —
+/// `control && control.numericRange`, found in cycle 1 by mutation, and
+/// `data-role="row-range"`, found in cycle 1's review the same way, matching
+/// both the painting site and a `renderObservation` selector. Requiring exactly
+/// one occurrence makes the next blind anchor fail the moment it is added.
 fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
     let script = page_source("page.js");
-    let required: [(&str, &str); 14] = [
-        (
-            "the unavailable mark",
-            &format!("var UNAVAILABLE_MARK = \"{UNAVAILABLE_MARK}\""),
-        ),
+    let unavailable_mark = format!("var UNAVAILABLE_MARK = \"{UNAVAILABLE_MARK}\"");
+    let required: [(&str, &str); 63] = [
+        // `controlIdOf` — [`page_control_id`].
+        ("the control identity read", "      control && control.path && control.path.controlId\n        ? control.path.controlId.id\n        : \"\""),
+        // `controlValueText` — [`page_value_text`], arm for arm.
+        ("the absent value mark", "    var value = control && control.value;\n    if (!value || typeof value !== \"object\") {\n      return UNAVAILABLE_MARK;"),
+        ("the scalar value discriminator", "    if (value.kind === \"scalar\") {"),
+        ("the scalar arm's stepped/continuous split", "      return control.kind === \"stepped\"\n        ? String(Math.round(Number(value.value)))\n        : Number(value.value).toFixed(3);"),
+        ("the parameter value discriminator", "    if (value.kind === \"parameter\") {\n      var parameter = value.value;\n      if (parameter && typeof parameter === \"object\") {"),
+        ("the continuous parameter's three places", "        if (parameter.kind === \"continuous\") {\n          return Number(parameter.value).toFixed(3);"),
+        ("the stepped parameter reads as itself", "        if (parameter.kind === \"stepped\") {\n          return String(parameter.value);"),
+        ("the choice discriminator", "        if (parameter.kind === \"choice\") {"),
+        ("the authored option label read (F-33)", "          return String(\n            control.selectedLabel === null || control.selectedLabel === undefined\n              ? parameter.value\n              : control.selectedLabel\n          );"),
+        ("the toggle wording", "        if (parameter.kind === \"toggle\") {\n          return parameter.value ? \"ON\" : \"OFF\";"),
+        ("the unknown parameter-kind marker", "        return \"?\" + String(parameter.kind);"),
+        ("the malformed parameter mark", "      }\n      return UNAVAILABLE_MARK;"),
+        ("the asset discriminator", "    if (value.kind === \"asset\") {"),
+        ("the asset locator read", "      return value.value && value.value.locator\n        ? String(value.value.locator)\n        : UNAVAILABLE_MARK;"),
+        ("the identity and summary read", "    if (value.kind === \"identity\" || value.kind === \"summary\") {\n      return String(value.value);"),
+        ("the unknown value-kind marker", "    return \"?\" + String(value.kind);"),
+        // The lifecycle band's requested value — [`page_requested_value_text`].
+        ("the requested value read through the active value's presentation", "        ? controlValueText({\n            kind: control.kind,\n            value: requested,"),
+        ("the requested option label read (F-33)", "            selectedLabel: control.requestedLabel,"),
+        // `rangeEndpointText` and `rangeHtml` — [`page_range_text`].
+        ("the endpoint's continuous three places", "    return control.kind === \"continuous\"\n      ? Number(value).toFixed(3)\n      : String(value);"),
+        ("the absent range paints nothing", "    var range = control && control.numericRange;\n    if (\n      !range ||\n      typeof range.minimum !== \"number\" ||\n      typeof range.maximum !== \"number\"\n    ) {\n      return \"\";"),
+        ("the painted range span", "      '<span class=\"prow-range type-hint muted\" data-role=\"row-range\">' +"),
+        ("the painted lower bound", "      escapeHtml(rangeEndpointText(control, range.minimum)) +"),
+        ("the separator painted between the bounds", "      escapeHtml(RANGE_SEPARATOR) +"),
+        ("the painted upper bound", "      escapeHtml(rangeEndpointText(control, range.maximum)) +"),
+        // The unit `check_ranges_and_units_are_rendered` reads back.
+        ("the painted unit span", "    var unit = control.unit\n      ? '<span class=\"prow-unit type-hint muted\">' +\n        escapeHtml(String(control.unit)) +\n        \"</span>\"\n      : \"\";"),
+        // `stripGroupKey` — [`page_strip_group_key`], arm for arm. This is the
+        // identity→group mapping T030's whole claim is about; cycle 1 pinned
+        // none of it (F-55).
+        ("the instrument group's identity", "    if (id === \"patch.engine\") {\n      return \"instrument\";"),
+        ("the envelope group's prefix", "    if (startsWith(id, \"patch.envelope.\")) {\n      return \"envelope\";"),
+        ("the capability group's prefix", "    if (startsWith(id, \"patch.capability.\")) {\n      return \"capability\";"),
+        ("the slot group's prefix", "    if (startsWith(id, \"patch.effectSlot.\")) {\n      return \"slot.\" + id.slice(\"patch.effectSlot.\".length);"),
+        ("the occupant joins its open slot", "    if (startsWith(id, \"patch.effect.\")) {\n      return openSlot;"),
+        ("an identity no designed group claims has no key", "      return openSlot;\n    }\n    return null;"),
+        // `groupHeadControlId` — [`page_group_head_control_id`]. The group titles
+        // `projected_screen_strings` walks are built through this.
+        ("the instrument and capability group head", "    if (key === \"instrument\" || key === \"capability\") {\n      return \"patch.engine\";"),
+        ("the slot group head", "    if (startsWith(key, \"slot.\")) {\n      return \"patch.effectSlot.\" + key.slice(\"slot.\".length);"),
+        ("no other group has a head row", "      return \"patch.effectSlot.\" + key.slice(\"slot.\".length);\n    }\n    return null;"),
+        // `stripGroups` — [`page_strip_groups`], statement for statement.
+        ("a group's legend and designed flag come from the declared table", "      if (!Object.prototype.hasOwnProperty.call(byKey, key)) {\n        var declared = designedGroup(key);\n        byKey[key] = {\n          key: key,\n          legend: declared ? declared.legend : null,\n          designed: declared ? declared.designed : false,\n          unknown: false,\n          rows: [],\n        };\n        groups.push(byKey[key]);\n      }\n      return byKey[key];"),
+        ("the open slot starts closed", "    var openSlot = null;"),
+        ("an invisible row is not arranged", "      if (!control.visible) {\n        continue;"),
+        ("the open slot is carried from the occupancy row", "      var id = controlIdOf(control);\n      if (startsWith(id, \"patch.effectSlot.\")) {\n        openSlot = stripGroupKey(id, null);"),
+        ("each row's group is resolved against the open slot", "      var key = stripGroupKey(id, openSlot);"),
+        ("the unclaimed identity branch", "      if (key === null) {"),
+        ("an unclaimed identity joins the explicit unknown group", "        var unknown = group(\"?group\");\n        unknown.unknown = true;\n        unknown.rows.push(control);\n        continue;"),
+        ("a row joins its group in document order", "      group(key).rows.push(control);"),
+        ("the declared-group re-insertion", "    for (var d = DESIGNED_STRIP_GROUPS.length - 1; d >= 0; d -= 1) {\n      var designed = DESIGNED_STRIP_GROUPS[d];\n      if (!designed.designed || byKey[designed.key]) {"),
+        ("the re-inserted group's declared position", "      var at = groups.length;\n      for (var g = 0; g < groups.length; g += 1) {\n        var index = -1;\n        for (var e = 0; e < DESIGNED_STRIP_GROUPS.length; e += 1) {\n          if (DESIGNED_STRIP_GROUPS[e].key === groups[g].key) {\n            index = e;\n          }\n        }\n        if (index > d) {\n          at = g;\n          break;\n        }\n      }"),
+        ("the re-inserted group carries no rows", "      groups.splice(at, 0, {\n        key: designed.key,\n        legend: designed.legend,\n        designed: true,\n        unknown: false,\n        rows: [],\n      });"),
+        // `stripGroupHtml` — the group title `projected_screen_strings` reads and
+        // the empty-group mark `check_an_absent_group_...` asserts.
+        ("the group title is the authored legend or the head row's value", "    var title = group.unknown\n      ? \"?\" + group.key.slice(1)\n      : group.legend || (head ? controlValueText(head) : null);"),
+        ("the empty-group mark", "    if (group.rows.length === 0) {\n      rows = markUnavailableRowHtml(String(group.legend || group.key));\n    }"),
+        // `patchStripHtml` — the whole-strip unavailable rule and the head row
+        // each group is titled by.
+        ("the unavailable strip", "    var groups = stripGroups(controls);\n    var painted = 0;\n    for (var g = 0; g < groups.length; g += 1) {\n      painted += groups[g].rows.length;\n    }\n    if (painted === 0) {"),
+        ("each group's head row is resolved through groupHeadControlId", "      body += stripGroupHtml(\n        groups[i],\n        mode,\n        \"listed\",\n        controlById(main, groupHeadControlId(groups[i].key))\n      );"),
+        // `sideRegionHintLine`, `hintRun` and `hintLabel` — [`page_side_hint_line`].
+        ("the hint line walks every projected action", "    var surfaces = model.surfaces || [];\n    for (var s = 0; s < surfaces.length; s += 1) {\n      var controls = surfaces[s].controls || [];\n      for (var c = 0; c < controls.length; c += 1) {\n        var valid = controls[c].validActions || [];"),
+        ("the hint line's action selection", "          var kind = action.action && action.action.kind;\n          var entersThis =\n            kind === \"enterSurface\" &&\n            action.action.payload === (surface && surface.id);\n          var leavesThis = kind === \"return\" && surfaces[s].id === surface.id;\n          if (!entersThis && !leavesThis) {\n            continue;\n          }"),
+        // Two anchors either side of the separator, which is deliberately not
+        // pinned: it is F-43's U+0000, owned by the merge step and scheduled for
+        // replacement with a printable character. What this file transcribes is
+        // the *pair* being deduped, which it copies as a tuple key — the same
+        // equivalence for any separator no hint or label can contain, which is
+        // why the page chose a NUL. Pinning the byte would fire on F-43's repair
+        // and would say nothing about the rule.
+        ("the hint line's dedup key", "          var key = String(action.hint) +"),
+        ("the hint line's dedup", " + String(action.label);\n          if (seen[key]) {\n            continue;\n          }\n          seen[key] = true;\n          actions.push(action);"),
+        ("no qualifying action, no hint line", "    if (actions.length === 0) {\n      return \"\";\n    }"),
+        ("the panel's hint line is its hint run", "    return (\n      '<span class=\"panel-hint\" data-role=\"utility-hint\">' +\n      hintRun(actions) +\n      \"</span>\"\n    );"),
+        ("a null hint never renders", "      if (!action.hint) {\n        continue;"),
+        ("the hint pairs its label with a colon", "        '<span class=\"type-hint focus\">' +\n          escapeHtml(action.hint) +\n          \":\" +\n          escapeHtml(hintLabel(action)) +\n          \"</span>\""),
+        ("the hint run's space join", "    return spans.join(\" \");"),
+        ("the hint label's authored transform", "    return String(action.label)\n      .toLowerCase()\n      .replace(/^(open|move)\\s+/, \"\")\n      .replace(/\\s+mode$/, \"\");"),
+        // The constants and marks this file transcribes directly.
+        ("the unavailable mark", unavailable_mark.as_str()),
         ("the range separator", "var RANGE_SEPARATOR = \" — \""),
-        ("the hint separator", "var HINT_SEPARATOR = \" · \""),
         ("the read-only mark", "var READ_ONLY_MARK = \"READ-ONLY\""),
-        (
-            "the read-only discriminator",
-            "control.patchInteraction === \"readOnly\"",
-        ),
-        (
-            "the authored option label read (F-33)",
-            "control.selectedLabel",
-        ),
-        (
-            "the requested option label read (F-33)",
-            "selectedLabel: control.requestedLabel",
-        ),
-        // Pinned to the *painting* site, not to the expression. `var range =
-        // control && control.numericRange;` occurs three times — twice in the
-        // position-indicator helpers — so a pin on it survives `rangeHtml`
-        // being emptied, and this guard once did. Found by running the
-        // mutation, not by reading the file (F-42's method, on my own work).
-        (
-            "the painted lower bound",
-            "escapeHtml(rangeEndpointText(control, range.minimum))",
-        ),
-        (
-            "the painted upper bound",
-            "escapeHtml(rangeEndpointText(control, range.maximum))",
-        ),
-        (
-            "the painted range span",
-            "data-role=\"row-range\"",
-        ),
-        // The two grouping rules this file's arranger transcribes, pinned to
-        // the loops that implement them: a designed group the walk never
-        // opened is re-inserted at its declared position, and a group with no
-        // rows marks itself rather than painting an empty container.
-        (
-            "the declared-group re-insertion",
-            "for (var d = DESIGNED_STRIP_GROUPS.length - 1; d >= 0; d -= 1) {",
-        ),
-        (
-            "the empty-group mark",
-            "if (group.rows.length === 0) {\n      rows = markUnavailableRowHtml(",
-        ),
-        (
-            "the unavailable strip",
-            "if (painted === 0) {",
-        ),
-        (
-            "the painted unit span",
-            "'<span class=\"prow-unit type-hint muted\">' +\n        escapeHtml(String(control.unit)) +",
-        ),
+        ("the read-only discriminator", "control.patchInteraction === \"readOnly\""),
     ];
     for (what, fragment) in required {
-        assert!(
-            script.contains(fragment),
-            "webview-page/page.js no longer contains {what}: {fragment:?} — the \
-             transcription in this file is describing a page that no longer exists"
-        );
+        match script.matches(fragment).count() {
+            1 => {}
+            0 => panic!(
+                "webview-page/page.js no longer contains {what}: {fragment:?} — the \
+                 transcription in this file is describing a page that no longer exists"
+            ),
+            elsewhere => panic!(
+                "{what} is pinned to {fragment:?}, which occurs {elsewhere} times in \
+                 webview-page/page.js — an anchor matching more than the one site it names \
+                 is not a pin (F-42, F-53, F-55): the named site could be changed and this \
+                 would stay satisfied"
+            ),
+        }
     }
     // The designed group table, key for key and legend for legend. A page that
     // adds, drops, renames or reorders a group makes the strip a different
@@ -1124,12 +1237,132 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
             }
             None => format!("{{ key: \"{key}\", legend: null, designed: {designed} }}"),
         };
-        assert!(
-            script.contains(&entry),
-            "webview-page/page.js no longer declares the strip group {entry}"
+        assert_eq!(
+            script.matches(&entry).count(),
+            1,
+            "webview-page/page.js must declare the strip group {entry} exactly once"
         );
     }
+    check_every_line_of_a_transcribed_page_rule_carries_a_pin(&script, &required);
     required.len() + DESIGNED_STRIP_GROUPS.len()
+}
+
+/// One `page.js` function's body, from the committed source.
+fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
+    let head = format!("\n  function {name}(");
+    let start = script
+        .find(&head)
+        .unwrap_or_else(|| panic!("webview-page/page.js declares {name}"))
+        + 1;
+    let body = &script[start..];
+    let end = body
+        .find("\n  }\n")
+        .unwrap_or_else(|| panic!("{name} closes at file scope"));
+    &body[..end]
+}
+
+/// **The pin set is complete, not merely large.**
+///
+/// The table above proves every pin still matches. It cannot prove there *is* a
+/// pin for every rule — which is precisely what cycle 1 lacked (F-55), and what
+/// reading the transcription against the page does not reveal either (F-56).
+/// The only thing that reveals it is walking the source.
+///
+/// So this walks it, mechanically: every line of every `page.js` function this
+/// file transcribes **whole** must either sit inside a pinned fragment or be
+/// named below as scaffolding that carries no rule. A rule added to any of
+/// these functions without a pin fails here, and the only way past is to write
+/// the new line into a list a reviewer reads — which is the difference between
+/// an omission and a decision.
+///
+/// Functions transcribed only in part — `stripGroupHtml`'s title and empty-group
+/// mark, `patchStripHtml`'s unavailable rule and head-row lookup, the lifecycle
+/// band's requested value, the row's unit span — are pinned by hand instead,
+/// because requiring whole-body coverage there would demand pins for markup this
+/// file does not copy, and a pin with no copied rule behind it is noise.
+fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
+    script: &str,
+    pins: &[(&str, &str)],
+) -> usize {
+    /// `page.js` function → the transcription in this file that copies it whole.
+    const TRANSCRIBED_WHOLE: [(&str, &str); 10] = [
+        ("controlIdOf", "page_control_id"),
+        ("controlValueText", "page_value_text"),
+        ("rangeEndpointText", "page_range_text"),
+        ("rangeHtml", "page_range_text"),
+        ("stripGroupKey", "page_strip_group_key"),
+        ("groupHeadControlId", "page_group_head_control_id"),
+        ("stripGroups", "page_strip_groups"),
+        ("hintLabel", "page_side_hint_line"),
+        ("hintRun", "page_side_hint_line"),
+        ("sideRegionHintLine", "page_side_hint_line"),
+    ];
+    /// Lines that carry no rule: accumulators, cursors and loop headers. Each
+    /// is here because the transcription's own loop is not a copy of *this*
+    /// loop — it walks Rust values — so there is nothing to pin. Every entry is
+    /// asserted below to still occur, so this list cannot rot into a permit.
+    const SCAFFOLDING: [&str; 13] = [
+        "var groups = [];",
+        "var byKey = {};",
+        "var spans = [];",
+        "var actions = [];",
+        "var seen = {};",
+        "var control = controls[i];",
+        "var action = valid[a];",
+        "var action = actions[i];",
+        "spans.push(",
+        "return groups;",
+        "for (var i = 0; i < controls.length; i += 1) {",
+        "for (var i = 0; i < actions.length; i += 1) {",
+        "for (var a = 0; a < valid.length; a += 1) {",
+    ];
+    /// F-43's NUL separator, whose two pins sit either side of it precisely so
+    /// the merge step's repair does not fire them. Matched by prefix for the
+    /// same reason.
+    const NUL_SEPARATOR_LINE: &str = "var key = String(action.hint) +";
+
+    let mut used = BTreeSet::new();
+    let mut checked = 0_usize;
+    for (page_function, twin) in TRANSCRIBED_WHOLE {
+        for line in page_function_body(script, page_function).split('\n') {
+            // An inline comment is not a rule; `//` cannot appear inside a
+            // string or a regex literal in any of these ten functions.
+            let code = line.split(" //").next().unwrap_or(line).trim_end();
+            let statement = code.trim();
+            if statement.is_empty()
+                || statement.starts_with("//")
+                || statement.starts_with("function ")
+            {
+                continue;
+            }
+            checked += 1;
+            if pins.iter().any(|(_, fragment)| fragment.contains(code)) {
+                continue;
+            }
+            if statement.starts_with(NUL_SEPARATOR_LINE) {
+                continue;
+            }
+            assert!(
+                SCAFFOLDING.contains(&statement),
+                "webview-page/page.js {page_function} line {statement:?} is transcribed by \
+                 {twin} and no pin covers it — pin the statement, or name it as scaffolding \
+                 that carries no rule (F-55: an unpinned copied rule is what made the \
+                 grouping claim provable against nothing)"
+            );
+            used.insert(statement);
+        }
+    }
+    assert_eq!(
+        used.len(),
+        SCAFFOLDING.len(),
+        "the scaffolding list names {} lines webview-page/page.js no longer has: {:?}",
+        SCAFFOLDING.len() - used.len(),
+        SCAFFOLDING
+            .iter()
+            .filter(|line| !used.contains(*line))
+            .collect::<Vec<_>>()
+    );
+    checked
 }
 
 // ---------------------------------------------------------------------------
@@ -1879,9 +2112,17 @@ fn check_utility_resolves_five_typed_rows_and_its_hint_line() {
     );
     // Both facts the design authority names: how an operator enters the panel
     // and how they leave it, each from the side of the boundary that owns it.
+    //
+    // Asserted on the *label* half — `hintLabel("Return")` — not on the hint
+    // half. Cycle 1 asserted `contains("Return")`, which the painted line
+    // satisfies through the physical hint `A / Return`, so it held whatever the
+    // leave action's label said. The painted line reads
+    // `D:utility A / Return:return`, and only the trailing pair comes from the
+    // action this claim is about.
+    let entered = page_side_hint_line(&document(&entered_utility()), "patchUtility");
     assert!(
-        page_side_hint_line(&document(&entered_utility()), "patchUtility").contains("Return"),
-        "the panel's own rows must project the action that leaves it"
+        entered.ends_with(":return") || entered.contains(":return "),
+        "the panel's own rows must project the action that leaves it: {entered}"
     );
 }
 
