@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-effects-and-buses demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell demo-live-component-library semantic-graphical-view-model-acceptance webview-tokens clean
+.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-effects-and-buses demo-live-patch-editor demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell demo-live-component-library semantic-graphical-view-model-acceptance webview-tokens clean
 
 help: ## Show the available project commands
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -41,7 +41,7 @@ observe: ## Print the structured headless behavioral observation
 demo: ## Run the exhaustive GUI demo and structured trace
 	cargo run --bin crest-synth -- --smoke --observe --demo-scene
 
-# The four retained live targets below (and the demo-live alias) run on the
+# The five retained live targets below (and the demo-live alias) run on the
 # webview shell: every --demo-live-* mode composes its own TauriWebviewWindow
 # inside StandaloneApplication::run_live_demo_scene (mission
 # webview-shell-cutover WP03). Since WP07 the webview shell is the product's
@@ -52,6 +52,15 @@ demo-live: demo-live-effects-and-buses ## Run the newest optimized graphical liv
 
 demo-live-effects-and-buses: ## Run the cumulative effects-and-buses demo with a real window and physical audio
 	cargo run --release --bin crest-synth -- --demo-live-effects-and-buses
+
+# Additive: the demo-live alias above keeps pointing at the cumulative
+# effects-and-buses scene, and this scene does not subsume it. Its subject is
+# the SECOND installed Patch, reached through the on-screen SelectPatch
+# gesture. Its declared controlled negative removes that gesture:
+#   cargo run --release --bin crest-synth -- --demo-live-patch-editor --defeat-patch-selection
+# which must exit 1 on the reach predicates.
+demo-live-patch-editor: ## Run the functional Patch editor demo on the second Patch with a real window and physical audio
+	cargo run --release --bin crest-synth -- --demo-live-patch-editor
 
 demo-live-sixteen-track-mixer-routing: ## Run the cumulative sixteen-track mixer-routing demo with a real window and physical audio
 	cargo run --release --bin crest-synth -- --demo-live-sixteen-track-mixer-routing

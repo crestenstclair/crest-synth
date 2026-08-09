@@ -44,6 +44,12 @@ pub use live_effects_and_buses_scene::{
     EFFECTS_AND_BUSES_SCENE_NAME,
 };
 
+pub mod functional_patch_editor_observation;
+pub use functional_patch_editor_observation::{
+    FunctionalPatchEditorObservation, PatchEditorMeasurement, PatchEditorTeardown,
+    AUDIBLE_EDIT_DELTA_MARGIN, FUNCTIONAL_PATCH_EDITOR_OBSERVATION_MARKER,
+};
+
 pub mod live_patch_editor_scene;
 
 pub mod live_demo_checkpoint;

@@ -22,6 +22,9 @@ use crate::synth::{
     VoiceEnvelope,
 };
 use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
+use crate::testing::functional_patch_editor_observation::{
+    per_track_rms_deltas, ObservedAudibleEdit, ObservedOccupancy, PatchEditorMeasurement,
+};
 use crate::testing::live_demo_checkpoint::{
     LiveCheckpoint, LiveDemoCheckpoint, LiveDemoCheckpointError, LiveEngineCheckpoint,
     LivePresetProjection, LiveTopologyCheckpoint,
@@ -98,6 +101,10 @@ pub struct LiveDemoRunner<Source, Observation> {
     completed_report: Option<LiveDemoReport>,
     runtime_audio: RuntimeAudioWitness,
     aborted: bool,
+    /// Present only for the functional Patch editor scene. It samples the
+    /// canonical projection the shell is already painting, so measuring costs
+    /// no extra projection.
+    patch_editor: Option<PatchEditorMeasurement>,
 }
 
 impl<Source, Observation> LiveDemoRunner<Source, Observation>
@@ -118,6 +125,7 @@ where
             scene.expected_engine_transitions(),
             scene.expected_topology_transitions(),
         );
+        let measures_patch_editor = scene.measures_patch_editor();
         let last_ready_graph_revision = runtime_audio.active_graph_revision();
         Self {
             automatic_midi,
@@ -148,6 +156,7 @@ where
             completed_report: None,
             runtime_audio,
             aborted: false,
+            patch_editor: measures_patch_editor.then(PatchEditorMeasurement::default),
         }
     }
 
@@ -177,6 +186,17 @@ where
 
         let result = self.advance_current(app_loop);
         let shell = app_loop.current_graphical_shell();
+        if self.patch_editor.is_some() {
+            // The projection the shell is painting, sampled every advance: the
+            // measured facts are gathered across the whole run rather than at
+            // one convenient moment, and no second projection is built.
+            let audio = self.observation.read_latest_on_control();
+            let state = app_loop.state();
+            if let Some(measurement) = self.patch_editor.as_mut() {
+                measurement.observe_projection(state, shell.semantic_model());
+                measurement.observe_audio(audio);
+            }
+        }
         if self
             .recent_shells
             .back()
@@ -1046,7 +1066,7 @@ where
             LiveTopologyPhase::Support { index } => {
                 self.tick_fixture(app_loop)?;
                 if let Some(item) = transition.support_before().get(index) {
-                    if execute_topology_support(app_loop, item)? {
+                    if execute_topology_support(app_loop, item, self.patch_editor.as_mut())? {
                         self.topology_phase = LiveTopologyPhase::Support {
                             index: index.saturating_add(1),
                         };
@@ -1064,6 +1084,7 @@ where
                 let audio_before = self.observation.read_latest_on_control();
                 let source_revision = app_loop.graph_revision();
                 let context = TopologyContext {
+                    focus_before: app_loop.state().interaction().focus_path().clone(),
                     audio_before,
                     source_revision,
                     request_id: None,
@@ -1267,7 +1288,7 @@ where
                     .mark_topology_exercised(transition.identifier());
                 self.topology_phase = LiveTopologyPhase::SupportAfter { index: 0 };
                 self.mark_progress();
-                self.push_topology_checkpoint(checkpoint)
+                self.push_topology_checkpoint(checkpoint, &transition, &context, app_loop)
             }
             LiveTopologyPhase::AwaitScalarAudible { mut context } => {
                 let observation = self.observation.read_latest_on_control();
@@ -1319,7 +1340,7 @@ where
                     .mark_topology_exercised(transition.identifier());
                 self.topology_phase = LiveTopologyPhase::SupportAfter { index: 0 };
                 self.mark_progress();
-                self.push_topology_checkpoint(checkpoint)
+                self.push_topology_checkpoint(checkpoint, &transition, &context, app_loop)
             }
             LiveTopologyPhase::AwaitRejectionAudio { mut context } => {
                 let observation = self.observation.read_latest_on_control();
@@ -1373,12 +1394,12 @@ where
                     .mark_topology_exercised(transition.identifier());
                 self.topology_phase = LiveTopologyPhase::SupportAfter { index: 0 };
                 self.mark_progress();
-                self.push_topology_checkpoint(checkpoint)
+                self.push_topology_checkpoint(checkpoint, &transition, &context, app_loop)
             }
             LiveTopologyPhase::SupportAfter { index } => {
                 self.tick_fixture(app_loop)?;
                 if let Some(item) = transition.support_after().get(index) {
-                    if execute_topology_support(app_loop, item)? {
+                    if execute_topology_support(app_loop, item, self.patch_editor.as_mut())? {
                         self.topology_phase = LiveTopologyPhase::SupportAfter {
                             index: index.saturating_add(1),
                         };
@@ -1417,13 +1438,60 @@ where
         }
     }
 
-    fn push_topology_checkpoint(
+    /// Pushes one topology checkpoint and, for the functional Patch editor
+    /// scene, the correlating patch-editor checkpoint beside it.
+    ///
+    /// Every completion path funnels through here, so the correlation is
+    /// emitted for each observed transition exactly once and cannot drift
+    /// from the topology evidence it is built out of.
+    fn push_topology_checkpoint<Boundary>(
         &mut self,
         checkpoint: LiveTopologyCheckpoint,
-    ) -> Result<Option<LiveCheckpoint>, LiveDemoError> {
-        let checkpoint = LiveCheckpoint::topology(checkpoint);
-        self.checkpoints.push(checkpoint.clone());
-        Ok(Some(checkpoint))
+        transition: &crate::testing::live_effects_and_buses_scene::LiveTopologyTransition,
+        context: &TopologyContext,
+        app_loop: &AppLoop<Boundary>,
+    ) -> Result<Option<LiveCheckpoint>, LiveDemoError>
+    where
+        Boundary: ControlAudioBoundary,
+    {
+        let correlating = self
+            .patch_editor
+            .as_ref()
+            .map(|_| build_patch_editor_checkpoint(&checkpoint, transition, context, app_loop));
+        let topology = LiveCheckpoint::topology(checkpoint);
+        self.checkpoints.push(topology.clone());
+        if let (Some(correlating), Some(measurement)) = (correlating, self.patch_editor.as_mut()) {
+            if let Some(slot) = slot_of(transition.action()) {
+                measurement.observe_occupancy(ObservedOccupancy {
+                    patch_id: correlating
+                        .destination_patch_id()
+                        .ok_or(LiveDemoError::TopologySupportMismatch)?,
+                    slot,
+                    // Focus was on this slot's own row at dispatch and still
+                    // is after the commit: the journey never left the row it
+                    // claims to have edited.
+                    focus_verified: focus_names_slot(&context.focus_before, slot)
+                        && focus_names_slot(correlating.focus_after(), slot),
+                });
+            }
+            if transition.measures_audible_edit() {
+                if let Some(patch_id) = correlating.destination_patch_id() {
+                    measurement.observe_audible_edit(ObservedAudibleEdit {
+                        patch_id,
+                        deltas_by_track: per_track_rms_deltas(
+                            context.audio_before,
+                            self.observation.read_latest_on_control(),
+                        ),
+                    });
+                }
+            }
+            if correlating.correlates(measurement.reached_patch_id()) {
+                measurement.observe_correlating_checkpoint();
+            }
+            self.checkpoints
+                .push(LiveCheckpoint::patch_editor(correlating));
+        }
+        Ok(Some(topology))
     }
 
     fn current_engine_transition(&self) -> Result<&LiveEngineTransition, LiveDemoError> {
@@ -1692,6 +1760,13 @@ where
         }
         let active_graph_revision = tree.graph_revision();
         let graphical_shell = app_loop.current_graphical_shell();
+        // The two facts the canonical event log is the only exact source for.
+        let event_log = app_loop.event_log();
+        if let Some(measurement) = self.patch_editor.as_mut() {
+            measurement.observe_switches_from_event_log(&event_log);
+            measurement.observe_note_offs_from_event_log(&event_log);
+        }
+        let patch_editor = self.patch_editor.clone();
         self.completed_report = Some(LiveDemoReport::new(
             self.scene.name(),
             self.checkpoints.clone(),
@@ -1706,6 +1781,7 @@ where
             self.runtime_audio
                 .with_active_graph_revision(active_graph_revision)
                 .measured(),
+            patch_editor,
         )?);
         self.mark_progress();
         Ok(())
@@ -1837,6 +1913,9 @@ struct PendingProjectionMeasure {
 /// Bounded per-transition correlation state for the topology phase.
 #[derive(Clone, Debug, PartialEq)]
 struct TopologyContext {
+    /// The canonical focus path at the moment of dispatch: the "before" half
+    /// of every occupancy transition's focus verification.
+    focus_before: FocusPath,
     audio_before: AudioObservationSnapshot,
     source_revision: crate::real_time::GraphRevision,
     request_id: Option<EngineSelectionRequestId>,
@@ -1881,6 +1960,7 @@ impl LiveTopologyPhase {
 fn execute_topology_support<Boundary>(
     app_loop: &mut AppLoop<Boundary>,
     item: &crate::testing::live_effects_and_buses_scene::LiveTopologySupport,
+    patch_editor: Option<&mut PatchEditorMeasurement>,
 ) -> Result<bool, LiveDemoError>
 where
     Boundary: ControlAudioBoundary,
@@ -1997,6 +2077,130 @@ where
                 Err(LiveDemoError::TopologySupportMismatch)
             }
         }
+        LiveTopologySupport::VerifyPatchSubject { patch_id } => {
+            // Read from the canonical projection the shell is painting, not
+            // from the reducer's field directly: what is on screen is the
+            // claim, and a projection speaking for another Patch is the
+            // defect this assertion exists for.
+            let projected = app_loop.current_semantic_model().focus_path().patch_id();
+            if projected == Some(*patch_id) {
+                Ok(true)
+            } else {
+                Err(LiveDemoError::TopologySupportMismatch)
+            }
+        }
+        LiveTopologySupport::ExpectRejected { event, rejection } => {
+            let focus_before = app_loop.state().interaction().focus_path().clone();
+            dispatch_rejected_topology_event(app_loop, event.clone(), rejection)?;
+            let unchanged = app_loop.state().interaction().focus_path() == &focus_before;
+            if let Some(measurement) = patch_editor {
+                match event {
+                    AppEvent::SelectPatch(_) => {
+                        measurement.observe_switch_refused_at_end(unchanged);
+                    }
+                    AppEvent::EnterSurface(crate::control::SurfaceId::PatchDetail) => {
+                        measurement.observe_detail_entry_refused_from_empty_slot();
+                    }
+                    _ => {}
+                }
+            }
+            if unchanged {
+                Ok(true)
+            } else {
+                Err(LiveDemoError::TopologySupportMismatch)
+            }
+        }
+    }
+}
+
+/// Builds the patch-editor correlation for one observed topology transition:
+/// the destination Patch the projection now speaks for, the focus before and
+/// after, and the per-track audible consequence measured over the transition's
+/// own observation window.
+///
+/// Everything here is read out of evidence the transition already produced;
+/// nothing is re-derived from what the scene intended.
+fn build_patch_editor_checkpoint<Boundary>(
+    checkpoint: &LiveTopologyCheckpoint,
+    transition: &crate::testing::live_effects_and_buses_scene::LiveTopologyTransition,
+    context: &TopologyContext,
+    app_loop: &AppLoop<Boundary>,
+) -> crate::testing::live_demo_checkpoint::LivePatchEditorCheckpoint
+where
+    Boundary: ControlAudioBoundary,
+{
+    let focus_after = app_loop.state().interaction().focus_path().clone();
+    let destination_patch_id = focus_after.patch_id();
+    let deltas = per_track_rms_deltas(checkpoint.audio_before(), checkpoint.audio_after());
+    let track_of = |patch_id: crate::kernel::PatchId| {
+        app_loop
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .map(|patch| patch.output().track_id().index())
+    };
+    let destination_track = destination_patch_id.and_then(track_of);
+    let destination_track_delta = destination_track.map_or(0.0, |index| deltas[index]);
+    // The largest delta on any *other* installed Patch's own output track over
+    // the same window. Patches may share a track, so a Patch whose route is
+    // the destination's own is not counted against it — that would measure the
+    // mixer's summing rather than the edit's reach.
+    let other_patch_track_delta = app_loop
+        .patches()
+        .iter()
+        .filter(|patch| Some(patch.id()) != destination_patch_id)
+        .map(|patch| patch.output().track_id().index())
+        .filter(|index| Some(*index) != destination_track)
+        .map(|index| deltas[index])
+        .fold(0.0_f32, f32::max);
+    crate::testing::live_demo_checkpoint::LivePatchEditorCheckpoint::new(
+        checkpoint.transition(),
+        destination_patch_id,
+        context.focus_before.clone(),
+        focus_after,
+        checkpoint.generation(),
+        checkpoint
+            .target_graph_revision()
+            .unwrap_or_else(|| checkpoint.source_graph_revision()),
+        slot_of(transition.action()),
+        edited_parameter_of(&context.focus_before),
+        deltas.to_vec(),
+        destination_track_delta,
+        other_patch_track_delta,
+        checkpoint.audio_before().sequence(),
+        checkpoint.audio_after().sequence(),
+    )
+}
+
+/// The occupancy position one declared action changes, if it changes one.
+fn slot_of(
+    action: Option<&crate::control::SemanticAction>,
+) -> Option<crate::synth::effect_slot_id::EffectSlotIndex> {
+    match action {
+        Some(crate::control::SemanticAction::SetSlotOccupancy { slot, .. }) => Some(*slot),
+        _ => None,
+    }
+}
+
+/// Whether one focus path names the given slot's own occupancy row.
+fn focus_names_slot(
+    focus: &FocusPath,
+    slot: crate::synth::effect_slot_id::EffectSlotIndex,
+) -> bool {
+    matches!(
+        focus.control_id(),
+        crate::control::SemanticControlId::Patch(PatchControlId::EffectSlot(actual))
+            if *actual == slot
+    )
+}
+
+/// The parameter identity a focused PATCH row addresses, carried on the
+/// correlation so the audible edit names what it edited.
+fn edited_parameter_of(focus: &FocusPath) -> Option<PatchControlId> {
+    match focus.control_id() {
+        crate::control::SemanticControlId::Patch(control) => Some(control.clone()),
+        crate::control::SemanticControlId::Mixer(_)
+        | crate::control::SemanticControlId::SurfaceRoot => None,
     }
 }
 

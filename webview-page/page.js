@@ -1966,6 +1966,13 @@
   // ShellFrameObservation forwarding consumes (WP02). The region ids spell
   // ShellRegionId's serialized names so the Rust side can assemble honest
   // observations without re-deriving them.
+  //
+  // It also carries `strip`: how many groups the PATCH strip painted, and
+  // whether it painted a flat run of rows instead of groups. Grouping is
+  // decided here and nowhere else (`stripGroups`), so this is read back off
+  // the painted DOM and transported — one producer. Measuring it Rust-side
+  // would be a second implementation of the same rule, which is agreement
+  // between copies rather than proof (mission finding F-44).
   function paintedEvidence(model) {
     var doc = window.document;
     var bands = [
@@ -2000,6 +2007,9 @@
         label: label,
       });
     }
+    var strip = doc.getElementById("strip");
+    var groupedRows = strip ? strip.querySelectorAll(".pgroup .prow").length : 0;
+    var allRows = strip ? strip.querySelectorAll(".prow").length : 0;
     return {
       generation: model.generation,
       stateHash: model.stateHash,
@@ -2012,6 +2022,12 @@
         heightPx: window.innerHeight,
       },
       regions: regions,
+      strip: {
+        groupsPainted: strip ? strip.querySelectorAll(".pgroup").length : 0,
+        // A run of painted rows with none of them inside a group: the flat
+        // control run FR-001 replaced. Zero painted rows is not a flat run.
+        flatControlRun: allRows > 0 && groupedRows === 0,
+      },
     };
   }
 
