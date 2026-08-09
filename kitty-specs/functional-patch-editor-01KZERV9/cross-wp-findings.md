@@ -1737,6 +1737,25 @@ lesson, paid for a fourth time.
 > throw on every parameter row while all 30 targets stay green; emptying the NUL
 > separator is MISSED and silently collides hint keys. "Exactly three MISSED remain"
 > was true of the pin pool and false of the control. There were three lists, not one.
+>
+> **AMENDED AGAIN after cycle 5, and this is the fifth link.** "Three lists" was also
+> short. Cycle 5 instrumented the walk to print the disposition of every line of every
+> walked body — 243 lines per run — and derived the loop's complete partition: three
+> keyed tables (pins, declarations, scaffolding), a fourth prefix skip (the NUL line),
+> three inert text filters, **and two extraction anchors outside the loop entirely**,
+> where the walk can fail to look at a line at all. `script.find` takes the first
+> declaration where JavaScript takes the last; the first column-two `}` stops being
+> the closer the moment an inner brace is dedented there.
+>
+> Cycle 5 built the proposed fix *verbatim* before landing anything, measured it, and
+> found it left **seven** mutations MISSED — including a `return groups;` moved inside
+> `stripGroups`' own loop so no row is ever arranged, and a second `controlIdOf`
+> declared below the first, which is the one the page actually calls.
+>
+> Five successive claims of completeness, each written from the enumeration in front
+> of its author. The one that finally held was not written from an enumeration at all
+> — it was measured by instrumenting the thing itself and classifying every line it
+> touched.
 
 **The fix is proven, not proposed.** The reviewer ran it green in an isolated copy:
 scope the pool with `pins.iter().filter(|(_, f)| body.contains(*f))`, skip
