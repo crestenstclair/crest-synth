@@ -1,5 +1,7 @@
 use crate::control::app_state::AppState;
-use crate::control::{EngineSelectionStatus, FocusPath, InteractionMode, ReturnPath};
+use crate::control::{
+    EngineSelectionStatus, FocusPath, InteractionMode, PatchDetailSubject, ReturnPath,
+};
 use crate::mixer::bus_id::MAX_BUS_RETURNS;
 use crate::mixer::bus_return::BusReturnBank;
 use crate::mixer::global_parameters::GlobalParameters;
@@ -66,6 +68,14 @@ pub(crate) struct SerializedInteractionState {
     pub(crate) mode: InteractionMode,
     #[serde(default)]
     pub(crate) return_path: Option<ReturnPath>,
+    /// The capability an open detail surface was opened on.
+    ///
+    /// Carried for the same reason `voiceLimit` is: it is reducer-owned state
+    /// that decides what is on screen, and a trace that cannot show which
+    /// capability a detail surface was opened on cannot correlate a detail
+    /// interaction with its consequence.
+    #[serde(default)]
+    pub(crate) detail_subject: Option<PatchDetailSubject>,
 }
 
 impl Default for SerializedInteractionState {
@@ -76,6 +86,7 @@ impl Default for SerializedInteractionState {
             remembered_mixer_main: default_mixer_focus(),
             mode: InteractionMode::Navigate,
             return_path: None,
+            detail_subject: None,
         }
     }
 }
@@ -89,6 +100,7 @@ impl SerializedInteractionState {
             remembered_mixer_main: interaction.remembered_mixer_main().clone(),
             mode: interaction.mode(),
             return_path: interaction.return_path().cloned(),
+            detail_subject: interaction.detail_subject().cloned(),
         }
     }
 }

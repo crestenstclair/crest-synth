@@ -1458,7 +1458,7 @@ mod tests {
                 let provider =
                     crate::adapter::production_instruments::production_soundfont_capability()
                         .unwrap();
-                let patch = Patch::new(
+                let mut patch = Patch::new(
                     PatchId::new(1).unwrap(),
                     "Limited Patch".to_owned(),
                     create_soundfont_config(
@@ -1468,9 +1468,8 @@ mod tests {
                     .unwrap(),
                     MidiChannel::new(0).unwrap(),
                     PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
-                )
-                .with_voice_limit(limit)
-                .unwrap();
+                );
+                patch.set_voice_limit(limit).unwrap();
                 Self {
                     provider,
                     patches: vec![patch],
@@ -1496,9 +1495,11 @@ mod tests {
                     .patches
                     .iter()
                     .cloned()
-                    .map(|patch| match limit {
-                        Some(value) => patch.with_voice_limit(value).unwrap(),
-                        None => patch,
+                    .map(|mut patch| {
+                        if let Some(value) = limit {
+                            patch.set_voice_limit(value).unwrap();
+                        }
+                        patch
                     })
                     .collect();
                 ParameterSnapshot::project_patches(

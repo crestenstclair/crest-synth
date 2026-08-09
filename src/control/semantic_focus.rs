@@ -77,13 +77,39 @@ impl SurfaceId {
         matches!(self, Self::PatchDetail)
     }
 
-    /// Reports whether the surface can be entered from a main path at all.
+    /// Reports whether a [`ReturnPath`] may name this surface as the one it was
+    /// entered *into*: structurally, every non-main surface.
+    ///
+    /// This is the shape rule, and it is deliberately separate from
+    /// [`Self::is_enterable`], which is the *admission* rule for the
+    /// `EnterSurface` action. Keeping them apart is what lets the reducer own,
+    /// remember, and leave a surface that the action vocabulary does not yet
+    /// offer.
+    pub const fn is_return_target(self) -> bool {
+        self.is_persistent_side() || self.is_subordinate()
+    }
+
+    /// Reports whether `EnterSurface` currently admits this surface as a target.
     ///
     /// This is the single predicate `EnterSurface` admission is decided by, so
-    /// the two persistent sides and the one subordinate surface cannot drift
-    /// apart from the action vocabulary that reaches them.
+    /// the admitted action vocabulary and the reducer cannot drift apart.
+    ///
+    /// **`PatchDetail` is deliberately withheld, and WP03 is what restores it.**
+    /// WP02 builds and proves the detail surface at the reducer seam — its
+    /// subject, its entry rules, its exact return, and its behaviour across a
+    /// patch switch — but nothing can *project* a detail focus yet: the PATCH
+    /// page shows the main content, and `AppLoop` treats a projection failure
+    /// on an accepted state as a panic. Advertising an action whose accepted
+    /// state the shell cannot show is worse than not advertising it. WP03's
+    /// detail projection (T015) removes this gate: delete the `PatchDetail`
+    /// arm below and the surface is offered again with no other change.
     pub const fn is_enterable(self) -> bool {
-        self.is_persistent_side() || self.is_subordinate()
+        match self {
+            Self::PatchUtility | Self::MixerInspector => true,
+            // Gated until WP03 T015 projects the detail surface.
+            Self::PatchDetail => false,
+            Self::PatchMain | Self::MixerMain => false,
+        }
     }
 
     pub const fn label(self) -> &'static str {
@@ -560,7 +586,7 @@ impl ReturnPath {
     pub fn new(origin: FocusPath, entered_surface: SurfaceId) -> Result<Self, FocusPathError> {
         origin.validate()?;
         if !origin.surface().is_main()
-            || !entered_surface.is_enterable()
+            || !entered_surface.is_return_target()
             || origin.context() != entered_surface.context()
         {
             return Err(FocusPathError::ContextSurfaceMismatch);
@@ -612,10 +638,33 @@ mod tests {
                 + usize::from(surface.is_subordinate());
             assert_eq!(roles, 1, "{surface:?} must hold exactly one surface role");
             assert_eq!(
-                surface.is_enterable(),
+                surface.is_return_target(),
                 !surface.is_main(),
-                "{surface:?}: entry lands on every non-main surface and no main one"
+                "{surface:?}: a return path names every non-main surface and no main one"
             );
+        }
+    }
+
+    /// The detail surface exists in the reducer but is not yet offered.
+    ///
+    /// `EnterSurface` admission is narrower than the structural
+    /// return-target rule for exactly one surface, and for exactly one reason:
+    /// no projection can render a detail focus until WP03's T015 lands. This
+    /// test fails the moment the gate is removed, so removing it is a
+    /// deliberate act rather than a silent one.
+    #[test]
+    fn the_detail_surface_is_a_return_target_but_is_not_offered_until_wp03() {
+        assert!(SurfaceId::PatchDetail.is_return_target());
+        assert!(
+            !SurfaceId::PatchDetail.is_enterable(),
+            "WP03 T015 removes this gate; nothing else may"
+        );
+        for offered in [SurfaceId::PatchUtility, SurfaceId::MixerInspector] {
+            assert!(offered.is_enterable());
+        }
+        for main in [SurfaceId::PatchMain, SurfaceId::MixerMain] {
+            assert!(!main.is_enterable());
+            assert!(!main.is_return_target());
         }
     }
 

@@ -180,6 +180,12 @@ struct MidiTreeTemplate {
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
     ///
+    /// Version 14: `interaction` gained the `detailSubject` leaves. The
+    /// subject decides what the detail surface shows, so a trace that cannot
+    /// show which capability a detail surface was opened on cannot correlate a
+    /// detail interaction with its consequence — the same reason `voiceLimit`
+    /// was enumerated in version 13.
+    ///
     /// Version 13: `parameters.patches[]` gained the `voiceLimit` leaf. A
     /// canonical value that crosses the real-time boundary and changes what is
     /// audible must be visible in the trace, or no measured proof can
@@ -187,7 +193,7 @@ impl StateTree {
     ///
     /// Version 12: the six retired reverb/delay `global` leaves are gone —
     /// return-owned state travels as the indexed top-level `returns` section.
-    pub const SCHEMA_VERSION: u32 = 13;
+    pub const SCHEMA_VERSION: u32 = 14;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -202,6 +208,7 @@ impl StateTree {
         "interaction.rememberedMixerMain",
         "interaction.mode",
         "interaction.returnPath",
+        "interaction.detailSubject",
         "engineSelection.kind",
         "engineSelection.activeGraphRevision",
         "engineSelection.correlation",
@@ -355,6 +362,14 @@ impl StateTree {
         "interaction.returnPath.origin.modalId",
         "interaction.returnPath.enteredSurface",
         "interaction.returnPath",
+        // The open detail surface's subject: `null` with no entry open, and
+        // otherwise the subject's own leaves. `slot_id` belongs to the
+        // `Effect` variant alone, so a tree that only ever opens an instrument
+        // detail entry cannot discover it.
+        "interaction.detailSubject",
+        "interaction.detailSubject.kind",
+        "interaction.detailSubject.capability_id",
+        "interaction.detailSubject.slot_id",
         "engineSelection.kind",
         "engineSelection.activeGraphRevision",
         "engineSelection.correlation",
@@ -554,6 +569,10 @@ impl StateTree {
                 "interaction.activeFocus.modalId",
                 "interaction.activeFocus.patchId",
                 "interaction.activeFocus.surface",
+                "interaction.detailSubject",
+                "interaction.detailSubject.capability_id",
+                "interaction.detailSubject.kind",
+                "interaction.detailSubject.slot_id",
                 "interaction.mode",
                 "interaction.rememberedMixerMain.capabilityId",
                 "interaction.rememberedMixerMain.context",
@@ -1588,7 +1607,8 @@ mod tests {
                     "modalId": null
                 },
                 "mode": "navigate",
-                "returnPath": null
+                "returnPath": null,
+                "detailSubject": null
             })
         );
         assert_eq!(

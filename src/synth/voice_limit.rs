@@ -177,6 +177,15 @@ impl VoiceLimit {
     pub const MAXIMUM: u16 = ENGINE_MANAGED_POLYPHONY_CEILING;
 
     /// Returns the one voice-limit field exactly once.
+    ///
+    /// The single-element array stays even though every production caller
+    /// wants [`Self::descriptor`] instead. It is what makes this value satisfy
+    /// the same descriptor contract `VoiceEnvelope` and `GlobalParameters`
+    /// hold — "the descriptor enumerates the field exactly once" — and that
+    /// contract is what a projection or a schema sweep reads a value's fields
+    /// through. `VoiceLimit` has exactly one field today; a value that
+    /// declared its surface differently from its neighbours because of that
+    /// accident would be a shape no sweep could rely on.
     pub const fn surface_descriptor() -> &'static [VoiceLimitDescriptor] {
         &VOICE_LIMIT_SURFACE_DESCRIPTOR
     }
