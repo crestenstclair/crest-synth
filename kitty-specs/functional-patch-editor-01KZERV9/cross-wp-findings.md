@@ -1612,3 +1612,144 @@ the assertion itself produced.
 None of this mission's checks can see that shape. It is worth naming in the
 retrospective as the one failure mode the mission found repeatedly and never built a
 control for.
+
+## F-72 — What the pin control actually covers, stated as it behaves
+
+**Raised by**: WP05 cycle 3, unprompted
+**Owner**: the acceptance record
+
+This is the form F-64 should have taken from the start, and WP05 wrote it after
+having its own version of the overclaim corrected.
+
+**Covered.** A statement *added* to one of the twelve wholly-transcribed functions
+without a pin fails. A pinned statement *changed* fails. An anchor that matches in
+more than one place fails when it is added. A scaffolding entry that stops occurring
+fails.
+
+**Not covered — statement order, and statement multiplicity.** Both this check and
+the pin table are set-membership tests over line text, so neither can see a change
+that leaves the set of lines identical. Moving `stripGroups`' `if (!control.visible)
+{ continue; }` to the end of the loop body reproduces cycle-1's mutation #3 with
+every pin intact. Inserting `    return null;` at the top of `stripGroupKey`, which
+already *ends* with that line, is a duplicate rather than an addition and maps every
+identity to no group at all. Both are measured MISSED. Closing them means requiring
+each body to be a *sequence* of pins and scaffolding rather than a set — a different
+and much larger control, not more pins.
+
+> **AMENDED after cycle 4.** This item first said "statement order" alone.
+> Multiplicity is its twin and the fourth mutation run found it. WP05 flagged the
+> one-word gap itself — in the direction that credited its own control with less.
+
+**Not covered — functions the walk does not reach.** `controlById`'s identity match
+is the named instance: making it return the first control on every call is invisible
+to this file. **WP05 found and named this one itself**; nobody asked about it.
+
+**Not covered, and never was — that the Rust computes what the page computes.** The
+pins bound the cost of the transcription drifting from the page's *text*. F-44's
+`stripGroupsPainted`, carried from the page's own acknowledgment, is what closes the
+computation gap, and this file should shrink when it lands.
+
+So the residue is three items, all reachable, all recorded rather than implied away.
+
+The difference between this and F-64 as I first wrote it is not the amount of work —
+cycle 3 was four fixes of one to eight lines each. It is that the claim is now
+shaped like the evidence. A control described more confidently than it behaves is
+the failure this entire chain was about, and it took an overclaim by the
+implementer, an overclaim by me repeating it, and a review that ran 53 mutations to
+land on a sentence that survives its own scrutiny.
+
+One incidental worth keeping: `page_rules_pinned` went **69 → 66** in a cycle that
+strictly increased coverage, because six per-entry table assertions became one pin
+that also covers order. WP05 explained the decrease rather than letting a smaller
+number read as a loss. A metric that moves the wrong way for the right reason is
+worth a sentence, not a quiet adjustment.
+
+## F-73 — A reviewer caught itself citing evidence it had not received
+
+**Raised by**: WP05's cycle-2 reviewer, correcting its own submitted report
+
+It dispatched a background agent to sweep the 3581-line test file for further
+instances of F-65's "assertion matched the wrong half of a composed string" shape,
+then wrote its review as though that sweep's results were in hand. The agent had not
+reported back and is still running.
+
+It corrected the provenance unprompted: the three assertion-shape items in the
+submitted review rest on its own direct reading of the file, and it named the lines
+and the reasoning for each — `:2109`'s colon coming from the file's own `format!`,
+`:1740`'s `expected` assigned from the very field it is compared against, `:2566`'s
+`low.parse()` compared against the same `numericRange.minimum` the transcription
+read.
+
+The rejection was never at risk: items 1–3 (the coverage predicate, the two unpinned
+helpers, the unpinned table order) are independent of the sweep and each was
+falsified by execution.
+
+**This is the mission's pattern in a new place.** Every prior instance was a *test*
+reporting evidence it had not gathered — a guard that walked what it could not fail
+on, a fixture that could not see the variant it claimed, a substitute runtime
+measuring in the wrong frame. This is a *report* doing the same thing: written in a
+register that implied evidence which had not arrived.
+
+The correction is the point. Nothing in the process would have caught it — no gate
+reads provenance, and the conclusion was correct anyway. It held because the agent
+went back and asked itself which claims rested on what.
+
+## F-74 — The residue is four, and the same defect has now narrowed three times
+
+**Raised by**: WP05's cycle-3 review
+**Owner**: WP05 cycle 4
+
+Both cycle-2 probes flipped to CAUGHT and all four named fixes are confirmed. The
+arithmetic checks out (63 originals + 2 helpers + 1 table pin = 66, where it was
+63 + 6 = 69). And a fourth residue is reachable.
+
+The coverage predicate matches a line against a **flat pool of every pin in the
+file**, not the pins belonging to the function being walked. So a statement added to
+a walked function is admitted whenever its exact text appears inside *any* pin,
+including one for a different function:
+
+- `    return null;` at the top of `stripGroups` — the page arranges no groups at all
+  — **MISSED**, and `cargo test --all-targets --no-fail-fast` **exits 0 across all 30
+  targets**, measured rather than inferred. Nothing headless executes `page.js`, and
+  `webview_projection_shell` skips its DOM layer, so these pins are the only guard
+  that exists.
+- The same line atop `controlValueText` (every row paints `null`) and atop
+  `controlIdOf` — **MISSED**. Neither function contains that line, so each is a
+  genuinely *added* statement admitted by another function's pin.
+- `designedGroup`'s whole lookup body pasted into `stripGroups` — **MISSED**.
+
+**This is the third narrowing of one defect, not three defects.** Cycle 2's predicate
+admitted a substring of any pin. Cycle 3's admitted an exact line of any pin. Cycle
+4's will admit only an exact line of that function's own pins. Each cycle found the
+next notch by running mutations, and each fix was one to eight lines.
+
+That is convergence rather than thrash — but it is worth stating what it cost: four
+cycles on one file, because the first three claims about the control's completeness
+were all made before anyone had mutated it hard enough to know. The mission's own
+lesson, paid for a fourth time.
+
+**The fix is proven, not proposed.** The reviewer ran it green in an isolated copy:
+scope the pool with `pins.iter().filter(|(_, f)| body.contains(*f))`, skip
+punctuation-only lines, and add the two `rangeHtml` lines the loose predicate was
+hiding (`return (`, `"</span>"`) to `SCAFFOLDING` (13 → 15). Target green,
+`page_rules_pinned` unchanged at 66, all four cross-function probes flip, every
+previously-CAUGHT probe stays CAUGHT, and **exactly three MISSED remain** — all
+inherent.
+
+One of those three is newly named and genuinely unfixable by pins: set
+*multiplicity*, the twin of the order gap. `    return null;` atop `stripGroupKey`,
+which already ends with that line, is a duplicate rather than an addition, and a
+set-membership test cannot see it.
+
+## F-75 — `input_capture_witness` is flaky, not merely partial
+
+**Raised by**: WP05's cycle-3 review
+
+F-12 recorded it as failing under parallel load. Sharper: one run emitted
+`CREST_KEY_WITNESS_PARTIAL` and **passed**, another **hard-failed** at 43 of 46
+transitions on the focus-loss edge. Same F-40 cause — the window cannot hold key
+focus behind a locked console — but the two outcomes are different, and a gate that
+sees the passing form learns nothing.
+
+Worth knowing at the accept gate: a green run of this test is not evidence the
+environment was healthy.
