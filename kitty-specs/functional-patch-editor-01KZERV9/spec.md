@@ -298,8 +298,38 @@ here rather than silently inherited.
 | 11. The Utility panel's authored hint line is dropped | FR-015 |
 | 13. `numeric_range` and `unit` projected but never painted | FR-013 |
 | Control kind: stepped parameter has no production producer | FR-009 (the voice limit becomes it) |
-| Control kind: read-only surface summary has no production path | FR-012 (capability-declared read-only detail sections) |
+| ~~Control kind: read-only surface summary has no production path~~ | **WITHDRAWN 2026-08-09 — see below** |
 | The persistent side region lost its scroll — **PATCH half** | FR-006: the Utility row set is bounded by declaration to five rows, which seat within the panel at both authored viewports. The remedy is the bounded declaration, not a restored scroll area. |
+
+**Withdrawn during implementation (2026-08-09):**
+
+**The read-only surface-summary control kind is not closed by this mission.** The
+claim above was wrong when I wrote it, and WP03's review established why by
+execution.
+
+Two different things were conflated. FR-012 does supply the capability-declared
+read-only **fact**: `PatchInteraction::ReadOnly` reaches the screen at
+`patchPage.detail.sections[].parameters[].patchInteraction`, it is discriminating
+(SoundFont declares two different interactions in one section), and detail rows
+are marked read-only in text or shape. That half is real and stays.
+
+But the carry-forward item was about a **control kind** —
+`SemanticControlKind::Surface` carrying a `SemanticControlValue::Summary` — stated
+in parallel with the stepped-parameter kind that FR-009 genuinely closes. That
+kind still has exactly one construction site, reachable only from a projection
+builder whose own documentation says production never uses it. Detail rows take
+their kind from `ParameterKind` and project `Continuous`, `Choice`, or `Asset` —
+never `Surface`.
+
+Closing it would mean inventing a surface-summary control the product design does
+not call for, purely so a checkbox could be ticked. That is precisely what C-006
+forbids: a designed structure with nothing behind it is marked unavailable, not
+filled with a plausible value. The same rule that governs the UI governs the
+mission's own claims about itself.
+
+So: **deferred, with the reason stated.** Whoever next needs a read-only surface
+summary should design one because a surface needs it, not because this table once
+said it was handled.
 
 **Deliberately deferred:**
 

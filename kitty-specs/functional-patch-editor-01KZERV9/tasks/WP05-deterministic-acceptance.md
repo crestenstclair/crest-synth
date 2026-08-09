@@ -38,6 +38,7 @@ execution_mode: code_change
 mission_slug: functional-patch-editor-01KZERV9
 owned_files:
 - tests/functional_patch_editor.rs
+- src/control/semantic_graphical_view_model.rs
 priority: P1
 role: implementer
 status: planned
@@ -237,17 +238,28 @@ identity serves both" is.
 7. Assert a capability-declared read-only section is marked in text or shape, and
    a mid-preparation capability shows its lifecycle status rather than an empty
    section set.
-8. **Read-only surface summary has a production producer** (closes analysis
-   finding C3): the spec's Scope Decisions table claims FR-012 closes the control
-   kind that "is reachable only on a projection path no application state
-   produces". Assert that a capability-declared read-only detail section produces
-   one on a **production** projection path — mirroring how WP01 T001 asserts the
-   `Stepped` kind now has a producer. Selector reachability is not the claim;
-   production reachability is, and that distinction is exactly what Phase 4
-   recorded as false. If the fixture's installed capabilities declare no
-   read-only section, say so plainly and withdraw the claim from the Scope
-   Decisions table rather than manufacturing a fixture that exists only to
-   satisfy the assertion.
+8. **Close the label guard's blind key set** (F-28), and **do not** assert a
+   read-only surface-summary producer — that claim is withdrawn.
+
+   The withdrawal first: the spec's Scope Decisions table claimed FR-012 closed
+   the read-only surface-summary *control kind*. It does not.
+   `SemanticControlKind::Surface` has one construction site, reachable only from a
+   projection builder production never uses. What FR-012 genuinely supplies is the
+   read-only *fact* at `patchPage.detail.sections[].parameters[].patchInteraction`
+   — which bullet 7 above already covers, discriminatingly. The claim is withdrawn
+   in `spec.md` with the reasoning; do not manufacture a fixture to satisfy it.
+
+   What to do instead, because it is a real hole: `serialization_keys()` in
+   `src/control/semantic_graphical_view_model.rs:2893` collects descriptor names,
+   parameter ids, leaf-descriptor names, and `PatchControlId::as_str()` forms —
+   but **not** capability or section identifiers. So the label guard walks section
+   labels, engine labels, and occupancy labels and cannot fail on any of them.
+   WP03's review proved it with a 17-site mutation sweep: 10 caught, 7 missed.
+
+   Add each installed instrument and effect descriptor's `id()`, and each of its
+   sections' `id()`, to the key set (~8 lines). Then re-run the sweep and confirm
+   all seven listed in F-28 flip from MISSED to CAUGHT. That file is now in your
+   map for this purpose alone — do not do other work in it.
 
 **Files**:
 - `tests/functional_patch_editor.rs` (modified, ~200 lines)
