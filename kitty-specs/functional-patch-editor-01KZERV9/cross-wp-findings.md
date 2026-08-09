@@ -276,3 +276,90 @@ Two links at `src/synth/patch.rs:94` and `:106` point at the deleted
 `broken_intra_doc_links` warnings. Rustdoc is not gated, so this is doc rot rather
 than a break — fix on the next commit touching that file rather than opening one
 for it.
+
+## F-18 — The casing ruling was scoped to one of three instances. Rest goes to WP04.
+
+**Raised by**: WP03, disagreeing with F-16 as written
+**Owner**: WP04
+
+F-16 told WP03 to fix `PatchDetailSubject`'s snake_case-in-camelCase field
+serialization. WP03 complied and then said the ruling was wrong: the same
+`#[serde(tag, rename_all)]` defect covers `SemanticSurfaceSummary` and
+`MixerControlId` too, and fixing one of three leaves the schema **mixed** —
+`summary.subject.capabilityId` beside `summary.capability_id` — which is harder to
+reason about than uniformly wrong. It asked the mission to choose all or none
+rather than complying silently.
+
+**It is right, and the ruling is amended.** WP03 stopped where it did for a good
+reason: `webview-page/page.js` reads `summary.patch_name`, `summary.capability_id`,
+and `summary.patch_id` by name, and that file is WP04's. WP04 is rewriting that
+render path wholesale for the composed strip, so it can move both sides in one
+place. The remaining two casings and the page reads are now WP04's, recorded in
+its prompt.
+
+The mixed state exists only between WP03 and WP04 and ships in neither.
+
+This is the second time an implementer has pushed back on a ruling of mine and
+been right (WP02 did it twice). The pattern worth keeping: a ruling written from
+one package's vantage point can be locally correct and globally wrong, and the
+package holding the other half is the one positioned to notice.
+
+## F-19 — Read-only sections do not exist in the type system
+
+**Raised by**: WP03
+**Owner**: WP05, before it writes T033's bullet 8
+
+T015's bullet said "a read-only section projects `editable: false`".
+`CapabilitySection` has no read-only flag — the concept does not exist. WP03
+derived `editable` from what the reducer actually accepts, and since
+`adjust_patch_control` refuses every `Adjust` on `PatchDetail`, *every* detail
+control projects `editable: false`. It called the bullet vacuously satisfied and
+asserted the reducer's refusal instead, which is the honest reading.
+
+**This bears directly on the analysis pass's finding C3.** WP05's T033 bullet 8
+requires asserting that a production path produces a read-only surface summary,
+and the spec's Scope Decisions table claims FR-012 closes that control kind. If
+the concept does not exist in a descriptor, that assertion may be unsatisfiable —
+in which case T033's own instruction applies: say so plainly and withdraw the
+claim from the Scope Decisions table rather than manufacturing a fixture that
+exists only to satisfy it.
+
+## F-20 — F-14's enumeration was also incomplete; a seventh test
+
+**Raised by**: WP03
+
+F-11 named three tests coupled to the gate. F-14 corrected it to six and widened
+ownership. WP03 found a seventh: a hardcoded Contexts coverage list at
+`tests/exhaustive_demo_scene.rs:110`. Three successive enumerations of the same
+blast radius, each short.
+
+Not a process failure to fix so much as a measurement to keep: in this codebase
+the coupled-test set around a vocabulary change is reliably larger than it looks,
+because several tests hardcode surface or coverage lists rather than deriving
+them. That is worth knowing before the next vocabulary change, not after.
+
+## F-21 — `make fmt-check` was already red at WP03's lane base
+
+**Raised by**: WP03, verified by stashing
+
+The tree was unformatted at HEAD before WP03 started. WP03 ran `cargo fmt --all`,
+which touched four files outside its map as a side effect. The tree is now clean.
+Recorded so the formatting churn in WP03's diff is not read as scope creep.
+
+## F-22 — The voice-limit loss report is transient
+
+**Raised by**: WP03
+**Owner**: needs a ruling before mission review
+
+F-07 required that a narrowing engine swap *report* the voice-limit loss rather
+than leave a player to discover it. WP03 projects `requestedValue` on the
+voice-limit row while the swap is `Preparing`. Once it commits, canonical state
+already holds the clamped value, the same rule returns `Preserved`, and the row
+falls silent.
+
+That satisfies "a projection that shows the limit while a swap narrows it says
+so" as literally written. Whether it satisfies the intent is a real question: a
+player who looked away during preparation never learns their limit changed. A
+durable record needs the carry-over outcome retained on `EngineSelectionStatus` —
+canonical state plus a crest-spec field, outside WP03's scope and not something to
+bolt on late.
