@@ -368,7 +368,15 @@ fn page_value_text(control: &Value) -> String {
                 Some("continuous") => {
                     format!("{:.3}", parameter["value"].as_f64().unwrap_or(f64::NAN))
                 }
-                Some("stepped") | Some("choice") => display(&parameter["value"]),
+                Some("stepped") => display(&parameter["value"]),
+                // A choice reads its projected authored name, falling back to
+                // the stored id only when the descriptor declared none. The
+                // page does the same (`controlValueText`); painting the id was
+                // mission finding F-33.
+                Some("choice") => control
+                    .get("selectedLabel")
+                    .filter(|label| !label.is_null())
+                    .map_or_else(|| display(&parameter["value"]), display),
                 Some("toggle") => if parameter["value"] == Value::Bool(true) {
                     "ON"
                 } else {

@@ -480,7 +480,20 @@
           return String(parameter.value);
         }
         if (parameter.kind === "choice") {
-          return String(parameter.value);
+          // The document's own authored name for the stored id, never a name
+          // composed here. `parameter.value` is the choice *identity* —
+          // `sf2.bank-0.program-40`, `braids.model.csaw` — and painting it is
+          // the defect FR-014 closes; DESIGN.md calls this exact row "the
+          // authored-name Preset row". The projection carries the descriptor's
+          // label beside the id as `selectedLabel`, so the page reads a name it
+          // was given (mission finding F-33). A choice with no projected label
+          // falls back to the id rather than to a blank, because an unlabelled
+          // option is a descriptor defect and hiding it would hide that.
+          return String(
+            control.selectedLabel === null || control.selectedLabel === undefined
+              ? parameter.value
+              : control.selectedLabel
+          );
         }
         if (parameter.kind === "toggle") {
           return parameter.value ? "ON" : "OFF";
@@ -926,7 +939,14 @@
     parts.push("REQUESTED VALUE");
     parts.push(
       requested
-        ? controlValueText({ kind: control.kind, value: requested })
+        ? controlValueText({
+            kind: control.kind,
+            value: requested,
+            // The requested value's own authored name, so the band never
+            // paints a choice id beneath a row whose active value reads its
+            // name (F-33, the requested half).
+            selectedLabel: control.requestedLabel,
+          })
         : UNAVAILABLE_MARK
     );
     var tone = control.error ? "warning" : "adjust";

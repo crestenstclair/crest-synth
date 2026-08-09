@@ -2626,7 +2626,11 @@ fn assert_patch_observation_structure(
 ///   the one the composition is sized against. The compact band held less than
 ///   the row set before this mission and still does, so the number is printed
 ///   rather than graded here.
-fn assert_patch_workspace_geometry(observation: &Value, inspector_width_at_least: f32, label: &str) {
+fn assert_patch_workspace_geometry(
+    observation: &Value,
+    inspector_width_at_least: f32,
+    label: &str,
+) {
     // Whichever composition the document selected: the strip's rows, or the
     // detail shell's. One measurement path serves both.
     let painted_rows = || {
@@ -2662,7 +2666,9 @@ fn assert_patch_workspace_geometry(observation: &Value, inspector_width_at_least
              position rail are competing for one line, and the rail is the item that loses \
              (rail {}px)",
             row.get("control").and_then(Value::as_str).unwrap_or("?"),
-            row.get("hintsPx").and_then(Value::as_f64).unwrap_or_default(),
+            row.get("hintsPx")
+                .and_then(Value::as_f64)
+                .unwrap_or_default(),
             row.get("railPx")
                 .and_then(Value::as_f64)
                 .map_or_else(|| "no ".to_owned(), |rail| format!("{rail}")),
