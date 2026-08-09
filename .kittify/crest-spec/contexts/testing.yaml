@@ -431,6 +431,7 @@ valueObjects:
       secondPatchFocusVerifiedTransitions: u32
       secondPatchAudibleEditDelta: f32
       firstPatchAudibleEditDelta: f32
+      audibleEditIsolatedToSecondPatch: bool
       checkpointsCorrelatingSwitchFocusAudio: u32
       detailSubjectsServed: u32
       detailSurfaceIdentities: u32
@@ -446,7 +447,6 @@ valueObjects:
       projectionGenerationGaps: u32
       physicalAudioNonzero: bool
       desktopViewportPainted: bool
-      audibleEditIsolatedToSecondPatch: bool
       activeNotesAfterCleanup: u32
       windowClosed: bool
       streamReleased: bool
