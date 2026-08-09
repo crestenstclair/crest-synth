@@ -95,7 +95,15 @@ audible delta on the second Patch's own output while requiring the first Patch's
 output to be unchanged.
 
 **The gated live suite requires a display seating 1920×1080.** The harness
-refuses rather than degrading. The external LS28AG700N must be awake to run it.
+refuses rather than degrading — and that refusal is not a limit, it is an
+instruction. The LS28AG700N is attached and seats 1920×1080; it sleeps. Run
+`caffeinate -u -t 3600 &` first and the gate passes (F-35).
+
+**F-39 binds you.** A `CREST_WEBVIEW_SKIP` line is not a pass, and substituting a
+browser for the shipped window is what produced WP04's rejection — the real window
+gives the page `innerHeight` 1018, not 1080, so a substitute measures confidently
+in the wrong frame. Every claim this package makes must be executed, and every
+falsification performed rather than described.
 
 ## Branch Strategy
 

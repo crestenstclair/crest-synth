@@ -771,3 +771,47 @@ exercised anywhere.
 
 Both are the same shape as everything else this mission has found: the failure was
 not that a test went red, but that no test ran.
+
+## F-39 — The accept gate requires executed evidence, not reasoned-about evidence
+
+**Raised by**: WP04's review
+**Owner**: the accept gate; binding on WP04, WP05, WP06
+
+Thirty-eight findings in, the mission's recurring failure has a single shape, and
+it is not carelessness: **unexecuted evidence keeps being treated as evidence.**
+
+It has now appeared at every level of this mission:
+
+- a fixture that could see only one variant (the detail-entry panic hid because
+  every test site used SoundFont);
+- a guard that walked a projection it could not fail on (the label guard, twice —
+  the PATCH page, then seven sites the key set cannot express);
+- a leaf-exactness test whose fixture never opened the state it guarded;
+- two reviewer enumerations that undercounted the thing they were enumerating;
+- a ruling written from one package's vantage point that was locally right and
+  globally wrong;
+- a claim about a producer "already reaching the screen" that three parties
+  accepted without checking which projection the page receives;
+- and a substitute runtime that measured confidently in a frame 62 px taller than
+  the product, which is the one that looked most like verification.
+
+Four of those were caught only by someone deliberately mutating code and watching
+what *failed to fail*. None was caught by a suite going red.
+
+**So the accept gate for this mission requires the live sections to have actually
+run.** Specifically, before acceptance:
+
+1. `CREST_WEBVIEW_TESTS=1 cargo test --test webview_projection_shell` executed with
+   the display awake, output recorded — not skipped, not substituted.
+2. `make demo-live-patch-editor` executed on hardware, its observation recorded
+   with actual field values.
+3. Every falsification this mission claims — F-28's seven label sites, F-33's
+   choice-value guard, the voice-limit defeat, the `--defeat-patch-selection`
+   negative — demonstrated by performing it, with the observed failure text.
+
+A `CREST_WEBVIEW_SKIP` line in the acceptance output is not a pass. Per F-35 the
+display is present and wakes with `caffeinate -u`, so there is no environmental
+excuse available.
+
+The standard is the mission's own: a test that passes with and without the code it
+claims to prove is not a proof, and a test that never ran is not a test.
