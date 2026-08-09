@@ -80,3 +80,70 @@ The active-note bitset is per (patch, note), so re-triggering an already-soundin
 note while at the limit is refused even though it would add no voice. This is
 consistent with the declaration as written. Recorded rather than fixed, because
 changing it is a product decision about what "sounding its limit" means.
+
+## F-07 — The engine-swap carry-over asymmetry was undeclared. Now ruled.
+
+**Raised by**: WP02's review
+**Owner**: closed at declaration; WP02 rework and WP03 implement
+
+WP01 invented the policy — clamp the voice limit on narrowing, preserve it on
+widening — and the WP02 handoff H2 told WP02 to apply it. Neither was wrong to
+act, but nobody had declared it, so the product behaviour was being settled by
+whoever wrote the code first. That is precisely the inversion the crest-spec
+phase exists to prevent, and it was mine to catch when I authored `VoiceLimit`.
+
+**Ruling, now in `valueObject.Synth.VoiceLimit`:** the asymmetry stands and is
+deliberate. Narrowing clamps, because a limit the engine cannot honour is not a
+limit. Widening preserves the player's value rather than raising it, because the
+limit is the player's setting and an engine change is not a request to change it.
+
+The consequence is stated rather than hidden: the carry is **lossy by design** —
+narrow then widen does not restore the prior value — and that loss is reported
+through the typed carry-over outcome rather than left for a player to discover.
+This also settles F-02 item 4: `VoiceLimitCarryOver`'s `Preserved`/`Clamped`
+discriminant now has a declared consumer, and it is WP03's engine-swap status
+projection.
+
+WP02's demo-scene fix — making the scene restore the limit through the Utility
+row the way a player would, rather than excusing the field from the reversibility
+check — was the honest response to an undeclared asymmetry and stands.
+
+## F-08 — `detailSubject` in the StateTree interaction shape
+
+**Raised by**: WP02's review
+**Owner**: WP02 rework
+
+The reviewer notes that `detailSubject` is absent from the crest-spec's
+`StateTree.interaction` shape, so omitting it is currently correct — but that the
+exact argument which got `voiceLimit` enumerated in F-03 applies here too.
+
+It does. `detailSubject` is reducer-owned state that determines what is on
+screen, and a trace that cannot show which capability a detail surface was opened
+on cannot correlate a detail interaction with its consequence. Enumerate it on
+the same reasoning. Folded into the WP02 rework alongside B2.
+
+## F-09 — Two crest-spec bullets disagreed on SelectPatch focus recovery. Now one.
+
+**Raised by**: WP02's review
+**Owner**: closed at declaration
+
+`aggregate.Control.InteractionState` said schema changes repair through the
+"one deterministic next-before-previous sibling rule", and then said a SelectPatch
+switch recovers "to its first valid control". Two rules, one of them called "the
+one rule". My authoring error.
+
+**Ruling:** the sibling rule, everywhere. There is exactly one focus-recovery rule
+in this system and a patch switch is not an exception to it. Recovering to the
+first valid control would make the destination's first row a special case no other
+schema change has, and would throw away the operator's position for no reason.
+WP02 implemented the sibling rule per T012, which was the strict improvement; the
+declaration now says what WP02 already built.
+
+## F-10 — `select_patch` reads the subordinate surface's control
+
+**Raised by**: WP02's review
+**Owner**: unowned; pre-existing
+
+`select_patch` reads `patch_control_focus()`, which on a subordinate surface
+returns that surface's control rather than the remembered main one. Pre-existing,
+not introduced by this mission. Recorded so it is not discovered a third time.
