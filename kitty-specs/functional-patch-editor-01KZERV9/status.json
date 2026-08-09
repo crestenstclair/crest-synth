@@ -119,7 +119,8 @@
       "model": "__resolved_model_absent__",
       "notes": [
         "Ready for review",
-        "Cycle 2: rail width, T025 assertion, desktop seating — measured in the shipped window"
+        "Cycle 2: rail width, T025 assertion, desktop seating — measured in the shipped window",
+        "Cycle 2 approved; review-cycle-3.md records the approval verdict."
       ],
       "provider": "__resolved_provider_absent__",
       "role": "reviewer",
