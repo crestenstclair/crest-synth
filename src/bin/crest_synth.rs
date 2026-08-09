@@ -711,7 +711,7 @@ impl DemoSceneObservation {
                     .and_then(Value::as_str)
                     == Some("track")
                 && tree
-                    .pointer("/interaction/activeFocus/controlId/id/track_id")
+                    .pointer("/interaction/activeFocus/controlId/id/trackId")
                     .and_then(Value::as_u64)
                     == Some(0)
                 && tree

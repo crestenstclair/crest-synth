@@ -192,8 +192,17 @@ impl PatchDetailSubject {
 /// for the occupying entry's scalar rows, a descriptor `ParameterId`. No
 /// variant names a concrete effect, and a return's contents changing never
 /// changes its identity.
+// Same `rename_all` limitation as [`PatchDetailSubject`] above: without
+// `rename_all_fields` the `track_id` leaf serializes snake_case inside an
+// otherwise camelCase schema. Fixing one tagged union and not the others left
+// the schema *mixed*, which is harder to reason about than uniformly wrong, so
+// all three moved together (mission finding F-18).
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum MixerControlId {
     Track {
         track_id: MixerTrackId,

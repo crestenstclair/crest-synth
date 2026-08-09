@@ -679,7 +679,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
         "track"
     );
     assert_eq!(
-        after["interaction"]["activeFocus"]["controlId"]["id"]["track_id"],
+        after["interaction"]["activeFocus"]["controlId"]["id"]["trackId"],
         2
     );
     assert_eq!(
@@ -780,7 +780,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
     assert_exactly_one_focused_row_is_the_scroll_target(&final_document);
     assert_eq!(
         final_document
-            .pointer("/focusPath/controlId/id/track_id")
+            .pointer("/focusPath/controlId/id/trackId")
             .and_then(Value::as_u64),
         Some(2),
         "the rendered document's focus is the retained mixer track"
