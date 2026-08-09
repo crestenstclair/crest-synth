@@ -1728,6 +1728,16 @@ cycles on one file, because the first three claims about the control's completen
 were all made before anyone had mutated it hard enough to know. The mission's own
 lesson, paid for a fourth time.
 
+> **AMENDED after cycle 4's review — this claim was itself an overclaim, the fourth
+> in the chain it documents.** Per-function scoping closed the **pin** pool and left
+> the other two admission paths flat: `SCAFFOLDING` is matched globally with no
+> function scope, and `NUL_SEPARATOR_LINE` is prefix-matched so everything after
+> `var key = String(action.hint) +` is unchecked. Both are reachable — `    return
+> groups;` inserted atop three other walked functions is MISSED and makes the page
+> throw on every parameter row while all 30 targets stay green; emptying the NUL
+> separator is MISSED and silently collides hint keys. "Exactly three MISSED remain"
+> was true of the pin pool and false of the control. There were three lists, not one.
+
 **The fix is proven, not proposed.** The reviewer ran it green in an isolated copy:
 scope the pool with `pins.iter().filter(|(_, f)| body.contains(*f))`, skip
 punctuation-only lines, and add the two `rangeHtml` lines the loose predicate was
