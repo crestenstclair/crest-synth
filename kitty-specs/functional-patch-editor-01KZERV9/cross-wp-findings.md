@@ -1685,3 +1685,63 @@ register that implied evidence which had not arrived.
 The correction is the point. Nothing in the process would have caught it — no gate
 reads provenance, and the conclusion was correct anyway. It held because the agent
 went back and asked itself which claims rested on what.
+
+## F-74 — The residue is four, and the same defect has now narrowed three times
+
+**Raised by**: WP05's cycle-3 review
+**Owner**: WP05 cycle 4
+
+Both cycle-2 probes flipped to CAUGHT and all four named fixes are confirmed. The
+arithmetic checks out (63 originals + 2 helpers + 1 table pin = 66, where it was
+63 + 6 = 69). And a fourth residue is reachable.
+
+The coverage predicate matches a line against a **flat pool of every pin in the
+file**, not the pins belonging to the function being walked. So a statement added to
+a walked function is admitted whenever its exact text appears inside *any* pin,
+including one for a different function:
+
+- `    return null;` at the top of `stripGroups` — the page arranges no groups at all
+  — **MISSED**, and `cargo test --all-targets --no-fail-fast` **exits 0 across all 30
+  targets**, measured rather than inferred. Nothing headless executes `page.js`, and
+  `webview_projection_shell` skips its DOM layer, so these pins are the only guard
+  that exists.
+- The same line atop `controlValueText` (every row paints `null`) and atop
+  `controlIdOf` — **MISSED**. Neither function contains that line, so each is a
+  genuinely *added* statement admitted by another function's pin.
+- `designedGroup`'s whole lookup body pasted into `stripGroups` — **MISSED**.
+
+**This is the third narrowing of one defect, not three defects.** Cycle 2's predicate
+admitted a substring of any pin. Cycle 3's admitted an exact line of any pin. Cycle
+4's will admit only an exact line of that function's own pins. Each cycle found the
+next notch by running mutations, and each fix was one to eight lines.
+
+That is convergence rather than thrash — but it is worth stating what it cost: four
+cycles on one file, because the first three claims about the control's completeness
+were all made before anyone had mutated it hard enough to know. The mission's own
+lesson, paid for a fourth time.
+
+**The fix is proven, not proposed.** The reviewer ran it green in an isolated copy:
+scope the pool with `pins.iter().filter(|(_, f)| body.contains(*f))`, skip
+punctuation-only lines, and add the two `rangeHtml` lines the loose predicate was
+hiding (`return (`, `"</span>"`) to `SCAFFOLDING` (13 → 15). Target green,
+`page_rules_pinned` unchanged at 66, all four cross-function probes flip, every
+previously-CAUGHT probe stays CAUGHT, and **exactly three MISSED remain** — all
+inherent.
+
+One of those three is newly named and genuinely unfixable by pins: set
+*multiplicity*, the twin of the order gap. `    return null;` atop `stripGroupKey`,
+which already ends with that line, is a duplicate rather than an addition, and a
+set-membership test cannot see it.
+
+## F-75 — `input_capture_witness` is flaky, not merely partial
+
+**Raised by**: WP05's cycle-3 review
+
+F-12 recorded it as failing under parallel load. Sharper: one run emitted
+`CREST_KEY_WITNESS_PARTIAL` and **passed**, another **hard-failed** at 43 of 46
+transitions on the focus-loss edge. Same F-40 cause — the window cannot hold key
+focus behind a locked console — but the two outcomes are different, and a gate that
+sees the passing form learns nothing.
+
+Worth knowing at the accept gate: a green run of this test is not evidence the
+environment was healthy.
