@@ -1268,46 +1268,85 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
 /// One `page.js` function's body, from the committed source.
 ///
 /// Both anchors are asserted, because the walk below is only as honest as the
-/// slice it is handed and neither anchor is self-evidently safe.
+/// slice it is handed and neither anchor is self-evidently safe. Both
+/// assertions are text scans. Each was first written to recognise exactly one
+/// spelling of what it forbids, and each now recognises a class of spellings
+/// instead — but a class, not the property, and the difference is named on the
+/// walk below rather than rounded off here.
 ///
-/// The **head** must occur exactly once. JavaScript lets a later declaration of
-/// a name override an earlier one, so a second `function controlIdOf(` appended
-/// under the first is the function the page actually calls while this walk goes
-/// on reading the original — every control id becomes `""` and nothing here
-/// notices. Measured MISSED before this assertion.
+/// The **head** must be declared exactly once. JavaScript lets a later
+/// declaration of a name override an earlier one, so a second `controlIdOf`
+/// declared under the first is the function the page actually calls while this
+/// walk goes on reading the original — every control id becomes `""` and
+/// nothing here notices. Counting occurrences of the literal
+/// `"\n  function NAME("` counted one spelling of that. Three others were
+/// hoisted just the same, were the declaration the page called, and were
+/// measured MISSED: `function controlIdOf (control)` with a space before the
+/// paren, `function  controlIdOf(control)` with two after the keyword, and the
+/// same declaration written at file scope. So the count is now over shape —
+/// `function`, any whitespace, this exact name, any whitespace, `(` — and all
+/// three fail. Locating the body still needs the literal, so the sole
+/// declaration respelled fails at the `find` below rather than being read from
+/// the wrong offset.
 ///
 /// The **end** is the first two-space-indented `}`, which is this function's own
 /// closer only while no inner brace sits at that column. Dedenting one is
 /// whitespace, so the page behaves identically, but the slice stops there and
 /// every line after it goes unread — a rule inserted past the cut was measured
 /// MISSED. A truncated slice leaves at least one inner brace open, so requiring
-/// exactly one unclosed brace — the function's own — detects the cut. The count
-/// is naive, and deliberately: no walked body holds a brace inside a string or a
-/// regex literal today, and if one arrives this fires rather than going quiet.
-/// Over-extension, the other way the anchor could slip, is caught downstream —
-/// the swallowed function's own declaration line is not a line this function may
-/// admit.
+/// exactly one unclosed brace — the function's own — detects the cut. That count
+/// was naive over the raw slice, and a comment is the one kind of text the walk
+/// below deletes before any table sees it: a `}` appended to a comment four
+/// lines above a cut rebalanced the count, `controlValueText` then walked 14
+/// lines instead of 56, and every parameter row painted the unavailable mark —
+/// MISSED. The count now runs over the same comment-stripped text the walk
+/// reads. It is still naive about a brace inside a string or a regex literal; no
+/// walked body holds one today, and if one arrives this fires rather than going
+/// quiet. Over-extension, the other way the anchor could slip, is caught
+/// downstream — the swallowed function's own declaration line is not a line this
+/// function may admit.
 fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
-    let head = format!("\n  function {name}(");
-    let declarations = script.matches(&head).count();
+    // Counted by shape rather than by spelling: `function`, any whitespace, this
+    // exact name, any whitespace, `(`. `strip_prefix` then requiring `(` is what
+    // keeps `startsWith` from being counted as `startsWithPrefix` would be.
+    let declarations = script
+        .match_indices("function")
+        .filter(|(at, _)| {
+            script[at + "function".len()..]
+                .trim_start()
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.trim_start().starts_with('('))
+        })
+        .count();
     assert_eq!(
         declarations, 1,
         "webview-page/page.js declares {name} {declarations} times and exactly one is \
          required: a later declaration overrides an earlier one, so a duplicate is the \
          function the page calls while this walk reads the first"
     );
-    let start = script
-        .find(&head)
-        .unwrap_or_else(|| panic!("webview-page/page.js declares {name}"))
-        + 1;
+    let head = format!("\n  function {name}(");
+    let start = script.find(&head).unwrap_or_else(|| {
+        panic!(
+            "webview-page/page.js declares {name}, but not as {head:?} — this walk \
+             locates a body by that literal, so it would read the wrong bytes or none"
+        )
+    }) + 1;
     let body = &script[start..];
     let end = body
         .find("\n  }\n")
         .unwrap_or_else(|| panic!("{name} closes at file scope"));
     let body = &body[..end];
+    // Counted over the text the walk below actually reads. That walk drops
+    // everything from the first ` //`, so a `}` typed into a comment reaches no
+    // table and yet rebalanced a naive count — enough to hide a slice already
+    // truncated by a dedented brace. Measured MISSED before this strip.
+    let code_only = body
+        .split('\n')
+        .map(|line| line.split(" //").next().unwrap_or(line))
+        .collect::<String>();
     assert_eq!(
-        body.matches('{').count(),
-        body.matches('}').count() + 1,
+        code_only.matches('{').count(),
+        code_only.matches('}').count() + 1,
         "the walk of {name} stops at the first two-space `}}`, and that is not this \
          function's own closer — an inner brace sits at that column, so every line \
          after it goes unwalked"
@@ -1330,31 +1369,58 @@ fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
 /// difference between an omission and a decision.
 ///
 /// **What this covers, stated as it behaves.** The check is over the *set* of
-/// statements each function contains. Four tables admit a line, and every one
-/// of them is keyed on the function being walked and matched against the whole
-/// line, indentation included: that function's own pins, its own declarations,
-/// its own scaffolding, and — in `sideRegionHintLine` alone — F-43's NUL
-/// separator. Nothing else admits anything, except three text filters that run
-/// ahead of the tables and are this walk's only unkeyed admissions: a blank
-/// line, a line beginning `//`, and a line spelled entirely from `{}()[];,`.
-/// None of the three can carry a rule; the third is decided character by
-/// character rather than by shape, and a punctuation line *moved* changes
-/// nesting without changing the set — which is the order residue below, not a
-/// fourth way in. So a statement added to a walked function fails here.
+/// statements each of twelve `page.js` bodies contains, as the extraction hands
+/// them over. Four tables admit a line, and every one of them is keyed on the
+/// function being walked and matched against the whole line, indentation
+/// included: that function's own pins (145 lines), its own declarations (13),
+/// its own scaffolding (15), and — in `sideRegionHintLine` alone — F-43's NUL
+/// separator (1). Those 174 are what `checked` counts. Nothing else admits
+/// anything, except three text filters that run ahead of the tables: a blank
+/// line (22), a line beginning `//` (**0** — the inline-comment strip above
+/// empties a whole-line comment before this filter ever sees it, so the filter
+/// is unreachable rather than merely harmless), and a line spelled entirely
+/// from `{}()[];,` (47). None of the three can carry a rule; the third is
+/// decided character by character rather than by shape, and a punctuation line
+/// *moved* changes nesting without changing the set — which is the order residue
+/// below, not a fourth way in. Those seven dispositions are the loop's complete
+/// control flow, and that is measured rather than reasoned: instrumenting the
+/// walk to print one tagged line per body line accounts for all 243 lines it
+/// touches, twice, with no eighth path. So a statement added to a line the walk
+/// is handed fails here.
 ///
 /// A pinned statement *changed* fails too, but in the pin table this walk is
 /// handed and not in this walk — that table is what `page_rules_pinned` counts,
 /// and it is where P3, P3b, P4, P5 and P15 panic.
 ///
-/// The slice each walk is handed is asserted as well, in `page_function_body`:
-/// the function is declared once, and the body runs to its own closing brace.
-/// Both were defeatable, so both are checked rather than assumed.
+/// **What the walk is handed is bounded by two anchors, and they are
+/// heuristics.** `page_function_body` asserts that the function is declared
+/// exactly once and that the slice holds exactly one unclosed brace. Both were
+/// defeatable, so both are checked rather than assumed — and each check was
+/// first written to recognise one spelling of what it forbids, which is how the
+/// slice arrived here truncated or read from the wrong declaration while every
+/// list above stayed satisfied. Each now recognises a class instead: the
+/// declaration count is over shape rather than over the literal
+/// `"\n  function NAME("`, so a second declaration spelled with any whitespace
+/// between `function`, the name and `(`, at any indentation, is counted; and
+/// the brace count runs over the comment-stripped body, the same text this loop
+/// reads, so a `}` typed into a comment can no longer rebalance a truncated
+/// slice. Four mutations that were MISSED are CAUGHT.
+///
+/// They are text scans and not a parser, and what that leaves is not a smaller
+/// version of the same hunt but one more instance of the residue below.
+/// `function controlIdOf/*x*/(control)` — a comment between the name and the
+/// paren — is valid, is hoisted, is the declaration the page calls, and is
+/// counted by nothing here. Measured MISSED. It is named rather than fixed:
+/// `str::find` over a literal always admits a further spelling, so the next scan
+/// would have a next spelling, and closing the class means a parser.
 ///
 /// Every one of these was flat once, and every flat one was reachable — the
 /// tables carry their own histories. What is worth saying in one place is that
-/// the shape never varied: an admission pool matching more than the one site it
-/// names, which is the exact defect the pin table above exists to reject, turned
-/// inward on the check built to enforce it.
+/// the shape barely varied: five times an admission pool matched more than the
+/// one site it names, which is the exact defect the pin table above exists to
+/// reject, turned inward on the check built to enforce it. The two anchors were
+/// its mirror image — an assertion recognising fewer spellings than the property
+/// it named — which is the same error read from the other side.
 ///
 /// What it does not cover is three things, and they are named rather than
 /// implied away.
@@ -1378,23 +1444,32 @@ fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
 /// scaffolding, a different and much larger control than this one. Recorded as
 /// known gaps (F-68, F-74) rather than treated as pending.
 ///
-/// **Not covered — functions the walk does not reach.** The **head-row
-/// resolution** is not pinned. `patchStripHtml`'s *call site*
-/// `controlById(main, groupHeadControlId(groups[i].key))` is pinned, and
-/// `groupHeadControlId` is transcribed whole; `controlById`'s own identity
-/// match is neither, because this file does not transcribe it — it asserts the
-/// head row through `group.rows[0]`. Making `controlById` match every control is
-/// invisible here.
+/// **Not covered — anything that is not a line of one of the twelve slices.**
+/// This is one *class*, not a list of items: it absorbs new instances without
+/// changing shape, and it has three measured ones. Each is MISSED here, and
+/// nothing else in the tree catches it either: the full `--all-targets` sweep
+/// under the third below left every target green but F-78's flaky
+/// `input_capture_witness`, which this same file passed in the clean run.
 ///
-/// The same boundary runs through `page.js`'s module scope. A *second
-/// declaration* of a walked function is caught, because the extraction requires
-/// the head to be unique — but a statement that merely **rebinds** one,
-/// `controlIdOf = function (control) { return ""; };` written below it, runs at
-/// load, defeats the function completely, and is a line of no walked body. It is
-/// MISSED; measured, not reasoned. Closing it means walking the whole file
-/// rather than twelve bodies, which is a different and much larger control. So
-/// this residue is a *class* and not an item, and `controlById`'s identity match
-/// and that rebinding are two measured instances of it.
+/// - The **head-row resolution** is not pinned. `patchStripHtml`'s *call site*
+///   `controlById(main, groupHeadControlId(groups[i].key))` is pinned, and
+///   `groupHeadControlId` is transcribed whole; `controlById`'s own identity
+///   match is neither, because this file does not transcribe it — it asserts the
+///   head row through `group.rows[0]`. Making `controlById` match every control
+///   is invisible here.
+/// - A **rebinding** rather than a declaration.
+///   `controlIdOf = function (control) { return ""; };` written below the
+///   original runs at load, defeats the function completely, and is a line of no
+///   walked body.
+/// - A **second declaration the head scan's shape does not describe** — a
+///   comment between the name and the paren, as above. Three other spellings of
+///   a second declaration were in this class until the scan stopped counting a
+///   literal; this one remains.
+///
+/// Closing the class means walking the file with a parser rather than twelve
+/// `str::find` slices — a different and much larger control. That is why it is
+/// described here instead of narrowed again: each narrowing of a literal scan
+/// buys the next spelling, not the property.
 ///
 /// **Not covered, and never was — that the Rust computes what the page
 /// computes.** These pins bound the cost of the transcription drifting from the
