@@ -56,7 +56,8 @@
       "model": "__resolved_model_absent__",
       "notes": [
         "Ready for review: widened PATCH Utility to five declared rows with reducer arms for master gain (shared canonical setter), MIDI input, and voice limit; added the subordinate PatchDetail surface with a structurally-enforced three-field invariant; H1/H2/H3 closed",
-        "Cycle 2: B1 gated to WP03, B2 fixed, dead APIs ruled"
+        "Cycle 2: B1 gated to WP03, B2 fixed, dead APIs ruled",
+        "Cycle 2 approved; see review-cycle-3.md. B1 closed via the offered escape hatch, verified by execution: EnterSurface(PatchDetail) is absent from surface_descriptor (17 entries), not phase-two admitted, never reaches valid_actions or the projected footer hints, and is a typed unchanged ActionUnavailableInContext rejection with generation frozen and state byte-equal; the reducer still enters, remembers and returns through AppEvent via the new is_return_target predicate. Gate removal falsified: flipping the is_enterable arm fails six tests including all three named tripwires. B1a/B1b falsified: removing leave_stale_detail_surface fails exactly those two tests. B2 closed with three leaves and two fixtures (deleting subject.slot_id fails the bidirectional exactness test). Twelve of twelve InteractionState mutators assert the invariant; replace_return_origin returns its construction failure. 777 passed / 0 failed, clippy clean, crest-spec byte-identical to repo root and mission branch, doctor OK. All four pushbacks upheld on measurement."
       ],
       "provider": "__resolved_provider_absent__",
       "role": "reviewer",
