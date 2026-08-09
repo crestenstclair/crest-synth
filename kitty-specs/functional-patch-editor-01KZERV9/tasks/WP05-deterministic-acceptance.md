@@ -362,3 +362,7 @@ same defect one layer up.
 - A falsification recorded as "verified" with no observed failure
 - The acceptance marker emitted early or from multiple places
 - Any check that would still pass with the feature removed
+
+## Activity Log
+
+- 2026-08-09T19:03:45Z – unknown – shell_pid=0 – Cycle 6 follow-up commit 15f5f91: doc-comment-only correction of two counts in the coverage statement (five flipped mutations, not four; a fabricated 'six designed groups' replaced with the measurement). No executable change; target still 30/0 with page_rules_pinned=66 and the marker.
