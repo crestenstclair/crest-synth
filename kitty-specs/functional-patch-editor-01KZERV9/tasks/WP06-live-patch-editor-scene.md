@@ -353,3 +353,7 @@ open since Phase 3; close it against real evidence.
 - A checkpoint counter incremented per checkpoint rather than per correlating one
 - `demo-live` re-aliased to this scene
 - A roadmap completion note with adjectives where numbers belong
+
+## Activity Log
+
+- 2026-08-09T11:42:28Z – claude – shell_pid=58383 – Partial: F-29 clone halving landed and measured (MIXER 89 rows, release, full project_with_shell: 2960us -> 2382us; NFR-004 bar 3.00ms met); AtomicAudioObservation now carries voice_limit_refusals (T035 step 0), falsified. NOT built: T035 observation type, T036 scene, T037 checkpoints, T038/T039 binary modes, T040 Makefile target, T041 roadmap note. Blocked by F-40 (console locked) for execution, and by four witness fields with no production producer: stripGroupsPainted, stripFlatControlRun, steamDeckViewportPainted, clippedOrOverlappingRows at row granularity.
