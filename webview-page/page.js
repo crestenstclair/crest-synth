@@ -85,6 +85,14 @@
   // its own group* rather than vanishing. `designed: false` marks the one
   // descriptor-driven group: an instrument that declares no parameters
   // genuinely has none, which is a projected fact and not missing data.
+  //
+  // The order is the order the projection emits, and it has to be: the
+  // capability's own rows belong to the instrument the engine row names, but
+  // the projection emits them *after* the envelope (DESIGN.md: "Engine,
+  // Attack, Decay, Sustain, Release, descriptor-declared instrument
+  // StructuralChoice rows"), so a group that gathered them under the engine
+  // row would paint them out of the reducer's own order. Grouping is a
+  // presentation change; it does not get to move a row.
   var DESIGNED_STRIP_GROUPS = [
     { key: "instrument", legend: "INSTRUMENT", designed: true },
     { key: "envelope", legend: "AMP ENVELOPE", designed: true },
@@ -359,21 +367,32 @@
       .replace(/\s+mode$/, "");
   }
 
+  // One projected action list as its hint run.
+  //
+  // The hints are separated by a text space, not by the flex gap alone. Every
+  // container that holds a run is a flex container, so a whitespace-only text
+  // node between two items generates no anonymous flex item and the painted
+  // geometry is unchanged — but the run's `textContent` reads "2:patch 1:mixer"
+  // rather than "2:patch1:mixer", which is what a screen reader announces, what
+  // a selection copies, and what an observation can compare against the
+  // projected list. Adjacent spans with no separating text made the run a
+  // single unbroken word in every one of those readings.
   function hintRun(actions) {
-    var html = "";
+    var spans = [];
     for (var i = 0; i < actions.length; i += 1) {
       var action = actions[i];
       if (!action.hint) {
         continue; // null hints never render (spike defect, kept fixed)
       }
-      html +=
+      spans.push(
         '<span class="type-hint focus">' +
-        escapeHtml(action.hint) +
-        ":" +
-        escapeHtml(hintLabel(action)) +
-        "</span>";
+          escapeHtml(action.hint) +
+          ":" +
+          escapeHtml(hintLabel(action)) +
+          "</span>"
+      );
     }
-    return html;
+    return spans.join(" ");
   }
 
   function actionsOfKind(model, kind) {
@@ -829,12 +848,13 @@
     // Utility rows are excluded: the panel states its affordances once on its
     // own authored hint line, and a nine-hint run does not seat in a 320 px
     // side region.
-    var hints =
-      role === "panel"
-        ? ""
-        : '<span class="prow-hints" data-role="row-hints">' +
-          hintRun(control.validActions || []) +
-          "</span>";
+    var hintRunHtml =
+      role === "panel" ? "" : hintRun(control.validActions || []);
+    var hints = hintRunHtml
+      ? '<span class="prow-hints" data-role="row-hints">' +
+        hintRunHtml +
+        "</span>"
+      : "";
     var row =
       '<div class="prow' +
       (role === "panel" ? " panel" : "") +
@@ -1693,8 +1713,36 @@
       });
     }
 
+    // The painted width of one element inside a row, or null when the row does
+    // not carry it. Rounded, so two renders of one document at one window size
+    // report the identical integer.
+    function widthOf(root, selector) {
+      var el = root.querySelector(selector);
+      return el ? Math.round(el.getBoundingClientRect().width) : null;
+    }
+
+    // The painted top and bottom edges of one element, in the row's own
+    // coordinates — enough to see which of a wrapping row's lines it landed
+    // on, which is the fact a width alone cannot report.
+    function edgesIn(row, selector) {
+      var el = row.querySelector(selector);
+      if (!el) {
+        return null;
+      }
+      var box = el.getBoundingClientRect();
+      var origin = row.getBoundingClientRect().top;
+      return {
+        topPx: Math.round(box.top - origin),
+        bottomPx: Math.round(box.bottom - origin),
+      };
+    }
+
     // The painted PATCH strip rows, in painted order, with the state each
     // row was painted in — the PATCH twin of the mixer column report.
+    //
+    // The painted box widths ride along because the row's parts compete for
+    // one line: a hint run that takes the rail's width leaves the rail a few
+    // pixels, which is a layout fact no text-only observation can see.
     function rowReport(nodes) {
       var out = [];
       for (var r = 0; r < nodes.length; r += 1) {
@@ -1710,6 +1758,11 @@
           hints: textOf(rowNode, '[data-role="row-hints"]'),
           interaction: rowNode.getAttribute("data-interaction"),
           readOnly: textOf(rowNode, '[data-role="read-only"]'),
+          heightPx: Math.round(rowNode.getBoundingClientRect().height),
+          railPx: widthOf(rowNode, ".prow-position"),
+          hintsPx: widthOf(rowNode, '[data-role="row-hints"]'),
+          labelEdges: edgesIn(rowNode, ".prow-label"),
+          hintEdges: edgesIn(rowNode, '[data-role="row-hints"]'),
         });
       }
       return out;
@@ -1785,11 +1838,49 @@
     }
     var utility = rowReport(inspectorElement.querySelectorAll(".prow"));
 
+    // What the workspace body actually got, in the window that actually
+    // shipped it. `window.innerHeight` is the page's real height, which is not
+    // the authored window height — the window decoration (and, on a screen
+    // exactly as tall as the window, the menu bar) takes its cut before the
+    // page sees a pixel. A viewport-sized iframe does not reproduce that, and
+    // a seating claim measured in one is a claim about a different surface.
+    var bodyNode = doc.getElementById("strip") || doc.getElementById("detail");
+    var workspaceBody = null;
+    if (bodyNode) {
+      // The composition's own height, measured from its first child's top to
+      // its last child's bottom. `scrollHeight` cannot answer this: it is
+      // clamped up to the client height, so a composition that seats reports
+      // the band's height rather than its own and the headroom is invisible.
+      var kids = bodyNode.children;
+      var contentPx = 0;
+      if (kids.length > 0) {
+        contentPx = Math.round(
+          kids[kids.length - 1].getBoundingClientRect().bottom -
+            kids[0].getBoundingClientRect().top
+        );
+      }
+      workspaceBody = {
+        id: bodyNode.id,
+        contentPx: contentPx,
+        bandPx: bodyNode.clientHeight,
+        scrollableBy: Math.max(
+          0,
+          bodyNode.scrollHeight - bodyNode.clientHeight
+        ),
+        widthPx: Math.round(bodyNode.getBoundingClientRect().width),
+      };
+    }
+
     var focusedNode = doc.querySelector("#bank .column.focused");
     return {
       generation: model.generation,
       stateHash: model.stateHash,
       bands: bands,
+      viewport: {
+        widthPx: window.innerWidth,
+        heightPx: window.innerHeight,
+      },
+      workspaceBody: workspaceBody,
       columns: columns,
       rows: rows,
       groups: groups,
