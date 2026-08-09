@@ -411,6 +411,40 @@ valueObjects:
         adjustment path
       schema_driven_patch_page: supplies the four canonical focusable/editable ADSR rows without creating
         UI-owned envelope state
+  VoiceLimit:
+    description: the canonical Patch-owned ceiling on how many of that Patch's notes may sound at once
+    from: u16
+    state:
+      value: u16
+      surfaceDescriptor: one typed stable id with presentation label, unitless presentation, inclusive
+        bounds, and fine/coarse steps
+    invariants:
+    - the value is in 1..=64 inclusive. The upper bound is the smallest declared engine polyphony ceiling
+      in the installed registry, so no Patch may declare a limit its own engine could not honour; a
+      registry admitting a lower-ceiling engine narrows this bound in this declaration rather than
+      discovering the mismatch at render time
+    - the descriptor classifies the control as Stepped with an integral fine step of one and a coarse
+      step of eight, enumerates the field exactly once, and is the shared pre-dispatch oracle for bounds
+      and step size used by reducer, projection, and demos — the same descriptor contract the VoiceEnvelope
+      and GlobalParameters surfaces already hold. This is the first production producer of the Stepped
+      classification, which the component vocabulary already declares and no capability previously drove
+    - the limit is Patch-local and follows the Patch. It is not a device polyphony setting, not a global
+      voice budget, and not a second name for an engine's own capacity ceiling
+    - enforcement refuses rather than steals — a note-on arriving while the Patch already sounds its limit
+      is not started, and no sounding note is truncated to make room. This matches the reducer's declared
+      refuse-rather-than-wrap idiom at every other boundary, and it is the falsifiable half of the pair —
+      a defeated limit is observable as a note that sounded, where a stealing policy would be observable
+      only as a different note stopping
+    - a limit lowered below the currently sounding count applies at the next note-on; it never reaches
+      into the callback to end voices already latched, because ending a voice out of band is exactly
+      the destruction the callback contract forbids
+    - the value contains no engine object, voice handle, allocator, buffer, or device capacity
+    contributesTo:
+      one_way_parameter_control: adds one schema-derived Patch value to the canonical PATCH adjustment
+        path
+      schema_driven_patch_page: gives the PATCH Utility voice-limit row a real canonical value, replacing
+        the structure the projection could previously only mark unavailable
+      realtime_execution: bounds per-Patch note starts with a fixed comparison and no allocation
 aggregates:
   Patch:
     root: true
@@ -424,6 +458,7 @@ aggregates:
       channel: MidiChannel
       envelope: VoiceEnvelope
       output: PatchOutput
+      voiceLimit: VoiceLimit
     invariants:
     - id is stable for the process lifetime
     - instrument capability and configuration are validated against the installed CapabilityRegistry before
@@ -448,9 +483,16 @@ aggregates:
     - descriptor-classified Scalar values may change through the canonical reducer; engine and descriptor-declared
       structural-choice edits atomically replace the complete InstrumentConfig only after one correlated
       candidate is prepared
-    - channel is assigned by the input adapter and is in 0..=15
-    - PatchOutput, VoiceEnvelope, and active descriptor-classified instrument/effect values remain Patch-owned
-      while mixer tracks and their controls remain separate canonical state
+    - channel is initially assigned by the input adapter and is in 0..=15; it is thereafter editable
+      through the canonical reducer from the PATCH Utility MIDI input row, and a change re-targets which
+      incoming part drives this Patch without disturbing identity, config, envelope, effects, routing,
+      or the active graph revision
+    - voiceLimit is Patch-owned canonical state carried on the latest-scalar snapshot to the real-time
+      domain; installation seeds it from the active engine's declared polyphony ceiling clamped to the
+      VoiceLimit bound, so no Patch starts with a limit its engine could not honour and none starts
+      unlimited-by-omission
+    - PatchOutput, VoiceEnvelope, VoiceLimit, and active descriptor-classified instrument/effect values
+      remain Patch-owned while mixer tracks and their controls remain separate canonical state
     - Patch contains no SoundFont-only or Chorus-specific field, engine/effect object, descriptor copy,
       prepared renderer, decoded asset, UI state, or fallback configuration
     - Patch contains no track level, pan, mute, solo, send, meter, mixer scratch, or duplicate MixerState

@@ -146,6 +146,7 @@ completion:
   - route_patches_through_sixteen_tracks
   - expand_effects_and_buses
   - build_from_component_vocabulary
+  - edit_every_installed_patch
   projectChecks:
   - format
   - clippy
@@ -178,3 +179,4 @@ completion:
   - acceptance_matrix_covers_all_requirement_kinds
   - component_vocabulary
   - component_composition
+  - functional_patch_editor

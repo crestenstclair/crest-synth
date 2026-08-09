@@ -89,8 +89,11 @@ valueObjects:
     - unused entries are inactive
     - the snapshot is fully owned, fixed-size, destructor-free, and readable without allocation; publish
       cost through the latest-value transport stays bounded at the widened size and is measured, not assumed
-    - each RtPatchParameters contains PatchId, fixed PatchOutput, VoiceEnvelope, scalarCount, and a descriptor-ordered
-      [f32; 16] engine-scalar array fixed by the active graph revision
+    - each RtPatchParameters contains PatchId, fixed PatchOutput, VoiceEnvelope, VoiceLimit, scalarCount,
+      and a descriptor-ordered [f32; 16] engine-scalar array fixed by the active graph revision
+    - VoiceLimit rides this snapshot as a plain bounded integer alongside the envelope, adding no field
+      that allocates, borrows, or carries a destructor; the widened entry stays Copy and fixed-size and
+      its publish cost remains measured rather than assumed
     - postEffects is a separate Patch-aligned section carrying MAX_EFFECT_SLOTS ordered entries per Patch;
       each active entry carries stable EffectSlotId, scalarCount, and descriptor-ordered [f32; 8] effect
       values fixed by the active graph revision, and clearing one slot leaves the other positions stable
@@ -104,9 +107,12 @@ valueObjects:
     - choice values are encoded as descriptor indices and snapshots contain no string, vector, asset,
       capability union, engine object, or destructor-bearing owner
     - a production-owned typed leaf descriptor covers generation, graphRevision, patchCount, every active
-      PatchId/output/envelope/scalar parameter, every effect-slot entry, all sixteen track parameter sets
-      including every indexed send, every bus-return entry, and every global parameter and exactly matches
-      the StateTree parameters projection; no leaf of the widened block is unenumerated
+      PatchId/output/envelope/voiceLimit/scalar parameter, every effect-slot entry, all sixteen track
+      parameter sets including every indexed send, every bus-return entry, and every global parameter and
+      exactly matches the StateTree parameters projection; no leaf of the widened block is unenumerated.
+      A canonical value that crosses the real-time boundary and changes what is audible is enumerated
+      here, because a value the trace cannot show is a value no measured proof can correlate — the
+      voice limit is enumerated for exactly that reason rather than left carried-but-invisible
     contributesTo:
       one_way_parameter_control: carries accepted AppState values to audio
       asynchronous_engine_selection: carries the exact descriptor scalar layout for the source or committed
@@ -189,6 +195,7 @@ valueObjects:
       commandsConsumed: u64
       activeNotes: u32
       routingFailures: u64
+      voiceLimitRefusals: u64
       lastUnknownPatchId: Option<PatchId>
       tracks: '[TrackMeter; 16]'
       leftPeak: f32
@@ -217,6 +224,10 @@ valueObjects:
     - routingFailures increments exactly once for each PatchMidi command whose PatchId is absent from
       either the compatible parameter projection or prepared rack, and lastUnknownPatchId retains that
       exact identity without fallback or broadcast
+    - voiceLimitRefusals increments exactly once for each note-on the Patch's snapshot-carried VoiceLimit
+      refused, and saturates rather than wrapping. It is the observable that makes the limit falsifiable
+      — a limit defeated in the callback shows zero refusals under a fixture that must exceed it, which
+      is a failing predicate rather than an unnoticed absence of silence
     - the callback updates nonFiniteSamples and clippedSamples instead of logging, formatting, panicking,
       or performing I/O
     contributesTo:
@@ -647,6 +658,16 @@ applicationServices:
         tail
       - an unknown PatchMidi identity leaves every prepared instrument unchanged and is preserved as one
         fixed-size routing failure in the same injected AudioObservation path
+      - a note-on dispatched to a Patch already sounding its snapshot-carried VoiceLimit is not started;
+        the renderer compares the Patch's already-tracked active-note count against the limit and drops
+        the start, leaving every sounding voice latched. The comparison is a fixed integer test against
+        state the active-note observer already maintains, so enforcement adds no allocation, no scan that
+        grows with polyphony, no branch on capability, and no voice destruction inside the callback
+      - a refused note-on is counted per Patch in the same bounded observation path as a routing failure,
+        so a limit that actually bit is observable rather than inferred from silence; the counter saturates
+        on overflow like every other callback counter
+      - note-off, all-notes-off, and every non-note message are never refused by the limit, because a
+        limit that could swallow a note-off would strand a latched voice
       - one engine-managed SoundFont synthesizer per SoundFont Patch plus every Patch-local Braids FFI
         bank, sixteen-voice bank iteration, 24-sample internal rendering, per-note envelopes, and 2:1
         conversion remain inside the same no-allocation callback contract

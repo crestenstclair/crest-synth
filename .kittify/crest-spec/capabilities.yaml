@@ -800,3 +800,83 @@ capabilities:
             no state visualization is re-derived
         evidence:
         - evidence.component_vocabulary_contract
+  functional_patch_editor:
+    description: Assemble the complete PATCH editing experience from the component vocabulary and the canonical
+      view model, so every installed Patch is reachable and editable through the one-way loop and the reach
+      is demonstrated on hardware
+    goals:
+    - edit_every_installed_patch
+    - inspect_patch
+    - control_synth
+    - shape_patch_with_effect
+    - build_from_component_vocabulary
+    - observe_live_synth
+    acceptance:
+      reach_the_second_instrument:
+        description: the whole PATCH surface moves to another installed Patch through the semantic gesture
+          and that Patch is then edited, on screen and audibly
+        actor: player
+        steps:
+        - action: install the fifteen-Patch fixture and focus the first Patch's engine row
+          observes: PATCH paints the PatchStrip composition — identity and routing header, instrument selector,
+            envelope group, and one group per ordered effect slot — with every numeric row showing its declared
+            range and unit and every label the owning descriptor's authored label
+        - action: send the rightward patch-selection gesture
+          observes: exactly one projection generation advances and it names the second Patch, its own capability
+            label, MIDI channel, envelope values, capability rows, effect slots, and Utility values; focus
+            resolves against the destination's own descriptor schema; no intermediate projection pairs one
+            Patch's identity with another's schema
+        - action: walk the second Patch's effect slots and set occupancy on one
+          observes: each slot transition is checkpointed with its focus path before and after, an empty slot
+            still presents its occupancy row, clearing one position leaves the others uncompacted, and the
+            active graph revision advances through the correlated structural lifecycle
+        - action: focus an occupant scalar row on the second Patch and adjust it while the fixture plays
+          observes: the row shows its active value, its requested value while the edit is in flight, and
+            its own valid actions; the measured audio observation changes on that Patch's own output and
+            not on the first Patch's
+        - action: send the patch-selection gesture at the last installed Patch
+          observes: the reducer returns the typed unchanged rejection and the projection is byte-identical
+            rather than wrapping to the first Patch
+        evidence:
+        - evidence.functional_patch_editor_contract
+      drive_the_utility_surface:
+        description: the five designed Utility rows all carry real canonical values and edit the one canonical
+          owner of each
+        actor: player
+        steps:
+        - action: move rightward from the strip into Utility
+          observes: exactly five rows — master volume, patch volume, MIDI input, output track, voice limit
+            — each with a real typed value, none marked unavailable, none labelled with a serialization key,
+            the authored hint line present, and every row seated inside the side region without a scroll
+            affordance at both authored viewports
+        - action: adjust master volume on PATCH Utility, then select MIXER
+          observes: the Inspector reports the same value through the same canonical descriptor; no second
+            master-volume value exists in state, snapshot, or projection
+        - action: lower the voice limit below the count the fixture sustains and let it play
+          observes: notes beyond the limit do not start, already-latched voices are not truncated, the bounded
+            observation counts the refusals, and callback allocations and destructions stay zero
+        - action: change the MIDI input row and send the fixture on the newly selected channel
+          observes: this Patch responds on the new channel and no longer on the old one, while identity,
+            config, envelope, effects, routing, and active graph revision are unchanged
+        evidence:
+        - evidence.functional_patch_editor_contract
+      one_detail_shell_two_subjects:
+        description: the same subordinate surface serves an instrument and an effect and returns to the exact
+          originating row
+        actor: player
+        steps:
+        - action: open detail from a focused instrument row, then leave it
+          observes: the surface's title, accent, ordered sections, controls, ranges, units, and status all
+            come from the active instrument descriptor, and leaving lands on the exact originating row rather
+            than a recomputed surface default
+        - action: open detail from a focused occupant row on an occupied effect slot
+          observes: the same composition renders with the effect capability's own descriptor content, with
+            no second surface identity and no branch on subject kind
+        - action: attempt to open detail from an empty effect slot and from a Utility row
+          observes: each is a typed unchanged rejection rather than an empty detail surface, and no subordinate
+            surface nests inside another
+        - action: open detail on a capability while its structural preparation is in flight
+          observes: the projected lifecycle status is shown rather than an empty or stale section set, and
+            a capability-declared read-only section is marked read-only in text or shape as well as colour
+        evidence:
+        - evidence.functional_patch_editor_contract

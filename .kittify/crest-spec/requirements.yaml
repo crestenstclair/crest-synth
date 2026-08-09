@@ -1323,3 +1323,113 @@ requirements:
     - build_from_component_vocabulary
     capabilities:
     - component_vocabulary
+  composed_patch_strip:
+    kind: functional
+    description: The PATCH main workspace SHALL be produced by the declared PatchStrip composition, which
+      arranges the focused Patch's identity-and-routing header, its instrument selector, its envelope group,
+      and one group per ordered effect slot with that slot's occupant parameters nested beneath it; the
+      workspace SHALL NOT be a flat run of every projected control, SHALL mark a group with no view data
+      unavailable rather than inventing one, and SHALL retain every group at both authored viewports without
+      clipping, overlap, or a hidden band
+    goals:
+    - edit_every_installed_patch
+    capabilities:
+    - functional_patch_editor
+    - component_vocabulary
+    - schema_driven_patch_page
+  on_screen_patch_selection:
+    kind: functional
+    description: SelectPatch SHALL move the whole PATCH surface to the adjacent installed Patch in exactly
+      one advanced projection generation, reprojecting identity, MIDI channel, engine, envelope, capability
+      rows, effect slots, and every Utility value from the destination Patch; focus SHALL be recovered against
+      the destination's own descriptor schema, an in-flight structural edit SHALL stay correlated to the
+      Patch it was started on, any open subordinate surface SHALL be left first, and a request at either
+      end of the installed order SHALL be a typed unchanged rejection rather than a wrap. No intermediate
+      projection SHALL pair one Patch's identity with another's schema
+    goals:
+    - edit_every_installed_patch
+    capabilities:
+    - functional_patch_editor
+    - schema_driven_patch_page
+  bounded_patch_utility_surface:
+    kind: functional
+    description: PATCH Utility SHALL project exactly five rows in the declared order — master volume, patch
+      volume, MIDI input, output track, voice limit — each carrying a real canonical value and each editable
+      through the canonical reducer. Master volume SHALL resolve the one canonical GlobalParameters value
+      through the one canonical descriptor that MIXER Inspector also edits, with no PATCH-side copy. MIDI
+      input SHALL edit the focused Patch's own channel. The panel SHALL render its authored hint line. The
+      row set being bounded by declaration, the panel SHALL seat every row within the persistent side region
+      at both authored viewports without a scroll affordance
+    goals:
+    - edit_every_installed_patch
+    capabilities:
+    - functional_patch_editor
+    - sixteen_track_mixer_routing
+    - global_mix
+  canonical_voice_limit:
+    kind: functional
+    description: Each Patch SHALL own a canonical VoiceLimit in 1..=64, seeded at installation from its
+      active engine's declared polyphony ceiling, edited through the canonical reducer as a Stepped control
+      from PATCH Utility, carried to the real-time domain on the existing latest-scalar snapshot, and enforced
+      at note-on by refusing to start a note while that Patch already sounds its limit. Enforcement SHALL
+      neither allocate, scan proportionally to polyphony, nor destroy a latched voice, SHALL never refuse
+      a note-off or all-notes-off, and SHALL count each refusal in the bounded audio observation so a defeated
+      limit fails a predicate rather than passing unnoticed
+    goals:
+    - edit_every_installed_patch
+    capabilities:
+    - functional_patch_editor
+    - realtime_execution
+    - one_way_parameter_control
+  projected_row_intent:
+    kind: functional
+    description: Each projected control SHALL carry its own valid-action list, resolved by the same pure
+      resolver that computes the model-level list, and SHALL carry the value an in-flight structural edit
+      correlated to it is moving toward for exactly as long as that edit is in flight. Per-row hints and
+      the mid-edit requested value SHALL therefore be projected facts; the shell SHALL NOT infer either,
+      and neither SHALL become a second hand-maintained input vocabulary or a locally optimistic value
+      written ahead of the reducer
+    goals:
+    - edit_every_installed_patch
+    capabilities:
+    - functional_patch_editor
+    - semantic_graphical_view_model
+  polymorphic_capability_detail_shell:
+    kind: functional
+    description: One subordinate PatchDetail surface SHALL serve both instrument and effect subjects. It
+      SHALL be entered only from a PatchMain path that resolves a PatchDetailSubject, SHALL resolve its
+      label, accent, ordered sections, controls, ranges, units, status, and errors entirely from the installed
+      descriptor that subject names, SHALL mark a capability-declared read-only section in text or shape
+      as well as color, SHALL show a mid-preparation capability through its projected lifecycle status rather
+      than an empty or stale section set, and SHALL restore the exact originating row on return. It SHALL
+      NOT nest with the persistent side surface, branch on subject kind, or declare a section list of its
+      own
+    goals:
+    - edit_every_installed_patch
+    capabilities:
+    - functional_patch_editor
+    - instrument_capability_model
+  authored_control_presentation:
+    kind: functional
+    description: Every projected numeric control's declared range and unit SHALL be rendered on screen,
+      not merely projected, and every control's label SHALL be its owning descriptor's authored label. A
+      serialization key SHALL NOT reach the screen as a label on any surface
+    goals:
+    - edit_every_installed_patch
+    capabilities:
+    - functional_patch_editor
+    - component_vocabulary
+  functional_patch_editor_behavioral_proof:
+    kind: nonfunctional
+    description: One retained live scene, make demo-live-patch-editor, SHALL navigate from one Patch to
+      another through SelectPatch on a real window, then perform a full focus-verified effect-slot occupancy
+      journey and an audible occupant parameter edit on the second instrument, with checkpoints correlating
+      the patch switch, the resulting focus path, and the measured audible consequence on that second Patch's
+      own output. The run SHALL report zero dropped events, zero callback allocations, zero callback destructions,
+      zero active notes after cleanup, a released stream, a closed window, and zero remaining owned graphs,
+      and SHALL be falsified by a controlled negative in which the patch switch is defeated
+    goals:
+    - edit_every_installed_patch
+    capabilities:
+    - functional_patch_editor
+    - live_observable_demo
