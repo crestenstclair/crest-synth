@@ -384,3 +384,7 @@ not a proof. This is the falsification step and it is not optional.
 - A detail surface projected while no entry is open
 - A `requestedValue` set anywhere outside the lifecycle projection
 - T019 recorded as "verified" with no observed failure text
+
+## Activity Log
+
+- 2026-08-09T05:00:39Z – claude – shell_pid=12527 – T019 falsification performed, not described. Guard removed from ProjectionChannel::retire (the retired_identities.remove(stale) block); the T018 proving test failed with, verbatim: thread 'shell::webview::projection_channel::tests::a_re_pushed_generation_retires_once_so_no_stale_identity_shadows_the_current_one' panicked at src/shell/webview/projection_channel.rs:1273:14: 'a verbatim ack for the re-pushed document must not be rejected: IdentityMismatch { generation: 1, field: "stateHash" }'. Guard restored; test passes; production diff for that file is +85 lines of test only. T016's guard was falsified the same way: reintroducing descriptor.name() as the MIXER Inspector global row's label failed with 'Mixer(Global { parameter: MasterGainDb }) on MixerInspector is labelled with the serialization key masterGainDb'; reverted.
