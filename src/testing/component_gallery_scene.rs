@@ -1004,8 +1004,10 @@ const fn composition_form(composition: ShellComposition) -> &'static str {
         ShellComposition::IdentityHeader => "header",
         ShellComposition::Section => "section",
         ShellComposition::PatchStripRow => "stripRow",
+        ShellComposition::PatchStrip => "strip",
         ShellComposition::MixerStripBank => "bank",
         ShellComposition::UtilityInspectorPanel => "panel",
+        ShellComposition::CapabilityDetailShell => "detail",
         ShellComposition::Footer => "footer",
     }
 }
@@ -1081,6 +1083,25 @@ fn composition_specimen(composition: ShellComposition) -> GallerySpecimen {
             )],
             Vec::new(),
         ),
+        // Groups arranging groups: the identity-and-routing header, then a
+        // titled group per structure with its rows nested beneath it. An
+        // empty slot keeps its group and its occupancy row, because an empty
+        // position an operator cannot see is a position they cannot fill.
+        ShellComposition::PatchStrip => (
+            vec![
+                GalleryCompositionEntry::new("LEAD PAD", Some("MIDI 03 · T03"), Some("focus")),
+                GalleryCompositionEntry::new("INSTRUMENT", None, Some("muted")),
+                GalleryCompositionEntry::new("Engine", Some("HiDef SoundFont"), None),
+                GalleryCompositionEntry::new("AMP ENVELOPE", None, Some("muted")),
+                GalleryCompositionEntry::new("Attack", Some("0.120 ms"), None),
+                GalleryCompositionEntry::new("Slot 1", None, Some("muted")),
+                GalleryCompositionEntry::new("Slot 1", Some("Chorus"), None),
+                GalleryCompositionEntry::new("Amount", Some("0.500"), None),
+                GalleryCompositionEntry::new("Slot 2", None, Some("muted")),
+                GalleryCompositionEntry::new("Slot 2", Some("Empty"), Some("muted")),
+            ],
+            Vec::new(),
+        ),
         ShellComposition::MixerStripBank => (
             Vec::new(),
             vec![
@@ -1096,6 +1117,17 @@ fn composition_specimen(composition: ShellComposition) -> GallerySpecimen {
                 GalleryCompositionEntry::new("MASTER VOLUME", Some("--"), Some("muted")),
                 GalleryCompositionEntry::new("PATCH VOLUME", Some("0.500"), None),
                 GalleryCompositionEntry::new("OUTPUT TRACK", Some("T03"), None),
+            ],
+            Vec::new(),
+        ),
+        // One composition for either subject. The read-only row carries the
+        // declared interaction as text, so it is distinguishable with the
+        // colour removed.
+        ShellComposition::CapabilityDetailShell => (
+            vec![
+                GalleryCompositionEntry::new("DETAIL", Some("HiDef SoundFont"), Some("focus")),
+                GalleryCompositionEntry::new("Preset", Some("Grand Piano"), None),
+                GalleryCompositionEntry::new("SoundFont File", Some("READ-ONLY"), Some("muted")),
             ],
             Vec::new(),
         ),
@@ -1428,9 +1460,11 @@ fn page_sections(page: ComponentGalleryPage, policy: ViewportDensityPolicy) -> V
         ComponentGalleryPage::HeadersAndSections => vec![
             composition_section(ShellComposition::IdentityHeader),
             composition_section(ShellComposition::Section),
+            composition_section(ShellComposition::CapabilityDetailShell),
         ],
         ComponentGalleryPage::StripPanelAndFooter => vec![
             composition_section(ShellComposition::PatchStripRow),
+            composition_section(ShellComposition::PatchStrip),
             composition_section(ShellComposition::MixerStripBank),
             composition_section(ShellComposition::UtilityInspectorPanel),
             composition_section(ShellComposition::Footer),
@@ -4063,8 +4097,8 @@ mod tests {
         assert_eq!(observation.controls_painted(), 8);
         assert_eq!(observation.kind_role_pairs_unmapped(), 0);
         assert_eq!(observation.controls_unreachable_by_any_pair(), 0);
-        assert_eq!(observation.compositions_declared(), 8);
-        assert_eq!(observation.compositions_painted(), 8);
+        assert_eq!(observation.compositions_declared(), 10);
+        assert_eq!(observation.compositions_painted(), 10);
         assert_eq!(observation.mixer_column_structures_declared(), 5);
         assert_eq!(observation.mixer_column_structures_painted(), 5);
         assert_eq!(observation.mixer_column_names_beyond_track_header(), 0);
@@ -4080,7 +4114,7 @@ mod tests {
         assert!(observation.window_closed());
         assert_eq!(observation.states_rendered().len(), 9);
         assert_eq!(observation.controls_rendered().len(), 8);
-        assert_eq!(observation.compositions_rendered().len(), 8);
+        assert_eq!(observation.compositions_rendered().len(), 10);
     }
 
     /// The serialized observation carries every field the witness schema

@@ -1439,7 +1439,7 @@ fn forwarded_observation(
 fn check_every_region_is_a_declared_band() {
     // The composition family still declares its region bindings, and every
     // observed region is bound by at least one declared composition.
-    assert_eq!(SHELL_COMPOSITION_COUNT, 8);
+    assert_eq!(SHELL_COMPOSITION_COUNT, 10);
     let declared: BTreeSet<&str> = ALL_SHELL_COMPOSITIONS
         .into_iter()
         .map(ShellComposition::canonical_name)
