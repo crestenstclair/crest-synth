@@ -4,12 +4,12 @@ artifact_type: spec-kitty.analysis-report
 command: /spec-kitty.analyze
 mission_slug: functional-patch-editor-01KZERV9
 mission_id: 01KZERV946GWEEMVZZM43EJ437
-generated_at: '2026-08-09T07:11:48.849241+00:00'
+generated_at: '2026-08-09T07:12:18.350295+00:00'
 analyzer_agent: unknown
 input_artifacts:
   spec.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/functional-patch-editor-01KZERV9/spec.md
-    sha256: ab731383d420b03eab817b6bbff3d76465c7ff19a2457cf09b4134bddd171efa
+    sha256: 4f3903f94f72d8dcf3b6ae5c758d550fc0b97e9258ee09fa7bcd8c17f3f27f6b
   plan.md:
     path: /Users/crestenstclair/workspace/crest-synth/kitty-specs/functional-patch-editor-01KZERV9/plan.md
     sha256: b0638641e101b4c007ac5575ddc0fbfc9f8a1789896a221a23dea7a6be4a160e
@@ -22,9 +22,9 @@ input_artifacts:
 verdict: ready
 issue_counts:
   medium: 2
+  critical: 0
   low: 3
   high: 0
-  critical: 0
   info: 0
 findings:
 - id: C4
