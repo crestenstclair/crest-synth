@@ -605,7 +605,7 @@ valueObjects:
       busReturns: 'Vec<{busId, effect: Option<{slotId, capabilityId, values: Vec<{parameterId, value}>,
         assetReferences: Vec<{parameterId, reference}>}>, returnLevel}>'
       global: '{masterGainDb}'
-      interaction: '{focusPath, rememberedPatchPath, rememberedMixerPath, mode, returnPath}'
+      interaction: '{focusPath, rememberedPatchPath, rememberedMixerPath, mode, returnPath, detailSubject}'
       engineSelection: EngineSelectionStatus
       patchPage: Option<PatchPageProjection>
       semanticGraphicalViewModel: SemanticGraphicalViewModel
@@ -636,8 +636,16 @@ valueObjects:
       embeds that exact value plus the same nested diagnostic projection and contains no parallel interaction
       state
     - serialization is deterministic JSON with a version field and stable property names
+    - interaction.detailSubject is enumerated for the same reason parameters.patches[].voiceLimit is —
+      the subject decides what the detail surface shows, so a trace that cannot say which capability a
+      detail surface was opened on cannot correlate a detail interaction with its consequence. It is
+      null with no entry open, and otherwise carries the subject's own leaves, including the exact
+      occupied slot identity for an Effect subject, which is what distinguishes two positions holding
+      the same registry entry
     - serializedLeafDescriptor exactly equals recursively discovered JSON leaf paths in both directions
-      for a discriminating multi-Patch tree
+      for a discriminating multi-Patch tree. Discriminating includes both detail subject variants — an
+      Instrument subject and an Effect subject do not carry the same leaves, so a tree that opens only
+      one of them cannot see the other's
     contributesTo:
       instrument_capability_model: exposes the installed descriptors and generic Patch configs as exact
         canonical data
