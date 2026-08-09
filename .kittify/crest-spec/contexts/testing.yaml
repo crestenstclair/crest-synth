@@ -446,8 +446,7 @@ valueObjects:
       projectionGenerationGaps: u32
       physicalAudioNonzero: bool
       desktopViewportPainted: bool
-      steamDeckViewportPainted: bool
-      clippedOrOverlappingRows: u32
+      audibleEditIsolatedToSecondPatch: bool
       activeNotesAfterCleanup: u32
       windowClosed: bool
       streamReleased: bool
@@ -458,6 +457,15 @@ valueObjects:
     - the audible-edit deltas are measured on each Patch's own output, so an edit made on the second Patch
       that moved the first Patch's signal fails rather than counting; the pair is what distinguishes reaching
       a second instrument from re-editing the first through a renamed path
+    - isolation is asserted as a bounded comparison rather than an exact zero on the first Patch. An exact
+      zero is unattainable on a live decaying voice — block-to-block RMS drift is nonzero — and forcing one
+      would require the first Patch to be silent across the measured window, which makes that half of the
+      pair weak. The second Patch's delta must exceed the first's by a declared margin, both measured on
+      their own outputs over the same window, and audibleEditIsolatedToSecondPatch carries that verdict so
+      the predicate asserts the claim rather than a proxy for it. Both raw deltas are still reported, because
+      a verdict without its inputs cannot be argued with
+    - the declared margin is a threshold, not a measurement, until a completed live run confirms or moves
+      it; it is recorded as such rather than presented as derived
     - patchesFocused counts distinct PatchIds that actually held focus during the run, so a scene that
       switched and switched back credits one reach rather than two
     - detailSurfaceIdentities counts the distinct surface identities that served a detail subject; two

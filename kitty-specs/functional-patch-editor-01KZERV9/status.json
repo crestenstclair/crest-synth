@@ -1,18 +1,18 @@
 {
-  "event_count": 50,
-  "last_event_id": "01KZK8Y7B3Y106Z79WKPE3KRQX",
-  "materialized_at": "2026-08-09T12:46:06.644973+00:00",
+  "event_count": 58,
+  "last_event_id": "01KZKCJ9SRYPPD8SV2A517W20A",
+  "materialized_at": "2026-08-09T13:49:30.296190+00:00",
   "mission_number": "",
   "mission_slug": "functional-patch-editor-01KZERV9",
   "mission_type": "software-dev",
   "summary": {
-    "approved": 4,
+    "approved": 5,
     "blocked": 0,
     "canceled": 0,
     "claimed": 0,
     "done": 0,
     "for_review": 0,
-    "in_progress": 2,
+    "in_progress": 1,
     "in_review": 0,
     "planned": 0
   },
@@ -165,19 +165,32 @@
       }
     },
     "WP06": {
-      "actor": "claude",
+      "actor": "user",
       "agent": "claude",
       "agent_profile": "__resolved_profile_absent__",
       "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
-      "lane": "in_progress",
-      "last_event_id": "01KZK34MZPR6YEK6PEMVPF5WX1",
-      "last_transition_at": "2026-08-09T11:04:45.814033+00:00",
+      "lane": "approved",
+      "last_event_id": "01KZKCJ9SRYPPD8SV2A517W20A",
+      "last_transition_at": "2026-08-09T13:49:30.296190+00:00",
       "model": "__resolved_model_absent__",
+      "notes": [
+        "Scene built; live run blocked on F-40",
+        "Cycle 2: isolation verdict field, schema pin at 42, scene-name gate pinned"
+      ],
       "provider": "__resolved_provider_absent__",
-      "role": "implementer",
-      "shell_pid": 31294,
-      "shell_pid_created_at": "1786275975.165524"
+      "role": "reviewer",
+      "shell_pid": 87179,
+      "shell_pid_created_at": "1786282347.610028",
+      "subtasks": {
+        "T035": "done",
+        "T036": "done",
+        "T037": "done",
+        "T038": "done",
+        "T039": "done",
+        "T040": "done",
+        "T041": "done"
+      }
     }
   }
 }

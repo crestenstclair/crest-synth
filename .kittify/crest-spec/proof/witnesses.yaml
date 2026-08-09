@@ -3366,6 +3366,7 @@ witnesses:
         second_patch_focus_verified_transitions: number
         second_patch_audible_edit_delta: number
         first_patch_audible_edit_delta: number
+        audible_edit_isolated_to_second_patch: bool
         checkpoints_correlating_switch_focus_audio: number
         detail_subjects_served: number
         detail_surface_identities: number
@@ -3449,9 +3450,9 @@ witnesses:
     - field: second_patch_audible_edit_delta
       op: gt
       value: 0
-    - field: first_patch_audible_edit_delta
+    - field: audible_edit_isolated_to_second_patch
       op: eq
-      value: 0
+      value: true
     - field: checkpoints_correlating_switch_focus_audio
       op: gt
       value: 0
