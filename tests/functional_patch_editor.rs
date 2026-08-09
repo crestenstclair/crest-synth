@@ -1049,7 +1049,7 @@ fn preset_swap_in_flight() -> (AppState, SemanticControlId) {
 /// instead of only under a live window.
 fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
     let script = page_source("page.js");
-    let required: [(&str, &str); 11] = [
+    let required: [(&str, &str); 14] = [
         (
             "the unavailable mark",
             &format!("var UNAVAILABLE_MARK = \"{UNAVAILABLE_MARK}\""),
@@ -1085,6 +1085,22 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
         (
             "the painted range span",
             "data-role=\"row-range\"",
+        ),
+        // The two grouping rules this file's arranger transcribes, pinned to
+        // the loops that implement them: a designed group the walk never
+        // opened is re-inserted at its declared position, and a group with no
+        // rows marks itself rather than painting an empty container.
+        (
+            "the declared-group re-insertion",
+            "for (var d = DESIGNED_STRIP_GROUPS.length - 1; d >= 0; d -= 1) {",
+        ),
+        (
+            "the empty-group mark",
+            "if (group.rows.length === 0) {\n      rows = markUnavailableRowHtml(",
+        ),
+        (
+            "the unavailable strip",
+            "if (painted === 0) {",
         ),
         (
             "the painted unit span",
@@ -1621,48 +1637,86 @@ fn check_a_flat_run_fails_the_grouped_check() -> String {
 
 /// A group with no view data marks itself unavailable rather than vanishing,
 /// and a workspace with no focused Patch marks the strip unavailable.
+///
+/// Both are exercised by withholding the view data and driving the *same*
+/// arranger, because no production fixture produces either shape — which is
+/// exactly why SC-003 counts zero. A check that only looked at the production
+/// document would report "no group is unavailable" without ever establishing
+/// that the arranger can say so.
 fn check_an_absent_group_and_an_unfocused_workspace_mark_themselves() {
-    // A Patch with no occupied slot still arranges all three slot groups: the
-    // occupancy rows are projected, so each slot marks its own emptiness.
-    let mut state = fixture_state();
-    state
-        .apply(AppEvent::SelectPatch(Direction::Right))
-        .unwrap();
-    let braids = document(&state);
-    let groups = page_strip_groups(&surface_controls(&braids, "patchMain"));
-    for (key, ..) in DESIGNED_STRIP_GROUPS.iter().filter(|(.., d)| *d) {
-        assert!(
-            groups.iter().any(|group| group.key == *key),
-            "the designed group {key} vanished on a Patch that supplies it no rows"
-        );
-    }
-    // Braids declares no structural capability row, so the *undesigned*
-    // `capability` group is simply absent rather than marked — the page marks
-    // designed structures, and inventing an entry for an undesigned one is the
-    // placeholder rule in reverse.
-    assert!(
-        groups.iter().any(|group| group.key == "capability"),
-        "Braids' read-only capability rows are still projected and grouped"
-    );
+    let document = document(&fixture_state());
+    let controls = surface_controls(&document, "patchMain");
 
-    // A workspace the projection carried no row for at all marks the strip
-    // unavailable rather than painting an empty container. Driven through the
-    // same arranger with an empty control list, which is the shape
-    // `patchStripHtml` tests with `painted === 0`.
-    let empty = page_strip_groups(&[]);
+    // The envelope group's rows withheld. The group must still land at its
+    // declared position, carrying no rows, so it marks itself inside its own
+    // group rather than disappearing between INSTRUMENT and the capability
+    // rows.
+    let without_envelope: Vec<Value> = controls
+        .iter()
+        .filter(|control| !page_control_id(control).starts_with("patch.envelope."))
+        .cloned()
+        .collect();
+    assert_eq!(
+        without_envelope.len(),
+        controls.len() - crest_synth::synth::VoiceEnvelope::surface_descriptor().len(),
+        "the fixture must actually lose its envelope rows"
+    );
+    let groups = page_strip_groups(&without_envelope);
+    let envelope = groups
+        .iter()
+        .position(|group| group.key == "envelope")
+        .expect("a designed group with no view data must not vanish");
     assert!(
-        empty.iter().all(|group| group.rows.is_empty()),
-        "an empty projection paints no row"
+        groups[envelope].rows.is_empty(),
+        "the withheld group must carry no rows, or nothing was withheld"
+    );
+    assert!(
+        groups[envelope].designed && groups[envelope].legend.is_some(),
+        "the group marks itself under its own authored legend"
     );
     assert_eq!(
-        empty.iter().map(|group| group.rows.len()).sum::<usize>(),
+        groups[envelope - 1].key,
+        "instrument",
+        "the withheld group lands at its declared position, not at the end"
+    );
+    // Withholding it does not reorder a painted row.
+    let painted: Vec<String> = groups
+        .iter()
+        .flat_map(|group| group.rows.iter().map(page_control_id))
+        .collect();
+    assert_eq!(
+        painted,
+        without_envelope
+            .iter()
+            .map(page_control_id)
+            .collect::<Vec<_>>(),
+        "grouping is a presentation change and does not move a row"
+    );
+
+    // The page's own unavailable rule for the whole strip: `painted === 0`.
+    let painted_rows = |controls: &[Value]| -> usize {
+        page_strip_groups(controls)
+            .iter()
+            .map(|group| group.rows.len())
+            .sum()
+    };
+    assert_eq!(
+        painted_rows(&[]),
         0,
-        "a workspace with no focused Patch marks the strip unavailable rather \
-         than arranging invented rows"
+        "a workspace with no focused Patch paints no row and marks the strip unavailable"
     );
     assert!(
-        empty.iter().all(|group| group.designed),
-        "only the designed groups survive an empty projection, and each marks itself"
+        painted_rows(&controls) > 0,
+        "the production workspace paints rows, so the unavailable rule is not always true"
+    );
+    // And it stays a strip of groups rather than collapsing to nothing.
+    assert_eq!(
+        page_strip_groups(&[]).len(),
+        DESIGNED_STRIP_GROUPS
+            .iter()
+            .filter(|(.., designed)| *designed)
+            .count(),
+        "every designed group survives an empty projection so each can mark itself"
     );
 }
 
