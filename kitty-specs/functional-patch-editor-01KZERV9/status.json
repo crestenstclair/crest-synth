@@ -1,7 +1,7 @@
 {
-  "event_count": 33,
-  "last_event_id": "01KZJNV6N1Y7XDSVFB5YH7RG3Y",
-  "materialized_at": "2026-08-09T07:12:24.737169+00:00",
+  "event_count": 34,
+  "last_event_id": "01KZJX10MY6N1ATR36R0NP9PFH",
+  "materialized_at": "2026-08-09T09:17:55.230217+00:00",
   "mission_number": "",
   "mission_slug": "functional-patch-editor-01KZERV9",
   "mission_type": "software-dev",
@@ -11,8 +11,8 @@
     "canceled": 0,
     "claimed": 0,
     "done": 0,
-    "for_review": 0,
-    "in_progress": 1,
+    "for_review": 1,
+    "in_progress": 0,
     "in_review": 0,
     "planned": 2
   },
@@ -113,14 +113,25 @@
       "agent_profile": "__resolved_profile_absent__",
       "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
-      "lane": "in_progress",
-      "last_event_id": "01KZJNV6N1Y7XDSVFB5YH7RG3Y",
-      "last_transition_at": "2026-08-09T07:12:24.737169+00:00",
+      "lane": "for_review",
+      "last_event_id": "01KZJX10MY6N1ATR36R0NP9PFH",
+      "last_transition_at": "2026-08-09T09:17:55.230217+00:00",
       "model": "__resolved_model_absent__",
       "provider": "__resolved_provider_absent__",
       "role": "implementer",
       "shell_pid": 47986,
-      "shell_pid_created_at": "1786259537.621639"
+      "shell_pid_created_at": "1786259537.621639",
+      "subtasks": {
+        "T020": "done",
+        "T021": "done",
+        "T022": "done",
+        "T023": "done",
+        "T024": "done",
+        "T025": "done",
+        "T026": "done",
+        "T027": "done",
+        "T028": "done"
+      }
     },
     "WP05": {
       "actor": "finalize-tasks",
