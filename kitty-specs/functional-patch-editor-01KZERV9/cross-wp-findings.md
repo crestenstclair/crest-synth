@@ -471,3 +471,114 @@ explicitly before re-dispatching a rejected package into the same lane.
 
 That this cost nothing is luck plus an implementer paying attention, not a
 property of the arrangement.
+
+## F-28 — The label guard walks every projection but cannot fail on 7 of 17 sites
+
+**Raised by**: WP03's cycle-2 review, which located its own cycle-1 misdiagnosis
+**Owner**: needs one — WP04 cannot reach it
+
+Cycle 1 diagnosed the label guard's blindness as a *fixture* gap and prescribed
+adding a Braids fixture and an effect detail subject. WP03 did exactly that and
+falsified exactly what it was asked to. The fixture set is now genuinely wide: all
+five surfaces asserted against `SurfaceId::ALL`, both engines, both detail
+subjects, master gain focused on each of the two surfaces that host it.
+
+The blindness moved rather than closed. A 17-site mutation sweep over every
+label-producing site caught 10 and **missed 7**:
+
+| missed site | reverted to | why it cannot fail |
+|---|---|---|
+| `patch_page_projection.rs:857` detail section label | `section.id()` | `CapabilitySection::id()` absent from the key set |
+| `:1336` PATCH Main section label | `section.id()` | same |
+| `:1386` effect-slot section label | `section.id()` | same |
+| `:1192` engine choice label | `descriptor.id()` | `CapabilityId` absent from the key set |
+| `:1451` engine active label | `descriptor.id()` | same |
+| `:1349` occupancy choice label | `descriptor.id()` | `EffectCapabilityId` absent |
+| `:1395` slot occupancy label | `effect_descriptor.id()` | same |
+
+`serialization_keys()` collects descriptor names, parameter ids, leaf-descriptor
+names, and `PatchControlId::as_str()` forms — but not capability or section
+identifiers. So the guard *walks* these labels and still cannot *fail* on them.
+The exact case cycle 1 named — a Braids descriptor whose `label()` equalled its
+`id()` — remains shippable, and the added fixture bought nothing for it, because
+the key set cannot express it.
+
+This sits inside a declared invariant, not a nice-to-have:
+`contexts/control.yaml` defines a serialization key as "the name a value carries
+in the state tree, the parameter snapshot, or a leaf descriptor", and
+`patchPage.sections[].id`, `patchPage.engine.activeCapabilityId`, and
+`patchPage.effects[].capabilityId` are all such names.
+
+**The fix is ~8 lines** in `serialization_keys` (`semantic_graphical_view_model.rs:2893`):
+add each installed instrument and effect descriptor's `id()` and each of its
+sections' `id()` to the key set. Re-falsification is mechanical — all seven rows
+above must flip from MISSED to CAUGHT.
+
+**Assigned to WP05**, which is the package that owns proving this mission's claims
+and already writes the deterministic acceptance target. `semantic_graphical_view_model.rs`
+is added to its map for this purpose alone.
+
+The pattern to carry: cycle 1 was right that the guard was blind, and wrong about
+where. A prescription attached to a correct diagnosis can still send the fix to
+the wrong place, and "they did what I asked and it did not help" is the signal.
+
+## F-29 — Halve the per-row availability clones before narrowing anything
+
+**Raised by**: WP03's cycle-2 review; recovered from a commit whose content was lost
+**Owner**: WP06, to measure against NFR-004
+
+Each availability probe clones `AppState` **twice**, and the second is redundant.
+`accepts_semantic_action` clones to obtain a `&mut` (`app_state.rs:659`), and the
+reducer it calls is already transactional — `apply` does
+`let mut next = self.clone(); next.reduce(event)?; *self = next` — so a refused
+action never touches the state it was given.
+
+A row pays `1 + 2·|vocabulary|` clones where `1 + |vocabulary| + |accepted|` would
+do. Hoist one scratch clone per row, reuse it across refused probes, take a fresh
+one only after an action is accepted. At a MIXER row most of the vocabulary is
+refused, so the dominant term roughly halves.
+
+It is behaviour-preserving by construction — same production reducer, same
+question, which is the property T013 forbids trading away — but it is unmeasured,
+its correctness rests on the transactional guarantee being total rather than
+incidental, and it touches a reducer seam in a closed package.
+
+**WP06 should measure this before reaching for anything that narrows what carries
+a per-row list**, because unlike narrowing it costs no fidelity.
+
+## F-30 — NFR-004's real number is 3.00 ms, not 2.92
+
+**Raised by**: WP03's cycle-2 review, re-measured
+**Owner**: WP06
+
+Cycle 2 did not change the cost (2.83 ms vs cycle 1's 2.92 ms is noise). But the
+earlier figure measured `SemanticGraphicalViewModel::project` alone. The **full**
+projection pipeline per accepted event, release, 89 MIXER rows:
+
+| surface | rows | `svm::project` | full `project_with_shell` |
+|---|---|---|---|
+| PATCH Main | 17 | 462 µs | 641 µs |
+| MIXER Main | 89 | 2829 µs | 2997 µs |
+| MIXER Inspector | 89 | 2820 µs | 2957 µs |
+
+NFR-004 says "projection throughput unchanged". WP06 measures against 3.00 ms,
+not 2.92, and grades honestly rather than loosening the bar.
+
+## F-31 — `SemanticControlViewModel.state` is declared field-by-field and is not exhaustive
+
+**Raised by**: WP03's cycle-2 review
+**Owner**: mission review
+
+`aggregate.Control.SemanticControlViewModel.state` (`contexts/control.yaml:806`)
+enumerates its fields one by one and lists neither `numericRange` nor `focusable`,
+both of which the code has carried since before this mission.
+
+This weakens one of WP03's three reasons for declining to carry `patchInteraction`
+onto the semantic model — "the declaration is field-by-field, so adding one means
+editing the bedrock to permit code" — because the declaration is evidently not
+exhaustive in practice. Its other two reasons stand on their own: one declared
+fact should have one producer, and that producer already exists and already
+reaches the screen.
+
+Not WP03's to fix. A mission-review line: either the declaration is exhaustive and
+two fields are missing from it, or it is illustrative and should say so.
