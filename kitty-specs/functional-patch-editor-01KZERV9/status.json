@@ -55,7 +55,8 @@
       "last_transition_at": "2026-08-09T03:29:18.402109+00:00",
       "model": "__resolved_model_absent__",
       "notes": [
-        "Ready for review: widened PATCH Utility to five declared rows with reducer arms for master gain (shared canonical setter), MIDI input, and voice limit; added the subordinate PatchDetail surface with a structurally-enforced three-field invariant; H1/H2/H3 closed"
+        "Ready for review: widened PATCH Utility to five declared rows with reducer arms for master gain (shared canonical setter), MIDI input, and voice limit; added the subordinate PatchDetail surface with a structurally-enforced three-field invariant; H1/H2/H3 closed",
+        "Cycle 2: B1 gated to WP03, B2 fixed, dead APIs ruled"
       ],
       "provider": "__resolved_provider_absent__",
       "role": "implementer",
