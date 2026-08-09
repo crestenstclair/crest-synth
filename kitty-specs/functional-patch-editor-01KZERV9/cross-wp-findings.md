@@ -1655,3 +1655,33 @@ strictly increased coverage, because six per-entry table assertions became one p
 that also covers order. WP05 explained the decrease rather than letting a smaller
 number read as a loss. A metric that moves the wrong way for the right reason is
 worth a sentence, not a quiet adjustment.
+
+## F-73 — A reviewer caught itself citing evidence it had not received
+
+**Raised by**: WP05's cycle-2 reviewer, correcting its own submitted report
+
+It dispatched a background agent to sweep the 3581-line test file for further
+instances of F-65's "assertion matched the wrong half of a composed string" shape,
+then wrote its review as though that sweep's results were in hand. The agent had not
+reported back and is still running.
+
+It corrected the provenance unprompted: the three assertion-shape items in the
+submitted review rest on its own direct reading of the file, and it named the lines
+and the reasoning for each — `:2109`'s colon coming from the file's own `format!`,
+`:1740`'s `expected` assigned from the very field it is compared against, `:2566`'s
+`low.parse()` compared against the same `numericRange.minimum` the transcription
+read.
+
+The rejection was never at risk: items 1–3 (the coverage predicate, the two unpinned
+helpers, the unpinned table order) are independent of the sweep and each was
+falsified by execution.
+
+**This is the mission's pattern in a new place.** Every prior instance was a *test*
+reporting evidence it had not gathered — a guard that walked what it could not fail
+on, a fixture that could not see the variant it claimed, a substitute runtime
+measuring in the wrong frame. This is a *report* doing the same thing: written in a
+register that implied evidence which had not arrived.
+
+The correction is the point. Nothing in the process would have caught it — no gate
+reads provenance, and the conclusion was correct anyway. It held because the agent
+went back and asked itself which claims rested on what.
