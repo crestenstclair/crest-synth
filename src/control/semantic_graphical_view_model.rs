@@ -646,6 +646,21 @@ impl SemanticGraphicalViewModel {
         self.data.surfaces.iter().find(|surface| surface.id == id)
     }
 
+    /// The row the active focus names, or `None` when the focus rests on a
+    /// surface root that owns no row.
+    ///
+    /// The one place a projection consumer may read the focused row's authored
+    /// label. Any screen string naming the cursor's position — the shell footer
+    /// breadcrumb is the only one today — composes from this rather than from
+    /// the control identity, because the identity is a serialization key and a
+    /// key on screen is the defect T016 exists to close.
+    pub fn focused_control(&self) -> Option<&SemanticControlViewModel> {
+        self.surface(self.active_surface())?
+            .controls()
+            .iter()
+            .find(|control| control.focused)
+    }
+
     pub(crate) fn with_generation(&self, generation: u64, state_hash: String) -> Self {
         let mut data = self.data.as_ref().clone();
         data.generation = generation;
@@ -1504,9 +1519,20 @@ fn project_patch_surfaces(
         .then(|| status.clone());
         // No detail row is editable in this phase: the reducer accepts no
         // adjustment on `PatchDetail`, so an editable row would advertise an
-        // edit that is refused. A read-only row is a projected fact the page
-        // can mark in text or shape, which is what the declaration asks for —
-        // and it is derived from what the reducer accepts rather than asserted.
+        // edit that is refused.
+        //
+        // This is a *surface-level* fact about what the reducer accepts, and it
+        // is uniform — a `StructuralChoice` row and a `ReadOnly` row project
+        // `editable: false` alike here, so this field discriminates nothing
+        // about the capability's own declaration.
+        //
+        // The capability-declared read-only fact is a different fact and it has
+        // its own declared home: `PatchInteraction`, carried to the screen at
+        // `patchPage.detail.sections[].parameters[].patchInteraction`
+        // (`PatchPageParameterRow::patch_interaction`). All three Braids rows
+        // and SoundFont's `file` row declare `ReadOnly`; SoundFont's `preset`
+        // declares `StructuralChoice`. A page marking a read-only section "in
+        // text or shape" reads that leaf, never this bool.
         let detail_editable = false;
         let mut detail_controls = Vec::with_capacity(detail_paths.len());
         for path in detail_paths {
@@ -2217,7 +2243,8 @@ mod projection_enrichment_tests {
         production_capability_registry, production_soundfont_capability,
     };
     use crate::control::{
-        AppEvent, Direction, EventRejection, InteractionMode, SemanticAction, SemanticControlId,
+        AppEvent, Direction, EventRejection, InteractionMode, PatchPageSection,
+        PatchPageSlotOccupancy, SemanticAction, SemanticControlId,
     };
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::patch_output::PatchOutput;
@@ -2757,8 +2784,15 @@ mod projection_enrichment_tests {
         assert!(!effect_detail.controls().is_empty());
     }
 
-    /// The detail surface is read-only in this phase, and it says so rather
+    /// The detail surface is uneditable in this phase, and it says so rather
     /// than inviting an edit the reducer refuses.
+    ///
+    /// Deliberately *not* a read-only proof: `editable` is uniform here, so it
+    /// cannot tell a `ReadOnly` row from a `StructuralChoice` one. The
+    /// capability's own declaration reaches the screen through
+    /// `patchInteraction` on the PATCH page, proved in
+    /// `patch_page_projection.rs` by
+    /// `the_declared_patch_interaction_reaches_the_detail_page_and_discriminates`.
     #[test]
     fn detail_controls_project_editable_false_because_the_reducer_refuses_to_adjust_them() {
         let mut state = patch_state();
@@ -2888,45 +2922,272 @@ mod projection_enrichment_tests {
             let leaf = path.rsplit('.').next().unwrap_or(path);
             keys.insert(leaf.trim_end_matches("[]").to_owned());
         }
+        // Every control identity's own serialized form — `patch.voiceLimit`,
+        // `patch.global.masterGainDb`. These are the keys the *footer* used to
+        // compose its breadcrumb from, which is a different vocabulary from the
+        // descriptor names the rows used, and a set that saw only the latter
+        // could not fail on the former.
+        for control in PatchControlId::UTILITY
+            .iter()
+            .cloned()
+            .chain([PatchControlId::Engine])
+        {
+            keys.insert(control.as_str().into_owned());
+        }
+        for descriptor in state.capabilities().descriptors() {
+            for spec in descriptor.parameters() {
+                keys.insert(
+                    PatchControlId::Capability(spec.id().clone())
+                        .as_str()
+                        .into_owned(),
+                );
+            }
+        }
+        for parameter in crate::synth::VoiceEnvelope::surface_descriptor() {
+            keys.insert(
+                PatchControlId::Envelope(parameter.parameter())
+                    .as_str()
+                    .into_owned(),
+            );
+        }
         keys
     }
 
-    #[test]
-    fn no_projected_label_on_any_surface_is_a_serialization_key() {
-        let mut detail = patch_state();
-        detail
+    /// Every screen string a full production projection of `state` produces
+    /// that is supposed to be an **authored label**, tagged with where it came
+    /// from.
+    ///
+    /// Walks all three projections, not just the semantic model: cycle 1's
+    /// guard walked `SemanticGraphicalViewModel` alone, so
+    /// `PatchPageProjection`'s master-gain row — one of the two production
+    /// sites T016 fixed — could be reverted to `descriptor.name()` with the
+    /// whole suite still green. A guard that cannot fail on a site is not
+    /// guarding it.
+    fn projected_labels(state: &AppState) -> Vec<(String, String)> {
+        fn push(labels: &mut Vec<(String, String)>, site: impl Into<String>, label: &str) {
+            labels.push((site.into(), label.to_owned()));
+        }
+
+        fn push_sections(
+            labels: &mut Vec<(String, String)>,
+            where_: &str,
+            sections: &[PatchPageSection],
+        ) {
+            for section in sections {
+                push(
+                    labels,
+                    format!("{where_} section {}", section.id()),
+                    section.label(),
+                );
+                for row in section.parameters() {
+                    let site = format!("{where_} row {}", row.id());
+                    push(labels, site.clone(), row.label());
+                    if let Some(label) = row.selected_label() {
+                        push(labels, format!("{site} selected"), label);
+                    }
+                    if let Some(label) = row.requested_label() {
+                        push(labels, format!("{site} requested"), label);
+                    }
+                    for choice in row.choices() {
+                        push(labels, format!("{site} choice"), choice.label());
+                    }
+                }
+            }
+        }
+
+        let (_, page, _, shell, _) = crate::control::StateProjector::new()
+            .project_with_shell(state)
+            .expect("the fixture state must project");
+        let model = shell.semantic_model();
+        let labels = &mut Vec::new();
+
+        for surface in model.surfaces() {
+            push(
+                labels,
+                format!("semantic surface {:?}", surface.id()),
+                surface.label(),
+            );
+            for control in surface.controls() {
+                push(
+                    labels,
+                    format!(
+                        "semantic {:?} on {:?}",
+                        control.path().control_id(),
+                        surface.id()
+                    ),
+                    control.label(),
+                );
+            }
+        }
+
+        // The footer breadcrumb: a composed string, so every `/`-separated
+        // segment is checked. F-25 — this is where `"MIXER / GLOBAL /
+        // masterGainDb"` and `"PATCH / patch.voiceLimit"` were composed.
+        for segment in shell.footer().path_label().split(" / ") {
+            push(labels, "shell footer pathLabel segment", segment);
+        }
+
+        if let Some(page) = page {
+            push(labels, "page engine active", page.engine().active_label());
+            for choice in page.engine().choices() {
+                push(labels, "page engine choice", choice.label());
+            }
+            for row in page.envelope() {
+                push(labels, format!("page envelope {}", row.id()), row.label());
+            }
+            for row in page.output() {
+                push(labels, format!("page output {}", row.id()), row.label());
+            }
+            push_sections(labels, "page main", page.sections());
+            for slot in page.effects() {
+                let where_ = format!("page effect slot {}", slot.slot_index().index());
+                if let PatchPageSlotOccupancy::Occupied { label, .. } = slot.occupancy() {
+                    push(labels, format!("{where_} occupancy"), label);
+                }
+                for choice in slot.choices() {
+                    push(labels, format!("{where_} choice"), choice.label());
+                }
+                push_sections(labels, &where_, slot.sections());
+            }
+            if let Some(detail) = page.detail() {
+                push(labels, "page detail", detail.label());
+                push_sections(labels, "page detail", detail.sections());
+            }
+        }
+        std::mem::take(labels)
+    }
+
+    /// Every fixture the label guard walks, and the surface each one opens.
+    ///
+    /// Two Patches with different engines, because a descriptor whose `label()`
+    /// equalled its `id()` would ship if only one were ever projected; both
+    /// detail subjects, because an instrument subject and an effect subject
+    /// read different descriptors; and every surface, because the guard is only
+    /// as wide as the surfaces it saw.
+    fn label_guard_fixtures() -> Vec<(&'static str, AppState)> {
+        let braids = |surface: Option<SurfaceId>| {
+            let mut state = patch_state();
+            state
+                .apply_semantic_action(SemanticAction::SelectPatch(Direction::Right))
+                .expect("the fixture installs a second Patch");
+            let focused = state.interaction().patch_focus().unwrap();
+            assert_eq!(
+                state
+                    .patches()
+                    .iter()
+                    .find(|patch| patch.id() == focused)
+                    .unwrap()
+                    .instrument_config()
+                    .capability_id()
+                    .as_str(),
+                BRAIDS_CAPABILITY_ID,
+                "the second Patch is the Braids one"
+            );
+            if let Some(surface) = surface {
+                state
+                    .apply_semantic_action(SemanticAction::EnterSurface(surface))
+                    .expect("the fixture surface is enterable");
+            }
+            state
+        };
+        let entered = |surface: SurfaceId| {
+            let mut state = patch_state();
+            state
+                .apply_semantic_action(SemanticAction::EnterSurface(surface))
+                .expect("the fixture surface is enterable");
+            state
+        };
+        let mut effect_detail = patch_state();
+        navigate_until(&mut effect_detail, |path| {
+            matches!(
+                path.control_id(),
+                SemanticControlId::Patch(PatchControlId::EffectSlot(slot)) if slot.index() == 0
+            )
+        });
+        effect_detail
             .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
-            .unwrap();
+            .expect("the occupied slot row resolves an effect subject");
         let mut inspector = mixed_state();
         inspector
             .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::MixerInspector))
             .unwrap();
-        let mut utility = patch_state();
-        utility
-            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchUtility))
-            .unwrap();
-
-        let mut covered = BTreeSet::new();
-        for state in [patch_state(), mixed_state(), detail, inspector, utility] {
-            let keys = serialization_keys(&state);
-            let model = project(&state);
-            for surface in model.surfaces() {
-                covered.insert(format!("{:?}", surface.id()));
-                assert!(
-                    !keys.contains(surface.label()),
-                    "surface {:?} is labelled with the serialization key {}",
-                    surface.id(),
-                    surface.label()
-                );
-                for control in surface.controls() {
-                    assert!(
-                        !keys.contains(control.label()),
-                        "{:?} on {:?} is labelled with the serialization key {}",
-                        control.path().control_id(),
-                        surface.id(),
-                        control.label()
-                    );
+        // Both surfaces that host master gain, focused on it. `masterGainDb` is
+        // the key F-25 recorded reaching `graphicalShell.footer.pathLabel`, and
+        // a breadcrumb is only checkable on the row the cursor is actually on.
+        //
+        // Side-surface navigation does not wrap, and neither surface's entry
+        // focus is above its master-gain row, so this walks both directions.
+        fn seek(state: &mut AppState, predicate: impl Fn(&FocusPath) -> bool) {
+            for direction in [Direction::Up, Direction::Down] {
+                for _ in 0..256 {
+                    if predicate(state.interaction().focus_path()) {
+                        return;
+                    }
+                    if state.apply(AppEvent::Navigate(direction)).is_err() {
+                        break;
+                    }
                 }
+            }
+            panic!("no row on this surface satisfied the predicate");
+        }
+        let mut utility_global = entered(SurfaceId::PatchUtility);
+        seek(&mut utility_global, |path| {
+            matches!(
+                path.control_id(),
+                SemanticControlId::Patch(PatchControlId::Global(_))
+            )
+        });
+        let mut inspector_global = inspector.clone();
+        seek(&mut inspector_global, |path| {
+            matches!(
+                path.control_id(),
+                SemanticControlId::Mixer(MixerControlId::Global { .. })
+            )
+        });
+        vec![
+            ("soundfont PATCH Main", patch_state()),
+            ("MIXER Main", mixed_state()),
+            (
+                "soundfont instrument detail",
+                entered(SurfaceId::PatchDetail),
+            ),
+            ("chorus effect detail", effect_detail),
+            ("MIXER Inspector", inspector),
+            ("MIXER Inspector master gain", inspector_global),
+            ("PATCH Utility", entered(SurfaceId::PatchUtility)),
+            ("PATCH Utility master gain", utility_global),
+            ("braids PATCH Main", braids(None)),
+            (
+                "braids instrument detail",
+                braids(Some(SurfaceId::PatchDetail)),
+            ),
+        ]
+    }
+
+    /// T016's guard, over **every** label-producing projection: the semantic
+    /// model, the PATCH page, and the shell footer's composed breadcrumb.
+    ///
+    /// Cycle 1's version walked the semantic model only, so
+    /// `patch_page_projection.rs`'s master-gain row could be reverted to
+    /// `descriptor.name()` and the entire suite stayed green — one of the two
+    /// production sites T016 fixed had no coverage at all. T019's rule applies
+    /// to this guard as much as to the channel's: a test that passes with and
+    /// without the code it claims to prove is not a proof.
+    #[test]
+    fn no_projected_label_on_any_surface_is_a_serialization_key() {
+        let mut covered = BTreeSet::new();
+        let mut checked = 0_usize;
+        for (fixture, state) in label_guard_fixtures() {
+            let keys = serialization_keys(&state);
+            for surface in project(&state).surfaces() {
+                covered.insert(format!("{:?}", surface.id()));
+            }
+            for (site, label) in projected_labels(&state) {
+                checked += 1;
+                assert!(
+                    !keys.contains(&label),
+                    "{fixture}: {site} is labelled with the serialization key {label}"
+                );
             }
         }
         // The guard is only as wide as the surfaces it saw. All five, or the
@@ -2939,6 +3200,43 @@ mod projection_enrichment_tests {
                 .collect::<BTreeSet<_>>(),
             "the label guard must cover every surface, not just the reported row"
         );
+        assert!(
+            checked > 200,
+            "only {checked} labels walked — the guard stopped seeing most of the projection"
+        );
+    }
+
+    /// The footer breadcrumb is *derived* from the focused row's authored
+    /// label, not merely absent from a key set.
+    ///
+    /// The set check above can only fail on a key it knows. This one fails on
+    /// any composition from any other source — a control identity, an ad-hoc
+    /// literal like `send[1]`, a descriptor name — because there is exactly one
+    /// string it accepts. F-25 recorded that this field composed
+    /// `"MIXER / GLOBAL / masterGainDb"`; it is harmless today only because
+    /// `page.js` ignores it, and this is what stops it becoming harmful when
+    /// WP04 reads it.
+    #[test]
+    fn the_footer_breadcrumb_is_the_focused_rows_authored_label() {
+        for (fixture, state) in label_guard_fixtures() {
+            let (_, _, _, shell, _) = crate::control::StateProjector::new()
+                .project_with_shell(&state)
+                .expect("the fixture state must project");
+            let model = shell.semantic_model();
+            let expected = format!(
+                "{} / {}",
+                model.context().label(),
+                model.focused_control().map_or_else(
+                    || model.active_surface().label().to_owned(),
+                    |control| control.label().to_owned()
+                )
+            );
+            assert_eq!(
+                shell.footer().path_label(),
+                expected,
+                "{fixture}: the breadcrumb must name the focused row by its authored label"
+            );
+        }
     }
 
     /// The reported defect itself: master gain reaches the screen as its

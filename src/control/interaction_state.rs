@@ -71,12 +71,14 @@ impl Selection {
 /// [`Self::enter_detail`], [`Self::leave_subordinate`], and
 /// [`Self::return_to_origin`] are the only transitions that can set or clear
 /// it. `active_focus` and `return_path` remain `pub(super)`: the reducer
-/// assigns `active_focus` directly at two sites, each of which moves within one
+/// assigns `active_focus` directly at four sites, each of which moves within one
 /// already-open surface's own resolved order and so cannot change which surface
-/// is active (`app_state::navigate_side_nonwrapping` and
-/// `app_state::repair_inspector_focus`). The invariant is therefore
-/// held by *every* mutator on this type ending in an
-/// [`Self::assert_detail_invariant`] call, plus those two guarded reducer
+/// is active — `app_state::navigate_side_nonwrapping`,
+/// `app_state::repair_inspector_focus`, and the persistent-side and detail
+/// branches of `app_state::with_counterfactual_focus`, each of which makes the
+/// named surface active first and only then places the row inside it. The
+/// invariant is therefore held by *every* mutator on this type ending in an
+/// [`Self::assert_detail_invariant`] call, plus those four guarded reducer
 /// writes — not by the privacy of one field alone.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InteractionState {

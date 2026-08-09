@@ -530,17 +530,24 @@ impl StateProjector {
         {
             return Err(StateProjectionError::InvalidSelection);
         }
-        // NFR-005, across the projections rather than within one of them. The
-        // semantic model already refuses to name two Patches internally; this
-        // is the other half — the model, the canonical snapshot it was derived
-        // from, and the PATCH page assembled beside it must all name the same
-        // one. A disagreement here is a projection set built from two accepted
-        // states, which is exactly the intermediate a patch switch must never
-        // produce.
+        // NFR-005, across the projections rather than within one of them: the
+        // canonical snapshot and the PATCH page assembled beside it must name
+        // the same Patch. A disagreement here is a projection set built from
+        // two accepted states, which is exactly the intermediate a patch switch
+        // must never produce.
+        //
+        // Only the page is compared. `semantic.patch_identity()` resolves to
+        // `state.interaction.active_focus.patch_id()` — literally the
+        // expression on the line below — so checking it compared a value to
+        // itself and could never fire. The model's identity is guarded where it
+        // can actually be wrong: `validate_data` refuses to build a model whose
+        // focus path, surface summaries, and control paths disagree, and the
+        // generation and state-hash equality directly above pins that model to
+        // this snapshot. The page is the one projection assembled on a separate
+        // path (it derives from `patch_focus()`), so it is the one that needs a
+        // cross-check.
         let snapshot_patch = state.interaction.active_focus.patch_id();
-        if semantic.patch_identity() != snapshot_patch
-            || page.is_some_and(|page| Some(page.patch().id()) != snapshot_patch)
-        {
+        if page.is_some_and(|page| Some(page.patch().id()) != snapshot_patch) {
             return Err(StateProjectionError::InvalidSelection);
         }
         let status_label = semantic.status().label();
@@ -567,19 +574,16 @@ impl StateProjector {
                     u16::from(patch.midi_channel().value()) + 1,
                     page.engine().active_label()
                 );
-                let path = match semantic.focus_path().control_id() {
-                    SemanticControlId::Patch(control) => {
-                        format!("PATCH / {}", control.as_str())
-                    }
+                match semantic.focus_path().control_id() {
+                    SemanticControlId::Patch(_) => {}
                     SemanticControlId::SurfaceRoot
-                        if semantic.active_surface() == crate::control::SurfaceId::PatchUtility =>
-                    {
-                        "PATCH / UTILITY".to_owned()
+                        if semantic.active_surface() == crate::control::SurfaceId::PatchUtility => {
                     }
                     SemanticControlId::Mixer(_) | SemanticControlId::SurfaceRoot => {
                         return Err(StateProjectionError::InvalidSelection)
                     }
-                };
+                }
+                let path = footer_path_label(semantic);
                 (
                     ShellIdentityHeader::new(primary, secondary),
                     format!("PATCH WORKSPACE · {}", patch.name()),
@@ -600,49 +604,35 @@ impl StateProjector {
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                let (primary, secondary, path) = match semantic.focus_path().control_id() {
-                    SemanticControlId::Mixer(MixerControlId::Track {
-                        track_id,
-                        parameter,
-                    }) => (
+                let (primary, secondary) = match semantic.focus_path().control_id() {
+                    SemanticControlId::Mixer(
+                        MixerControlId::Track { track_id, .. }
+                        | MixerControlId::Send { track_id, .. },
+                    ) => (
                         format!("MIXER · {track_id}"),
                         format!("ROUTED PATCHES · {}", routed_for(track_id)),
-                        format!("MIXER / {track_id} / {}", parameter.name()),
                     ),
-                    SemanticControlId::Mixer(MixerControlId::Send { track_id, bus }) => (
-                        format!("MIXER · {track_id}"),
-                        format!("ROUTED PATCHES · {}", routed_for(track_id)),
-                        format!("MIXER / {track_id} / send[{}]", bus.index()),
-                    ),
-                    SemanticControlId::Mixer(MixerControlId::ReturnOccupancy { bus }) => (
+                    SemanticControlId::Mixer(
+                        MixerControlId::ReturnOccupancy { .. }
+                        | MixerControlId::ReturnLevel { .. }
+                        | MixerControlId::ReturnEffect { .. },
+                    ) => (
                         "MIXER · RETURNS".to_owned(),
                         format!("{} PATCHES · BUS RETURNS", state.patches.len()),
-                        format!("MIXER / RETURN {bus} / occupancy"),
                     ),
-                    SemanticControlId::Mixer(MixerControlId::ReturnLevel { bus }) => (
-                        "MIXER · RETURNS".to_owned(),
-                        format!("{} PATCHES · BUS RETURNS", state.patches.len()),
-                        format!("MIXER / RETURN {bus} / returnLevel"),
-                    ),
-                    SemanticControlId::Mixer(MixerControlId::ReturnEffect { bus, parameter }) => (
-                        "MIXER · RETURNS".to_owned(),
-                        format!("{} PATCHES · BUS RETURNS", state.patches.len()),
-                        format!("MIXER / RETURN {bus} / {parameter}"),
-                    ),
-                    SemanticControlId::Mixer(MixerControlId::Global { parameter }) => (
+                    SemanticControlId::Mixer(MixerControlId::Global { .. }) => (
                         "MIXER · GLOBAL".to_owned(),
                         format!("{} PATCHES · MASTER OUTPUT", state.patches.len()),
-                        format!("MIXER / GLOBAL / {}", parameter.name()),
                     ),
                     SemanticControlId::SurfaceRoot => (
                         "MIXER · INSPECTOR".to_owned(),
                         format!("{} PATCHES · READ ONLY", state.patches.len()),
-                        "MIXER / INSPECTOR".to_owned(),
                     ),
                     SemanticControlId::Patch(_) => {
                         return Err(StateProjectionError::InvalidSelection)
                     }
                 };
+                let path = footer_path_label(semantic);
                 (
                     ShellIdentityHeader::new(primary, secondary),
                     "MIXER WORKSPACE".to_owned(),
@@ -665,6 +655,30 @@ impl StateProjector {
         )
         .map_err(StateProjectionError::from)
     }
+}
+
+/// The shell footer's breadcrumb: the top-level context, then the **authored
+/// label** of the row the cursor is on.
+///
+/// This used to be composed per control-identity variant out of the identity's
+/// own serialization key — `"MIXER / GLOBAL / masterGainDb"`,
+/// `"PATCH / patch.voiceLimit"` — which is exactly the defect T016 exists to
+/// close, one layer up from the row labels it closed it on. It was harmless
+/// only by accident: the page ignores `pathLabel` and composes its own
+/// breadcrumb from `control.label`. It stops being harmless the moment anything
+/// reads the field.
+///
+/// The per-variant match is gone rather than repaired arm by arm. There is one
+/// composition, one source — [`SemanticGraphicalViewModel::focused_control`] —
+/// and no place left for a key to be spelled, so a future control identity
+/// cannot reintroduce the defect by adding an arm. A focus resting on a surface
+/// root owns no row, so it names the surface, whose label is authored too.
+fn footer_path_label(semantic: &SemanticGraphicalViewModel) -> String {
+    let leaf = semantic.focused_control().map_or_else(
+        || semantic.active_surface().label().to_owned(),
+        |control| control.label().to_owned(),
+    );
+    format!("{} / {leaf}", semantic.context().label())
 }
 
 fn selection_from_serialized(
