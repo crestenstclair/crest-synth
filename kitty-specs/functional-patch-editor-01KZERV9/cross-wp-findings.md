@@ -1170,3 +1170,32 @@ had been told what to watch for and still needed the mutation to see it.
 The mission's own record now shows the practice catching the failure at every level:
 in implementation, in review, in an implementer's self-check, and now in an
 implementer who had read the warning. Nothing else in this mission caught these.
+
+## F-54 — F-27 recurred, in the work of the agent that recorded it
+
+**Raised by**: the orchestrator, on itself
+**Owner**: the orchestrator; the note did not work, so the practice must
+
+F-27 recorded that a rejection returns a work package to `planned` but does not
+terminate the agent working it, and that dispatching the rework into the same lane
+before stopping the previous agent is unsafe. I wrote that finding, and then did it
+again: WP06's first session was still live in lane-f when I dispatched its
+continuation there.
+
+No damage — the first session was only re-reporting a stale wait loop, I stopped it
+on noticing, and `95f600a`'s work is intact with the continuation's uncommitted
+changes untouched. But it cost nothing by luck, twice.
+
+**This is F-53's shape applied to process rather than to tests.** Knowing about the
+failure mode did not prevent it. What would prevent it is a step that cannot be
+skipped: stop the prior agent as part of re-claiming a lane, not as something to
+remember before dispatching.
+
+For the rest of this mission: `TaskStop` on the previous agent is the first action
+of any re-dispatch, before the claim, unconditionally — including when the previous
+agent has reported `completed`, because `completed` is what both of these had
+reported.
+
+The generalizable lesson is the one the whole mission keeps producing: a recorded
+warning is not a control. F-39 and F-42 earned their place by being enforced at a
+gate; F-27 was written down and read and did nothing.
