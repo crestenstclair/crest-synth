@@ -430,6 +430,13 @@ valueObjects:
       classification, which the component vocabulary already declares and no capability previously drove
     - the limit is Patch-local and follows the Patch. It is not a device polyphony setting, not a global
       voice budget, and not a second name for an engine's own capacity ceiling
+    - an engine replacement carries the limit rather than reseeding it, and the carry is deliberately
+      asymmetric. Swapping to a narrower engine clamps the limit to the new ceiling, because a limit the
+      engine cannot honour is not a limit. Swapping to a wider engine preserves the player's value rather
+      than raising it, because the limit is the player's setting and an engine change is not a request
+      to change it. The asymmetry is therefore lossy by design — narrow then widen does not restore the
+      prior value — and that loss is reported through the typed carry-over outcome rather than left for
+      a player to discover. A projection that shows the limit while a swap narrows it says so
     - enforcement refuses rather than steals — a note-on arriving while the Patch already sounds its limit
       is not started, and no sounding note is truncated to make room. This matches the reducer's declared
       refuse-rather-than-wrap idiom at every other boundary, and it is the falsifiable half of the pair —
