@@ -1074,3 +1074,99 @@ already right.
 So a new live scene must either perform the base scene's three engine transitions or
 both must be relaxed. Neither is a defect; both are undeclared assumptions that a
 scene author meets by discovering them. Worth knowing before writing 800 lines.
+
+## F-50 — The shipped observation adapter drops `voiceLimitRefusals`
+
+**Raised by**: WP05
+**Owner**: WP06
+
+`AtomicObservationFields` in `src/adapter/atomic_audio_observation.rs` has no atomic
+for the refusal counter, so a count read through the production transport is zero
+regardless of what the callback counted. Nothing on the control side reads it today.
+
+WP05 did not fix it — the file is WP06's, and WP06 is the package that must
+correlate a refused note with the limit that refused it on hardware. Its own target
+counts where production counts (`AudioRenderer::render`) and publishes through a
+local two-atomic transport, documented in place.
+
+Its reasoning is the right one and worth stating: reading FR-009's central claim
+through an adapter that discards it would have been this mission's signature defect
+— a guard walking something it cannot report on. WP06 was already instructed to add
+the field; this confirms it is load-bearing rather than tidy-up.
+
+## F-51 — `SemanticControlViewModel.state` is now five fields short
+
+**Raised by**: WP05, extending F-31
+**Owner**: mission review
+
+F-31 recorded `numericRange` and `focusable` missing from the crest-spec's
+field-by-field declaration. Add `patchInteraction` (WP04), `selectedLabel` and
+`requestedLabel` (WP05): five.
+
+Both WP04 and WP05 followed the same precedent — do not edit the bedrock to permit
+code already written — which is correct and has now produced a declaration that is
+visibly not what the code carries.
+
+Either the declaration is exhaustive and five fields are missing from it, or it is
+illustrative and should say so. Not a package's to decide; it is a question about
+what that block of the crest-spec means, and answering it by adding five fields
+would settle it in the direction that happens to match today's code rather than the
+direction that is right.
+
+## F-52 — The transcription ruling, and the boundary it rests on
+
+**Raised by**: WP05, disputing F-44's reach
+**Ruled**: the transcription stays
+
+WP05's `page_strip_groups` is a Rust transcription of the page's `stripGroups`
+rule. F-44 ruled that reimplementing the page's grouping rule Rust-side is a second
+producer for one fact. WP05 kept the transcription and made its case rather than
+complying silently.
+
+**It is right, and the boundary is worth stating precisely so this is not misread
+later.**
+
+- **F-44 is about the witness**, which proves *what a run painted*. There, a Rust
+  reimplementation would be two producers of one fact and the first divergence would
+  be silent. WP06 carrying `stripGroupsPainted` from the page's own acknowledgment is
+  the correct producer, and that ruling stands unchanged.
+- **WP05's target proves the page's *rule* against the committed source.** It has no
+  DOM and no acknowledgment, so it cannot carry the page's answer. Without the
+  transcription, T030's grouping claim has no executed proof at all while F-40 blocks
+  the live layer — strictly worse than a pinned transcription.
+
+Different claims, different producers, both legitimate. `tests/component_composition.rs`
+already established this pattern for the deterministic layer; WP05 did not invent it.
+
+**The ruling rests entirely on the pins being real**, and WP05 proved that is a live
+constraint rather than a formality: its own range pin anchored on a string appearing
+three times in `page.js`, so emptying `rangeHtml` left the pin satisfied and the
+guard passed the defect it exists for. It found this by mutation, not by reading.
+
+So the transcription is acceptable **only while every rule it copies is pinned to
+the committed source, and every pin is falsified by mutating that source.** A pin
+that matches a comment, or matches in more places than it claims, is not a pin. If a
+later mission finds a copied rule no pin covers, the correct response is to add the
+pin or delete the transcription — not to trust it because it was once allowed.
+
+## F-53 — F-42 recurred one mission later, in the work of the agent that was told about it
+
+**Raised by**: WP05, on its own work
+
+WP05 was briefed on F-42 explicitly — a threshold guard that passed the very defect
+it was added for — and then wrote a pin with the same shape: an anchor string
+(`control && control.numericRange`) that appears three times in `page.js`, twice in
+position-indicator helpers. Emptying `rangeHtml` left it satisfied.
+
+It found it by running the mutation. It also found a second, the same way: mutating
+the page's declared-group re-insertion changed nothing, because its own transcription
+implements that rule.
+
+**This is the strongest evidence the mission has produced that F-39 and F-42 belong
+in doctrine rather than in a findings file.** Knowing about the failure mode did not
+prevent it. Running the mutation did — twice, in the same package, by an agent that
+had been told what to watch for and still needed the mutation to see it.
+
+The mission's own record now shows the practice catching the failure at every level:
+in implementation, in review, in an implementer's self-check, and now in an
+implementer who had read the warning. Nothing else in this mission caught these.
