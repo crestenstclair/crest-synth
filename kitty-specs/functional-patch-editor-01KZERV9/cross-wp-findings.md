@@ -854,3 +854,81 @@ sufficient condition met.
 **This does not stop the mission.** Every deterministic gate, the full webview
 geometry suite, and WP05's acceptance target all run locked. The mission can reach
 `accept` with everything except the live witness, and park exactly there.
+
+## F-41 — Compact cannot seat the strip, structurally. NFR-003 graded, not passed.
+
+**Raised by**: WP04, quantified by its review
+**Owner**: mission review — a product decision about the compact band budget
+
+| document | rows | composition | band | scrolls by |
+|---|---|---|---|---|
+| patch-navigate | 12 (576 px) | 753 | 520 | 233 |
+| patch-adjust | 12 (610 px) | 787 | 520 | 267 |
+| patch-braids | 11 (528 px) | 705 | 520 | 185 |
+
+The declared compact shell bands take 156 px, so the largest band the strip could
+*ever* hold is 612 px in the shipped 768 px window (644 px at a true authored 800).
+The composition needs 753 px, and stripping every gap and inset still leaves six
+required group titles on top of 576 px of rows. `overflow-y: auto` on
+`#workspace .strip` is pre-existing; compact was already 708/504 at base.
+
+Seating compact requires painting fewer rows, going below the declared 48 px
+interactive minimum, or enlarging the bands in `src/shell/density.rs`. None is
+inside any package's map, and the first two are worse than scrolling.
+
+**NFR-003 is graded met-with-qualification, not passed silently and not failed.**
+All four of its stated criteria hold at both viewports: five shell bands intact,
+Inspector at or above 320 px, every interactive target at or above the minimum, no
+clipped or overlapped row — a scrolling container reaches every row, and the
+no-scroll rule the crest-spec declares is scoped to the Utility panel, which does
+not scroll.
+
+What fails is NFR-003's *title* — "Both authored viewports seat the surface" — at
+compact, structurally and permanently. The honest grade is met, with 233/267/185 px
+attached, and a mission-review decision about whether the title or the criteria is
+wrong. Desktop seats with 17 px of headroom (753 in 770), up from zero at base.
+
+## F-42 — A threshold guard is only as discriminating as the widest fixture reaching it
+
+**Raised by**: WP04 cycle 2, on its own work
+**Owner**: WP05, as method
+
+WP04's first T024 rail guard used a `rail > 5.0` threshold. It **passed against the
+live defect**, because the T024 fixtures' rails were 319–421 px — comfortably above
+it — while the failing T011 row was 4.28 px. Its review confirmed this by
+neutralizing only the structural assertion and leaving the threshold in place: T024
+passed. The guard as first written would have shipped the very defect it was added
+for.
+
+WP04 found it by running the mutation rather than by reasoning, rewrote the guard
+structurally — the hint run's top edge must sit at or below the label's bottom edge
+— and the structural form fails on the first document's first row, `patch.engine`,
+which has *no rail at all*. That case no threshold can reach on any fixture.
+
+This is the mission's recurring failure caught by an implementer on its own work
+before review saw it, which is the first time that has happened here. The method
+generalizes and WP05 should carry it: **falsify by mutation, not by fixture.** A
+threshold passes whatever is comfortably above it, and the fixture set silently
+decides what that is.
+
+## F-43 — A NUL byte ships in `page.js`
+
+**Raised by**: WP04's review
+**Owner**: the merge step — no open package owns `webview-page/` after WP04
+
+`webview-page/page.js` line 1384 uses a literal U+0000 as a dedup key separator in
+the hint-run de-duplication.
+
+The code is correct and the page is byte-identical through the production seam. But
+it is the only file in the repository containing a NUL, and `grep`/`rg` therefore
+classify the most-audited file in this mission as **binary** and return no line
+matches. The reviewer's own searches came back empty until it noticed.
+
+In a mission whose recurring failure is a tool that walks something it cannot report
+on, a silent search failure over `page.js` is worth closing. One character — replace
+with a printable separator such as `|` or a unit-separator that greps cleanly.
+
+WP04's review approved rather than opening a third cycle, which was proportionate:
+blocking two packages over a delimiter would have cost more than it bought. Fixed on
+the consolidated tree at merge, the same way the previous mission handled its
+inherited formatting gate.
