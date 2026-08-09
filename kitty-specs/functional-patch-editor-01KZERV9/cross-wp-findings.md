@@ -1074,3 +1074,185 @@ already right.
 So a new live scene must either perform the base scene's three engine transitions or
 both must be relaxed. Neither is a defect; both are undeclared assumptions that a
 scene author meets by discovering them. Worth knowing before writing 800 lines.
+
+## F-50 — The shipped observation adapter drops `voiceLimitRefusals`
+
+**Raised by**: WP05
+**Owner**: WP06
+
+`AtomicObservationFields` in `src/adapter/atomic_audio_observation.rs` has no atomic
+for the refusal counter, so a count read through the production transport is zero
+regardless of what the callback counted. Nothing on the control side reads it today.
+
+WP05 did not fix it — the file is WP06's, and WP06 is the package that must
+correlate a refused note with the limit that refused it on hardware. Its own target
+counts where production counts (`AudioRenderer::render`) and publishes through a
+local two-atomic transport, documented in place.
+
+Its reasoning is the right one and worth stating: reading FR-009's central claim
+through an adapter that discards it would have been this mission's signature defect
+— a guard walking something it cannot report on. WP06 was already instructed to add
+the field; this confirms it is load-bearing rather than tidy-up.
+
+## F-51 — `SemanticControlViewModel.state` is now five fields short
+
+**Raised by**: WP05, extending F-31
+**Owner**: mission review
+
+F-31 recorded `numericRange` and `focusable` missing from the crest-spec's
+field-by-field declaration. Add `patchInteraction` (WP04), `selectedLabel` and
+`requestedLabel` (WP05): five.
+
+Both WP04 and WP05 followed the same precedent — do not edit the bedrock to permit
+code already written — which is correct and has now produced a declaration that is
+visibly not what the code carries.
+
+Either the declaration is exhaustive and five fields are missing from it, or it is
+illustrative and should say so. Not a package's to decide; it is a question about
+what that block of the crest-spec means, and answering it by adding five fields
+would settle it in the direction that happens to match today's code rather than the
+direction that is right.
+
+## F-52 — The transcription ruling, and the boundary it rests on
+
+**Raised by**: WP05, disputing F-44's reach
+**Ruled**: the transcription stays
+
+WP05's `page_strip_groups` is a Rust transcription of the page's `stripGroups`
+rule. F-44 ruled that reimplementing the page's grouping rule Rust-side is a second
+producer for one fact. WP05 kept the transcription and made its case rather than
+complying silently.
+
+**It is right, and the boundary is worth stating precisely so this is not misread
+later.**
+
+- **F-44 is about the witness**, which proves *what a run painted*. There, a Rust
+  reimplementation would be two producers of one fact and the first divergence would
+  be silent. WP06 carrying `stripGroupsPainted` from the page's own acknowledgment is
+  the correct producer, and that ruling stands unchanged.
+- **WP05's target proves the page's *rule* against the committed source.** It has no
+  DOM and no acknowledgment, so it cannot carry the page's answer. Without the
+  transcription, T030's grouping claim has no executed proof at all while F-40 blocks
+  the live layer — strictly worse than a pinned transcription.
+
+Different claims, different producers, both legitimate. `tests/component_composition.rs`
+already established this pattern for the deterministic layer; WP05 did not invent it.
+
+**The ruling rests entirely on the pins being real**, and WP05 proved that is a live
+constraint rather than a formality: its own range pin anchored on a string appearing
+three times in `page.js`, so emptying `rangeHtml` left the pin satisfied and the
+guard passed the defect it exists for. It found this by mutation, not by reading.
+
+So the transcription is acceptable **only while every rule it copies is pinned to
+the committed source, and every pin is falsified by mutating that source.** A pin
+that matches a comment, or matches in more places than it claims, is not a pin. If a
+later mission finds a copied rule no pin covers, the correct response is to add the
+pin or delete the transcription — not to trust it because it was once allowed.
+
+## F-53 — F-42 recurred one mission later, in the work of the agent that was told about it
+
+**Raised by**: WP05, on its own work
+
+WP05 was briefed on F-42 explicitly — a threshold guard that passed the very defect
+it was added for — and then wrote a pin with the same shape: an anchor string
+(`control && control.numericRange`) that appears three times in `page.js`, twice in
+position-indicator helpers. Emptying `rangeHtml` left it satisfied.
+
+It found it by running the mutation. It also found a second, the same way: mutating
+the page's declared-group re-insertion changed nothing, because its own transcription
+implements that rule.
+
+**This is the strongest evidence the mission has produced that F-39 and F-42 belong
+in doctrine rather than in a findings file.** Knowing about the failure mode did not
+prevent it. Running the mutation did — twice, in the same package, by an agent that
+had been told what to watch for and still needed the mutation to see it.
+
+The mission's own record now shows the practice catching the failure at every level:
+in implementation, in review, in an implementer's self-check, and now in an
+implementer who had read the warning. Nothing else in this mission caught these.
+
+## F-54 — F-27 recurred, in the work of the agent that recorded it
+
+**Raised by**: the orchestrator, on itself
+**Owner**: the orchestrator; the note did not work, so the practice must
+
+F-27 recorded that a rejection returns a work package to `planned` but does not
+terminate the agent working it, and that dispatching the rework into the same lane
+before stopping the previous agent is unsafe. I wrote that finding, and then did it
+again: WP06's first session was still live in lane-f when I dispatched its
+continuation there.
+
+No damage — the first session was only re-reporting a stale wait loop, I stopped it
+on noticing, and `95f600a`'s work is intact with the continuation's uncommitted
+changes untouched. But it cost nothing by luck, twice.
+
+**This is F-53's shape applied to process rather than to tests.** Knowing about the
+failure mode did not prevent it. What would prevent it is a step that cannot be
+skipped: stop the prior agent as part of re-claiming a lane, not as something to
+remember before dispatching.
+
+For the rest of this mission: `TaskStop` on the previous agent is the first action
+of any re-dispatch, before the claim, unconditionally — including when the previous
+agent has reported `completed`, because `completed` is what both of these had
+reported.
+
+The generalizable lesson is the one the whole mission keeps producing: a recorded
+warning is not a control. F-39 and F-42 earned their place by being enforced at a
+gate; F-27 was written down and read and did nothing.
+
+## F-55 — The transcription ruling's condition was tested and failed
+
+**Raised by**: WP05's review
+**Owner**: WP05 cycle 2
+
+F-52 ruled WP05's Rust transcription of the page's grouping rule acceptable **only
+while every rule it copies is pinned to the committed source, and every pin is
+falsified by mutating that source.** The reviewer tested that condition directly.
+Six mutations to `page.js`, each breaking a rule the transcription copies, all
+**MISSED** — the acceptance target stayed green:
+
+- `stripGroupKey`'s `patch.envelope.` prefix altered
+- `stripGroupKey`'s `patch.effect.` arm returning `null` instead of `openSlot`
+- `stripGroups`' `if (!control.visible) continue` neutralized
+- `groupHeadControlId`'s `slot.N` → `patch.engine`
+- `stripGroups`' `openSlot` assignment nulled
+- unknown identities dropped instead of marked `?group`
+
+`page_strip_group_key` is a line-for-line copy of `stripGroupKey`, and **no pin
+mentions any of its five prefix rules.** The `DESIGNED_STRIP_GROUPS` pin covers the
+group *names*; the identity→group *mapping* — which is the substance of T030 — was
+tied to nothing. Two further copied rules are also unpinned: `rangeEndpointText`'s
+`toFixed(3)` and `controlValueText`'s `"ON"/"OFF"`.
+
+**The ruling stands; the package fails its condition.** This is what a conditional
+ruling is for. F-52 named the exact failure mode — "a pin that matches a comment, or
+matches in more places than it claims, is not a pin" — and the reviewer found the
+larger version: rules with no pin at all.
+
+It is live rather than hypothetical. WP06 is in `page.js` now, F-44's
+`stripGroupsPainted` producer has not landed, and F-40 blocks the live layer — so
+this file is currently the mission's **only** executed grouping proof.
+
+One sibling blind pin also found, the same shape WP05 caught in its own work:
+`data-role="row-range"` occurs twice — the painting site in `rangeHtml` and a CSS
+selector in `renderObservation` — so renaming only the painting site MISSES. The pin
+set is not blind overall (the two `rangeEndpointText` pins independently caught a
+fully-emptied `rangeHtml`), but that entry guards nothing it claims to.
+
+## F-56 — Fourth instance, and the first where the reviewer had to run it
+
+**Raised by**: WP05's review
+
+Counting only this mission: the failure mode was visible solely by running a
+mutation in WP04's implementation, in WP04's review, twice in WP05's own self-check,
+and now in WP05's review. Four levels, one practice.
+
+F-53 already argued F-39 and F-42 belong in project doctrine rather than a findings
+file. This adds the case that matters most for how the doctrine should be worded:
+**the reviewer had to run the mutation too.** Reading the transcription against the
+page and satisfying itself they agreed would have approved a target whose central
+claim was tied to nothing — and reading is what review normally is.
+
+So the doctrine is not "implementers should falsify". It is: **a guard is unproven
+until someone has watched it fail, and that obligation does not transfer by being
+reviewed.**
