@@ -124,25 +124,6 @@ impl Patch {
         }
     }
 
-    /// Creates an installed patch and seeds its voice limit from the declared
-    /// voice policy of its own instrument capability.
-    ///
-    /// A SoundFont Patch seeds from its engine's prepared polyphony ceiling; a
-    /// Braids Patch seeds from its own fixed-per-Patch capacity. The seed is
-    /// per-capability, never a value shared across capabilities.
-    pub fn installed(
-        id: PatchId,
-        name: String,
-        instrument: InstrumentConfig,
-        channel: MidiChannel,
-        output: PatchOutput,
-        policy: VoicePolicy,
-    ) -> Self {
-        let mut patch = Self::new(id, name, instrument, channel, output);
-        patch.seed_voice_limit(policy);
-        patch
-    }
-
     /// Returns this patch's stable process-lifetime identity.
     pub const fn id(&self) -> PatchId {
         self.id
@@ -206,18 +187,6 @@ impl Patch {
     pub fn with_envelope(mut self, envelope: VoiceEnvelope) -> Self {
         self.envelope = envelope;
         self
-    }
-
-    /// Supplies an explicit voice limit while constructing a Patch fixture,
-    /// through the same bounds check the reducer uses.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`VoiceLimitError::OutOfRange`] when the value falls outside the
-    /// declared bounds. The value is refused, never clamped.
-    pub fn with_voice_limit(mut self, value: u16) -> Result<Self, VoiceLimitError> {
-        self.set_voice_limit(value)?;
-        Ok(self)
     }
 
     /// Seeds this Patch's limit from its own capability's declared per-Patch
@@ -747,7 +716,8 @@ mod tests {
         );
 
         // A limit the incoming engine can honour crosses unchanged.
-        let mut patch = test_patch().with_voice_limit(8).unwrap();
+        let mut patch = test_patch();
+        patch.set_voice_limit(8).unwrap();
         let carry_over = patch.replace_instrument_config(braids_config.clone(), braids_policy);
         assert_eq!(
             carry_over,
@@ -759,7 +729,8 @@ mod tests {
 
         // A limit above the incoming engine's ceiling is narrowed at the swap,
         // and the narrowing is reported rather than silently applied.
-        let mut patch = test_patch().with_voice_limit(48).unwrap();
+        let mut patch = test_patch();
+        patch.set_voice_limit(48).unwrap();
         let carry_over = patch.replace_instrument_config(braids_config.clone(), braids_policy);
         assert_eq!(
             carry_over,
@@ -794,8 +765,14 @@ mod tests {
         assert_eq!(patch.output(), before.output());
     }
 
+    /// Composes an installed Patch exactly the way the reducer does:
+    /// `Patch::new`, then `seed_voice_limit` once the capability has been
+    /// resolved against the registry. There is deliberately no constructor
+    /// that does both — the reducer needs the registry lookup *between* them,
+    /// so a second way to build an installed Patch would be one the production
+    /// installation site could never use.
     fn installed_patch(id: u32, policy: VoicePolicy) -> Patch {
-        Patch::installed(
+        let mut patch = Patch::new(
             PatchId::new(id).unwrap(),
             format!("Patch {id}"),
             InstrumentConfig::from_parts(
@@ -805,8 +782,9 @@ mod tests {
             ),
             MidiChannel::new((id - 1) as u8).unwrap(),
             PatchOutput::default(),
-            policy,
-        )
+        );
+        patch.seed_voice_limit(policy);
+        patch
     }
 
     #[test]

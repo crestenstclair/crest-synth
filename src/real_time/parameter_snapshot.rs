@@ -1232,15 +1232,15 @@ mod tests {
         let provider = BraidsCapability::new().unwrap();
         let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
         let patch = |id: u32, limit: u16| {
-            Patch::new(
+            let mut patch = Patch::new(
                 PatchId::new(id).unwrap(),
                 format!("Patch {id}"),
                 provider.default_config().unwrap(),
                 crate::kernel::midi_channel::MidiChannel::new((id - 1) as u8).unwrap(),
                 PatchOutput::to_track(MixerTrackId::new((id - 1) as u8).unwrap()),
-            )
-            .with_voice_limit(limit)
-            .unwrap()
+            );
+            patch.set_voice_limit(limit).unwrap();
+            patch
         };
         let patches = [patch(1, 5), patch(2, 41)];
 

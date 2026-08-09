@@ -65,12 +65,19 @@ impl Selection {
 /// facts move together in one transition, so no reachable state pairs an open
 /// detail surface with no subject, or a subject with no surface to live on.
 ///
-/// That is enforced structurally rather than by convention: `detail_subject`
-/// is private to this module — unlike its `pub(super)` siblings, the reducer
-/// cannot assign it — so [`Self::enter_detail`] and [`Self::leave_subordinate`]
-/// are the only transitions that can set or clear it, and both move all three
-/// fields at once. Every mutator ends by asserting
-/// [`Self::detail_invariant_holds`].
+/// That is enforced structurally rather than by convention, for one of the
+/// three fields: `detail_subject` is private to this module, so — unlike its
+/// `pub(super)` siblings — the reducer cannot assign it, and
+/// [`Self::enter_detail`], [`Self::leave_subordinate`], and
+/// [`Self::return_to_origin`] are the only transitions that can set or clear
+/// it. `active_focus` and `return_path` remain `pub(super)`: the reducer
+/// assigns `active_focus` directly at two sites, each of which moves within one
+/// already-open surface's own resolved order and so cannot change which surface
+/// is active (`app_state::navigate_side_nonwrapping` and
+/// `app_state::repair_inspector_focus`). The invariant is therefore
+/// held by *every* mutator on this type ending in an
+/// [`Self::assert_detail_invariant`] call, plus those two guarded reducer
+/// writes — not by the privacy of one field alone.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InteractionState {
     pub(super) active_focus: FocusPath,
@@ -191,6 +198,7 @@ impl InteractionState {
 
     pub(super) fn initialize_patch_focus(&mut self, focus: Option<FocusPath>) {
         self.remembered_patch_main = focus;
+        self.assert_detail_invariant();
     }
 
     /// Lands the active focus on a main path, leaving any subordinate surface.
@@ -236,6 +244,7 @@ impl InteractionState {
             return Err(FocusPathError::ModalIdentityUnavailable);
         }
         self.mode = mode;
+        self.assert_detail_invariant();
         Ok(())
     }
 
@@ -340,6 +349,32 @@ impl InteractionState {
     pub(super) fn leave_subordinate(&mut self) {
         self.return_path = None;
         self.detail_subject = None;
+        self.assert_detail_invariant();
+    }
+
+    /// Leaves an open detail surface by restoring its remembered origin.
+    ///
+    /// Used where the subject stopped naming a live capability or slot — an
+    /// engine swap or a slot clear committed underneath the open entry. The
+    /// declaration is explicit that such a subject is *not* repaired into a
+    /// neighbouring one: the surface is left back to its origin, because
+    /// silently retargeting a detail view would show one capability's values
+    /// under another's title. Reports whether a surface was actually left.
+    pub(super) fn leave_detail_to_origin(&mut self) -> bool {
+        if self.detail_subject.is_none() {
+            return false;
+        }
+        let origin = self
+            .return_path
+            .take()
+            .expect("the detail invariant pairs an open subject with a return path")
+            .origin()
+            .clone();
+        self.detail_subject = None;
+        self.active_focus = origin;
+        self.mode = InteractionMode::Navigate;
+        self.assert_detail_invariant();
+        true
     }
 
     pub(super) fn replace_remembered_patch_main(&mut self, focus: FocusPath) {
@@ -348,6 +383,7 @@ impl InteractionState {
         if was_active {
             self.active_focus = focus;
         }
+        self.assert_detail_invariant();
     }
 
     pub(super) fn replace_remembered_mixer_main(&mut self, focus: FocusPath) {
@@ -356,12 +392,27 @@ impl InteractionState {
         if was_active {
             self.active_focus = focus;
         }
+        self.assert_detail_invariant();
     }
 
-    pub(super) fn replace_return_origin(&mut self, origin: FocusPath) {
-        if let Some(return_path) = self.return_path.as_ref() {
-            self.return_path = ReturnPath::new(origin, return_path.entered_surface()).ok();
-        }
+    /// Replaces the remembered origin of whichever surface is open.
+    ///
+    /// A construction failure is returned, never swallowed: assigning `None`
+    /// here would clear the return path while an open detail surface still
+    /// held its subject, which is precisely the state the detail invariant
+    /// forbids. No caller can reach the failure today — every origin it is
+    /// given is a repaired main path in the entered surface's own context —
+    /// and this is what keeps that true rather than assuming it.
+    pub(super) fn replace_return_origin(
+        &mut self,
+        origin: FocusPath,
+    ) -> Result<(), FocusPathError> {
+        let Some(return_path) = self.return_path.as_ref() else {
+            return Ok(());
+        };
+        self.return_path = Some(ReturnPath::new(origin, return_path.entered_surface())?);
+        self.assert_detail_invariant();
+        Ok(())
     }
 }
 
@@ -421,6 +472,28 @@ mod tests {
         state.return_to_origin().unwrap();
         assert_eq!(state.focus_path(), &origin);
         assert_eq!(state.return_path(), None);
+    }
+
+    /// A return origin that cannot be constructed is refused, not swallowed.
+    ///
+    /// Assigning `None` here would clear the return path while an open detail
+    /// surface still held its subject — the state the detail invariant
+    /// forbids. No reducer path can reach this today, because every origin the
+    /// repair hands over is a main path in the entered surface's own context;
+    /// this is what keeps that a fact rather than an assumption.
+    #[test]
+    fn a_return_origin_that_cannot_be_constructed_is_refused_and_changes_nothing() {
+        let mut state = InteractionState::new();
+        state.enter_surface(SurfaceId::MixerInspector).unwrap();
+        let before = state.clone();
+
+        // An Inspector path is not a main path, so it cannot be an origin.
+        let not_a_main_path =
+            FocusPath::mixer_send(MixerTrackId::default(), crate::mixer::bus_id::BusId::default());
+        assert!(state.replace_return_origin(not_a_main_path).is_err());
+        assert_eq!(state, before, "a refused replacement leaves state identical");
+        assert!(state.return_path().is_some());
+        assert!(state.detail_invariant_holds());
     }
 
     #[test]
