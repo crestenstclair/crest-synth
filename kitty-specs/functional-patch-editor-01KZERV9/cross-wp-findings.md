@@ -441,3 +441,33 @@ fails roughly 2 runs in 3 under `cargo test --release` and passes in debug.
 Untouched by WP03; the declared gate is debug and debug is green. Recorded
 alongside F-12 so nobody chases it during the live phases, where release builds
 are the norm.
+
+## F-27 — Two agents wrote lane-c concurrently. Orchestrator error.
+
+**Raised by**: WP03's cycle-2 implementer, which noticed and said so
+**Owner**: orchestrator; no code consequence, but a process one
+
+I dispatched WP03's cycle-2 implementer while cycle 1's agent was still live in the
+same lane worktree. Both wrote `lane-c`. The cycle-2 report noted it explicitly:
+files changed between its own consecutive commands (`app_state.rs`,
+`interaction_state.rs`, `patch.rs` mid-verification; `semantic_graphical_view_model.rs`
+twice more), one commit was authored by something other than itself, and one test
+run failed against a half-written file and passed on re-run.
+
+It did the right thing: it identified the stale-binary artifact as an artifact
+rather than a real failure, and re-verified everything on the committed tree
+before reporting.
+
+**No code consequence.** I stopped the second agent, then independently ran the
+gates on the committed tree rather than trusting either report: 701 lib tests plus
+every integration target green, with only F-12's known flake firing. The lane's
+own commits touch no protected path.
+
+**The process lesson.** A rejection returns a work package to `planned`, but it
+does not terminate the agent that was working it. Dispatching the rework is not
+safe until the previous agent is confirmed stopped. Nothing in the loop enforced
+that, and I did not check. For the remaining packages: stop the prior agent
+explicitly before re-dispatching a rejected package into the same lane.
+
+That this cost nothing is luck plus an implementer paying attention, not a
+property of the arrangement.
