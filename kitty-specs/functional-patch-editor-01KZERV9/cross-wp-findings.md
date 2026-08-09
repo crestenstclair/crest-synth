@@ -1343,3 +1343,68 @@ the switch, so a defeated run projects one value — and FR-008's editability is
 in WP05's deterministic target against a fixture that permits it. But the field's
 name promises more than it measures, and WP06 flagged that rather than letting the
 name carry it. Grade it for what it measures.
+
+## F-61 — F-49's finding was half wrong; the dangerous direction was the other one
+
+**Raised by**: WP06 cycle 2, correcting the review that raised it
+
+The review found that mutating the effects-and-buses scene-name gate to a
+never-matching literal left 715 lib tests and the topology, mixer and shell suites
+green while dropping an entire evidence block. WP06 tested both directions and the
+picture is different:
+
+**Narrowing was already caught.** With the literal mutated to never match,
+`tests/effects_and_buses.rs` fails at `the cumulative scene retains
+effects-and-buses evidence`. The suites the finding listed do stay green — but the
+suite that owns the phase was not among them, and it fails. That direction was
+covered before anyone touched it.
+
+**Widening was caught by nothing.** With the gate replaced by always-true,
+`effects_and_buses`, `live_demo_scene`, `topology_change_lifecycle` and
+`live_patch_editor_scene` all pass. That is the real gap, and it is the direction
+that breaks *this* mission: the patch-editor scene declares topology transitions, so
+an always-true gate grades its effect-slot occupancy walk against the
+eight-destination bus contract it never claimed to meet.
+
+Both directions are now pinned, with a second test showing *why* the gate is
+load-bearing rather than tidy.
+
+The lesson is narrow and useful: a mutation proves what it proves. Testing one
+direction of a boolean gate and reporting "unprotected" named a real gap and got its
+polarity backwards — and the polarity was the part that mattered.
+
+## F-62 — The same half-amendment, in miniature, two hours later
+
+**Raised by**: WP06 cycle 2
+**Owner**: closed
+
+I amended the witness to add `audible_edit_isolated_to_second_patch` after
+`first_patch_audible_edit_delta`, and amended the observation's `state:` block to add
+it after `desktopViewportPainted`. Content agreed exactly, so nothing failed — but
+the two declarations of one thing listed it in different places, which is F-57's
+pattern repeating within the same working session that recorded F-57.
+
+WP06 followed the witness as instructed, flagged the discrepancy rather than
+silently picking one, and noted it would read as a defect to the next person who
+diffs them. Now aligned.
+
+Six instances. The through-line is not carelessness about any one edit — it is that
+I treat a declaration as prose to be updated rather than as a machine-checkable
+artifact with more than one face. `crest-spec doctor` passes on both orderings,
+which is exactly why it kept happening.
+
+## F-63 — The margin's exposure changed when the predicate did
+
+**Raised by**: WP06 cycle 2
+**Owner**: the accept gate
+
+`AUDIBLE_EDIT_DELTA_MARGIN = 1.0e-3` was an inline comparison inside
+`is_complete()`. After the F-57 amendment it stands behind a declared witness
+predicate. The ruling that documenting is sufficient still holds and WP06 did not
+invent a bound — but the exposure is different: the first completed live run now
+either confirms the margin or **moves a predicate**.
+
+One property worth keeping, which WP06 asserted rather than left true by accident: a
+run with no edit on the second Patch reports both deltas at zero, and zero does not
+clear the margin — so absent evidence reads as "not isolated" rather than as
+isolation by default.
