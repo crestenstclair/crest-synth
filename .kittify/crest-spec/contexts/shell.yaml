@@ -315,8 +315,10 @@ valueObjects:
     - IdentityHeader
     - Section
     - PatchStripRow
+    - PatchStrip
     - MixerStripBank
     - UtilityInspectorPanel
+    - CapabilityDetailShell
     - Footer
     state:
       region: the named shell region this composition fills
@@ -358,6 +360,32 @@ valueObjects:
       out of view, elided, or narrowed past the declared floor in order to fit, because the product design
       authority requires all sixteen tracks visible at the desktop viewport and a track hidden to save
       width is a track an operator cannot see is empty
+    - PatchStrip is to PATCH what MixerStripBank is to MIXER — the composition that fills the main workspace
+      and arranges groups rather than controls. It arranges, in the projected order, the Patch identity
+      and routing header, the instrument selector, the envelope group, and one group per effect slot;
+      PatchStripRow remains the row-level composition it nests, exactly as MixerTrackColumnStructure is
+      what MixerStripBank nests. A PATCH main workspace painted as one flat run of every control the
+      projection reports for the focused Patch does not satisfy it, because grouping is the structure
+      the product design authority declares and a flat run erases which rows belong to which slot
+    - PatchStrip titles the slot groups rather than the strip, because the identity header already names
+      the Patch and an operator reading an effect row needs to know which slot it belongs to; the envelope
+      group carries its authored legend for the same reason
+    - PatchStrip carries the no-placeholder rule at both levels — a group whose designed structure has
+      no view data marks that structure unavailable inside its own group, and a strip with no focused
+      Patch at all marks the strip unavailable
+    - CapabilityDetailShell fills the main workspace for the subordinate detail surface and arranges the
+      active capability's projected sections and their controls. It is one composition, not one per subject
+      kind — the instrument case and the effect case differ only in the projection slice handed to it,
+      and a second composition branched on subject would reintroduce the per-engine page this vocabulary
+      exists to prevent
+    - CapabilityDetailShell renders a section the projection marks read-only with text or shape as well
+      as color, and renders a capability mid-preparation through its projected lifecycle status rather
+      than as an empty or stale section set
+    - UtilityInspectorPanel seats its entries within the persistent side region without a scroll affordance
+      on PATCH, where the declared Utility row set is bounded at five. Where a side surface's row set is
+      not bounded by declaration, the panel marks what it cannot seat rather than silently painting past
+      its own edge; a row reachable by no declared gesture is not a rendering detail but an unreachable
+      control
     contributesTo:
       component_vocabulary: is the assembly half of the vocabulary, so later surfaces compose rather than
         re-lay-out

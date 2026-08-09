@@ -45,6 +45,9 @@ valueObjects:
     - EffectSlot(EffectSlotIndex)
     - Effect(EffectSlotId, ParameterId)
     - Output(PatchOutputParameter)
+    - Global(GlobalParameter)
+    - MidiInput
+    - VoiceLimit
     invariants:
     - the base ordered surface is Engine followed by the four VoiceEnvelope surface-descriptor parameters
       Attack, Decay, Sustain, and Release exactly once; the focused Patch resolver appends each visible
@@ -54,12 +57,25 @@ valueObjects:
     - EffectSlot rows use the same adjacent nonwrapping choice contract as the engine row, cycling through
       empty plus every installed registry entry; an empty slot still projects its occupancy row so every
       position stays reachable
-    - PatchUtility has a distinct ordered resolver containing Output(TrimGain) then Output(OutputTrack);
-      those controls reuse the canonical PatchOutput descriptor and never enter the PatchMain order
+    - PatchUtility has a distinct ordered resolver containing exactly five rows in this order —
+      Global(MasterGainDb), Output(TrimGain), MidiInput, Output(OutputTrack), VoiceLimit — matching the
+      product design authority's declared Utility panel. The set is bounded by declaration rather than
+      by what fits — five rows seat within the persistent side region at both authored viewports, so the
+      panel needs no scroll affordance and no row is reachable only by a gesture the surface does not
+      declare. None of these controls enters the PatchMain order
+    - Global(MasterGainDb) on PatchUtility and MixerControlId.Global(MasterGainDb) on MixerInspector address
+      the one canonical GlobalParameters value through the one canonical surface descriptor. Two surfaces,
+      one value, one descriptor, one set of bounds and steps. PATCH does not own a master-volume copy,
+      does not shadow the mixer's, and an edit made on either surface is the same edit
+    - MidiInput addresses the focused Patch's own channel and VoiceLimit its own limit, so both follow
+      the Patch across a patch selection rather than persisting as surface-local values; a patch switch
+      reprojects them from the destination Patch
     - Engine serializes as patch.engine, Envelope(parameter) derives patch.envelope.<VoiceEnvelopeParameter.name>,
       Capability(parameter) derives patch.capability.<ParameterId>, EffectSlot(index) derives patch.effectSlot.<EffectSlotIndex>,
-      Effect(slotId, parameter) derives patch.effect.<EffectSlotId>.<ParameterId>, and Output(parameter)
-      derives patch.output.<PatchOutputParameter.name> without declaring a second domain-field enum
+      Effect(slotId, parameter) derives patch.effect.<EffectSlotId>.<ParameterId>, Output(parameter)
+      derives patch.output.<PatchOutputParameter.name>, Global(parameter) derives patch.global.<GlobalParameter.name>,
+      MidiInput serializes as patch.midiInput, and VoiceLimit as patch.voiceLimit, without declaring a
+      second domain-field enum
     - the value is never a widget index, text line, capability id, display label, choice label, or platform
       input code
     contributesTo:
@@ -71,6 +87,7 @@ valueObjects:
       static_patch_effect: addresses descriptor-owned effect scalars through stable slot and parameter
         identities
       sixteen_track_mixer_routing: addresses canonical Patch trim and output track in PATCH Utility
+      global_mix: reaches the one canonical master gain from PATCH without a second owner
   EngineSelectionRequestId:
     description: a monotonic correlation identity for one structural instrument-config replacement attempt
     from: u64
@@ -244,21 +261,53 @@ valueObjects:
       soundfont_preset_selection: addresses a preset change generically by ParameterId and stable choice
         id
   SurfaceId:
-    description: the closed stable identity of the four Phase 2 graphical surfaces
+    description: the closed stable identity of the graphical surfaces — four persistent plus one subordinate
+      PATCH detail surface
     from:
     - PatchMain
     - PatchUtility
+    - PatchDetail
     - MixerMain
     - MixerInspector
     invariants:
-    - PatchMain and PatchUtility belong only to PATCH; MixerMain and MixerInspector belong only to MIXER
+    - PatchMain, PatchUtility, and PatchDetail belong only to PATCH; MixerMain and MixerInspector belong
+      only to MIXER
     - the identity is invariant across desktop and Steam Deck composition and never encodes a pane index,
       rectangle, visibility shortcut, or renderer id
     - PatchUtility owns the canonical Patch trim and output-track controls introduced by the corrective
-      routing gate; MixerInspector owns selected-track sends and routed-Patch summary, and later visual
-      work must reuse these identities rather than invent parallel surfaces
+      routing gate, plus master volume, MIDI input, and voice limit; MixerInspector owns selected-track
+      sends and routed-Patch summary, and later visual work must reuse these identities rather than invent
+      parallel surfaces
+    - PatchDetail is subordinate rather than persistent — it is entered only from a PatchMain path whose
+      control resolves a PatchDetailSubject, it is never the resting surface of a context, and leaving
+      it restores the exact origin through ReturnPath. One detail surface identity serves both instrument
+      and effect subjects, because the surface is the shell and the subject supplies the content; a second
+      identity per subject kind would be the polymorphism this declaration exists to prevent
     contributesTo:
       semantic_graphical_view_model: lets more than one layout place the same canonical surface model
+      schema_driven_patch_page: gives the polymorphic detail shell one stable identity rather than one
+        per subject kind
+  PatchDetailSubject:
+    description: the capability whose schema fills the polymorphic PATCH detail surface
+    from:
+    - Instrument(CapabilityId)
+    - Effect(EffectSlotId, EffectCapabilityId)
+    invariants:
+    - the subject is derived from the originating PatchMain FocusPath at entry and is never chosen by
+      a host, a layout, or a detail-local selection
+    - Instrument resolves the focused Patch's active InstrumentConfig capability; Effect resolves the
+      exact occupied slot identity, so two positions holding the same registry entry are distinct subjects
+    - the subject names a capability identity only; it carries no section list, control list, value, label,
+      accent, geometry, or descriptor copy, because those are resolved from the installed descriptor at
+      projection time and would otherwise become a second schema
+    - a subject whose capability leaves the registry, or whose slot is cleared, is not repaired into a
+      neighbouring subject; the detail surface is left through the deterministic focus resolver back to
+      its origin, because silently retargeting a detail view would show one capability's values under
+      another's title
+    contributesTo:
+      schema_driven_patch_page: makes one detail shell serve instruments and effects without an engine
+        or effect branch
+      instrument_capability_model: keeps detail content descriptor-owned rather than surface-owned
   InteractionMode:
     description: the explicit reducer-owned interaction interpretation projected to every host
     from:
@@ -339,19 +388,27 @@ valueObjects:
       schema_driven_patch_page: reuses PatchControlId and descriptor identities instead of a second page
         focus
   ReturnPath:
-    description: the exact origin captured before entering a subordinate persistent surface
+    description: the exact origin captured before entering a subordinate surface
     state:
       origin: FocusPath
       enteredSurface:
       - PatchUtility
       - MixerInspector
+      - PatchDetail
     invariants:
     - origin is a valid PatchMain or MixerMain path in the same TopLevelContext as enteredSurface
-    - there is at most one ReturnPath in Phase 2; Return atomically restores origin, clears the path,
-      and enters Navigate mode
+    - there is at most one ReturnPath; Return atomically restores origin, clears the path, and enters
+      Navigate mode. The subordinate surfaces do not nest — entering PatchDetail from PatchUtility, or
+      PatchUtility from PatchDetail, is a typed unchanged rejection rather than a second stacked origin,
+      because one remembered origin is the whole contract and a stack would make "the exact origin" a
+      question of depth
     - a schema change repairs origin through the same deterministic focus resolver before it can be restored
+    - restoring origin from PatchDetail lands on the exact originating row, not on a recomputed surface
+      default; a detail entry whose origin no longer resolves repairs through the deterministic focus
+      resolver against the current schema rather than falling back to the first row
     contributesTo:
       semantic_graphical_view_model: proves exact return without a view-owned navigation stack
+      schema_driven_patch_page: gives the polymorphic detail shell its exact-return contract
   TopLevelContext:
     description: the only top-level product context selected through the reducer
     from:
@@ -373,9 +430,23 @@ valueObjects:
       rememberedMixerPath: FocusPath
       mode: InteractionMode
       returnPath: Option<ReturnPath>
+      detailSubject: Option<PatchDetailSubject>
     invariants:
     - initial focusPath and rememberedMixerPath identify MIXER Main Track T00 Level in Navigate mode,
       so exactly one semantic target exists before any Patch is installed
+    - detailSubject is Some exactly while focusPath.surface is PatchDetail and returnPath.enteredSurface
+      is PatchDetail, and None otherwise; the three move together in one transition, so no state exists
+      in which a detail surface is open without a subject or a subject outlives its surface
+    - entering PatchDetail is accepted only from a PatchMain path whose control resolves a PatchDetailSubject
+      — the engine row, an active-instrument capability row, an occupied effect slot, or one of its
+      occupant parameter rows. Every other origin, including an empty slot and every PatchUtility row,
+      is a typed unchanged rejection rather than an empty detail surface
+    - entry records the exact origin, derives detailSubject from that origin, and focuses the subject
+      descriptor's first visible enabled control; Return restores the origin, clears returnPath and
+      detailSubject together, and enters Navigate mode
+    - SelectPatch and SelectContext while a detail entry is open leave the detail surface first, because
+      a detail subject belongs to the Patch it was opened on and carrying it across a switch would show
+      one Patch's capability under another Patch's identity
     - InstallPatches initializes rememberedPatchPath to the first accepted Patch's PatchMain Engine path
       and preserves the active MIXER path; no Patch vector index becomes focus identity
     - direct context selection saves the active root path, restores the destination context's remembered
@@ -735,6 +806,7 @@ valueObjects:
       - identity
       - surface
       value: typed canonical value or read-only presentation
+      requestedValue: Option<typed canonical value>
       unit: Option<String>
       enabled: bool
       visible: bool
@@ -742,15 +814,31 @@ valueObjects:
       focused: bool
       status: Option<Ready | Preparing | Activating | Failed>
       error: Option<typed stable error projection>
+      validActions: Vec<ValidAction>
     invariants:
     - parameter kind, label, value, unit, dependency state, editability, status, and failure come from
       canonical state plus the owning instrument/effect/mixer descriptor
+    - label is the owning descriptor's authored label. A serialization key — the name a value carries
+      in the state tree, the parameter snapshot, or a leaf descriptor — is never projected as a label,
+      because the two vocabularies exist for different readers and one reaching the screen is a defect
+      rather than a naming choice
+    - requestedValue is Some exactly while this control has an in-flight structural edit correlated to
+      it, and carries the value the edit is moving toward. A row mid-edit therefore projects both what
+      is active and what was asked for; a lifecycle status alone reports that something is happening
+      without saying what, which is what this field exists to fix. It is None on every settled row and
+      is never a locally optimistic value written ahead of the reducer
+    - validActions is this control's own accepted action list, resolved by the same pure resolver that
+      computes the model-level list, for the counterfactual focus in which this control is focused. The
+      model-level list stays the authority for the focused row and the two agree exactly there. A row
+      list is what makes a per-row hint possible without a second hand-maintained vocabulary
     - focused is true for exactly the node whose path equals SemanticGraphicalViewModel.focusPath; read-only
       and disabled nodes never enter the focus resolver
     - the value contains no renderer type, geometry, callback, mutable state, engine/effect branch, prepared
       object, device, or audio buffer
     contributesTo:
       semantic_graphical_view_model: gives multiple layouts the same schema-derived control content
+      schema_driven_patch_page: makes a row's in-flight target and its own valid actions projected facts
+        rather than shell inferences
   SemanticSurfaceViewModel:
     description: one immutable semantic surface independent of where a host places it
     state:
@@ -759,19 +847,30 @@ valueObjects:
       role:
       - Main
       - PersistentSide
+      - Detail
       controls: Vec<SemanticControlViewModel>
       summary: typed read-only canonical summary
     invariants:
-    - PATCH exposes PatchMain plus PatchUtility and MIXER exposes MixerMain plus MixerInspector; no third
-      top-level context exists
-    - main controls use canonical descriptor order; PatchUtility projects Patch trim and output track,
+    - PATCH exposes PatchMain plus PatchUtility, and PatchDetail while a detail entry is open; MIXER exposes
+      MixerMain plus MixerInspector; no third top-level context exists
+    - main controls use canonical descriptor order; PatchUtility projects the five declared Utility rows,
       MixerInspector projects the selected track's sends and routed-Patch summary, and neither side surface
       owns a second value copy
+    - a Detail surface is present exactly while InteractionState holds a PatchDetail entry, and absent
+      otherwise; hosts never render a stale detail surface and never synthesize one
+    - the Detail surface's label, accent, ordered sections, controls, ranges, units, status, and errors
+      all resolve from the installed descriptor named by its PatchDetailSubject. The surface itself declares
+      no section list and branches on no capability, which is the whole of what makes one shell serve
+      instruments and effects
+    - a Detail section the active capability declares read-only projects controls with editable false
+      and is marked read-only in text or shape; read-only is a projected fact, never a color the host
+      assigns
     - surface order and identities are stable while host layout order, density, wrapping, and rectangle
       placement remain adapter concerns
     contributesTo:
       semantic_graphical_view_model: lets desktop and Steam Deck compositions render the same semantic
         content
+      schema_driven_patch_page: projects one detail shell whose whole content is capability-supplied
   SemanticGraphicalViewModel:
     description: the canonical immutable host-neutral graphical interaction projection
     state:

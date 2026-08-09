@@ -239,3 +239,22 @@ evidence:
     - test
     witnesses:
     - witness.component_gallery
+  functional_patch_editor_contract:
+    kind: behavioral
+    description: the PatchStrip and CapabilityDetailShell compositions, the widened PatchControlId surface,
+      the five-row Utility resolver, the canonical VoiceLimit and its callback enforcement, per-row valid
+      actions and mid-edit requested values, and the retained live scene agree that every installed Patch
+      is reachable and editable through the one-way loop; that a patch switch reprojects the whole surface
+      in one generation against the destination's own schema and refuses at either end; that master volume
+      has exactly one canonical owner reachable from two surfaces; that the voice limit actually bites in
+      the callback without allocating, destroying, or refusing a note-off; and that the second instrument's
+      effect-slot journey and audible parameter edit are demonstrated on a real window with physical audio
+      rather than asserted
+    validations:
+    - functional_patch_editor
+    - validation.semantic_graphical_view_model
+    - component_composition
+    - live_demo
+    - test
+    witnesses:
+    - witness.functional_patch_editor
