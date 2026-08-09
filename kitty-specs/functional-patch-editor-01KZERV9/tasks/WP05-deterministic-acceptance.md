@@ -305,6 +305,11 @@ identity serves both" is.
 ## Definition of Done
 
 - [ ] All six subtasks complete
+- [ ] **F-28 closed**: `serialization_keys()` covers capability and section
+      identifiers, and all seven label sites F-28 lists flip from MISSED to CAUGHT
+      under the mutation sweep. This is a Definition-of-Done item and not merely a
+      finding, because FR-014 is already claimed satisfied by the existing guard —
+      so without this line, skipping the key-set widening fails nothing.
 - [ ] `cargo test --test functional_patch_editor` exits 0 and emits the marker
 - [ ] Every guard demonstrated to fail when its subject is defeated
 - [ ] The fixture installs >2 Patches across both engines

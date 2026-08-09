@@ -365,7 +365,10 @@ said it was handled.
   on that second instrument.
 - **SC-003**: Zero rows on the shipped PATCH surface are marked unavailable for
   want of data — every designed PATCH structure this mission claims either carries a
-  real canonical value or is explicitly deferred in the table above.
+  real canonical value or is explicitly deferred in the table above. The read-only
+  surface-summary control kind is one such deferral (withdrawn 2026-08-09), so an
+  assertion of this criterion names it as a declared exception rather than counting
+  it as a failure or quietly widening the bound.
 - **SC-004**: The audio callback allocates nothing and drops nothing across the full
   live run with voice limiting active.
 - **SC-005**: The complete PATCH surface renders without clipping or overlap at both
