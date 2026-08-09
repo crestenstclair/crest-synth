@@ -815,3 +815,42 @@ excuse available.
 
 The standard is the mission's own: a test that passes with and without the code it
 claims to prove is not a proof, and a test that never ran is not a test.
+
+## F-40 — The session is locked, and that IS a real blocker
+
+**Raised by**: WP04 cycle 2
+**Confirmed independently**: `ioreg -n Root -d1 -a` reports `IOConsoleLocked: true`
+**Owner**: the operator; blocks the mission's exit gate
+
+F-35 corrected "the display is absent" to "the display is asleep". That was right
+and incomplete. There are two separate conditions:
+
+| condition | state | fix |
+|---|---|---|
+| display attached and seating 1920×1080 | yes | — |
+| display awake | wakes with `caffeinate -u` | automatable |
+| **console session unlocked** | **NO** | **requires the operator's password** |
+
+The paint acknowledgment is emitted from `requestAnimationFrame`, which macOS
+suspends for a window behind the lock screen. Hence `only 0 of 150 projections were
+acked as painted within 15s`. The evidence screenshot WP04 captured is a picture of
+the lock screen, which confirms it directly.
+
+**What still runs locked** (and did, this cycle): T022, T023, T010, T014, T025, and
+crucially **T024 page-render determinism and T011 painted-geometry fidelity** —
+because `window.crest.render` is synchronous and layout is computed regardless of
+occlusion. That is how WP04 cycle 2 measured every viewport number it reports.
+
+**What cannot run locked**: NFR-001 projection-to-paint, T012, T013, the T015 ack
+audit — and **`make demo-live-patch-editor`, the mission's declared exit gate**,
+which depends on the same ack path.
+
+I previously told the operator the exit gate was producible without them. That was
+wrong, and the error is the same shape as everything else this mission has found: I
+corrected "absent" to "asleep", verified the display, and stopped — without checking
+whether waking it was *sufficient*. A necessary condition satisfied is not a
+sufficient condition met.
+
+**This does not stop the mission.** Every deterministic gate, the full webview
+geometry suite, and WP05's acceptance target all run locked. The mission can reach
+`accept` with everything except the live witness, and park exactly there.
