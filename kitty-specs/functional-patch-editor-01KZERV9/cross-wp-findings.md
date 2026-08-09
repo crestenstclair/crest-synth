@@ -771,3 +771,164 @@ exercised anywhere.
 
 Both are the same shape as everything else this mission has found: the failure was
 not that a test went red, but that no test ran.
+
+## F-39 — The accept gate requires executed evidence, not reasoned-about evidence
+
+**Raised by**: WP04's review
+**Owner**: the accept gate; binding on WP04, WP05, WP06
+
+Thirty-eight findings in, the mission's recurring failure has a single shape, and
+it is not carelessness: **unexecuted evidence keeps being treated as evidence.**
+
+It has now appeared at every level of this mission:
+
+- a fixture that could see only one variant (the detail-entry panic hid because
+  every test site used SoundFont);
+- a guard that walked a projection it could not fail on (the label guard, twice —
+  the PATCH page, then seven sites the key set cannot express);
+- a leaf-exactness test whose fixture never opened the state it guarded;
+- two reviewer enumerations that undercounted the thing they were enumerating;
+- a ruling written from one package's vantage point that was locally right and
+  globally wrong;
+- a claim about a producer "already reaching the screen" that three parties
+  accepted without checking which projection the page receives;
+- and a substitute runtime that measured confidently in a frame 62 px taller than
+  the product, which is the one that looked most like verification.
+
+Four of those were caught only by someone deliberately mutating code and watching
+what *failed to fail*. None was caught by a suite going red.
+
+**So the accept gate for this mission requires the live sections to have actually
+run.** Specifically, before acceptance:
+
+1. `CREST_WEBVIEW_TESTS=1 cargo test --test webview_projection_shell` executed with
+   the display awake, output recorded — not skipped, not substituted.
+2. `make demo-live-patch-editor` executed on hardware, its observation recorded
+   with actual field values.
+3. Every falsification this mission claims — F-28's seven label sites, F-33's
+   choice-value guard, the voice-limit defeat, the `--defeat-patch-selection`
+   negative — demonstrated by performing it, with the observed failure text.
+
+A `CREST_WEBVIEW_SKIP` line in the acceptance output is not a pass. Per F-35 the
+display is present and wakes with `caffeinate -u`, so there is no environmental
+excuse available.
+
+The standard is the mission's own: a test that passes with and without the code it
+claims to prove is not a proof, and a test that never ran is not a test.
+
+## F-40 — The session is locked, and that IS a real blocker
+
+**Raised by**: WP04 cycle 2
+**Confirmed independently**: `ioreg -n Root -d1 -a` reports `IOConsoleLocked: true`
+**Owner**: the operator; blocks the mission's exit gate
+
+F-35 corrected "the display is absent" to "the display is asleep". That was right
+and incomplete. There are two separate conditions:
+
+| condition | state | fix |
+|---|---|---|
+| display attached and seating 1920×1080 | yes | — |
+| display awake | wakes with `caffeinate -u` | automatable |
+| **console session unlocked** | **NO** | **requires the operator's password** |
+
+The paint acknowledgment is emitted from `requestAnimationFrame`, which macOS
+suspends for a window behind the lock screen. Hence `only 0 of 150 projections were
+acked as painted within 15s`. The evidence screenshot WP04 captured is a picture of
+the lock screen, which confirms it directly.
+
+**What still runs locked** (and did, this cycle): T022, T023, T010, T014, T025, and
+crucially **T024 page-render determinism and T011 painted-geometry fidelity** —
+because `window.crest.render` is synchronous and layout is computed regardless of
+occlusion. That is how WP04 cycle 2 measured every viewport number it reports.
+
+**What cannot run locked**: NFR-001 projection-to-paint, T012, T013, the T015 ack
+audit — and **`make demo-live-patch-editor`, the mission's declared exit gate**,
+which depends on the same ack path.
+
+I previously told the operator the exit gate was producible without them. That was
+wrong, and the error is the same shape as everything else this mission has found: I
+corrected "absent" to "asleep", verified the display, and stopped — without checking
+whether waking it was *sufficient*. A necessary condition satisfied is not a
+sufficient condition met.
+
+**This does not stop the mission.** Every deterministic gate, the full webview
+geometry suite, and WP05's acceptance target all run locked. The mission can reach
+`accept` with everything except the live witness, and park exactly there.
+
+## F-41 — Compact cannot seat the strip, structurally. NFR-003 graded, not passed.
+
+**Raised by**: WP04, quantified by its review
+**Owner**: mission review — a product decision about the compact band budget
+
+| document | rows | composition | band | scrolls by |
+|---|---|---|---|---|
+| patch-navigate | 12 (576 px) | 753 | 520 | 233 |
+| patch-adjust | 12 (610 px) | 787 | 520 | 267 |
+| patch-braids | 11 (528 px) | 705 | 520 | 185 |
+
+The declared compact shell bands take 156 px, so the largest band the strip could
+*ever* hold is 612 px in the shipped 768 px window (644 px at a true authored 800).
+The composition needs 753 px, and stripping every gap and inset still leaves six
+required group titles on top of 576 px of rows. `overflow-y: auto` on
+`#workspace .strip` is pre-existing; compact was already 708/504 at base.
+
+Seating compact requires painting fewer rows, going below the declared 48 px
+interactive minimum, or enlarging the bands in `src/shell/density.rs`. None is
+inside any package's map, and the first two are worse than scrolling.
+
+**NFR-003 is graded met-with-qualification, not passed silently and not failed.**
+All four of its stated criteria hold at both viewports: five shell bands intact,
+Inspector at or above 320 px, every interactive target at or above the minimum, no
+clipped or overlapped row — a scrolling container reaches every row, and the
+no-scroll rule the crest-spec declares is scoped to the Utility panel, which does
+not scroll.
+
+What fails is NFR-003's *title* — "Both authored viewports seat the surface" — at
+compact, structurally and permanently. The honest grade is met, with 233/267/185 px
+attached, and a mission-review decision about whether the title or the criteria is
+wrong. Desktop seats with 17 px of headroom (753 in 770), up from zero at base.
+
+## F-42 — A threshold guard is only as discriminating as the widest fixture reaching it
+
+**Raised by**: WP04 cycle 2, on its own work
+**Owner**: WP05, as method
+
+WP04's first T024 rail guard used a `rail > 5.0` threshold. It **passed against the
+live defect**, because the T024 fixtures' rails were 319–421 px — comfortably above
+it — while the failing T011 row was 4.28 px. Its review confirmed this by
+neutralizing only the structural assertion and leaving the threshold in place: T024
+passed. The guard as first written would have shipped the very defect it was added
+for.
+
+WP04 found it by running the mutation rather than by reasoning, rewrote the guard
+structurally — the hint run's top edge must sit at or below the label's bottom edge
+— and the structural form fails on the first document's first row, `patch.engine`,
+which has *no rail at all*. That case no threshold can reach on any fixture.
+
+This is the mission's recurring failure caught by an implementer on its own work
+before review saw it, which is the first time that has happened here. The method
+generalizes and WP05 should carry it: **falsify by mutation, not by fixture.** A
+threshold passes whatever is comfortably above it, and the fixture set silently
+decides what that is.
+
+## F-43 — A NUL byte ships in `page.js`
+
+**Raised by**: WP04's review
+**Owner**: the merge step — no open package owns `webview-page/` after WP04
+
+`webview-page/page.js` line 1384 uses a literal U+0000 as a dedup key separator in
+the hint-run de-duplication.
+
+The code is correct and the page is byte-identical through the production seam. But
+it is the only file in the repository containing a NUL, and `grep`/`rg` therefore
+classify the most-audited file in this mission as **binary** and return no line
+matches. The reviewer's own searches came back empty until it noticed.
+
+In a mission whose recurring failure is a tool that walks something it cannot report
+on, a silent search failure over `page.js` is worth closing. One character — replace
+with a printable separator such as `|` or a unit-separator that greps cleanly.
+
+WP04's review approved rather than opening a third cycle, which was proportionate:
+blocking two packages over a delimiter would have cost more than it bought. Fixed on
+the consolidated tree at merge, the same way the previous mission handled its
+inherited formatting gate.
