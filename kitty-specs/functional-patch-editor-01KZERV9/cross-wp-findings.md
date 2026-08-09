@@ -337,6 +337,48 @@ Worth keeping: an implementer's "this concept doesn't exist" is a claim about th
 codebase, and I treated it as one about the world. Two earlier pushbacks were
 right, which is exactly what made this one easy to accept without checking.
 
+**Resolved by WP03 cycle 2: the record was corrected; the code was not changed.**
+Of the two offered remedies, carrying `PatchInteraction` onto
+`SemanticControlViewModel` was rejected for three reasons, in order of weight:
+
+1. The crest-spec declares `aggregate.Control.SemanticControlViewModel.state`
+   field by field (`contexts/control.yaml:806`) and `patchInteraction` is not
+   among them — while the *same* declaration carries it explicitly on
+   `PatchPageProjection`'s `sections[].parameters[]` and
+   `detail.sections[].parameters[]` (`:691`, `:701`). Adding the field to the
+   semantic model means editing the crest-spec mid-implementation to permit code
+   that was already written, which is exactly the inversion the crest-spec phase
+   exists to prevent (F-07 is the same lesson).
+2. It would create a *second* producer for one declared fact. T013's own rule —
+   one resolver, never a parallel vocabulary that looks correct until the two
+   drift — generalizes; and the review has already told WP04 and WP05 to read the
+   PATCH-page leaf.
+3. The declared producer already exists in production and already reaches the
+   screen. Nothing was missing; only the write-up was wrong.
+
+The corrected record, in three places code review can check rather than three
+sentences of prose:
+
+- `semantic_graphical_view_model.rs`, at the `detail_editable = false` binding —
+  states that `editable` is a *surface-level* fact about what the reducer
+  accepts, that it is uniform and therefore discriminates nothing about the
+  capability's declaration, and names `patchInteraction` and its path as the home
+  of the capability-declared fact.
+- `detail_controls_project_editable_false_because_the_reducer_refuses_to_adjust_them`
+  — its docstring now says explicitly that it is *not* a read-only proof, and
+  points at the one that is.
+- A new discriminating test,
+  `patch_page_projection::tests::the_declared_patch_interaction_reaches_the_detail_page_and_discriminates`,
+  asserts every detail row's projected `patchInteraction` against the *installed*
+  descriptor's declaration, then spells out the discriminating pair on one
+  descriptor: SoundFont's `file` projects `ReadOnly` and its `preset` projects
+  `StructuralChoice`, while `editable` is `false` on both. That is the assertion
+  WP05's T033 bullets 7 and 8 can be built on, and it fails if the projection
+  ever hardcodes either answer.
+
+**WP05: the escape hatch stays shut and the producer is
+`patchPage.detail.sections[].parameters[].patchInteraction`.** Not `editable`.
+
 ## F-20 — F-14's enumeration was also incomplete; a seventh test
 
 **Raised by**: WP03
@@ -400,6 +442,26 @@ generation evidence degrades, the honest options are to narrow what carries a
 per-row list or to grade NFR-004 with the number stated — not to quietly loosen
 the bar.
 
+**One cheap narrowing, offered by WP03 cycle 2 and deliberately not taken here.**
+Each availability probe clones `AppState` **twice**, and the second one is
+redundant. `accepts_semantic_action` clones to obtain a `&mut`
+(`app_state.rs:659`), and the reducer it then calls is *already* transactional —
+`apply` does `let mut next = self.clone(); next.reduce(event)?; *self = next`
+(`app_state.rs:821`), so a refused action never touches the state it was given.
+A row therefore pays `1 + 2·|vocabulary|` clones where `1 + |vocabulary| +
+|accepted|` would do: hoist one scratch clone per row and reuse it across the
+whole vocabulary, taking a fresh one only after an action is *accepted*. At any
+given MIXER row most of the vocabulary is refused, so the dominant term roughly
+halves.
+
+It is behaviour-preserving by construction — the same production reducer answers
+the same question, which is the property T013 forbids trading away — but it is
+**unmeasured**, it changes a reducer seam in a closed package (`app_state.rs`),
+and its correctness rests on the transactional guarantee being total rather than
+usual. WP06 should measure it before adopting it, and should measure it *before*
+reaching for anything that narrows what carries a list, because this one costs
+no fidelity at all.
+
 ## F-24 — WP03 edited a file belonging to an open package
 
 **Raised by**: WP03's review
@@ -430,6 +492,28 @@ composed into a projection field and then not read.
 **WP04 must not re-couple to `pathLabel`** while recomposing the footer. If it
 does, the keys reach the screen and T016's guard — which does not walk this path
 either — will not notice.
+
+**Closed by WP03 cycle 2.** The per-control-identity match that composed the path
+is gone, not repaired arm by arm: `state_projector::footer_path_label` is one
+composition with one source, the focused row's authored label read through the
+new `SemanticGraphicalViewModel::focused_control`, falling back to the active
+surface's own authored label when the focus rests on a surface root. There is no
+place left in that function for a key to be spelled, so a control identity added
+later cannot reintroduce the defect by adding an arm. Two guards cover it, and
+both were falsified by reverting the composition and observing them fail:
+
+- the widened T016 set check now walks `graphicalShell.footer.pathLabel`,
+  segment by segment, with every `PatchControlId::as_str()` form added to the key
+  set — the footer's vocabulary was different from the rows', so a set that saw
+  only descriptor names could not have failed on `patch.voiceLimit`;
+- `the_footer_breadcrumb_is_the_focused_rows_authored_label` asserts the
+  *derivation* rather than the absence of a known key, so it fails on any other
+  source, including ad-hoc literals like `send[1]` and `occupancy` that no key
+  set contains.
+
+The breadcrumb now reads `"PATCH / Master Volume"`, `"MIXER / T00 Level"`,
+`"PATCH / Voice Limit"`. WP04 is still free to compose its own — but coupling to
+this field is no longer a way to put a key on screen.
 
 ## F-26 — A release-mode flake, distinct from F-12
 

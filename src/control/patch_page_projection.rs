@@ -1758,6 +1758,83 @@ mod tests {
         state
     }
 
+    /// The capability-declared read-only fact reaches the detail page, and it
+    /// *discriminates* — which `editable` cannot, because every detail row is
+    /// uneditable in this phase regardless of what its capability declared.
+    ///
+    /// SoundFont is the discriminating descriptor: one section, two rows, two
+    /// different declarations. `preset` is `StructuralChoice`, `file` is
+    /// `ReadOnly` (the default of `ParameterSpec::new`). A projection that
+    /// dropped the declaration and hardcoded either value would agree with this
+    /// test on one row and disagree on the other, so both halves are asserted
+    /// against the descriptor rather than against a literal.
+    ///
+    /// This is the producer FR-012's AC-3 is satisfiable from — the one a page
+    /// reads to mark a read-only section in text or shape. WP03 cycle 1
+    /// reported that no such concept existed; it does, it is declared in the
+    /// crest-spec at `valueObject.Synth.ParameterSpec.patchInteraction`, and
+    /// this is where it comes out.
+    #[test]
+    fn the_declared_patch_interaction_reaches_the_detail_page_and_discriminates() {
+        let soundfont =
+            crate::adapter::production_instruments::production_soundfont_capability().unwrap();
+        let state = state_with_open_detail(
+            create_soundfont_config(
+                &soundfont,
+                SoundFontInstrument::new(128, 11, false).unwrap(),
+            )
+            .unwrap(),
+            DetailSubjectFixture::Instrument,
+        );
+        let page = project(&state);
+        let detail = page.detail().expect("the detail entry is open");
+        let rows = detail
+            .sections()
+            .iter()
+            .flat_map(PatchPageSection::parameters)
+            .collect::<Vec<_>>();
+
+        let installed = state
+            .capabilities()
+            .descriptor(state.patches()[0].instrument_config().capability_id())
+            .expect("the fixture's engine is installed");
+        let declared = installed
+            .parameters()
+            .map(|spec| (spec.id().to_string(), spec.patch_interaction()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert!(!declared.is_empty());
+        for row in &rows {
+            assert_eq!(
+                Some(row.patch_interaction()),
+                declared.get(&row.id().to_string()).copied(),
+                "{} projects an interaction its capability did not declare",
+                row.id()
+            );
+        }
+
+        // The discrimination itself, spelled out: one descriptor, two rows, two
+        // answers. Assert it on the *projection*, so a page reading this leaf
+        // can tell the two apart.
+        let interaction = |id: &str| {
+            rows.iter()
+                .find(|row| row.id().to_string() == id)
+                .unwrap_or_else(|| panic!("{id} is a projected detail row"))
+                .patch_interaction()
+        };
+        assert_eq!(
+            interaction(crate::adapter::hidef_soundfont_capability::SOUNDFONT_FILE_PARAMETER_ID),
+            PatchInteraction::ReadOnly
+        );
+        assert_eq!(
+            interaction(crate::adapter::hidef_soundfont_capability::SOUNDFONT_PRESET_PARAMETER_ID),
+            PatchInteraction::StructuralChoice
+        );
+
+        // `editable` is uniform across exactly the pair that differ, which is
+        // why it is not the producer for this fact.
+        assert!(rows.iter().all(|row| !row.editable()));
+    }
+
     fn project(state: &AppState) -> PatchPageProjection {
         let projector = StateProjector::new();
         let snapshot = projector.state_snapshot(state).unwrap();

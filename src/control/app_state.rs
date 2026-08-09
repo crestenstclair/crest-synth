@@ -670,15 +670,21 @@ impl AppState {
     /// lifecycle, the same interaction mode — so the difference between one
     /// row's list and another's is the focus and nothing else.
     ///
-    /// The move goes through the same [`InteractionState`] transitions the
-    /// reducer itself uses, so every counterfactual is a state the reducer
-    /// could really be in rather than an assembled one: a main path lands
-    /// through `set_active_main`, a persistent-side path is *entered* from the
-    /// remembered main origin the way a player enters it, and a detail path is
-    /// only reachable while the entry it belongs to is already open. Entering a
-    /// surface resets the mode, so the accepted mode is restored afterwards:
-    /// the counterfactual differs in focus, and a mode change would silently
-    /// answer a different question.
+    /// The move reaches each surface the way a player does, so every
+    /// counterfactual is a state the reducer could really be in rather than an
+    /// assembled one: a main path lands through `set_active_main`, a
+    /// persistent-side path is *entered* from the remembered main origin, and a
+    /// detail path is only reachable while the entry it belongs to is already
+    /// open. Entering a surface resets the mode, so the accepted mode is
+    /// restored afterwards: the counterfactual differs in focus, and a mode
+    /// change would silently answer a different question.
+    ///
+    /// Once the right surface is active, the row within it is assigned to
+    /// `active_focus` directly, exactly as the reducer's own two side-surface
+    /// movers do (see [`InteractionState`]'s note): the branch has already
+    /// established that the surface is the one the path names, so the write
+    /// moves within one already-open surface's order and cannot change which
+    /// surface is active.
     ///
     /// The final resolver check is what makes the result trustworthy — a path
     /// the installed schema does not host yields `None` rather than a state
