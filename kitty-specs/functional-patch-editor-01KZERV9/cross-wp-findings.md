@@ -1199,3 +1199,60 @@ reported.
 The generalizable lesson is the one the whole mission keeps producing: a recorded
 warning is not a control. F-39 and F-42 earned their place by being enforced at a
 gate; F-27 was written down and read and did nothing.
+
+## F-55 — The transcription ruling's condition was tested and failed
+
+**Raised by**: WP05's review
+**Owner**: WP05 cycle 2
+
+F-52 ruled WP05's Rust transcription of the page's grouping rule acceptable **only
+while every rule it copies is pinned to the committed source, and every pin is
+falsified by mutating that source.** The reviewer tested that condition directly.
+Six mutations to `page.js`, each breaking a rule the transcription copies, all
+**MISSED** — the acceptance target stayed green:
+
+- `stripGroupKey`'s `patch.envelope.` prefix altered
+- `stripGroupKey`'s `patch.effect.` arm returning `null` instead of `openSlot`
+- `stripGroups`' `if (!control.visible) continue` neutralized
+- `groupHeadControlId`'s `slot.N` → `patch.engine`
+- `stripGroups`' `openSlot` assignment nulled
+- unknown identities dropped instead of marked `?group`
+
+`page_strip_group_key` is a line-for-line copy of `stripGroupKey`, and **no pin
+mentions any of its five prefix rules.** The `DESIGNED_STRIP_GROUPS` pin covers the
+group *names*; the identity→group *mapping* — which is the substance of T030 — was
+tied to nothing. Two further copied rules are also unpinned: `rangeEndpointText`'s
+`toFixed(3)` and `controlValueText`'s `"ON"/"OFF"`.
+
+**The ruling stands; the package fails its condition.** This is what a conditional
+ruling is for. F-52 named the exact failure mode — "a pin that matches a comment, or
+matches in more places than it claims, is not a pin" — and the reviewer found the
+larger version: rules with no pin at all.
+
+It is live rather than hypothetical. WP06 is in `page.js` now, F-44's
+`stripGroupsPainted` producer has not landed, and F-40 blocks the live layer — so
+this file is currently the mission's **only** executed grouping proof.
+
+One sibling blind pin also found, the same shape WP05 caught in its own work:
+`data-role="row-range"` occurs twice — the painting site in `rangeHtml` and a CSS
+selector in `renderObservation` — so renaming only the painting site MISSES. The pin
+set is not blind overall (the two `rangeEndpointText` pins independently caught a
+fully-emptied `rangeHtml`), but that entry guards nothing it claims to.
+
+## F-56 — Fourth instance, and the first where the reviewer had to run it
+
+**Raised by**: WP05's review
+
+Counting only this mission: the failure mode was visible solely by running a
+mutation in WP04's implementation, in WP04's review, twice in WP05's own self-check,
+and now in WP05's review. Four levels, one practice.
+
+F-53 already argued F-39 and F-42 belong in project doctrine rather than a findings
+file. This adds the case that matters most for how the doctrine should be worded:
+**the reviewer had to run the mutation too.** Reading the transcription against the
+page and satisfying itself they agreed would have approved a target whose central
+claim was tied to nothing — and reading is what review normally is.
+
+So the doctrine is not "implementers should falsify". It is: **a guard is unproven
+until someone has watched it fail, and that obligation does not transfer by being
+reviewed.**
