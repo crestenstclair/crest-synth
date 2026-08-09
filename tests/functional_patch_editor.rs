@@ -1266,8 +1266,36 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
 }
 
 /// One `page.js` function's body, from the committed source.
+///
+/// Both anchors are asserted, because the walk below is only as honest as the
+/// slice it is handed and neither anchor is self-evidently safe.
+///
+/// The **head** must occur exactly once. JavaScript lets a later declaration of
+/// a name override an earlier one, so a second `function controlIdOf(` appended
+/// under the first is the function the page actually calls while this walk goes
+/// on reading the original — every control id becomes `""` and nothing here
+/// notices. Measured MISSED before this assertion.
+///
+/// The **end** is the first two-space-indented `}`, which is this function's own
+/// closer only while no inner brace sits at that column. Dedenting one is
+/// whitespace, so the page behaves identically, but the slice stops there and
+/// every line after it goes unread — a rule inserted past the cut was measured
+/// MISSED. A truncated slice leaves at least one inner brace open, so requiring
+/// exactly one unclosed brace — the function's own — detects the cut. The count
+/// is naive, and deliberately: no walked body holds a brace inside a string or a
+/// regex literal today, and if one arrives this fires rather than going quiet.
+/// Over-extension, the other way the anchor could slip, is caught downstream —
+/// the swallowed function's own declaration line is not a line this function may
+/// admit.
 fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
     let head = format!("\n  function {name}(");
+    let declarations = script.matches(&head).count();
+    assert_eq!(
+        declarations, 1,
+        "webview-page/page.js declares {name} {declarations} times and exactly one is \
+         required: a later declaration overrides an earlier one, so a duplicate is the \
+         function the page calls while this walk reads the first"
+    );
     let start = script
         .find(&head)
         .unwrap_or_else(|| panic!("webview-page/page.js declares {name}"))
@@ -1276,7 +1304,15 @@ fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
     let end = body
         .find("\n  }\n")
         .unwrap_or_else(|| panic!("{name} closes at file scope"));
-    &body[..end]
+    let body = &body[..end];
+    assert_eq!(
+        body.matches('{').count(),
+        body.matches('}').count() + 1,
+        "the walk of {name} stops at the first two-space `}}`, and that is not this \
+         function's own closer — an inner brace sits at that column, so every line \
+         after it goes unwalked"
+    );
+    body
 }
 
 /// **Every statement of a wholly-transcribed function carries a pin.**
@@ -1294,10 +1330,34 @@ fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
 /// difference between an omission and a decision.
 ///
 /// **What this covers, stated as it behaves.** The check is over the *set* of
-/// statements each function contains, matched whole-line against that
-/// function's **own** pins — a statement added to a walked function, or a
-/// pinned statement changed, fails here. What it does not cover is three
-/// things, and they are named rather than implied away.
+/// statements each function contains. Four tables admit a line, and every one
+/// of them is keyed on the function being walked and matched against the whole
+/// line, indentation included: that function's own pins, its own declarations,
+/// its own scaffolding, and — in `sideRegionHintLine` alone — F-43's NUL
+/// separator. Nothing else admits anything, except three text filters that run
+/// ahead of the tables and are this walk's only unkeyed admissions: a blank
+/// line, a line beginning `//`, and a line spelled entirely from `{}()[];,`.
+/// None of the three can carry a rule; the third is decided character by
+/// character rather than by shape, and a punctuation line *moved* changes
+/// nesting without changing the set — which is the order residue below, not a
+/// fourth way in. So a statement added to a walked function fails here.
+///
+/// A pinned statement *changed* fails too, but in the pin table this walk is
+/// handed and not in this walk — that table is what `page_rules_pinned` counts,
+/// and it is where P3, P3b, P4, P5 and P15 panic.
+///
+/// The slice each walk is handed is asserted as well, in `page_function_body`:
+/// the function is declared once, and the body runs to its own closing brace.
+/// Both were defeatable, so both are checked rather than assumed.
+///
+/// Every one of these was flat once, and every flat one was reachable — the
+/// tables carry their own histories. What is worth saying in one place is that
+/// the shape never varied: an admission pool matching more than the one site it
+/// names, which is the exact defect the pin table above exists to reject, turned
+/// inward on the check built to enforce it.
+///
+/// What it does not cover is three things, and they are named rather than
+/// implied away.
 ///
 /// **Not covered — the set's order, and its multiplicity.** Both this check and
 /// the pin table are set-membership tests over line text, so neither can see a
@@ -1325,6 +1385,16 @@ fn page_function_body<'a>(script: &'a str, name: &str) -> &'a str {
 /// match is neither, because this file does not transcribe it — it asserts the
 /// head row through `group.rows[0]`. Making `controlById` match every control is
 /// invisible here.
+///
+/// The same boundary runs through `page.js`'s module scope. A *second
+/// declaration* of a walked function is caught, because the extraction requires
+/// the head to be unique — but a statement that merely **rebinds** one,
+/// `controlIdOf = function (control) { return ""; };` written below it, runs at
+/// load, defeats the function completely, and is a line of no walked body. It is
+/// MISSED; measured, not reasoned. Closing it means walking the whole file
+/// rather than twelve bodies, which is a different and much larger control. So
+/// this residue is a *class* and not an item, and `controlById`'s identity match
+/// and that rebinding are two measured instances of it.
 ///
 /// **Not covered, and never was — that the Rust computes what the page
 /// computes.** These pins bound the cost of the transcription drifting from the
@@ -1358,11 +1428,60 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
         ("hintRun", "page_side_hint_line"),
         ("sideRegionHintLine", "page_side_hint_line"),
     ];
-    /// Lines that carry no rule: accumulators, cursors, loop headers, and the
-    /// bare openers and closing literals of a concatenated markup expression.
+    /// The declaration lines the walk crosses: the twelve heads above, and
+    /// `stripGroups`' nested `group` helper. A declaration is not a statement,
+    /// but it is not ruleless either — its parameter list, and the order of it,
+    /// is the calling convention every line beneath it reads. Skipping whatever
+    /// merely *starts with* `function ` admitted all thirteen at every site, and
+    /// two mutations walked straight through: swapping
+    /// `rangeEndpointText(control, value)` to `(value, control)` paints
+    /// `[object Object]` for both bounds of every numeric range, and dropping the
+    /// nested helper's `key` parameter rebinds it to `stripGroups`' own loop
+    /// variable so the explicit unknown group loses its `?group` identity. Both
+    /// measured MISSED under the prefix skip and CAUGHT under this table.
+    ///
+    /// Asserting every entry is reached is also what proves each of the twelve
+    /// bodies was walked at all: a body the extraction returned empty would take
+    /// its declaration with it.
+    const DECLARATIONS: [(&str, &str); 13] = [
+        ("startsWith", "  function startsWith(text, prefix) {"),
+        ("designedGroup", "  function designedGroup(key) {"),
+        ("controlIdOf", "  function controlIdOf(control) {"),
+        ("controlValueText", "  function controlValueText(control) {"),
+        (
+            "rangeEndpointText",
+            "  function rangeEndpointText(control, value) {",
+        ),
+        ("rangeHtml", "  function rangeHtml(control) {"),
+        ("stripGroupKey", "  function stripGroupKey(id, openSlot) {"),
+        ("groupHeadControlId", "  function groupHeadControlId(key) {"),
+        ("stripGroups", "  function stripGroups(controls) {"),
+        ("stripGroups", "    function group(key) {"),
+        ("hintLabel", "  function hintLabel(action) {"),
+        ("hintRun", "  function hintRun(actions) {"),
+        (
+            "sideRegionHintLine",
+            "  function sideRegionHintLine(model, surface) {",
+        ),
+    ];
+    /// Lines that carry no rule **in the function that holds them**:
+    /// accumulators, cursors, loop headers, and the bare openers and closing
+    /// literals of a concatenated markup expression.
     /// Each is here because the transcription's own loop is not a copy of *this*
-    /// loop — it walks Rust values — so there is nothing to pin. Every entry is
+    /// loop — it walks Rust values — so there is nothing to pin. Every pair is
     /// asserted below to still occur, so this list cannot rot into a permit.
+    ///
+    /// **Owner and indentation are both part of the entry, and both were
+    /// load-bearing.** Matched on the bare text, this list admitted any of its
+    /// fifteen lines in any of the twelve walked functions: `    return groups;`
+    /// inserted at the top of `controlValueText`, `controlIdOf` or
+    /// `stripGroupKey` was MISSED, and `groups` is local to `stripGroups`, so the
+    /// first of those throws on every parameter row and the page cannot render —
+    /// with all thirty targets green. Matched on the trimmed statement, the same
+    /// entry was still admitted at any depth *within* its owner:
+    /// `      return groups;` moved inside `stripGroups`' loop returns after the
+    /// first control, so no row is ever arranged, and that was MISSED too. The
+    /// pins beside it have always matched whole lines; these now do the same.
     ///
     /// The last two are `rangeHtml`'s, and they were **hidden** until the pin
     /// pool was scoped per function: the flat pool admitted them from
@@ -1372,29 +1491,51 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
     /// bounds and the separator between them — is pinned individually above; a
     /// pin on the return opener or the closing tag would be a pin with no
     /// copied rule behind it, which is F-65's `HINT_SEPARATOR`.
-    const SCAFFOLDING: [&str; 15] = [
-        "var groups = [];",
-        "var byKey = {};",
-        "var spans = [];",
-        "var actions = [];",
-        "var seen = {};",
-        "var control = controls[i];",
-        "var action = valid[a];",
-        "var action = actions[i];",
-        "spans.push(",
-        "return groups;",
-        "for (var i = 0; i < controls.length; i += 1) {",
-        "for (var i = 0; i < actions.length; i += 1) {",
-        "for (var a = 0; a < valid.length; a += 1) {",
-        "return (",
-        "\"</span>\"",
+    const SCAFFOLDING: [(&str, &str); 15] = [
+        ("stripGroups", "    var groups = [];"),
+        ("stripGroups", "    var byKey = {};"),
+        ("hintRun", "    var spans = [];"),
+        ("sideRegionHintLine", "    var actions = [];"),
+        ("sideRegionHintLine", "    var seen = {};"),
+        ("stripGroups", "      var control = controls[i];"),
+        ("sideRegionHintLine", "          var action = valid[a];"),
+        ("hintRun", "      var action = actions[i];"),
+        ("hintRun", "      spans.push("),
+        ("stripGroups", "    return groups;"),
+        (
+            "stripGroups",
+            "    for (var i = 0; i < controls.length; i += 1) {",
+        ),
+        (
+            "hintRun",
+            "    for (var i = 0; i < actions.length; i += 1) {",
+        ),
+        (
+            "sideRegionHintLine",
+            "        for (var a = 0; a < valid.length; a += 1) {",
+        ),
+        ("rangeHtml", "    return ("),
+        ("rangeHtml", "      \"</span>\""),
     ];
     /// F-43's NUL separator, whose two pins sit either side of it precisely so
-    /// the merge step's repair does not fire them. Matched by prefix for the
-    /// same reason.
-    const NUL_SEPARATOR_LINE: &str = "var key = String(action.hint) +";
+    /// the merge step's repair does not fire them — the concern is a literal NUL
+    /// byte in *this* file, which a `\u{0}` escape avoids entirely. So the line
+    /// is admitted here by its owner and its whole text, not by the prefix the
+    /// two pins stop at. Under the prefix, everything after
+    /// `String(action.hint) +` was unchecked: emptying the separator to `+ "" +`
+    /// was MISSED, and `hint="AB", label="C"` then keys the same as
+    /// `hint="A", label="BC"`, silently dropping a hint from the utility line —
+    /// which is the collision the NUL is there to prevent. Unowned, the line was
+    /// also admitted inside `controlIdOf`, where `action` is undefined and every
+    /// row throws.
+    const NUL_SEPARATOR_LINE: (&str, &str) = (
+        "sideRegionHintLine",
+        "          var key = String(action.hint) + \"\u{0}\" + String(action.label);",
+    );
 
     let mut used = BTreeSet::new();
+    let mut declared = BTreeSet::new();
+    let mut nul_separator_seen = false;
     let mut checked = 0_usize;
     for (page_function, twin) in TRANSCRIBED_WHOLE {
         let body = page_function_body(script, page_function);
@@ -1415,13 +1556,19 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
             .filter(|(_, fragment)| body.contains(*fragment))
             .collect::<Vec<_>>();
         for line in body.split('\n') {
-            // An inline comment is not a rule; `//` cannot appear inside a
-            // string or a regex literal in any of these ten functions.
+            // An inline comment is not a rule. This drops everything from the
+            // first ` //`, which is a transform and not an admission, so it is
+            // the one place the walk can lose text without noticing: it would,
+            // if a ` //` ever sat inside a string or a regex literal. Twenty
+            // lines across the twelve bodies contain one and every one of them
+            // is a comment — checked by scanning each line for an unclosed
+            // quote ahead of the `//`, not assumed. A truncated line that is not
+            // a comment fails closed anyway: the prefix left behind matches no
+            // pin.
             let code = line.split(" //").next().unwrap_or(line).trim_end();
             let statement = code.trim();
             if statement.is_empty()
                 || statement.starts_with("//")
-                || statement.starts_with("function ")
                 // A closing brace, a bare `);` or a lone `,` is punctuation and
                 // not a statement: there is no rule in it to pin and none to
                 // defeat. Unscoped, these were being admitted by whichever pin
@@ -1452,28 +1599,60 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
             {
                 continue;
             }
-            if statement.starts_with(NUL_SEPARATOR_LINE) {
+            // A declaration line and the NUL separator are admitted the same
+            // way a pin is: by this function's own entry, matched whole. Neither
+            // is a `starts_with`, because both were reachable as one — see the
+            // two tables above.
+            if DECLARATIONS
+                .iter()
+                .any(|(owner, declaration)| *owner == page_function && *declaration == code)
+            {
+                declared.insert((page_function, code));
+                continue;
+            }
+            if (page_function, code) == NUL_SEPARATOR_LINE {
+                nul_separator_seen = true;
                 continue;
             }
             assert!(
-                SCAFFOLDING.contains(&statement),
-                "webview-page/page.js {page_function} line {statement:?} is transcribed by \
+                SCAFFOLDING
+                    .iter()
+                    .any(|(owner, scaffold)| *owner == page_function && *scaffold == code),
+                "webview-page/page.js {page_function} line {code:?} is transcribed by \
                  {twin} and no pin covers it — pin the statement, or name it as scaffolding \
                  that carries no rule (F-55: an unpinned copied rule is what made the \
                  grouping claim provable against nothing)"
             );
-            used.insert(statement);
+            used.insert((page_function, code));
         }
     }
     assert_eq!(
         used.len(),
         SCAFFOLDING.len(),
-        "the scaffolding list names {} lines webview-page/page.js no longer has: {:?}",
+        "the scaffolding list names {} (function, line) pairs webview-page/page.js no \
+         longer has: {:?}",
         SCAFFOLDING.len() - used.len(),
         SCAFFOLDING
             .iter()
-            .filter(|line| !used.contains(*line))
+            .filter(|pair| !used.contains(*pair))
             .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        declared.len(),
+        DECLARATIONS.len(),
+        "the declaration list names {} (function, line) pairs webview-page/page.js no \
+         longer has: {:?}",
+        DECLARATIONS.len() - declared.len(),
+        DECLARATIONS
+            .iter()
+            .filter(|pair| !declared.contains(*pair))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        nul_separator_seen,
+        "sideRegionHintLine no longer keys its dedup on the NUL-separated hint and \
+         label — F-43's rule is gone, and the two pins either side of it cannot see \
+         that on their own"
     );
     checked
 }
