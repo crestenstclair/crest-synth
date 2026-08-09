@@ -1,7 +1,7 @@
 {
-  "event_count": 36,
-  "last_event_id": "01KZJYKTTZHKYJFSRRA107AGX3",
-  "materialized_at": "2026-08-09T09:45:40.447622+00:00",
+  "event_count": 38,
+  "last_event_id": "01KZJYRGJ3HF6BG9A56M35YBBP",
+  "materialized_at": "2026-08-09T09:48:13.718003+00:00",
   "mission_number": "",
   "mission_slug": "functional-patch-editor-01KZERV9",
   "mission_type": "software-dev",
@@ -12,9 +12,9 @@
     "claimed": 0,
     "done": 0,
     "for_review": 0,
-    "in_progress": 0,
+    "in_progress": 1,
     "in_review": 0,
-    "planned": 3
+    "planned": 2
   },
   "work_packages": {
     "WP01": {
@@ -108,20 +108,20 @@
       }
     },
     "WP04": {
-      "actor": "user",
+      "actor": "claude",
       "agent": "",
       "agent_profile": "__resolved_profile_absent__",
       "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
-      "lane": "planned",
-      "last_event_id": "01KZJYKTTZHKYJFSRRA107AGX3",
-      "last_transition_at": "2026-08-09T09:45:40.447622+00:00",
+      "lane": "in_progress",
+      "last_event_id": "01KZJYRGJ3HF6BG9A56M35YBBP",
+      "last_transition_at": "2026-08-09T09:48:13.718003+00:00",
       "model": "__resolved_model_absent__",
       "notes": [
         "Ready for review"
       ],
       "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
+      "role": "implementer",
       "shell_pid": 0,
       "shell_pid_created_at": "1786267212.555686",
       "subtasks": {
