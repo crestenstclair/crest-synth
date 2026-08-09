@@ -302,9 +302,33 @@ identity serves both" is.
 - [ ] The falsification observed and recorded, not described
 - [ ] The marker is emitted last, after all checks
 
+## Folded in from WP04 (F-33) — authored option labels
+
+The Preset row paints `sf2.bank-0.program-40` and Braids' Model row paints
+`braids.model.csaw`. `SemanticControlValue::Choice` carries the stored config
+string and the semantic model has no option-label vocabulary.
+
+WP04 argued this sits outside FR-014, which is worded about *labels* rather than
+values. That reading is defensible and I overrode it: DESIGN.md calls this exact
+row "the **authored-name** Preset row" and declares SoundFont presets "labeled with
+exact authored SF2 names". An identifier is visibly on screen, on a row the design
+authority says carries a name. Closing FR-014 while that ships closes it on a
+technicality.
+
+Carry the descriptor's authored option label alongside the stored id, the way every
+other row already carries `label`. It is a projection change in
+`src/control/semantic_graphical_view_model.rs`, which is in your map. Then extend
+the label guard to fail on a projected choice *value* that equals a choice id,
+which is the same mutation discipline F-28 asks for one field over.
+
+Do not invent a label page-side. WP04 declined to and was right — that would be the
+same defect one layer up.
+
 ## Definition of Done
 
 - [ ] All six subtasks complete
+- [ ] **F-33 closed**: a choice row projects its authored option label, and the
+      guard fails on a projected choice value that equals a choice id
 - [ ] **F-28 closed**: `serialization_keys()` covers capability and section
       identifiers, and all seven label sites F-28 lists flip from MISSED to CAUGHT
       under the mutation sweep. This is a Definition-of-Done item and not merely a
