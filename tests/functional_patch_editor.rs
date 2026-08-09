@@ -1049,7 +1049,7 @@ fn preset_swap_in_flight() -> (AppState, SemanticControlId) {
 /// instead of only under a live window.
 fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
     let script = page_source("page.js");
-    let required: [(&str, &str); 9] = [
+    let required: [(&str, &str); 11] = [
         (
             "the unavailable mark",
             &format!("var UNAVAILABLE_MARK = \"{UNAVAILABLE_MARK}\""),
@@ -1069,8 +1069,27 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
             "the requested option label read (F-33)",
             "selectedLabel: control.requestedLabel",
         ),
-        ("the projected range", "control && control.numericRange"),
-        ("the projected unit", "control.unit"),
+        // Pinned to the *painting* site, not to the expression. `var range =
+        // control && control.numericRange;` occurs three times — twice in the
+        // position-indicator helpers — so a pin on it survives `rangeHtml`
+        // being emptied, and this guard once did. Found by running the
+        // mutation, not by reading the file (F-42's method, on my own work).
+        (
+            "the painted lower bound",
+            "escapeHtml(rangeEndpointText(control, range.minimum))",
+        ),
+        (
+            "the painted upper bound",
+            "escapeHtml(rangeEndpointText(control, range.maximum))",
+        ),
+        (
+            "the painted range span",
+            "data-role=\"row-range\"",
+        ),
+        (
+            "the painted unit span",
+            "'<span class=\"prow-unit type-hint muted\">' +\n        escapeHtml(String(control.unit)) +",
+        ),
     ];
     for (what, fragment) in required {
         assert!(
