@@ -1612,3 +1612,46 @@ the assertion itself produced.
 None of this mission's checks can see that shape. It is worth naming in the
 retrospective as the one failure mode the mission found repeatedly and never built a
 control for.
+
+## F-72 — What the pin control actually covers, stated as it behaves
+
+**Raised by**: WP05 cycle 3, unprompted
+**Owner**: the acceptance record
+
+This is the form F-64 should have taken from the start, and WP05 wrote it after
+having its own version of the overclaim corrected.
+
+**Covered.** A statement *added* to one of the twelve wholly-transcribed functions
+without a pin fails. A pinned statement *changed* fails. An anchor that matches in
+more than one place fails when it is added. A scaffolding entry that stops occurring
+fails.
+
+**Not covered — statement order.** Moving `stripGroups`' `if (!control.visible) {
+continue; }` to the end of the loop body reproduces cycle-1's mutation #3 with every
+pin intact and every statement present, and nothing fails. Closing it means
+requiring each body to be a *sequence* rather than a *set* — a different, larger
+control that WP05 did not build and does not claim.
+
+**Not covered — functions the walk does not reach.** `controlById`'s identity match
+is the named instance: making it return the first control on every call is invisible
+to this file. **WP05 found and named this one itself**; nobody asked about it.
+
+**Not covered, and never was — that the Rust computes what the page computes.** The
+pins bound the cost of the transcription drifting from the page's *text*. F-44's
+`stripGroupsPainted`, carried from the page's own acknowledgment, is what closes the
+computation gap, and this file should shrink when it lands.
+
+So the residue is three items, all reachable, all recorded rather than implied away.
+
+The difference between this and F-64 as I first wrote it is not the amount of work —
+cycle 3 was four fixes of one to eight lines each. It is that the claim is now
+shaped like the evidence. A control described more confidently than it behaves is
+the failure this entire chain was about, and it took an overclaim by the
+implementer, an overclaim by me repeating it, and a review that ran 53 mutations to
+land on a sentence that survives its own scrutiny.
+
+One incidental worth keeping: `page_rules_pinned` went **69 → 66** in a cycle that
+strictly increased coverage, because six per-entry table assertions became one pin
+that also covers order. WP05 explained the decrease rather than letting a smaller
+number read as a loss. A metric that moves the wrong way for the right reason is
+worth a sentence, not a quiet adjustment.
