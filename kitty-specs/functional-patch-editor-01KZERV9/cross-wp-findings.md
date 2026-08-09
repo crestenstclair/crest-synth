@@ -582,3 +582,139 @@ reaches the screen.
 
 Not WP03's to fix. A mission-review line: either the declaration is exhaustive and
 two fields are missing from it, or it is illustrative and should say so.
+
+## F-32 — Two rulings assumed things reach the page that never do
+
+**Raised by**: WP04, disputing both
+**Owner**: closed here; the projection consequence goes to WP05
+
+The webview transport emits `projection.semantic_model()` only, and
+`requirement.serialized_projection_transport` declares the page consumes exactly
+the serde serialization of `SemanticGraphicalViewModel`. Two of my rulings ignored
+that.
+
+**F-25's lift was meaningless.** I told WP04 it could read
+`graphicalShell.footer.pathLabel` now that WP03 had cleaned it. `pathLabel` lives
+on `GraphicalShellProjection`, which the page never receives. The footer still
+builds its breadcrumb from `control.label`, as it always did. F-25's real status is
+not "fixed" but "a serialization key is composed into a projection field that
+nobody reads" — better than a key on screen, and not the same as closed.
+
+**WP03's B2 resolution rested on a false premise, and both the reviewer and I
+accepted it.** WP03 declined to carry `patchInteraction` onto the semantic model,
+reasoning in part that "the producer already exists and already reaches the
+screen". It reaches the *StateTree* at
+`patchPage.detail.sections[].parameters[].patchInteraction`. The reviewer verified
+that leaf is emitted — true, and beside the point, because the page never receives
+the StateTree. `TextProjection` reaches the webview nowhere either.
+
+So for the shipped screen there was no read-only discriminator at all: `editable`
+is uniformly `false` on every detail row, because the reducer refuses every
+`Adjust` on `PatchDetail` in this phase. T028 had nothing to paint.
+
+WP04 added `patch_interaction: Option<PatchInteraction>` to
+`SemanticControlViewModel`, projected from the same single producer
+(`ParameterSpec::patch_interaction()`), folded into the unshipped schema version
+15. That is **outside its map** — the file is WP05's — and it flagged it rather
+than letting it pass.
+
+The lesson is specific and worth keeping: "the producer already reaches the screen"
+is a claim about a transport, and neither WP03 nor its reviewer nor I checked which
+projection the page actually receives. Three parties, one unverified premise, two
+cycles of reasoning built on it.
+
+## F-33 — A choice row paints a choice id, not an authored name
+
+**Raised by**: WP04
+**Owner**: WP05 — folded into this mission
+
+The Preset row paints `sf2.bank-0.program-40`; Braids' Model row paints
+`braids.model.csaw`. `SemanticControlValue::Choice` carries the stored config
+string and the semantic model has no option-label vocabulary.
+
+WP04 argued this is arguably outside FR-014, which is worded about *labels*. That
+reading is defensible, and I am overriding it, because DESIGN.md calls this exact
+row "the **authored-name** Preset row" and declares that SoundFont presets are
+"labeled with exact authored SF2 names". An identifier is visibly on screen, on a
+row the design authority says carries a name. Closing FR-014 while that ships would
+be closing it on a technicality.
+
+It is a projection gap rather than a page one — `SemanticControlValue::Choice` must
+carry the descriptor's authored option label alongside the stored id, the way every
+other row already carries `label`. WP05 owns
+`src/control/semantic_graphical_view_model.rs` and is the package that proves this
+mission's label claims.
+
+WP04 was right not to invent a label page-side. That would have been the same
+defect one layer over.
+
+## F-34 — The semantic model drops `CapabilitySection`
+
+**Raised by**: WP04
+**Owner**: deferred, deliberately
+
+FR-012 asks for a "capability-supplied title, sections". The semantic model
+flattens `descriptor.parameters()` and carries no `CapabilitySection` — no section
+identity, title, or accent. Every production capability declares exactly one
+section, so nothing is lost today and "section order matches the projection" is
+satisfied trivially. A two-section capability would render as one undifferentiated
+run.
+
+WP04 did not extend the projection for this, and that restraint was right: no
+installed capability needs it, and building a section vocabulary nothing produces
+is the placeholder rule in reverse.
+
+It found a branch-free route for the title instead — the detail shell names its
+subject by the projected *value* of the strip row that owns the detail rows (engine
+row → "HiDef SoundFont", slot occupancy row → "Chorus"), so `detailShellHtml`
+contains zero references to `summary.subject`. Painting `subject.capabilityId`
+would have been exactly the defect FR-014 closes.
+
+Deferred with the gap named: the declaration and the code disagree, and the first
+two-section capability makes it visible.
+
+## F-35 — The display-gated painted assertions are unexercised
+
+**Raised by**: WP04
+**Owner**: the accept gate
+
+T028's live assertions — instrument-detail and effect-detail fixtures, the
+subject-kind-blind `assert_patch_detail_composition` helper, group/header/hint/
+utility assertions — all sit behind `CREST_WEBVIEW_TESTS=1`, which needs a display
+seating 1920×1080. WP04's machine did not have one. They compile; the headless
+fixture-discrimination guard runs; **the painted assertions have never executed.**
+
+WP04 substituted browser evidence and was honest that it is Blink, not the shipped
+WebKit: eight documents from the production reducer at both authored viewports,
+measured rather than eyeballed — side region 420/320 px, `scrollableBy` 0 on
+`#inspector`, five Utility rows in projected order, 48 px row minimum, zero
+horizontal overflow, five bands, three slot groups occupied or empty, and
+`READ-ONLY` discriminating SoundFont's `file` from its `preset`.
+
+That is real and it is not the same as the gate passing. **This joins
+`make demo-live-patch-editor` as work that cannot complete without the external
+display.** Both must run before the mission can claim its evidence; neither can run
+on the current rig. Recorded here so the gap is visible at the accept gate rather
+than discovered there.
+
+## F-36 — The compact viewport already scrolled, and now scrolls more
+
+**Raised by**: WP04, measured against base rather than asserted
+**Owner**: judged at review; recorded either way
+
+Desktop: 816/816 content-to-viewport at base, 825/816 with grouping. WP04 tightened
+the inter-group rhythm one token step to `--space-8` and returned it to 816/816.
+
+Compact (1280×800): **708/536 at base** — it already overflowed before this
+mission — and 846/536 now. WP04 calls that a degree rather than a kind, and
+inherited.
+
+NFR-003 requires both authored viewports to seat the surface "with no clipped or
+overlapped row". Scrolling is neither clipping nor overlapping, and the no-scroll
+rule this mission declares is scoped to the Utility panel, which does not scroll.
+So NFR-003 is arguably satisfied on its own words while the compact viewport is
+visibly worse than it was.
+
+Recorded rather than resolved: whether "seats the surface" tolerates a scrolling
+main workspace is a product question, and the honest answer at mission review is
+the two numbers rather than a verdict dressed as a measurement.
