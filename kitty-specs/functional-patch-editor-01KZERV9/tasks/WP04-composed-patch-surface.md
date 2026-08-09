@@ -94,6 +94,30 @@ them in order and commit incrementally.
 - Execution worktrees are allocated per computed lane (see `lanes.json`).
 - Do not create ad-hoc branches outside the lane workflow.
 
+## Finish the casing fix WP03 could only start (F-18)
+
+`#[serde(tag, rename_all)]` renames enum *variants*, not their fields, so three
+tagged unions serialize snake_case fields into an otherwise camelCase schema:
+`PatchDetailSubject`, `SemanticSurfaceSummary`, and `MixerControlId`.
+
+WP03 was told to fix `PatchDetailSubject` and did. It then argued — correctly —
+that fixing one of three leaves the schema **mixed** rather than uniformly wrong:
+`summary.subject.capabilityId` now sits beside `summary.capability_id`. A reader
+cannot tell which convention to expect, and a mixed schema is harder to reason
+about than a consistently wrong one. It stopped rather than reaching into
+`webview-page/page.js`, which is yours.
+
+**Fix the remaining two, and the page reads that depend on them.** `page.js`
+currently reads `summary.patch_name`, `summary.capability_id`, and
+`summary.patch_id` by name. You are rewriting that render path wholesale for the
+composed strip, so you change both sides in one place — which is exactly why this
+landed on you rather than on WP03.
+
+Both sides move together or neither does. A camelCase schema with a snake_case
+reader is a blank surface, and the mission's own history says that failure would
+survive a suite run: three defects so far came from a fixture that could only see
+one variant.
+
 ## Subtasks
 
 ### T020: Render the PATCH main workspace as the grouped `PatchStrip` composition
