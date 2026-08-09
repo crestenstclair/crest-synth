@@ -304,25 +304,38 @@ been right (WP02 did it twice). The pattern worth keeping: a ruling written from
 one package's vantage point can be locally correct and globally wrong, and the
 package holding the other half is the one positioned to notice.
 
-## F-19 — Read-only sections do not exist in the type system
+## F-19 — WITHDRAWN. Read-only sections DO exist, and C3 must not be withdrawn.
 
-**Raised by**: WP03
-**Owner**: WP05, before it writes T033's bullet 8
+**Originally raised by**: WP03
+**Disproved by**: WP03's review, by execution
+**Owner**: WP03 cycle 2; WP05 must read the correction before writing T033
 
-T015's bullet said "a read-only section projects `editable: false`".
-`CapabilitySection` has no read-only flag — the concept does not exist. WP03
-derived `editable` from what the reducer actually accepts, and since
-`adjust_patch_control` refuses every `Adjust` on `PatchDetail`, *every* detail
-control projects `editable: false`. It called the bullet vacuously satisfied and
-asserted the reducer's refusal instead, which is the honest reading.
+**This finding was wrong and I propagated it without checking.** WP03 reported
+that `CapabilitySection` has no read-only flag and that "the concept does not
+exist in the type system", and I recorded that, and drew the conclusion that
+WP05 might have to withdraw the analysis pass's C3 claim.
 
-**This bears directly on the analysis pass's finding C3.** WP05's T033 bullet 8
-requires asserting that a production path produces a read-only surface summary,
-and the spec's Scope Decisions table claims FR-012 closes that control kind. If
-the concept does not exist in a descriptor, that assertion may be unsatisfiable —
-in which case T033's own instruction applies: say so plainly and withdraw the
-claim from the Scope Decisions table rather than manufacturing a fixture that
-exists only to satisfy it.
+The reviewer disproved it: `PatchInteraction::ReadOnly` exists at
+`instrument_capability.rs:146`, is crest-spec declared (`synth.yaml:168`, `:228`),
+is the **default** of `ParameterSpec::new`, is what all three Braids rows and
+SoundFont's `file` row actually declare, and is already consumed for `editable` at
+three sites in the same file WP03 wrote the claim about. The same commit even
+projects it at `patch_page_projection.rs:148`, and a production Braids detail
+projection emits `"patchInteraction": "readOnly"`.
+
+**Consequences, both directions:**
+
+- **WP05 must NOT take T033's escape hatch.** The fixture does declare read-only
+  sections. The claim stays in the spec's Scope Decisions table. The production
+  producer is `patchPage.detail.sections[].parameters[].patchInteraction` — not
+  `editable`, which is where WP03 looked.
+- **WP03 cycle 2** either carries the declared interaction onto the semantic
+  model, or corrects the written record. Not both — the block is on the record,
+  not the code.
+
+Worth keeping: an implementer's "this concept doesn't exist" is a claim about the
+codebase, and I treated it as one about the world. Two earlier pushbacks were
+right, which is exactly what made this one easy to accept without checking.
 
 ## F-20 — F-14's enumeration was also incomplete; a seventh test
 
@@ -363,3 +376,68 @@ player who looked away during preparation never learns their limit changed. A
 durable record needs the carry-over outcome retained on `EngineSelectionStatus` —
 canonical state plus a crest-spec field, outside WP03's scope and not something to
 bolt on late.
+
+## F-23 — Per-row action lists cost 2.92 ms per accepted event on MIXER
+
+**Raised by**: WP03's review, measured independently in release
+**Owner**: WP06 (NFR-004), and a ruling if it does not hold
+
+The `Arc` change was upheld: `CapabilityRegistry::clone` was 91% of the pre-Arc
+`AppState::clone`, and the reviewer reconstructed a 23× improvement on its own
+machine. Cheaper designs were considered and ruled out — memoisation has no sound
+key because only the reducer knows the focused control's identity, and a resolver
+that avoids the clone is the one alternative T013 forbids by name, precisely so
+the per-row answer cannot drift from the production reducer.
+
+But the price is not only test time, and neither WP03 nor I measured the
+production half. The reviewer did: **MIXER reprojection is 2.92 ms across 89 rows
+per accepted event on the control thread** (PATCH: 630 µs over 17 rows). It scales
+as rows × actions × clone.
+
+NFR-004 says "projection throughput unchanged". WP06 inherits this with a number
+attached, and must measure rather than assume. If the live scene's frame or
+generation evidence degrades, the honest options are to narrow what carries a
+per-row list or to grade NFR-004 with the number stated — not to quietly loosen
+the bar.
+
+## F-24 — WP03 edited a file belonging to an open package
+
+**Raised by**: WP03's review
+**Owner**: WP06 must be told; not a violation to undo
+
+Every out-of-map edit WP03 made was into WP01's or WP02's files — both approved
+and closed, so no contention — except one:
+`src/testing/live_effects_and_buses_scene.rs` is **WP06's, and WP06 is open**.
+Four lines, pure formatting, forced by `cargo fmt --all` which WP03's own lane
+gate required and which was already red at its base (F-21).
+
+The reviewer let it stand. It is recorded so WP06 is not surprised by four lines
+of formatting churn in a file it has not opened yet.
+
+## F-25 — The footer path label still composes serialization keys
+
+**Raised by**: WP03's review
+**Owner**: WP04 must not re-couple; the composition itself is unfixed
+
+`state_projector.rs` still builds `graphicalShell.footer.pathLabel` from
+serialization keys — `"MIXER / GLOBAL / masterGainDb"`, `"PATCH / patch.voiceLimit"`.
+This is the same class of defect T016 exists to close, one layer up.
+
+It is non-blocking only by accident: `page.js:1031` ignores `pathLabel` entirely
+and builds its own breadcrumb from `control.label`. So a serialization key is
+composed into a projection field and then not read.
+
+**WP04 must not re-couple to `pathLabel`** while recomposing the footer. If it
+does, the keys reach the screen and T016's guard — which does not walk this path
+either — will not notice.
+
+## F-26 — A release-mode flake, distinct from F-12
+
+**Raised by**: WP03's review
+**Owner**: unowned; pre-existing
+
+`adapter::lock_free_structural_graph_boundary::tests::status_is_latest_wins_...`
+fails roughly 2 runs in 3 under `cargo test --release` and passes in debug.
+Untouched by WP03; the declared gate is debug and debug is green. Recorded
+alongside F-12 so nobody chases it during the live phases, where release builds
+are the norm.
