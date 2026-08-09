@@ -330,18 +330,75 @@ body {
  * the generated table, so the row minimum leans on the declared
  * --min-interactive-target and the gaps on the declared spacing steps. */
 
+/* The strip's own rhythm separates the header from the groups and the groups
+ * from each other. One step tighter than the pre-grouping row gap, so the
+ * group titles and the header cost the band nothing: the SoundFont fixture's
+ * twelve rows still seat inside the desktop workspace without scrolling, as
+ * they did before the grouping. */
 #workspace .strip {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-12);
+  gap: var(--space-8);
   margin: var(--space-16) 0;
 }
 
 #workspace .strip.strip-unavailable {
   justify-content: center;
+}
+
+/* ---- the PatchStrip group anatomy --------------------------------------
+ * The workspace holds ordered groups, each an optional authored title band
+ * and its rows — groups arranging groups, the PATCH twin of the mixer bank
+ * arranging track columns. Groups separate by the rhythm of the strip's own
+ * gap; a group is not a card. */
+
+.pgroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.pgroup-title {
+  padding: 0 var(--space-12);
+}
+
+.pgroup-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* A designed group the projection carried no row for keeps its title and
+ * says so inside its own group; it is never dropped and never filled with a
+ * representative row. */
+.pgroup.unavailable > .pgroup-title {
+  color: var(--color-text-muted);
+}
+
+/* A control identity no designed group claims is arranged under the explicit
+ * `?group` marker in the warning accent — visible, never folded silently
+ * into a neighbouring group. */
+.pgroup.unknown > .pgroup-title {
+  color: var(--color-accent-warning);
+}
+
+/* The strip's own identity and routing header: the Patch being edited and
+ * where its sound goes. Informative — it allocates no interactive target, so
+ * it carries neither the row minimum nor a focus treatment. */
+.strip-header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+  padding: 0 var(--space-12) var(--space-8);
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+}
+
+.strip-header .strip-header-name {
+  color: var(--color-accent-patch);
 }
 
 /* One listed row: label left, state mark or position indicator in the
@@ -351,11 +408,50 @@ body {
 .prow {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-16);
   min-height: var(--min-interactive-target);
   padding: 0 var(--space-12);
   border-left: var(--keyline-resting) solid var(--color-border-default);
   border-bottom: var(--keyline-resting) solid var(--color-border-default);
+}
+
+/* The projected bounds and the row's own valid actions ride the right of the
+ * row. The run is the exact presentation of the projected list, which at the
+ * widest row is longer than the compact main surface: the row wraps it onto
+ * its own line rather than clipping it or eliding an action, which is the
+ * same choice the strip already makes for a row taller than its band. */
+.prow .prow-range {
+  white-space: nowrap;
+}
+
+.prow .prow-hints {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  margin-left: auto;
+}
+
+/* The row's own hint run is a secondary reading of the same list the footer
+ * carries in the focus accent, so the footer stays the primary statement of
+ * the grammar and a strip of rows does not read as a wall of accent — the
+ * tone split the design file draws between its row hints and its footer
+ * hints. Content is identical; only the colour role differs. */
+.prow .prow-hints .type-hint {
+  color: var(--color-text-muted);
+}
+
+/* The capability-declared read-only mark: the word plus the dashed keyline
+ * below, so the declaration reads in text and in shape and never in color
+ * alone. */
+.prow .prow-readonly {
+  white-space: nowrap;
+  letter-spacing: var(--type-label-control-tracking);
+}
+
+.prow[data-interaction="readOnly"] {
+  border-left: var(--keyline-emphasis) dashed var(--color-border-strong);
 }
 
 .prow .prow-label {
@@ -460,10 +556,80 @@ body {
   padding: 0 var(--space-12);
 }
 
-/* Utility panel rows ride the side region's own column and rhythm. */
+/* ---- the CapabilityDetailShell -----------------------------------------
+ * One composition for either subject: the surface's title, the projected
+ * name of the capability the model named, its lifecycle word while it is
+ * preparing, and its ordered rows. Nothing here branches on subject kind —
+ * the projection slice differs, the composition does not. */
+
+#workspace .detail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  margin: var(--space-16) 0;
+}
+
+.detail-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+  padding: 0 var(--space-12) var(--space-8);
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+}
+
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* ---- Utility panel rows ------------------------------------------------
+ * Two lines, as the design draws them (`Utility MASTER VOLUME` 36:53): the
+ * label and value on one line, the position indicator full width below it.
+ * The five-row set is bounded by declaration, so the rows are sized to seat
+ * inside the side region at both authored viewports and `#inspector` keeps
+ * its `overflow: hidden` — the bound is five, and a row that does not seat
+ * is a row height to fix, not a scroll to add.
+ *
+ * Token gap (recorded, not closed with a literal): the authored 48 px
+ * utility entry on a 60 px pitch is not in the generated table, so the entry
+ * leans on the declared --min-interactive-target and the pitch on the
+ * declared spacing steps. */
 #inspector .prow {
+  gap: var(--space-4);
+  padding: var(--space-8);
+  align-content: center;
+}
+
+#inspector .prow .prow-label,
+#inspector .prow .prow-value {
+  flex: 0 0 auto;
+}
+
+#inspector .prow .prow-value {
+  margin-left: auto;
+}
+
+/* The position indicator takes the whole second line of a panel row. */
+#inspector .prow .prow-position {
+  flex: 0 0 100%;
+}
+
+#inspector .prow .prow-mark,
+#inspector .prow .prow-range,
+#inspector .prow .prow-unit {
+  flex: 0 0 auto;
+}
+
+/* The panel's own authored hint line, beneath the identity caption. */
+#inspector .panel-hint {
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--space-8);
-  padding: 0 var(--space-8);
 }
 
 /* ---- the persistent Inspector ------------------------------------------
