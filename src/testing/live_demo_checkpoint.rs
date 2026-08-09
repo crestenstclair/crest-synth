@@ -276,6 +276,11 @@ pub enum LiveCheckpoint {
     Topology {
         checkpoint: Box<LiveTopologyCheckpoint>,
     },
+    /// One patch-editor correlation: the destination Patch a switch reached,
+    /// the focus that resulted, and the audible consequence, together.
+    PatchEditor {
+        checkpoint: Box<LivePatchEditorCheckpoint>,
+    },
 }
 
 impl LiveCheckpoint {
@@ -297,24 +302,38 @@ impl LiveCheckpoint {
         }
     }
 
+    pub fn patch_editor(checkpoint: LivePatchEditorCheckpoint) -> Self {
+        Self::PatchEditor {
+            checkpoint: Box::new(checkpoint),
+        }
+    }
+
+    /// The patch-editor correlation this checkpoint carries, if any.
+    pub fn as_patch_editor(&self) -> Option<&LivePatchEditorCheckpoint> {
+        match self {
+            Self::PatchEditor { checkpoint } => Some(checkpoint),
+            Self::Parameter { .. } | Self::Engine { .. } | Self::Topology { .. } => None,
+        }
+    }
+
     pub const fn as_parameter(&self) -> Option<&LiveDemoCheckpoint> {
         match self {
             Self::Parameter { checkpoint } => Some(checkpoint),
-            Self::Engine { .. } | Self::Topology { .. } => None,
+            Self::Engine { .. } | Self::Topology { .. } | Self::PatchEditor { .. } => None,
         }
     }
 
     pub const fn as_engine(&self) -> Option<&LiveEngineCheckpoint> {
         match self {
             Self::Engine { checkpoint } => Some(checkpoint),
-            Self::Parameter { .. } | Self::Topology { .. } => None,
+            Self::Parameter { .. } | Self::Topology { .. } | Self::PatchEditor { .. } => None,
         }
     }
 
     pub const fn as_topology(&self) -> Option<&LiveTopologyCheckpoint> {
         match self {
             Self::Topology { checkpoint } => Some(checkpoint),
-            Self::Parameter { .. } | Self::Engine { .. } => None,
+            Self::Parameter { .. } | Self::Engine { .. } | Self::PatchEditor { .. } => None,
         }
     }
 
@@ -323,7 +342,122 @@ impl LiveCheckpoint {
             Self::Parameter { checkpoint } => checkpoint.agrees(),
             Self::Engine { checkpoint } => checkpoint.agrees(),
             Self::Topology { checkpoint } => checkpoint.agrees(),
+            Self::PatchEditor { checkpoint } => checkpoint.agrees(),
         }
+    }
+}
+
+/// One immutable correlation of a patch switch, the focus that resulted from
+/// it, and the audible consequence measured on each Patch's own output track.
+///
+/// This is the gate's exact demand — "checkpoints must correlate the patch
+/// switch, the resulting focus, and the audible consequence" — carried as one
+/// value rather than assembled by a reader from three others. A checkpoint is
+/// *correlating* only when all three agree with each other
+/// ([`Self::correlates`]); emitting one does not make it so.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivePatchEditorCheckpoint {
+    transition: String,
+    /// The Patch the projection speaks for after this transition — read from
+    /// the canonical focus path, never from what the scene intended.
+    destination_patch_id: Option<PatchId>,
+    focus_before: crate::control::FocusPath,
+    focus_after: crate::control::FocusPath,
+    generation: u64,
+    graph_revision: GraphRevision,
+    /// The occupancy position this transition changed, when it changed one.
+    slot: Option<crate::synth::effect_slot_id::EffectSlotIndex>,
+    /// The parameter identity and value change, for the audible edit.
+    edited_parameter: Option<PatchControlId>,
+    /// Per-mixer-track RMS delta across this transition's own observation
+    /// window. Each Patch's delta is read out of this by its own output track
+    /// identity, so no Patch's consequence is ever read off another's meter.
+    track_rms_deltas: Vec<f32>,
+    /// The destination Patch's own output track, and the delta measured on it.
+    destination_track_delta: f32,
+    /// The largest delta measured on any *other* installed Patch's own output
+    /// track over the same window.
+    other_patch_track_delta: f32,
+    audio_before_sequence: u64,
+    audio_after_sequence: u64,
+}
+
+impl LivePatchEditorCheckpoint {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        transition: impl Into<String>,
+        destination_patch_id: Option<PatchId>,
+        focus_before: crate::control::FocusPath,
+        focus_after: crate::control::FocusPath,
+        generation: u64,
+        graph_revision: GraphRevision,
+        slot: Option<crate::synth::effect_slot_id::EffectSlotIndex>,
+        edited_parameter: Option<PatchControlId>,
+        track_rms_deltas: Vec<f32>,
+        destination_track_delta: f32,
+        other_patch_track_delta: f32,
+        audio_before_sequence: u64,
+        audio_after_sequence: u64,
+    ) -> Self {
+        Self {
+            transition: transition.into(),
+            destination_patch_id,
+            focus_before,
+            focus_after,
+            generation,
+            graph_revision,
+            slot,
+            edited_parameter,
+            track_rms_deltas,
+            destination_track_delta,
+            other_patch_track_delta,
+            audio_before_sequence,
+            audio_after_sequence,
+        }
+    }
+
+    pub fn transition(&self) -> &str {
+        &self.transition
+    }
+
+    pub const fn destination_patch_id(&self) -> Option<PatchId> {
+        self.destination_patch_id
+    }
+
+    pub const fn focus_after(&self) -> &crate::control::FocusPath {
+        &self.focus_after
+    }
+
+    pub const fn destination_track_delta(&self) -> f32 {
+        self.destination_track_delta
+    }
+
+    pub const fn other_patch_track_delta(&self) -> f32 {
+        self.other_patch_track_delta
+    }
+
+    /// Whether this checkpoint actually correlates all three facts: it names a
+    /// destination Patch, the resulting focus speaks for that same Patch, and
+    /// the destination's own output moved further than any other Patch's over
+    /// the same window by the declared margin.
+    ///
+    /// Counting emitted checkpoints instead of this is the defect T037 names.
+    pub fn correlates(&self, reached: Option<PatchId>) -> bool {
+        self.destination_patch_id.is_some()
+            && self.destination_patch_id == reached
+            && self.focus_after.patch_id() == self.destination_patch_id
+            && self.destination_track_delta.is_finite()
+            && self.other_patch_track_delta.is_finite()
+            && self.destination_track_delta - self.other_patch_track_delta
+                >= crate::testing::functional_patch_editor_observation::AUDIBLE_EDIT_DELTA_MARGIN
+    }
+
+    pub fn agrees(&self) -> bool {
+        !self.transition.trim().is_empty()
+            && self.audio_after_sequence > self.audio_before_sequence
+            && self.track_rms_deltas.iter().all(|delta| delta.is_finite())
+            && self.focus_after.patch_id() == self.destination_patch_id
     }
 }
 

@@ -159,14 +159,25 @@ fn run(options: Options) -> Result<()> {
     } else if options.demo_live {
         let scene_kind = if options.demo_live_effects_and_buses {
             LiveSceneKind::EffectsAndBuses
+        } else if options.demo_live_patch_editor {
+            LiveSceneKind::FunctionalPatchEditor {
+                defeat_patch_selection: options.defeat_patch_selection,
+            }
         } else {
             LiveSceneKind::SixteenTrackMixerRouting
         };
         let total_timeout = if options.demo_live_effects_and_buses {
             crest_synth::testing::live_effects_and_buses_scene::EFFECTS_AND_BUSES_TOTAL_TIMEOUT
+        } else if options.demo_live_patch_editor {
+            crest_synth::testing::live_patch_editor_scene::PATCH_EDITOR_TOTAL_TIMEOUT
         } else {
             LIVE_DEMO_TOTAL_TIMEOUT
         };
+        if options.defeat_patch_selection {
+            eprintln!(
+                "crest-synth live demo: --defeat-patch-selection is the declared controlled negative. The patch-selection gesture is removed; the journey still runs, still succeeds step by step, and still visits three slots and makes an audible edit — on the FIRST instrument. The reach predicates are what must fail, and this process must exit 1."
+            );
+        }
         eprintln!(
             "crest-synth live demo: autonomous and input-isolated; expected duration about 90 seconds; no-progress timeout={}s; total timeout={}s; closing the window cancels the proof",
             LIVE_DEMO_NO_PROGRESS_TIMEOUT.as_secs(),
@@ -183,7 +194,27 @@ fn run(options: Options) -> Result<()> {
                 emit_live_report,
             )
             .context("live observable demo execution failed")?;
-        if options.demo_live_effects_and_buses {
+        if options.demo_live_patch_editor {
+            let editor = observation
+                .functional_patch_editor()
+                .context("the functional Patch editor scene did not retain its measurement")?;
+            let shortfalls = editor.shortfalls();
+            let json = serde_json::to_string(editor)
+                .context("failed to serialize the functional Patch editor observation")?;
+            println!(
+                "{}{json}",
+                crest_synth::testing::FUNCTIONAL_PATCH_EDITOR_OBSERVATION_MARKER
+            );
+            if !shortfalls.is_empty() {
+                // The failing predicate set is reported by name, so a negative
+                // that failed for an unrelated reason is visible as such
+                // rather than being credited as falsification.
+                bail!(
+                    "functional Patch editor predicates unmet: {}",
+                    shortfalls.join(", ")
+                );
+            }
+        } else if options.demo_live_effects_and_buses {
             let effects = observation
                 .effects_and_buses()
                 .context("the effects-and-buses scene did not retain its evidence")?;
@@ -282,6 +313,10 @@ struct Options {
     demo_live_semantic: bool,
     demo_live_sixteen_track: bool,
     demo_live_effects_and_buses: bool,
+    demo_live_patch_editor: bool,
+    /// The declared controlled negative for the functional Patch editor
+    /// scene. Accepted only alongside `--demo-live-patch-editor`.
+    defeat_patch_selection: bool,
     /// The browsable component gallery. Deliberately not a `demo_live` scene:
     /// it accepts input, correlates with no generation, and is not part of the
     /// `--demo-live` alias group.
@@ -306,6 +341,16 @@ where
             "--demo-live" | "--demo-live-effects-and-buses" if !options.demo_live => {
                 options.demo_live = true;
                 options.demo_live_effects_and_buses = true;
+            }
+            // Additive, and deliberately absent from the `--demo-live` alias
+            // group above: `--demo-live` keeps pointing at the newest
+            // cumulative retained scene.
+            "--demo-live-patch-editor" if !options.demo_live => {
+                options.demo_live = true;
+                options.demo_live_patch_editor = true;
+            }
+            "--defeat-patch-selection" if !options.defeat_patch_selection => {
+                options.defeat_patch_selection = true;
             }
             "--demo-live-sixteen-track-mixer-routing" if !options.demo_live => {
                 options.demo_live = true;
@@ -336,6 +381,8 @@ where
             | "--demo-live"
             | "--demo-live-effects-and-buses"
             | "--demo-live-sixteen-track-mixer-routing"
+            | "--demo-live-patch-editor"
+            | "--defeat-patch-selection"
             | "--demo-live-semantic-view-model"
             | "--demo-live-graphical-shell"
             | "--demo-live-component-library" => {
@@ -361,6 +408,9 @@ where
         && (options.smoke || options.observe || options.demo_scene || options.degenerate.is_some())
     {
         bail!("the live demo option must be used by itself");
+    }
+    if options.defeat_patch_selection && !options.demo_live_patch_editor {
+        bail!("--defeat-patch-selection requires --demo-live-patch-editor");
     }
     if options.demo_component_library
         && (options.smoke
@@ -1146,6 +1196,8 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_live_patch_editor: false,
+                defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: None,
             }
@@ -1160,6 +1212,8 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_live_patch_editor: false,
+                defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: None,
             }
@@ -1174,6 +1228,8 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_live_patch_editor: false,
+                defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: None,
             }
@@ -1188,6 +1244,8 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_live_patch_editor: false,
+                defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: Some(DegenerateMode::Audio),
             }
@@ -1208,6 +1266,8 @@ mod tests {
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
+                demo_live_patch_editor: false,
+                defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: Some(DegenerateMode::Control),
             }
@@ -1217,6 +1277,8 @@ mod tests {
             Options {
                 demo_live: true,
                 demo_live_effects_and_buses: true,
+                demo_live_patch_editor: false,
+                defeat_patch_selection: false,
                 ..Options::default()
             }
         );
@@ -1225,6 +1287,8 @@ mod tests {
             Options {
                 demo_live: true,
                 demo_live_effects_and_buses: true,
+                demo_live_patch_editor: false,
+                defeat_patch_selection: false,
                 ..Options::default()
             }
         );
@@ -1251,6 +1315,55 @@ mod tests {
                 ..Options::default()
             }
         );
+    }
+
+    /// The functional Patch editor scene is additive: it stands alone, its
+    /// negative is accepted only beside it, and `--demo-live` keeps pointing
+    /// at the cumulative effects-and-buses scene.
+    #[test]
+    fn the_patch_editor_scene_is_additive_and_its_negative_is_bound_to_it() {
+        assert_eq!(
+            parse_options(["--demo-live-patch-editor"]).unwrap(),
+            Options {
+                demo_live: true,
+                demo_live_patch_editor: true,
+                ..Options::default()
+            }
+        );
+        assert_eq!(
+            parse_options(["--demo-live-patch-editor", "--defeat-patch-selection"]).unwrap(),
+            Options {
+                demo_live: true,
+                demo_live_patch_editor: true,
+                defeat_patch_selection: true,
+                ..Options::default()
+            }
+        );
+
+        // `demo-live` is unchanged: still the cumulative scene, never this one.
+        let alias = parse_options(["--demo-live"]).unwrap();
+        assert!(alias.demo_live_effects_and_buses);
+        assert!(!alias.demo_live_patch_editor);
+
+        // The negative is rejected outside its scene, and outside every other.
+        assert!(parse_options(["--defeat-patch-selection"]).is_err());
+        assert!(parse_options(["--demo-live", "--defeat-patch-selection"]).is_err());
+        assert!(
+            parse_options(["--demo-live-effects-and-buses", "--defeat-patch-selection",]).is_err()
+        );
+        assert!(parse_options(["--smoke", "--defeat-patch-selection"]).is_err());
+
+        // The mode itself refuses to combine with any incompatible flag.
+        assert!(parse_options(["--demo-live-patch-editor", "--demo-live"]).is_err());
+        assert!(parse_options(["--demo-live", "--demo-live-patch-editor"]).is_err());
+        assert!(parse_options(["--demo-live-patch-editor", "--smoke"]).is_err());
+        assert!(parse_options(["--demo-live-patch-editor", "--demo-live-patch-editor"]).is_err());
+        assert!(parse_options([
+            "--demo-live-patch-editor",
+            "--defeat-patch-selection",
+            "--defeat-patch-selection",
+        ])
+        .is_err());
     }
 
     /// The gallery is its own scene, not a live-demo alias.

@@ -84,7 +84,7 @@ use crate::control::{GraphicalShellProjection, SemanticGraphicalViewModel};
 use crate::shell::app_window::WindowError;
 use crate::shell::{
     ShellFrameObservation, ShellFrameObservationError, ShellRegionId, ShellRegionObservation,
-    ShellRegionRect,
+    ShellRegionRect, StripPaintObservation,
 };
 use core::fmt;
 use serde_json::Value;
@@ -537,6 +537,14 @@ impl ProjectionChannel {
             regions,
         )
         .map_err(|source| PaintedAckError::InvalidObservation { generation, source })?;
+        // The page's own strip-paint evidence, transported rather than
+        // recomputed (F-44). Absent when the painting host reports none; a
+        // present-but-malformed `strip` is a malformed ack, not a silent zero,
+        // because a zero here is a measurement the witness reads.
+        let observation = match ack.get("strip") {
+            None => observation,
+            Some(strip) => observation.with_strip_paint(measured_strip(strip)?),
+        };
 
         // The ack consumed its document. Everything older was superseded
         // without ever acking — dropped, degrading observation only.
@@ -617,6 +625,32 @@ fn measured_px(value: &Value, field: &str) -> Result<f32, PaintedAckError> {
         .ok_or_else(|| PaintedAckError::Malformed {
             detail: format!("ack geometry carries no numeric {field}"),
         })
+}
+
+/// Reads the page's own strip-paint evidence from the ack's `strip` object.
+///
+/// Both leaves are required once the object is present: the witness reads
+/// these as measurements, so a missing leaf must be a malformed ack rather
+/// than a fabricated zero.
+fn measured_strip(value: &Value) -> Result<StripPaintObservation, PaintedAckError> {
+    let groups_painted = value
+        .get("groupsPainted")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| PaintedAckError::Malformed {
+            detail: "ack strip carries no numeric groupsPainted".to_owned(),
+        })?;
+    let flat_control_run = value
+        .get("flatControlRun")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| PaintedAckError::Malformed {
+            detail: "ack strip carries no boolean flatControlRun".to_owned(),
+        })?;
+    Ok(StripPaintObservation::new(
+        u32::try_from(groups_painted).map_err(|_| PaintedAckError::Malformed {
+            detail: format!("ack strip groupsPainted {groups_painted} is out of range"),
+        })?,
+        flat_control_run,
+    ))
 }
 
 /// Reads one measured region — stable id, painted bounds, visible label —
@@ -862,6 +896,73 @@ mod tests {
                   "widthPx": 1920.0, "heightPx": 64.0, "label": "MIXER" },
             ],
         })
+    }
+
+    /// The page's own strip-paint evidence is transported verbatim, and a
+    /// present-but-malformed `strip` is a malformed ack rather than a silent
+    /// zero — a zero here is a measurement the witness reads (F-44).
+    #[test]
+    fn the_pages_strip_paint_evidence_is_transported_and_never_invented() {
+        // Absent: the observation carries none, and none is not a zero.
+        let mut channel = ProjectionChannel::new();
+        let projection = projection(7, "state-7");
+        push_ok(&mut channel, &projection);
+        let ForwardedAck::Observation(observation) = channel
+            .forward_ack(&ack_for(&projection).to_string())
+            .expect("the ack forwards")
+        else {
+            panic!("an in-flight ack constructs an observation");
+        };
+        assert_eq!(observation.strip(), None);
+
+        // Present: copied across exactly, with no Rust-side re-derivation.
+        let mut channel = ProjectionChannel::new();
+        push_ok(&mut channel, &projection);
+        let mut ack = ack_for(&projection);
+        ack["strip"] = json!({ "groupsPainted": 4, "flatControlRun": false });
+        let ForwardedAck::Observation(observation) = channel
+            .forward_ack(&ack.to_string())
+            .expect("the ack forwards")
+        else {
+            panic!("an in-flight ack constructs an observation");
+        };
+        let strip = observation.strip().expect("the ack carried strip evidence");
+        assert_eq!(strip.groups_painted(), 4);
+        assert!(!strip.flat_control_run());
+
+        // A flat run is reported as one, not smoothed away.
+        let mut channel = ProjectionChannel::new();
+        push_ok(&mut channel, &projection);
+        let mut ack = ack_for(&projection);
+        ack["strip"] = json!({ "groupsPainted": 0, "flatControlRun": true });
+        let ForwardedAck::Observation(observation) = channel
+            .forward_ack(&ack.to_string())
+            .expect("the ack forwards")
+        else {
+            panic!("an in-flight ack constructs an observation");
+        };
+        let strip = observation.strip().expect("the ack carried strip evidence");
+        assert_eq!(strip.groups_painted(), 0);
+        assert!(strip.flat_control_run());
+
+        // Half a strip object is malformed, never a defaulted zero.
+        for partial in [
+            json!({ "groupsPainted": 4 }),
+            json!({ "flatControlRun": false }),
+            json!({ "groupsPainted": "four", "flatControlRun": false }),
+        ] {
+            let mut channel = ProjectionChannel::new();
+            push_ok(&mut channel, &projection);
+            let mut ack = ack_for(&projection);
+            ack["strip"] = partial;
+            assert!(
+                matches!(
+                    channel.forward_ack(&ack.to_string()),
+                    Err(PaintedAckError::Malformed { .. })
+                ),
+                "an incomplete strip object must be a malformed ack",
+            );
+        }
     }
 
     #[test]

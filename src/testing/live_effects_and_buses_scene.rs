@@ -119,6 +119,20 @@ pub enum LiveTopologySupport {
     VerifyPatchFocus {
         control: PatchControlId,
     },
+    /// Asserts which Patch the projection is speaking for. A journey that
+    /// believes it switched instruments and did not must fail here rather
+    /// than quietly editing the one it was already on.
+    VerifyPatchSubject {
+        patch_id: PatchId,
+    },
+    /// Dispatches one event that must be refused by the named typed
+    /// rejection, leaving state unchanged. The falsifying half of a journey:
+    /// an entry the surface does not offer, or a step past the end of an
+    /// order.
+    ExpectRejected {
+        event: AppEvent,
+        rejection: &'static str,
+    },
 }
 
 /// The causal audio measurement demanded by one topology transition.
@@ -157,6 +171,10 @@ pub struct LiveTopologyTransition {
     support_before: Vec<LiveTopologySupport>,
     support_after: Vec<LiveTopologySupport>,
     audible: LiveTopologyAudibleWitness,
+    /// This transition's dispatch is the scene's audible parameter edit: the
+    /// runner records its per-track RMS deltas as the measured audible
+    /// consequence of editing an occupant on the subject Patch.
+    measures_audible_edit: bool,
     /// Voice carry-over: the probe note sounded before the dispatch is
     /// held through preparation, activation, and the audible capture — the
     /// runner must NOT re-sound it after Ready, so the captured witness can
@@ -166,7 +184,7 @@ pub struct LiveTopologyTransition {
 
 impl LiveTopologyTransition {
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    pub(crate) fn new(
         id: impl Into<String>,
         action: Option<SemanticAction>,
         adjust: Option<Direction>,
@@ -189,8 +207,22 @@ impl LiveTopologyTransition {
             support_before,
             support_after,
             audible,
+            measures_audible_edit: false,
             hold_note_through_activation: false,
         }
+    }
+
+    /// Marks this transition's dispatch as the scene's measured audible
+    /// parameter edit.
+    pub(crate) fn measuring_audible_edit(mut self) -> Self {
+        self.measures_audible_edit = true;
+        self
+    }
+
+    /// Whether the runner records this transition's per-track deltas as the
+    /// audible parameter edit.
+    pub const fn measures_audible_edit(&self) -> bool {
+        self.measures_audible_edit
     }
 
     /// Marks this transition's probe note as held across activation.

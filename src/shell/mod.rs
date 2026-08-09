@@ -15,7 +15,7 @@ pub mod window_input;
 pub use keyboard_input_translator::KeyboardInputTranslator;
 pub use shell_frame_observation::{
     ShellFrameObservation, ShellFrameObservationError, ShellRegionId, ShellRegionObservation,
-    ShellRegionRect,
+    ShellRegionRect, StripPaintObservation,
 };
 pub use standalone_application::{
     ApplicationConfig, ApplicationError, DegenerateMode, GraphicalShellLiveObservation,

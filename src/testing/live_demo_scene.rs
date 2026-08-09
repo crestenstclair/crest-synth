@@ -620,6 +620,10 @@ pub struct LiveDemoScene {
     expected_topology_transitions:
         Vec<crate::testing::live_effects_and_buses_scene::LiveTopologyTransition>,
     patches: Vec<LivePatch>,
+    /// True for the functional Patch editor scene: the runner samples the
+    /// canonical projection into a `PatchEditorMeasurement` while this scene
+    /// runs, and the host emits the resulting observation after teardown.
+    measures_patch_editor: bool,
 }
 
 impl LiveDemoScene {
@@ -880,6 +884,7 @@ impl LiveDemoScene {
             expected_engine_transitions,
             expected_topology_transitions: Vec::new(),
             patches,
+            measures_patch_editor: false,
         })
     }
 
@@ -897,6 +902,31 @@ impl LiveDemoScene {
         self.expected_topology_transitions = transitions;
         self.total_timeout = total_timeout;
         self
+    }
+
+    /// Extends one frozen base scene into the functional Patch editor scene.
+    /// The scalar steps, the three engine transitions, and the teardown
+    /// contract are inherited unchanged (mission finding F-49): a new live
+    /// scene either performs the base scene's engine transitions or both of
+    /// the runner's undeclared couplings must be relaxed, and inheriting is
+    /// the honest half of that choice.
+    pub(crate) fn with_patch_editor_extension(
+        mut self,
+        name: impl Into<String>,
+        transitions: Vec<crate::testing::live_effects_and_buses_scene::LiveTopologyTransition>,
+        total_timeout: Duration,
+    ) -> Self {
+        self.name = name.into();
+        self.expected_topology_transitions = transitions;
+        self.total_timeout = total_timeout;
+        self.measures_patch_editor = true;
+        self
+    }
+
+    /// Whether the runner measures the functional Patch editor observation
+    /// while this scene runs.
+    pub const fn measures_patch_editor(&self) -> bool {
+        self.measures_patch_editor
     }
 
     pub fn name(&self) -> &str {
@@ -2206,7 +2236,7 @@ pub(crate) struct DecodedStateTree {
     #[serde(default)]
     returns: Vec<DecodedSerializedReturn>,
     interaction: DecodedInteraction,
-    parameters: DecodedParameterSnapshot,
+    pub(crate) parameters: DecodedParameterSnapshot,
 }
 
 /// One serialized return: the occupying configuration plus the return-owned
@@ -2257,9 +2287,9 @@ struct DecodedGlobal {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DecodedParameterSnapshot {
+pub(crate) struct DecodedParameterSnapshot {
     graph_revision: GraphRevision,
-    patches: Vec<DecodedParameterPatch>,
+    pub(crate) patches: Vec<DecodedParameterPatch>,
     mixer_tracks: [MixerTrackParameters; MixerTrackId::COUNT],
     /// Part of the serialized snapshot shape, decoded so the return section
     /// must be present and well-formed even where this scene's assertions
@@ -2290,8 +2320,12 @@ impl DecodedParameterSnapshot {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DecodedParameterPatch {
-    patch_id: u32,
+pub(crate) struct DecodedParameterPatch {
+    pub(crate) patch_id: u32,
+    /// The canonical per-Patch ceiling, published beside the envelope so a
+    /// scene can derive how far it must step to make the limit bite instead
+    /// of assuming a starting value.
+    pub(crate) voice_limit: u16,
     envelope: VoiceEnvelope,
     instrument: DecodedInstrumentParameters,
     /// One live entry per ordered effect position.

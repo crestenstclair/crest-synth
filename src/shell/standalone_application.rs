@@ -211,6 +211,11 @@ pub struct GraphicalShellLiveObservation {
     #[serde(flatten)]
     mixer_routing: LiveMixerRoutingEvidence,
     effects_and_buses: Option<crate::testing::LiveEffectsAndBusesEvidence>,
+    /// The functional Patch editor observation, resolved here because the
+    /// teardown half of its schema — window close, stream release, graph
+    /// collection, callback safety — is only knowable after the host returns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    functional_patch_editor: Option<crate::testing::FunctionalPatchEditorObservation>,
     physical_audio_nonzero: bool,
     active_notes_after_cleanup: u32,
     window_closed: bool,
@@ -225,6 +230,28 @@ impl GraphicalShellLiveObservation {
         callback_safety: CallbackSafetySnapshot,
     ) -> Self {
         let shell = report.shell_coverage();
+        let functional_patch_editor = report.patch_editor().map(|measurement| {
+            measurement.resolve(
+                // The final state's installed order, not the scene's own
+                // subject: every second-Patch counter keys off this (F-47).
+                &installed_patch_order(report),
+                crate::testing::PatchEditorTeardown {
+                    strip_groups_painted: shell.strip_groups_painted(),
+                    strip_flat_control_run: shell.strip_flat_control_run(),
+                    voice_limit_refusals: report.final_audio_observation().voice_limit_refusals(),
+                    events_dropped: report.event_log().dropped_records(),
+                    callback_allocations: callback_safety.allocations() as u64,
+                    callback_destructions: callback_safety.destructions() as u64,
+                    qualifying_webview_frames: shell.qualifying_frames() as u32,
+                    physical_audio_nonzero: shell.physical_audio_nonzero(),
+                    desktop_viewport_painted: shell.desktop_viewport_painted(),
+                    active_notes_after_cleanup: report.final_audio_observation().active_notes(),
+                    window_closed: true,
+                    stream_released: true,
+                    owned_graphs_remaining: owned_graphs_remaining as u32,
+                },
+            )
+        });
         Self {
             context_line_visible: shell.context_line_visible(),
             identity_header_visible: shell.identity_header_visible(),
@@ -235,6 +262,7 @@ impl GraphicalShellLiveObservation {
             mixer_context_observed: shell.mixer_context_observed(),
             mixer_routing: report.mixer_routing().with_callback_safety(callback_safety),
             effects_and_buses: report.effects_and_buses().cloned(),
+            functional_patch_editor,
             physical_audio_nonzero: shell.physical_audio_nonzero(),
             active_notes_after_cleanup: report.final_audio_observation().active_notes(),
             window_closed: true,
@@ -274,6 +302,14 @@ impl GraphicalShellLiveObservation {
         )
     }
 
+    /// The functional Patch editor teardown projection, present only for the
+    /// scene that measures it.
+    pub const fn functional_patch_editor(
+        &self,
+    ) -> Option<&crate::testing::FunctionalPatchEditorObservation> {
+        self.functional_patch_editor.as_ref()
+    }
+
     /// The retained effects-and-buses teardown projection: the cumulative
     /// sixteen-track evidence plus the topology, responsiveness, and
     /// eight-destination measurements.
@@ -285,6 +321,28 @@ impl GraphicalShellLiveObservation {
                 effects_and_buses: evidence.clone(),
             })
     }
+}
+
+/// The installed Patch order read out of the completed report's final state
+/// tree. This is the order every functional Patch editor counter keys off.
+fn installed_patch_order(report: &LiveDemoReport) -> Vec<crate::kernel::PatchId> {
+    serde_json::from_str::<serde_json::Value>(report.state_tree().json())
+        .ok()
+        .and_then(|value| {
+            value
+                .get("patches")
+                .and_then(|patches| patches.as_array())
+                .cloned()
+        })
+        .map(|patches| {
+            patches
+                .iter()
+                .filter_map(|patch| patch.get("id").and_then(serde_json::Value::as_u64))
+                .filter_map(|id| u32::try_from(id).ok())
+                .filter_map(|id| crate::kernel::PatchId::new(id).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Final effects-and-buses witness emitted after physical teardown.
@@ -309,6 +367,13 @@ pub enum LiveSceneKind {
     SixteenTrackMixerRouting,
     /// The retained cumulative effects-and-buses scene.
     EffectsAndBuses,
+    /// The functional Patch editor scene, whose subject is the second
+    /// installed Patch. Additive: it does not subsume the cumulative scene.
+    FunctionalPatchEditor {
+        /// The declared controlled negative: the patch-selection gesture is
+        /// removed and the journey stays on the first Patch.
+        defeat_patch_selection: bool,
+    },
 }
 
 /// A startup, control, fixture, device, or window failure.
@@ -1050,6 +1115,16 @@ where
                     &app_loop.current_state_tree(),
                 )?
             }
+            LiveSceneKind::FunctionalPatchEditor {
+                defeat_patch_selection,
+            } => crate::testing::live_patch_editor_scene::from_installed_state(
+                &app_loop.current_state_tree(),
+                if defeat_patch_selection {
+                    crate::testing::live_patch_editor_scene::PatchSelectionMode::Defeated
+                } else {
+                    crate::testing::live_patch_editor_scene::PatchSelectionMode::Gesture
+                },
+            )?,
         };
         if app_loop.event_log().capacity()
             < scene.required_event_log_capacity(LIVE_FIXTURE_EVENT_ALLOWANCE)

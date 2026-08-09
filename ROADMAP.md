@@ -328,8 +328,85 @@ Phase 5 does not close until both of these hold:
   instrument, not only the first. Checkpoints must correlate the patch switch,
   the resulting focus, and the audible consequence.
 
+  **STILL OPEN (2026-08-09) — BUILT AND UNRUN.** The target, the scene, the
+  observation, and the controlled negative all exist and are green under
+  `cargo test`. The live run has never completed, so this bullet is not struck.
+  A bullet struck against a run that did not happen would be a claim, not a
+  record. See the Phase 5 status note below for exactly what is measured and
+  what is not.
+
 Meeting both closes LIMIT-1. Until then, no scene may claim the effects journey
 is demonstrated across the instrument roster.
+
+### Phase 5 status note (2026-08-09) — the exit gate is built and unrun
+
+This is not a completion note. Phase 5 does not close here, and the note says so
+rather than reporting an adjective where a number belongs.
+
+**What is built.** `make demo-live-patch-editor` exists and resolves
+(`Makefile`, `--demo-live-patch-editor` in `src/bin/crest_synth.rs`). `demo-live`
+is unchanged and still points at `demo-live-effects-and-buses`; this scene is
+additive. The scene
+(`src/testing/live_patch_editor_scene.rs`) reaches the **second** installed Patch
+by dispatching `SemanticAction::SelectPatch` through `AppLoop` and the production
+reducer, then derives every effect-slot position, the audible occupant edit, the
+voice-limit ceiling walk, and the end-of-order boundary from *that Patch's own*
+descriptors and published state. The observation
+(`src/testing/functional_patch_editor_observation.rs`) carries all 41 fields the
+witness declares, and each second-Patch counter is keyed by the PatchId resolved
+from the **final state's installed order**, never from the scene's own subject.
+The declared controlled negative `--defeat-patch-selection` removes the gesture
+and leaves the journey on the first instrument.
+
+**What is measured, deterministically, without a window.**
+
+- 15 installed Patches (8 SoundFont, 7 Braids) — the fixture the reach claim is
+  made against; the controller could formerly reach 1 of them.
+- The switch script, replayed through the production `AppLoop`, leaves the
+  canonical projection speaking for installed Patch **2**, distinct from Patch 1.
+- All **3** declared slot positions are targeted on Patch 2 by id, each with a
+  verified landing on its own occupancy row, and all 3 are restored to the exact
+  occupancy the run found.
+- Under `--defeat-patch-selection` the identical journey runs, targets **3**
+  slots and makes an audible edit — all of it on Patch **1** — and the reach
+  counters therefore read `patchesFocused = 1`, `secondPatchIdDistinct = false`,
+  `secondPatchSlotsVisited = 0`, `secondPatchAudibleEditDelta = 0.0`. That is
+  the keying rule doing the work it exists for.
+- The end-of-order refusal is a genuine `parameterAtBoundary` in **both** modes,
+  so the negative fails on reach rather than on its own scaffold.
+- The voice-limit walk lands exactly on the declared minimum (**1**), one further
+  step is a boundary refusal, and the asymmetric return walk restores the exact
+  starting ceiling (**16** on the Braids subject) rather than overshooting it.
+- Detail entry from an empty occupancy row on Patch 2 is refused
+  `actionUnavailableInContext`.
+- The page's strip-paint evidence survives the ack round trip verbatim, and a
+  half-formed `strip` object is a typed malformed ack rather than a zero.
+- NFR-004: full `project_with_shell` per accepted event, release, median of 15,
+  89 MIXER rows — **2382 µs** against the 3.00 ms bar (down from 2960 µs).
+
+**What is not measured, and why.** Every predicate that needs a painted frame
+remains unexecuted: `stripGroupsPainted`, `stripFlatControlRun`,
+`qualifyingWebviewFrames`, `desktopViewportPainted`, `physicalAudioNonzero`, both
+audible-edit deltas, `checkpointsCorrelatingSwitchFocusAudio`,
+`voiceLimitRefusals`, `projectionGenerationGaps`, and the teardown quartet. The
+run was attempted on 2026-08-09 and failed after 10 s with
+`no progress ... awaiting parameter projection paint confirmation at step 3`:
+no paint acknowledgment ever arrives. **The already-shipped
+`demo-live-effects-and-buses` scene fails identically — same step, same
+predicate, same timeout** — which is what establishes the blocker as the
+environment rather than this scene. Neither run reaches its own phase.
+
+**One declared threshold is unvalidated.** `AUDIBLE_EDIT_DELTA_MARGIN`
+(1.0e-3 RMS) is the margin by which the second Patch's measured delta must exceed
+the first Patch's. It is a declaration, not a measurement; the first completed
+live run is what confirms or moves it.
+
+**One witness predicate disagrees with its own ruling.**
+`witness.functional_patch_editor` still declares
+`first_patch_audible_edit_delta == 0`, which mission finding F-47 ruled
+unattainable on a live decaying voice and replaced with the bounded comparison
+above. The observation implements the ruling. The witness YAML needs the same
+amendment its finding already made.
 
 Assemble the Patch experience from the component library and semantic view models.
 

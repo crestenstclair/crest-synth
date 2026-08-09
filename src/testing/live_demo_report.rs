@@ -45,6 +45,20 @@ pub struct LiveShellCoverage {
     focus_recovery_observed: bool,
     physical_audio_nonzero: bool,
     qualifying_frames: u64,
+    /// The subordinate detail surface was seen painted. WP06's scene is what
+    /// drives it; the four persistent surfaces above never reach it.
+    patch_detail_observed: bool,
+    /// A qualifying frame whose measured viewport resolved to the authored
+    /// desktop policy. The seat, not an exact height: the shipped window
+    /// hands the page a viewport shorter than the display's own 1080 (F-39),
+    /// and the authored policy is what "desktop" means here.
+    desktop_viewport_painted: bool,
+    /// The largest group count the painting page reported for the PATCH
+    /// strip, and whether it ever reported a flat run. Both are transported
+    /// from the page, which is grouping's only producer (F-44); `None` until
+    /// a frame carried the evidence, so absent never reads as a measured 0.
+    strip_groups_painted: Option<u32>,
+    strip_flat_control_run: Option<bool>,
 }
 
 impl LiveShellCoverage {
@@ -67,11 +81,7 @@ impl LiveShellCoverage {
                 }
             }
             SurfaceId::PatchUtility => self.patch_utility_observed = true,
-            // The subordinate detail surface has no coverage flag here yet:
-            // this report tracks the four persistent surfaces the live scene
-            // visits. WP06's scene owns whether detail entry becomes observed
-            // evidence; claiming it here would report coverage nothing drives.
-            SurfaceId::PatchDetail => {}
+            SurfaceId::PatchDetail => self.patch_detail_observed = true,
             SurfaceId::MixerMain => {
                 self.mixer_main_observed = true;
                 if self.mixer_inspector_observed && frame.return_path().is_none() {
@@ -86,7 +96,42 @@ impl LiveShellCoverage {
             InteractionMode::Modal | InteractionMode::MultiSelect => {}
         }
         self.healthy_empty_errors_observed |= frame.errors().is_empty();
+        self.desktop_viewport_painted |=
+            crate::shell::density::ViewportDensityPolicy::resolve(frame.viewport_width())
+                == crate::shell::density::ViewportDensityPolicy::Desktop;
+        if let Some(strip) = frame.strip() {
+            self.strip_groups_painted = Some(
+                self.strip_groups_painted
+                    .map_or(strip.groups_painted(), |seen| {
+                        seen.max(strip.groups_painted())
+                    }),
+            );
+            self.strip_flat_control_run =
+                Some(self.strip_flat_control_run.unwrap_or(false) || strip.flat_control_run());
+        }
         self.qualifying_frames = self.qualifying_frames.saturating_add(1);
+    }
+
+    /// Whether the subordinate detail surface was seen painted.
+    pub const fn patch_detail_observed(&self) -> bool {
+        self.patch_detail_observed
+    }
+
+    /// Whether a qualifying frame painted at the authored desktop viewport.
+    pub const fn desktop_viewport_painted(&self) -> bool {
+        self.desktop_viewport_painted
+    }
+
+    /// The largest group count the page reported painting, or `None` when no
+    /// qualifying frame carried strip evidence.
+    pub const fn strip_groups_painted(&self) -> Option<u32> {
+        self.strip_groups_painted
+    }
+
+    /// Whether the page ever reported painting a flat control run, or `None`
+    /// when no qualifying frame carried strip evidence.
+    pub const fn strip_flat_control_run(&self) -> Option<bool> {
+        self.strip_flat_control_run
     }
 
     pub const fn context_line_visible(&self) -> bool {
@@ -788,6 +833,11 @@ pub struct LiveDemoReport {
     runtime_audio: RuntimeAudioWitness,
     mixer_routing: LiveMixerRoutingEvidence,
     effects_and_buses: Option<LiveEffectsAndBusesEvidence>,
+    /// The functional Patch editor measurement, present only for the scene
+    /// that declares it. Not serialized: the host resolves it into the
+    /// emitted observation after teardown, when the facts only the host knows
+    /// are available.
+    patch_editor: Option<crate::testing::PatchEditorMeasurement>,
     summary: String,
 }
 
@@ -1078,6 +1128,7 @@ impl LiveDemoReport {
         cleanup_sequence_before: u64,
         final_observation: AudioObservationSnapshot,
         runtime_audio: RuntimeAudioWitness,
+        patch_editor: Option<crate::testing::PatchEditorMeasurement>,
     ) -> Result<Self, LiveDemoReportError> {
         let scene = scene.into();
         if scene.trim().is_empty() {
@@ -1157,8 +1208,14 @@ impl LiveDemoReport {
             &graphical_shell,
             runtime_audio,
         );
-        let effects_and_buses =
-            measure_effects_and_buses(&checkpoints, &LiveMixerDspEvidence::measure());
+        // Effects-and-buses evidence is measured for the scene that declares
+        // the effects-and-buses phase. Other scenes reuse the same topology
+        // machinery for their own journeys; grading their checkpoints against
+        // the eight-destination bus contract would report a shortfall in
+        // something they never claimed to do.
+        let effects_and_buses = (scene == crate::testing::EFFECTS_AND_BUSES_SCENE_NAME)
+            .then(|| measure_effects_and_buses(&checkpoints, &LiveMixerDspEvidence::measure()))
+            .flatten();
         let lossless = event_log.dropped_records() == 0
             && event_log.total_observed() == event_log.records().len() as u64;
         let complete = coverage.is_complete()
@@ -1214,6 +1271,7 @@ impl LiveDemoReport {
             runtime_audio,
             mixer_routing,
             effects_and_buses,
+            patch_editor,
             summary,
         })
     }
@@ -1267,6 +1325,12 @@ impl LiveDemoReport {
 
     pub const fn runtime_audio(&self) -> RuntimeAudioWitness {
         self.runtime_audio
+    }
+
+    /// The functional Patch editor measurement, present only for the scene
+    /// that declares it.
+    pub const fn patch_editor(&self) -> Option<&crate::testing::PatchEditorMeasurement> {
+        self.patch_editor.as_ref()
     }
 
     pub const fn effects_and_buses(&self) -> Option<&LiveEffectsAndBusesEvidence> {

@@ -132,6 +132,42 @@ impl ShellRegionObservation {
     }
 }
 
+/// What the painting page reported about the PATCH strip's group structure.
+///
+/// Grouping is decided by the page (`stripGroups` in `webview-page/page.js`)
+/// and nowhere else, so this is *transported*, never recomputed: the page reads
+/// its own painted DOM back and this value carries the answer across the
+/// boundary. Re-deriving the same fact Rust-side would give one fact two
+/// producers, which is agreement between copies rather than proof, and the
+/// first divergence between them would be silent (mission finding F-44).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StripPaintObservation {
+    groups_painted: u32,
+    flat_control_run: bool,
+}
+
+impl StripPaintObservation {
+    pub const fn new(groups_painted: u32, flat_control_run: bool) -> Self {
+        Self {
+            groups_painted,
+            flat_control_run,
+        }
+    }
+
+    /// How many groups the strip painted.
+    pub const fn groups_painted(self) -> u32 {
+        self.groups_painted
+    }
+
+    /// Whether the strip painted rows with none of them inside a group — the
+    /// flat control run FR-001 replaced. A strip that painted no rows at all
+    /// is not a flat run and reports `false`.
+    pub const fn flat_control_run(self) -> bool {
+        self.flat_control_run
+    }
+}
+
 /// An invalid adapter-boundary frame observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShellFrameObservationError {
@@ -184,6 +220,10 @@ pub struct ShellFrameObservation {
     status: SemanticLifecycleStatus,
     errors: Vec<SemanticError>,
     regions: [ShellRegionObservation; 5],
+    /// Absent when the painting host reported no strip evidence — a harness
+    /// window, or a page older than the field. Absent is not a measured zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strip: Option<StripPaintObservation>,
 }
 
 impl ShellFrameObservation {
@@ -258,7 +298,21 @@ impl ShellFrameObservation {
             status: semantic.status().clone(),
             errors: semantic.errors().to_vec(),
             regions,
+            strip: None,
         })
+    }
+
+    /// Attaches the painting page's own strip-paint evidence.
+    #[must_use]
+    pub fn with_strip_paint(mut self, strip: StripPaintObservation) -> Self {
+        self.strip = Some(strip);
+        self
+    }
+
+    /// The painting page's strip-paint evidence, or `None` when the host
+    /// reported none.
+    pub const fn strip(&self) -> Option<StripPaintObservation> {
+        self.strip
     }
 
     pub const fn viewport_width(&self) -> f32 {
