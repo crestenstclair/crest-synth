@@ -1,7 +1,7 @@
 {
-  "event_count": 61,
-  "last_event_id": "01KZKEX6YXA5KYG9N9RDN3PG81",
-  "materialized_at": "2026-08-09T14:30:24.989563+00:00",
+  "event_count": 63,
+  "last_event_id": "01KZKF1JBRP0B4AN81JVQVM1AK",
+  "materialized_at": "2026-08-09T14:32:47.691060+00:00",
   "mission_number": "",
   "mission_slug": "functional-patch-editor-01KZERV9",
   "mission_type": "software-dev",
@@ -12,9 +12,9 @@
     "claimed": 0,
     "done": 0,
     "for_review": 0,
-    "in_progress": 0,
+    "in_progress": 1,
     "in_review": 0,
-    "planned": 1
+    "planned": 0
   },
   "work_packages": {
     "WP01": {
@@ -139,21 +139,21 @@
       }
     },
     "WP05": {
-      "actor": "user",
+      "actor": "claude",
       "agent": "",
       "agent_profile": "__resolved_profile_absent__",
       "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
-      "lane": "planned",
-      "last_event_id": "01KZKEX6YXA5KYG9N9RDN3PG81",
-      "last_transition_at": "2026-08-09T14:30:24.989563+00:00",
+      "lane": "in_progress",
+      "last_event_id": "01KZKF1JBRP0B4AN81JVQVM1AK",
+      "last_transition_at": "2026-08-09T14:32:47.691060+00:00",
       "model": "__resolved_model_absent__",
       "notes": [
         "Ready for review",
         "Cycle 2: every transcribed rule pinned and falsified"
       ],
       "provider": "__resolved_provider_absent__",
-      "role": "reviewer",
+      "role": "implementer",
       "shell_pid": 0,
       "shell_pid_created_at": "1786283736.523959",
       "subtasks": {
