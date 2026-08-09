@@ -105,11 +105,9 @@ impl<'a> SemanticResolver<'a> {
             return None;
         };
         match control {
-            PatchControlId::Engine | PatchControlId::Capability(_) => {
-                Some(PatchDetailSubject::instrument(
-                    patch.instrument_config().capability_id().clone(),
-                ))
-            }
+            PatchControlId::Engine | PatchControlId::Capability(_) => Some(
+                PatchDetailSubject::instrument(patch.instrument_config().capability_id().clone()),
+            ),
             // The occupancy row names a position; only an occupied one names a
             // capability. An empty slot is deliberately not repaired into a
             // neighbouring subject.
@@ -165,13 +163,9 @@ impl<'a> SemanticResolver<'a> {
             PatchDetailSubject::Effect {
                 slot_id,
                 capability_id,
-            } => patch
-                .effect_slots()
-                .iter()
-                .flatten()
-                .any(|effect| {
-                    effect.slot_id() == *slot_id && effect.capability_id() == capability_id
-                }),
+            } => patch.effect_slots().iter().flatten().any(|effect| {
+                effect.slot_id() == *slot_id && effect.capability_id() == capability_id
+            }),
         }
     }
 
@@ -458,11 +452,7 @@ impl<'a> SemanticResolver<'a> {
     /// It is generic so a patch switch can recover over *control* identities,
     /// where the two orders carry different PatchIds and whole paths can never
     /// compare equal — without growing a second, subtly different rule.
-    pub fn recovered_index<T: PartialEq>(
-        old: &T,
-        old_keys: &[T],
-        new_keys: &[T],
-    ) -> Option<usize> {
+    pub fn recovered_index<T: PartialEq>(old: &T, old_keys: &[T], new_keys: &[T]) -> Option<usize> {
         if let Some(index) = new_keys.iter().position(|candidate| candidate == old) {
             return Some(index);
         }
@@ -473,7 +463,10 @@ impl<'a> SemanticResolver<'a> {
                     return Some(index);
                 }
             }
-            if let Some(previous) = old_index.checked_sub(distance).map(|index| &old_keys[index]) {
+            if let Some(previous) = old_index
+                .checked_sub(distance)
+                .map(|index| &old_keys[index])
+            {
                 if let Some(index) = new_keys.iter().position(|candidate| candidate == previous) {
                     return Some(index);
                 }
@@ -539,11 +532,6 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         SemanticAction::SetSlotOccupancy { .. } => ("Set slot occupancy", None),
         SemanticAction::SetReturnOccupancy { .. } => ("Set return occupancy", None),
         SemanticAction::EnterSurface(SurfaceId::PatchUtility) => ("Open Utility", Some("D")),
-        // Presentation for an action that is not currently offered:
-        // `SurfaceId::is_enterable` withholds `PatchDetail` until WP03's
-        // detail projection lands, so this never reaches `valid_actions` or a
-        // footer hint today. It stays so the arm and the gate are removed in
-        // the same place they were added.
         SemanticAction::EnterSurface(SurfaceId::PatchDetail) => ("Open Detail", Some("Return")),
         SemanticAction::EnterSurface(SurfaceId::MixerInspector) => ("Open Inspector", None),
         SemanticAction::EnterSurface(SurfaceId::PatchMain)

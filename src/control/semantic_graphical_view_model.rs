@@ -153,6 +153,16 @@ impl SemanticError {
 }
 
 /// One immutable semantic control with no widget or geometry state.
+///
+/// Every field except the last two is resolved from the row's own descriptor
+/// and canonical value where the row is built. `requested_value` and
+/// `valid_actions` are not: they are facts about this row's relationship to the
+/// model as a whole — what an in-flight structural edit is moving it toward,
+/// and what the reducer would accept were it the focused row — so both are
+/// resolved for every control in exactly one later pass
+/// ([`project_control_intent`]) and nowhere else. Each row-building site leaves
+/// them unresolved rather than answering the question locally, because a dozen
+/// local answers is exactly the second vocabulary the declaration forbids.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SemanticControlViewModel {
@@ -169,6 +179,8 @@ pub struct SemanticControlViewModel {
     focused: bool,
     status: Option<SemanticLifecycleStatus>,
     error: Option<SemanticError>,
+    requested_value: Option<SemanticControlValue>,
+    valid_actions: Vec<ValidAction>,
 }
 
 impl SemanticControlViewModel {
@@ -223,6 +235,25 @@ impl SemanticControlViewModel {
     pub const fn error(&self) -> Option<&SemanticError> {
         self.error.as_ref()
     }
+
+    /// The value an in-flight structural edit correlated to this control is
+    /// moving it toward, or `None` on a settled row.
+    ///
+    /// Always sourced from the correlated lifecycle already in canonical state,
+    /// never from the input that triggered the edit: a locally optimistic value
+    /// would break the one-way loop while appearing to work.
+    pub const fn requested_value(&self) -> Option<&SemanticControlValue> {
+        self.requested_value.as_ref()
+    }
+
+    /// This control's own accepted action list — what the reducer would accept
+    /// were this the focused row.
+    ///
+    /// Resolved by the same pure resolver that computes the model-level list,
+    /// so at the actually-focused row the two are the same value.
+    pub fn valid_actions(&self) -> &[ValidAction] {
+        &self.valid_actions
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -267,6 +298,18 @@ pub enum SemanticSurfaceSummary {
         patch_id: PatchId,
         subject: PatchDetailSubject,
     },
+}
+
+impl SemanticSurfaceSummary {
+    /// The Patch this surface speaks for, or `None` for a MIXER surface.
+    pub const fn patch_id(&self) -> Option<PatchId> {
+        match self {
+            Self::Patch { patch_id, .. }
+            | Self::PatchUtility { patch_id, .. }
+            | Self::PatchDetail { patch_id, .. } => Some(*patch_id),
+            Self::Mixer { .. } | Self::MixerInspector { .. } => None,
+        }
+    }
 }
 
 /// One Patch identity routed to the selected mixer track.
@@ -343,6 +386,8 @@ pub enum SemanticGraphicalViewModelError {
     InvalidFocusPath,
     DuplicateControlPath,
     DuplicateValidAction,
+    DuplicateControlValidAction,
+    PatchIdentityDisagreement,
     IncoherentSurface,
 }
 
@@ -355,6 +400,12 @@ impl fmt::Display for SemanticGraphicalViewModelError {
             Self::InvalidFocusPath => "semantic projection focus does not resolve",
             Self::DuplicateControlPath => "semantic projection contains a duplicate control path",
             Self::DuplicateValidAction => "semantic projection contains a duplicate valid action",
+            Self::DuplicateControlValidAction => {
+                "semantic projection control contains a duplicate valid action"
+            }
+            Self::PatchIdentityDisagreement => {
+                "semantic projection pairs one Patch's identity with another's"
+            }
             Self::IncoherentSurface => "semantic projection context, surface, and focus differ",
         })
     }
@@ -477,6 +528,11 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].path.modalId",
         "surfaces[].controls[].path.patchId",
         "surfaces[].controls[].path.surface",
+        "surfaces[].controls[].requestedValue",
+        "surfaces[].controls[].requestedValue.kind",
+        "surfaces[].controls[].requestedValue.value",
+        "surfaces[].controls[].requestedValue.value.kind",
+        "surfaces[].controls[].requestedValue.value.value",
         "surfaces[].controls[].status",
         "surfaces[].controls[].status.graphRevision",
         "surfaces[].controls[].status.kind",
@@ -484,6 +540,10 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].status.requestId",
         "surfaces[].controls[].status.targetGraphRevision",
         "surfaces[].controls[].unit",
+        "surfaces[].controls[].validActions[].action.kind",
+        "surfaces[].controls[].validActions[].action.payload",
+        "surfaces[].controls[].validActions[].hint",
+        "surfaces[].controls[].validActions[].label",
         "surfaces[].controls[].value.kind",
         "surfaces[].controls[].value.value",
         "surfaces[].controls[].value.value.kind",
@@ -511,9 +571,9 @@ impl SemanticGraphicalViewModel {
         // discovered for either subject variant; `slot_id` only for `Effect`,
         // which is the variant that names an exact occupied position — so a
         // fixture that opens only an instrument detail entry cannot see it.
-        "surfaces[].summary.subject.capability_id",
+        "surfaces[].summary.subject.capabilityId",
         "surfaces[].summary.subject.kind",
-        "surfaces[].summary.subject.slot_id",
+        "surfaces[].summary.subject.slotId",
         "validActions[].action.kind",
         "validActions[].action.payload",
         "validActions[].hint",
@@ -570,6 +630,16 @@ impl SemanticGraphicalViewModel {
 
     pub fn surfaces(&self) -> &[SemanticSurfaceViewModel] {
         &self.data.surfaces
+    }
+
+    /// The one Patch identity every PATCH field of this model agrees on, or
+    /// `None` in MIXER.
+    ///
+    /// Safe to read as a single value because [`validate_data`] refuses to
+    /// build a model whose focus path, PATCH surface summaries, and control
+    /// paths name more than one Patch (NFR-005).
+    pub fn patch_identity(&self) -> Option<PatchId> {
+        self.data.focus_path.patch_id()
     }
 
     pub fn surface(&self, id: SurfaceId) -> Option<&SemanticSurfaceViewModel> {
@@ -716,10 +786,11 @@ impl SemanticGraphicalViewModel {
         }
         let status = project_status(state);
         let errors = project_errors(state, &resolver, &status)?;
-        let surfaces = match state.context() {
+        let mut surfaces = match state.context() {
             TopLevelContext::Patch => project_patch_surfaces(state, &resolver, &status, &errors)?,
             TopLevelContext::Mixer => project_mixer_surfaces(state, &resolver, &status, &errors)?,
         };
+        project_control_intent(state, &resolver, &mut surfaces)?;
         let valid_actions = resolver.valid_actions();
         let data = SemanticGraphicalData {
             generation: state.generation(),
@@ -766,6 +837,8 @@ fn fixture_surfaces(
         editable: false,
         status: None,
         error: None,
+        requested_value: None,
+        valid_actions: Vec::new(),
     };
     let side_control_path = if active.surface().is_main() {
         side_path
@@ -843,6 +916,167 @@ fn fixture_surfaces(
             ]
         }
     }
+}
+
+/// Resolves, for every projected control, the two facts that belong to the
+/// model as a whole rather than to one row's descriptor.
+///
+/// **This is the only site that answers either question.** A per-row action
+/// list computed anywhere else would be a second input vocabulary, and a
+/// requested value written anywhere else would be a locally optimistic guess —
+/// the two failure modes the declaration names by name. Both are greppable:
+/// nothing else in this crate assigns `valid_actions` or `requested_value` on a
+/// [`SemanticControlViewModel`].
+///
+/// The row's action list comes from [`SemanticResolver::valid_actions`] — the
+/// same function, not a lookalike — run over the counterfactual state in which
+/// this row is the focused one. At the row that really *is* focused there is no
+/// counterfactual to build: the model-level list is reused by value, so the two
+/// agree by construction rather than by two computations happening to match.
+///
+/// A row whose counterfactual does not exist projects an empty list. That is a
+/// projected fact and not an omission: it says the reducer would accept nothing
+/// there.
+fn project_control_intent(
+    state: &AppState,
+    resolver: &SemanticResolver<'_>,
+    surfaces: &mut [SemanticSurfaceViewModel],
+) -> Result<(), SemanticGraphicalViewModelError> {
+    let focused_path = state.interaction().focus_path();
+    let focused_actions = resolver.valid_actions();
+    for surface in surfaces.iter_mut() {
+        for control in &mut surface.controls {
+            control.requested_value = project_requested_value(state, &control.path)?;
+            control.valid_actions = if &control.path == focused_path {
+                focused_actions.clone()
+            } else {
+                state
+                    .with_counterfactual_focus(&control.path)
+                    .map(|candidate| SemanticResolver::new(&candidate).valid_actions())
+                    .unwrap_or_default()
+            };
+        }
+    }
+    Ok(())
+}
+
+/// Resolves what an in-flight structural edit is moving one control toward.
+///
+/// Everything here is read from the correlated lifecycle already in canonical
+/// state — the intent the reducer accepted and the registries it validated the
+/// intent against. Nothing is read from the input that requested the edit, so a
+/// row can only claim to be moving toward a value the reducer has already
+/// agreed to move it toward.
+///
+/// The requested value always carries the same shape as the row's active value,
+/// so a page can show the pair without knowing which control it is looking at.
+fn project_requested_value(
+    state: &AppState,
+    path: &FocusPath,
+) -> Result<Option<SemanticControlValue>, SemanticGraphicalViewModelError> {
+    let Some(correlation) = state.engine_selection().correlation() else {
+        return Ok(None);
+    };
+    let occupancy_value = |entry: Option<&crate::synth::EffectCapabilityId>| {
+        entry.map_or_else(
+            || Ok("Empty".to_owned()),
+            |id| {
+                state
+                    .effects()
+                    .descriptor(id)
+                    .map(|descriptor| descriptor.label().to_owned())
+                    .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)
+            },
+        )
+    };
+    let targets_focused_patch =
+        correlation.patch_id().is_some() && correlation.patch_id() == path.patch_id();
+    let requested = match (path.control_id(), correlation.intent()) {
+        (
+            crate::control::SemanticControlId::Patch(PatchControlId::Engine),
+            crate::control::StructuralEditIntent::ReplaceCapability {
+                target_capability_id,
+            },
+        ) if targets_focused_patch => {
+            let descriptor = state
+                .capabilities()
+                .descriptor(target_capability_id)
+                .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
+            Some(SemanticControlValue::Identity(
+                descriptor.label().to_owned(),
+            ))
+        }
+        // The voice-limit row is not the row the swap was requested from, but
+        // it is a row the swap moves: the carry-over is lossy by design, and a
+        // narrowing that the player only discovers afterwards is exactly the
+        // silent loss the declaration forbids. The same typed outcome the
+        // commit will apply decides whether there is anything to say — a
+        // widening swap preserves the player's value, so it says nothing.
+        (
+            crate::control::SemanticControlId::Patch(PatchControlId::VoiceLimit),
+            crate::control::StructuralEditIntent::ReplaceCapability {
+                target_capability_id,
+            },
+        ) if targets_focused_patch => {
+            let patch_id = path
+                .patch_id()
+                .ok_or(SemanticGraphicalViewModelError::MissingPatch)?;
+            let patch = state
+                .patches()
+                .iter()
+                .find(|patch| patch.id() == patch_id)
+                .ok_or(SemanticGraphicalViewModelError::MissingPatch)?;
+            let policy = state
+                .capabilities()
+                .descriptor(target_capability_id)
+                .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?
+                .voice_policy();
+            match crate::synth::VoiceLimitCarryOver::resolve(patch.voice_limit(), policy) {
+                crate::synth::VoiceLimitCarryOver::Preserved(_) => None,
+                crate::synth::VoiceLimitCarryOver::Clamped { limit, .. } => {
+                    Some(SemanticControlValue::Scalar(f64::from(limit.value())))
+                }
+            }
+        }
+        (
+            crate::control::SemanticControlId::Patch(PatchControlId::Capability(id)),
+            crate::control::StructuralEditIntent::ReplaceParameterChoice {
+                capability_id,
+                parameter_id,
+                choice_id,
+            },
+        ) if targets_focused_patch
+            && id == parameter_id
+            && path.capability_id().is_none_or(|focus_capability| {
+                focus_capability == &FocusCapabilityId::Instrument(capability_id.clone())
+            }) =>
+        {
+            Some(SemanticControlValue::Parameter(ParameterValue::Choice(
+                choice_id.clone(),
+            )))
+        }
+        (
+            crate::control::SemanticControlId::Patch(PatchControlId::EffectSlot(index)),
+            crate::control::StructuralEditIntent::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            },
+        ) if Some(*patch_id) == path.patch_id() && index == slot => Some(
+            SemanticControlValue::Identity(occupancy_value(entry.as_ref())?),
+        ),
+        (
+            crate::control::SemanticControlId::Mixer(MixerControlId::ReturnOccupancy { bus }),
+            crate::control::StructuralEditIntent::SetReturnOccupancy {
+                bus: target_bus,
+                entry,
+            },
+        ) if bus == target_bus => Some(SemanticControlValue::Identity(occupancy_value(
+            entry.as_ref(),
+        )?)),
+        _ => None,
+    };
+    Ok(requested)
 }
 
 fn project_status(state: &AppState) -> SemanticLifecycleStatus {
@@ -958,6 +1192,8 @@ fn project_patch_surfaces(
         focused: active == &engine_path,
         status: Some(status.clone()),
         error: error_for_path(errors, &engine_path),
+        requested_value: None,
+        valid_actions: Vec::new(),
     });
 
     for envelope in crate::synth::VoiceEnvelope::surface_descriptor() {
@@ -984,6 +1220,8 @@ fn project_patch_surfaces(
             focused: active == &path,
             status: None,
             error: None,
+            requested_value: None,
+            valid_actions: Vec::new(),
         });
     }
 
@@ -1061,6 +1299,8 @@ fn project_patch_surfaces(
             focused: active == &occupancy_path,
             status: targeted.then(|| status.clone()),
             error: error_for_path(errors, &occupancy_path),
+            requested_value: None,
+            valid_actions: Vec::new(),
         });
 
         let Some(effect) = occupant else {
@@ -1143,7 +1383,13 @@ fn project_patch_surfaces(
                             None,
                         ),
                     };
-                    (descriptor.label().to_owned(), kind, value, numeric_range, unit)
+                    (
+                        descriptor.label().to_owned(),
+                        kind,
+                        value,
+                        numeric_range,
+                        unit,
+                    )
                 }
                 // The one canonical master gain, read through the one global
                 // descriptor — the same value and bounds the MIXER Inspector's
@@ -1151,7 +1397,10 @@ fn project_patch_surfaces(
                 PatchControlId::Global(parameter) => {
                     let descriptor = parameter.descriptor();
                     (
-                        descriptor.name().to_owned(),
+                        // The descriptor's authored label. `name()` is the
+                        // serialization key `masterGainDb`, which is what used
+                        // to reach the screen here.
+                        descriptor.label().to_owned(),
                         SemanticControlKind::Continuous,
                         SemanticControlValue::Scalar(state.global_row_value(*parameter) as f64),
                         Some(SemanticNumericRange::new(
@@ -1212,6 +1461,8 @@ fn project_patch_surfaces(
                 editable: true,
                 status: None,
                 error: None,
+                requested_value: None,
+                valid_actions: Vec::new(),
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1240,6 +1491,23 @@ fn project_patch_surfaces(
         let detail_paths = resolver
             .patch_detail_paths(patch_id, subject)
             .map_err(map_resolver_error)?;
+        // A capability mid-preparation reports its typed lifecycle on its own
+        // rows rather than leaving them looking settled. The section set is
+        // never empty or stale — it is resolved from the installed descriptor
+        // just above — so what a preparing subject needs to say is *that it is
+        // preparing*, which is exactly what this projects.
+        let subject_status = (!lifecycle_editable
+            && state
+                .engine_selection()
+                .correlation()
+                .is_some_and(|correlation| correlation.patch_id() == Some(patch_id)))
+        .then(|| status.clone());
+        // No detail row is editable in this phase: the reducer accepts no
+        // adjustment on `PatchDetail`, so an editable row would advertise an
+        // edit that is refused. A read-only row is a projected fact the page
+        // can mark in text or shape, which is what the declaration asks for —
+        // and it is derived from what the reducer accepts rather than asserted.
+        let detail_editable = false;
         let mut detail_controls = Vec::with_capacity(detail_paths.len());
         for path in detail_paths {
             let control = match (subject, path.control_id()) {
@@ -1264,9 +1532,9 @@ fn project_patch_surfaces(
                             enabled,
                             visible,
                             focusable: true,
-                            editable: lifecycle_editable,
+                            editable: detail_editable,
                             active,
-                            status: None,
+                            status: subject_status.clone(),
                             errors,
                         },
                     )
@@ -1300,9 +1568,9 @@ fn project_patch_surfaces(
                             enabled,
                             visible,
                             focusable: true,
-                            editable: true,
+                            editable: detail_editable,
                             active,
-                            status: None,
+                            status: subject_status.clone(),
                             errors,
                         },
                     )
@@ -1387,6 +1655,8 @@ fn project_mixer_surfaces(
                     editable: true,
                     status: None,
                     error: None,
+                    requested_value: None,
+                    valid_actions: Vec::new(),
                 }
             }
             MixerControlId::ReturnOccupancy { bus } => {
@@ -1425,6 +1695,8 @@ fn project_mixer_surfaces(
                     editable: lifecycle_editable && !state.effects().descriptors().is_empty(),
                     status: targeted.then(|| status.clone()),
                     error: error_for_path(errors, &path),
+                    requested_value: None,
+                    valid_actions: Vec::new(),
                 }
             }
             MixerControlId::ReturnLevel { bus } => {
@@ -1450,6 +1722,8 @@ fn project_mixer_surfaces(
                     editable: true,
                     status: None,
                     error: None,
+                    requested_value: None,
+                    valid_actions: Vec::new(),
                 }
             }
             MixerControlId::ReturnEffect { bus, parameter } => {
@@ -1485,7 +1759,7 @@ fn project_mixer_surfaces(
                 let descriptor = parameter.descriptor();
                 SemanticControlViewModel {
                     path: path.clone(),
-                    label: descriptor.name().to_owned(),
+                    label: descriptor.label().to_owned(),
                     kind: SemanticControlKind::Continuous,
                     value: SemanticControlValue::Scalar(state.global_row_value(parameter) as f64),
                     numeric_range: Some(SemanticNumericRange::new(
@@ -1502,6 +1776,8 @@ fn project_mixer_surfaces(
                     focused: active == &path,
                     status: None,
                     error: None,
+                    requested_value: None,
+                    valid_actions: Vec::new(),
                 }
             }
         };
@@ -1583,6 +1859,8 @@ fn track_control(
         editable: true,
         status: None,
         error: None,
+        requested_value: None,
+        valid_actions: Vec::new(),
     }
 }
 
@@ -1624,6 +1902,8 @@ fn control_from_parameter(
         focusable: projection.focusable,
         editable: projection.editable,
         status: projection.status,
+        requested_value: None,
+        valid_actions: Vec::new(),
     }
 }
 
@@ -1646,6 +1926,8 @@ fn surface_root_control(
         editable: false,
         status: None,
         error: None,
+        requested_value: None,
+        valid_actions: Vec::new(),
     }
 }
 
@@ -1792,6 +2074,40 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
     if unique_actions.len() != data.valid_actions.len() {
         return Err(SemanticGraphicalViewModelError::DuplicateValidAction);
     }
+    // A per-row list is held to the same shape rule as the model-level one:
+    // ordered and duplicate-free. It comes from the same resolver, so this can
+    // only fail if that resolver stopped being duplicate-free — in which case
+    // both lists are wrong and the model should not be built at all.
+    if controls.iter().any(|control| {
+        control
+            .valid_actions
+            .iter()
+            .map(ValidAction::action)
+            .collect::<HashSet<_>>()
+            .len()
+            != control.valid_actions.len()
+    }) {
+        return Err(SemanticGraphicalViewModelError::DuplicateControlValidAction);
+    }
+    // NFR-005: within one projected model, every PATCH identity agrees — the
+    // focus path, every PATCH surface's summary, and every control path. A
+    // patch switch is one accepted event and one reprojection, so a projection
+    // that named two Patches would be one that had shown a half-applied switch.
+    // Checking the set size rather than comparing against the focus makes the
+    // claim symmetric: no field is privileged, and a disagreement anywhere is
+    // the same defect.
+    let identities = core::iter::once(data.focus_path.patch_id())
+        .chain(
+            data.surfaces
+                .iter()
+                .map(|surface| surface.summary.patch_id()),
+        )
+        .chain(controls.iter().map(|control| control.path.patch_id()))
+        .flatten()
+        .collect::<HashSet<_>>();
+    if identities.len() > 1 {
+        return Err(SemanticGraphicalViewModelError::PatchIdentityDisagreement);
+    }
     Ok(())
 }
 
@@ -1883,6 +2199,864 @@ mod tests {
         assert_eq!(
             slot_value(2),
             Some(SemanticControlValue::Identity("Empty".to_owned()))
+        );
+    }
+}
+
+/// WP03 acceptance for the two per-row facts, the detail surface, authored
+/// labels, and one-generation identity agreement.
+#[cfg(test)]
+mod projection_enrichment_tests {
+    use super::*;
+    use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
+    use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
+    use crate::adapter::production_effects::{
+        production_chorus_config, production_effect_registry,
+    };
+    use crate::adapter::production_instruments::{
+        production_capability_registry, production_soundfont_capability,
+    };
+    use crate::control::{
+        AppEvent, Direction, EventRejection, InteractionMode, SemanticAction, SemanticControlId,
+    };
+    use crate::mixer::global_parameters::GlobalParameters;
+    use crate::mixer::patch_output::PatchOutput;
+    use crate::synth::effect_slot_id::EffectSlotIndex;
+    use crate::synth::sound_font_instrument::SoundFontInstrument;
+    use crate::synth::{EffectSlotId, Patch};
+    use crate::testing::automatic_midi_test::create_soundfont_config;
+    use std::collections::BTreeSet;
+
+    /// Two installed Patches whose engines disagree about everything that
+    /// matters here: SoundFont's first detail row is also a PATCH Main row and
+    /// its voice policy is engine-managed; Braids hosts no `Capability` row on
+    /// PATCH Main at all and caps at sixteen voices. Patch 1's first slot is
+    /// occupied so an *effect* detail subject is reachable too.
+    fn mixed_state() -> AppState {
+        let soundfont = create_soundfont_config(
+            &production_soundfont_capability().unwrap(),
+            SoundFontInstrument::new(0, 40, false).unwrap(),
+        )
+        .unwrap();
+        let braids = BraidsCapability::new().unwrap().default_config().unwrap();
+        let mut state = AppState::new_with_effects(
+            production_capability_registry().unwrap(),
+            production_effect_registry().unwrap(),
+            GlobalParameters::new(-3.0).unwrap(),
+        );
+        state
+            .apply(AppEvent::InstallPatches(vec![
+                Patch::new(
+                    PatchId::new(1).unwrap(),
+                    "Lead".to_owned(),
+                    soundfont,
+                    MidiChannel::new(0).unwrap(),
+                    PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
+                )
+                .with_effect_slot(
+                    EffectSlotIndex::ALL[0],
+                    production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap(),
+                ),
+                Patch::new(
+                    PatchId::new(2).unwrap(),
+                    "Bass".to_owned(),
+                    braids,
+                    MidiChannel::new(1).unwrap(),
+                    PatchOutput::to_track(MixerTrackId::new(1).unwrap()),
+                ),
+            ]))
+            .unwrap();
+        state
+    }
+
+    fn patch_state() -> AppState {
+        let mut state = mixed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+    }
+
+    fn project(state: &AppState) -> SemanticGraphicalViewModel {
+        SemanticGraphicalViewModel::project(state, "wp03-state-hash")
+            .expect("the fixture state must project")
+    }
+
+    fn controls(model: &SemanticGraphicalViewModel) -> Vec<&SemanticControlViewModel> {
+        model
+            .surfaces()
+            .iter()
+            .flat_map(SemanticSurfaceViewModel::controls)
+            .collect()
+    }
+
+    fn control_at<'a>(
+        model: &'a SemanticGraphicalViewModel,
+        control: &SemanticControlId,
+    ) -> &'a SemanticControlViewModel {
+        controls(model)
+            .into_iter()
+            .find(|candidate| candidate.path().control_id() == control)
+            .unwrap_or_else(|| panic!("{control:?} must be projected"))
+    }
+
+    /// Walks the reducer until `predicate` holds, refusing to loop forever.
+    fn navigate_until(state: &mut AppState, predicate: impl Fn(&FocusPath) -> bool) {
+        for _ in 0..256 {
+            if predicate(state.interaction().focus_path()) {
+                return;
+            }
+            state
+                .apply(AppEvent::Navigate(Direction::Down))
+                .expect("the fixture order is long enough to reach the target row");
+        }
+        panic!("no row in the canonical order satisfied the predicate");
+    }
+
+    // -----------------------------------------------------------------
+    // T013 — per-row valid actions
+    // -----------------------------------------------------------------
+
+    /// The contract, not a coincidence: at the focused row the two lists are
+    /// the same value, because the projection reuses the model-level list there
+    /// rather than computing a second one.
+    #[test]
+    fn the_focused_rows_action_list_is_the_model_level_list_element_for_element() {
+        for state in [patch_state(), mixed_state()] {
+            let model = project(&state);
+            let focused = controls(&model)
+                .into_iter()
+                .filter(|control| control.focused())
+                .collect::<Vec<_>>();
+            assert_eq!(focused.len(), 1, "exactly one control is focused");
+            assert_eq!(focused[0].path(), model.focus_path());
+            assert!(
+                !model.valid_actions().is_empty(),
+                "the fixture must offer something, or this proves nothing"
+            );
+            assert_eq!(focused[0].valid_actions(), model.valid_actions());
+        }
+    }
+
+    /// The discriminating half: an unfocused row's list is *its own*. Entering
+    /// the detail surface is accepted only from a row that resolves a subject,
+    /// so the engine row offers it and an envelope row does not — and neither
+    /// of those rows is the focused one in the same projection.
+    #[test]
+    fn each_rows_action_list_reflects_that_row_rather_than_the_focus() {
+        let mut state = patch_state();
+        // Focus a row that is neither of the two rows under test.
+        navigate_until(&mut state, |path| {
+            matches!(
+                path.control_id(),
+                SemanticControlId::Patch(PatchControlId::EffectSlot(_))
+            )
+        });
+        let model = project(&state);
+        let enter_detail = SemanticAction::EnterSurface(SurfaceId::PatchDetail);
+        let offers_detail = |control: &SemanticControlViewModel| {
+            control
+                .valid_actions()
+                .iter()
+                .any(|valid| valid.action() == &enter_detail)
+        };
+
+        let engine = control_at(&model, &SemanticControlId::Patch(PatchControlId::Engine));
+        assert!(!engine.focused());
+        assert!(
+            offers_detail(engine),
+            "the engine row resolves an instrument subject, so it offers entry"
+        );
+
+        let envelope = controls(&model)
+            .into_iter()
+            .find(|control| {
+                matches!(
+                    control.path().control_id(),
+                    SemanticControlId::Patch(PatchControlId::Envelope(_))
+                )
+            })
+            .expect("the ADSR rows are projected");
+        assert!(!envelope.focused());
+        assert!(
+            !offers_detail(envelope),
+            "an envelope row resolves no subject, so it must not offer entry"
+        );
+
+        // A Utility row is on another surface entirely: its counterfactual is
+        // one where that surface is open, so it offers Return and the main
+        // rows do not.
+        let voice_limit = control_at(
+            &model,
+            &SemanticControlId::Patch(PatchControlId::VoiceLimit),
+        );
+        let offers_return = |control: &SemanticControlViewModel| {
+            control
+                .valid_actions()
+                .iter()
+                .any(|valid| valid.action() == &SemanticAction::Return)
+        };
+        assert!(offers_return(voice_limit));
+        assert!(!offers_return(engine));
+    }
+
+    /// A row at a value boundary excludes the adjustment that would exceed it —
+    /// on a row that is *not* the focused one, so the exclusion cannot have
+    /// come from the model-level list.
+    #[test]
+    fn an_unfocused_row_at_its_boundary_excludes_the_direction_that_would_exceed_it() {
+        let mut state = mixed_state();
+        // Drive the first MIXER track's level to its ceiling.
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        let mut raised = 0;
+        while state.apply(AppEvent::Adjust(Direction::Up)).is_ok() {
+            raised += 1;
+            assert!(raised < 512, "the level bound must be reachable");
+        }
+        assert!(raised > 0, "the fixture level must start below its ceiling");
+        let raised_path = state.interaction().focus_path().clone();
+
+        // Move the focus off it, then come back into Adjust mode so adjustment
+        // is part of the offered vocabulary at all.
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Navigate))
+            .unwrap();
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        assert_ne!(state.interaction().focus_path(), &raised_path);
+
+        let model = project(&state);
+        let at_bound = controls(&model)
+            .into_iter()
+            .find(|control| control.path() == &raised_path)
+            .expect("the raised row is still projected");
+        assert!(!at_bound.focused());
+        let offers = |control: &SemanticControlViewModel, action: SemanticAction| {
+            control
+                .valid_actions()
+                .iter()
+                .any(|valid| valid.action() == &action)
+        };
+        assert!(
+            !offers(at_bound, SemanticAction::Adjust(Direction::Up)),
+            "a row at its ceiling must not offer the coarse increase"
+        );
+        assert!(
+            !offers(at_bound, SemanticAction::Adjust(Direction::Right)),
+            "a row at its ceiling must not offer the fine increase"
+        );
+        assert!(
+            offers(at_bound, SemanticAction::Adjust(Direction::Down)),
+            "the direction away from the bound is still available"
+        );
+    }
+
+    /// Every per-row list is ordered like the descriptor and duplicate-free —
+    /// the same shape rule the model-level list is held to, which
+    /// `validate_data` refuses to build a model without.
+    #[test]
+    fn every_projected_rows_action_list_is_ordered_and_duplicate_free() {
+        for state in [patch_state(), mixed_state()] {
+            let model = project(&state);
+            let order = SemanticAction::surface_descriptor();
+            for control in controls(&model) {
+                let positions = control
+                    .valid_actions()
+                    .iter()
+                    .map(|valid| {
+                        order
+                            .iter()
+                            .position(|candidate| candidate == valid.action())
+                            .expect("a projected action is in the closed descriptor")
+                    })
+                    .collect::<Vec<_>>();
+                assert!(
+                    positions.windows(2).all(|pair| pair[0] < pair[1]),
+                    "{:?} must project its actions in descriptor order without repeats",
+                    control.path().control_id()
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // T014 — requested value
+    // -----------------------------------------------------------------
+
+    /// Every row of a settled projection projects `None`. Counted rather than
+    /// spot-checked, because "no row claims to be mid-edit" is the half of the
+    /// contract a positive test cannot cover.
+    #[test]
+    fn a_settled_projection_has_exactly_zero_rows_claiming_a_requested_value() {
+        for state in [patch_state(), mixed_state()] {
+            let model = project(&state);
+            let claiming = controls(&model)
+                .into_iter()
+                .filter(|control| control.requested_value().is_some())
+                .count();
+            assert_eq!(claiming, 0, "a settled projection moves nothing");
+        }
+    }
+
+    /// An engine row mid-swap projects both the active capability and the
+    /// requested one, and it is the only row that does.
+    #[test]
+    fn an_engine_row_mid_swap_projects_the_active_and_the_requested_capability() {
+        let mut state = patch_state();
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        assert!(state.engine_selection().is_in_flight());
+
+        let model = project(&state);
+        let engine = control_at(&model, &SemanticControlId::Patch(PatchControlId::Engine));
+        assert_eq!(
+            engine.value(),
+            &SemanticControlValue::Identity("HiDef SoundFont".to_owned()),
+            "the active capability is still the source engine"
+        );
+        assert_eq!(
+            engine.requested_value(),
+            Some(&SemanticControlValue::Identity(
+                "Mutable Instruments Braids".to_owned()
+            )),
+            "the requested capability is the one the correlated intent names"
+        );
+
+        // The requested capability is read from canonical state, not from the
+        // input that triggered the edit: it equals the correlation's own target.
+        let target = state
+            .engine_selection()
+            .correlation()
+            .and_then(|correlation| correlation.target_capability_id().cloned())
+            .expect("an in-flight capability swap correlates a target");
+        assert_eq!(target.as_str(), BRAIDS_CAPABILITY_ID);
+        assert_eq!(
+            state
+                .capabilities()
+                .descriptor(&target)
+                .unwrap()
+                .label()
+                .to_owned(),
+            match engine.requested_value() {
+                Some(SemanticControlValue::Identity(label)) => label.clone(),
+                other => panic!("expected an identity requested value, got {other:?}"),
+            }
+        );
+    }
+
+    /// An engine swap that narrows the voice ceiling says so on the row that
+    /// shows the limit. The carry-over is lossy by design, so the loss is
+    /// reported through the same typed outcome the commit will apply rather
+    /// than left for a player to find afterwards.
+    #[test]
+    fn a_swap_that_narrows_the_voice_limit_projects_the_narrowed_value_on_that_row() {
+        let mut state = patch_state();
+        let patch_id = state.interaction().patch_focus().unwrap();
+        let before = state
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .unwrap()
+            .voice_limit();
+        assert_eq!(
+            before.value(),
+            64,
+            "the SoundFont Patch starts at the engine-managed ceiling"
+        );
+
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+
+        let model = project(&state);
+        let limit = control_at(
+            &model,
+            &SemanticControlId::Patch(PatchControlId::VoiceLimit),
+        );
+        assert_eq!(
+            limit.value(),
+            &SemanticControlValue::Scalar(64.0),
+            "the active limit is still the player's value"
+        );
+        assert_eq!(
+            limit.requested_value(),
+            Some(&SemanticControlValue::Scalar(16.0)),
+            "Braids caps at sixteen, and a swap that costs the player 48 voices must say so"
+        );
+
+        // The widening direction says nothing: preserving the player's value is
+        // not a change, so there is nothing to report.
+        let mut widening = mixed_state();
+        widening
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        widening
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+        assert_eq!(
+            widening.patches()[1]
+                .instrument_config()
+                .capability_id()
+                .as_str(),
+            BRAIDS_CAPABILITY_ID
+        );
+        widening
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        widening.apply(AppEvent::Adjust(Direction::Left)).unwrap();
+        assert_eq!(
+            widening
+                .engine_selection()
+                .correlation()
+                .and_then(|correlation| correlation.target_capability_id())
+                .map(crate::synth::CapabilityId::as_str),
+            Some(HIDEF_CAPABILITY_ID)
+        );
+        let widened = project(&widening);
+        assert_eq!(
+            control_at(
+                &widened,
+                &SemanticControlId::Patch(PatchControlId::VoiceLimit),
+            )
+            .requested_value(),
+            None,
+            "a widening swap preserves the value, so the row reports no move"
+        );
+    }
+
+    /// An effect-slot occupancy row mid-change projects both what occupies the
+    /// position now and what is being installed into it.
+    #[test]
+    fn an_effect_slot_row_mid_occupancy_change_projects_the_active_and_the_requested_entry() {
+        let mut state = patch_state();
+        navigate_until(&mut state, |path| {
+            matches!(
+                path.control_id(),
+                SemanticControlId::Patch(PatchControlId::EffectSlot(slot)) if slot.index() == 1
+            )
+        });
+        let slot_path = state.interaction().focus_path().clone();
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+
+        let model = project(&state);
+        let slot = controls(&model)
+            .into_iter()
+            .find(|control| control.path() == &slot_path)
+            .expect("the occupancy row is projected");
+        assert_eq!(
+            slot.value(),
+            &SemanticControlValue::Identity("Empty".to_owned()),
+            "the position is still empty until the change commits"
+        );
+        let requested = slot
+            .requested_value()
+            .expect("a slot mid-occupancy-change reports what it is moving toward");
+        assert_ne!(requested, slot.value());
+
+        // Exactly one row is in flight.
+        assert_eq!(
+            controls(&model)
+                .into_iter()
+                .filter(|control| control.requested_value().is_some())
+                .count(),
+            1
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // T015 — the detail surface
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn the_detail_surface_is_present_exactly_while_an_entry_is_open() {
+        let mut state = patch_state();
+        assert!(project(&state).surface(SurfaceId::PatchDetail).is_none());
+
+        state
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let open = project(&state);
+        let detail = open
+            .surface(SurfaceId::PatchDetail)
+            .expect("an open entry projects its surface");
+        assert_eq!(detail.role(), SemanticSurfaceRole::Detail);
+        assert_eq!(open.active_surface(), SurfaceId::PatchDetail);
+
+        state.apply_semantic_action(SemanticAction::Return).unwrap();
+        assert!(
+            project(&state).surface(SurfaceId::PatchDetail).is_none(),
+            "leaving the surface removes it; hosts never see a stale one"
+        );
+    }
+
+    /// One surface identity, two subjects. Both project under the same
+    /// `SurfaceId` with the same role, and each one's controls and order come
+    /// from the descriptor its subject names.
+    #[test]
+    fn an_instrument_subject_and_an_effect_subject_share_one_surface_identity() {
+        let mut instrument = patch_state();
+        instrument
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+
+        let mut effect = patch_state();
+        navigate_until(&mut effect, |path| {
+            matches!(
+                path.control_id(),
+                SemanticControlId::Patch(PatchControlId::EffectSlot(slot)) if slot.index() == 0
+            )
+        });
+        effect
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+
+        let instrument_model = project(&instrument);
+        let effect_model = project(&effect);
+        let instrument_detail = instrument_model.surface(SurfaceId::PatchDetail).unwrap();
+        let effect_detail = effect_model.surface(SurfaceId::PatchDetail).unwrap();
+
+        assert_eq!(instrument_detail.id(), effect_detail.id());
+        assert_eq!(instrument_detail.role(), effect_detail.role());
+        assert_eq!(instrument_detail.label(), effect_detail.label());
+
+        let SemanticSurfaceSummary::PatchDetail { subject, .. } = instrument_detail.summary()
+        else {
+            panic!("the detail surface carries a detail summary");
+        };
+        assert!(matches!(subject, PatchDetailSubject::Instrument { .. }));
+        let SemanticSurfaceSummary::PatchDetail { subject, .. } = effect_detail.summary() else {
+            panic!("the detail surface carries a detail summary");
+        };
+        assert!(matches!(subject, PatchDetailSubject::Effect { .. }));
+
+        // Content is the descriptor's, in the descriptor's order, for both.
+        let soundfont = instrument
+            .capabilities()
+            .descriptor(instrument.patches()[0].instrument_config().capability_id())
+            .unwrap();
+        let expected = soundfont
+            .parameters()
+            .map(|spec| spec.label().to_owned())
+            .collect::<Vec<_>>();
+        let projected = instrument_detail
+            .controls()
+            .iter()
+            .map(|control| control.label().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(projected, expected, "section order is descriptor order");
+        assert!(!effect_detail.controls().is_empty());
+    }
+
+    /// The detail surface is read-only in this phase, and it says so rather
+    /// than inviting an edit the reducer refuses.
+    #[test]
+    fn detail_controls_project_editable_false_because_the_reducer_refuses_to_adjust_them() {
+        let mut state = patch_state();
+        state
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let model = project(&state);
+        let detail = model.surface(SurfaceId::PatchDetail).unwrap();
+        assert!(!detail.controls().is_empty());
+        for control in detail.controls() {
+            assert!(
+                !control.editable(),
+                "{} claims to be editable on a surface the reducer will not adjust",
+                control.label()
+            );
+        }
+
+        // The claim is derived, not asserted: adjustment really is refused.
+        let mut adjusting = state.clone();
+        adjusting
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        assert_eq!(
+            adjusting.apply(AppEvent::Adjust(Direction::Right)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+    }
+
+    /// A subject mid-preparation projects its typed lifecycle rather than an
+    /// empty or stale section set.
+    #[test]
+    fn a_mid_preparation_subject_projects_its_lifecycle_and_keeps_its_sections() {
+        let mut state = patch_state();
+        navigate_until(&mut state, |path| {
+            matches!(
+                path.control_id(),
+                SemanticControlId::Patch(PatchControlId::Capability(_))
+            )
+        });
+        state
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let settled = project(&state);
+        let settled_rows = settled
+            .surface(SurfaceId::PatchDetail)
+            .unwrap()
+            .controls()
+            .len();
+        assert!(settled_rows > 0);
+        assert!(settled
+            .surface(SurfaceId::PatchDetail)
+            .unwrap()
+            .controls()
+            .iter()
+            .all(|control| control.status().is_none()));
+
+        // Request a structural choice from PATCH Main under the open entry.
+        state.apply_semantic_action(SemanticAction::Return).unwrap();
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Navigate))
+            .unwrap();
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        assert!(state.engine_selection().is_in_flight());
+
+        let preparing = project(&state);
+        let detail = preparing.surface(SurfaceId::PatchDetail).unwrap();
+        assert_eq!(
+            detail.controls().len(),
+            settled_rows,
+            "the section set is the descriptor's, not something preparation empties"
+        );
+        assert!(
+            detail.controls().iter().all(|control| matches!(
+                control.status().map(SemanticLifecycleStatus::kind),
+                Some(EngineSelectionStatusKind::Preparing | EngineSelectionStatusKind::Activating)
+            )),
+            "a preparing subject reports its typed lifecycle on its own rows"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // T016 — authored labels, never serialization keys
+    // -----------------------------------------------------------------
+
+    /// Every serialization key this system addresses a value by: the name a
+    /// descriptor carries in the state tree and the parameter snapshot, plus
+    /// every leaf name the projections themselves are addressed by.
+    ///
+    /// Built as a *set* rather than a list of known offenders, so a future key
+    /// leaking into a label fails this too — the reported `masterGainDb` is one
+    /// member of it and gets no special treatment.
+    fn serialization_keys(state: &AppState) -> BTreeSet<String> {
+        let mut keys = BTreeSet::new();
+        for descriptor in GlobalParameters::surface_descriptor() {
+            keys.insert(descriptor.name().to_owned());
+        }
+        for descriptor in crate::synth::VoiceEnvelope::surface_descriptor() {
+            keys.insert(descriptor.name().to_owned());
+        }
+        for descriptor in VoiceLimit::surface_descriptor() {
+            keys.insert(descriptor.name().to_owned());
+        }
+        for descriptor in PatchOutput::surface_descriptor() {
+            keys.insert(descriptor.name().to_owned());
+        }
+        for descriptor in
+            crate::mixer::mixer_track_parameters::MixerTrackParameters::surface_descriptor()
+        {
+            keys.insert(descriptor.name().to_owned());
+        }
+        for descriptor in state.capabilities().descriptors() {
+            keys.extend(descriptor.parameters().map(|spec| spec.id().to_string()));
+        }
+        for descriptor in state.effects().descriptors() {
+            keys.extend(descriptor.parameters().map(|spec| spec.id().to_string()));
+        }
+        for path in SemanticGraphicalViewModel::serialized_leaf_descriptor()
+            .iter()
+            .chain(crate::control::PatchPageProjection::serialized_leaf_descriptor())
+        {
+            let leaf = path.rsplit('.').next().unwrap_or(path);
+            keys.insert(leaf.trim_end_matches("[]").to_owned());
+        }
+        keys
+    }
+
+    #[test]
+    fn no_projected_label_on_any_surface_is_a_serialization_key() {
+        let mut detail = patch_state();
+        detail
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let mut inspector = mixed_state();
+        inspector
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::MixerInspector))
+            .unwrap();
+        let mut utility = patch_state();
+        utility
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchUtility))
+            .unwrap();
+
+        let mut covered = BTreeSet::new();
+        for state in [patch_state(), mixed_state(), detail, inspector, utility] {
+            let keys = serialization_keys(&state);
+            let model = project(&state);
+            for surface in model.surfaces() {
+                covered.insert(format!("{:?}", surface.id()));
+                assert!(
+                    !keys.contains(surface.label()),
+                    "surface {:?} is labelled with the serialization key {}",
+                    surface.id(),
+                    surface.label()
+                );
+                for control in surface.controls() {
+                    assert!(
+                        !keys.contains(control.label()),
+                        "{:?} on {:?} is labelled with the serialization key {}",
+                        control.path().control_id(),
+                        surface.id(),
+                        control.label()
+                    );
+                }
+            }
+        }
+        // The guard is only as wide as the surfaces it saw. All five, or the
+        // row that was reported is the only one anybody ever checks.
+        assert_eq!(
+            covered,
+            SurfaceId::ALL
+                .into_iter()
+                .map(|surface| format!("{surface:?}"))
+                .collect::<BTreeSet<_>>(),
+            "the label guard must cover every surface, not just the reported row"
+        );
+    }
+
+    /// The reported defect itself: master gain reaches the screen as its
+    /// authored label on both surfaces that host it, and as the serialization
+    /// key on neither.
+    #[test]
+    fn master_gain_projects_its_authored_label_on_both_surfaces_that_host_it() {
+        let mut utility = patch_state();
+        utility
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchUtility))
+            .unwrap();
+        let mut inspector = mixed_state();
+        inspector
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::MixerInspector))
+            .unwrap();
+
+        for model in [project(&utility), project(&inspector)] {
+            let row = controls(&model)
+                .into_iter()
+                .find(|control| {
+                    matches!(
+                        control.path().control_id(),
+                        SemanticControlId::Patch(PatchControlId::Global(_))
+                            | SemanticControlId::Mixer(MixerControlId::Global { .. })
+                    )
+                })
+                .expect("master gain is projected on both surfaces");
+            assert_eq!(row.label(), "Master Volume");
+            assert_ne!(row.label(), "masterGainDb");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // T017 — one Patch identity, one generation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn every_patch_identity_in_one_projection_agrees() {
+        let mut state = patch_state();
+        for step in 0..2 {
+            if step > 0 {
+                state
+                    .apply(AppEvent::SelectPatch(Direction::Right))
+                    .unwrap();
+            }
+            let model = project(&state);
+            let mut identities = BTreeSet::new();
+            identities.extend(model.focus_path().patch_id());
+            for surface in model.surfaces() {
+                identities.extend(surface.summary().patch_id());
+                identities.extend(
+                    surface
+                        .controls()
+                        .iter()
+                        .filter_map(|control| control.path().patch_id()),
+                );
+            }
+            assert_eq!(identities.len(), 1, "one projection names one Patch");
+            assert_eq!(model.patch_identity(), identities.into_iter().next());
+        }
+    }
+
+    /// NFR-005 from the outside: a patch-selection gesture advances the
+    /// projected generation by exactly one, and the projection at that
+    /// generation names only the destination Patch. Both halves — reprojecting
+    /// twice, or reprojecting once against a half-switched state — are defects,
+    /// and neither is visible from the other's evidence.
+    #[test]
+    fn a_patch_switch_advances_exactly_one_projected_generation() {
+        let mut state = patch_state();
+        let before = project(&state);
+        let source = before.patch_identity().unwrap();
+
+        state
+            .apply_semantic_action(SemanticAction::SelectPatch(Direction::Right))
+            .unwrap();
+        let after = project(&state);
+
+        assert_eq!(after.generation(), before.generation() + 1);
+        let destination = after.patch_identity().unwrap();
+        assert_ne!(destination, source);
+        for surface in after.surfaces() {
+            if let Some(patch_id) = surface.summary().patch_id() {
+                assert_eq!(patch_id, destination);
+            }
+            for control in surface.controls() {
+                if let Some(patch_id) = control.path().patch_id() {
+                    assert_eq!(
+                        patch_id, destination,
+                        "no projected row may carry the source Patch's identity"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The diagnostic text projection and the graphical projection cannot come
+    /// from different accepted generations: they are derived together and the
+    /// shell refuses to hold a pair that disagrees.
+    #[test]
+    fn the_text_and_graphical_projections_come_from_one_accepted_generation() {
+        let mut state = patch_state();
+        state
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let (snapshot, page, text, shell, _parameters) = crate::control::StateProjector::new()
+            .project_with_shell(&state)
+            .expect("an open detail entry projects the whole set");
+
+        assert_eq!(shell.generation(), state.generation());
+        assert_eq!(shell.semantic_model().generation(), state.generation());
+        assert_eq!(text.state_hash(), snapshot.hash());
+        assert_eq!(shell.state_hash(), snapshot.hash());
+        assert_eq!(shell.semantic_model().state_hash(), snapshot.hash());
+        assert_eq!(
+            shell.patch_identity(),
+            page.map(|page| page.patch().id()),
+            "the page and the semantic model name one Patch"
         );
     }
 }

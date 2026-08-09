@@ -2,16 +2,16 @@ use crate::control::app_state::AppState;
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
     EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, PatchControlId,
-    StructuralEditIntent,
+    PatchDetailSubject, StructuralEditIntent, SurfaceId,
 };
 use crate::kernel::{MidiChannel, PatchId};
 use crate::mixer::patch_output::{PatchOutputParameter, PatchOutputParameterKind};
 use crate::real_time::GraphRevision;
-use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::instrument_capability::{
     AssetReference, ParameterChoice, ParameterDefault, ParameterKind, ParameterRange,
     ParameterUpdate, ParameterValue, PatchInteraction,
 };
+use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
     CapabilityId, EffectCapabilityDescriptor, EffectCapabilityId, EffectSlotId, ParameterId,
     ParameterSpec, PostEffectConfig,
@@ -205,8 +205,11 @@ impl PatchPageOutputRow {
                 let descriptor = parameter.descriptor();
                 Self {
                     control_id: control.clone(),
+                    // `id` is the serialization key and `label` is the
+                    // authored label. They are two vocabularies for two
+                    // readers, and this row used to project the key for both.
                     id: descriptor.name().to_owned(),
-                    label: descriptor.name().to_owned(),
+                    label: descriptor.label().to_owned(),
                     kind: "continuous".to_owned(),
                     scalar_value: Some(global.master_gain_db()),
                     choice_value: None,
@@ -719,6 +722,145 @@ impl PatchPageEffectSlot {
     }
 }
 
+/// The open detail entry's content, resolved entirely from the installed
+/// descriptor its [`PatchDetailSubject`] names.
+///
+/// Present exactly while the reducer holds a detail entry and absent otherwise,
+/// so a page never renders a stale detail and never synthesizes one. It carries
+/// the subject rather than a copy of the subject's schema: label, sections,
+/// rows, ranges, and units all resolve from the descriptor at projection time.
+///
+/// Every row is a focus target — the detail order is the subject descriptor's
+/// visible enabled rows, not just its structural ones — which is why these rows
+/// carry a `controlId` where the same specs projected on PATCH Main do not.
+/// None of them is editable: the reducer accepts no adjustment on the detail
+/// surface in this phase, so `editable` says so rather than inviting an edit
+/// that would be refused.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchPageDetail {
+    subject: PatchDetailSubject,
+    label: String,
+    status: EngineSelectionStatusKind,
+    sections: Vec<PatchPageSection>,
+}
+
+impl PatchPageDetail {
+    pub const fn subject(&self) -> &PatchDetailSubject {
+        &self.subject
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub const fn status(&self) -> EngineSelectionStatusKind {
+        self.status
+    }
+
+    pub fn sections(&self) -> &[PatchPageSection] {
+        &self.sections
+    }
+}
+
+/// Builds one detail surface's sections from a descriptor's own ordered
+/// sections and this Patch's canonical values.
+///
+/// This is the single walk both subject kinds run. The caller has already
+/// resolved which descriptor and which config to read; nothing here can tell an
+/// instrument subject from an effect one, which is the whole of what makes one
+/// shell serve both.
+fn detail_sections<'a>(
+    sections: &[crate::synth::CapabilitySection],
+    value: &dyn Fn(&ParameterId) -> Option<&'a ParameterValue>,
+    asset: &dyn Fn(&ParameterId) -> Option<&'a AssetReference>,
+    control_id: &dyn Fn(&ParameterId) -> PatchControlId,
+) -> Result<Vec<PatchPageSection>, PatchPageProjectionError> {
+    sections
+        .iter()
+        .map(|section| {
+            let parameters = section
+                .parameters()
+                .iter()
+                .map(|spec| {
+                    let resolved = if spec.kind() == ParameterKind::Asset {
+                        let reference = asset(spec.id())
+                            .or_else(|| match spec.default_value() {
+                                ParameterDefault::Asset(reference) => Some(reference),
+                                ParameterDefault::Value(_) => None,
+                            })
+                            .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
+                        PatchPageParameterValue::Asset {
+                            reference: reference.clone(),
+                        }
+                    } else {
+                        PatchPageParameterValue::Parameter {
+                            value: value(spec.id())
+                                .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?
+                                .clone(),
+                        }
+                    };
+                    let satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
+                        predicate.is_none_or(|predicate| {
+                            value(predicate.parameter_id()) == Some(predicate.equals())
+                        })
+                    };
+                    let enabled = satisfied(spec.enabled_when());
+                    let visible = satisfied(spec.visible_when());
+                    let selected_choice_id = match &resolved {
+                        PatchPageParameterValue::Parameter {
+                            value: ParameterValue::Choice(choice_id),
+                        } => Some(choice_id.clone()),
+                        _ => None,
+                    };
+                    let selected_label = selected_choice_id.as_deref().and_then(|choice_id| {
+                        spec.choices()
+                            .iter()
+                            .find(|choice| choice.id() == choice_id)
+                            .map(|choice| choice.label().to_owned())
+                    });
+                    Ok(PatchPageParameterRow {
+                        // Every visible enabled detail row is a focus target,
+                        // whatever its patch interaction: the detail order is
+                        // the descriptor's own rows, which is exactly why a
+                        // Braids detail focus has no PATCH Main row to land on.
+                        control_id: (enabled && visible).then(|| control_id(spec.id())),
+                        id: spec.id().clone(),
+                        label: spec.label().to_owned(),
+                        kind: spec.kind(),
+                        update: spec.update(),
+                        patch_interaction: spec.patch_interaction(),
+                        value: resolved,
+                        selected_choice_id,
+                        selected_label,
+                        range: spec.range(),
+                        choices: spec.choices().to_vec(),
+                        fine_step: spec.fine_step(),
+                        coarse_step: spec.coarse_step(),
+                        unit: spec.unit().map(str::to_owned),
+                        formatter: spec.formatter().to_owned(),
+                        requested_choice_id: None,
+                        requested_label: None,
+                        status: None,
+                        request_id: None,
+                        active_graph_revision: None,
+                        target_graph_revision: None,
+                        failure: None,
+                        enabled,
+                        visible,
+                        editable: false,
+                    })
+                })
+                .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
+            Ok(PatchPageSection {
+                id: section.id().to_owned(),
+                label: section.label().to_owned(),
+                parameters,
+            })
+        })
+        .collect()
+}
+
 impl PatchPageSection {
     pub fn id(&self) -> &str {
         &self.id
@@ -744,6 +886,7 @@ struct PatchPageContent {
     envelope: Vec<PatchPageEnvelopeRow>,
     sections: Vec<PatchPageSection>,
     effects: Vec<PatchPageEffectSlot>,
+    detail: Option<PatchPageDetail>,
 }
 
 /// Immutable host-neutral PATCH view model derived by one generic schema walk.
@@ -756,6 +899,46 @@ pub struct PatchPageProjection {
 impl PatchPageProjection {
     pub const SERIALIZED_LEAF_DESCRIPTOR: &'static [&'static str] = &[
         "context",
+        "detail",
+        "detail.label",
+        "detail.sections[].id",
+        "detail.sections[].label",
+        "detail.sections[].parameters[].activeGraphRevision",
+        "detail.sections[].parameters[].choices[].id",
+        "detail.sections[].parameters[].choices[].label",
+        "detail.sections[].parameters[].coarseStep",
+        "detail.sections[].parameters[].controlId",
+        "detail.sections[].parameters[].editable",
+        "detail.sections[].parameters[].enabled",
+        "detail.sections[].parameters[].failure",
+        "detail.sections[].parameters[].fineStep",
+        "detail.sections[].parameters[].formatter",
+        "detail.sections[].parameters[].id",
+        "detail.sections[].parameters[].kind",
+        "detail.sections[].parameters[].label",
+        "detail.sections[].parameters[].patchInteraction",
+        "detail.sections[].parameters[].range",
+        "detail.sections[].parameters[].range.maximum",
+        "detail.sections[].parameters[].range.minimum",
+        "detail.sections[].parameters[].requestId",
+        "detail.sections[].parameters[].requestedChoiceId",
+        "detail.sections[].parameters[].requestedLabel",
+        "detail.sections[].parameters[].selectedChoiceId",
+        "detail.sections[].parameters[].selectedLabel",
+        "detail.sections[].parameters[].status",
+        "detail.sections[].parameters[].targetGraphRevision",
+        "detail.sections[].parameters[].unit",
+        "detail.sections[].parameters[].update",
+        "detail.sections[].parameters[].value.reference.kind",
+        "detail.sections[].parameters[].value.reference.locator",
+        "detail.sections[].parameters[].value.source",
+        "detail.sections[].parameters[].value.value.kind",
+        "detail.sections[].parameters[].value.value.value",
+        "detail.sections[].parameters[].visible",
+        "detail.status",
+        "detail.subject.capabilityId",
+        "detail.subject.kind",
+        "detail.subject.slotId",
         "engine.activeCapabilityId",
         "engine.activeGraphRevision",
         "engine.activeLabel",
@@ -910,6 +1093,12 @@ impl PatchPageProjection {
         &self.content.effects
     }
 
+    /// The open detail entry's capability-resolved content, or `None` while no
+    /// entry is open.
+    pub fn detail(&self) -> Option<&PatchPageDetail> {
+        self.content.detail.as_ref()
+    }
+
     pub fn state_hash(&self) -> &str {
         &self.state_hash
     }
@@ -953,20 +1142,37 @@ impl PatchPageProjection {
             .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
         crate::control::app_state::validate_effect_slots(state.effects(), patch.effect_slots())
             .map_err(|_| PatchPageProjectionError::InvalidEffectConfig)?;
+        // The detail entry, resolved before the containment check because it is
+        // one of the three orders a focused row may belong to.
+        let detail = state
+            .interaction()
+            .detail_subject()
+            .map(|subject| project_detail(state, patch, subject))
+            .transpose()?;
+
         // Which order the focused row belongs to is decided by the one
         // Utility/PatchMain split, so a new Utility row cannot fall through to
         // the main order and read as an invalid config.
         //
-        // A focus on the subordinate detail surface belongs to *neither* order
-        // — it is the open subject's own order — and this check rejects it.
-        // That is deliberate and it is why `SurfaceId::is_enterable` withholds
-        // `PatchDetail` from the offered action vocabulary: nothing here
-        // projects a detail surface yet, and the text projection has no
-        // selected line for a detail row either, so a detail focus is not a
-        // projectable state. WP03's T015 owns making it one — page rows, this
-        // containment check, and the text projection's selected line together —
-        // and removing the entry gate is part of the same change.
-        let resolved_controls = if focused_control_id.is_utility() {
+        // A focus on the subordinate detail surface belongs to neither of those
+        // orders — it is the open subject's own order, which the surface it is
+        // focused on names. Resolving it from the open entry rather than from
+        // the main order is what makes a Braids detail focus projectable at
+        // all: Braids' main order hosts no `Capability` row, so its detail rows
+        // exist in exactly one place.
+        let resolved_controls = if state.interaction().active_surface() == SurfaceId::PatchDetail {
+            detail
+                .as_ref()
+                .map(|detail| {
+                    detail
+                        .sections()
+                        .iter()
+                        .flat_map(|section| section.parameters())
+                        .filter_map(PatchPageParameterRow::control_id)
+                        .collect::<Vec<_>>()
+                })
+                .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?
+        } else if focused_control_id.is_utility() {
             PatchControlId::utility_surface_descriptor().to_vec()
         } else {
             state
@@ -1267,10 +1473,87 @@ impl PatchPageProjection {
                 envelope,
                 sections,
                 effects,
+                detail,
             }),
             state_hash: Arc::from(state_hash),
         })
     }
+}
+
+/// Resolves the open detail entry's whole content from the descriptor its
+/// subject names.
+///
+/// The single `match` below picks *which descriptor and which config* the
+/// subject resolves to, and nothing else: no section list is declared here, and
+/// both arms hand the identical [`detail_sections`] walk their descriptor's own
+/// ordered sections. Adding a third subject kind would add one arm here and
+/// change nothing downstream.
+fn project_detail(
+    state: &AppState,
+    patch: &crate::synth::patch::Patch,
+    subject: &PatchDetailSubject,
+) -> Result<PatchPageDetail, PatchPageProjectionError> {
+    // A row's identity on the detail surface follows the subject's shape: an
+    // effect row is addressed by its exact occupied slot, an instrument row by
+    // the capability parameter alone. This is the row *identity*, not its
+    // content — the same distinction `SemanticResolver::patch_detail_paths`
+    // draws when it resolves the focus order.
+    let slot_id = subject.slot_id();
+    let control_id = |id: &ParameterId| match slot_id {
+        Some(slot) => PatchControlId::Effect(slot, id.clone()),
+        None => PatchControlId::Capability(id.clone()),
+    };
+    let (label, sections) = match subject {
+        PatchDetailSubject::Instrument { capability_id } => {
+            let descriptor = state
+                .capabilities()
+                .descriptor(capability_id)
+                .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
+            let config = patch.instrument_config();
+            (
+                descriptor.label().to_owned(),
+                detail_sections(
+                    descriptor.sections(),
+                    &|id| config.value(id),
+                    &|id| config.asset_reference(id),
+                    &control_id,
+                )?,
+            )
+        }
+        PatchDetailSubject::Effect {
+            slot_id,
+            capability_id,
+        } => {
+            let config = patch
+                .effect_slots()
+                .iter()
+                .flatten()
+                .find(|effect| effect.slot_id() == *slot_id)
+                .ok_or(PatchPageProjectionError::InvalidEffectConfig)?;
+            let descriptor = state
+                .effects()
+                .descriptor(capability_id)
+                .ok_or(PatchPageProjectionError::InvalidEffectConfig)?;
+            (
+                descriptor.label().to_owned(),
+                detail_sections(
+                    descriptor.sections(),
+                    &|id| config.value(id),
+                    &|id| config.asset_reference(id),
+                    &control_id,
+                )?,
+            )
+        }
+    };
+    Ok(PatchPageDetail {
+        subject: subject.clone(),
+        label,
+        // A capability mid-preparation reports its typed lifecycle rather than
+        // an empty or stale section set: the sections above are the installed
+        // descriptor's, and this says what is happening to them.
+        status: state.engine_selection().kind(),
+        sections,
+    })
 }
 
 impl PartialEq for PatchPageProjection {
@@ -1295,6 +1578,7 @@ impl Serialize for PatchPageProjection {
             envelope: &'a [PatchPageEnvelopeRow],
             sections: &'a [PatchPageSection],
             effects: &'a [PatchPageEffectSlot],
+            detail: Option<&'a PatchPageDetail>,
             state_hash: &'a str,
         }
 
@@ -1307,6 +1591,7 @@ impl Serialize for PatchPageProjection {
             envelope: self.envelope(),
             sections: self.sections(),
             effects: self.effects(),
+            detail: self.detail(),
             state_hash: self.state_hash(),
         }
         .serialize(serializer)
@@ -1433,6 +1718,43 @@ mod tests {
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();
+        state
+    }
+
+    /// Which detail subject a fixture opens. The two subjects resolve different
+    /// descriptors and different row identities, so a fixture must say which.
+    enum DetailSubjectFixture {
+        Instrument,
+        Effect,
+    }
+
+    /// A focused Patch with one detail entry open, driven through the reducer
+    /// rather than assembled: the subject is derived from the originating row,
+    /// which is the only way a detail entry is ever reached.
+    fn state_with_open_detail(
+        config: crate::synth::InstrumentConfig,
+        subject: DetailSubjectFixture,
+    ) -> AppState {
+        let mut state = state_with_configured_effect(config);
+        if matches!(subject, DetailSubjectFixture::Effect) {
+            for _ in 0..64 {
+                if matches!(
+                    state.interaction().focus_path().control_id(),
+                    crate::control::SemanticControlId::Patch(PatchControlId::EffectSlot(slot))
+                        if slot.index() == 0
+                ) {
+                    break;
+                }
+                state
+                    .apply(AppEvent::Navigate(crate::control::Direction::Down))
+                    .expect("the occupied slot row is inside the canonical order");
+            }
+        }
+        state
+            .apply(AppEvent::EnterSurface(
+                crate::control::SurfaceId::PatchDetail,
+            ))
+            .expect("the fixture row resolves a detail subject");
         state
     }
 
@@ -1699,6 +2021,25 @@ mod tests {
             page,
             project(&state_with_configured_effect(
                 BraidsCapability::new().unwrap().default_config().unwrap(),
+            )),
+            // Both detail subjects, because they do not carry the same leaves:
+            // an instrument subject leaves `detail.slotId` null while an effect
+            // subject names its exact occupied slot, and only the SoundFont
+            // subject reaches the asset-valued `detail...value.reference.*`
+            // rows. A fixture that opens one detail entry cannot see the
+            // other's leaves — which is the same partial-enumeration trap that
+            // let the subject's own leaves go undeclared upstream.
+            project(&state_with_open_detail(
+                create_soundfont_config(
+                    &soundfont,
+                    SoundFontInstrument::new(128, 11, false).unwrap(),
+                )
+                .unwrap(),
+                DetailSubjectFixture::Instrument,
+            )),
+            project(&state_with_open_detail(
+                BraidsCapability::new().unwrap().default_config().unwrap(),
+                DetailSubjectFixture::Effect,
             )),
         ] {
             leaves(&serde_json::to_value(page).unwrap(), "", &mut discovered);

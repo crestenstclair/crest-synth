@@ -9,6 +9,7 @@ use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
     FocusPath, MixerControlId, SemanticAction, SemanticControlId, SemanticResolver, SurfaceId,
 };
+use crate::kernel::midi_channel::MidiChannel;
 use crate::mixer::bus_id::BusId;
 use crate::mixer::bus_return::{BusReturnBank, RETURN_LEVEL_DESCRIPTOR};
 use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
@@ -26,7 +27,6 @@ use crate::synth::instrument_capability::{
     CapabilityError, CapabilityRegistry, ParameterAdjustment, ParameterKind, ParameterValue,
     PatchInteraction,
 };
-use crate::kernel::midi_channel::MidiChannel;
 use crate::synth::patch::{Patch, PatchEditableTarget};
 use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
@@ -411,8 +411,8 @@ pub(crate) fn exercise_reducer_table_rejections(
         .expect_err("PATCH has no focus before installation");
 
     let mut invalid_selection = AppState {
-        capabilities: capabilities.clone(),
-        effects: EffectCapabilityRegistry::default(),
+        capabilities: std::sync::Arc::new(capabilities.clone()),
+        effects: std::sync::Arc::new(EffectCapabilityRegistry::default()),
         patches: vec![probe_patch(1, 0, instrument_config)],
         mixer: MixerState::default(),
         global,
@@ -486,8 +486,26 @@ pub(crate) fn exercise_reducer_table_rejections(
 /// its target read-only, then commits only the next generation and one command.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
-    capabilities: CapabilityRegistry,
-    effects: EffectCapabilityRegistry,
+    /// The two installed registries are shared rather than copied.
+    ///
+    /// Neither is ever reassigned after construction — nothing in the reducer
+    /// can change what is installed — so sharing them cannot alias a mutation,
+    /// and `Arc<T>: PartialEq` still compares contents, leaving state equality
+    /// exactly as it was.
+    ///
+    /// Sharing them is what makes availability affordable to ask per row.
+    /// [`Self::accepts_semantic_action`] answers by cloning this state and
+    /// running the real reducer over the clone, which is the whole reason the
+    /// answer cannot drift; the projection now asks that question once for the
+    /// focus and once more for every projected control's counterfactual focus.
+    /// Measured on the production registries, copying the capability registry
+    /// was 41µs of a 48µs `AppState` clone — 86% of the cost of a question that
+    /// never reads a descriptor it did not already have. Sharing takes the
+    /// clone to 1.5µs and one full action-availability sweep from 1.46ms to
+    /// 139µs, which is the difference between a per-row list and no per-row
+    /// list at all.
+    capabilities: std::sync::Arc<CapabilityRegistry>,
+    effects: std::sync::Arc<EffectCapabilityRegistry>,
     patches: Vec<Patch>,
     mixer: MixerState,
     global: GlobalParameters,
@@ -535,8 +553,8 @@ impl AppState {
         active_graph_revision: GraphRevision,
     ) -> Self {
         Self {
-            capabilities,
-            effects,
+            capabilities: std::sync::Arc::new(capabilities),
+            effects: std::sync::Arc::new(effects),
             patches: Vec::new(),
             mixer: MixerState::default(),
             global,
@@ -567,11 +585,11 @@ impl AppState {
         &self.patches
     }
 
-    pub const fn capabilities(&self) -> &CapabilityRegistry {
+    pub fn capabilities(&self) -> &CapabilityRegistry {
         &self.capabilities
     }
 
-    pub const fn effects(&self) -> &EffectCapabilityRegistry {
+    pub fn effects(&self) -> &EffectCapabilityRegistry {
         &self.effects
     }
 
@@ -641,6 +659,68 @@ impl AppState {
     pub fn accepts_semantic_action(&self, action: &SemanticAction) -> bool {
         let mut candidate = self.clone();
         candidate.apply_semantic_action(action.clone()).is_ok()
+    }
+
+    /// Returns this exact accepted state with the focus moved to `path`, or
+    /// `None` when no coherent state has that path focused.
+    ///
+    /// This is the counterfactual the per-row action list is resolved against:
+    /// *if this control were the focused one, what would the reducer accept?*
+    /// Nothing else changes — the same Patches, the same mixer, the same
+    /// lifecycle, the same interaction mode — so the difference between one
+    /// row's list and another's is the focus and nothing else.
+    ///
+    /// The move goes through the same [`InteractionState`] transitions the
+    /// reducer itself uses, so every counterfactual is a state the reducer
+    /// could really be in rather than an assembled one: a main path lands
+    /// through `set_active_main`, a persistent-side path is *entered* from the
+    /// remembered main origin the way a player enters it, and a detail path is
+    /// only reachable while the entry it belongs to is already open. Entering a
+    /// surface resets the mode, so the accepted mode is restored afterwards:
+    /// the counterfactual differs in focus, and a mode change would silently
+    /// answer a different question.
+    ///
+    /// The final resolver check is what makes the result trustworthy — a path
+    /// the installed schema does not host yields `None` rather than a state
+    /// focused on a control that is not there.
+    pub(crate) fn with_counterfactual_focus(&self, path: &FocusPath) -> Option<Self> {
+        if self.interaction.focus_path() == path {
+            return Some(self.clone());
+        }
+        if path.context() != self.context() || path.validate().is_err() {
+            return None;
+        }
+        let mode = self.interaction.mode();
+        let mut candidate = self.clone();
+        let surface = path.surface();
+        if surface.is_main() {
+            candidate.interaction.set_active_main(path.clone()).ok()?;
+        } else if surface.is_persistent_side() {
+            let origin = match path.context() {
+                TopLevelContext::Patch => self.interaction.remembered_patch_main().cloned()?,
+                TopLevelContext::Mixer => self.interaction.remembered_mixer_main().clone(),
+            };
+            candidate.interaction.set_active_main(origin).ok()?;
+            candidate.interaction.enter_surface(surface).ok()?;
+            candidate.interaction.active_focus = path.clone();
+        } else {
+            // The subordinate detail surface carries a subject, and only
+            // `enter_detail` may set one. A detail row is projected exactly
+            // while that entry is open, so the counterfactual moves within the
+            // already-open surface's own order and never opens one.
+            if self.interaction.active_surface() != surface {
+                return None;
+            }
+            candidate.interaction.active_focus = path.clone();
+        }
+        candidate.interaction.set_mode(mode).ok()?;
+        debug_assert!(
+            candidate.interaction.detail_invariant_holds(),
+            "a counterfactual focus must leave the detail facts agreeing"
+        );
+        SemanticResolver::new(&candidate)
+            .resolves(path)
+            .then_some(candidate)
     }
 
     /// Applies a normalized user intent through the same transactional reducer
@@ -999,7 +1079,9 @@ impl AppState {
         let subject = resolver
             .detail_subject(&origin)
             .ok_or(EventRejection::ActionUnavailableInContext)?;
-        let patch_id = origin.patch_id().ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch_id = origin
+            .patch_id()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
         // The subject's first visible enabled control, resolved from the
         // installed descriptor rather than assumed.
         let focus = resolver
@@ -1649,7 +1731,8 @@ impl AppState {
                         .return_to_origin()
                         .map_err(|_| EventRejection::ActionUnavailableInContext)
                 } else if matches!(direction, Direction::Up | Direction::Down) {
-                    let paths = SemanticResolver::new(self).ordered_paths(SurfaceId::PatchDetail)?;
+                    let paths =
+                        SemanticResolver::new(self).ordered_paths(SurfaceId::PatchDetail)?;
                     self.navigate_side_nonwrapping(&paths, direction == Direction::Down)
                 } else {
                     Err(EventRejection::ActionUnavailableInContext)
@@ -2461,9 +2544,9 @@ impl AppState {
                 // roots and one return *origin*, all of which are main by
                 // construction. A subordinate surface's own focus is repaired
                 // where that surface's order is resolved.
-                SurfaceId::PatchUtility
-                | SurfaceId::PatchDetail
-                | SurfaceId::MixerInspector => return Err(EventRejection::InvalidSelection),
+                SurfaceId::PatchUtility | SurfaceId::PatchDetail | SurfaceId::MixerInspector => {
+                    return Err(EventRejection::InvalidSelection)
+                }
             };
             SemanticResolver::recover(path, old_order, new_order)
                 .ok_or(EventRejection::InvalidSelection)
@@ -2695,10 +2778,10 @@ mod tests {
     use crate::adapter::hidef_soundfont_capability::{
         HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_PRESET_PARAMETER_ID,
     };
+    use crate::control::{InteractionMode, PatchControlId, PatchDetailSubject};
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
-    use crate::control::{InteractionMode, PatchControlId, PatchDetailSubject};
     use crate::mixer::global_parameters::GlobalParameter;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::{DescriptorDefaultConfigFactory, InstrumentCapabilityProvider, ParameterId};
@@ -4069,8 +4152,12 @@ mod tests {
 
     /// Navigates PATCH Utility from its entry row to `control`.
     fn focus_utility_row(state: &mut AppState, control: &PatchControlId) {
-        state.apply(AppEvent::SelectContext(TopLevelContext::Patch)).unwrap();
-        state.apply(AppEvent::EnterSurface(SurfaceId::PatchUtility)).unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+            .unwrap();
         let order = PatchControlId::utility_surface_descriptor();
         let index = |target: &PatchControlId| {
             order
@@ -4127,15 +4214,17 @@ mod tests {
             assert!(
                 !main
                     .iter()
-                    .any(|path| path.control_id()
-                        == &SemanticControlId::Patch(control.clone())),
+                    .any(|path| path.control_id() == &SemanticControlId::Patch(control.clone())),
                 "{control} must not appear in the PatchMain order"
             );
         }
 
         // Upward from the first row and downward from the last both refuse,
         // leaving state identical.
-        focus_utility_row(&mut state, &PatchControlId::Global(GlobalParameter::MasterGainDb));
+        focus_utility_row(
+            &mut state,
+            &PatchControlId::Global(GlobalParameter::MasterGainDb),
+        );
         let at_top = state.clone();
         assert_eq!(
             state.apply(AppEvent::Navigate(Direction::Up)),
@@ -4182,15 +4271,16 @@ mod tests {
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
             .unwrap();
-        let mixer_paths = SemanticResolver::new(&state).mixer_inspector_paths(
-            state
-                .interaction()
-                .remembered_mixer_main()
-                .control_id()
-                .as_mixer_track_id()
-                .unwrap(),
-        )
-        .unwrap();
+        let mixer_paths = SemanticResolver::new(&state)
+            .mixer_inspector_paths(
+                state
+                    .interaction()
+                    .remembered_mixer_main()
+                    .control_id()
+                    .as_mixer_track_id()
+                    .unwrap(),
+            )
+            .unwrap();
         let global_path = mixer_paths
             .iter()
             .find(|path| {
@@ -4235,7 +4325,10 @@ mod tests {
         for (name, source) in [
             ("Patch", include_str!("../synth/patch.rs")),
             ("PatchControlId", include_str!("patch_control_id.rs")),
-            ("PatchPageProjection", include_str!("patch_page_projection.rs")),
+            (
+                "PatchPageProjection",
+                include_str!("patch_page_projection.rs"),
+            ),
         ] {
             let declarations = source
                 .lines()
@@ -4421,7 +4514,10 @@ mod tests {
         while state.patches()[0].voice_limit().value() > descriptor.minimum() {
             state.apply(AppEvent::Adjust(Direction::Down)).unwrap();
         }
-        assert_eq!(state.patches()[0].voice_limit().value(), descriptor.minimum());
+        assert_eq!(
+            state.patches()[0].voice_limit().value(),
+            descriptor.minimum()
+        );
         let at_min = state.clone();
         assert_eq!(
             state.apply(AppEvent::Adjust(Direction::Left)),
@@ -4437,14 +4533,12 @@ mod tests {
         use crate::adapter::braids_capability::BRAIDS_FIXED_VOICES;
         use crate::adapter::hidef_soundfont_capability::HIDEF_POLYPHONY_CEILING;
 
-        let registry = crate::adapter::production_instruments::production_capability_registry()
-            .unwrap();
+        let registry =
+            crate::adapter::production_instruments::production_capability_registry().unwrap();
         let braids = BraidsCapability::new().unwrap().default_config().unwrap();
-        let soundfont = create_soundfont_config(
-            &provider(),
-            SoundFontInstrument::new(0, 1, false).unwrap(),
-        )
-        .unwrap();
+        let soundfont =
+            create_soundfont_config(&provider(), SoundFontInstrument::new(0, 1, false).unwrap())
+                .unwrap();
 
         let mut state = AppState::new(registry, global_parameters());
         state
@@ -4675,63 +4769,78 @@ mod tests {
         // `detail_entry_from_a_subjectless_row_is_a_typed_unchanged_rejection`.
     }
 
-    /// B1: the detail surface is reducer-owned but is **not** offered.
+    /// B1, resolved: the detail surface is reducer-owned **and** offered.
     ///
-    /// `EnterSurface(PatchDetail)` is held out of the admitted semantic action
-    /// vocabulary until WP03's detail projection (T015) exists, so it never
-    /// reaches `validActions` or a footer hint. The reducer transition itself
-    /// is unchanged and still proved through `AppEvent`, which is how every
-    /// other detail test here drives it.
+    /// `EnterSurface(PatchDetail)` was held out of the admitted semantic action
+    /// vocabulary for exactly as long as no projection could render a detail
+    /// focus. It now reaches `validActions` through the same passive boundary
+    /// as every other action, and a row that resolves no subject still refuses
+    /// it — the gate's removal widened what is offered, not what is accepted.
     #[test]
-    fn the_detail_surface_is_reducer_owned_but_not_offered_until_wp03() {
+    fn the_detail_surface_is_reducer_owned_and_offered_through_the_passive_boundary() {
         let mut state = installed_state();
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();
         let entry = SemanticAction::EnterSurface(SurfaceId::PatchDetail);
 
-        // Not advertised: not accepted, and absent from the projected actions.
+        // Advertised: accepted, and present in the projected action list.
+        assert!(state.accepts_semantic_action(&entry));
+        assert!(SemanticResolver::new(&state)
+            .valid_actions()
+            .iter()
+            .any(|valid| valid.action() == &entry));
+
+        // Accepted through the passive boundary, not only through `AppEvent`.
+        state.apply_semantic_action(entry.clone()).unwrap();
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+        assert!(state.interaction().detail_subject().is_some());
+
+        // Still refused where no subject resolves: from an envelope row the
+        // action is neither offered nor accepted, and refusing it changes
+        // nothing. Offering the vocabulary did not widen the entry rule.
+        state.apply_semantic_action(SemanticAction::Return).unwrap();
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert!(
+            matches!(
+                state.interaction().focus_path().control_id(),
+                SemanticControlId::Patch(PatchControlId::Envelope(_))
+            ),
+            "the row below Engine is an envelope row, which resolves no subject"
+        );
         assert!(!state.accepts_semantic_action(&entry));
         assert!(!SemanticResolver::new(&state)
             .valid_actions()
             .iter()
             .any(|valid| valid.action() == &entry));
-
-        // Refused as a typed unchanged rejection through the passive boundary.
         let before = state.clone();
         assert_eq!(
             state.apply_semantic_action(entry),
             Err(EventRejection::ActionUnavailableInContext)
         );
         assert_eq!(state, before);
-
-        // The reducer transition still exists and still works.
-        state
-            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
-            .unwrap();
-        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
     }
 
-    /// B1: exactly why the entry gate exists, measured rather than asserted.
+    /// B1, resolved: a **Braids** detail state projects, which is the whole
+    /// reason the entry gate existed.
     ///
     /// Braids is the discriminating engine: its PatchMain order is
     /// `[Engine, ADSR…, EffectSlot…]` with no `Capability` row at all, while
     /// its detail order is entirely `Capability` rows, so the two share
     /// nothing. On SoundFont the first detail row is
     /// `Capability(soundfont.preset)`, which is *also* a PatchMain row, so a
-    /// SoundFont-only test cannot tell a working projection from a missing one.
+    /// SoundFont-only test cannot tell a working projection from a missing one
+    /// — which is exactly how the original hole survived a whole cycle.
     ///
-    /// Driven through the reducer-only `AppEvent` seam, a Braids detail state
-    /// is accepted and then fails to project — which is precisely why
-    /// `SurfaceId::is_enterable` withholds the surface from the offered action
-    /// vocabulary. **When WP03's T015 makes a detail focus projectable, this
-    /// test fails**, and fixing it means asserting the projection succeeds and
-    /// deleting the gate. That is the intended coupling: the gate cannot be
-    /// forgotten because the thing that removes it breaks this test.
+    /// The assertions below therefore *establish* the discriminating shape
+    /// before projecting: the focused detail control is one the main order does
+    /// not host. Only then is a successful projection evidence of anything.
     #[test]
-    fn the_entry_gate_exists_because_a_braids_detail_state_cannot_yet_be_projected() {
+    fn a_braids_detail_state_projects_even_though_its_row_is_absent_from_the_main_order() {
         let mut state = mixed_state();
-        state.apply(AppEvent::SelectPatch(Direction::Right)).unwrap();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
         assert_eq!(
             state.patches()[1]
                 .instrument_config()
@@ -4740,14 +4849,11 @@ mod tests {
             BRAIDS_CAPABILITY_ID
         );
 
-        // Not offered: this is the whole user-visible remedy.
-        assert!(
-            !state.accepts_semantic_action(&SemanticAction::EnterSurface(SurfaceId::PatchDetail))
-        );
-
+        // Offered, through the passive boundary a player actually reaches.
         state
-            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
             .unwrap();
+
         let focused = state.interaction().patch_control_focus().unwrap();
         let main_order = state.focused_patch_controls().unwrap();
         assert!(
@@ -4761,11 +4867,24 @@ mod tests {
             "the discriminating case requires a detail row the main order does not host"
         );
 
+        let (_, page, text, _shell, _parameters, _tree) = crate::control::StateProjector::new()
+            .project_with_shell_tree(&state)
+            .expect("a Braids detail state must project");
+
+        // The text projection's selected line is the detail row itself, not
+        // some main row that happens to share its identity: without a detail
+        // line to select, `render_patch_text` would have failed above rather
+        // than picked a neighbour, and this pins which line it picked.
+        let page = page.expect("PATCH context always projects a page");
+        assert_eq!(page.focused_control_id(), focused);
+        let selected = text
+            .body()
+            .lines()
+            .nth(text.selected_line())
+            .expect("the selected line is inside the body");
         assert!(
-            crate::control::StateProjector::new()
-                .project_with_shell_tree(&state)
-                .is_err(),
-            "WP03 T015 makes this succeed; when it does, delete the is_enterable gate"
+            selected.starts_with("> DETAIL_PARAMETER "),
+            "the selected line must be the detail row, got {selected}"
         );
     }
 
@@ -4828,11 +4947,8 @@ mod tests {
             .unwrap();
         let patch_id = state.patches()[0].id();
         let occupied_slot = EffectSlotIndex::new(1).unwrap();
-        let origin = FocusPath::patch_main(
-            patch_id,
-            None,
-            PatchControlId::EffectSlot(occupied_slot),
-        );
+        let origin =
+            FocusPath::patch_main(patch_id, None, PatchControlId::EffectSlot(occupied_slot));
         state.interaction.active_focus = origin.clone();
 
         // Request the clear, then open detail on the still-occupied slot.
@@ -4847,9 +4963,10 @@ mod tests {
             .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
             .unwrap();
         assert_eq!(
-            state.interaction().detail_subject().and_then(
-                crate::control::PatchDetailSubject::slot_id
-            ),
+            state
+                .interaction()
+                .detail_subject()
+                .and_then(crate::control::PatchDetailSubject::slot_id),
             Some(EffectSlotId::new(2).unwrap())
         );
 
@@ -4899,7 +5016,9 @@ mod tests {
         let master_before = state.global().master_gain_db();
         let generation_before = state.generation();
 
-        state.apply(AppEvent::SelectPatch(Direction::Right)).unwrap();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
 
         // The detail surface closed and the three facts moved together.
         assert_eq!(state.interaction().detail_subject(), None);
@@ -4949,7 +5068,9 @@ mod tests {
         );
         assert_eq!(state, at_first, "a refused switch leaves state identical");
 
-        state.apply(AppEvent::SelectPatch(Direction::Right)).unwrap();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
         let at_last = state.clone();
         assert_eq!(
             state.apply(AppEvent::SelectPatch(Direction::Right)),
@@ -5002,9 +5123,13 @@ mod tests {
             .expect("the SoundFont descriptor declares a structural choice row")
             .clone();
         let preset_index = source_order.iter().position(|p| p == &preset).unwrap();
-        state.interaction.replace_remembered_patch_main(preset.clone());
+        state
+            .interaction
+            .replace_remembered_patch_main(preset.clone());
 
-        state.apply(AppEvent::SelectPatch(Direction::Right)).unwrap();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
 
         let landed = state.interaction().focus_path().clone();
         let destination_order = SemanticResolver::new(&state)
