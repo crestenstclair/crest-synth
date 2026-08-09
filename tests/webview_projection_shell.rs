@@ -110,7 +110,7 @@ use crest_synth::adapter::production_instruments::{
 };
 use crest_synth::control::{
     AppEvent, AppState, Direction, InteractionMode, SemanticGraphicalViewModel, StateProjector,
-    TopLevelContext,
+    SurfaceId, TopLevelContext,
 };
 use crest_synth::kernel::{MidiChannel, PatchId};
 use crest_synth::mixer::global_parameters::GlobalParameters;
@@ -347,6 +347,50 @@ fn production_patch_braids_state() -> AppState {
     state
 }
 
+/// The PATCH fixture with an **instrument** detail entry open (WP04 T028):
+/// the engine row is focused at rest, so entering the detail surface opens
+/// the SoundFont capability, whose two rows declare two different
+/// interactions — `preset` is `StructuralChoice` and `file` is `ReadOnly`.
+/// One document therefore carries both halves of the read-only marking rule.
+fn production_patch_instrument_detail_state() -> AppState {
+    let mut state = production_patch_state();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("entering the instrument detail surface from the engine row is accepted");
+    state
+}
+
+/// The PATCH fixture with an **effect** detail entry open (WP04 T028): the
+/// other subject kind, which the one detail composition must serve without a
+/// branch. Walks to the first slot's occupancy row through the production
+/// reducer rather than constructing a focus, so the fixture cannot disagree
+/// with the reducer about where the entry is reachable from.
+fn production_patch_effect_detail_state() -> AppState {
+    let mut state = production_patch_state();
+    for _ in 0..32 {
+        let projection = StateProjector::new()
+            .project_with_shell(&state)
+            .expect("the production projector accepts the fixture state")
+            .3;
+        let focus = serde_json::to_value(projection.semantic_model())
+            .expect("the fixture document serializes")
+            .pointer("/focusPath/controlId/id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if focus.starts_with("patch.effectSlot.") {
+            state
+                .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+                .expect("entering the effect detail surface from an occupied slot is accepted");
+            return state;
+        }
+        state
+            .apply(AppEvent::Navigate(Direction::Down))
+            .expect("moving PATCH focus down reaches the first effect slot");
+    }
+    panic!("the PATCH focus order reaches an effect slot occupancy row within 32 steps");
+}
+
 /// The MIXER fixture with the focused track's level driven to its exact
 /// range floor through the production reducer (WP03 T011): coarse decreases
 /// are applied until the reducer rejects the clamped no-op, so the projected
@@ -557,6 +601,35 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         &production_patch_braids_state(),
         "PATCH state C (Braids focus, disabled rows present)",
     );
+    // WP04 T028: both detail subject kinds, so the one detail composition is
+    // rendered for each rather than reasoned about from one. Their own
+    // channel, as the geometry fixtures below have theirs: an entry costs one
+    // accepted generation, so the instrument-detail state collides with the
+    // Braids state on the channel above and would be gated out rather than
+    // emitted — which is the gate working, not a fork to hide.
+    let mut detail_channel = ProjectionChannel::new();
+    let (patch_generation_d, patch_instrument_detail) = check_state_fidelity(
+        &projector,
+        &mut detail_channel,
+        &production_patch_instrument_detail_state(),
+        "PATCH state D (instrument detail open)",
+    );
+    let (patch_generation_e, patch_effect_detail) = check_state_fidelity(
+        &projector,
+        &mut detail_channel,
+        &production_patch_effect_detail_state(),
+        "PATCH state E (effect detail open)",
+    );
+    assert_ne!(
+        patch_generation_d, patch_generation_e,
+        "the two detail states must carry distinct generations so gating cannot mask one"
+    );
+    // The read-only marking rule is only falsifiable against a subject that
+    // declares more than one interaction. SoundFont's detail declares two;
+    // Chorus's declares one, twice. Asserted here so a fixture change that
+    // quietly removed the discriminating case fails by name instead of
+    // leaving the live marking assertion vacuous.
+    assert_detail_declares_both_interactions(&patch_instrument_detail);
     let patch_generations = [patch_generation_a, patch_generation_b, patch_generation_c];
     assert_eq!(
         patch_generations.iter().collect::<HashSet<_>>().len(),
@@ -587,9 +660,10 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
 
     println!(
         "T022 serialized-schema fidelity: PASS \
-         (8 distinct states across both contexts, MIXER generations \
+         (10 distinct states across both contexts, MIXER generations \
          {generation_a}/{generation_b}/{generation_c}, PATCH generations \
-         {patch_generation_a}/{patch_generation_b}/{patch_generation_c}, \
+         {patch_generation_a}/{patch_generation_b}/{patch_generation_c}/\
+         {patch_generation_d}/{patch_generation_e}, \
          emit path byte-identical + structural round-trip + declared key surface)"
     );
     FidelityEvidence {
@@ -598,6 +672,8 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
             ("patch-navigate", patch_navigate),
             ("patch-adjust", patch_adjust),
             ("patch-braids", patch_braids),
+            ("patch-instrument-detail", patch_instrument_detail),
+            ("patch-effect-detail", patch_effect_detail),
         ],
         zero_level_document,
         patch_geometry_document,
@@ -2165,6 +2241,24 @@ fn assert_patch_observation_structure(
         .get("interactionMode")
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("{label}: the document names its interaction mode"));
+
+    // WP04 T028: while a detail entry is open the detail composition replaces
+    // the workspace body and the strip is not painted, so the strip-shaped
+    // assertions below do not apply. The shell bands and the persistent side
+    // region are asserted for both, above and below.
+    let detail_surface = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("role").and_then(Value::as_str) == Some("detail"))
+        .cloned();
+    if let Some(detail_surface) = detail_surface {
+        assert_patch_detail_composition(observation, document, &detail_surface, mode, label);
+        assert_patch_utility_panel(observation, document, inspector_width_at_least, label);
+        return;
+    }
+
     let expected_rows: Vec<(String, String)> = document
         .get("surfaces")
         .and_then(Value::as_array)
@@ -2249,14 +2343,64 @@ fn assert_patch_observation_structure(
             !text("label").is_empty() && !text("value").is_empty(),
             "{label}: every strip row paints a label and a value (got {row:?})"
         );
-        // Disabled rows announce themselves with text beyond color.
+        // Disabled rows announce themselves with text beyond color, and a
+        // row the capability declared read-only says the more specific word.
+        // Both variants occur: SoundFont's `file` and all three Braids rows
+        // declare ReadOnly; the engine and slot rows are disabled without
+        // declaring one.
         if row.get("state").and_then(Value::as_str) == Some("disabled") {
-            assert_eq!(
-                row.get("mark").and_then(Value::as_str),
-                Some("Locked"),
-                "{label}: a disabled row says Locked in text"
-            );
+            if row.get("interaction").and_then(Value::as_str) == Some("readOnly") {
+                assert_eq!(
+                    row.get("readOnly").and_then(Value::as_str),
+                    Some("READ-ONLY"),
+                    "{label}: a capability-declared read-only row says so in text (got {row:?})"
+                );
+                assert!(
+                    row.get("mark").is_none_or(Value::is_null),
+                    "{label}: a read-only row states its declaration once, not twice \
+                     (got {row:?})"
+                );
+            } else {
+                assert_eq!(
+                    row.get("mark").and_then(Value::as_str),
+                    Some("Locked"),
+                    "{label}: a disabled row says Locked in text"
+                );
+            }
         }
+        // Every projected range and unit is painted, and nothing is invented
+        // for a row that carries neither (FR-013).
+        let projected = document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|surface| {
+                surface
+                    .get("controls")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .find(|control| {
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    == row.get("control").and_then(Value::as_str)
+            })
+            .unwrap_or_else(|| panic!("{label}: every painted row names a projected control"));
+        assert_eq!(
+            projected
+                .get("numericRange")
+                .is_some_and(|range| !range.is_null()),
+            row.get("range").is_some_and(|range| !range.is_null()),
+            "{label}: a row shows its projected range and invents none (got {row:?})"
+        );
+        assert_eq!(
+            projected.get("unit").is_some_and(|unit| !unit.is_null()),
+            row.get("unit").is_some_and(|unit| !unit.is_null()),
+            "{label}: a row shows its projected unit and invents none (got {row:?})"
+        );
     }
 
     // Exactly one focused/adjusting row, and it is the document's focus.
@@ -2306,29 +2450,232 @@ fn assert_patch_observation_structure(
         "{label}: the section annotation names the focused entry"
     );
 
-    // The Utility panel: the projected identity caption, the two driven
-    // output rows, and the three designed entries the projection does not
-    // drive marked explicitly unavailable.
-    let summary = document
+    // WP04 T020-T023: the workspace arranges groups, not one flat row run.
+    // The painted group order is the declared group order, every designed
+    // group is present whether it carried rows or not, and the concatenation
+    // of the groups' rows is exactly the flat painted order — so grouping
+    // cannot have reordered a row out of the reducer's focus order.
+    let groups = observation
+        .get("groups")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label}: the observation reports the strip groups"));
+    let group_keys: Vec<&str> = groups
+        .iter()
+        .filter_map(|group| group.get("key").and_then(Value::as_str))
+        .collect();
+    for designed in ["instrument", "envelope", "slot.0", "slot.1", "slot.2"] {
+        assert!(
+            group_keys.contains(&designed),
+            "{label}: the designed group {designed} renders whether occupied or not \
+             (got {group_keys:?})"
+        );
+    }
+    assert!(
+        groups.len() >= 5,
+        "{label}: the workspace arranges groups, not one flat row run (got {group_keys:?})"
+    );
+    for group in groups {
+        let key = group.get("key").and_then(Value::as_str).unwrap_or_default();
+        let rows = group
+            .get("rows")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default();
+        // A group with no view data marks itself inside its own group; it is
+        // neither dropped nor filled with a representative row.
+        assert_eq!(
+            rows == 0,
+            group.get("unavailable").and_then(Value::as_bool) == Some(true),
+            "{label}: group {key} marks itself unavailable exactly when it carried no row"
+        );
+        if key.starts_with("slot.") || key == "envelope" || key == "instrument" {
+            assert!(
+                group
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .is_some_and(|title| !title.is_empty()),
+                "{label}: the designed group {key} carries its authored title"
+            );
+        }
+    }
+    let grouped_order: Vec<String> = groups
+        .iter()
+        .flat_map(|group| {
+            group
+                .get("rows")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|row| row.as_str().map(str::to_owned))
+        .collect();
+    let flat_order: Vec<String> = painted_rows.iter().map(|(id, _)| id.clone()).collect();
+    assert_eq!(
+        grouped_order, flat_order,
+        "{label}: the grouped rows are the painted rows, in the same order"
+    );
+
+    // T021: the strip's own identity-and-routing header, every value
+    // projected, allocating no interactive target.
+    let header = observation
+        .get("stripHeader")
+        .filter(|header| !header.is_null())
+        .unwrap_or_else(|| panic!("{label}: the strip paints its identity header"));
+    let patch_name = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+        .and_then(|surface| surface.pointer("/summary/patchName"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: the document projects the Patch name"));
+    assert_eq!(
+        header.get("patchName").and_then(Value::as_str),
+        Some(patch_name),
+        "{label}: the strip header names the focused Patch from the projection"
+    );
+    for part in ["midiInput", "outputTrack"] {
+        assert!(
+            header
+                .get(part)
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty() && text != "--"),
+            "{label}: the strip header paints the projected {part} routing (got {header:?})"
+        );
+    }
+    assert_eq!(
+        header.get("controls").and_then(Value::as_u64),
+        Some(0),
+        "{label}: the strip header is informative — it allocates no interactive target"
+    );
+
+    // T025: the focused row's own hint run is the footer's hint run. The two
+    // agree by construction; the assertion is that neither was special-cased.
+    let focused_hints = observation
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|row| row.get("control").and_then(Value::as_str) == Some(document_focus))
+        .and_then(|row| row.get("hints").and_then(Value::as_str))
+        .unwrap_or_else(|| panic!("{label}: the focused row paints its own action hints"));
+    let footer_hints: String = document
+        .get("validActions")
+        .and_then(Value::as_array)
+        .map(|actions| {
+            actions
+                .iter()
+                .filter(|action| action.get("hint").is_some_and(|hint| !hint.is_null()))
+                .map(|action| {
+                    format!(
+                        "{}:{}",
+                        action
+                            .get("hint")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                        hint_label(
+                            action
+                                .get("label")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                        )
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        focused_hints.split_whitespace().collect::<Vec<_>>(),
+        footer_hints.split_whitespace().collect::<Vec<_>>(),
+        "{label}: the focused row's hints are the model-level hint run, exactly"
+    );
+
+    assert_patch_utility_panel(observation, document, inspector_width_at_least, label);
+}
+
+/// The instrument-detail fixture must declare two different interactions on
+/// one surface, or the read-only marking assertion cannot discriminate.
+fn assert_detail_declares_both_interactions(document: &str) {
+    let document: Value =
+        serde_json::from_str(document).expect("the detail fidelity document parses");
+    let interactions: HashSet<String> = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("role").and_then(Value::as_str) == Some("detail"))
+        .and_then(|surface| surface.get("controls"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|control| control.get("patchInteraction").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        interactions.contains("readOnly") && interactions.len() >= 2,
+        "the instrument-detail fixture declares a read-only row beside a differently \
+         declared one, so the marking rule discriminates (got {interactions:?})"
+    );
+}
+
+/// The page's `hintLabel`, replicated: the projected action label condensed to
+/// the authored hint form ("Move right" -> "right", "Open PATCH" -> "patch").
+fn hint_label(label: &str) -> String {
+    let lowered = label.to_lowercase();
+    let stripped = lowered
+        .strip_prefix("open ")
+        .or_else(|| lowered.strip_prefix("move "))
+        .unwrap_or(&lowered);
+    stripped
+        .strip_suffix(" mode")
+        .unwrap_or(stripped)
+        .to_owned()
+}
+
+/// WP04 T027: the persistent Utility region — exactly the five declared rows
+/// in projected order, all with real values and none marked unavailable, the
+/// authored hint line, and no scroll affordance at either authored viewport.
+///
+/// Asserted for the strip and for the detail surface alike: the side region
+/// is persistent, so opening a detail entry must not disturb it.
+fn assert_patch_utility_panel(
+    observation: &Value,
+    document: &Value,
+    inspector_width_at_least: f32,
+    label: &str,
+) {
+    let utility_surface = document
         .get("surfaces")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchUtility"))
-        .unwrap_or_else(|| panic!("{label}: the document carries the patchUtility surface"))
-        .get("summary")
+        .unwrap_or_else(|| panic!("{label}: the document carries the patchUtility surface"));
+    let projected: Vec<(String, String)> = utility_surface
+        .get("controls")
+        .and_then(Value::as_array)
         .cloned()
-        .unwrap_or(Value::Null);
-    let patch_id = summary.get("patch_id").and_then(Value::as_u64).unwrap_or(0);
-    let capability_id = summary
-        .get("capability_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert_eq!(
-        observation.get("patchIdentity").and_then(Value::as_str),
-        Some(format!("{patch_id} · {capability_id}").as_str()),
-        "{label}: the Utility panel paints the projected patch identity"
-    );
+        .unwrap_or_default()
+        .iter()
+        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+        .map(|control| {
+            (
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                control
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect();
+
     let utility_rows: Vec<(String, String, String)> = observation
         .pointer("/inspector/utility")
         .and_then(Value::as_array)
@@ -2344,22 +2691,74 @@ fn assert_patch_observation_structure(
             (text("control"), text("label"), text("value"))
         })
         .collect();
-    for driver in ["patch.output.trimGainDb", "patch.output.outputTrack"] {
+    assert_eq!(
+        utility_rows.len(),
+        5,
+        "{label}: the Utility panel seats exactly the five declared rows \
+         (got {utility_rows:?})"
+    );
+    assert_eq!(
+        utility_rows
+            .iter()
+            .map(|(control, row_label, _)| (control.clone(), row_label.clone()))
+            .collect::<Vec<_>>(),
+        projected,
+        "{label}: the Utility rows are the projected rows, in projected order, \
+         under their projected labels"
+    );
+    for (control, row_label, value) in &utility_rows {
         assert!(
-            utility_rows.iter().any(|(control, _, _)| control == driver),
-            "{label}: the Utility panel paints the projected {driver} row \
-             (got {utility_rows:?})"
+            !value.is_empty() && value != "--",
+            "{label}: the Utility row {control} carries a real value, not the \
+             unavailable mark (got {value:?})"
+        );
+        assert!(
+            !row_label.contains('.'),
+            "{label}: the Utility row {control} is labelled by its authored label, \
+             never a serialization key (got {row_label:?})"
         );
     }
-    for designed in ["MASTER VOLUME", "MIDI INPUT", "VOICE LIMIT"] {
-        assert!(
-            utility_rows
-                .iter()
-                .any(|(_, label_text, value)| label_text == designed && value == "--"),
-            "{label}: the undriven designed entry {designed} is marked explicitly \
-             unavailable (got {utility_rows:?})"
-        );
-    }
+
+    // The authored identity caption and hint line (design file 36:51, 36:52).
+    let patch_id = utility_surface
+        .pointer("/summary/patchId")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("{label}: the Utility summary names its Patch"));
+    let patch_name = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+        .and_then(|surface| surface.pointer("/summary/patchName"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: the document projects the Patch name"));
+    assert_eq!(
+        observation.get("patchIdentity").and_then(Value::as_str),
+        Some(format!("{patch_id} · {patch_name}").as_str()),
+        "{label}: the Utility caption paints the projected identity and the \
+         projected name — never a capability identity"
+    );
+    assert!(
+        observation
+            .pointer("/inspector/hintLine")
+            .and_then(Value::as_str)
+            .is_some_and(|line| line.contains("return")),
+        "{label}: the panel paints its authored hint line \
+         (got {:?})",
+        observation.pointer("/inspector/hintLine")
+    );
+
+    // The row set is bounded by declaration at five, so the region seats them
+    // with no scroll affordance. Measured, so a relaxed `overflow` fails here
+    // rather than passing as a CSS diff nobody reads.
+    assert_eq!(
+        observation
+            .pointer("/inspector/scrollableBy")
+            .and_then(Value::as_f64),
+        Some(0.0),
+        "{label}: the side region seats its entries without a scroll affordance"
+    );
 
     // The persistent side region honors the authored floor, and the meter
     // paints nothing when no mixer track is focused.
@@ -2377,6 +2776,214 @@ fn assert_patch_observation_structure(
         Some(""),
         "{label}: the meter paints nothing when no mixer track is focused"
     );
+}
+
+/// WP04 T028: the painted `CapabilityDetailShell` against the detail surface
+/// the document carries — for either subject kind, through the one render
+/// path.
+///
+/// The assertion is deliberately blind to which subject is open: it names the
+/// capability from the detail surface's own rows and their strip twins, the
+/// same way the composition does, so an instrument document and an effect
+/// document are checked by identical code. If the page had branched on
+/// subject kind, one of the two fixtures would fail here.
+fn assert_patch_detail_composition(
+    observation: &Value,
+    document: &Value,
+    detail_surface: &Value,
+    mode: &str,
+    label: &str,
+) {
+    let detail = observation
+        .get("detail")
+        .filter(|detail| !detail.is_null())
+        .unwrap_or_else(|| panic!("{label}: an open detail entry paints the detail composition"));
+    assert!(
+        observation
+            .get("groups")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty),
+        "{label}: the detail composition replaces the workspace body while it is open"
+    );
+    assert_eq!(
+        detail.get("surface").and_then(Value::as_str),
+        detail_surface.get("label").and_then(Value::as_str),
+        "{label}: the detail composition carries the surface's projected label"
+    );
+
+    let expected: Vec<(String, String, String)> = detail_surface
+        .get("controls")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+        .map(|control| {
+            (
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                control
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                expected_control_state(control, mode),
+            )
+        })
+        .collect();
+    assert!(
+        !expected.is_empty(),
+        "{label}: an open detail surface projects rows — never an empty section set"
+    );
+    let painted: Vec<(String, String, String)> = detail
+        .get("rows")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label}: the detail composition reports its rows"))
+        .iter()
+        .map(|row| {
+            let text = |key: &str| {
+                row.get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            (text("control"), text("label"), text("state"))
+        })
+        .collect();
+    assert_eq!(
+        painted, expected,
+        "{label}: the detail composition paints the projected rows, in projected order"
+    );
+
+    // The subject's name is the projected value of the strip row that owns
+    // these rows — the capability's authored label, never its identity.
+    let owner = detail_surface
+        .pointer("/controls/0/path/controlId/id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let owner_id = if owner.starts_with("patch.capability.") {
+        "patch.engine".to_owned()
+    } else {
+        // The occupancy row of the slot whose occupant rows these are, found
+        // through the main surface's own order rather than by mapping slot
+        // instance ids to positions.
+        let main = document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+            .and_then(|surface| surface.get("controls"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut open = String::new();
+        let mut found = String::new();
+        for control in &main {
+            let id = control
+                .pointer("/path/controlId/id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if id.starts_with("patch.effectSlot.") {
+                open = id.to_owned();
+            }
+            if id == owner {
+                found = open.clone();
+                break;
+            }
+        }
+        found
+    };
+    let owner_value = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+        .and_then(|surface| surface.get("controls"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|control| {
+            control
+                .pointer("/path/controlId/id")
+                .and_then(Value::as_str)
+                == Some(&owner_id)
+        })
+        .and_then(|control| control.pointer("/value/value"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: the owning strip row projects the capability label"));
+    assert_eq!(
+        detail.get("subject").and_then(Value::as_str),
+        Some(owner_value),
+        "{label}: the detail composition names its capability by the projected \
+         label, never by a capability identity"
+    );
+    assert!(
+        !owner_value.contains('.'),
+        "{label}: the painted capability name is a label, not an identity \
+         (got {owner_value:?})"
+    );
+
+    // A row the capability declared read-only is distinguishable with the
+    // colour removed. SoundFont's detail carries both a ReadOnly row and a
+    // StructuralChoice one, so the mark discriminates rather than covering
+    // every row.
+    let declared_read_only: Vec<&Value> = detail_surface
+        .get("controls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|control| {
+            control.get("patchInteraction").and_then(Value::as_str) == Some("readOnly")
+        })
+        .collect();
+    // Every detail row carries the capability's declared interaction, so a
+    // leaf that stopped reaching the page fails here rather than turning the
+    // marking rule silently vacuous. Which interactions occur differs by
+    // subject — SoundFont's detail declares ReadOnly and StructuralChoice,
+    // Chorus's declares ScalarEdit twice — and that difference is exactly
+    // what the correspondence below has to survive.
+    for control in detail_surface
+        .get("controls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        assert!(
+            control
+                .get("patchInteraction")
+                .and_then(Value::as_str)
+                .is_some(),
+            "{label}: every detail row carries its capability's declared interaction"
+        );
+    }
+    for row in detail
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let control = row
+            .get("control")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let declared = declared_read_only.iter().any(|candidate| {
+            candidate
+                .pointer("/path/controlId/id")
+                .and_then(Value::as_str)
+                == Some(control)
+        });
+        assert_eq!(
+            declared,
+            row.get("readOnly").and_then(Value::as_str) == Some("READ-ONLY"),
+            "{label}: the detail row {control} marks the capability's declared \
+             interaction in text, and only when it is declared (got {row:?})"
+        );
+    }
 }
 
 /// The driver: everything the live window is asked to do, in order — T024's
@@ -2514,8 +3121,8 @@ fn drive_live_window(
             desktop_side,
             &format!("T024 desktop 1920x1080 {patch_label}"),
         );
+        screenshot(&format!("t024-{patch_label}-desktop-1920x1080.png"));
     }
-    screenshot("t024-patch-desktop-1920x1080.png");
 
     window
         .set_size(tauri::LogicalSize::new(
@@ -2560,8 +3167,8 @@ fn drive_live_window(
             compact_side,
             &format!("T024 compact 1280x800 {patch_label}"),
         );
+        screenshot(&format!("t024-{patch_label}-compact-1280x800.png"));
     }
-    screenshot("t024-patch-compact-1280x800.png");
 
     window
         .set_size(tauri::LogicalSize::new(
