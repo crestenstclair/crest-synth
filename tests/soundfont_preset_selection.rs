@@ -350,7 +350,6 @@ fn soundfont_preset_selection() {
         MidiChannel::new(1).unwrap(),
         PatchOutput::new(MixerTrackId::new(1).unwrap(), -4.0).unwrap(),
     );
-    let untargeted_before = untargeted.clone();
     let mut state = AppState::for_graph(registry.clone(), globals(), GraphRevision::INITIAL);
     state
         .apply(AppEvent::InstallPatches(vec![
@@ -364,6 +363,11 @@ fn soundfont_preset_selection() {
             untargeted,
         ]))
         .unwrap();
+    // Captured from installed state: installation seeds each Patch's voice
+    // limit from its own engine's declared ceiling, so an installed Patch
+    // legitimately differs from what the constructor built. What this proves
+    // is that the preset commit leaves the untargeted Patch alone.
+    let untargeted_before = state.patches()[1].clone();
 
     let boundary = LockFreeAudioBoundary::new(
         128,

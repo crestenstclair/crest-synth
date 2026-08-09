@@ -33,7 +33,7 @@ use crest_synth::control::{
 use crest_synth::kernel::{MidiChannel, PatchId};
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
-use crest_synth::mixer::patch_output::{PatchOutput, PatchOutputParameter};
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crest_synth::real_time::{AudioCommand, GraphRevision, ParameterSnapshot};
 use crest_synth::shell::density::ViewportDensityPolicy;
@@ -355,16 +355,21 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     assert_eq!(utility.active_surface(), SurfaceId::PatchUtility);
     assert_eq!(utility.return_path().unwrap().origin(), &origin);
     let utility_controls = utility.surface(SurfaceId::PatchUtility).unwrap().controls();
-    assert_eq!(utility_controls.len(), 2);
+    // The declared five-row Utility panel, in its declared order. Compared
+    // against the one canonical declaration rather than a second list here, so
+    // this asserts the projection follows the declaration instead of pinning a
+    // copy of it that could drift.
+    assert_eq!(utility_controls.len(), 5);
     assert_eq!(
         utility_controls
             .iter()
             .map(|control| control.path().control_id().clone())
             .collect::<Vec<_>>(),
-        vec![
-            SemanticControlId::Patch(PatchControlId::Output(PatchOutputParameter::TrimGain,)),
-            SemanticControlId::Patch(PatchControlId::Output(PatchOutputParameter::OutputTrack,)),
-        ]
+        PatchControlId::utility_surface_descriptor()
+            .iter()
+            .cloned()
+            .map(SemanticControlId::Patch)
+            .collect::<Vec<_>>()
     );
     state.apply_semantic_action(SemanticAction::Return).unwrap();
     assert_eq!(semantic(&state).focus_path(), &origin);

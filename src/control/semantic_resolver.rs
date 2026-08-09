@@ -1,14 +1,14 @@
 use crate::control::{
     AppState, EventRejection, FocusCapabilityId, FocusPath, MixerControlId, PatchControlId,
-    SemanticAction, SemanticControlId, SurfaceId, ValidAction,
+    PatchDetailSubject, SemanticAction, SemanticControlId, SurfaceId, ValidAction,
 };
 use crate::kernel::PatchId;
 use crate::mixer::bus_id::BusId;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_track_id::{MixerTrackId, MixerTrackId as TrackId};
 use crate::mixer::mixer_track_parameters::MixerTrackParameter;
-use crate::mixer::patch_output::PatchOutputParameter;
-use crate::synth::PatchInteraction;
+use crate::synth::instrument_capability::{ParameterSpec, ParameterValue};
+use crate::synth::{ParameterId, PatchInteraction};
 use std::collections::HashSet;
 
 /// Pure descriptor-backed authority for semantic focus order and recovery.
@@ -52,7 +52,13 @@ impl<'a> SemanticResolver<'a> {
                 PatchControlId::Engine
                 | PatchControlId::Envelope(_)
                 | PatchControlId::EffectSlot(_) => None,
-                PatchControlId::Output(_) => {
+                // The five Utility identities never enter the PatchMain order.
+                // `resolve` cannot produce one, so reaching here means a
+                // descriptor claimed a row that belongs to the other surface.
+                PatchControlId::Output(_)
+                | PatchControlId::Global(_)
+                | PatchControlId::MidiInput
+                | PatchControlId::VoiceLimit => {
                     return Err(EventRejection::InvalidSelection);
                 }
                 PatchControlId::Capability(_) => Some(FocusCapabilityId::Instrument(
@@ -77,6 +83,132 @@ impl<'a> SemanticResolver<'a> {
         Ok(paths)
     }
 
+    /// Derives the detail subject one PatchMain path opens, or `None`.
+    ///
+    /// The engine row and every active-instrument capability row resolve
+    /// `Instrument`; an *occupied* effect slot and its occupant's parameter
+    /// rows resolve `Effect` carrying that slot's exact identity, so two
+    /// positions holding the same registry entry are distinct subjects. Every
+    /// other path resolves `None` — an empty slot, an envelope row, and every
+    /// Utility row included — because a subject-less detail surface would be
+    /// an empty shell rather than a place to be.
+    pub fn detail_subject(&self, path: &FocusPath) -> Option<PatchDetailSubject> {
+        if path.surface() != SurfaceId::PatchMain {
+            return None;
+        }
+        let patch = self
+            .state
+            .patches()
+            .iter()
+            .find(|patch| Some(patch.id()) == path.patch_id())?;
+        let SemanticControlId::Patch(control) = path.control_id() else {
+            return None;
+        };
+        match control {
+            PatchControlId::Engine | PatchControlId::Capability(_) => {
+                Some(PatchDetailSubject::instrument(
+                    patch.instrument_config().capability_id().clone(),
+                ))
+            }
+            // The occupancy row names a position; only an occupied one names a
+            // capability. An empty slot is deliberately not repaired into a
+            // neighbouring subject.
+            PatchControlId::EffectSlot(index) => {
+                let occupant = patch.effect_slot(*index)?;
+                Some(PatchDetailSubject::effect(
+                    occupant.slot_id(),
+                    occupant.capability_id().clone(),
+                ))
+            }
+            PatchControlId::Effect(slot_id, _) => {
+                let occupant = patch
+                    .effect_slots()
+                    .iter()
+                    .flatten()
+                    .find(|effect| effect.slot_id() == *slot_id)?;
+                Some(PatchDetailSubject::effect(
+                    occupant.slot_id(),
+                    occupant.capability_id().clone(),
+                ))
+            }
+            PatchControlId::Envelope(_)
+            | PatchControlId::Output(_)
+            | PatchControlId::Global(_)
+            | PatchControlId::MidiInput
+            | PatchControlId::VoiceLimit => None,
+        }
+    }
+
+    /// Returns the detail surface's focus order for one subject: the subject
+    /// descriptor's visible enabled rows, in descriptor order.
+    ///
+    /// The rows are resolved from the installed descriptor at call time. The
+    /// subject supplies only a capability identity, so nothing here is a
+    /// second copy of the schema.
+    pub fn patch_detail_paths(
+        &self,
+        patch_id: PatchId,
+        subject: &PatchDetailSubject,
+    ) -> Result<Vec<FocusPath>, EventRejection> {
+        let patch = self
+            .state
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let capability_id = subject.focus_capability_id();
+        let paths = match subject {
+            PatchDetailSubject::Instrument { capability_id: id } => {
+                let config = patch.instrument_config();
+                let descriptor = self
+                    .state
+                    .capabilities()
+                    .descriptor(id)
+                    .ok_or(EventRejection::InvalidInstrumentConfig)?;
+                descriptor
+                    .parameters()
+                    .filter(|spec| row_is_visible_and_enabled(spec, |id| config.value(id)))
+                    .map(|spec| {
+                        FocusPath::patch_detail(
+                            patch_id,
+                            capability_id.clone(),
+                            PatchControlId::Capability(spec.id().clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }
+            PatchDetailSubject::Effect {
+                slot_id,
+                capability_id: id,
+            } => {
+                let occupant = patch
+                    .effect_slots()
+                    .iter()
+                    .flatten()
+                    .find(|effect| effect.slot_id() == *slot_id)
+                    .ok_or(EventRejection::InvalidEffectConfig)?;
+                let descriptor = self
+                    .state
+                    .effects()
+                    .descriptor(id)
+                    .ok_or(EventRejection::InvalidEffectConfig)?;
+                descriptor
+                    .parameters()
+                    .filter(|spec| row_is_visible_and_enabled(spec, |id| occupant.value(id)))
+                    .map(|spec| {
+                        FocusPath::patch_detail(
+                            patch_id,
+                            capability_id.clone(),
+                            PatchControlId::Effect(*slot_id, spec.id().clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        ensure_unique(&paths)?;
+        Ok(paths)
+    }
+
     /// Returns the sixteen fixed MIXER Main track sections in identity order.
     pub fn mixer_main_sections(&self) -> Result<Vec<Vec<FocusPath>>, EventRejection> {
         let mut sections = Vec::with_capacity(MixerTrackId::COUNT);
@@ -95,6 +227,11 @@ impl<'a> SemanticResolver<'a> {
         Ok(self.mixer_main_sections()?.into_iter().flatten().collect())
     }
 
+    /// Returns PATCH Utility's canonical focus order: the five declared rows.
+    ///
+    /// The order comes from [`PatchControlId::utility_surface_descriptor`] —
+    /// one written declaration — rather than from iterating any parameter
+    /// descriptor, so reordering a descriptor cannot reshuffle the panel.
     pub fn patch_utility_paths(&self, patch_id: PatchId) -> Result<Vec<FocusPath>, EventRejection> {
         if !self
             .state
@@ -104,9 +241,9 @@ impl<'a> SemanticResolver<'a> {
         {
             return Err(EventRejection::NoPatchesInstalled);
         }
-        let paths = PatchOutputParameter::ALL
-            .into_iter()
-            .map(|parameter| FocusPath::patch_utility(patch_id, PatchControlId::Output(parameter)))
+        let paths = PatchControlId::utility_surface_descriptor()
+            .iter()
+            .map(|control| FocusPath::patch_utility(patch_id, control.clone()))
             .collect::<Vec<_>>();
         ensure_unique(&paths)?;
         Ok(paths)
@@ -138,14 +275,8 @@ impl<'a> SemanticResolver<'a> {
                 .descriptor(config.capability_id())
                 .ok_or(EventRejection::InvalidEffectConfig)?;
             for spec in descriptor.parameters() {
-                let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
-                    predicate.is_none_or(|predicate| {
-                        config.value(predicate.parameter_id()) == Some(predicate.equals())
-                    })
-                };
                 if spec.patch_interaction() == PatchInteraction::ScalarEdit
-                    && predicate_satisfied(spec.visible_when())
-                    && predicate_satisfied(spec.enabled_when())
+                    && row_is_visible_and_enabled(spec, |id| config.value(id))
                 {
                     paths.push(FocusPath::mixer_return_effect(
                         bus,
@@ -195,6 +326,19 @@ impl<'a> SemanticResolver<'a> {
                     .patch_focus()
                     .ok_or(EventRejection::NoPatchesInstalled)?;
                 self.patch_utility_paths(patch_id)
+            }
+            // The detail surface's order belongs to the open subject alone.
+            // With no entry open there is no order to resolve — which is
+            // exactly the state in which no detail path can be valid.
+            SurfaceId::PatchDetail => {
+                let interaction = self.state.interaction();
+                let subject = interaction
+                    .detail_subject()
+                    .ok_or(EventRejection::ActionUnavailableInContext)?;
+                let patch_id = interaction
+                    .patch_focus()
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                self.patch_detail_paths(patch_id, subject)
             }
             SurfaceId::MixerInspector => self.mixer_inspector_paths(self.selected_mixer_track()?),
         }
@@ -256,27 +400,68 @@ impl<'a> SemanticResolver<'a> {
         old_order: &[FocusPath],
         new_order: &[FocusPath],
     ) -> Option<FocusPath> {
-        if new_order.iter().any(|candidate| candidate == old_path) {
-            return Some(old_path.clone());
+        if !old_order.iter().any(|candidate| candidate == old_path)
+            && !new_order.iter().any(|candidate| candidate == old_path)
+        {
+            return None;
         }
-        let old_index = old_order
-            .iter()
-            .position(|candidate| candidate == old_path)?;
-        for distance in 1..old_order.len() {
-            if let Some(next) = old_order.get(old_index + distance) {
-                if new_order.iter().any(|candidate| candidate == next) {
-                    return Some(next.clone());
-                }
-            }
-            if let Some(previous_index) = old_index.checked_sub(distance) {
-                let previous = &old_order[previous_index];
-                if new_order.iter().any(|candidate| candidate == previous) {
-                    return Some(previous.clone());
-                }
-            }
-        }
-        new_order.first().cloned()
+        Self::recovered_index(old_path, old_order, new_order)
+            .map(|index| new_order[index].clone())
+            .or_else(|| new_order.first().cloned())
     }
+
+    /// The one deterministic focus-recovery rule, over any comparable identity.
+    ///
+    /// Returns the index in `new_keys` the old identity recovers to: its exact
+    /// position when the new order still hosts it, otherwise the nearest
+    /// surviving sibling walking outward from its old position — next before
+    /// previous at equal distance. `None` means nothing near it survived, or
+    /// it was never in the old order at all; callers decide what a total miss
+    /// means for their surface.
+    ///
+    /// It is generic so a patch switch can recover over *control* identities,
+    /// where the two orders carry different PatchIds and whole paths can never
+    /// compare equal — without growing a second, subtly different rule.
+    pub fn recovered_index<T: PartialEq>(
+        old: &T,
+        old_keys: &[T],
+        new_keys: &[T],
+    ) -> Option<usize> {
+        if let Some(index) = new_keys.iter().position(|candidate| candidate == old) {
+            return Some(index);
+        }
+        let old_index = old_keys.iter().position(|candidate| candidate == old)?;
+        for distance in 1..old_keys.len() {
+            if let Some(next) = old_keys.get(old_index + distance) {
+                if let Some(index) = new_keys.iter().position(|candidate| candidate == next) {
+                    return Some(index);
+                }
+            }
+            if let Some(previous) = old_index.checked_sub(distance).map(|index| &old_keys[index]) {
+                if let Some(index) = new_keys.iter().position(|candidate| candidate == previous) {
+                    return Some(index);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Reports whether one descriptor row's visibility and enablement predicates
+/// are both satisfied by the configuration `value` reads.
+///
+/// This is the one place predicate satisfaction is decided. Every surface
+/// resolver — PatchMain, PatchDetail, and MixerInspector — reads it, so the
+/// same configuration cannot make a row visible on one surface and hidden on
+/// another.
+pub(crate) fn row_is_visible_and_enabled<'a>(
+    spec: &ParameterSpec,
+    value: impl Fn(&ParameterId) -> Option<&'a ParameterValue>,
+) -> bool {
+    [spec.visible_when(), spec.enabled_when()]
+        .into_iter()
+        .flatten()
+        .all(|predicate| value(predicate.parameter_id()) == Some(predicate.equals()))
 }
 
 fn ensure_unique(paths: &[FocusPath]) -> Result<(), EventRejection> {
@@ -318,6 +503,7 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         SemanticAction::SetSlotOccupancy { .. } => ("Set slot occupancy", None),
         SemanticAction::SetReturnOccupancy { .. } => ("Set return occupancy", None),
         SemanticAction::EnterSurface(SurfaceId::PatchUtility) => ("Open Utility", Some("D")),
+        SemanticAction::EnterSurface(SurfaceId::PatchDetail) => ("Open Detail", Some("Return")),
         SemanticAction::EnterSurface(SurfaceId::MixerInspector) => ("Open Inspector", None),
         SemanticAction::EnterSurface(SurfaceId::PatchMain)
         | SemanticAction::EnterSurface(SurfaceId::MixerMain) => ("Unavailable surface", None),

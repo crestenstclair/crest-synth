@@ -382,7 +382,11 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
 #[test]
 fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact() {
     let discovered = assert_state_tree_leaf_surface_exact();
-    assert_eq!(StateTree::SCHEMA_VERSION, 12);
+    // Version 13 added the `parameters.patches[].voiceLimit` leaf: a canonical
+    // value that crosses the real-time boundary and changes what is audible
+    // must be visible in the trace, or no measured proof can correlate a
+    // refused note with the limit that refused it.
+    assert_eq!(StateTree::SCHEMA_VERSION, 13);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

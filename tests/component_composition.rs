@@ -121,13 +121,16 @@ const NOT_ASKABLE_PAIRS: [(SemanticControlKind, PresentationRole); 3] = [
 
 /// The semantic control kinds the shipped reducer actually projects.
 ///
-/// Measured, not assumed. `Stepped` has no production capability declaring
-/// one, and `Surface` is built only on the fixture projection path. Pinned so
-/// that a kind appearing or disappearing fails
+/// Measured, not assumed. `Stepped` joined this set when the PATCH Utility
+/// voice-limit row gained a canonical descriptor that classifies itself
+/// `Stepped` and a reducer arm that edits it — the first production producer
+/// of the kind. `Surface` is still built only on the fixture projection path.
+/// Pinned so that a kind appearing or disappearing fails
 /// [`the_production_projection_carries_the_kinds_this_target_can_drive`]
 /// rather than silently shrinking what the document sweep covers.
-const PRODUCTION_PROJECTED_KINDS: [SemanticControlKind; 5] = [
+const PRODUCTION_PROJECTED_KINDS: [SemanticControlKind; 6] = [
     SemanticControlKind::Continuous,
+    SemanticControlKind::Stepped,
     SemanticControlKind::Choice,
     SemanticControlKind::Toggle,
     SemanticControlKind::Asset,
@@ -135,8 +138,7 @@ const PRODUCTION_PROJECTED_KINDS: [SemanticControlKind; 5] = [
 ];
 
 /// The kinds the shipped reducer projects nothing of.
-const PRODUCTION_UNPROJECTED_KINDS: [SemanticControlKind; 2] =
-    [SemanticControlKind::Stepped, SemanticControlKind::Surface];
+const PRODUCTION_UNPROJECTED_KINDS: [SemanticControlKind; 1] = [SemanticControlKind::Surface];
 
 /// The declared column anatomy, closed and ordered (crest-spec
 /// `valueObject.MixerTrackColumnStructure`), transcribed from the design
@@ -157,11 +159,11 @@ const FORBIDDEN_MARKERS: [&str; 5] = ["", " ", "0", "0.0", "0.000"];
 /// transcribed from the product authority rather than parsed back from the
 /// page, so a panel that quietly rebinds or drops one fails here.
 const AUTHORED_UTILITY_ENTRIES: [(&str, Option<&str>); 5] = [
-    ("MASTER VOLUME", None),
+    ("MASTER VOLUME", Some("patch.global.masterGainDb")),
     ("PATCH VOLUME", Some("patch.output.trimGainDb")),
-    ("MIDI INPUT", None),
+    ("MIDI INPUT", Some("patch.midiInput")),
     ("OUTPUT TRACK", Some("patch.output.outputTrack")),
-    ("VOICE LIMIT", None),
+    ("VOICE LIMIT", Some("patch.voiceLimit")),
 ];
 
 // ===========================================================================

@@ -26,7 +26,9 @@ use crate::synth::instrument_capability::{
     CapabilityError, CapabilityRegistry, ParameterAdjustment, ParameterKind, ParameterValue,
     PatchInteraction,
 };
+use crate::kernel::midi_channel::MidiChannel;
 use crate::synth::patch::{Patch, PatchEditableTarget};
+use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
     EffectCapabilityError, EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, ParameterId,
     PostEffectConfig, VoiceEnvelopeParameter,
@@ -769,6 +771,10 @@ impl AppState {
                     .map_err(|_| EventRejection::ActionUnavailableInContext)?;
                 Ok(ReducerEffects::default())
             }
+            AppEvent::EnterSurface(SurfaceId::PatchDetail) => {
+                self.enter_patch_detail()?;
+                Ok(ReducerEffects::default())
+            }
             AppEvent::EnterSurface(surface) => {
                 self.interaction
                     .enter_surface(surface)
@@ -915,7 +921,7 @@ impl AppState {
         }
     }
 
-    fn install_patches(&mut self, patches: Vec<Patch>) -> Result<(), EventRejection> {
+    fn install_patches(&mut self, mut patches: Vec<Patch>) -> Result<(), EventRejection> {
         if self.generation != 0 || !self.patches.is_empty() {
             return Err(EventRejection::InstallationClosed);
         }
@@ -944,6 +950,20 @@ impl AppState {
             }
         }
 
+        // This is the only installation site with registry access, so it is
+        // the only place a Patch can learn what its own engine can honour.
+        // Without this, every Patch would carry `Patch::new`'s unconditional
+        // engine-managed ceiling — including a Braids Patch whose capability
+        // declares far fewer voices.
+        for patch in &mut patches {
+            let policy = self
+                .capabilities
+                .descriptor(patch.instrument_config().capability_id())
+                .ok_or(EventRejection::InvalidInstrumentConfig)?
+                .voice_policy();
+            patch.seed_voice_limit(policy);
+        }
+
         self.patches = patches;
         let resolver = SemanticResolver::new(self);
         let mixer_focus = resolver
@@ -960,6 +980,36 @@ impl AppState {
             .set_active_main(mixer_focus)
             .map_err(|_| EventRejection::InvalidSelection)?;
         Ok(())
+    }
+
+    /// Opens the subordinate PATCH detail surface on the focused row's subject.
+    ///
+    /// Entry is accepted only from a PatchMain path whose control resolves a
+    /// [`PatchDetailSubject`] — the engine row, an active-instrument
+    /// capability row, an occupied effect slot, or one of its occupant's
+    /// parameter rows. Every other origin is a typed unchanged rejection
+    /// rather than an empty detail surface: an empty slot names no capability,
+    /// and a Utility row is not on the main surface at all.
+    fn enter_patch_detail(&mut self) -> Result<(), EventRejection> {
+        if self.interaction.active_surface() != SurfaceId::PatchMain {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        let origin = self.interaction.focus_path().clone();
+        let resolver = SemanticResolver::new(self);
+        let subject = resolver
+            .detail_subject(&origin)
+            .ok_or(EventRejection::ActionUnavailableInContext)?;
+        let patch_id = origin.patch_id().ok_or(EventRejection::NoPatchesInstalled)?;
+        // The subject's first visible enabled control, resolved from the
+        // installed descriptor rather than assumed.
+        let focus = resolver
+            .patch_detail_paths(patch_id, &subject)?
+            .into_iter()
+            .next()
+            .ok_or(EventRejection::InvalidSelection)?;
+        self.interaction
+            .enter_detail(subject, focus)
+            .map_err(|_| EventRejection::ActionUnavailableInContext)
     }
 
     fn select_context(&mut self, context: TopLevelContext) -> Result<(), EventRejection> {
@@ -984,10 +1034,24 @@ impl AppState {
     /// installs one Patch per MIDI part, so without it every instrument after
     /// the first is unreachable from the controller.
     ///
-    /// Focus is recovered against the destination Patch's own descriptor
+    /// Any open subordinate surface is left first: a detail subject belongs to
+    /// the Patch it was opened on, and carrying it across would show one
+    /// Patch's capability under another Patch's identity.
+    ///
+    /// Focus is then recovered against the destination Patch's own descriptor
     /// schema: the same control is kept when that Patch offers it, otherwise
-    /// the first valid control is taken. A control identity the destination
-    /// cannot host is never carried across.
+    /// the one deterministic next-before-previous sibling rule finds the
+    /// nearest row the destination does host. A control identity the
+    /// destination cannot host is never carried across, and recovery never
+    /// falls back to "first row" while a real sibling survives.
+    ///
+    /// `MidiInput` and `VoiceLimit` are Patch-local and follow the switch
+    /// simply by being read from the newly focused Patch; master gain is not
+    /// Patch-local and is untouched here.
+    ///
+    /// The whole switch is one accepted event, so it advances the generation
+    /// exactly once and no intermediate state pairs one Patch's identity with
+    /// another's schema.
     fn select_patch(&mut self, direction: Direction) -> Result<(), EventRejection> {
         if self.context() != TopLevelContext::Patch {
             return Err(EventRejection::ActionUnavailableInContext);
@@ -1028,14 +1092,34 @@ impl AppState {
             .ok_or(EventRejection::ParameterAtBoundary)?
             .id();
 
+        // Any open subordinate surface is left as part of landing on the
+        // destination: `set_active_main` below clears the return path and the
+        // detail subject together, because a main path is by definition not a
+        // detail path. Clearing here as well would be a second owner of the
+        // same fact, and the invariant assertion could not tell them apart.
         let held = self.interaction.patch_control_focus();
         let resolver = SemanticResolver::new(self);
+        let source_order = resolver.patch_main_paths(focused)?;
         let candidates = resolver.patch_main_paths(target_id)?;
+
+        // Recovery runs over *control* identities, because the two orders
+        // carry different PatchIds and so can never compare equal as whole
+        // paths. Exact identity wins; otherwise the shared next-before-
+        // previous rule walks outward through the source order for the
+        // nearest control the destination also hosts.
         let recovered = held
             .and_then(|control| {
-                candidates
+                let source_controls = source_order
                     .iter()
-                    .find(|path| path.control_id() == &SemanticControlId::Patch(control.clone()))
+                    .map(FocusPath::control_id)
+                    .collect::<Vec<_>>();
+                let destination_controls = candidates
+                    .iter()
+                    .map(FocusPath::control_id)
+                    .collect::<Vec<_>>();
+                let held = SemanticControlId::Patch(control);
+                SemanticResolver::recovered_index(&&held, &source_controls, &destination_controls)
+                    .map(|index| &candidates[index])
             })
             .or_else(|| candidates.first())
             .ok_or(EventRejection::NoPatchesInstalled)?
@@ -1145,6 +1229,14 @@ impl AppState {
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
+        // Read the destination's declared ceiling before taking the Patch
+        // mutably: committing the config and clamping the limit is one step,
+        // so canonical state never holds a limit the new engine cannot honour.
+        let target_policy = self
+            .capabilities
+            .descriptor(&target_capability_id)
+            .ok_or(EventRejection::MismatchedEngineSelection)?
+            .voice_policy();
         let patch = self
             .patches
             .iter_mut()
@@ -1166,7 +1258,16 @@ impl AppState {
                 .expect("Activating status always owns correlation"),
         )
         .expect("Activating correlation owns a target revision");
-        patch.set_instrument_config(candidate_config);
+        // Commit the config and narrow the limit together. The preparation
+        // worker deliberately does not clamp: clamping only the candidate
+        // would leave the candidate snapshot and canonical state out of step,
+        // so the one narrowing happens here, where both land at once.
+        let carry_over = patch.replace_instrument_config(candidate_config, target_policy);
+        debug_assert_eq!(
+            patch.voice_limit(),
+            carry_over.limit(),
+            "the reported carry-over limit must be the one canonical state now holds"
+        );
         self.engine_selection = status;
         self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
         Ok(effect)
@@ -1532,7 +1633,7 @@ impl AppState {
                     Err(EventRejection::ActionUnavailableInContext)
                 }
             },
-            SurfaceId::PatchMain | SurfaceId::PatchUtility => {
+            SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail => {
                 Err(EventRejection::ActionUnavailableInContext)
             }
         }
@@ -1540,6 +1641,20 @@ impl AppState {
 
     fn navigate_patch_control(&mut self, direction: Direction) -> Result<(), EventRejection> {
         match self.interaction.active_surface() {
+            // The subordinate detail surface navigates its subject's rows and
+            // is left the same way Utility is: Left restores the exact origin.
+            SurfaceId::PatchDetail => {
+                if direction == Direction::Left {
+                    self.interaction
+                        .return_to_origin()
+                        .map_err(|_| EventRejection::ActionUnavailableInContext)
+                } else if matches!(direction, Direction::Up | Direction::Down) {
+                    let paths = SemanticResolver::new(self).ordered_paths(SurfaceId::PatchDetail)?;
+                    self.navigate_side_nonwrapping(&paths, direction == Direction::Down)
+                } else {
+                    Err(EventRejection::ActionUnavailableInContext)
+                }
+            }
             SurfaceId::PatchUtility => {
                 if direction == Direction::Left {
                     self.interaction
@@ -1598,12 +1713,36 @@ impl AppState {
         direction: Direction,
     ) -> Result<ReducerEffects, EventRejection> {
         if self.interaction.active_surface() == SurfaceId::PatchUtility {
-            let SemanticControlId::Patch(crate::control::PatchControlId::Output(parameter)) =
-                self.interaction.focus_path().control_id()
+            let SemanticControlId::Patch(control) = self.interaction.focus_path().control_id()
             else {
                 return Err(EventRejection::InvalidSelection);
             };
-            self.adjust_patch_output(*parameter, direction)?;
+            match control.clone() {
+                crate::control::PatchControlId::Output(parameter) => {
+                    self.adjust_patch_output(parameter, direction)?;
+                }
+                // Master volume from PATCH Utility reaches the one canonical
+                // GlobalParameters value through `adjust_global` — the very
+                // method the MIXER Inspector's own arm calls. PATCH adds no
+                // field and no second setter, so an edit made on either
+                // surface is the same edit.
+                crate::control::PatchControlId::Global(parameter) => {
+                    self.adjust_global(parameter, direction)?;
+                }
+                crate::control::PatchControlId::MidiInput => {
+                    self.adjust_patch_midi_input(direction)?;
+                }
+                crate::control::PatchControlId::VoiceLimit => {
+                    self.adjust_patch_voice_limit(direction)?;
+                }
+                crate::control::PatchControlId::Engine
+                | crate::control::PatchControlId::Envelope(_)
+                | crate::control::PatchControlId::Capability(_)
+                | crate::control::PatchControlId::EffectSlot(_)
+                | crate::control::PatchControlId::Effect(..) => {
+                    return Err(EventRejection::InvalidSelection);
+                }
+            }
             return Ok(ReducerEffects::default());
         }
         if self.interaction.active_surface() != SurfaceId::PatchMain {
@@ -1648,7 +1787,11 @@ impl AppState {
                 self.adjust_patch_effect(slot_id, &parameter_id, direction)?;
                 Ok(ReducerEffects::default())
             }
-            Some(crate::control::PatchControlId::Output(_)) => {
+            // The five Utility identities are never focused on PatchMain.
+            Some(crate::control::PatchControlId::Output(_))
+            | Some(crate::control::PatchControlId::Global(_))
+            | Some(crate::control::PatchControlId::MidiInput)
+            | Some(crate::control::PatchControlId::VoiceLimit) => {
                 Err(EventRejection::InvalidSelection)
             }
             None => Err(EventRejection::NoPatchesInstalled),
@@ -1703,6 +1846,93 @@ impl AppState {
             }
         };
         patch.set_output(updated);
+        Ok(())
+    }
+
+    /// Re-targets which incoming MIDI part drives the focused Patch.
+    ///
+    /// The channel is an adjacent choice over `0..=15` and refuses at both
+    /// ends rather than wrapping, exactly like the output-track row. Nothing
+    /// else on the Patch is touched: identity, instrument config, envelope,
+    /// effect slots, output routing, and the active graph revision all stay
+    /// as they were, because a channel is who plays the Patch, not what it is.
+    fn adjust_patch_midi_input(&mut self, direction: Direction) -> Result<(), EventRejection> {
+        if matches!(direction, Direction::Up | Direction::Down) {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let current = patch.channel().value();
+        let channel = if direction == Direction::Right {
+            current
+                .checked_add(1)
+                .filter(|value| *value <= MidiChannel::MAX)
+        } else {
+            current.checked_sub(1)
+        }
+        .ok_or(EventRejection::ParameterAtBoundary)?;
+        let channel = MidiChannel::new(channel).map_err(|_| EventRejection::ParameterAtBoundary)?;
+        // Two Patches driven by one part would make the incoming stream
+        // ambiguous, which installation already refuses; the same rule holds
+        // for an edit that would create the collision.
+        if self
+            .patches
+            .iter()
+            .any(|other| other.id() != patch_id && other.channel() == channel)
+        {
+            return Err(EventRejection::DuplicateMidiChannel);
+        }
+        self.patches
+            .iter_mut()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?
+            .set_channel(channel);
+        Ok(())
+    }
+
+    /// Adjusts the focused Patch's own ceiling on simultaneously sounding notes.
+    ///
+    /// Bounds and both step sizes come from the canonical
+    /// [`VoiceLimit::descriptor`], never from literals here, so the reducer
+    /// and every projection move the value by the same amounts. The arithmetic
+    /// is integral: a voice count has no fractional position, so it is not
+    /// routed through the float scalar path.
+    fn adjust_patch_voice_limit(&mut self, direction: Direction) -> Result<(), EventRejection> {
+        let descriptor = VoiceLimit::descriptor();
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch = self
+            .patches
+            .iter_mut()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let current = patch.voice_limit().value();
+        let (step, increasing) = match direction {
+            Direction::Right => (descriptor.fine_step(), true),
+            Direction::Left => (descriptor.fine_step(), false),
+            Direction::Up => (descriptor.coarse_step(), true),
+            Direction::Down => (descriptor.coarse_step(), false),
+        };
+        let value = if increasing {
+            current.saturating_add(step).min(descriptor.maximum())
+        } else {
+            current.saturating_sub(step).max(descriptor.minimum())
+        };
+        if value == current {
+            return Err(EventRejection::ParameterAtBoundary);
+        }
+        patch
+            .set_voice_limit(value)
+            .map_err(|_| EventRejection::InvalidParameterValue)?;
         Ok(())
     }
 
@@ -2227,9 +2457,13 @@ impl AppState {
             let (old_order, new_order) = match path.surface() {
                 SurfaceId::PatchMain => (old_patch_order, new_patch_order.as_slice()),
                 SurfaceId::MixerMain => (old_mixer_order, new_mixer_order.as_slice()),
-                SurfaceId::PatchUtility | SurfaceId::MixerInspector => {
-                    return Err(EventRejection::InvalidSelection)
-                }
+                // Only main paths are repaired here: this repairs remembered
+                // roots and one return *origin*, all of which are main by
+                // construction. A subordinate surface's own focus is repaired
+                // where that surface's order is resolved.
+                SurfaceId::PatchUtility
+                | SurfaceId::PatchDetail
+                | SurfaceId::MixerInspector => return Err(EventRejection::InvalidSelection),
             };
             SemanticResolver::recover(path, old_order, new_order)
                 .ok_or(EventRejection::InvalidSelection)
@@ -2429,6 +2663,8 @@ mod tests {
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
+    use crate::control::{InteractionMode, PatchControlId, PatchDetailSubject};
+    use crate::mixer::global_parameters::GlobalParameter;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::{DescriptorDefaultConfigFactory, InstrumentCapabilityProvider, ParameterId};
     use crate::testing::automatic_midi_test::create_soundfont_config;
@@ -3789,6 +4025,781 @@ mod tests {
         assert_eq!(
             state.engine_selection().kind(),
             EngineSelectionStatusKind::Preparing
+        );
+    }
+
+    // ===================================================================
+    // WP02: the widened PATCH control surface
+    // ===================================================================
+
+    /// Navigates PATCH Utility from its entry row to `control`.
+    fn focus_utility_row(state: &mut AppState, control: &PatchControlId) {
+        state.apply(AppEvent::SelectContext(TopLevelContext::Patch)).unwrap();
+        state.apply(AppEvent::EnterSurface(SurfaceId::PatchUtility)).unwrap();
+        let order = PatchControlId::utility_surface_descriptor();
+        let index = |target: &PatchControlId| {
+            order
+                .iter()
+                .position(|candidate| candidate == target)
+                .expect("the declared Utility order hosts this row")
+        };
+        let entry = index(&PatchControlId::Output(PatchOutputParameter::TrimGain));
+        let target = index(control);
+        let (direction, steps) = if target >= entry {
+            (Direction::Down, target - entry)
+        } else {
+            (Direction::Up, entry - target)
+        };
+        for _ in 0..steps {
+            state.apply(AppEvent::Navigate(direction)).unwrap();
+        }
+        assert_eq!(
+            state.interaction().focus_path().control_id(),
+            &SemanticControlId::Patch(control.clone()),
+            "navigation must land on the requested Utility row"
+        );
+    }
+
+    /// T008: the panel is exactly five declared rows, and navigation refuses
+    /// at both ends rather than wrapping.
+    #[test]
+    fn patch_utility_resolves_exactly_five_declared_rows_without_wrapping() {
+        let mut state = installed_state();
+        let patch_id = state.patches()[0].id();
+        let paths = SemanticResolver::new(&state)
+            .patch_utility_paths(patch_id)
+            .unwrap();
+
+        assert_eq!(
+            paths
+                .iter()
+                .map(|path| path.control_id().clone())
+                .collect::<Vec<_>>(),
+            vec![
+                SemanticControlId::Patch(PatchControlId::Global(GlobalParameter::MasterGainDb)),
+                SemanticControlId::Patch(PatchControlId::Output(PatchOutputParameter::TrimGain)),
+                SemanticControlId::Patch(PatchControlId::MidiInput),
+                SemanticControlId::Patch(PatchControlId::Output(PatchOutputParameter::OutputTrack)),
+                SemanticControlId::Patch(PatchControlId::VoiceLimit),
+            ]
+        );
+
+        // None of the five enters the PatchMain order.
+        let main = SemanticResolver::new(&state)
+            .patch_main_paths(patch_id)
+            .unwrap();
+        for control in PatchControlId::utility_surface_descriptor() {
+            assert!(
+                !main
+                    .iter()
+                    .any(|path| path.control_id()
+                        == &SemanticControlId::Patch(control.clone())),
+                "{control} must not appear in the PatchMain order"
+            );
+        }
+
+        // Upward from the first row and downward from the last both refuse,
+        // leaving state identical.
+        focus_utility_row(&mut state, &PatchControlId::Global(GlobalParameter::MasterGainDb));
+        let at_top = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Navigate(Direction::Up)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, at_top);
+
+        focus_utility_row(&mut state, &PatchControlId::VoiceLimit);
+        let at_bottom = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Navigate(Direction::Down)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, at_bottom);
+    }
+
+    /// T009: master gain has exactly one canonical owner, reachable from both
+    /// surfaces. Asserted in both directions through the production reducer.
+    #[test]
+    fn master_gain_is_one_canonical_value_reached_from_patch_and_mixer() {
+        let mut state = installed_state();
+
+        // PATCH edits it; MIXER reads the same value back.
+        focus_utility_row(
+            &mut state,
+            &PatchControlId::Global(GlobalParameter::MasterGainDb),
+        );
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        let after_patch_edit = state.global().master_gain_db();
+        assert_ne!(after_patch_edit, 0.0, "the PATCH edit must move the value");
+        assert_eq!(
+            state.global_row_value(GlobalParameter::MasterGainDb),
+            after_patch_edit,
+            "the MIXER row reads the value PATCH just edited"
+        );
+
+        // MIXER edits it; PATCH reads the same value back.
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Navigate))
+            .unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+            .unwrap();
+        let mixer_paths = SemanticResolver::new(&state).mixer_inspector_paths(
+            state
+                .interaction()
+                .remembered_mixer_main()
+                .control_id()
+                .as_mixer_track_id()
+                .unwrap(),
+        )
+        .unwrap();
+        let global_path = mixer_paths
+            .iter()
+            .find(|path| {
+                matches!(
+                    path.control_id(),
+                    SemanticControlId::Mixer(MixerControlId::Global { .. })
+                )
+            })
+            .expect("the Inspector hosts the canonical global row")
+            .clone();
+        state.interaction.active_focus = global_path;
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        let after_mixer_edit = state.global().master_gain_db();
+        assert_ne!(after_mixer_edit, after_patch_edit);
+
+        // Both surfaces moved the value by the same descriptor step, which is
+        // only possible if they address one value through one descriptor.
+        let step = GlobalParameter::MasterGainDb.descriptor().fine_step();
+        assert!((after_patch_edit - step).abs() < 1.0e-6);
+        assert!((after_mixer_edit - 2.0 * step).abs() < 1.0e-6);
+    }
+
+    /// T009: no second master-gain owner exists on the PATCH side.
+    ///
+    /// Counted over the production sources rather than asserted by
+    /// inspection: a PATCH-side copy would have to declare a field somewhere,
+    /// and the canonical value has exactly one storage owner —
+    /// `GlobalParameters` — that every other mention reads through.
+    #[test]
+    fn exactly_one_master_gain_owner_exists_and_patch_holds_no_copy() {
+        // No PATCH-owned type declares the field. These are the three places a
+        // PATCH-side copy would have to live to shadow the mixer's.
+        for (name, source) in [
+            ("Patch", include_str!("../synth/patch.rs")),
+            ("PatchControlId", include_str!("patch_control_id.rs")),
+            ("PatchPageProjection", include_str!("patch_page_projection.rs")),
+        ] {
+            let declarations = source
+                .lines()
+                .map(str::trim_start)
+                .filter(|line| {
+                    !line.starts_with("//")
+                        && (line.starts_with("master_gain_db:")
+                            || line.starts_with("pub master_gain_db:")
+                            || line.starts_with("pub(crate) master_gain_db:"))
+                })
+                .count();
+            assert_eq!(
+                declarations, 0,
+                "{name} must not declare a master-gain field; the one canonical \
+                 owner is GlobalParameters"
+            );
+        }
+
+        // The canonical storage owner declares it exactly once.
+        let canonical = include_str!("../mixer/global_parameters.rs")
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| line.starts_with("master_gain_db: f32,"))
+            .count();
+        assert_eq!(canonical, 1, "GlobalParameters owns the value exactly once");
+
+        // And no Patch serializes one.
+        let state = installed_state();
+        let patch_json = serde_json::to_value(
+            crate::control::serialized_state::SerializedPatch::from(&state.patches()[0]),
+        )
+        .unwrap();
+        assert!(
+            patch_json.get("masterGainDb").is_none(),
+            "a Patch must not carry a master-gain copy"
+        );
+    }
+
+    /// T009: the PATCH Utility row and the MIXER Inspector row project the
+    /// same value through the same descriptor bounds — the observable
+    /// consequence of there being one owner.
+    #[test]
+    fn both_surfaces_project_one_master_gain_value_and_one_set_of_bounds() {
+        let mut state = installed_state();
+        // Edit through the canonical global owner, then read what the PATCH
+        // Utility projection shows.
+        state.global = state.global.with_master_gain_db(-4.5).unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+
+        let semantic =
+            crate::control::SemanticGraphicalViewModel::project(&state, "state-hash").unwrap();
+        let utility_row = semantic
+            .surface(SurfaceId::PatchUtility)
+            .expect("PATCH exposes its Utility surface")
+            .controls()
+            .iter()
+            .find(|control| {
+                control.path().control_id()
+                    == &SemanticControlId::Patch(PatchControlId::Global(
+                        GlobalParameter::MasterGainDb,
+                    ))
+            })
+            .expect("the Utility panel hosts the master-volume row")
+            .clone();
+
+        assert_eq!(
+            utility_row.value(),
+            &crate::control::SemanticControlValue::Scalar(-4.5),
+            "the PATCH row reads the value the MIXER edit wrote"
+        );
+        let descriptor = GlobalParameter::MasterGainDb.descriptor();
+        let range = utility_row
+            .numeric_range()
+            .expect("the master-volume row carries its descriptor bounds");
+        assert_eq!(range.minimum(), f64::from(descriptor.minimum()));
+        assert_eq!(range.maximum(), f64::from(descriptor.maximum()));
+        assert_eq!(range.fine_step(), f64::from(descriptor.fine_step()));
+        assert_eq!(range.coarse_step(), f64::from(descriptor.coarse_step()));
+    }
+
+    /// T009: a MIDI channel change re-targets which incoming part drives the
+    /// Patch and changes nothing else about it.
+    #[test]
+    fn midi_input_retargets_the_patch_and_touches_nothing_else() {
+        let mut state = installed_state();
+        let before = state.patches()[0].clone();
+        let graph_before = state.engine_selection().projection_graph_revision();
+
+        focus_utility_row(&mut state, &PatchControlId::MidiInput);
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        // Patch 2 already holds channel 1, so stepping up collides and is
+        // refused from the existing typed vocabulary, unchanged.
+        let collided = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Adjust(Direction::Right)),
+            Err(EventRejection::DuplicateMidiChannel)
+        );
+        assert_eq!(state, collided);
+
+        // Patch 1 is on channel 0, the lower bound: stepping down refuses.
+        assert_eq!(
+            state.apply(AppEvent::Adjust(Direction::Left)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state, collided);
+
+        // Vertical adjustment is not this row's gesture.
+        assert_eq!(
+            state.apply(AppEvent::Adjust(Direction::Up)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+
+        // A free channel is accepted and moves only the channel.
+        let mut free = AppState::new(registry(), global_parameters());
+        free.apply(AppEvent::InstallPatches(vec![patch_on_channel(1, 0.0, 4)]))
+            .unwrap();
+        let before_free = free.patches()[0].clone();
+        focus_utility_row(&mut free, &PatchControlId::MidiInput);
+        free.apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        free.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        let after = &free.patches()[0];
+        assert_eq!(after.channel().value(), 5);
+        assert_eq!(after.id(), before_free.id());
+        assert_eq!(after.instrument_config(), before_free.instrument_config());
+        assert_eq!(after.envelope(), before_free.envelope());
+        assert_eq!(after.effect_slots(), before_free.effect_slots());
+        assert_eq!(after.output(), before_free.output());
+        assert_eq!(after.voice_limit(), before_free.voice_limit());
+        assert_eq!(
+            free.engine_selection().projection_graph_revision(),
+            graph_before,
+            "a channel change publishes no new graph"
+        );
+        assert_eq!(before.id(), state.patches()[0].id());
+    }
+
+    /// T009: the voice limit honours the descriptor's own fine and coarse
+    /// steps — not literals — and refuses at both bounds.
+    #[test]
+    fn voice_limit_uses_descriptor_steps_and_refuses_at_both_bounds() {
+        let descriptor = VoiceLimit::descriptor();
+        let mut state = installed_state();
+        let seeded = state.patches()[0].voice_limit().value();
+
+        focus_utility_row(&mut state, &PatchControlId::VoiceLimit);
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+
+        // Fine down, then coarse down: each moves by the descriptor's own step.
+        state.apply(AppEvent::Adjust(Direction::Left)).unwrap();
+        assert_eq!(
+            state.patches()[0].voice_limit().value(),
+            seeded - descriptor.fine_step()
+        );
+        state.apply(AppEvent::Adjust(Direction::Down)).unwrap();
+        assert_eq!(
+            state.patches()[0].voice_limit().value(),
+            seeded - descriptor.fine_step() - descriptor.coarse_step()
+        );
+        // And back up by the same amounts.
+        state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        assert_eq!(state.patches()[0].voice_limit().value(), seeded);
+
+        // At the maximum, increasing refuses and leaves state identical.
+        while state.patches()[0].voice_limit().value() < descriptor.maximum() {
+            state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+        }
+        let at_max = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Adjust(Direction::Right)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state, at_max);
+
+        // At the minimum, decreasing refuses and leaves state identical.
+        while state.patches()[0].voice_limit().value() > descriptor.minimum() {
+            state.apply(AppEvent::Adjust(Direction::Down)).unwrap();
+        }
+        assert_eq!(state.patches()[0].voice_limit().value(), descriptor.minimum());
+        let at_min = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Adjust(Direction::Left)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state, at_min);
+    }
+
+    /// H1: installation seeds every Patch's limit from its own engine's
+    /// declared ceiling — proved against both real production descriptors.
+    #[test]
+    fn installation_seeds_each_patch_limit_from_its_own_engine_ceiling() {
+        use crate::adapter::braids_capability::BRAIDS_FIXED_VOICES;
+        use crate::adapter::hidef_soundfont_capability::HIDEF_POLYPHONY_CEILING;
+
+        let registry = crate::adapter::production_instruments::production_capability_registry()
+            .unwrap();
+        let braids = BraidsCapability::new().unwrap().default_config().unwrap();
+        let soundfont = create_soundfont_config(
+            &provider(),
+            SoundFontInstrument::new(0, 1, false).unwrap(),
+        )
+        .unwrap();
+
+        let mut state = AppState::new(registry, global_parameters());
+        state
+            .apply(AppEvent::InstallPatches(vec![
+                Patch::new(
+                    PatchId::new(1).unwrap(),
+                    "SoundFont".to_owned(),
+                    soundfont,
+                    MidiChannel::new(0).unwrap(),
+                    PatchOutput::to_track(MixerTrackId::new(0).unwrap()),
+                ),
+                Patch::new(
+                    PatchId::new(2).unwrap(),
+                    "Braids".to_owned(),
+                    braids,
+                    MidiChannel::new(1).unwrap(),
+                    PatchOutput::to_track(MixerTrackId::new(1).unwrap()),
+                ),
+            ]))
+            .unwrap();
+
+        assert_eq!(
+            state.patches()[0].voice_limit().value(),
+            HIDEF_POLYPHONY_CEILING
+        );
+        assert_eq!(
+            state.patches()[1].voice_limit().value(),
+            BRAIDS_FIXED_VOICES,
+            "a Braids Patch must carry its own engine's ceiling, not 64"
+        );
+        assert_ne!(
+            state.patches()[0].voice_limit(),
+            state.patches()[1].voice_limit(),
+            "seeding must discriminate between the two installed engines"
+        );
+    }
+
+    /// H2: an engine swap to a narrower engine clamps the limit in canonical
+    /// state, and the reported carry-over is what canonical state holds.
+    #[test]
+    fn an_engine_swap_to_a_narrower_engine_clamps_the_limit_in_canonical_state() {
+        use crate::adapter::braids_capability::BRAIDS_FIXED_VOICES;
+        use crate::synth::instrument_capability::VoicePolicy;
+
+        // The reducer's clamp is the same one `replace_instrument_config`
+        // performs; proved here on the canonical aggregate the reducer mutates.
+        let mut patch = patch(1, 0.0);
+        patch.seed_voice_limit(VoicePolicy::EngineManaged);
+        assert_eq!(patch.voice_limit().value(), VoiceLimit::MAXIMUM);
+
+        let braids = BraidsCapability::new().unwrap().default_config().unwrap();
+        let carry_over = patch.replace_instrument_config(
+            braids,
+            VoicePolicy::FixedPerPatch {
+                voices: BRAIDS_FIXED_VOICES,
+            },
+        );
+
+        assert_eq!(
+            carry_over,
+            crate::synth::patch::VoiceLimitCarryOver::Clamped {
+                previous: VoiceLimit::new(VoiceLimit::MAXIMUM).unwrap(),
+                limit: VoiceLimit::new(BRAIDS_FIXED_VOICES).unwrap(),
+            }
+        );
+        assert_eq!(
+            patch.voice_limit(),
+            carry_over.limit(),
+            "canonical state must hold exactly the reported carry-over limit"
+        );
+        assert_eq!(patch.voice_limit().value(), BRAIDS_FIXED_VOICES);
+    }
+
+    /// T010/T011: entry is accepted only from a PatchMain row whose control
+    /// resolves a subject, and the three detail facts move together.
+    #[test]
+    fn detail_entry_is_accepted_only_from_a_row_that_resolves_a_subject() {
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        assert!(state.interaction().detail_invariant_holds());
+        assert_eq!(state.interaction().detail_subject(), None);
+
+        // The engine row resolves the active instrument capability.
+        let origin = state.interaction().focus_path().clone();
+        assert_eq!(
+            origin.control_id(),
+            &SemanticControlId::Patch(PatchControlId::Engine)
+        );
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+
+        // All three facts moved together.
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+        assert_eq!(
+            state.interaction().return_path().unwrap().entered_surface(),
+            SurfaceId::PatchDetail
+        );
+        assert_eq!(state.interaction().return_path().unwrap().origin(), &origin);
+        assert!(matches!(
+            state.interaction().detail_subject(),
+            Some(PatchDetailSubject::Instrument { .. })
+        ));
+        assert!(state.interaction().detail_invariant_holds());
+
+        // Return restores the exact originating row and clears both together.
+        state.apply(AppEvent::Return).unwrap();
+        assert_eq!(state.interaction().focus_path(), &origin);
+        assert_eq!(state.interaction().return_path(), None);
+        assert_eq!(state.interaction().detail_subject(), None);
+        assert!(state.interaction().detail_invariant_holds());
+    }
+
+    /// T010/T011: an envelope row and every Utility row resolve no subject, so
+    /// entry from them is a typed unchanged rejection rather than an empty
+    /// detail surface.
+    #[test]
+    fn detail_entry_from_a_subjectless_row_is_a_typed_unchanged_rejection() {
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        // Move off the engine row onto the first envelope row.
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert!(matches!(
+            state.interaction().focus_path().control_id(),
+            SemanticControlId::Patch(PatchControlId::Envelope(_))
+        ));
+
+        let before = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::EnterSurface(SurfaceId::PatchDetail)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, before, "a refused entry leaves state identical");
+        assert_eq!(state.interaction().detail_subject(), None);
+
+        // Every Utility row refuses too — and from Utility the origin is not
+        // even a main path, so the surfaces cannot nest.
+        for control in PatchControlId::utility_surface_descriptor() {
+            let mut utility = installed_state();
+            focus_utility_row(&mut utility, control);
+            let before = utility.clone();
+            assert_eq!(
+                utility.apply(AppEvent::EnterSurface(SurfaceId::PatchDetail)),
+                Err(EventRejection::ActionUnavailableInContext),
+                "entering detail from the {control} Utility row must be refused"
+            );
+            assert_eq!(utility, before);
+            assert!(utility.interaction().detail_invariant_holds());
+        }
+    }
+
+    /// T010/T011: an empty effect slot names no capability, so entry from it is
+    /// refused; an occupied one resolves its exact slot identity.
+    #[test]
+    fn detail_entry_distinguishes_an_empty_slot_from_an_occupied_one() {
+        let mut state = gapped_effects_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        let patch_id = state.patches()[0].id();
+        let resolver = SemanticResolver::new(&state);
+
+        // Slot 0 is empty: no subject.
+        let empty = FocusPath::patch_main(
+            patch_id,
+            None,
+            PatchControlId::EffectSlot(EffectSlotIndex::new(0).unwrap()),
+        );
+        assert_eq!(resolver.detail_subject(&empty), None);
+
+        // Slot 1 is occupied: the subject carries that slot's exact identity.
+        let occupied = FocusPath::patch_main(
+            patch_id,
+            None,
+            PatchControlId::EffectSlot(EffectSlotIndex::new(1).unwrap()),
+        );
+        let subject = resolver
+            .detail_subject(&occupied)
+            .expect("an occupied slot resolves an Effect subject");
+        assert_eq!(subject.slot_id(), Some(EffectSlotId::new(2).unwrap()));
+
+        // Entering from the empty slot is a typed unchanged rejection.
+        state.interaction.active_focus = empty;
+        let before = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::EnterSurface(SurfaceId::PatchDetail)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, before);
+
+        // Entering from the occupied slot opens the surface on that subject.
+        state.interaction.active_focus = occupied;
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        assert_eq!(state.interaction().detail_subject(), Some(&subject));
+        assert!(state.interaction().detail_invariant_holds());
+    }
+
+    /// T011: the subordinate surfaces do not nest in either direction.
+    #[test]
+    fn subordinate_surfaces_refuse_to_nest_in_either_direction() {
+        // Utility from an open detail surface.
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let in_detail = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::EnterSurface(SurfaceId::PatchUtility)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, in_detail);
+        assert_eq!(
+            state.interaction().return_path().unwrap().entered_surface(),
+            SurfaceId::PatchDetail,
+            "the one remembered origin is unchanged by the refusal"
+        );
+
+        // Detail from an open Utility surface is covered by
+        // `detail_entry_from_a_subjectless_row_is_a_typed_unchanged_rejection`.
+    }
+
+    /// T012: a patch switch closes any open detail surface, lands on a valid
+    /// destination path, reprojects the Patch-local Utility values, leaves the
+    /// non-Patch-local one alone, and advances the generation exactly once.
+    #[test]
+    fn a_patch_switch_closes_the_detail_surface_and_reprojects_patch_local_values() {
+        let mut state = installed_state();
+        // Set after installation: installation seeds every limit from its own
+        // engine's ceiling, so a distinguishing value has to be written on top
+        // of that seed rather than before it.
+        state.patches[1].set_voice_limit(21).unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        assert!(state.interaction().detail_subject().is_some());
+
+        let master_before = state.global().master_gain_db();
+        let generation_before = state.generation();
+
+        state.apply(AppEvent::SelectPatch(Direction::Right)).unwrap();
+
+        // The detail surface closed and the three facts moved together.
+        assert_eq!(state.interaction().detail_subject(), None);
+        assert_eq!(state.interaction().return_path(), None);
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
+        assert!(state.interaction().detail_invariant_holds());
+
+        // Exactly one generation.
+        assert_eq!(
+            state.generation() - generation_before,
+            1,
+            "the whole switch is one advanced generation"
+        );
+
+        // The destination path resolves against the destination's own schema.
+        assert!(SemanticResolver::new(&state).resolves(state.interaction().focus_path()));
+        assert_eq!(
+            state.interaction().patch_focus(),
+            Some(PatchId::new(2).unwrap())
+        );
+
+        // MidiInput and VoiceLimit are Patch-local and follow the switch;
+        // master gain is not Patch-local and did not change.
+        let focused = state
+            .patches()
+            .iter()
+            .find(|candidate| Some(candidate.id()) == state.interaction().patch_focus())
+            .unwrap();
+        assert_eq!(focused.voice_limit().value(), 21);
+        assert_eq!(focused.channel().value(), 1);
+        assert_eq!(state.global().master_gain_db(), master_before);
+    }
+
+    /// T012: a switch at either end of the installed order is a typed
+    /// unchanged rejection.
+    #[test]
+    fn a_patch_switch_at_either_end_is_a_typed_unchanged_rejection() {
+        let mut state = installed_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+
+        let at_first = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Left)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state, at_first, "a refused switch leaves state identical");
+
+        state.apply(AppEvent::SelectPatch(Direction::Right)).unwrap();
+        let at_last = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::SelectPatch(Direction::Right)),
+            Err(EventRejection::ParameterAtBoundary)
+        );
+        assert_eq!(state, at_last);
+    }
+
+    /// T012: a destination declaring fewer rows recovers focus through the
+    /// deterministic sibling rule rather than carrying a stale identity — and
+    /// not by falling back to the first row.
+    #[test]
+    fn a_switch_to_a_narrower_destination_recovers_through_the_sibling_rule() {
+        // Patch 1 is a SoundFont: its descriptor declares a preset
+        // StructuralChoice row that Braids does not host.
+        let braids = BraidsCapability::new().unwrap().default_config().unwrap();
+        let mut state = AppState::new(
+            crate::adapter::production_instruments::production_capability_registry().unwrap(),
+            global_parameters(),
+        );
+        state
+            .apply(AppEvent::InstallPatches(vec![
+                patch(1, 0.0),
+                Patch::new(
+                    PatchId::new(2).unwrap(),
+                    "Braids".to_owned(),
+                    braids,
+                    MidiChannel::new(1).unwrap(),
+                    PatchOutput::to_track(MixerTrackId::new(1).unwrap()),
+                ),
+            ]))
+            .unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+
+        let source_order = SemanticResolver::new(&state)
+            .patch_main_paths(PatchId::new(1).unwrap())
+            .unwrap();
+        // Focus the SoundFont-only preset row: the last capability row.
+        let preset = source_order
+            .iter()
+            .rev()
+            .find(|path| {
+                matches!(
+                    path.control_id(),
+                    SemanticControlId::Patch(PatchControlId::Capability(_))
+                )
+            })
+            .expect("the SoundFont descriptor declares a structural choice row")
+            .clone();
+        let preset_index = source_order.iter().position(|p| p == &preset).unwrap();
+        state.interaction.replace_remembered_patch_main(preset.clone());
+
+        state.apply(AppEvent::SelectPatch(Direction::Right)).unwrap();
+
+        let landed = state.interaction().focus_path().clone();
+        let destination_order = SemanticResolver::new(&state)
+            .patch_main_paths(PatchId::new(2).unwrap())
+            .unwrap();
+        assert!(
+            destination_order.contains(&landed),
+            "focus must land on a control the destination actually hosts"
+        );
+        assert_ne!(
+            landed.control_id(),
+            preset.control_id(),
+            "a control the destination cannot host is never carried across"
+        );
+
+        // The sibling rule, not "first row": the recovered control is the
+        // nearest surviving neighbour of the held row in the source order.
+        let expected = SemanticResolver::recovered_index(
+            &preset.control_id(),
+            &source_order
+                .iter()
+                .map(FocusPath::control_id)
+                .collect::<Vec<_>>(),
+            &destination_order
+                .iter()
+                .map(FocusPath::control_id)
+                .collect::<Vec<_>>(),
+        )
+        .map(|index| destination_order[index].clone())
+        .expect("the deterministic rule finds a surviving sibling");
+        assert_eq!(landed, expected);
+        assert!(
+            preset_index > 0,
+            "the held row is not the first row, so a first-row fallback would \
+             be observably different from the sibling rule"
+        );
+        assert_ne!(
+            landed, destination_order[0],
+            "recovery must not fall back to the first row while a sibling survives"
         );
     }
 }
