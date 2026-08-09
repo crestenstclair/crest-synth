@@ -1,7 +1,7 @@
 {
-  "event_count": 68,
-  "last_event_id": "01KZKJX16PX2EJDKFCDKG7Q542",
-  "materialized_at": "2026-08-09T15:40:13.350814+00:00",
+  "event_count": 69,
+  "last_event_id": "01KZKME39NAG14SAS9N8P5BCCY",
+  "materialized_at": "2026-08-09T16:07:01.173707+00:00",
   "mission_number": "",
   "mission_slug": "functional-patch-editor-01KZERV9",
   "mission_type": "software-dev",
@@ -11,8 +11,8 @@
     "canceled": 0,
     "claimed": 0,
     "done": 0,
-    "for_review": 0,
-    "in_progress": 1,
+    "for_review": 1,
+    "in_progress": 0,
     "in_review": 0,
     "planned": 0
   },
@@ -139,14 +139,14 @@
       }
     },
     "WP05": {
-      "actor": "claude",
+      "actor": "user",
       "agent": "",
       "agent_profile": "__resolved_profile_absent__",
       "agent_profile_version": "__resolved_profile_version_absent__",
       "force_count": 0,
-      "lane": "in_progress",
-      "last_event_id": "01KZKJX16PX2EJDKFCDKG7Q542",
-      "last_transition_at": "2026-08-09T15:40:13.350814+00:00",
+      "lane": "for_review",
+      "last_event_id": "01KZKME39NAG14SAS9N8P5BCCY",
+      "last_transition_at": "2026-08-09T16:07:01.173707+00:00",
       "model": "__resolved_model_absent__",
       "notes": [
         "Ready for review",
@@ -158,12 +158,12 @@
       "shell_pid": 0,
       "shell_pid_created_at": "1786287118.113656",
       "subtasks": {
-        "T029": "planned",
-        "T030": "planned",
-        "T031": "planned",
-        "T032": "planned",
-        "T033": "planned",
-        "T034": "planned"
+        "T029": "done",
+        "T030": "done",
+        "T031": "done",
+        "T032": "done",
+        "T033": "done",
+        "T034": "done"
       }
     },
     "WP06": {
