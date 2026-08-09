@@ -352,7 +352,7 @@ by dispatching `SemanticAction::SelectPatch` through `AppLoop` and the productio
 reducer, then derives every effect-slot position, the audible occupant edit, the
 voice-limit ceiling walk, and the end-of-order boundary from *that Patch's own*
 descriptors and published state. The observation
-(`src/testing/functional_patch_editor_observation.rs`) carries all 41 fields the
+(`src/testing/functional_patch_editor_observation.rs`) carries all 42 fields the
 witness declares, and each second-Patch counter is keyed by the PatchId resolved
 from the **final state's installed order**, never from the scene's own subject.
 The declared controlled negative `--defeat-patch-selection` removes the gesture
@@ -370,8 +370,17 @@ and leaves the journey on the first instrument.
 - Under `--defeat-patch-selection` the identical journey runs, targets **3**
   slots and makes an audible edit — all of it on Patch **1** — and the reach
   counters therefore read `patchesFocused = 1`, `secondPatchIdDistinct = false`,
-  `secondPatchSlotsVisited = 0`, `secondPatchAudibleEditDelta = 0.0`. That is
-  the keying rule doing the work it exists for.
+  `secondPatchSlotsVisited = 0`. That is the keying rule doing the work it
+  exists for. **Two halves, proven separately.** That the defeated plan stays on
+  Patch 1 is proven by the plan-level test; that such a measurement credits the
+  second Patch nothing is proven by the unit test, which feeds the resolver a
+  synthetic three-slot-and-an-edit measurement recorded against Patch 1 and gets
+  `secondPatchAudibleEditDelta = 0.0` back. **That `0.0` is a synthetic
+  measurement, not a live number** — it belongs to the unit test, not to a run,
+  and the live audible deltas remain unmeasured below. The plan→runner→resolve
+  join is exercised only live, so the negative's falsifying power today is "the
+  keying rule provably discriminates on a measurement of the shape the runner
+  produces", not "the negative was observed to fail on reach".
 - The end-of-order refusal is a genuine `parameterAtBoundary` in **both** modes,
   so the negative fails on reach rather than on its own scaffold.
 - The voice-limit walk lands exactly on the declared minimum (**1**), one further
@@ -381,13 +390,29 @@ and leaves the journey on the first instrument.
   `actionUnavailableInContext`.
 - The page's strip-paint evidence survives the ack round trip verbatim, and a
   half-formed `strip` object is a typed malformed ack rather than a zero.
+- The emitted observation's keys are **exactly** the witness's declared 42, in
+  both directions — every declared field present, and nothing beyond
+  `schema_version` — pinned in `the_emitted_schema_matches_the_declared_witness_fields`
+  and falsified both ways (a camelCase `serde(rename)` and a stale 41-entry
+  array each fail it).
+- F-49's scene-name gate — which decides whether a scene's topology checkpoints
+  are graded against the effects-and-buses bus contract — is now pinned in both
+  directions, both mutations run rather than argued. Narrowing it to a
+  never-matching literal was **already** caught, by `tests/effects_and_buses.rs`
+  rather than by any suite a general sweep would reach. **Widening** it to
+  always-true was caught by nothing: the `effects_and_buses`,
+  `live_demo_scene`, `topology_change_lifecycle` and `live_patch_editor_scene`
+  suites all stayed green while an always-true gate graded this scene's
+  effect-slot occupancy walk against a contract it never claimed to meet. That
+  is the direction that was genuinely open, and it is now closed.
 - NFR-004: full `project_with_shell` per accepted event, release, median of 15,
   89 MIXER rows — **2382 µs** against the 3.00 ms bar (down from 2960 µs).
 
 **What is not measured, and why.** Every predicate that needs a painted frame
 remains unexecuted: `stripGroupsPainted`, `stripFlatControlRun`,
 `qualifyingWebviewFrames`, `desktopViewportPainted`, `physicalAudioNonzero`, both
-audible-edit deltas, `checkpointsCorrelatingSwitchFocusAudio`,
+audible-edit deltas and the `audibleEditIsolatedToSecondPatch` verdict drawn from
+them, `checkpointsCorrelatingSwitchFocusAudio`,
 `voiceLimitRefusals`, `projectionGenerationGaps`, and the teardown quartet. The
 run was attempted on 2026-08-09 and failed after 10 s with
 `no progress ... awaiting parameter projection paint confirmation at step 3`:
@@ -401,12 +426,32 @@ environment rather than this scene. Neither run reaches its own phase.
 the first Patch's. It is a declaration, not a measurement; the first completed
 live run is what confirms or moves it.
 
-**One witness predicate disagrees with its own ruling.**
-`witness.functional_patch_editor` still declares
-`first_patch_audible_edit_delta == 0`, which mission finding F-47 ruled
-unattainable on a live decaying voice and replaced with the bounded comparison
-above. The observation implements the ruling. The witness YAML needs the same
-amendment its finding already made.
+**The witness now asserts the bounded verdict directly, and the observation
+carries it.** F-47 ruled the exact-zero first-Patch delta unattainable on a live
+decaying voice and replaced it with the bounded comparison; that ruling has since
+landed in the declaration. `witness.functional_patch_editor` declares a 42nd
+field, `audible_edit_isolated_to_second_patch`, and predicates *that* — while
+still reporting both raw deltas beside it, because a verdict without its inputs
+cannot be argued with. `first_patch_audible_edit_delta` remains in the schema as
+a reported number and no longer carries a predicate of its own. The observation
+carries the field, computes it in `resolve()` as
+`secondPatchAudibleEditDelta - firstPatchAudibleEditDelta >=
+AUDIBLE_EDIT_DELTA_MARGIN`, and names it as the shortfall when it fails, so the
+controlled negative's recorded failing set names a predicate that exists. A run
+that made no edit on the second Patch reports both deltas at zero, and zero does
+not clear the margin — absent evidence reads as "not isolated" rather than as
+isolation by default. Recorded as mission finding F-57.
+
+**One witness field's name is broader than what it measures.**
+`midiInputRechannelled` is implemented as "the projected MIDI-input row took more
+than one distinct value across the run" — that is, *the row is Patch-local and
+re-projects across a switch*, so a defeated run that never leaves the first
+instrument projects one value and fails it. It is **not** a completed
+re-channelling edit: the fixture packs 15 Patches onto channels 0-14, so every
+adjacent channel is a `DuplicateMidiChannel` refusal and no such edit is
+measurable on this roster. FR-008 editability is proven in WP05's target. The
+field is graded for what it measures and the name is left alone rather than
+renamed mid-mission; the gap is recorded here and carries into acceptance.
 
 Assemble the Patch experience from the component library and semantic view models.
 
