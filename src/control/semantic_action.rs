@@ -107,7 +107,7 @@ impl SemanticActionKind {
     }
 }
 
-const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 17] = [
+const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 18] = [
     SemanticAction::SelectContext(TopLevelContext::Patch),
     SemanticAction::SelectContext(TopLevelContext::Mixer),
     // Only the horizontal pair: moving along the installed Patch order is an
@@ -125,10 +125,11 @@ const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 17] = [
     SemanticAction::SetInteractionMode(InteractionMode::Navigate),
     SemanticAction::SetInteractionMode(InteractionMode::Adjust),
     SemanticAction::EnterSurface(SurfaceId::PatchUtility),
-    // `EnterSurface(PatchDetail)` is absent because `SurfaceId::is_enterable`
-    // withholds it until WP03's detail projection (T015) lands. The descriptor
-    // lists the *admitted* surface, so an unadmitted action must not appear in
-    // it — see `SurfaceId::is_enterable` for what removes the gate.
+    // The descriptor lists the *admitted* surfaces, which `SurfaceId::is_enterable`
+    // decides. `PatchDetail` was absent for exactly as long as no projection
+    // could render a detail focus; the detail projection exists, so the
+    // subordinate surface is offered like every other non-main one.
+    SemanticAction::EnterSurface(SurfaceId::PatchDetail),
     SemanticAction::EnterSurface(SurfaceId::MixerInspector),
     SemanticAction::Return,
 ];
@@ -160,11 +161,10 @@ impl SemanticAction {
 
     /// Reports whether the action belongs to the Phase 2 user-intent surface.
     ///
-    /// `EnterSurface` admits the two persistent sides; a main surface is where
-    /// entry *starts*, never where it lands, and the subordinate detail
-    /// surface is withheld until WP03 can project it. The predicate lives on
-    /// `SurfaceId` so this vocabulary and the reducer's own admission cannot
-    /// drift apart.
+    /// `EnterSurface` admits the two persistent sides and the subordinate
+    /// detail surface; a main surface is where entry *starts*, never where it
+    /// lands. The predicate lives on `SurfaceId` so this vocabulary and the
+    /// reducer's own admission cannot drift apart.
     pub const fn is_phase_two_admitted(&self) -> bool {
         match self {
             Self::SetInteractionMode(mode) => mode.is_phase_two_reachable(),
@@ -230,14 +230,22 @@ mod tests {
         assert_eq!(unique.len(), SemanticAction::surface_descriptor().len());
         assert!(!SemanticAction::SetInteractionMode(InteractionMode::Modal).is_phase_two_admitted());
         assert!(!SemanticAction::EnterSurface(SurfaceId::PatchMain).is_phase_two_admitted());
-        // The detail surface is reducer-owned but not offered: WP03's T015
-        // projection removes the gate on `SurfaceId::is_enterable`, and this
-        // assertion together with the descriptor's length is what makes that
-        // removal visible.
-        assert!(!SemanticAction::EnterSurface(SurfaceId::PatchDetail).is_phase_two_admitted());
-        assert!(!SemanticAction::surface_descriptor()
+        // The subordinate detail surface is offered now that a detail focus
+        // projects. The descriptor lists the admitted surfaces, so it must
+        // carry the action as well as admit it — one without the other is the
+        // drift this pair of assertions exists to catch.
+        assert!(SemanticAction::EnterSurface(SurfaceId::PatchDetail).is_phase_two_admitted());
+        assert!(SemanticAction::surface_descriptor()
             .contains(&SemanticAction::EnterSurface(SurfaceId::PatchDetail)));
-        assert_eq!(SemanticAction::surface_descriptor().len(), 17);
+        for surface in SurfaceId::ALL {
+            assert_eq!(
+                SemanticAction::surface_descriptor()
+                    .contains(&SemanticAction::EnterSurface(surface)),
+                surface.is_enterable(),
+                "{surface:?}: the descriptor lists exactly the admitted surfaces"
+            );
+        }
+        assert_eq!(SemanticAction::surface_descriptor().len(), 18);
     }
 
     #[test]

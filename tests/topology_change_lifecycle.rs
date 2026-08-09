@@ -27,11 +27,11 @@ use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::bus_id::BusId;
 use crest_synth::mixer::global_parameters::GlobalParameters;
-use crest_synth::mixer::patch_output::PatchOutputParameter;
 use crest_synth::mixer::mixer_state::MixerState;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::mixer_track_parameters::MixerTrackParameters;
 use crest_synth::mixer::patch_output::PatchOutput;
+use crest_synth::mixer::patch_output::PatchOutputParameter;
 use crest_synth::real_time::{
     AudioBoundary, AudioObservation, AudioRenderer, ControlAudioObservation, GraphHandoffStatus,
     GraphRevision, ParameterSnapshot, PreparedGraphBuilder, StructuralGraphBoundary,
@@ -774,9 +774,8 @@ fn a_configured_chain_and_its_live_state_follow_the_patch_across_a_reroute() {
         .unwrap();
     // Walk to the output-track row through the declared five-row Utility order
     // rather than assuming it sits one step below the entry row.
-    for _ in 0..utility_rows_from_entry(&PatchControlId::Output(
-        PatchOutputParameter::OutputTrack,
-    )) {
+    for _ in 0..utility_rows_from_entry(&PatchControlId::Output(PatchOutputParameter::OutputTrack))
+    {
         fixture
             .app_loop
             .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)

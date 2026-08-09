@@ -94,20 +94,22 @@ impl SurfaceId {
     /// This is the single predicate `EnterSurface` admission is decided by, so
     /// the admitted action vocabulary and the reducer cannot drift apart.
     ///
-    /// **`PatchDetail` is deliberately withheld, and WP03 is what restores it.**
-    /// WP02 builds and proves the detail surface at the reducer seam — its
-    /// subject, its entry rules, its exact return, and its behaviour across a
-    /// patch switch — but nothing can *project* a detail focus yet: the PATCH
-    /// page shows the main content, and `AppLoop` treats a projection failure
-    /// on an accepted state as a panic. Advertising an action whose accepted
-    /// state the shell cannot show is worse than not advertising it. WP03's
-    /// detail projection (T015) removes this gate: delete the `PatchDetail`
-    /// arm below and the surface is offered again with no other change.
+    /// `PatchDetail` was withheld here for exactly as long as no projection
+    /// could render a detail focus — advertising an action whose accepted state
+    /// the shell cannot show is worse than not advertising it, and `AppLoop`
+    /// treats a projection failure on an accepted state as a panic. The detail
+    /// projection now exists, so the gate is gone and every non-main surface is
+    /// offered.
+    ///
+    /// The predicate stays separate from [`Self::is_return_target`] even though
+    /// the two currently agree on every surface: one is the *shape* rule for
+    /// what a `ReturnPath` may name, the other the *admission* rule for an
+    /// action, and collapsing them would mean the next surface that needs to be
+    /// reducer-owned before it is offered has nowhere to say so. The match is
+    /// exhaustive so a new surface must answer it rather than inherit one.
     pub const fn is_enterable(self) -> bool {
         match self {
-            Self::PatchUtility | Self::MixerInspector => true,
-            // Gated until WP03 T015 projects the detail surface.
-            Self::PatchDetail => false,
+            Self::PatchUtility | Self::MixerInspector | Self::PatchDetail => true,
             Self::PatchMain | Self::MixerMain => false,
         }
     }
@@ -131,8 +133,15 @@ impl SurfaceId {
 /// otherwise become a second schema. `Effect` carries the exact occupied slot
 /// identity, so two positions holding the same registry entry are distinct
 /// subjects.
+// `rename_all` renames the *variants* of a tagged enum, never a struct
+// variant's fields, so this needs `rename_all_fields` as well or the subject's
+// fields land snake_case inside an otherwise camelCase schema.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PatchDetailSubject {
     Instrument {
         capability_id: CapabilityId,
@@ -171,9 +180,7 @@ impl PatchDetailSubject {
             Self::Instrument { capability_id } => {
                 FocusCapabilityId::Instrument(capability_id.clone())
             }
-            Self::Effect { capability_id, .. } => {
-                FocusCapabilityId::Effect(capability_id.clone())
-            }
+            Self::Effect { capability_id, .. } => FocusCapabilityId::Effect(capability_id.clone()),
         }
     }
 }
@@ -472,10 +479,7 @@ impl FocusPath {
             // rows: an instrument capability parameter, or one occupant's
             // parameter at its exact slot. The path always carries the
             // subject's capability identity, matched to the row's kind.
-            (
-                SurfaceId::PatchDetail,
-                SemanticControlId::Patch(PatchControlId::Capability(_)),
-            ) => {
+            (SurfaceId::PatchDetail, SemanticControlId::Patch(PatchControlId::Capability(_))) => {
                 if self.patch_id.is_none() {
                     return Err(FocusPathError::PatchIdentityMismatch);
                 }
@@ -645,20 +649,28 @@ mod tests {
         }
     }
 
-    /// The detail surface exists in the reducer but is not yet offered.
+    /// The detail surface is a return target *and* an offered entry target.
     ///
-    /// `EnterSurface` admission is narrower than the structural
-    /// return-target rule for exactly one surface, and for exactly one reason:
-    /// no projection can render a detail focus until WP03's T015 lands. This
-    /// test fails the moment the gate is removed, so removing it is a
-    /// deliberate act rather than a silent one.
+    /// `EnterSurface` admission was deliberately narrower than the structural
+    /// return-target rule for exactly one surface, for exactly one reason: no
+    /// projection could render a detail focus. The detail projection landed, so
+    /// admission and shape now agree on every surface — and this asserts that
+    /// agreement rather than assuming it, so a surface that silently stops
+    /// being offered is a failure and not a shrug.
     #[test]
-    fn the_detail_surface_is_a_return_target_but_is_not_offered_until_wp03() {
+    fn every_non_main_surface_is_both_a_return_target_and_an_offered_entry_target() {
         assert!(SurfaceId::PatchDetail.is_return_target());
         assert!(
-            !SurfaceId::PatchDetail.is_enterable(),
-            "WP03 T015 removes this gate; nothing else may"
+            SurfaceId::PatchDetail.is_enterable(),
+            "the detail projection exists, so the entry gate is gone"
         );
+        for surface in SurfaceId::ALL {
+            assert_eq!(
+                surface.is_enterable(),
+                surface.is_return_target(),
+                "{surface:?}: admission and the return-target shape rule must agree"
+            );
+        }
         for offered in [SurfaceId::PatchUtility, SurfaceId::MixerInspector] {
             assert!(offered.is_enterable());
         }

@@ -180,6 +180,14 @@ struct MidiTreeTemplate {
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
     ///
+    /// Version 15: the subordinate detail surface became projectable, so the
+    /// tree gained `patchPage.detail` and the semantic model's controls gained
+    /// `requestedValue` and their own `validActions`. `PatchDetailSubject`'s
+    /// fields moved to camelCase in the same bump: `#[serde(rename_all)]`
+    /// renames a tagged enum's variants and not a struct variant's fields, so
+    /// they had been snake_case inside a camelCase schema. Paying that in a
+    /// version this shape was changing anyway costs one bump instead of two.
+    ///
     /// Version 14: `interaction` gained the `detailSubject` leaves. The
     /// subject decides what the detail surface shows, so a trace that cannot
     /// show which capability a detail surface was opened on cannot correlate a
@@ -193,7 +201,7 @@ impl StateTree {
     ///
     /// Version 12: the six retired reverb/delay `global` leaves are gone —
     /// return-owned state travels as the indexed top-level `returns` section.
-    pub const SCHEMA_VERSION: u32 = 14;
+    pub const SCHEMA_VERSION: u32 = 15;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -368,8 +376,8 @@ impl StateTree {
         // detail entry cannot discover it.
         "interaction.detailSubject",
         "interaction.detailSubject.kind",
-        "interaction.detailSubject.capability_id",
-        "interaction.detailSubject.slot_id",
+        "interaction.detailSubject.capabilityId",
+        "interaction.detailSubject.slotId",
         "engineSelection.kind",
         "engineSelection.activeGraphRevision",
         "engineSelection.correlation",
@@ -570,9 +578,9 @@ impl StateTree {
                 "interaction.activeFocus.patchId",
                 "interaction.activeFocus.surface",
                 "interaction.detailSubject",
-                "interaction.detailSubject.capability_id",
+                "interaction.detailSubject.capabilityId",
                 "interaction.detailSubject.kind",
-                "interaction.detailSubject.slot_id",
+                "interaction.detailSubject.slotId",
                 "interaction.mode",
                 "interaction.rememberedMixerMain.capabilityId",
                 "interaction.rememberedMixerMain.context",

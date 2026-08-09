@@ -301,7 +301,9 @@ fn utility_rows_below_entry(control: &PatchControlId) -> usize {
             .expect("the scene only walks declared Utility rows")
     };
     index(control)
-        .checked_sub(index(&PatchControlId::Output(PatchOutputParameter::TrimGain)))
+        .checked_sub(index(&PatchControlId::Output(
+            PatchOutputParameter::TrimGain,
+        )))
         .expect("the scene walks the declared Utility order downward")
 }
 

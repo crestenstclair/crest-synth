@@ -41,6 +41,7 @@ impl fmt::Display for GlobalParameter {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlobalParameterDescriptor {
     parameter: GlobalParameter,
+    label: &'static str,
     minimum: f32,
     maximum: f32,
     fine_step: f32,
@@ -50,6 +51,7 @@ pub struct GlobalParameterDescriptor {
 impl GlobalParameterDescriptor {
     const fn new(
         parameter: GlobalParameter,
+        label: &'static str,
         minimum: f32,
         maximum: f32,
         fine_step: f32,
@@ -57,6 +59,7 @@ impl GlobalParameterDescriptor {
     ) -> Self {
         Self {
             parameter,
+            label,
             minimum,
             maximum,
             fine_step,
@@ -68,8 +71,26 @@ impl GlobalParameterDescriptor {
         self.parameter
     }
 
+    /// Returns the stable serialized field name.
+    ///
+    /// This is a **serialization key**, not a screen label. It names the value
+    /// in the state tree, the parameter snapshot, and the diagnostic text; it
+    /// is read by tools, not by players. Projecting it as a control label is a
+    /// defect rather than a naming choice — see [`Self::label`], which is the
+    /// only thing a surface may put on screen.
     pub const fn name(&self) -> &'static str {
         self.parameter.name()
+    }
+
+    /// Returns the authored on-screen label.
+    ///
+    /// Every other descriptor in this system carries one beside its bounds —
+    /// the envelope rows, the Patch output rows, the mixer track rows, the
+    /// voice limit. This one did not, which is precisely how `masterGainDb`
+    /// reached the screen: with no authored label to project, both surfaces
+    /// that host the row reached for [`Self::name`].
+    pub const fn label(&self) -> &'static str {
+        self.label
     }
 
     pub const fn minimum(&self) -> f32 {
@@ -96,6 +117,7 @@ impl GlobalParameterDescriptor {
 const GLOBAL_PARAMETER_SURFACE_DESCRIPTOR: [GlobalParameterDescriptor; 1] =
     [GlobalParameterDescriptor::new(
         GlobalParameter::MasterGainDb,
+        "Master Volume",
         -60.0,
         6.0,
         1.0,
@@ -173,6 +195,7 @@ mod tests {
             descriptor,
             &[GlobalParameterDescriptor::new(
                 GlobalParameter::MasterGainDb,
+                "Master Volume",
                 -60.0,
                 6.0,
                 1.0,
@@ -181,6 +204,11 @@ mod tests {
         );
         assert_eq!(descriptor.len(), 1);
         assert_eq!(descriptor[0].name(), "masterGainDb");
+        // The two vocabularies are for two readers and must never be the same
+        // string: `name` addresses the value in the state tree and the
+        // parameter snapshot, `label` is the only one a surface may show.
+        assert_eq!(descriptor[0].label(), "Master Volume");
+        assert_ne!(descriptor[0].label(), descriptor[0].name());
         assert!(descriptor[0].fine_step() > 0.0);
         assert!(descriptor[0].coarse_step() >= descriptor[0].fine_step());
     }

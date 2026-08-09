@@ -435,8 +435,11 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // refused note with the limit that refused it. Version 14 added the
     // `interaction.detailSubject` leaves on the same reasoning: the subject
     // decides what the detail surface shows, so a trace without it cannot
-    // correlate a detail interaction with its consequence.
-    assert_eq!(StateTree::SCHEMA_VERSION, 14);
+    // correlate a detail interaction with its consequence. Version 15 made the
+    // detail surface projectable — `patchPage.detail`, plus per-control
+    // `requestedValue` and `validActions` on the semantic model — and moved
+    // `PatchDetailSubject`'s own fields to camelCase in the same bump.
+    assert_eq!(StateTree::SCHEMA_VERSION, 15);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

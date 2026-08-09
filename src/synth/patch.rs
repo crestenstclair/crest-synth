@@ -91,9 +91,9 @@ pub struct Patch {
     ///
     /// Patch-local and following the Patch, exactly like the envelope and the
     /// output route. It is seeded from the Patch's own capability at
-    /// installation ([`Patch::installed`], [`Patch::seed_voice_limit`]) so no
-    /// Patch starts unlimited-by-omission, and thereafter it changes only
-    /// through the canonical reducer.
+    /// installation ([`Patch::seed_voice_limit`]) so no Patch starts
+    /// unlimited-by-omission, and thereafter it changes only through the
+    /// canonical reducer.
     voice_limit: VoiceLimit,
 }
 
@@ -103,8 +103,7 @@ impl Patch {
     /// The limit seeds to the engine-managed ceiling, which is the widest any
     /// installed engine declares. Installation resolves the Patch's own
     /// capability against the registry and re-seeds through
-    /// [`Self::seed_voice_limit`]; [`Self::installed`] does both at once when
-    /// the policy is already in hand.
+    /// [`Self::seed_voice_limit`], which is the only site with registry access.
     pub fn new(
         id: PatchId,
         name: String,
@@ -231,16 +230,9 @@ impl Patch {
         policy: VoicePolicy,
     ) -> VoiceLimitCarryOver {
         self.instrument = config;
-        let ceiling = VoiceLimit::seeded_from(policy);
-        if self.voice_limit <= ceiling {
-            return VoiceLimitCarryOver::Preserved(self.voice_limit);
-        }
-        let previous = self.voice_limit;
-        self.voice_limit = ceiling;
-        VoiceLimitCarryOver::Clamped {
-            previous,
-            limit: ceiling,
-        }
+        let carry_over = VoiceLimitCarryOver::resolve(self.voice_limit, policy);
+        self.voice_limit = carry_over.limit();
+        carry_over
     }
 
     /// Occupies one validated position while constructing a Patch, leaving
@@ -335,6 +327,28 @@ pub enum VoiceLimitCarryOver {
 }
 
 impl VoiceLimitCarryOver {
+    /// Decides what an engine replacement does to one existing limit, without
+    /// performing it.
+    ///
+    /// This is the one place the declared asymmetry lives — narrowing clamps
+    /// because a limit the engine cannot honour is not a limit; widening
+    /// preserves the player's value because an engine change is not a request
+    /// to change it. [`Patch::replace_instrument_config`] applies the answer
+    /// and a projection showing the limit while a swap narrows it reads the
+    /// same answer to say so, so the two can never disagree about whether a
+    /// swap costs the player anything.
+    pub const fn resolve(current: VoiceLimit, policy: VoicePolicy) -> Self {
+        let ceiling = VoiceLimit::seeded_from(policy);
+        if current.value() <= ceiling.value() {
+            Self::Preserved(current)
+        } else {
+            Self::Clamped {
+                previous: current,
+                limit: ceiling,
+            }
+        }
+    }
+
     /// Returns the limit the Patch carries after the replacement.
     pub const fn limit(self) -> VoiceLimit {
         match self {
