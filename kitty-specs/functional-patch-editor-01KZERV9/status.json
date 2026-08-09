@@ -54,6 +54,9 @@
       "last_event_id": "01KZJ3E4PZ6220JN6889DMWD6C",
       "last_transition_at": "2026-08-09T01:50:42.399890+00:00",
       "model": "__resolved_model_absent__",
+      "notes": [
+        "Ready for review: widened PATCH Utility to five declared rows with reducer arms for master gain (shared canonical setter), MIDI input, and voice limit; added the subordinate PatchDetail surface with a structurally-enforced three-field invariant; H1/H2/H3 closed"
+      ],
       "provider": "__resolved_provider_absent__",
       "role": "implementer",
       "shell_pid": 18264,
