@@ -516,6 +516,50 @@ pub struct AppState {
     generation: u64,
 }
 
+/// One reusable scratch state for asking the availability question many times
+/// about the *same* accepted state.
+///
+/// The question itself is unchanged and is still answered by running the
+/// production reducer — that is the property the per-row action list exists to
+/// preserve, and nothing here weakens it. What changes is how many `AppState`
+/// clones the answer costs.
+///
+/// [`AppState::apply`] is transactional in the direction that matters here: a
+/// rejected event returns before any field is written, so a refused probe
+/// leaves the scratch byte-for-byte the state it was given and the next probe
+/// may reuse it. An *accepted* probe does mutate the scratch, so the scratch is
+/// refreshed from the accepted state before the next question is asked.
+///
+/// The cost per vocabulary sweep goes from `2·|vocabulary|` clones — one to
+/// obtain a `&mut`, one inside `apply` — to `1 + |vocabulary| + |accepted|`.
+/// On a MIXER row most of the vocabulary is refused, which is where the
+/// difference is largest.
+pub struct SemanticActionAvailability<'state> {
+    accepted: &'state AppState,
+    scratch: AppState,
+}
+
+impl<'state> SemanticActionAvailability<'state> {
+    /// Prepares one scratch clone of `accepted`.
+    #[must_use]
+    pub fn new(accepted: &'state AppState) -> Self {
+        Self {
+            accepted,
+            scratch: accepted.clone(),
+        }
+    }
+
+    /// Answers whether the accepted state would accept `action`, reusing the
+    /// scratch across refusals and refreshing it after an acceptance.
+    pub fn accepts(&mut self, action: &SemanticAction) -> bool {
+        let accepted = self.scratch.apply_semantic_action(action.clone()).is_ok();
+        if accepted {
+            self.scratch = self.accepted.clone();
+        }
+        accepted
+    }
+}
+
 impl AppState {
     /// Creates startup state before the fixture Patch set is installed.
     pub fn new(capabilities: CapabilityRegistry, global: GlobalParameters) -> Self {
@@ -656,9 +700,14 @@ impl AppState {
     /// Tests one normalized user action against a clone of the exact accepted
     /// reducer state. Availability is therefore pure and cannot drift from
     /// reducer bounds, dependencies, lifecycle, or surface rules.
+    ///
+    /// This is the one-shot form. Asking the same question for a whole
+    /// vocabulary — which is what a per-row action list does — goes through
+    /// [`SemanticActionAvailability`], which reuses one scratch state instead
+    /// of taking a fresh clone per question. Both forms run the same reducer
+    /// over the same scratch, because this one *is* the other one.
     pub fn accepts_semantic_action(&self, action: &SemanticAction) -> bool {
-        let mut candidate = self.clone();
-        candidate.apply_semantic_action(action.clone()).is_ok()
+        SemanticActionAvailability::new(self).accepts(action)
     }
 
     /// Returns this exact accepted state with the focus moved to `path`, or

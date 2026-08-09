@@ -44,6 +44,8 @@ pub use live_effects_and_buses_scene::{
     EFFECTS_AND_BUSES_SCENE_NAME,
 };
 
+pub mod live_patch_editor_scene;
+
 pub mod live_demo_checkpoint;
 pub use live_demo_checkpoint::{
     LiveCheckpoint, LiveDemoCheckpoint, LiveDemoCheckpointError, LiveEngineCheckpoint,
