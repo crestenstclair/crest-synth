@@ -644,7 +644,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         serde_json::from_str(report.state_tree().json()).unwrap();
     assert_eq!(
         final_tree_value["interaction"]["activeFocus"]["controlId"]["id"],
-        serde_json::json!({"kind": "track", "track_id": 15, "parameter": "solo"})
+        serde_json::json!({"kind": "track", "trackId": 15, "parameter": "solo"})
     );
 
     let final_log = app_loop.event_log().to_json().unwrap();
