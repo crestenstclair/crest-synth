@@ -1196,6 +1196,91 @@ mod tests {
         ));
     }
 
+    /// `retire()`'s de-duplication guard, proved by the false rejection it
+    /// prevents (WP03 T018/T019).
+    ///
+    /// The retained window is searched with `find`, which answers with the
+    /// *first* entry carrying the acked generation. So a generation retired
+    /// twice — once with an identity the channel has since replaced, once with
+    /// the identity it actually pushed last — leaves the stale copy shadowing
+    /// the current one at the front of the window. The ack that then arrives is
+    /// a faithful verbatim copy of the document this channel really emitted,
+    /// and without the guard it is rejected as an `IdentityMismatch`: the
+    /// channel calls a page honest evidence a lie. That is strictly worse than
+    /// the lost frame it should have been, because a typed ack rejection takes
+    /// the window's record-first-error-and-close path.
+    ///
+    /// Removing the `retired_identities.remove(stale)` block in
+    /// [`ProjectionChannel::retire`] makes the final assertion below fail with
+    /// `IdentityMismatch { generation: 1, field: "stateHash" }`.
+    #[test]
+    fn a_re_pushed_generation_retires_once_so_no_stale_identity_shadows_the_current_one() {
+        let mut channel = ProjectionChannel::new();
+
+        // Round one: emit generation 1, supersede it with generation 2, and
+        // let 2's ack drain the pair. Generation 1's *first* identity is now
+        // in the retained window.
+        let stale = projection(1, "state-1-stale");
+        let superseding = advanced(&stale, 2);
+        push_ok(&mut channel, &stale);
+        push_ok(&mut channel, &superseding);
+        channel
+            .forward_ack(&ack_for(&superseding).to_string())
+            .expect("the successor's ack becomes its one observation");
+        assert_eq!(channel.in_flight_documents(), 0);
+
+        // Round two: the channel emits generation 1 again, carrying a
+        // different accepted document. This is the situation the guard names —
+        // generations are monotone in production, so it takes a re-push to
+        // reach it, and the guard exists precisely so reaching it is harmless.
+        let current = projection(1, "state-1-current");
+        push_ok(&mut channel, &current);
+        let successor = advanced(&current, 3);
+        push_ok(&mut channel, &successor);
+        channel
+            .forward_ack(&ack_for(&successor).to_string())
+            .expect("the successor's ack becomes its one observation");
+        assert_eq!(channel.in_flight_documents(), 0);
+
+        // The window still speaks for the generations that retired only once.
+        let mut rewritten = ack_for(&superseding);
+        rewritten["stateHash"] = Value::from("state-invented");
+        assert!(matches!(
+            channel
+                .forward_ack(&rewritten.to_string())
+                .expect_err("an unrelated retired generation still validates its late ack"),
+            PaintedAckError::IdentityMismatch {
+                generation: 2,
+                field: "stateHash"
+            }
+        ));
+
+        // A rewritten identity for the twice-retired generation is still a
+        // rejection, from either copy — so passing the assertion below cannot
+        // be achieved by the window simply forgetting generation 1.
+        let mut invented = ack_for(&current);
+        invented["stateHash"] = Value::from("state-invented");
+        assert!(matches!(
+            channel
+                .forward_ack(&invented.to_string())
+                .expect_err("a rewritten late ack is rejected in either copy"),
+            PaintedAckError::IdentityMismatch {
+                generation: 1,
+                field: "stateHash"
+            }
+        ));
+
+        // The falsifying assertion: the page's honest ack for the document
+        // this channel really pushed last. With the guard the window holds one
+        // generation-1 identity — the current one — and the ack is the lost
+        // frame it is. Without the guard `find` reaches the stale copy first
+        // and rejects a truthful ack.
+        let honest = channel
+            .forward_ack(&ack_for(&current).to_string())
+            .expect("a verbatim ack for the re-pushed document must not be rejected");
+        assert_eq!(honest, ForwardedAck::SupersededLate { generation: 1 });
+    }
+
     #[test]
     fn a_superseded_late_ack_never_constructs_an_observation() {
         // The invariant that keeps RISK-4 latent survives the new validation:

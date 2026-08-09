@@ -4,24 +4,33 @@ use crate::mixer::bus_id::BusId;
 use crate::mixer::global_parameters::GlobalParameter;
 use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::mixer::mixer_track_parameters::MixerTrackParameter;
-use crate::synth::{CapabilityId, EffectCapabilityId, ParameterId};
+use crate::synth::{CapabilityId, EffectCapabilityId, EffectSlotId, ParameterId};
 use core::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Stable graphical surfaces independent of host layout or rectangle placement.
+///
+/// Four are persistent — two mains and two sides — and one, [`Self::PatchDetail`],
+/// is subordinate: it is entered only from a PatchMain path whose control
+/// resolves a [`PatchDetailSubject`], it is never the resting surface of a
+/// context, and leaving it restores the exact origin. One detail surface
+/// identity serves both instrument and effect subjects, because the surface is
+/// the shell and the subject supplies the content.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SurfaceId {
     PatchMain,
     PatchUtility,
+    PatchDetail,
     MixerMain,
     MixerInspector,
 }
 
 impl SurfaceId {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::PatchMain,
         Self::PatchUtility,
+        Self::PatchDetail,
         Self::MixerMain,
         Self::MixerInspector,
     ];
@@ -32,7 +41,7 @@ impl SurfaceId {
 
     pub const fn context(self) -> TopLevelContext {
         match self {
-            Self::PatchMain | Self::PatchUtility => TopLevelContext::Patch,
+            Self::PatchMain | Self::PatchUtility | Self::PatchDetail => TopLevelContext::Patch,
             Self::MixerMain | Self::MixerInspector => TopLevelContext::Mixer,
         }
     }
@@ -44,6 +53,9 @@ impl SurfaceId {
         }
     }
 
+    /// Returns the context's *persistent* side surface. `PatchDetail` is never
+    /// a result: it is subordinate, so it has no resting place to be returned
+    /// as a context's side.
     pub const fn side_for(context: TopLevelContext) -> Self {
         match context {
             TopLevelContext::Patch => Self::PatchUtility,
@@ -59,12 +71,116 @@ impl SurfaceId {
         matches!(self, Self::PatchUtility | Self::MixerInspector)
     }
 
+    /// Reports whether this surface is subordinate: entered from a main path,
+    /// remembered by exactly one [`ReturnPath`], and left through `Return`.
+    pub const fn is_subordinate(self) -> bool {
+        matches!(self, Self::PatchDetail)
+    }
+
+    /// Reports whether a [`ReturnPath`] may name this surface as the one it was
+    /// entered *into*: structurally, every non-main surface.
+    ///
+    /// This is the shape rule, and it is deliberately separate from
+    /// [`Self::is_enterable`], which is the *admission* rule for the
+    /// `EnterSurface` action. Keeping them apart is what lets the reducer own,
+    /// remember, and leave a surface that the action vocabulary does not yet
+    /// offer.
+    pub const fn is_return_target(self) -> bool {
+        self.is_persistent_side() || self.is_subordinate()
+    }
+
+    /// Reports whether `EnterSurface` currently admits this surface as a target.
+    ///
+    /// This is the single predicate `EnterSurface` admission is decided by, so
+    /// the admitted action vocabulary and the reducer cannot drift apart.
+    ///
+    /// `PatchDetail` was withheld here for exactly as long as no projection
+    /// could render a detail focus — advertising an action whose accepted state
+    /// the shell cannot show is worse than not advertising it, and `AppLoop`
+    /// treats a projection failure on an accepted state as a panic. The detail
+    /// projection now exists, so the gate is gone and every non-main surface is
+    /// offered.
+    ///
+    /// The predicate stays separate from [`Self::is_return_target`] even though
+    /// the two currently agree on every surface: one is the *shape* rule for
+    /// what a `ReturnPath` may name, the other the *admission* rule for an
+    /// action, and collapsing them would mean the next surface that needs to be
+    /// reducer-owned before it is offered has nowhere to say so. The match is
+    /// exhaustive so a new surface must answer it rather than inherit one.
+    pub const fn is_enterable(self) -> bool {
+        match self {
+            Self::PatchUtility | Self::MixerInspector | Self::PatchDetail => true,
+            Self::PatchMain | Self::MixerMain => false,
+        }
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::PatchMain => "PATCH",
             Self::PatchUtility => "UTILITY",
+            Self::PatchDetail => "DETAIL",
             Self::MixerMain => "MIXER",
             Self::MixerInspector => "INSPECTOR",
+        }
+    }
+}
+
+/// The capability whose schema fills the polymorphic PATCH detail surface.
+///
+/// The subject names a capability identity **only**. It carries no section
+/// list, control list, value, label, accent, geometry, or descriptor copy:
+/// those resolve from the installed descriptor at projection time and would
+/// otherwise become a second schema. `Effect` carries the exact occupied slot
+/// identity, so two positions holding the same registry entry are distinct
+/// subjects.
+// `rename_all` renames the *variants* of a tagged enum, never a struct
+// variant's fields, so this needs `rename_all_fields` as well or the subject's
+// fields land snake_case inside an otherwise camelCase schema.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PatchDetailSubject {
+    Instrument {
+        capability_id: CapabilityId,
+    },
+    Effect {
+        slot_id: EffectSlotId,
+        capability_id: EffectCapabilityId,
+    },
+}
+
+impl PatchDetailSubject {
+    /// Names one instrument capability as the detail subject.
+    pub const fn instrument(capability_id: CapabilityId) -> Self {
+        Self::Instrument { capability_id }
+    }
+
+    /// Names one *exact occupied slot* as the detail subject.
+    pub const fn effect(slot_id: EffectSlotId, capability_id: EffectCapabilityId) -> Self {
+        Self::Effect {
+            slot_id,
+            capability_id,
+        }
+    }
+
+    /// Returns the occupied slot identity for an effect subject.
+    pub const fn slot_id(&self) -> Option<EffectSlotId> {
+        match self {
+            Self::Effect { slot_id, .. } => Some(*slot_id),
+            Self::Instrument { .. } => None,
+        }
+    }
+
+    /// Returns the subject as the capability identity a `FocusPath` carries.
+    pub fn focus_capability_id(&self) -> FocusCapabilityId {
+        match self {
+            Self::Instrument { capability_id } => {
+                FocusCapabilityId::Instrument(capability_id.clone())
+            }
+            Self::Effect { capability_id, .. } => FocusCapabilityId::Effect(capability_id.clone()),
         }
     }
 }
@@ -238,6 +354,25 @@ impl FocusPath {
         }
     }
 
+    /// One control on the subordinate PATCH detail surface.
+    ///
+    /// The path carries the subject's capability identity, so a row belonging
+    /// to one capability is never mistaken for the same-named row of another.
+    pub const fn patch_detail(
+        patch_id: PatchId,
+        capability_id: FocusCapabilityId,
+        control_id: PatchControlId,
+    ) -> Self {
+        Self {
+            context: TopLevelContext::Patch,
+            surface: SurfaceId::PatchDetail,
+            patch_id: Some(patch_id),
+            capability_id: Some(capability_id),
+            control_id: SemanticControlId::Patch(control_id),
+            modal_id: None,
+        }
+    }
+
     pub const fn mixer_track(track_id: MixerTrackId, parameter: MixerTrackParameter) -> Self {
         Self {
             context: TopLevelContext::Mixer,
@@ -326,13 +461,38 @@ impl FocusPath {
                 if self.patch_id.is_none() {
                     return Err(FocusPathError::PatchIdentityMismatch);
                 }
-                if matches!(control, PatchControlId::Output(_)) {
+                // The five Utility identities and the PatchMain order are
+                // disjoint by declaration; the split is decided in exactly one
+                // place so the two surfaces cannot both claim a row.
+                if control.is_utility() {
                     return Err(FocusPathError::ControlSurfaceMismatch);
                 }
             }
-            (SurfaceId::PatchUtility, SemanticControlId::Patch(PatchControlId::Output(_))) => {
+            (SurfaceId::PatchUtility, SemanticControlId::Patch(control))
+                if control.is_utility() =>
+            {
                 if self.patch_id.is_none() || self.capability_id.is_some() {
                     return Err(FocusPathError::PatchIdentityMismatch);
+                }
+            }
+            // The detail surface hosts the subject capability's own descriptor
+            // rows: an instrument capability parameter, or one occupant's
+            // parameter at its exact slot. The path always carries the
+            // subject's capability identity, matched to the row's kind.
+            (SurfaceId::PatchDetail, SemanticControlId::Patch(PatchControlId::Capability(_))) => {
+                if self.patch_id.is_none() {
+                    return Err(FocusPathError::PatchIdentityMismatch);
+                }
+                if !matches!(self.capability_id, Some(FocusCapabilityId::Instrument(_))) {
+                    return Err(FocusPathError::CapabilityIdentityMismatch);
+                }
+            }
+            (SurfaceId::PatchDetail, SemanticControlId::Patch(PatchControlId::Effect(..))) => {
+                if self.patch_id.is_none() {
+                    return Err(FocusPathError::PatchIdentityMismatch);
+                }
+                if !matches!(self.capability_id, Some(FocusCapabilityId::Effect(_))) {
+                    return Err(FocusPathError::CapabilityIdentityMismatch);
                 }
             }
             (
@@ -420,10 +580,17 @@ pub struct ReturnPath {
 }
 
 impl ReturnPath {
+    /// Captures one exact main-surface origin before entering a subordinate
+    /// or persistent side surface.
+    ///
+    /// The origin must be a *main* path in the entered surface's own context.
+    /// That single requirement is what makes the surfaces non-nesting: a path
+    /// already on `PatchUtility` or `PatchDetail` is not main, so it can never
+    /// become a second stacked origin.
     pub fn new(origin: FocusPath, entered_surface: SurfaceId) -> Result<Self, FocusPathError> {
         origin.validate()?;
         if !origin.surface().is_main()
-            || !entered_surface.is_persistent_side()
+            || !entered_surface.is_return_target()
             || origin.context() != entered_surface.context()
         {
             return Err(FocusPathError::ContextSurfaceMismatch);
@@ -446,25 +613,113 @@ impl ReturnPath {
 #[cfg(test)]
 mod tests {
     use super::{
-        FocusPath, FocusPathError, MixerControlId, ReturnPath, SemanticControlId, SurfaceId,
+        FocusPath, FocusPathError, MixerControlId, PatchDetailSubject, ReturnPath,
+        SemanticControlId, SurfaceId,
     };
     use crate::control::PatchControlId;
     use crate::kernel::PatchId;
     use crate::mixer::global_parameters::GlobalParameter;
 
     #[test]
-    fn four_surfaces_are_context_compatible_and_layout_neutral() {
-        assert_eq!(SurfaceId::surface_descriptor().len(), 4);
-        assert_eq!(
-            SurfaceId::PatchMain.context(),
-            crate::control::TopLevelContext::Patch
-        );
+    fn five_surfaces_are_context_compatible_and_layout_neutral() {
+        use crate::control::TopLevelContext;
+
+        assert_eq!(SurfaceId::surface_descriptor().len(), 5);
+        assert_eq!(SurfaceId::PatchMain.context(), TopLevelContext::Patch);
         assert_eq!(
             SurfaceId::MixerInspector.context(),
             crate::control::TopLevelContext::Mixer
         );
         assert!(SurfaceId::PatchUtility.is_persistent_side());
         assert!(SurfaceId::MixerMain.is_main());
+
+        // Every surface is exactly one of main, persistent side, or
+        // subordinate — a surface that were two at once would let the reducer
+        // treat it as a resting place and a return target simultaneously.
+        for surface in SurfaceId::ALL {
+            let roles = usize::from(surface.is_main())
+                + usize::from(surface.is_persistent_side())
+                + usize::from(surface.is_subordinate());
+            assert_eq!(roles, 1, "{surface:?} must hold exactly one surface role");
+            assert_eq!(
+                surface.is_return_target(),
+                !surface.is_main(),
+                "{surface:?}: a return path names every non-main surface and no main one"
+            );
+        }
+    }
+
+    /// The detail surface is a return target *and* an offered entry target.
+    ///
+    /// `EnterSurface` admission was deliberately narrower than the structural
+    /// return-target rule for exactly one surface, for exactly one reason: no
+    /// projection could render a detail focus. The detail projection landed, so
+    /// admission and shape now agree on every surface — and this asserts that
+    /// agreement rather than assuming it, so a surface that silently stops
+    /// being offered is a failure and not a shrug.
+    #[test]
+    fn every_non_main_surface_is_both_a_return_target_and_an_offered_entry_target() {
+        assert!(SurfaceId::PatchDetail.is_return_target());
+        assert!(
+            SurfaceId::PatchDetail.is_enterable(),
+            "the detail projection exists, so the entry gate is gone"
+        );
+        for surface in SurfaceId::ALL {
+            assert_eq!(
+                surface.is_enterable(),
+                surface.is_return_target(),
+                "{surface:?}: admission and the return-target shape rule must agree"
+            );
+        }
+        for offered in [SurfaceId::PatchUtility, SurfaceId::MixerInspector] {
+            assert!(offered.is_enterable());
+        }
+        for main in [SurfaceId::PatchMain, SurfaceId::MixerMain] {
+            assert!(!main.is_enterable());
+            assert!(!main.is_return_target());
+        }
+    }
+
+    /// The subordinate surface belongs to PATCH, is never a context's resting
+    /// place, and is reachable only by entering it from a main path.
+    #[test]
+    fn the_detail_surface_is_subordinate_and_never_a_resting_surface() {
+        use crate::control::TopLevelContext;
+
+        assert_eq!(SurfaceId::PatchDetail.context(), TopLevelContext::Patch);
+        assert!(SurfaceId::PatchDetail.is_subordinate());
+        assert!(!SurfaceId::PatchDetail.is_main());
+        assert!(!SurfaceId::PatchDetail.is_persistent_side());
+
+        for context in [TopLevelContext::Patch, TopLevelContext::Mixer] {
+            assert_ne!(SurfaceId::main_for(context), SurfaceId::PatchDetail);
+            assert_ne!(SurfaceId::side_for(context), SurfaceId::PatchDetail);
+        }
+    }
+
+    /// One detail surface identity serves both subject kinds, and an effect
+    /// subject is distinguished by its *slot*, not just its capability — so
+    /// two positions holding the same registry entry are distinct subjects.
+    #[test]
+    fn a_detail_subject_names_a_capability_and_an_effect_names_its_exact_slot() {
+        use crate::synth::{CapabilityId, EffectCapabilityId, EffectSlotId};
+
+        let capability = EffectCapabilityId::new("effect.fixture").unwrap();
+        let first = PatchDetailSubject::effect(EffectSlotId::new(1).unwrap(), capability.clone());
+        let second = PatchDetailSubject::effect(EffectSlotId::new(2).unwrap(), capability);
+        assert_ne!(
+            first, second,
+            "the same registry entry in two slots must be two subjects"
+        );
+        assert_eq!(first.slot_id(), Some(EffectSlotId::new(1).unwrap()));
+
+        let instrument =
+            PatchDetailSubject::instrument(CapabilityId::new("instrument.fixture").unwrap());
+        assert_eq!(instrument.slot_id(), None);
+        assert_ne!(
+            instrument.focus_capability_id(),
+            first.focus_capability_id()
+        );
     }
 
     #[test]

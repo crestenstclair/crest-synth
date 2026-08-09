@@ -67,6 +67,11 @@ impl LiveShellCoverage {
                 }
             }
             SurfaceId::PatchUtility => self.patch_utility_observed = true,
+            // The subordinate detail surface has no coverage flag here yet:
+            // this report tracks the four persistent surfaces the live scene
+            // visits. WP06's scene owns whether detail entry becomes observed
+            // evidence; claiming it here would report coverage nothing drives.
+            SurfaceId::PatchDetail => {}
             SurfaceId::MixerMain => {
                 self.mixer_main_observed = true;
                 if self.mixer_inspector_observed && frame.return_path().is_none() {

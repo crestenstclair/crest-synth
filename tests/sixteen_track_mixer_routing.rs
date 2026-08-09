@@ -145,6 +145,26 @@ fn installed_state(outputs: &[PatchOutput], mixer: MixerState) -> AppState {
     state
 }
 
+/// Navigates from the PATCH Utility entry row (TrimGain) to the output-track
+/// row through the one declared five-row order, rather than assuming the two
+/// are adjacent — MIDI input is seated between them.
+fn navigate_to_output_track(state: &mut AppState) {
+    let order = PatchControlId::utility_surface_descriptor();
+    let index = |control: &PatchControlId| {
+        order
+            .iter()
+            .position(|candidate| candidate == control)
+            .expect("the declared Utility order hosts this row")
+    };
+    let steps = index(&PatchControlId::Output(PatchOutputParameter::OutputTrack))
+        - index(&PatchControlId::Output(PatchOutputParameter::TrimGain));
+    for _ in 0..steps {
+        state
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
+            .unwrap();
+    }
+}
+
 fn enter_patch_utility(state: &mut AppState) {
     state
         .apply_semantic_action(SemanticAction::SelectContext(TopLevelContext::Patch))
@@ -546,9 +566,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
         .apply_semantic_action(SemanticAction::Adjust(Direction::Right))
         .unwrap();
     set_mode(&mut output_state, InteractionMode::Navigate);
-    output_state
-        .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
-        .unwrap();
+    navigate_to_output_track(&mut output_state);
     set_mode(&mut output_state, InteractionMode::Adjust);
     output_state
         .apply_semantic_action(SemanticAction::Adjust(Direction::Right))
@@ -585,18 +603,17 @@ fn production_path_proves_canonical_sixteen_track_routing() {
             .iter()
             .map(|control| control.path().control_id().clone())
             .collect::<Vec<_>>(),
-        vec![
-            SemanticControlId::Patch(PatchControlId::Output(PatchOutputParameter::TrimGain,)),
-            SemanticControlId::Patch(PatchControlId::Output(PatchOutputParameter::OutputTrack,)),
-        ]
+        PatchControlId::utility_surface_descriptor()
+            .iter()
+            .cloned()
+            .map(SemanticControlId::Patch)
+            .collect::<Vec<_>>()
     );
 
     let mut invalid_state =
         installed_state(&[PatchOutput::to_track(track(15))], MixerState::default());
     enter_patch_utility(&mut invalid_state);
-    invalid_state
-        .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
-        .unwrap();
+    navigate_to_output_track(&mut invalid_state);
     set_mode(&mut invalid_state, InteractionMode::Adjust);
     let invalid_parameters = projector.parameter_snapshot(&invalid_state).unwrap();
     let boundary = LockFreeAudioBoundary::new(4, invalid_parameters);
@@ -825,9 +842,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
     assert_eq!(initial_observation.track(track(4)).rms(), 0.0);
 
     enter_patch_utility(&mut renderer_state);
-    renderer_state
-        .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
-        .unwrap();
+    navigate_to_output_track(&mut renderer_state);
     set_mode(&mut renderer_state, InteractionMode::Adjust);
     renderer_state
         .apply_semantic_action(SemanticAction::Adjust(Direction::Right))
