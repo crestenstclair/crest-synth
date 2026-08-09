@@ -1427,9 +1427,16 @@ than an arm body: `value.kind === "scalar"`, `parameter.kind === "choice"`,
 Pinning the choice arm's body while leaving `=== "choice"` unpinned is F-55 in
 miniature, one level down.
 
-So the completeness claim is no longer "I walked it carefully". It is: **the set is
-closed under a check that runs on every test run, and that check has already been
-falsified twice** — a new unpinned arm fails, a stale scaffolding entry fails.
+So the completeness claim is no longer "I walked it carefully". It is that a check
+runs on every test run and has already been falsified twice — a new unpinned arm
+fails, a stale scaffolding entry fails.
+
+> **AMENDED 2026-08-09 — see F-68.** I first wrote that this check "closes the set".
+> It does not, and the review proved it: the check's own predicate matched more than
+> it named, admitting two probes that collapse the rules it defends. After cycle 3 it
+> is closed against *added and changed* statements and still open against *reordered*
+> ones. The lesson below stands; the claim that the control is complete does not, and
+> stating it that way would have made this finding the next F-53.
 
 Two enforcement rules now live in the acceptance target rather than in a reviewer's
 head:
@@ -1500,3 +1507,108 @@ unmodified — there is no rule to transcribe.
 That is honest and it is also asymmetric, and WP05 said so rather than manufacturing
 a rule to make the two halves look alike. Recorded so the asymmetry is a known
 property rather than something a later reader mistakes for thoroughness.
+
+## F-68 — F-64 OVERCLAIMED. The completeness check has the defect it was built to prevent.
+
+**Raised by**: WP05's cycle-2 review
+**Owner**: correction to F-64, which must not ship as written
+
+I wrote F-64 saying "the set is closed under a check that runs on every test run,
+and that check has already been falsified twice", and called it the most useful
+thing the mission produced. **The first half is false.**
+
+The completeness check's predicate is `fragment.contains(code)`, and `code` keeps
+its indentation — so a deeper-indented pinned line *contains* the same statement at
+shallower indentation. The reviewer proved it with two probes, both admitted by
+unrelated pins:
+
+- `return openSlot;` inserted at the top of `stripGroupKey` — returns `openSlot`
+  for every identity, collapsing the entire grouping rule
+- `return UNAVAILABLE_MARK;` at the top of `controlValueText` — every value paints
+  unavailable
+
+**This is F-42, F-53 and F-55's exact mechanism turned inward.** The check built to
+catch anchors matching more than they name, matches more than it names. A guard
+whose own guard has the guard defect is the tidiest possible statement of what this
+mission keeps finding.
+
+Three further residues, all reachable:
+
+- **Two copied rules have no pin at all.** `startsWith` → `return false` collapses
+  the page's whole grouping rule and `cargo test --all-targets` **passes in full**,
+  30 targets, 0 failed. `designedGroup` neutered strips every legend and `designed`
+  flag: MISSED. Both are called by the transcribed functions; both are rules the
+  Rust copies. F-52's condition applies literally.
+- **`DESIGNED_STRIP_GROUPS`' order is unpinned.** Membership is pinned six times
+  over; sequence not at all, and the sequence is copied.
+- **Statement order is invisible to both checks.** Moving the `visible` skip to the
+  end of the `stripGroups` loop reproduces cycle-1's mutation #3 with every pin
+  intact. This one is inherent to a set-based check and cannot be fixed by adding
+  pins — only by the docstring not implying otherwise.
+
+**F-64's lesson survives; its wording does not.** The valuable part is real: WP05's
+careful pass produced 55 pins and it would have submitted that, and a mechanical
+audit found ten more. What is false is the claim that the resulting control closes
+the set. After cycle 3 it will be closed against *added and changed* statements and
+still open against *reordered* ones.
+
+The reviewer's warning is the one to heed: stated as I wrote it, **F-64 becomes the
+next F-53** — a lesson asserted more confidently than its evidence, which is exactly
+the failure the lesson is about. F-64 is amended in place to say what the control
+actually covers.
+
+The fix is small — match whole lines rather than substrings, widen the one pin that
+starts mid-statement, pin the two missing rules, pin the order — and the reviewer
+ran it green before proposing it.
+
+## F-69 — F-66's instruction was unenforceable; name the character
+
+**Raised by**: WP05's cycle-2 review
+
+F-66 told the merge step to "pick a character no projected hint or label can
+contain" when replacing the NUL dedup separator. The reviewer tested that
+instruction: `\x1f` leaves the target green, and **`|` also leaves it green** — the
+character F-66 warns against passes exactly as cleanly as a correct one.
+
+So the instruction cannot be checked by anything, which makes it advice rather than
+a control — the same category error F-54 recorded about process notes.
+
+**Name the character**: use `\x1f` (unit separator) or `\x1e` (record separator).
+Both are outside anything a projected hint or label can carry, both grep cleanly, and
+neither is a judgement call at merge time.
+
+## F-70 — F-67 understated the asymmetry: three tiers, not two
+
+**Raised by**: WP05's cycle-2 review
+
+F-67 recorded that values and ranges read back through transcribed rules while units
+rest on the pin alone. The reviewer measured it and there are three tiers:
+
+- **values** read back fully;
+- **ranges** read back only *structurally* — `low.parse::<f64>() == minimum` compares
+  `numericRange.minimum` against itself, so the endpoint's precision rides entirely
+  on the pin;
+- **units** rest on the pin alone.
+
+WP05's refusal to manufacture a rule for the unit was still right — it would have
+re-committed the `HINT_SEPARATOR` defect one line over, which is the defect of
+pinning a rule the file does not actually transcribe. But F-67 credited the range
+half with more than it does.
+
+## F-71 — One more F-65 sibling, and the shape now has three instances
+
+**Raised by**: WP05's cycle-2 review
+
+`hint.contains(':')` at `:2109` is satisfied by construction: the colon comes from
+the transcription's own `format!`, and the preceding non-empty assert makes it
+unfalsifiable.
+
+Low materiality — the colon rule is separately pinned and CAUGHT — but it is the
+third instance of F-65's shape: **an assertion that passes because of where it
+looked rather than what it tested.** The first matched the wrong half of a composed
+string; the second matched a physical hint instead of a label; this one matches text
+the assertion itself produced.
+
+None of this mission's checks can see that shape. It is worth naming in the
+retrospective as the one failure mode the mission found repeatedly and never built a
+control for.
