@@ -147,3 +147,75 @@ declaration now says what WP02 already built.
 `select_patch` reads `patch_control_focus()`, which on a subordinate surface
 returns that surface's control rather than the remembered main one. Pre-existing,
 not introduced by this mission. Recorded so it is not discovered a third time.
+
+## F-11 — `PatchDetail` is gated out of the offered vocabulary until WP03
+
+**Raised by**: WP02 cycle 2, closing review blocker B1
+**Owner**: WP03 removes the gate; WP06 restores what the gate costs
+
+`SurfaceId::is_enterable` withholds `PatchDetail`, so `EnterSurface(PatchDetail)`
+is not phase-two admitted, is absent from `SemanticAction::surface_descriptor`,
+never reaches `validActions` or a footer hint, and is a typed unchanged rejection.
+The reducer still owns, remembers, and leaves the surface — `ReturnPath::new` now
+reads a new structural `is_return_target` predicate instead of `is_enterable`, so
+a surface the vocabulary does not offer is still one the reducer can hold.
+
+The gate exists because an accepted detail state cannot yet be projected, and
+`app_loop.rs:347` `.expect()`s that every accepted state projects. Advertising an
+action that panics the loop is worse than not offering it yet.
+
+**Removing it is three coupled changes, all WP03's T015:**
+1. the containment check at `patch_page_projection.rs::project`,
+2. the detail page content plus `render_patch_text`'s selected line,
+3. deleting the `PatchDetail` arm in `is_enterable`.
+
+WP02 measured that (1) alone is not sufficient and the review's sizing of it was
+wrong: it only moves the failure from `PatchPage(InvalidInstrumentConfig)` to
+`render_patch_text`'s `InvalidSelection`, because the page projects
+`control_id: None` for every `ScalarEdit` row, so a Braids `Capability(braids.model)`
+detail focus has no line to be selected on. WP02 reverted its partial fix rather
+than leave a half-fix that looks like the hole is closed.
+
+**The gate cannot become permanent by forgetting.** Three tests fail the moment
+(1) and (2) land and must be updated together with (3):
+`app_state::the_entry_gate_exists_because_a_braids_detail_state_cannot_yet_be_projected`,
+`semantic_focus::the_detail_surface_is_a_return_target_but_is_not_offered_until_wp03`,
+and `semantic_action::semantic_action_descriptors_are_closed_unique_and_phase_two_safe`.
+
+**What the gate costs, for WP06.** The demo scene loses its `surface.detail` steps
+and coverage identifier, because a gated action is a refusal, not a demonstration.
+WP02 made the expected-coverage builder skip a surface that is not `is_enterable`,
+so WP03's gate removal restores the *expectation* automatically — but WP06 must
+put the two scene steps and their checkpoints back by hand.
+
+## F-12 — `input_capture_witness` stalls intermittently under parallel load
+
+**Raised by**: WP02 cycle 2
+**Owner**: unowned; pre-existing
+
+`tests/input_capture_witness.rs:428` ("the witness script stalled") fails roughly
+one run in two under full parallel load. It is a windowed test contending for key
+focus and passes 3/3 standalone. WP02 confirmed it pre-existing by running the
+suite three times in a temporary worktree at the pre-rework base `f2bbd56` and
+reproducing the identical failure on run 1 of 3. Not a regression. A reviewer
+running the suite once may hit it.
+
+## F-13 — Two review claims rested on partial enumerations
+
+**Raised by**: WP02 cycle 2
+**Owner**: recorded as a review-practice note
+
+Both of WP02's rejection findings under-counted, in the same way the findings were
+about:
+
+- B2 named `subject.kind` and `subject.capability_id` as the undeclared leaves. An
+  `Effect` subject also produces `subject.slot_id`. Declaring only the two the
+  reviewer's instrument-subject fixture happened to discover would have reproduced
+  the defect class exactly — three leaves, two fixtures.
+- The `with_voice_limit` ruling verified two callers; there were five. All
+  test-only, so the deletion ruling stands, but "verified zero non-test callers"
+  rested on a partial list.
+
+The lesson is not that the reviewer was careless — both findings were real and one
+was a reproduced panic. It is that a fixture which can only see one variant is the
+recurring failure mode in this mission, and it catches reviewers too.
