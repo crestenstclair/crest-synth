@@ -1256,3 +1256,90 @@ claim was tied to nothing — and reading is what review normally is.
 So the doctrine is not "implementers should falsify". It is: **a guard is unproven
 until someone has watched it fail, and that obligation does not transfer by being
 reviewed.**
+
+## F-57 — Two declarations I amended in one place and not the other
+
+**Raised by**: WP06
+**Owner**: closed
+
+Both would have failed `spec-kitty accept`, and WP06 found them by implementing
+against the declaration rather than around it.
+
+**The observation's `state:` block was stale.** F-44 withdrew
+`steamDeckViewportPainted` and `clippedOrOverlappingRows`, and I amended the
+witness schema and wrote the reasoning into the invariants — but left both fields in
+the `state:` list. The invariant described a withdrawal the declaration beside it
+did not perform. WP06 followed the witness (41 fields) and said so.
+
+**F-47's ruling and the witness disagreed.** I ruled the exact-zero first-Patch
+delta unattainable and replaced it with a bounded comparison, recorded that in the
+findings, and never amended the predicate. The witness still said
+`first_patch_audible_edit_delta == 0`. WP06 implemented the ruling, reported that
+acceptance would fail on the YAML, and **did not lower the predicate or silence it**
+— which is exactly right, and is the behaviour that made the gap visible instead of
+absorbed.
+
+Both are now fixed, and the second is fixed properly rather than by deletion: the
+witness predicates a new `audible_edit_isolated_to_second_patch` boolean carrying the
+bounded verdict, with both raw deltas still reported — because a verdict without its
+inputs cannot be argued with. **WP06 must add that one field**; it already computes
+the comparison in `is_complete()`.
+
+The pattern is now familiar enough to name: I keep amending the half of a
+declaration I am looking at. F-03, F-07, F-09, F-44 and now this — five times, always
+the prose and not the machine-checkable list, or the reverse. The findings file is
+not a substitute for the declaration, and a ruling recorded only in findings is a
+ruling that will fail a gate.
+
+## F-58 — The blocker was falsified, not asserted
+
+**Raised by**: WP06
+
+WP06 ran `make demo-live-patch-editor` rather than inheriting F-40's verdict. It
+failed at `awaiting parameter projection paint confirmation at step 3` after 10 s,
+zero paint acks. It then ran the **shipped** `demo-live-effects-and-buses` — a scene
+that has passed on this rig before — and it fails **identically**: same step, same
+predicate, same timeout. Neither reaches its own phase.
+
+That is the difference between "our new scene does not work" and "nothing that needs
+a painted frame works on a locked console", and it is the strongest falsification
+available without the password. It is also the first time in this mission that an
+environmental claim was tested by finding a known-good control rather than by
+reasoning about the mechanism.
+
+## F-59 — What the exit gate cannot yet prove, stated plainly
+
+**Raised by**: WP06
+**Owner**: the accept gate
+
+Two honest limitations, both self-reported rather than discovered:
+
+**The declared margin is unmeasured.** `AUDIBLE_EDIT_DELTA_MARGIN = 1.0e-3` is set
+above the expected block-to-block drift of a silent stem, but no completed live run
+has confirmed it. It is documented as a threshold in code and in ROADMAP. The first
+live run confirms it or moves it.
+
+**Under F-40 the controlled negative proves nothing.** Both the positive and the
+negative exit 1, for the same environmental reason. `--defeat-patch-selection`'s
+falsifying power currently rests entirely on the headless keying tests — which are
+real and which caught four defects in WP06's own first plan — but the negative's
+*exit code* is not evidence today. The `shortfalls()` list is emitted by name so a
+completed live run distinguishes the two cases immediately.
+
+Both belong in the acceptance record as stated limits, not as passing predicates.
+
+## F-60 — `midi_input_rechannelled` measures projection, not editing
+
+**Raised by**: WP06
+**Owner**: the accept gate, to grade deliberately
+
+The fixture packs fifteen Patches onto channels 0–14, so an adjacent-step rechannel
+on Patch 2 is a `DuplicateMidiChannel` refusal. WP06 therefore measures the field as
+"the row projected more than one channel across the run" rather than as a completed
+edit.
+
+It discriminates for what the live scene claims — the row is Patch-local and follows
+the switch, so a defeated run projects one value — and FR-008's editability is proven
+in WP05's deterministic target against a fixture that permits it. But the field's
+name promises more than it measures, and WP06 flagged that rather than letting the
+name carry it. Grade it for what it measures.
