@@ -31,7 +31,14 @@ create_intent:
 execution_mode: code_change
 mission_slug: functional-patch-editor-01KZERV9
 owned_files:
-- src/testing/**
+- src/testing/live_patch_editor_scene.rs
+- src/testing/live_demo_scene.rs
+- src/testing/live_demo_checkpoint.rs
+- src/testing/live_demo_report.rs
+- src/testing/live_demo_runner.rs
+- src/testing/live_effects_and_buses_scene.rs
+- src/testing/functional_patch_editor_observation.rs
+- src/testing/mod.rs
 - src/bin/crest_synth.rs
 - Makefile
 - ROADMAP.md
