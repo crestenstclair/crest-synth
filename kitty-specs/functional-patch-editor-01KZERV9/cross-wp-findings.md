@@ -1343,3 +1343,272 @@ the switch, so a defeated run projects one value — and FR-008's editability is
 in WP05's deterministic target against a fixture that permits it. But the field's
 name promises more than it measures, and WP06 flagged that rather than letting the
 name carry it. Grade it for what it measures.
+
+## F-61 — F-49's finding was half wrong; the dangerous direction was the other one
+
+**Raised by**: WP06 cycle 2, correcting the review that raised it
+
+The review found that mutating the effects-and-buses scene-name gate to a
+never-matching literal left 715 lib tests and the topology, mixer and shell suites
+green while dropping an entire evidence block. WP06 tested both directions and the
+picture is different:
+
+**Narrowing was already caught.** With the literal mutated to never match,
+`tests/effects_and_buses.rs` fails at `the cumulative scene retains
+effects-and-buses evidence`. The suites the finding listed do stay green — but the
+suite that owns the phase was not among them, and it fails. That direction was
+covered before anyone touched it.
+
+**Widening was caught by nothing.** With the gate replaced by always-true,
+`effects_and_buses`, `live_demo_scene`, `topology_change_lifecycle` and
+`live_patch_editor_scene` all pass. That is the real gap, and it is the direction
+that breaks *this* mission: the patch-editor scene declares topology transitions, so
+an always-true gate grades its effect-slot occupancy walk against the
+eight-destination bus contract it never claimed to meet.
+
+Both directions are now pinned, with a second test showing *why* the gate is
+load-bearing rather than tidy.
+
+The lesson is narrow and useful: a mutation proves what it proves. Testing one
+direction of a boolean gate and reporting "unprotected" named a real gap and got its
+polarity backwards — and the polarity was the part that mattered.
+
+## F-62 — The same half-amendment, in miniature, two hours later
+
+**Raised by**: WP06 cycle 2
+**Owner**: closed
+
+I amended the witness to add `audible_edit_isolated_to_second_patch` after
+`first_patch_audible_edit_delta`, and amended the observation's `state:` block to add
+it after `desktopViewportPainted`. Content agreed exactly, so nothing failed — but
+the two declarations of one thing listed it in different places, which is F-57's
+pattern repeating within the same working session that recorded F-57.
+
+WP06 followed the witness as instructed, flagged the discrepancy rather than
+silently picking one, and noted it would read as a defect to the next person who
+diffs them. Now aligned.
+
+Six instances. The through-line is not carelessness about any one edit — it is that
+I treat a declaration as prose to be updated rather than as a machine-checkable
+artifact with more than one face. `crest-spec doctor` passes on both orderings,
+which is exactly why it kept happening.
+
+## F-63 — The margin's exposure changed when the predicate did
+
+**Raised by**: WP06 cycle 2
+**Owner**: the accept gate
+
+`AUDIBLE_EDIT_DELTA_MARGIN = 1.0e-3` was an inline comparison inside
+`is_complete()`. After the F-57 amendment it stands behind a declared witness
+predicate. The ruling that documenting is sufficient still holds and WP06 did not
+invent a bound — but the exposure is different: the first completed live run now
+either confirms the margin or **moves a predicate**.
+
+One property worth keeping, which WP06 asserted rather than left true by accident: a
+run with no edit on the second Patch reports both deltas at zero, and zero does not
+clear the margin — so absent evidence reads as "not isolated" rather than as
+isolation by default.
+
+## F-64 — The completeness claim stopped being a claim about care
+
+**Raised by**: WP05 cycle 2
+**Owner**: doctrine
+
+This is the most useful thing the mission produced, and it came from an agent
+being honest about its own first attempt.
+
+WP05 was told to pin every rule its transcription copies. It did a careful
+line-by-line pass, produced 55 pins, and — in its own words — **would have
+submitted that**. Then it wrote the audit that became
+`check_every_line_of_a_transcribed_page_rule_carries_a_pin`, and the audit named
+**ten body lines the careful pass had missed** — every one a *discriminator* rather
+than an arm body: `value.kind === "scalar"`, `parameter.kind === "choice"`,
+`if (key === null)`, `var openSlot = null`, `controls[c].validActions`, and so on.
+Pinning the choice arm's body while leaving `=== "choice"` unpinned is F-55 in
+miniature, one level down.
+
+So the completeness claim is no longer "I walked it carefully". It is that a check
+runs on every test run and has already been falsified twice — a new unpinned arm
+fails, a stale scaffolding entry fails.
+
+> **AMENDED 2026-08-09 — see F-68.** I first wrote that this check "closes the set".
+> It does not, and the review proved it: the check's own predicate matched more than
+> it named, admitting two probes that collapse the rules it defends. After cycle 3 it
+> is closed against *added and changed* statements and still open against *reordered*
+> ones. The lesson below stands; the claim that the control is complete does not, and
+> stating it that way would have made this finding the next F-53.
+
+Two enforcement rules now live in the acceptance target rather than in a reviewer's
+head:
+
+- **every anchor must occur exactly once** — the review's own cycle-1 note ("assert
+  each new anchor is unique so the next entry cannot be added blind") turned from a
+  note into an assertion, and it immediately caught one of WP05's own new anchors;
+- **every line of every wholly-transcribed function must carry a pin**, with a
+  13-entry scaffolding list whose *unused* entries also fail, so the list cannot rot
+  into a blanket permit.
+
+F-56 said a guard is unproven until someone has watched it fail, and that the
+obligation does not transfer by being reviewed. This is that lesson taken literally:
+the omission that caused the rejection now fails at the moment it is committed,
+rather than waiting for a reviewer to think of the right mutation.
+
+67 mutations, 67 caught, `page.js` restored byte-for-byte each time.
+
+## F-65 — Two defects the review did not find, and one is a shape worth sweeping
+
+**Raised by**: WP05 cycle 2's own audit
+
+**`page_side_hint_line` was not a transcription at all.** It joined with
+`HINT_SEPARATOR` (` · `) and read `action.label` raw; the page joins hint spans with
+a text space and puts labels through `hintLabel` (lowercase, leading `open`/`move`
+stripped, trailing `mode` stripped). So it copied two rules from nowhere, and the
+`HINT_SEPARATOR` pin defended a rule this file did not transcribe — F-55's condition
+pointing the *other* way, at a pin with no copied rule behind it.
+
+**Its assertion passed for the wrong reason.** `contains("Return")` matched the
+physical hint `A / Return`, not the leave action's label, so it held whatever that
+label said. The painted line is `D:utility A / Return:return`; it now checks the
+`:return` half.
+
+That second one is a shape rather than an instance: **an assertion that passes
+because it matched the wrong half of a composed string.** It is the same family as
+the anchor matching in more places than it names, and it is invisible to every check
+this mission has built, because the assertion does fail when the whole string
+changes — just not when the half it claims to test does.
+
+## F-66 — F-43's NUL is load-bearing, not cosmetic
+
+**Corrected by**: WP05 cycle 2
+**Owner**: the merge step
+
+F-43 recorded the NUL byte in `page.js` as a grep nuisance and assigned "replace with
+a printable separator" to merge. That under-described it.
+
+It is the **dedup-key separator** in `sideRegionHintLine`, and it works precisely
+because no hint or label can contain it. Replacing it is therefore a semantic choice,
+not a cosmetic one: the replacement must be a character no projected hint or label
+can contain, or two distinct hint pairs could collide into one key and a hint would
+silently vanish.
+
+WP05's pins sit either side of the separator and the transcription dedups on the pair,
+so the repair fires neither pin and needs no test update. But whoever makes the change
+at merge must pick the character deliberately rather than reaching for `|`.
+
+## F-67 — The unit half of T032 is thinner than the range half
+
+**Raised by**: WP05 cycle 2, declining to hide it
+
+`check_ranges_and_units_are_rendered` reads `control.unit` off the projection and
+pins only the painting site. The unit's *text* is not read back through a transcribed
+rule the way ranges and values are, because the page paints `String(control.unit)`
+unmodified — there is no rule to transcribe.
+
+That is honest and it is also asymmetric, and WP05 said so rather than manufacturing
+a rule to make the two halves look alike. Recorded so the asymmetry is a known
+property rather than something a later reader mistakes for thoroughness.
+
+## F-68 — F-64 OVERCLAIMED. The completeness check has the defect it was built to prevent.
+
+**Raised by**: WP05's cycle-2 review
+**Owner**: correction to F-64, which must not ship as written
+
+I wrote F-64 saying "the set is closed under a check that runs on every test run,
+and that check has already been falsified twice", and called it the most useful
+thing the mission produced. **The first half is false.**
+
+The completeness check's predicate is `fragment.contains(code)`, and `code` keeps
+its indentation — so a deeper-indented pinned line *contains* the same statement at
+shallower indentation. The reviewer proved it with two probes, both admitted by
+unrelated pins:
+
+- `return openSlot;` inserted at the top of `stripGroupKey` — returns `openSlot`
+  for every identity, collapsing the entire grouping rule
+- `return UNAVAILABLE_MARK;` at the top of `controlValueText` — every value paints
+  unavailable
+
+**This is F-42, F-53 and F-55's exact mechanism turned inward.** The check built to
+catch anchors matching more than they name, matches more than it names. A guard
+whose own guard has the guard defect is the tidiest possible statement of what this
+mission keeps finding.
+
+Three further residues, all reachable:
+
+- **Two copied rules have no pin at all.** `startsWith` → `return false` collapses
+  the page's whole grouping rule and `cargo test --all-targets` **passes in full**,
+  30 targets, 0 failed. `designedGroup` neutered strips every legend and `designed`
+  flag: MISSED. Both are called by the transcribed functions; both are rules the
+  Rust copies. F-52's condition applies literally.
+- **`DESIGNED_STRIP_GROUPS`' order is unpinned.** Membership is pinned six times
+  over; sequence not at all, and the sequence is copied.
+- **Statement order is invisible to both checks.** Moving the `visible` skip to the
+  end of the `stripGroups` loop reproduces cycle-1's mutation #3 with every pin
+  intact. This one is inherent to a set-based check and cannot be fixed by adding
+  pins — only by the docstring not implying otherwise.
+
+**F-64's lesson survives; its wording does not.** The valuable part is real: WP05's
+careful pass produced 55 pins and it would have submitted that, and a mechanical
+audit found ten more. What is false is the claim that the resulting control closes
+the set. After cycle 3 it will be closed against *added and changed* statements and
+still open against *reordered* ones.
+
+The reviewer's warning is the one to heed: stated as I wrote it, **F-64 becomes the
+next F-53** — a lesson asserted more confidently than its evidence, which is exactly
+the failure the lesson is about. F-64 is amended in place to say what the control
+actually covers.
+
+The fix is small — match whole lines rather than substrings, widen the one pin that
+starts mid-statement, pin the two missing rules, pin the order — and the reviewer
+ran it green before proposing it.
+
+## F-69 — F-66's instruction was unenforceable; name the character
+
+**Raised by**: WP05's cycle-2 review
+
+F-66 told the merge step to "pick a character no projected hint or label can
+contain" when replacing the NUL dedup separator. The reviewer tested that
+instruction: `\x1f` leaves the target green, and **`|` also leaves it green** — the
+character F-66 warns against passes exactly as cleanly as a correct one.
+
+So the instruction cannot be checked by anything, which makes it advice rather than
+a control — the same category error F-54 recorded about process notes.
+
+**Name the character**: use `\x1f` (unit separator) or `\x1e` (record separator).
+Both are outside anything a projected hint or label can carry, both grep cleanly, and
+neither is a judgement call at merge time.
+
+## F-70 — F-67 understated the asymmetry: three tiers, not two
+
+**Raised by**: WP05's cycle-2 review
+
+F-67 recorded that values and ranges read back through transcribed rules while units
+rest on the pin alone. The reviewer measured it and there are three tiers:
+
+- **values** read back fully;
+- **ranges** read back only *structurally* — `low.parse::<f64>() == minimum` compares
+  `numericRange.minimum` against itself, so the endpoint's precision rides entirely
+  on the pin;
+- **units** rest on the pin alone.
+
+WP05's refusal to manufacture a rule for the unit was still right — it would have
+re-committed the `HINT_SEPARATOR` defect one line over, which is the defect of
+pinning a rule the file does not actually transcribe. But F-67 credited the range
+half with more than it does.
+
+## F-71 — One more F-65 sibling, and the shape now has three instances
+
+**Raised by**: WP05's cycle-2 review
+
+`hint.contains(':')` at `:2109` is satisfied by construction: the colon comes from
+the transcription's own `format!`, and the preceding non-empty assert makes it
+unfalsifiable.
+
+Low materiality — the colon rule is separately pinned and CAUGHT — but it is the
+third instance of F-65's shape: **an assertion that passes because of where it
+looked rather than what it tested.** The first matched the wrong half of a composed
+string; the second matched a physical hint instead of a label; this one matches text
+the assertion itself produced.
+
+None of this mission's checks can see that shape. It is worth naming in the
+retrospective as the one failure mode the mission found repeatedly and never built a
+control for.
