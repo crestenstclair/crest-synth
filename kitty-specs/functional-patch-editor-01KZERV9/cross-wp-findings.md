@@ -1653,11 +1653,21 @@ So the residue is three items, all reachable, all recorded rather than implied a
 
 > **AMENDED after cycle 5's review.** "Three items" undercounts the third. The class
 > is *anything that is not a line of one of the twelve extracted slices*, and it now
-> has **four measured instances**, not one: `controlById` (unwalked), R1 (a module-scope
-> rebinding of `controlIdOf`), D2 (a second declaration spelled `function name (` with
-> a space, which JavaScript hoists and the page calls), and T2 (a `}` appended to a
-> comment, rebalancing a slice truncated by a dedented brace, so `controlValueText`
-> walks 14 lines instead of 56). Each was measured; each leaves all 30 targets green.
+> has more measured instances than one.
+>
+> **AMENDED AGAIN after cycle 6 — this time the correction runs the other way.** The
+> four instances this amendment listed included D2 and T2, and **both are now CAUGHT**:
+> cycle 6's head scan counts declarations by shape rather than by a literal, and its
+> brace count runs over the comment-stripped body. Five previously-MISSED mutations
+> flipped. The class's measured instances are now three: `controlById` (unwalked), R1
+> (a module-scope rebinding rather than a declaration), and D5 (`function
+> controlIdOf/*x*/(control)` — a comment between the name and the paren, valid,
+> hoisted, and the declaration the page calls).
+>
+> Worth noting which direction this one goes. Every prior amendment in this chain
+> corrected a claim that credited a control with more than it had. This one corrects a
+> residue statement that credited it with **less**, and WP05 raised it against its own
+> interest — the stale version made its work look weaker.
 > The count of *classes* is right; the count of ways in is not, and the carve-out
 > saying second declarations are caught while rebindings are not draws the boundary in
 > the wrong place, because neither is caught.
