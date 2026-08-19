@@ -1769,11 +1769,9 @@ mod tests {
     /// test on one row and disagree on the other, so both halves are asserted
     /// against the descriptor rather than against a literal.
     ///
-    /// This is the producer FR-012's AC-3 is satisfiable from — the one a page
-    /// reads to mark a read-only section in text or shape. WP03 cycle 1
-    /// reported that no such concept existed; it does, it is declared in the
-    /// crest-spec at `valueObject.Synth.ParameterSpec.patchInteraction`, and
-    /// this is where it comes out.
+    /// This is the producer a page reads to mark a read-only section in text or
+    /// shape. The concept is declared by `ParameterSpec::patch_interaction`,
+    /// and this is where it reaches the projection.
     #[test]
     fn the_declared_patch_interaction_reaches_the_detail_page_and_discriminates() {
         let soundfont =

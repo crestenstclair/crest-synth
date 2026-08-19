@@ -5,15 +5,15 @@
 //! projection, the prepared renderer's audio observation, the painting page's
 //! own acknowledgment, and the host's teardown — never copied from expected
 //! data. Where a fact has one producer it is transported from that producer
-//! rather than recomputed beside it (mission finding F-44): the PATCH strip's
+//! rather than recomputed beside it: the PATCH strip's
 //! group structure is decided by the page and carried in the paint ack, and
 //! this observation copies what arrived.
 //!
 //! # Keying, and why it is the sharpest rule here
 //!
 //! Every "second Patch" counter is keyed by the PatchId resolved from the
-//! **final state's installed order**, never from the scene's own subject
-//! (mission finding F-47). A scene whose patch switch has been defeated still
+//! **final state's installed order**, never from the scene's own subject. A
+//! scene whose patch switch has been defeated still
 //! visits three slots and still makes an audible edit — just on the wrong
 //! instrument. A counter that counted the work without checking where it
 //! landed would pass under defeat, which is exactly the shape of defect this
@@ -21,11 +21,8 @@
 //!
 //! # Wire form
 //!
-//! Snake case, matching `witness.functional_patch_editor`'s declared schema
-//! and the shipped `SixteenTrackMixerRoutingObservation` beside it. (The
-//! `valueObject.Testing.FunctionalPatchEditorObservation` declaration spells
-//! its state in camelCase, which is the declaration's own convention; the
-//! witness is what acceptance reads, and it declares snake case.)
+//! Snake case, matching the acceptance schema and the shipped
+//! `SixteenTrackMixerRoutingObservation` beside it.
 
 use crate::control::app_state::{AppState, SemanticActionAvailability};
 use crate::control::{
@@ -40,7 +37,7 @@ use crate::synth::effect_slot_id::EffectSlotIndex;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The stdout marker the witness reads. Emitted only after semantic cleanup,
+/// The stdout marker the acceptance runner reads. Emitted only after semantic cleanup,
 /// stream release, worker shutdown, graph collection, window close, and a
 /// successful parent-process return.
 pub const FUNCTIONAL_PATCH_EDITOR_OBSERVATION_MARKER: &str =
@@ -52,8 +49,8 @@ pub const FUNCTIONAL_PATCH_EDITOR_OBSERVATION_MARKER: &str =
 ///
 /// **This is a declared threshold, not a measured one.** An exact zero on the
 /// untargeted Patch is unattainable on a live decaying voice — natural
-/// block-to-block RMS drift is nonzero — so mission finding F-47 ruled the
-/// pair a bounded comparison instead: both deltas measured on their own output
+/// block-to-block RMS drift is nonzero — so the pair uses a bounded comparison:
+/// both deltas are measured on their own output
 /// tracks over the same window, the second required to exceed the first by
 /// this margin. The number is set above the block-to-block drift of a silent
 /// or decaying track and far below the smallest edit this scene makes. The
@@ -66,8 +63,7 @@ const DECLARED_UTILITY_ROWS: u32 = 5;
 /// The focused machine-readable result of the Phase 5 functional Patch editor
 /// live acceptance.
 ///
-/// The field order and names mirror `witness.functional_patch_editor`'s
-/// declared schema exactly, because the witness is what acceptance runs.
+/// The field order and names are the declared acceptance schema.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FunctionalPatchEditorObservation {
     schema_version: u32,
@@ -119,7 +115,7 @@ impl FunctionalPatchEditorObservation {
     pub const SCHEMA_VERSION: u32 = 1;
 
     /// Every declared predicate that this observation does **not** satisfy,
-    /// named by its witness field.
+    /// named by its acceptance field.
     ///
     /// The controlled negative reports this list rather than a bare exit code,
     /// so a negative that failed for an unrelated reason is visible as such
@@ -700,7 +696,7 @@ impl PatchEditorMeasurement {
             utility_rows_unavailable: self.utility_rows_unavailable,
             utility_serialization_key_labels: self.utility_serialization_key_labels,
             master_volume_single_owner: self.master_volume_owner_counts == BTreeSet::from([1]),
-            // **The witness field's name is broader than what this measures.**
+            // **The observation field's name is broader than what this measures.**
             // What is measured is that the projected MIDI-input row took more
             // than one distinct value across the run — i.e. the row is
             // Patch-local and re-projects across a switch, so a run that never
@@ -708,9 +704,9 @@ impl PatchEditorMeasurement {
             // is *not* a completed re-channelling edit: the fixture packs 15
             // Patches onto channels 0-14, so every adjacent channel is a
             // `DuplicateMidiChannel` refusal and no such edit is measurable on
-            // this roster. FR-008 editability is proven in WP05's target. The
-            // field is graded for what it measures; the name is not renamed
-            // mid-mission (mission finding F-57's review).
+            // this roster. MIDI-input editability is proven in the deterministic
+            // target. The field is graded for what it measures; the wire name
+            // remains stable.
             midi_input_rechannelled: self.midi_input_values.len() > 1,
             numeric_rows_missing_range_or_unit: self.numeric_rows_missing_range_or_unit,
             per_row_valid_actions_agree_at_focus: self.valid_actions_samples > 0
@@ -1114,32 +1110,31 @@ mod tests {
         );
     }
 
-    /// The emitted wire names are the witness's declared schema, exactly.
+    /// The emitted wire names are the declared acceptance schema, exactly.
     #[test]
-    fn the_emitted_schema_matches_the_declared_witness_fields() {
+    fn the_emitted_schema_matches_the_declared_acceptance_fields() {
         let (first, second) = (patch(1), patch(2));
         let observation = healthy(first, second).resolve(&[first, second], teardown());
         let value = serde_json::to_value(&observation).expect("the observation serializes");
         let object = value.as_object().expect("the observation is a JSON object");
-        for field in WITNESS_SCHEMA_FIELDS {
+        for field in ACCEPTANCE_SCHEMA_FIELDS {
             assert!(
                 object.contains_key(field),
-                "the emitted observation must carry the declared witness field {field}",
+                "the emitted observation must carry the declared acceptance field {field}",
             );
         }
         // Only `schema_version` may be carried beyond the declared schema.
         for key in object.keys() {
             assert!(
-                key == "schema_version" || WITNESS_SCHEMA_FIELDS.contains(&key.as_str()),
-                "the emitted observation carries {key}, which the witness does not declare",
+                key == "schema_version" || ACCEPTANCE_SCHEMA_FIELDS.contains(&key.as_str()),
+                "the emitted observation carries {key}, which acceptance does not declare",
             );
         }
     }
 
-    /// `witness.functional_patch_editor`'s declared observation schema, in its
-    /// declared order. Written out so a field renamed on either side fails
-    /// here rather than at acceptance on the rig.
-    const WITNESS_SCHEMA_FIELDS: [&str; 42] = [
+    /// The declared observation schema, in order. Written out so a field
+    /// renamed in the serializer fails here rather than on the physical rig.
+    const ACCEPTANCE_SCHEMA_FIELDS: [&str; 42] = [
         "patches_installed",
         "patches_focused",
         "patch_switch_generations_exact",

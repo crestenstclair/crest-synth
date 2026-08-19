@@ -52,7 +52,8 @@ use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::webview::frame_stream::QualifyingFrameStream;
 use crate::shell::webview::meter_channel::{MeterChannel, METER_EVENT};
 use crate::shell::webview::projection_channel::{
-    ForwardedAck, ProjectionChannel, PAINTED_EVENT, PROJECTION_EVENT, RENDER_ERROR_EVENT,
+    ForwardedAck, ProjectionChannel, PAINTED_EVENT, PROJECTION_EVENT, READY_EVENT,
+    RENDER_ERROR_EVENT,
 };
 use crate::shell::webview::{input_capture, WebviewShellError};
 use crate::shell::window_input::WindowInput;
@@ -299,6 +300,9 @@ impl KeyPipeline {
 /// One page-reported condition carried from the Send tauri listener context
 /// onto the window's event thread, where the non-Send callbacks live.
 enum PageSignal {
+    /// Both Rust→page event listeners are registered and can receive the
+    /// first projection and meter documents without a startup race.
+    Ready,
     /// A painted-document ack payload from `crest://painted`.
     PaintedAck(String),
     /// A thrown page render failure payload from `crest://render-error`.
@@ -501,11 +505,16 @@ impl AppWindow for TauriWebviewWindow {
             .build(crate::shell::webview::tauri_context())
             .map_err(|error| WindowError::from(WebviewShellError::RuntimeUnavailable(error)))?;
 
-        // Page→Rust signals: painted acks and thrown render failures arrive
+        // Page→Rust signals: transport readiness, painted acks, and thrown
+        // render failures arrive
         // on tauri events in a Send listener context; relay them through a
         // channel onto the event thread below, where the non-Send frame
         // callback and projection channel live.
         let (page_signal_sender, page_signals) = mpsc::channel::<PageSignal>();
+        let ready_sender = page_signal_sender.clone();
+        app.listen_any(READY_EVENT, move |_| {
+            let _ = ready_sender.send(PageSignal::Ready);
+        });
         let painted_sender = page_signal_sender.clone();
         app.listen_any(PAINTED_EVENT, move |event| {
             let _ = painted_sender.send(PageSignal::PaintedAck(event.payload().to_owned()));
@@ -524,6 +533,12 @@ impl AppWindow for TauriWebviewWindow {
             .title(&self.title)
             .inner_size(f64::from(authored.width_px), f64::from(authored.height_px))
             .min_inner_size(f64::from(smallest.width_px), f64::from(smallest.height_px))
+            // A synth keeps running when its editor is behind another window.
+            // WebKit's default hidden-view suspension would stop the page's
+            // requestAnimationFrame paint acknowledgements and can unload the
+            // listener-bearing document. Keep the bounded projection/meter
+            // transports alive; the audio callback remains wholly separate.
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
             .focused(true)
             .build()
             .map_err(|error| WindowError::from(WebviewShellError::WindowCreation(error)))?;
@@ -547,6 +562,7 @@ impl AppWindow for TauriWebviewWindow {
         let loop_pipeline = Rc::clone(&pipeline);
         let mut last_tick = Instant::now();
         let mut close_requested = false;
+        let mut page_ready = false;
 
         // The first runtime failure while the window still lives — a
         // transport emit, a rejected painted ack, a page render failure, or
@@ -586,6 +602,9 @@ impl AppWindow for TauriWebviewWindow {
                 // (with retry), surface after the loop.
                 while let Ok(signal) = page_signals.try_recv() {
                     match signal {
+                        PageSignal::Ready => {
+                            page_ready = true;
+                        }
                         PageSignal::PaintedAck(payload) => {
                             match projection_channel.forward_ack(&payload) {
                                 Ok(ForwardedAck::Observation(observation)) => {
@@ -628,6 +647,9 @@ impl AppWindow for TauriWebviewWindow {
                 let elapsed = now.duration_since(last_tick);
                 last_tick = now;
                 if on_tick(elapsed) {
+                    if !page_ready {
+                        return;
+                    }
                     // Port invariant: each interactive frame advances the
                     // injected control-side tick and then requests the
                     // current immutable projection.
@@ -785,6 +807,10 @@ mod tests {
                 "the page must register no key handler"
             );
         }
+        assert!(PAGE_JS.contains("var projectionListener = tauri.event.listen("));
+        assert!(PAGE_JS.contains("var meterListener = tauri.event.listen("));
+        assert!(PAGE_JS.contains("Promise.all([projectionListener, meterListener])"));
+        assert!(PAGE_JS.contains("tauri.event.emit(READY_EVENT"));
     }
 
     /// Every asset the page references resolves over the protocol with its
@@ -927,6 +953,9 @@ mod tests {
                 }
                 PageSignal::PaintedAck(_) => {
                     unreachable!("a render error is never a painted ack")
+                }
+                PageSignal::Ready => {
+                    unreachable!("the render-error fixture contains no ready signal")
                 }
             }
         }

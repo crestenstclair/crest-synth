@@ -330,13 +330,13 @@ pub enum VoiceLimitCarryOver {
         /// value and `requested_value` carries the clamped one. Reading
         /// `previous` there would project the value the row already shows.
         ///
-        /// It earns a consumer only in the *durable* report F-22 describes,
+        /// It earns a consumer only in the durable engine-selection report,
         /// where the outcome is retained on `EngineSelectionStatus` after the
         /// commit has already overwritten canonical state — at which point the
         /// previous limit is no longer recoverable from the row and this field
-        /// is the only thing that still knows it. That needs a crest-spec
-        /// field and canonical state, so it is not WP03's to bolt on. Kept
-        /// rather than deleted for exactly that reason, and the reducer test
+        /// is the only thing that still knows it. That needs a canonical field
+        /// in application state. It is kept rather than deleted for exactly
+        /// that reason, and the reducer test
         /// `an_engine_swap_to_a_narrower_engine_clamps_the_limit_in_canonical_state`
         /// asserts the whole outcome, so the field cannot silently go wrong in
         /// the meantime.

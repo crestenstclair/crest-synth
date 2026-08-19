@@ -94,6 +94,12 @@ use std::collections::VecDeque;
 /// serialized [`SemanticGraphicalViewModel`] to the page.
 pub const PROJECTION_EVENT: &str = "crest://projection";
 
+/// The named tauri event the page emits after both Rust→page transport
+/// listeners have been registered. The window does not publish projection
+/// or meter documents before this handshake, so the first accepted state
+/// cannot be lost during webview startup.
+pub const READY_EVENT: &str = "crest://ready";
+
 /// The named tauri event on which the page acknowledges each painted
 /// document: the document's semantic identity copied verbatim plus the
 /// measured viewport and region geometry (the page's `paintedEvidence`).
@@ -685,7 +691,7 @@ fn measured_region(value: &Value) -> Result<ShellRegionObservation, PaintedAckEr
 mod tests {
     use super::{
         ForwardedAck, PaintedAckError, ProjectionChannel, ProjectionChannelError, ProjectionPush,
-        MAX_IN_FLIGHT_DOCUMENTS, PAINTED_EVENT, PROJECTION_EVENT, RENDER_ERROR_EVENT,
+        MAX_IN_FLIGHT_DOCUMENTS, PAINTED_EVENT, PROJECTION_EVENT, READY_EVENT, RENDER_ERROR_EVENT,
         RETAINED_RETIRED_IDENTITIES,
     };
     use crate::control::{
@@ -967,7 +973,7 @@ mod tests {
 
     #[test]
     fn event_names_satisfy_the_tauri_event_charset() {
-        for event in [PAINTED_EVENT, RENDER_ERROR_EVENT] {
+        for event in [PAINTED_EVENT, READY_EVENT, RENDER_ERROR_EVENT] {
             assert!(event.chars().all(|c| c.is_alphanumeric()
                 || c == '-'
                 || c == '/'

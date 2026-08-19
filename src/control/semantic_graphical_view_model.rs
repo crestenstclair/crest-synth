@@ -214,12 +214,11 @@ impl SemanticControlViewModel {
     /// [`crate::control::PatchPageParameterRow::selected_label`] already does.
     ///
     /// It exists because without it a choice id was on screen. The webview
-    /// consumes exactly the serde serialization of this model (crest-spec
-    /// `requirement.serialized_projection_transport`), so the PATCH page's
+    /// consumes exactly the serde serialization of this model, so the PATCH page's
     /// `selectedLabel` never reached it and the shipped Preset row painted
     /// `sf2.bank-0.program-40` while `DESIGN.md` calls it "the **authored-name**
     /// Preset row" and declares SoundFont presets "labeled with exact authored
-    /// SF2 names" (mission finding F-33). FR-014 forbids a serialization key on
+    /// SF2 names". The product contract forbids a serialization key on
     /// screen as a *label*; this key reached the screen as a *value*, which the
     /// label guard could not see.
     pub fn selected_label(&self) -> Option<&str> {
@@ -326,7 +325,7 @@ pub enum SemanticSurfaceRole {
 // snake_case inside an otherwise camelCase schema. The three tagged unions
 // carrying that defect — `PatchDetailSubject`, this one, and `MixerControlId`
 // — moved together rather than one at a time, because a half-fixed schema is
-// harder to read than a uniformly wrong one (mission finding F-18).
+// harder to read than a uniformly wrong one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(
     tag = "kind",
@@ -1651,14 +1650,12 @@ fn project_patch_surfaces(
         // detail surface carries both. A page marking a read-only row "in text
         // or shape" reads that leaf, never this bool.
         //
-        // WP03 left the fact on `patchPage` alone on the reasoning that it
-        // "already reaches the screen". It does not reach *this* screen: the
-        // webview consumes exactly the serde serialization of
-        // `SemanticGraphicalViewModel` (crest-spec
-        // `requirement.serialized_projection_transport`), and `patchPage`
+        // Keeping the fact on `patchPage` alone does not reach *this* screen:
+        // the webview consumes exactly the serde serialization of
+        // `SemanticGraphicalViewModel`, and `patchPage`
         // belongs to the StateTree observation, which no shipped surface
         // paints. Without this leaf the declared "read-only marked in text or
-        // shape" rule is unrenderable (mission WP04).
+        // shape" rule is unrenderable.
         let detail_editable = false;
         let mut detail_controls = Vec::with_capacity(detail_paths.len());
         for path in detail_paths {
@@ -3078,17 +3075,16 @@ mod projection_enrichment_tests {
         for descriptor in state.effects().descriptors() {
             keys.extend(descriptor.parameters().map(|spec| spec.id().to_string()));
         }
-        // Capability and section identities. `contexts/control.yaml` defines a
-        // serialization key as "the name a value carries in the state tree, the
-        // parameter snapshot, or a leaf descriptor", and
+        // Capability and section identities. A serialization key is the name a
+        // value carries in the state tree, parameter snapshot, or leaf descriptor;
         // `patchPage.sections[].id`, `patchPage.engine.activeCapabilityId`, and
         // `patchPage.effects[].capabilityId` are all such names — so a label
         // reverted to one of them is the same defect as `masterGainDb` on a row.
         //
         // Without these the guard *walked* seven label sites it could not
         // *fail* on: three section labels, the engine choice and active labels,
-        // and the two occupancy labels (mission finding F-28, a 17-site
-        // mutation sweep that caught 10 and missed 7). The exact case the first
+        // and the two occupancy labels. A 17-site mutation sweep caught 10 and
+        // missed these 7. The exact case the first
         // diagnosis named — a descriptor whose `label()` equalled its `id()` —
         // was unexpressible in the key set, so widening the *fixtures* bought
         // nothing for it.

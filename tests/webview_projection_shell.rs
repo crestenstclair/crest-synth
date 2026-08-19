@@ -124,7 +124,7 @@ use crest_synth::shell::webview::meter_channel::{
 };
 use crest_synth::shell::webview::projection_channel::{
     ForwardedAck, PaintedAckError, ProjectionChannel, ProjectionPush, MAX_IN_FLIGHT_DOCUMENTS,
-    PROJECTION_EVENT, RENDER_ERROR_EVENT,
+    PROJECTION_EVENT, READY_EVENT, RENDER_ERROR_EVENT,
 };
 use crest_synth::shell::webview::token_export;
 use crest_synth::shell::webview::{protocol_response, PAGE_CSP};
@@ -136,17 +136,20 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The `crest://painted` ack event the page emits after each projection
-/// paint (authored in `webview-page/page.js`; WP05).
-const PAINTED_EVENT: &str = "crest://painted";
+use crest_synth::shell::webview::projection_channel::PAINTED_EVENT;
 
 /// The harness-only event the driver uses to pull `renderObservation`
 /// payloads and page-side statistics back out of the page.
 const HARNESS_EVENT: &str = "crest://harness";
+
+/// A harness-only minimal Rust→page delivery probe. It proves the native
+/// emitter independently of projection parsing, rendering, and paint timing.
+const TRANSPORT_PROBE_EVENT: &str = "crest://transport-probe";
 
 /// The declared column anatomy, closed and ordered.
 const COLUMN_ANATOMY: [&str; 5] = [
@@ -1804,6 +1807,7 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
     let desktop = ViewportDensityPolicy::Desktop.authored_viewport();
 
     let (harness_sender, harness_receiver) = mpsc::channel::<Value>();
+    let (ready_sender, ready_receiver) = mpsc::channel::<()>();
     let painted: PaintedAcks = Arc::new(Mutex::new(Vec::new()));
     let render_errors: RenderErrors = Arc::new(Mutex::new(Vec::new()));
 
@@ -1823,6 +1827,9 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
         if let Ok(value) = serde_json::from_str::<Value>(event.payload()) {
             let _ = harness_sender.send(value);
         }
+    });
+    app.listen_any(READY_EVENT, move |_| {
+        let _ = ready_sender.send(());
     });
     {
         let painted = Arc::clone(&painted);
@@ -1854,16 +1861,33 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
     // (tauri.conf.json) grants the page's event permissions to that label.
     // always_on_top keeps the page unoccluded so requestAnimationFrame (the
     // painted ack's clock) is never throttled by a window in front.
-    let _window =
+    let window =
         tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::CustomProtocol(url))
             .title("crest-synth WP06 acceptance harness")
             .inner_size(f64::from(desktop.width_px), f64::from(desktop.height_px))
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
             .focused(true)
             .always_on_top(true)
             .build()
             .expect("the live harness window builds");
+    request_authored_desktop(&window)
+        .unwrap_or_else(|error| panic!("the live harness seats its authored viewport: {error}"));
 
     let handle = app.handle().clone();
+    // Match the shipped window's idle cadence. The native event loop waits
+    // when idle; this bounded waker gives WebKit regular presentation turns
+    // in which requestAnimationFrame can publish post-paint evidence.
+    let stop_waker = Arc::new(AtomicBool::new(false));
+    let waker_stop = Arc::clone(&stop_waker);
+    let waker_handle = handle.clone();
+    let waker = std::thread::spawn(move || {
+        while !waker_stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(16));
+            if waker_handle.run_on_main_thread(|| {}).is_err() {
+                break;
+            }
+        }
+    });
     let driver_fidelity = fidelity.clone();
     let driver_painted = Arc::clone(&painted);
     let driver_render_errors = Arc::clone(&render_errors);
@@ -1874,6 +1898,7 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
             drive_live_window(
                 &handle,
                 &harness_receiver,
+                &ready_receiver,
                 &driver_painted,
                 &driver_render_errors,
                 &driver_fidelity,
@@ -1895,6 +1920,8 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
 
     let exit_code = app.run_return(|_, _| {});
     driver.join().expect("the driver thread rejoins");
+    stop_waker.store(true, Ordering::Relaxed);
+    waker.join().expect("the harness waker rejoins");
     let outcome = outcome
         .lock()
         .expect("driver outcome lock")
@@ -1915,6 +1942,28 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
     prove_forced_render_throw_on_the_shipped_binary();
     prove_shutdown_parity_on_real_runs();
     prove_forced_double_close_failure_on_the_shipped_binary();
+}
+
+/// Request the exact authored desktop viewport on the primary display.
+///
+/// The page-side viewport probe below is the authority: if macOS clamps this
+/// request on a smaller display, the measured CSS width fails rather than
+/// allowing the test to claim desktop evidence. This avoids depending on
+/// Tauri monitor enumeration, which is empty before this harness enters its
+/// event loop on macOS.
+fn request_authored_desktop(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let desktop = ViewportDensityPolicy::Desktop.authored_viewport();
+    window
+        .set_position(tauri::LogicalPosition::new(0.0, 0.0))
+        .map_err(|error| {
+            format!("positioning the window on the primary display failed: {error}")
+        })?;
+    window
+        .set_size(tauri::LogicalSize::new(
+            f64::from(desktop.width_px),
+            f64::from(desktop.height_px),
+        ))
+        .map_err(|error| format!("sizing the window to the desktop viewport failed: {error}"))
 }
 
 fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
@@ -3127,6 +3176,7 @@ fn assert_patch_detail_composition(
 fn drive_live_window(
     handle: &tauri::AppHandle,
     receiver: &mpsc::Receiver<Value>,
+    ready: &mpsc::Receiver<()>,
     painted: &PaintedAcks,
     render_errors: &RenderErrors,
     fidelity: &FidelityEvidence,
@@ -3148,37 +3198,76 @@ fn drive_live_window(
     let desktop_side = ViewportDensityPolicy::Desktop.split().side_px;
     let compact_side = ViewportDensityPolicy::SteamDeck.split().side_px;
 
-    // Seat the window on a display that can hold the authored desktop
-    // viewport: macOS clamps a window to its screen's visible frame, so a
-    // window created on a smaller (e.g. built-in Retina) display would
-    // silently measure a narrower viewport. Failing to find such a display
-    // is a live-section failure, never a skip.
-    let monitor = window
-        .available_monitors()
-        .map_err(|error| format!("monitor enumeration failed: {error}"))?
-        .into_iter()
-        .find(|monitor| {
-            let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
-            size.width >= f64::from(desktop.width_px) && size.height >= f64::from(desktop.height_px)
-        })
-        .ok_or_else(|| {
-            format!(
-                "no attached display seats the authored {}x{} viewport",
-                desktop.width_px, desktop.height_px
-            )
-        })?;
-    window
-        .set_position(*monitor.position())
-        .map_err(|error| format!("seating the window on its display failed: {error}"))?;
-    window
-        .set_size(tauri::LogicalSize::new(
-            f64::from(desktop.width_px),
-            f64::from(desktop.height_px),
-        ))
-        .map_err(|error| format!("sizing the window to the desktop viewport failed: {error}"))?;
+    // The main thread requested the authored position and size beside window
+    // construction. Let the event loop apply that geometry before the page
+    // measures the real CSS viewport.
     std::thread::sleep(Duration::from_millis(500));
 
-    // Wait for the page: window.crest is installed by the committed page.js.
+    // Wait for the page's production listeners, not merely its globals. The
+    // ready event is emitted only after both tauri.event.listen promises
+    // resolve, so the first production projection cannot race startup.
+    ready
+        .recv_timeout(Duration::from_secs(30))
+        .map_err(|_| "the page transports never became ready within 30s".to_owned())?;
+
+    // These calls run after `run_return` is active. On macOS, a window built
+    // before the loop starts can have a loaded DOM before WebKit has attached
+    // a presentation surface; make that native state explicit and prove one
+    // real animation-frame turn before claiming any paint evidence.
+    window
+        .show()
+        .map_err(|error| format!("showing the live harness window failed: {error}"))?;
+    window
+        .unminimize()
+        .map_err(|error| format!("unminimizing the live harness window failed: {error}"))?;
+    window
+        .set_focus()
+        .map_err(|error| format!("focusing the live harness window failed: {error}"))?;
+    window
+        .eval(format!(
+            "window.requestAnimationFrame(function () {{ \
+             window.__TAURI__.event.emit('{HARNESS_EVENT}', {{ \
+             phase: 'animation-frame-ready', visibility: document.visibilityState, \
+             focused: document.hasFocus() }}); }});"
+        ))
+        .map_err(|error| format!("animation-frame readiness probe failed: {error}"))?;
+    let frame_ready = receive_phase(receiver, "animation-frame-ready", Duration::from_secs(10))?;
+    println!(
+        "T026 animation-frame readiness: PASS (visibility={}, focused={})",
+        frame_ready
+            .get("visibility")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+        frame_ready
+            .get("focused")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    );
+
+    window
+        .eval(format!(
+            "window.__TAURI__.event.listen('{TRANSPORT_PROBE_EVENT}', function (event) {{ \
+             window.__TAURI__.event.emit('{HARNESS_EVENT}', {{ phase: 'transport-probe-arrived', \
+             sequence: event.payload.sequence }}); }}).then(function () {{ \
+             window.__TAURI__.event.emit('{HARNESS_EVENT}', \
+             {{ phase: 'transport-probe-ready' }}); }});"
+        ))
+        .map_err(|error| format!("transport probe listener install failed: {error}"))?;
+    receive_phase(receiver, "transport-probe-ready", Duration::from_secs(10))?;
+    tauri::Emitter::emit(
+        handle,
+        TRANSPORT_PROBE_EVENT,
+        serde_json::json!({ "sequence": 1 }),
+    )
+    .map_err(|error| format!("transport probe emit failed: {error}"))?;
+    let probe = receive_phase(receiver, "transport-probe-arrived", Duration::from_secs(10))?;
+    if probe.get("sequence").and_then(Value::as_u64) != Some(1) {
+        return Err(format!(
+            "the Rust→page transport probe rewrote its payload: {probe}"
+        ));
+    }
+
+    // Also prove the committed page API is installed before direct probes.
     let ready_deadline = Instant::now() + Duration::from_secs(30);
     loop {
         window
@@ -3379,8 +3468,10 @@ fn drive_live_window(
             break;
         }
         if Instant::now() > ack_deadline {
+            let errors = render_errors.lock().expect("render errors lock").clone();
             return Err(format!(
-                "only {acked} of {pushes} projections were acked as painted within 15s"
+                "only {acked} of {pushes} projections were acked as painted within 15s; \
+                 render errors = {errors:?}"
             ));
         }
         std::thread::sleep(Duration::from_millis(20));

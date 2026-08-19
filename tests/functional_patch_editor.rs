@@ -305,7 +305,7 @@ fn page(state: &AppState) -> PatchPageProjection {
 ///
 /// Taken through the production [`ProjectionChannel`], not serialized here, so
 /// a transport that changed what it emits fails this rather than agreeing with
-/// a second serializer (crest-spec `requirement.serialized_projection_transport`).
+/// a second serializer owned by the test.
 fn document(state: &AppState) -> Value {
     let projection = StateProjector::new()
         .project_with_shell(state)
@@ -1224,13 +1224,10 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
         // `sideRegionHintLine`, `hintRun` and `hintLabel` — [`page_side_hint_line`].
         ("the hint line walks every projected action", "    var surfaces = model.surfaces || [];\n    for (var s = 0; s < surfaces.length; s += 1) {\n      var controls = surfaces[s].controls || [];\n      for (var c = 0; c < controls.length; c += 1) {\n        var valid = controls[c].validActions || [];"),
         ("the hint line's action selection", "          var kind = action.action && action.action.kind;\n          var entersThis =\n            kind === \"enterSurface\" &&\n            action.action.payload === (surface && surface.id);\n          var leavesThis = kind === \"return\" && surfaces[s].id === surface.id;\n          if (!entersThis && !leavesThis) {\n            continue;\n          }"),
-        // Two anchors either side of the separator, which is deliberately not
-        // pinned: it is F-43's U+0000, owned by the merge step and scheduled for
-        // replacement with a printable character. What this file transcribes is
-        // the *pair* being deduped, which it copies as a tuple key — the same
-        // equivalence for any separator no hint or label can contain, which is
-        // why the page chose a NUL. Pinning the byte would fire on F-43's repair
-        // and would say nothing about the rule.
+        // Two anchors cover the pair being deduped. The whole-function census
+        // below separately pins the escaped U+0000 separator, so an empty or
+        // colliding separator cannot hide between these fragments and the
+        // JavaScript source remains an ordinary text file.
         ("the hint line's dedup key", "          var key = String(action.hint) +"),
         ("the hint line's dedup", " + String(action.label);\n          if (seen[key]) {\n            continue;\n          }\n          seen[key] = true;\n          actions.push(action);"),
         ("no qualifying action, no hint line", "    if (actions.length === 0) {\n      return \"\";\n    }"),
@@ -1597,11 +1594,10 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
         ("rangeHtml", "    return ("),
         ("rangeHtml", "      \"</span>\""),
     ];
-    /// F-43's NUL separator, whose two pins sit either side of it precisely so
-    /// the merge step's repair does not fire them — the concern is a literal NUL
-    /// byte in *this* file, which a `\u{0}` escape avoids entirely. So the line
-    /// is admitted here by its owner and its whole text, not by the prefix the
-    /// two pins stop at. Under the prefix, everything after
+    /// F-43's NUL separator is escaped in the JavaScript source so the file
+    /// remains text while the runtime key still contains U+0000. The line is
+    /// admitted here by its owner and its whole text, not by the prefix the two
+    /// pins stop at. Under the prefix, everything after
     /// `String(action.hint) +` was unchecked: emptying the separator to `+ "" +`
     /// was MISSED, and `hint="AB", label="C"` then keys the same as
     /// `hint="A", label="BC"`, silently dropping a hint from the utility line —
@@ -1610,7 +1606,7 @@ fn check_every_line_of_a_transcribed_page_rule_carries_a_pin(
     /// row throws.
     const NUL_SEPARATOR_LINE: (&str, &str) = (
         "sideRegionHintLine",
-        "          var key = String(action.hint) + \"\u{0}\" + String(action.label);",
+        r#"          var key = String(action.hint) + "\u0000" + String(action.label);"#,
     );
 
     let mut used = BTreeSet::new();

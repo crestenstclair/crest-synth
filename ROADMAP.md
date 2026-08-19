@@ -287,10 +287,8 @@ Closure evidence, in the order the C-007 constraint demands:
 
 ## Phase 5 — Functional Patch editor blockout
 
-**Blocked by the webview shell cutover gate above (2026-08-05).** All Phase 5
-surfaces are assembled in the webview shell; references to the egui window in
-the entry condition below are the historical record of how LIMIT-1 was found
-and remain accurate as history.
+**The webview shell cutover gate closed on 2026-08-06.** All Phase 5 surfaces
+are assembled in that sole production shell.
 
 ### Entry condition — close LIMIT-1: the journey must reach more than one instrument
 
@@ -311,7 +309,7 @@ Phase 5 does not close until both of these hold:
   **CLOSED 2026-08-02.** `SemanticAction::SelectPatch(Direction)` moves the
   focused Patch one position along the installed order, reduced by
   `AppState::select_patch`. It travels the production physical input → semantic
-  action → `AppState::apply` → projection path (Q/E through the egui window and
+  action → `AppState::apply` → projection path (Q/E through the webview window and
   the keyboard translator), refuses rather than wraps at either end, is
   available only in the Patch context in Navigate mode, and recovers focus
   against the destination Patch's own descriptor schema. The reducer test
@@ -328,17 +326,17 @@ Phase 5 does not close until both of these hold:
   instrument, not only the first. Checkpoints must correlate the patch switch,
   the resulting focus, and the audible consequence.
 
-  **STILL OPEN (2026-08-09) — BUILT AND UNRUN.** The target, the scene, the
+  **STILL OPEN (2026-08-19) — BUILT; LIVE PROOF INCOMPLETE.** The target, the scene, the
   observation, and the controlled negative all exist and are green under
-  `cargo test`. The live run has never completed, so this bullet is not struck.
-  A bullet struck against a run that did not happen would be a claim, not a
+  `cargo test`. The live run has not completed, so this bullet is not struck.
+  A bullet struck against a run that did not complete would be a claim, not a
   record. See the Phase 5 status note below for exactly what is measured and
   what is not.
 
 Meeting both closes LIMIT-1. Until then, no scene may claim the effects journey
 is demonstrated across the instrument roster.
 
-### Phase 5 status note (2026-08-09) — the exit gate is built and unrun
+### Phase 5 status note (2026-08-19) — implementation built; live proof incomplete
 
 This is not a completion note. Phase 5 does not close here, and the note says so
 rather than reporting an adjective where a number belongs.
@@ -352,8 +350,8 @@ by dispatching `SemanticAction::SelectPatch` through `AppLoop` and the productio
 reducer, then derives every effect-slot position, the audible occupant edit, the
 voice-limit ceiling walk, and the end-of-order boundary from *that Patch's own*
 descriptors and published state. The observation
-(`src/testing/functional_patch_editor_observation.rs`) carries all 42 fields the
-witness declares, and each second-Patch counter is keyed by the PatchId resolved
+(`src/testing/functional_patch_editor_observation.rs`) carries all 42 fields in
+the acceptance schema, and each second-Patch counter is keyed by the PatchId resolved
 from the **final state's installed order**, never from the scene's own subject.
 The declared controlled negative `--defeat-patch-selection` removes the gesture
 and leaves the journey on the first instrument.
@@ -390,12 +388,12 @@ and leaves the journey on the first instrument.
   `actionUnavailableInContext`.
 - The page's strip-paint evidence survives the ack round trip verbatim, and a
   half-formed `strip` object is a typed malformed ack rather than a zero.
-- The emitted observation's keys are **exactly** the witness's declared 42, in
+- The emitted observation's keys are **exactly** the acceptance schema's 42, in
   both directions — every declared field present, and nothing beyond
-  `schema_version` — pinned in `the_emitted_schema_matches_the_declared_witness_fields`
+  `schema_version` — pinned in `the_emitted_schema_matches_the_declared_acceptance_fields`
   and falsified both ways (a camelCase `serde(rename)` and a stale 41-entry
   array each fail it).
-- F-49's scene-name gate — which decides whether a scene's topology checkpoints
+- The scene-name gate — which decides whether a scene's topology checkpoints
   are graded against the effects-and-buses bus contract — is now pinned in both
   directions, both mutations run rather than argued. Narrowing it to a
   never-matching literal was **already** caught, by `tests/effects_and_buses.rs`
@@ -406,7 +404,8 @@ and leaves the journey on the first instrument.
   effect-slot occupancy walk against a contract it never claimed to meet. That
   is the direction that was genuinely open, and it is now closed.
 - NFR-004: full `project_with_shell` per accepted event, release, median of 15,
-  89 MIXER rows — **2382 µs** against the 3.00 ms bar (down from 2960 µs).
+  89 MIXER rows — **2353 µs** against the 3.00 ms bar; the 15-row PATCH
+  projection measured **467 µs** in the same run.
 
 **What is not measured, and why.** Every predicate that needs a painted frame
 remains unexecuted: `stripGroupsPainted`, `stripFlatControlRun`,
@@ -414,23 +413,30 @@ remains unexecuted: `stripGroupsPainted`, `stripFlatControlRun`,
 audible-edit deltas and the `audibleEditIsolatedToSecondPatch` verdict drawn from
 them, `checkpointsCorrelatingSwitchFocusAudio`,
 `voiceLimitRefusals`, `projectionGenerationGaps`, and the teardown quartet. The
-run was attempted on 2026-08-09 and failed after 10 s with
-`no progress ... awaiting parameter projection paint confirmation at step 3`:
-no paint acknowledgment ever arrives. **The already-shipped
-`demo-live-effects-and-buses` scene fails identically — same step, same
-predicate, same timeout** — which is what establishes the blocker as the
-environment rather than this scene. Neither run reaches its own phase.
+latest run was attempted on 2026-08-19 and failed after 10 s with
+`no progress ... awaiting parameter projection paint confirmation at step 3`
+for `OutputLevel`: no paint acknowledgment ever arrives. The window-enabled
+webview target sharpened the boundary: the production event stream delivered
+and rendered all **150** paced projections, with no render error, but the
+inactive macOS desktop supplied no `requestAnimationFrame` presentation turn.
+A standalone frame-readiness probe likewise timed out after the window was
+shown, unminimized, focused, and run under display, system, and user-active
+assertions; Computer Use could not attach to any desktop window
+(`cgWindowNotFound`). The already-shipped `demo-live-effects-and-buses` scene
+has the same recorded step/predicate timeout. This establishes an unavailable
+foreground presentation surface as the remaining environment gate rather than
+a Phase 5 reducer, projection, or render failure. Neither live scene reaches
+its own phase.
 
 **One declared threshold is unvalidated.** `AUDIBLE_EDIT_DELTA_MARGIN`
 (1.0e-3 RMS) is the margin by which the second Patch's measured delta must exceed
 the first Patch's. It is a declaration, not a measurement; the first completed
 live run is what confirms or moves it.
 
-**The witness now asserts the bounded verdict directly, and the observation
-carries it.** F-47 ruled the exact-zero first-Patch delta unattainable on a live
-decaying voice and replaced it with the bounded comparison; that ruling has since
-landed in the declaration. `witness.functional_patch_editor` declares a 42nd
-field, `audible_edit_isolated_to_second_patch`, and predicates *that* — while
+**The acceptance observation asserts the bounded verdict directly.** An exact-zero
+first-Patch delta is unattainable on a live decaying voice, so the schema uses a
+bounded comparison. Its 42nd field,
+`audible_edit_isolated_to_second_patch`, records that verdict — while
 still reporting both raw deltas beside it, because a verdict without its inputs
 cannot be argued with. `first_patch_audible_edit_delta` remains in the schema as
 a reported number and no longer carries a predicate of its own. The observation
@@ -440,16 +446,17 @@ AUDIBLE_EDIT_DELTA_MARGIN`, and names it as the shortfall when it fails, so the
 controlled negative's recorded failing set names a predicate that exists. A run
 that made no edit on the second Patch reports both deltas at zero, and zero does
 not clear the margin — absent evidence reads as "not isolated" rather than as
-isolation by default. Recorded as mission finding F-57.
+isolation by default.
 
-**One witness field's name is broader than what it measures.**
+**One observation field's name is broader than what it measures.**
 `midiInputRechannelled` is implemented as "the projected MIDI-input row took more
 than one distinct value across the run" — that is, *the row is Patch-local and
 re-projects across a switch*, so a defeated run that never leaves the first
 instrument projects one value and fails it. It is **not** a completed
 re-channelling edit: the fixture packs 15 Patches onto channels 0-14, so every
 adjacent channel is a `DuplicateMidiChannel` refusal and no such edit is
-measurable on this roster. FR-008 editability is proven in WP05's target. The
+measurable on this roster. MIDI-input editability is proven in the deterministic
+acceptance target. The
 field is graded for what it measures and the name is left alone rather than
 renamed mid-mission; the gap is recorded here and carries into acceptance.
 

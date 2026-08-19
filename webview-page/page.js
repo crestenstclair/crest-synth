@@ -28,6 +28,7 @@
   var PROJECTION_EVENT = "crest://projection";
   var METER_EVENT = "crest://meters";
   var PAINTED_EVENT = "crest://painted";
+  var READY_EVENT = "crest://ready";
   var RENDER_ERROR_EVENT = "crest://render-error";
 
   // Explicit-unavailability mark: a declared structure with no view data
@@ -1400,7 +1401,7 @@
           if (!entersThis && !leavesThis) {
             continue;
           }
-          var key = String(action.hint) + " " + String(action.label);
+          var key = String(action.hint) + "\u0000" + String(action.label);
           if (seen[key]) {
             continue;
           }
@@ -2086,30 +2087,44 @@
     if (!tauri || !tauri.event) {
       return; // headless harness drives window.crest.render directly
     }
-    tauri.event.listen(PROJECTION_EVENT, function (event) {
-      var model = event.payload;
-      latestModel = model;
-      // A document that fails to render must NOT ack: the catch emits the
-      // typed crest://render-error payload (fatal shell-side) and returns
-      // before the acknowledgment below is ever scheduled.
-      try {
-        render(model);
-        updateMeter();
-      } catch (error) {
-        emitRenderError(error, model);
-        return; // a failed render must NOT ack
+    var projectionListener = tauri.event.listen(
+      PROJECTION_EVENT,
+      function (event) {
+        var model = event.payload;
+        latestModel = model;
+        // A document that fails to render must NOT ack: the catch emits the
+        // typed crest://render-error payload (fatal shell-side) and returns
+        // before the acknowledgment below is ever scheduled.
+        try {
+          render(model);
+          updateMeter();
+        } catch (error) {
+          emitRenderError(error, model);
+          return; // a failed render must NOT ack
+        }
+        // Exactly one paint ack per painted document, in paint order: emitted
+        // after this frame has painted, carrying the document's own identity
+        // with post-paint region evidence.
+        window.requestAnimationFrame(function () {
+          tauri.event
+            .emit(PAINTED_EVENT, paintedEvidence(model))
+            .catch(function (error) {
+              emitRenderError(error, model);
+            });
+        });
       }
-      // Exactly one paint ack per painted document, in paint order: emitted
-      // after this frame has painted, carrying the document's own identity
-      // with post-paint region evidence.
-      window.requestAnimationFrame(function () {
-        tauri.event.emit(PAINTED_EVENT, paintedEvidence(model));
-      });
-    });
-    tauri.event.listen(METER_EVENT, function (event) {
+    );
+    var meterListener = tauri.event.listen(METER_EVENT, function (event) {
       latestFrame = event.payload;
       updateMeter();
     });
+    Promise.all([projectionListener, meterListener])
+      .then(function () {
+        return tauri.event.emit(READY_EVENT, { ready: true });
+      })
+      .catch(function (error) {
+        emitRenderError(error, latestModel);
+      });
   }
 
   // Any uncaught page fault after load — including a throw inside the

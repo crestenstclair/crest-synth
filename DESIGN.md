@@ -634,9 +634,15 @@ memory.
 
 The interactive window schedules its next idle frame after 16 ms instead of
 requesting an immediate perpetual repaint. Input and native window events may
-still wake it sooner. `make demo-live` uses the optimized release profile so a
-physical listening demo measures product behavior rather than debug-build
-overhead; deterministic acceptance remains in the unoptimized test profile.
+still wake it sooner. The webview registers both projection transports before
+emitting its ready signal; the window publishes no projection or meter document
+before that handshake. WebKit background suspension is disabled for this sole
+application webview so hiding the editor cannot unload its listeners or strand
+an unchanged canonical generation without a receiver. This affects only the UI
+transport and never moves work onto the audio callback. `make demo-live` uses
+the optimized release profile so a physical listening demo measures product
+behavior rather than debug-build overhead; deterministic acceptance remains in
+the unoptimized test profile.
 
 `make demo-live` is a bounded autonomous verification command, not an
 open-ended interactive session. While its scene is active, the window renders

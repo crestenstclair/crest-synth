@@ -43,8 +43,7 @@ demo: ## Run the exhaustive GUI demo and structured trace
 
 # The five retained live targets below (and the demo-live alias) run on the
 # webview shell: every --demo-live-* mode composes its own TauriWebviewWindow
-# inside StandaloneApplication::run_live_demo_scene (mission
-# webview-shell-cutover WP03). Since WP07 the webview shell is the product's
+# inside StandaloneApplication::run_live_demo_scene. The webview shell is the product's
 # only shell — the interactive and headless targets compose the same
 # TauriWebviewWindow directly and no renderer flag exists. Target names are
 # frozen by the ROADMAP retention contract.
