@@ -1180,9 +1180,8 @@ fn held_voices_carry_over_a_slot_clear_activation_sample_continuously() {
     assert_eq!(control.renderer.active_revision(), source_revision);
 }
 
-/// WP07 (FR-009) — the RETURN-side twin of the slot-clear proof directly
-/// above, wired to the crest-spec attached validation selector
-/// `return_clear_held_note_continuity`: a delta that only CLEARS an occupied
+/// The RETURN-side twin of the slot-clear proof directly above: a delta that
+/// only CLEARS an occupied
 /// bus return preserves every sounding voice across the swap.
 ///
 /// Fixture: track 0 sends 0.6 to bus 2 (the raised send), and both the

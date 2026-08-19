@@ -116,8 +116,7 @@ fn run(options: Options) -> Result<()> {
             GraphHandoffStatus::with_active(GraphRevision::INITIAL),
         )
         .context("failed to prepare the structural graph boundary")?;
-        // The webview shell is the product's one shell (mission
-        // webview-shell-cutover WP07, crest-spec `selected_webview_stack`):
+        // The webview shell is the product's one shell:
         // construction is direct, no launch flag chooses a renderer, and a
         // webview init failure is a typed startup error on the fatal path —
         // never an alternate window. Live modes do not use this interactive

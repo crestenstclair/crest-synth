@@ -1,8 +1,7 @@
 //! The Tauri v2 webview window — the product's one shell behind the
 //! `AppWindow` port.
 //!
-//! Composition follows the WP01 input-capture probe verdict
-//! (`kitty-specs/webview-shell-foundation-01KZ9DN7/research/input-capture-probe.md`):
+//! Composition follows the original input-capture probe verdict:
 //!
 //! - keys are captured Rust-side by [`input_capture::install`] (NSEvent local
 //!   monitor, installed on the main thread before the event loop starts) and

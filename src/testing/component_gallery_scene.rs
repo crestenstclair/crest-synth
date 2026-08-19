@@ -139,8 +139,7 @@ pub const GALLERY_PAGE_COUNT: usize = 15;
 /// count would otherwise make a declared page unreachable.
 pub const GALLERY_DIGIT_BINDING_COUNT: usize = 10;
 
-/// The declared mixer track column anatomy, in declared order
-/// (crest-spec `valueObject.MixerTrackColumnStructure`).
+/// The declared mixer track column anatomy, in declared order.
 ///
 /// The bank specimen shows the same column anatomy the shipped MIXER shows,
 /// and the observation measures the painted columns against exactly this
@@ -956,8 +955,7 @@ const fn control_presentation(control: ComponentControl) -> &'static str {
 /// The representative content one control's specimens carry.
 ///
 /// Representative, deliberately: the gallery is the one surface allowed to
-/// hold specimens (crest-spec: "representative content belongs to the
-/// gallery"); production controls read their content from the projection.
+/// hold specimens; production controls read their content from the projection.
 const fn control_content(control: ComponentControl) -> (&'static str, &'static str, Option<f64>) {
     match control {
         ComponentControl::ParameterRow => ("ATTACK", "0.120 s", Some(0.12)),
@@ -2534,8 +2532,8 @@ impl PaintedCompositionRecord {
 /// Constructed only from a [`GalleryAckLedger`] that painted acks filled in.
 /// There is no constructor that accepts an expected page set, a specimen
 /// list, or a coverage plan, which is what keeps this evidence rather than
-/// assertion. The serialized field set is the crest-spec
-/// `witness.component_gallery` observation schema.
+/// assertion. The serialized field set is the component-gallery observation
+/// schema.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ComponentGalleryObservation {
     pages_declared: usize,
@@ -4010,7 +4008,7 @@ mod tests {
     }
 
     /// The full operator walk, correlated with acks built from the real
-    /// documents, satisfies every predicate the crest-spec witness declares.
+    /// documents, satisfies every declared witness predicate.
     #[test]
     fn a_complete_session_satisfies_the_declared_witness_predicates() {
         let mut selection = GalleryPageSelection::default();
@@ -4085,8 +4083,8 @@ mod tests {
         assert_eq!(observation.compositions_rendered().len(), 8);
     }
 
-    /// The serialized observation carries every field the crest-spec witness
-    /// schema declares.
+    /// The serialized observation carries every field the witness schema
+    /// declares.
     #[test]
     fn the_serialized_observation_carries_every_declared_field() {
         let ledger = GalleryAckLedger::default();

@@ -774,8 +774,7 @@ pub fn from_installed_state(tree: &StateTree) -> Result<LiveDemoScene, LiveDemoS
         // the installed registry entries and empty, so an unknown registry
         // entry is inexpressible through the UI. Requesting one therefore
         // requires the injection below — the single sanctioned exception to
-        // the journey-driven occupancy contract (spec C-003, crest-spec
-        // requirement.expandable_effects_behavioral_proof).
+        // the journey-driven occupancy contract.
         LiveTopologyTransition::new(
             "Topology.refused",
             Some(SemanticAction::SetSlotOccupancy {

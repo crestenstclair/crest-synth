@@ -9,9 +9,8 @@
 // production model (spec C-002/C-006).
 //
 // This page registers no key handler and captures no input of any kind —
-// digit and bracket paging stays Rust-side, scene-local, exactly where the
-// retired gallery kept it (WP01/WP02 boundary; crest-spec invariant: gallery
-// page selection never becomes a SemanticAction).
+// digit and bracket paging stays Rust-side and scene-local. Gallery page
+// selection never becomes a SemanticAction.
 //
 // After each paint the page reads its own painted DOM back and emits one
 // acknowledgment on crest://gallery-painted carrying the page, state, and

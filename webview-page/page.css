@@ -1,5 +1,4 @@
-/* crest-synth projection page composition — PATCH and MIXER
- * (crest-spec asset.WebviewProjectionPage).
+/* crest-synth projection page composition — PATCH and MIXER.
  *
  * Every color, type style, spacing step, radius, keyline, halo, fader, and
  * mixer geometry value resolves from the generated tokens.css custom
@@ -11,8 +10,7 @@
 
 /* Vendored Azeret Mono faces, served over the crest:// protocol from
  * vendor/azeret-mono/. Deliberately no fallback stack: a missing face is a
- * visible failure, never a silently substituted font
- * (crest-spec asset.WebviewProjectionPage). */
+ * visible failure, never a silently substituted font. */
 @font-face {
   font-family: "Azeret Mono";
   src: url("fonts/AzeretMono-Regular.ttf") format("truetype");

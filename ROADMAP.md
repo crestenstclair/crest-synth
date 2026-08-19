@@ -122,10 +122,8 @@ Landed and verified deterministically on the merged tree:
 
 The four items above are discharged. `make demo-live-effects-and-buses` was run
 on the physical rig (real window, physical audio device, real MIDI fixture) on
-the fully merged lane. **Process exit 0.** The complete log is **committed**, not
-merely cited, at
-[`kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log`](kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/evidence/wp11-t044-live-run.log)
-(evidence commit `5238020`).
+the fully merged lane. **Process exit 0.** The complete log is recorded in
+evidence commit `5238020`.
 
 - Completeness — 144/144 checkpoints; 17,462 events with `droppedRecords=0` and
   `lossless=true`; 105/105 editable parameters; 3/3 engine transitions; 7,718
@@ -218,13 +216,11 @@ WITH NOTES) proved the approach: the production MIXER renders from the same
 hand-painted egui layer needed a 684-line density policy. This gate **blocks
 Phase 5**; Phases 5–9 assemble their surfaces in the webview shell.
 
-- Author the retirement in the crest-spec FIRST: replace
-  `requirement.selected_egui_stack` with a webview-default declaration, retire
-  the egui adapter and any validations that drive the egui render path
-  (Phase 4's `component_vocabulary` / `component_composition` proofs must be
-  re-declared against the webview path or deliberately retired, not silently
-  dropped), and record the pivot in `DESIGN.md`. This is a deliberate
-  declaration, never a side effect of deletion.
+- Record the retirement in `DESIGN.md` first, retire the egui adapter and any
+  validations that drive the egui render path, and re-target Phase 4's
+  `component_vocabulary` / `component_composition` proofs to the webview path
+  or deliberately retire them. This is a deliberate declaration, never a side
+  effect of deletion.
 - Render the PATCH context and every shipped shell surface through the webview
   shell from the canonical view model. Keyboard input stays Rust-side; the
   one-way loop, immutable projections, and owned-shutdown path are unchanged.
@@ -249,18 +245,16 @@ The gate closes on a hardware run of the cumulative `make demo-live` target
 through the webview shell — real window, physical audio, real MIDI fixture,
 full teardown contract — with the egui visual layer no longer in the tree.
 
-**Gate closed (2026-08-06, mission `webview-shell-cutover-01KZAC7Q`).**
+**Gate closed (2026-08-06).**
 Closure evidence, in the order the C-007 constraint demands:
 
-- *Retained evidence first.* The WP06 hardware evidence wall —
-  `kitty-specs/webview-shell-cutover-01KZAC7Q/evidence/README.md` with the
-  four retained scene logs, the same-workload RT A/B comparison against the
-  egui baseline, and the 300 s soak — was committed on
+- *Retained evidence first.* The hardware evidence wall — four retained scene
+  logs, the same-workload RT A/B comparison against the egui baseline, and the
+  300 s soak — was committed on
   `feat/webview-shell-cutover` at `69fa5eb` (logs) and `b57bf9d` (README),
   strictly before any deletion.
-- *Deletion last.* WP07's deletion commit (`ceef87b` on lane
-  `kitty/mission-webview-shell-cutover-01KZAC7Q-lane-g`, "delete the egui
-  layer") removed `src/shell/visual/`, the eframe window adapter,
+- *Deletion last.* Commit `ceef87b` ("delete the egui layer") removed
+  `src/shell/visual/`, the eframe window adapter,
   `tests/eframe_context.rs`, the `webview_input_probe` binary, and the
   `eframe`/`egui_extras` dependencies in one deletion-only change:
   39 files, +212/−18,353 lines. The authored vocabulary survived it,
@@ -268,18 +262,16 @@ Closure evidence, in the order the C-007 constraint demands:
   `component_state.rs`, and `component_vocabulary.rs`.
 - *Probe decision.* The WP01 foundation probe binary
   (`webview_input_probe`, 484 lines) is deleted with its `[[bin]]` entry:
-  its evidence is the committed probe verdict
-  (`kitty-specs/webview-shell-foundation-01KZ9DN7/research/input-capture-probe.md`),
-  and the automated key-injection witness (`tests/input_capture_witness.rs`,
-  WP05) carries the living input-capture contract.
+  its evidence remains in history, and the automated key-injection witness
+  (`tests/input_capture_witness.rs`) carries the living input-capture contract.
 - *SC-003, zero references.* `grep -riE '\b(egui|eframe)\b' src/ tests/
   webview-page/ Cargo.toml Cargo.lock` returns zero matches. (Two
   pre-existing identifiers — `ExhaustiveGuiDemo` and the `WholeFrame`
   shell region — contain incidental case-insensitive substrings and do not
   reference the retired stack.)
 - *SC-004, net shell-code reduction.* Measured on code paths only —
-  committed evidence logs and planning documents under `kitty-specs/` are
-  deliberately excluded: `git diff --shortstat d41e7bd..HEAD -- src tests
+  generated evidence logs and planning documents were deliberately excluded:
+  `git diff --shortstat d41e7bd..HEAD -- src tests
   webview-page Cargo.toml Cargo.lock` (from the pre-mission planning tip
   `d41e7bd` of `feat/webview-shell-cutover`) reports +13,368/−27,907 =
   **net −14,539 lines** (−13,506 restricted to `src/` and `tests/`),
@@ -322,9 +314,8 @@ Phase 5 does not close until both of these hold:
   action → `AppState::apply` → projection path (Q/E through the egui window and
   the keyboard translator), refuses rather than wraps at either end, is
   available only in the Patch context in Navigate mode, and recovers focus
-  against the destination Patch's own descriptor schema. Declared first in the
-  crest-spec (`SemanticAction`, `InteractionState` invariants). Falsified: the
-  reducer test fails when the move is defeated.
+  against the destination Patch's own descriptor schema. The reducer test
+  fails when the move is defeated.
 
   This mattered more than "a demo bound" made it sound. The fixture installs
   one Patch per MIDI part — the last hardware run loaded **15** (8 SoundFont,
@@ -337,10 +328,8 @@ Phase 5 does not close until both of these hold:
   instrument, not only the first. Checkpoints must correlate the patch switch,
   the resulting focus, and the audible consequence.
 
-Meeting both closes LIMIT-1 (recorded in
-`kitty-specs/expandable-effects-and-bus-topology-01KYNGX8/mission-review.md`,
-Addendum 2). Until then, no scene may claim the effects journey is demonstrated
-across the instrument roster.
+Meeting both closes LIMIT-1. Until then, no scene may claim the effects journey
+is demonstrated across the instrument roster.
 
 Assemble the Patch experience from the component library and semantic view models.
 

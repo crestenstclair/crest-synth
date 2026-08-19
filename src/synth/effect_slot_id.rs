@@ -3,10 +3,9 @@ use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 /// The product-level maximum number of ordered post-effect slots per Patch.
 ///
-/// Sourced from the DESIGN.md product maximum (three ordered post-FX slots,
-/// constraint C-001) and declared in the crest-spec realtime context as a real
-/// bound: no slice, snapshot, rack, or graph may exceed it without changing
-/// that declaration.
+/// Sourced from the DESIGN.md product maximum of three ordered post-FX slots:
+/// no slice, snapshot, rack, or graph may exceed it without changing that
+/// declaration.
 pub const MAX_EFFECT_SLOTS: usize = 3;
 
 /// Stable non-zero Patch-local identity for one ordered post-effect instance.

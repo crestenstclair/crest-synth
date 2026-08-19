@@ -1,7 +1,4 @@
-//! Acceptance for the webview projection shell (crest-spec
-//! `validation.webview_projection_shell`, asset
-//! `WebviewProjectionShellAcceptanceTests`; mission
-//! webview-shell-foundation-01KZ9DN7, WP06).
+//! Acceptance for the webview projection shell.
 //!
 //! Five falsifiable proofs over the production reducer, projector, transports,
 //! generated token table, committed projection page, and the real shipped
@@ -12,8 +9,7 @@
 //!   reducer states in BOTH top-level contexts — three MIXER states and
 //!   three PATCH states (navigate, adjust with a focused editable control,
 //!   and a state carrying disabled controls) — so no page-facing schema fork
-//!   can hide behind generation gating (crest-spec
-//!   `WebviewProjectionShellAcceptanceTests`: "across both contexts").
+//!   can hide behind generation gating across either context.
 //! - T023 token-table freshness: the committed `webview-page/tokens.css` is
 //!   byte-fresh against the authored vocabulary via WP04's
 //!   `committed_tokens_are_fresh` contract, carries the GENERATED header, and
@@ -64,9 +60,7 @@
 //!   zero render-errors across the whole suite (FR-006, spec US3 and the
 //!   first-vs-update-render edge case).
 //!
-//! Mission shell-hygiene-01KZD0KR WP04 adds the two error-path proofs the
-//! crest-spec's deepened `validation.webview_projection_shell` names, both
-//! over the production path:
+//! The shell-hygiene work adds two error-path proofs over the production path:
 //!
 //! - T013 forced double-close failure (live): with WP01's debug-only
 //!   `CREST_WEBVIEW_FORCE_CLOSE_FAILURE` seam armed on the shipped binary so
@@ -154,8 +148,7 @@ const PAINTED_EVENT: &str = "crest://painted";
 /// payloads and page-side statistics back out of the page.
 const HARNESS_EVENT: &str = "crest://harness";
 
-/// The declared column anatomy, closed and ordered (crest-spec
-/// `valueObject.MixerTrackColumnStructure`).
+/// The declared column anatomy, closed and ordered.
 const COLUMN_ANATOMY: [&str; 5] = [
     "TrackHeader",
     "LevelFader",
@@ -175,9 +168,8 @@ const SHELL_REGION_IDS: [&str; 5] = [
 ];
 
 /// The serialized identity fields a painted ack must copy verbatim from the
-/// document it claims to have painted (crest-spec
-/// `valueObject.Shell.ShellFrameObservation`: "copies semantic identity
-/// exactly"). The page copies exactly these out of the document it rendered
+/// document it claims to have painted. The page copies exactly these out of
+/// the document it rendered
 /// (`webview-page/page.js` `paintedEvidence`) and the production
 /// `ProjectionChannel` compares exactly these — in-flight and, since mission
 /// shell-hygiene WP02, retired-but-retained alike. One list in this file:

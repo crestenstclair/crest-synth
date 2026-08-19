@@ -1,6 +1,4 @@
-//! Acceptance for the graphical application shell (crest-spec
-//! `validation.graphical_application_shell`, asset
-//! `GraphicalShellAcceptanceTests`).
+//! Acceptance for the graphical application shell.
 //!
 //! Retargeted by mission webview-shell-cutover-01KZAC7Q WP05 (T018): the
 //! retired raw-input/tessellation mechanics are gone. The shell contract is

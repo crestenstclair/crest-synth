@@ -138,8 +138,7 @@ const PRODUCTION_PROJECTED_KINDS: [SemanticControlKind; 5] = [
 const PRODUCTION_UNPROJECTED_KINDS: [SemanticControlKind; 2] =
     [SemanticControlKind::Stepped, SemanticControlKind::Surface];
 
-/// The declared column anatomy, closed and ordered (crest-spec
-/// `valueObject.MixerTrackColumnStructure`), transcribed from the design
+/// The declared column anatomy, closed and ordered, transcribed from the design
 /// authority rather than read back from the page.
 const COLUMN_ANATOMY: [&str; 5] = [
     "TrackHeader",

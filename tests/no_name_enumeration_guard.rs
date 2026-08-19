@@ -1,7 +1,6 @@
 //! No-name-enumeration guard — the open-closed property as a build gate.
 //!
-//! Invariant (`.kittify/crest-spec/proof/invariants.yaml`, core group;
-//! executable check `validation.no_name_enumerated_identity`):
+//! Product invariant:
 //! no type in Synth, Mixer, RealTime, or Control may enumerate a variant,
 //! field, or descriptor entry named after a specific effect or bus. Effects,
 //! slots, sends, and returns are addressed by index into descriptor-driven
@@ -16,8 +15,8 @@
 //! document is a demonstrably insufficient control here, so a failed check —
 //! not a reviewer's attention — is what stops the next closed shortcut.
 //!
-//! The scan itself lives in `scripts/check_no_name_enumerated_identity.sh`
-//! (the command declared by the crest-spec validation). It matches the
+//! The scan itself lives in `scripts/check_no_name_enumerated_identity.sh`.
+//! It matches the
 //! retired identifiers exactly, in identifier position only, over the four
 //! context trees. Deliberately excluded, with reasons:
 //! - `src/adapter/*`: an adapter implementing reverb is supposed to say
@@ -34,7 +33,7 @@
 //! If this test fails on your change, do not weaken the script or this test:
 //! address the effect or bus by index/registry entry instead, or — if you
 //! believe the identifier is genuinely legitimate — amend the invariant in
-//! the crest-spec first.
+//! `DESIGN.md` first.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -132,8 +131,8 @@ fn write_fixture(dir: &Path, file: &str, content: &str) {
     fs::write(dir.join(file), content).expect("fixture file must be writable");
 }
 
-/// The delivered tree satisfies the invariant: the declared validation
-/// command passes and emits the marker `spec-kitty accept` asserts on.
+/// The delivered tree satisfies the invariant: the validation command passes
+/// and emits its success marker.
 #[test]
 fn guard_passes_on_the_delivered_tree() {
     let output = run_guard(&[]);
@@ -247,7 +246,7 @@ fn guard_allows_master_gain_and_the_documented_exempt_surfaces() {
 
 /// A missing scanner must not read as a clean tree. Without `rg` the guard
 /// exits with its own missing-tool code, names the absent tool, and never
-/// prints the pass marker `spec-kitty accept` asserts on — otherwise any
+/// prints the pass marker — otherwise any
 /// machine lacking ripgrep would satisfy the invariant vacuously.
 #[test]
 fn guard_refuses_to_run_without_ripgrep_rather_than_reporting_a_clean_tree() {

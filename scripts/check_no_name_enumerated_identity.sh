@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # no_name_enumerated_identity — static guard for the open-closed invariant.
 #
-# Invariant (.kittify/crest-spec/proof/invariants.yaml, core group):
+# Product invariant:
 #   no type in Synth, Mixer, RealTime, or Control may enumerate a variant,
 #   field, or descriptor entry named after a specific effect or bus; effects,
 #   slots, sends, and returns are addressed by index into descriptor-driven
@@ -151,13 +151,12 @@ fail_with_guidance() {
 NO-NAME-ENUMERATION GUARD FAILED
 The identifiers above reintroduce a name-enumerated effect or routing
 identity into a bound context. The invariant "no name-enumerated effect or
-routing identity" (.kittify/crest-spec/proof/invariants.yaml, core group;
-validation no_name_enumerated_identity) requires effects, slots, sends, and
+routing identity" requires effects, slots, sends, and
 returns to be addressed by index into descriptor-driven arrays, so adding a
 registry entry never changes a Synth, Mixer, RealTime, or Control type.
 Register concrete effects in src/adapter/ instead. MasterGainDb is the
 single declared exception. If you believe a flagged identifier is legitimate,
-amend the invariant in the crest-spec first — do not weaken this script.
+amend the product invariant in DESIGN.md first — do not weaken this script.
 EOF
   exit 1
 }

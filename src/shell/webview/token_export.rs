@@ -6,9 +6,9 @@
 //! and the viewport density policies in [`crate::shell::density`].
 //! No raw value is typed in this module — each declaration reads the same
 //! `resolve()`/`metrics()`/accessor the native shell reads, so an authored
-//! change lands in the page by regeneration, never by hand-copying (crest-spec
-//! `asset.WebviewProjectionPage`: the page declares no raw value the
-//! vocabulary already names; a hand-copied or drifted value is a defect).
+//! change lands in the page by regeneration, never by hand-copying. The page
+//! declares no raw value the vocabulary already names; a hand-copied or
+//! drifted value is a defect.
 //!
 //! # Name transformation
 //!

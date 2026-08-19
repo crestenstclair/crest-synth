@@ -6,10 +6,9 @@
 //! [`SemanticGraphicalViewModel`] with `serde_json` and emits the document on
 //! the [`PROJECTION_EVENT`] named event through the tauri `Emitter`. The
 //! payload is exactly the projector's serialization — one schema, no
-//! page-facing struct, no trimmed or selected field (crest-spec
-//! `requirement.serialized_projection_transport`). If the page ever needs a
-//! field this document lacks, the fix is in the projector via the crest-spec,
-//! never a wrapper here.
+//! page-facing struct, no trimmed or selected field. If the page ever needs a
+//! field this document lacks, the fix is in the projector and `DESIGN.md`, never
+//! a wrapper here.
 //!
 //! # Generation gating
 //!
@@ -42,8 +41,7 @@
 //! for field), viewport and region rectangles taken from the ack's measured
 //! geometry. An ack that matches no in-flight pushed document never becomes
 //! an observation: expected region names or a pre-render layout plan alone
-//! cannot construct a passing observation (crest-spec
-//! `valueObject.Shell.ShellFrameObservation`). Which of the two ways that
+//! cannot construct a passing observation. Which of the two ways that
 //! can happen decides the outcome: an ack claiming a generation newer than
 //! anything ever pushed is fabricated evidence and stays a typed
 //! [`PaintedAckError`], while a late ack for an already-superseded document
@@ -80,8 +78,7 @@
 //! `AppWindow` — the same value the retired native adapter painted. It installs
 //! nothing into the audio callback, allocates nothing inside it, and shares
 //! no lock the callback could contend on; the render path's measured bounds
-//! are unchanged from the pre-cutover shell baseline (crest-spec
-//! `requirement.serialized_projection_transport`; measured in WP06).
+//! are unchanged from the pre-cutover shell baseline.
 
 use crate::control::{GraphicalShellProjection, SemanticGraphicalViewModel};
 use crate::shell::app_window::WindowError;
@@ -133,9 +130,8 @@ pub const MAX_IN_FLIGHT_DOCUMENTS: usize = 8;
 const RETAINED_RETIRED_IDENTITIES: usize = MAX_IN_FLIGHT_DOCUMENTS;
 
 /// The serialized identity fields a painted ack must copy verbatim from its
-/// document, in the order they are tracked (crest-spec
-/// `valueObject.Shell.ShellFrameObservation`: "copies semantic identity
-/// exactly").
+/// document, in the order they are tracked. This copies semantic identity
+/// exactly.
 const ACK_IDENTITY_FIELDS: [&str; 6] = [
     "generation",
     "stateHash",

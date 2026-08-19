@@ -79,10 +79,9 @@ const LIVE_FIXTURE_EVENT_ALLOWANCE: usize = 60_000;
 /// webview shell cutover.
 const LIVE_DEMO_WINDOW_TITLE: &str = "crest-synth — autonomous live demo";
 
-/// Composes the one shell window every retained live scene runs on (mission
-/// webview-shell-cutover WP03, crest-spec
-/// `context.Shell.StandaloneApplication`: "runLiveDemo uses the exact normal
-/// startup order, real TauriWebviewWindow, physical CpalAudioOutput ..."):
+/// Composes the one shell window every retained live scene runs on, using the
+/// normal startup order, real `TauriWebviewWindow`, and physical
+/// `CpalAudioOutput`:
 /// the same `TauriWebviewWindow` construction the interactive composition
 /// root uses, carrying the autonomous live title.
 fn live_demo_window() -> TauriWebviewWindow {

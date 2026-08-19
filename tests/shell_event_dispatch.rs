@@ -1,6 +1,4 @@
-//! The renamed headless event-dispatch contract (crest-spec
-//! `validation.shell_event_dispatch`, asset `BehavioralAcceptanceTests`;
-//! mission webview-shell-cutover-01KZAC7Q WP05 T017).
+//! The headless event-dispatch contract.
 //!
 //! This target re-proves the retired native-context target's behavioral inventory —
 //! event → document coherence — through the webview projection path, with no

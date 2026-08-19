@@ -268,7 +268,7 @@ mod tests {
 
     /// The four keys added for the gallery carry no application binding.
     ///
-    /// The invariant this holds is the crest-spec's: an unbound key reaching
+    /// The invariant this holds is the design's: an unbound key reaching
     /// the translator produces *no* `SemanticAction`, not a substitute one. It
     /// is asserted here, beside the vocabulary that normalizes them, because
     /// this is where a later change would add one.

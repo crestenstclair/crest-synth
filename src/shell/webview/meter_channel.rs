@@ -13,9 +13,8 @@
 //!
 //! The channel owns exactly one pending slot. Every observation overwrites
 //! it; nothing is ever queued behind it, so queue depth is structurally
-//! bounded at one frame regardless of how fast observations arrive
-//! (crest-spec `requirement.serialized_projection_transport`: 30 Hz
-//! "without queue growth over a five-minute render").
+//! bounded at one frame regardless of how fast observations arrive: 30 Hz
+//! without queue growth over a five-minute render.
 //!
 //! # Loss semantics: display-only degradation
 //!
@@ -23,8 +22,7 @@
 //! frame whose emit fails is dropped — the next observation replaces it.
 //! Meters are render evidence, not control state: a lost frame costs one
 //! meter repaint and nothing else, and the next due frame carries the
-//! current values (crest-spec `requirement.serialized_projection_transport`:
-//! "their loss degrades display only"). Emit failures therefore never take
+//! current values. Their loss degrades display only, so emit failures never take
 //! the window's fatal error path.
 //!
 //! # Nothing here touches the real-time callback
@@ -34,8 +32,7 @@
 //! atomically-published snapshot the retired native window read every frame. It
 //! installs nothing into the audio callback, allocates nothing inside it,
 //! and shares no lock the callback could contend on; the render path's
-//! measured bounds are unchanged from the pre-cutover shell baseline (crest-spec
-//! `requirement.serialized_projection_transport`; measured in WP06).
+//! measured bounds are unchanged from the pre-cutover shell baseline.
 
 use crate::real_time::AudioObservationSnapshot;
 use std::time::{Duration, Instant};
@@ -46,8 +43,7 @@ pub const METER_EVENT: &str = "crest://meters";
 /// The declared meter decimation rate.
 ///
 /// NFR-002: meter animation sustains a 30 Hz update rate without
-/// accumulating queue depth over a five-minute render (crest-spec
-/// `requirement.serialized_projection_transport`). The interval below is
+/// accumulating queue depth over a five-minute render. The interval below is
 /// derived from this named rate; no independent millisecond literal exists.
 pub const METER_RATE_HZ: u32 = 30;
 

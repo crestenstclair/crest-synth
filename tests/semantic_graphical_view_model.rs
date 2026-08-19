@@ -1,6 +1,4 @@
-//! Acceptance for the semantic graphical view model (crest-spec
-//! `validation.semantic_graphical_view_model`, asset
-//! `SemanticGraphicalViewModelAcceptanceTests`).
+//! Acceptance for the semantic graphical view model.
 //!
 //! Retargeted by mission webview-shell-cutover-01KZAC7Q WP05 (T019): only the
 //! render half changed. The action/focus/recovery/projection assertions are

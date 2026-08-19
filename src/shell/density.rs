@@ -335,7 +335,7 @@ impl ViewportDensityPolicy {
     /// integral, above the floor, the same authored gutter, and
     /// `15 × 58 + 54 = 924 ≤ 928`. It is rejected because 58 is a pitch this
     /// policy authors nowhere, and the declared overflow rule is not
-    /// occupancy-maximizing — the crest-spec's "where they already fit it keeps
+    /// occupancy-maximizing — the design's "where they already fit it keeps
     /// the measured values rather than stretching them" says the rule narrows
     /// until sixteen seat, not until the surface is full.
     ///

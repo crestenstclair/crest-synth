@@ -590,7 +590,7 @@ Versions belong in `Cargo.toml`, not here.
 | --- | --- | --- |
 | device audio | [CPAL](https://github.com/RustAudio/cpal) | Preferred low-level cross-platform host. High-level playback APIs do not replace the render architecture. |
 | live MIDI | [midir](https://github.com/Boddlnagg/midir) | Normalize callback bytes immediately and keep protocol types out of the domain. |
-| desktop UI | [Tauri v2](https://tauri.app) webview (wry/WKWebView) | Selected shell for the controller-first product UI: the canonical view model is serialized to a token-driven HTML/CSS projection page, keys are captured Rust-side, and the crest-spec `selected_webview_stack` is the declaration of record. The previous eframe/egui stack was retired by mission webview-shell-cutover (2026-08-06). Crest owns the stable component, behavior, token, and visual contracts. |
+| desktop UI | [Tauri v2](https://tauri.app) webview (wry/WKWebView) | Selected shell for the controller-first product UI: the canonical view model is serialized to a token-driven HTML/CSS projection page and keys are captured Rust-side. The previous eframe/egui stack was retired on 2026-08-06. Crest owns the stable component, behavior, token, and visual contracts. |
 | controller input | [gilrs](https://gitlab.com/gilrs-project/gilrs) | Map buttons/axes to semantic actions at the edge. |
 | RT event queues | [rtrb](https://github.com/mgeier/rtrb) | Fixed-capacity SPSC; one producer per queue. |
 | latest snapshots | [triple-buffer](https://github.com/HadrienG2/triple-buffer) | Suitable for newest-complete parameters/meters after destruction behavior is audited. |
@@ -687,7 +687,7 @@ An architecture change must preserve the one-way state path and callback contrac
 ## Durable decisions
 
 - The Figma redesign replaces the diagnostic text view as the product interface.
-- The product UI renders through the Tauri v2 webview projection shell — the only shell. The immutable semantic view model is serialized to a page that paints exclusively from the generated token table (`webview-page/tokens.css`, regenerated from the authored vocabulary in `src/shell/tokens.rs`); keyboard input is captured Rust-side and travels the same physical input → semantic action path; a webview startup failure is a typed error with no fallback window. The crest-spec `selected_webview_stack` is the declaration of record; the previous eframe/egui stack was deleted by mission webview-shell-cutover (2026-08-06). Crest owns the application shell and component contracts; third-party utilities do not own product state, navigation, or audio behavior.
+- The product UI renders through the Tauri v2 webview projection shell — the only shell. The immutable semantic view model is serialized to a page that paints exclusively from the generated token table (`webview-page/tokens.css`, regenerated from the authored vocabulary in `src/shell/tokens.rs`); keyboard input is captured Rust-side and travels the same physical input → semantic action path; a webview startup failure is a typed error with no fallback window. The previous eframe/egui stack was deleted on 2026-08-06. Crest owns the application shell and component contracts; third-party utilities do not own product state, navigation, or audio behavior.
 - PATCH and MIXER are the only top-level contexts.
 - The UI is schema-driven; Figma example names are not a feature list.
 - SoundFont is the first concrete engine, not a reason to couple the domain to one library.

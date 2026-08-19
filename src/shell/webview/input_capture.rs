@@ -1,7 +1,6 @@
 //! Rust-side native key capture for the webview shell.
 //!
-//! This is the winning path from the WP01 input-capture probe
-//! (`kitty-specs/webview-shell-foundation-01KZ9DN7/research/input-capture-probe.md`):
+//! This is the input-capture path selected by the original probe:
 //! an `NSEvent` local monitor installed from the Rust side at window setup.
 //! The monitor observes every key event delivered to this process *before*
 //! dispatch to the responder chain, so capture is independent of which view

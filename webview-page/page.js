@@ -1,4 +1,4 @@
-// crest-synth projection page (crest-spec asset.WebviewProjectionPage).
+// crest-synth projection page.
 //
 // PURE RENDER. `render(model)` rebuilds the five shell bands from one
 // deserialized SemanticGraphicalViewModel document and nothing else: no
@@ -9,9 +9,9 @@
 // PATCH as the listed strip of projected rows — through the same shared
 // structural bands (context line, identity header, workspace scaffold,
 // persistent side region, footer); nothing forks the schema and no field is
-// invented (crest-spec requirement.serialized_projection_transport).
+// invented.
 //
-// The one carve-out is presentation-only meter animation (crest-spec C-002):
+// The one carve-out is presentation-only meter animation:
 // the crest://meters listener repaints ONLY the meter element from the
 // latest AudioObservationSnapshot frame, mirroring the retired-shell rule — a
 // reading shows only when the frame's parameterGeneration and
@@ -43,8 +43,7 @@
   // The authored hint separator (primitives::hint::HINT_SEPARATOR).
   var HINT_SEPARATOR = " · ";
 
-  // The declared column anatomy, closed and ordered (crest-spec
-  // valueObject.MixerTrackColumnStructure). Rendering walks exactly this
+  // The declared column anatomy, closed and ordered. Rendering walks exactly this
   // list; the observation reports it per column so a lost or reordered
   // structure is measurable.
   var COLUMN_ANATOMY = [
@@ -125,7 +124,7 @@
 
   // The bound MidiHexadecimal form: (v-min)/(max-min)*127 as two uppercase
   // hex digits. Bound to the LevelReadout presentation (and the Inspector's
-  // reading of the same focused level) — crest-spec ValuePresentationForm.
+  // reading of the same focused level).
   function midiHex(control) {
     var scaled = Math.round(fraction(control) * 127);
     var hex = scaled.toString(16).toUpperCase();
