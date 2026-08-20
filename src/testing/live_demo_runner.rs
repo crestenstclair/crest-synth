@@ -1110,6 +1110,16 @@ where
                     if let Some(expected) = transition.expected_rejection() {
                         let rejection =
                             dispatch_rejected_topology_event(app_loop, event, expected)?;
+                        if matches!(action, crate::control::SemanticAction::SelectPatch(_)) {
+                            let unchanged = app_loop.state().interaction().focus_path()
+                                == &context.focus_before;
+                            if let Some(measurement) = self.patch_editor.as_mut() {
+                                measurement.observe_switch_refused_at_end(unchanged);
+                            }
+                            if !unchanged {
+                                return Err(LiveDemoError::TopologySupportMismatch);
+                            }
+                        }
                         self.topology_phase = LiveTopologyPhase::AwaitRejectionAudio {
                             context: TopologyContext {
                                 rejection: Some(rejection),

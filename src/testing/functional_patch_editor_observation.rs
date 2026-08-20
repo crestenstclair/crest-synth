@@ -26,9 +26,9 @@
 
 use crate::control::app_state::{AppState, SemanticActionAvailability};
 use crate::control::{
-    FocusPath, InteractionMode, PatchControlId, PatchDetailSubject, SemanticControlId,
-    SemanticControlKind, SemanticControlValue, SemanticGraphicalViewModel, SemanticSurfaceSummary,
-    SurfaceId,
+    FocusPath, InteractionMode, MixerControlId, PatchControlId, PatchDetailSubject,
+    SemanticControlId, SemanticControlKind, SemanticControlValue, SemanticGraphicalViewModel,
+    SemanticSurfaceSummary, SurfaceId,
 };
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -384,7 +384,9 @@ impl PatchEditorMeasurement {
                     control.path().control_id(),
                     SemanticControlId::Patch(PatchControlId::Global(
                         crate::mixer::global_parameters::GlobalParameter::MasterGainDb
-                    ))
+                    )) | SemanticControlId::Mixer(MixerControlId::Global {
+                        parameter: crate::mixer::global_parameters::GlobalParameter::MasterGainDb
+                    })
                 )
             })
             .count();
@@ -423,7 +425,7 @@ impl PatchEditorMeasurement {
                         self.numeric_rows_missing_range_or_unit.saturating_add(1);
                 }
                 if control.requested_value().is_some() {
-                    if model.status().target_graph_revision().is_some() {
+                    if state.engine_selection().is_in_flight() {
                         self.requested_value_while_in_flight = true;
                     } else {
                         self.requested_value_when_settled =
@@ -511,16 +513,30 @@ impl PatchEditorMeasurement {
         self.focus_transitions.last().map(|(_, to)| *to)
     }
 
-    /// Reads every accepted `SelectPatch` record's exact generation pair out
-    /// of the canonical event log.
+    /// Reads every accepted `SelectPatch` record's exact generation pair and
+    /// every synchronously projected accepted generation out of the canonical
+    /// event log.
     ///
-    /// The log is the only place the exact pair exists: the runner's sampling
-    /// cadence can put more than one accepted event between two projections,
-    /// and a sampled delta would report a healthy switch as inexact.
+    /// The log is the only place the exact pairs exist: one fixture poll can
+    /// dispatch more than one accepted MIDI event between runner samples. An
+    /// accepted record is projection evidence rather than an input proxy:
+    /// `AppLoop::dispatch_internal` constructs the coherent production
+    /// projections before it constructs and appends that record. Filling those
+    /// certified intermediate generations prevents batching from being
+    /// misreported as a skipped projection.
     pub(crate) fn observe_switches_from_event_log(
         &mut self,
         event_log: &crate::control::event_log::EventLog,
     ) {
+        self.projection_generations.extend(
+            event_log
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.outcome() == crate::control::event_record::EventOutcome::Accepted
+                })
+                .flat_map(|record| [record.generation_before(), record.generation_after()]),
+        );
         self.switch_generations = event_log
             .records()
             .iter()

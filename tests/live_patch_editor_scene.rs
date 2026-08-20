@@ -12,12 +12,14 @@
 #[allow(dead_code)]
 mod support;
 
+use crest_synth::adapter::braids_capability::BraidsCapability;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::production_effects::{
-    production_effect_providers, production_effect_registry,
+    production_chorus_config, production_effect_providers, production_effect_registry,
 };
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_instrument_providers,
+    production_soundfont_capability,
 };
 use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::app_loop::AppLoop;
@@ -26,14 +28,19 @@ use crest_synth::control::event_log::EventLog;
 use crest_synth::control::event_record::EventSource;
 use crest_synth::control::state_projector::StateProjector;
 use crest_synth::control::{SemanticAction, SemanticControlId};
+use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::mixer_state::MixerState;
+use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::real_time::graph_revision::GraphRevision;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
+use crest_synth::synth::patch::Patch;
+use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::voice_limit::VoiceLimit;
-use crest_synth::testing::automatic_midi_test::AutomaticMidiTest;
+use crest_synth::testing::automatic_midi_test::{create_soundfont_config, AutomaticMidiTest};
 use crest_synth::testing::live_demo_scene::LiveDemoScene;
 use crest_synth::testing::live_patch_editor_scene::{
     from_installed_state, PatchSelectionMode, PATCH_EDITOR_SCENE_NAME,
@@ -69,6 +76,72 @@ fn installed_fixture(
         .initialize_with_effects(&providers, &effect_providers, &mut app_loop)
         .expect("fixture initializes through AppLoop");
     app_loop
+}
+
+/// A reducer fixture with the same production registries and an explicitly
+/// sized installed order. The live roster is longer than the two-Patch MIDI
+/// unit fixture, so boundary planning must be exercised against that shape.
+fn installed_fixture_with_patch_count(
+    patch_count: usize,
+) -> AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle> {
+    assert!((2..=MixerTrackId::COUNT).contains(&patch_count));
+    let global = globals();
+    let soundfont = production_soundfont_capability().expect("production capability is valid");
+    let braids = BraidsCapability::new().expect("production capability is valid");
+    let registry = production_capability_registry().expect("production registry is valid");
+    let effects = production_effect_registry().expect("production effect registry is valid");
+    let patches = (0..patch_count)
+        .map(|index| {
+            let mut patch = Patch::new(
+                PatchId::new(index as u32 + 1).expect("fixture PatchId is valid"),
+                format!("Roster Patch {}", index + 1),
+                if index % 2 == 0 {
+                    create_soundfont_config(
+                        &soundfont,
+                        SoundFontInstrument::new(0, index as u8, false)
+                            .expect("fixture preset is valid"),
+                    )
+                    .expect("fixture config matches the production descriptor")
+                } else {
+                    braids
+                        .default_config()
+                        .expect("fixture config matches the production descriptor")
+                },
+                MidiChannel::new(index as u8).expect("fixture channel is valid"),
+                PatchOutput::to_track(
+                    MixerTrackId::new(index as u8).expect("fixture track is valid"),
+                ),
+            );
+            if index == 0 {
+                let slot = EffectSlotIndex::ALL[0];
+                patch = patch.with_effect_slot(
+                    slot,
+                    production_chorus_config(slot.instance_identity())
+                        .expect("fixture Chorus config is valid"),
+                );
+            }
+            patch
+        })
+        .collect();
+    let mut state = AppState::new_with_effects(registry, effects.clone(), global)
+        .with_initial_returns(
+            crest_synth::adapter::production_effects::startup_bus_returns(&effects),
+        );
+    state
+        .apply(AppEvent::InstallPatches(patches))
+        .expect("installing the explicit roster is accepted");
+
+    let initial = ParameterSnapshot::new(0, global, MixerState::default(), &[])
+        .expect("initial parameters are valid");
+    let boundary = LockFreeAudioBoundary::new(512, initial);
+    let (control, _audio) = boundary.into_handles();
+    AppLoop::with_event_log(
+        state,
+        StateProjector::for_graph(GraphRevision::INITIAL),
+        control,
+        EventLog::new(4096).expect("fixture journal capacity is valid"),
+    )
+    .expect("explicit roster projects through the production AppLoop")
 }
 
 fn transition<'a>(scene: &'a LiveDemoScene, id: &str) -> &'a LiveTopologyTransition {
@@ -288,7 +361,8 @@ fn the_defeated_scene_removes_the_gesture_and_stays_on_the_first_patch() {
 #[test]
 fn the_end_of_order_refusal_is_a_real_boundary_in_both_modes() {
     for mode in [PatchSelectionMode::Gesture, PatchSelectionMode::Defeated] {
-        let mut app_loop = installed_fixture();
+        let mut app_loop = installed_fixture_with_patch_count(5);
+        let installed = installed_ids(&app_loop);
         let scene = from_installed_state(&app_loop.current_state_tree(), mode)
             .expect("the installed fixture produces a patch-editor scene");
         let refusal = transition(&scene, "PatchEditor.switchRefusedAtEnd");
@@ -297,15 +371,31 @@ fn the_end_of_order_refusal_is_a_real_boundary_in_both_modes() {
             panic!("the end-of-order refusal must be a SelectPatch request");
         };
 
-        // Walk to this mode's subject through the plan's own switch script,
-        // then dispatch the declared refusal and require the typed unchanged
-        // rejection from the production reducer.
+        // Walk to this mode's subject, then run the boundary transition's own
+        // roster-derived support. The gesture scene reaches the actual last
+        // Patch even when the roster has more than two entries; the defeated
+        // scene remains on the first Patch and probes left.
         let switch = transition(&scene, "PatchEditor.switchToSubject");
         for event in support_events(switch.support_before()) {
             app_loop
                 .dispatch_from(event, EventSource::DemoScene)
                 .expect("the plan's switch script is accepted");
         }
+        let subject = match mode {
+            PatchSelectionMode::Gesture => installed[1],
+            PatchSelectionMode::Defeated => installed[0],
+        };
+        assert_eq!(focused_patch(&app_loop), Some(subject));
+        for event in support_events(refusal.support_before()) {
+            app_loop
+                .dispatch_from(event, EventSource::DemoScene)
+                .expect("the boundary walk is accepted");
+        }
+        let expected_boundary = match mode {
+            PatchSelectionMode::Gesture => *installed.last().expect("the roster is non-empty"),
+            PatchSelectionMode::Defeated => installed[0],
+        };
+        assert_eq!(focused_patch(&app_loop), Some(expected_boundary));
         let focus_before = focused_patch(&app_loop);
         assert_eq!(
             app_loop.dispatch_from(AppEvent::SelectPatch(*direction), EventSource::DemoScene),
@@ -313,6 +403,16 @@ fn the_end_of_order_refusal_is_a_real_boundary_in_both_modes() {
             "{mode:?}: the declared boundary direction must actually be a boundary",
         );
         assert_eq!(focused_patch(&app_loop), focus_before);
+        for event in support_events(refusal.support_after()) {
+            app_loop
+                .dispatch_from(event, EventSource::DemoScene)
+                .expect("the boundary return walk is accepted");
+        }
+        assert_eq!(
+            focused_patch(&app_loop),
+            Some(subject),
+            "{mode:?}: the boundary probe restores the scene subject",
+        );
     }
 }
 

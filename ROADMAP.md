@@ -319,24 +319,24 @@ Phase 5 does not close until both of these hold:
   one Patch per MIDI part — the last hardware run loaded **15** (8 SoundFont,
   7 Braids), all rendering — and the controller could reach exactly one. The
   gesture is what makes the other fourteen playable.
-- **`make demo-live-patch-editor` demonstrates the effect-slot journey on more
-  than one instrument** — the scene navigates from one Patch to another *through
+- ~~**`make demo-live-patch-editor` demonstrates the effect-slot journey on more
+  than one instrument**~~ — **CLOSED 2026-08-20.** The scene navigates from one Patch to another *through
   that gesture on screen*, then performs a full focus-verified effect-slot
   occupancy journey and an audible occupant parameter edit on the second
   instrument, not only the first. Checkpoints must correlate the patch switch,
   the resulting focus, and the audible consequence.
 
-  **STILL OPEN (2026-08-19) — BUILT; LIVE PROOF INCOMPLETE.** The target, the scene, the
-  observation, and the controlled negative all exist and are green under
-  `cargo test`. The live run has not completed, so this bullet is not struck.
-  A bullet struck against a run that did not complete would be a claim, not a
-  record. See the Phase 5 status note below for exactly what is measured and
-  what is not.
+  The completed physical run focused all **15** installed Patches, exercised
+  all **3** effect-slot positions on Patch 2, correlated the switch, focus, and
+  audible edit across **8** checkpoints, and measured an isolated second-Patch
+  delta of **0.07703647 RMS** against **0.001004152 RMS** on Patch 1. The
+  end-of-order refusal remained typed and unchanged at the actual last installed
+  Patch.
 
 Meeting both closes LIMIT-1. Until then, no scene may claim the effects journey
 is demonstrated across the instrument roster.
 
-### Phase 5 status note (2026-08-19) — implementation built; live proof incomplete
+### Phase 5 historical status note (2026-08-19) — implementation built; live proof incomplete
 
 This is not a completion note. Phase 5 does not close here, and the note says so
 rather than reporting an adjective where a number belongs.
@@ -459,6 +459,26 @@ measurable on this roster. MIDI-input editability is proven in the deterministic
 acceptance target. The
 field is graded for what it measures and the name is left alone rather than
 renamed mid-mission; the gap is recorded here and carries into acceptance.
+
+### Phase 5 completion note (2026-08-20) — physical live proof complete
+
+`make demo-live-patch-editor` completed successfully through the production
+window, reducer, projection, audio, and teardown paths. The retained observation
+reported all **42** acceptance fields with no schema mismatch. It focused all
+**15** installed Patches, preserved exact projection generations, exercised all
+**3** engine transitions, edited **105/105** editable parameters, painted
+**2,152** qualifying shell frames, correlated **136** checkpoints, processed
+**15,248** events with **0** dropped, and advanced the prepared graph from
+revision **1** to **10** without fallback.
+
+The second-Patch proof visited all **3** effect slots and all **6** occupancy
+states. Its audible edit measured **0.07703647 RMS** on Patch 2 versus
+**0.001004152 RMS** on Patch 1, clearing the declared isolation margin. The
+boundary refusal, master-volume ownership, MIDI reprojection, requested-value
+settling, detail identity, empty-row refusal, voice-limit refusals, and desktop
+paint predicates all passed. The callback recorded **0** allocations and **0**
+destructions; teardown closed the window, stream, and graphs with **0** active
+notes. LIMIT-1 and Phase 5 are closed. Phase 6 is unblocked.
 
 Assemble the Patch experience from the component library and semantic view models.
 
