@@ -12,6 +12,10 @@ pub enum AudioCommand {
         patch_id: PatchId,
         message: MidiMessage,
     },
+    /// Starts the exact graph-prepared audition for one origin Patch.
+    PreviewStart { patch_id: PatchId, audition_id: u64 },
+    /// Releases the exact graph-prepared audition with its prepared de-click.
+    PreviewStop { patch_id: PatchId, audition_id: u64 },
     /// Requests bounded recovery by silencing every active note.
     AllNotesOff,
 }
@@ -27,11 +31,36 @@ impl AudioCommand {
         Self::AllNotesOff
     }
 
+    pub const fn preview_start(patch_id: PatchId, audition_id: u64) -> Self {
+        Self::PreviewStart {
+            patch_id,
+            audition_id,
+        }
+    }
+
+    pub const fn preview_stop(patch_id: PatchId, audition_id: u64) -> Self {
+        Self::PreviewStop {
+            patch_id,
+            audition_id,
+        }
+    }
+
     /// Returns the target patch for a patch MIDI command.
     pub const fn patch_id(self) -> Option<PatchId> {
         match self {
-            Self::PatchMidi { patch_id, .. } => Some(patch_id),
+            Self::PatchMidi { patch_id, .. }
+            | Self::PreviewStart { patch_id, .. }
+            | Self::PreviewStop { patch_id, .. } => Some(patch_id),
             Self::AllNotesOff => None,
+        }
+    }
+
+    pub const fn audition_id(self) -> Option<u64> {
+        match self {
+            Self::PreviewStart { audition_id, .. } | Self::PreviewStop { audition_id, .. } => {
+                Some(audition_id)
+            }
+            Self::PatchMidi { .. } | Self::AllNotesOff => None,
         }
     }
 
@@ -39,7 +68,7 @@ impl AudioCommand {
     pub const fn message(self) -> Option<MidiMessage> {
         match self {
             Self::PatchMidi { message, .. } => Some(message),
-            Self::AllNotesOff => None,
+            Self::PreviewStart { .. } | Self::PreviewStop { .. } | Self::AllNotesOff => None,
         }
     }
 }

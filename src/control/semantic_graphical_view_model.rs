@@ -1,7 +1,9 @@
 use crate::control::{
     AppState, EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind,
-    FocusCapabilityId, FocusPath, MixerControlId, PatchControlId, PatchDetailSubject, ReturnPath,
-    SemanticControlId, SemanticResolver, SurfaceId, TopLevelContext, ValidAction,
+    FocusCapabilityId, FocusPath, MixerControlId, PatchChoiceSubject, PatchControlId,
+    PatchDetailSubject, PatchSubordinateSession, ReturnPath, SampleAssetLifecycle,
+    SamplePreviewState, SemanticControlId, SemanticResolver, SurfaceId, TopLevelContext,
+    ValidAction,
 };
 use crate::kernel::{MidiChannel, PatchId};
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -10,7 +12,8 @@ use crate::mixer::patch_output::PatchOutputParameter;
 use crate::real_time::GraphRevision;
 use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
-    AssetReference, CapabilityId, ParameterKind, ParameterSpec, ParameterValue, PatchInteraction,
+    AssetKind, AssetReference, CapabilityId, ParameterId, ParameterKind, ParameterSpec,
+    ParameterValue, Patch, PatchInteraction,
 };
 use core::fmt;
 use serde::{Serialize, Serializer};
@@ -28,6 +31,10 @@ pub enum SemanticControlKind {
     Asset,
     Identity,
     Surface,
+    BrowserParent,
+    BrowserFolder,
+    BrowserFile,
+    BrowserCancel,
 }
 
 impl From<ParameterKind> for SemanticControlKind {
@@ -152,6 +159,60 @@ impl SemanticError {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SemanticBrowserMetadataStatus {
+    Pending,
+    Ready,
+    Failed,
+}
+
+/// Typed catalog metadata for one Sample Browser file row.
+///
+/// The display text is projected alongside the typed fields so JavaScript does
+/// not become a second WAV-format policy. Optional fields serialize as `null`;
+/// this keeps one stable frame schema across pending, ready, and failed rows.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticBrowserMetadata {
+    status: SemanticBrowserMetadataStatus,
+    text: String,
+    source_bytes: Option<u64>,
+    sample_rate: Option<u32>,
+    channels: Option<u16>,
+    bits_per_sample: Option<u16>,
+    encoding: Option<crate::synth::SampleEncoding>,
+    frames: Option<u64>,
+    duration_milliseconds: Option<u64>,
+    cause: Option<crate::synth::SampleAssetError>,
+}
+
+impl SemanticBrowserMetadata {
+    pub const fn status(&self) -> SemanticBrowserMetadataStatus {
+        self.status
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub const fn source_bytes(&self) -> Option<u64> {
+        self.source_bytes
+    }
+
+    pub const fn sample_rate(&self) -> Option<u32> {
+        self.sample_rate
+    }
+
+    pub const fn channels(&self) -> Option<u16> {
+        self.channels
+    }
+
+    pub const fn duration_milliseconds(&self) -> Option<u64> {
+        self.duration_milliseconds
+    }
+}
+
 /// One immutable semantic control with no widget or geometry state.
 ///
 /// Every field except the last two is resolved from the row's own descriptor
@@ -173,6 +234,7 @@ pub struct SemanticControlViewModel {
     selected_label: Option<String>,
     numeric_range: Option<SemanticNumericRange>,
     unit: Option<String>,
+    browser_metadata: Option<SemanticBrowserMetadata>,
     enabled: bool,
     visible: bool,
     focusable: bool,
@@ -231,6 +293,10 @@ impl SemanticControlViewModel {
 
     pub fn unit(&self) -> Option<&str> {
         self.unit.as_deref()
+    }
+
+    pub const fn browser_metadata(&self) -> Option<&SemanticBrowserMetadata> {
+        self.browser_metadata.as_ref()
     }
 
     pub const fn enabled(&self) -> bool {
@@ -317,6 +383,7 @@ pub enum SemanticSurfaceRole {
     /// The subordinate PATCH detail surface: present exactly while a detail
     /// entry is open, never a context's resting place.
     Detail,
+    Modal,
 }
 
 /// Typed, read-only canonical summary for one semantic surface.
@@ -361,6 +428,20 @@ pub enum SemanticSurfaceSummary {
         patch_id: PatchId,
         subject: PatchDetailSubject,
     },
+    PatchChoice {
+        patch_id: PatchId,
+        subject: PatchChoiceSubject,
+    },
+    SampleBrowser {
+        patch_id: PatchId,
+        asset_parameter_id: crate::synth::ParameterId,
+        folder: crate::synth::SampleFolderId,
+        active_asset: Option<AssetReference>,
+        requested_asset: Option<crate::synth::SampleAssetId>,
+        lifecycle: SampleAssetLifecycle,
+        preview_request_id: Option<EngineSelectionRequestId>,
+        preview: SamplePreviewState,
+    },
 }
 
 impl SemanticSurfaceSummary {
@@ -369,7 +450,9 @@ impl SemanticSurfaceSummary {
         match self {
             Self::Patch { patch_id, .. }
             | Self::PatchUtility { patch_id, .. }
-            | Self::PatchDetail { patch_id, .. } => Some(*patch_id),
+            | Self::PatchDetail { patch_id, .. }
+            | Self::PatchChoice { patch_id, .. }
+            | Self::SampleBrowser { patch_id, .. } => Some(*patch_id),
             Self::Mixer { .. } | Self::MixerInspector { .. } => None,
         }
     }
@@ -381,6 +464,96 @@ impl SemanticSurfaceSummary {
 pub struct SemanticRoutedPatch {
     patch_id: PatchId,
     patch_name: String,
+}
+
+/// One descriptor-owned detail section in authored order.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticDetailSectionViewModel {
+    id: String,
+    label: String,
+    control_paths: Vec<FocusPath>,
+}
+
+impl SemanticDetailSectionViewModel {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+    pub fn control_paths(&self) -> &[FocusPath] {
+        &self.control_paths
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticWaveformPair {
+    left_min: f32,
+    left_max: f32,
+    right_min: f32,
+    right_max: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticWaveformLandmark {
+    role: crate::synth::WaveformLandmarkRole,
+    normalized_position: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SemanticVisualizationData {
+    Envelope {
+        attack_milliseconds: f32,
+        decay_milliseconds: f32,
+        sustain: f32,
+        release_milliseconds: f32,
+    },
+    Waveform {
+        asset: Option<AssetReference>,
+        sample_rate: Option<u32>,
+        channels: Option<u16>,
+        frames: Option<usize>,
+        pairs: Vec<SemanticWaveformPair>,
+        landmarks: Vec<SemanticWaveformLandmark>,
+        status: String,
+    },
+    Status {
+        text: String,
+    },
+}
+
+/// One informative capability shape. It never carries a FocusPath and cannot
+/// enter the semantic order.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticVisualizationViewModel {
+    id: String,
+    label: String,
+    focusable: bool,
+    data: SemanticVisualizationData,
+}
+
+impl SemanticVisualizationViewModel {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+    pub const fn focusable(&self) -> bool {
+        self.focusable
+    }
+    pub const fn data(&self) -> &SemanticVisualizationData {
+        &self.data
+    }
 }
 
 impl SemanticRoutedPatch {
@@ -400,6 +573,8 @@ pub struct SemanticSurfaceViewModel {
     label: String,
     role: SemanticSurfaceRole,
     controls: Vec<SemanticControlViewModel>,
+    sections: Vec<SemanticDetailSectionViewModel>,
+    visualizations: Vec<SemanticVisualizationViewModel>,
     summary: SemanticSurfaceSummary,
 }
 
@@ -418,6 +593,14 @@ impl SemanticSurfaceViewModel {
 
     pub fn controls(&self) -> &[SemanticControlViewModel] {
         &self.controls
+    }
+
+    pub fn sections(&self) -> &[SemanticDetailSectionViewModel] {
+        &self.sections
+    }
+
+    pub fn visualizations(&self) -> &[SemanticVisualizationViewModel] {
+        &self.visualizations
     }
 
     pub const fn summary(&self) -> &SemanticSurfaceSummary {
@@ -515,6 +698,8 @@ impl SemanticGraphicalViewModel {
         "errors[].code.kind",
         "errors[].label",
         "errors[].sourcePath.capabilityId",
+        "errors[].sourcePath.capabilityId.id",
+        "errors[].sourcePath.capabilityId.kind",
         "errors[].sourcePath.context",
         "errors[].sourcePath.controlId.id",
         "errors[].sourcePath.controlId.kind",
@@ -527,6 +712,7 @@ impl SemanticGraphicalViewModel {
         "focusPath.context",
         "focusPath.controlId.id",
         "focusPath.controlId.id.bus",
+        "focusPath.controlId.id.id",
         "focusPath.controlId.id.kind",
         "focusPath.controlId.id.parameter",
         "focusPath.controlId.id.trackId",
@@ -556,6 +742,17 @@ impl SemanticGraphicalViewModel {
         "status.label",
         "status.requestId",
         "status.targetGraphRevision",
+        "surfaces[].controls[].browserMetadata",
+        "surfaces[].controls[].browserMetadata.bitsPerSample",
+        "surfaces[].controls[].browserMetadata.cause",
+        "surfaces[].controls[].browserMetadata.channels",
+        "surfaces[].controls[].browserMetadata.durationMilliseconds",
+        "surfaces[].controls[].browserMetadata.encoding",
+        "surfaces[].controls[].browserMetadata.frames",
+        "surfaces[].controls[].browserMetadata.sampleRate",
+        "surfaces[].controls[].browserMetadata.sourceBytes",
+        "surfaces[].controls[].browserMetadata.status",
+        "surfaces[].controls[].browserMetadata.text",
         "surfaces[].controls[].editable",
         "surfaces[].controls[].enabled",
         "surfaces[].controls[].error",
@@ -563,6 +760,8 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].error.code.kind",
         "surfaces[].controls[].error.label",
         "surfaces[].controls[].error.sourcePath.capabilityId",
+        "surfaces[].controls[].error.sourcePath.capabilityId.id",
+        "surfaces[].controls[].error.sourcePath.capabilityId.kind",
         "surfaces[].controls[].error.sourcePath.context",
         "surfaces[].controls[].error.sourcePath.controlId.id",
         "surfaces[].controls[].error.sourcePath.controlId.kind",
@@ -585,6 +784,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].path.context",
         "surfaces[].controls[].path.controlId.id",
         "surfaces[].controls[].path.controlId.id.bus",
+        "surfaces[].controls[].path.controlId.id.id",
         "surfaces[].controls[].path.controlId.id.kind",
         "surfaces[].controls[].path.controlId.id.parameter",
         "surfaces[].controls[].path.controlId.id.trackId",
@@ -622,6 +822,16 @@ impl SemanticGraphicalViewModel {
         "surfaces[].id",
         "surfaces[].label",
         "surfaces[].role",
+        "surfaces[].sections[].controlPaths[].capabilityId.id",
+        "surfaces[].sections[].controlPaths[].capabilityId.kind",
+        "surfaces[].sections[].controlPaths[].context",
+        "surfaces[].sections[].controlPaths[].controlId.id",
+        "surfaces[].sections[].controlPaths[].controlId.kind",
+        "surfaces[].sections[].controlPaths[].modalId",
+        "surfaces[].sections[].controlPaths[].patchId",
+        "surfaces[].sections[].controlPaths[].surface",
+        "surfaces[].sections[].id",
+        "surfaces[].sections[].label",
         "surfaces[].summary.capabilityId",
         "surfaces[].summary.effectCount",
         // `MixerInspector.focusedControl` is the remembered MixerMain origin,
@@ -636,6 +846,17 @@ impl SemanticGraphicalViewModel {
         "surfaces[].summary.patchCount",
         "surfaces[].summary.patchId",
         "surfaces[].summary.patchName",
+        "surfaces[].summary.activeAsset.kind",
+        "surfaces[].summary.activeAsset.locator",
+        "surfaces[].summary.assetParameterId",
+        "surfaces[].summary.folder",
+        "surfaces[].summary.lifecycle",
+        "surfaces[].summary.preview.assetId",
+        "surfaces[].summary.preview.cause",
+        "surfaces[].summary.preview.held",
+        "surfaces[].summary.preview.kind",
+        "surfaces[].summary.requestedAsset",
+        "surfaces[].summary.previewRequestId",
         "surfaces[].summary.routedPatches[].patchId",
         "surfaces[].summary.routedPatches[].patchName",
         // The open detail surface's subject. `capability_id` and `kind` are
@@ -645,6 +866,27 @@ impl SemanticGraphicalViewModel {
         "surfaces[].summary.subject.capabilityId",
         "surfaces[].summary.subject.kind",
         "surfaces[].summary.subject.slotId",
+        "surfaces[].visualizations[].data.asset.kind",
+        "surfaces[].visualizations[].data.asset.locator",
+        "surfaces[].visualizations[].data.attackMilliseconds",
+        "surfaces[].visualizations[].data.channels",
+        "surfaces[].visualizations[].data.decayMilliseconds",
+        "surfaces[].visualizations[].data.frames",
+        "surfaces[].visualizations[].data.kind",
+        "surfaces[].visualizations[].data.landmarks[].normalizedPosition",
+        "surfaces[].visualizations[].data.landmarks[].role",
+        "surfaces[].visualizations[].data.pairs[].leftMax",
+        "surfaces[].visualizations[].data.pairs[].leftMin",
+        "surfaces[].visualizations[].data.pairs[].rightMax",
+        "surfaces[].visualizations[].data.pairs[].rightMin",
+        "surfaces[].visualizations[].data.releaseMilliseconds",
+        "surfaces[].visualizations[].data.sampleRate",
+        "surfaces[].visualizations[].data.status",
+        "surfaces[].visualizations[].data.sustain",
+        "surfaces[].visualizations[].data.text",
+        "surfaces[].visualizations[].focusable",
+        "surfaces[].visualizations[].id",
+        "surfaces[].visualizations[].label",
         "validActions[].action.kind",
         "validActions[].action.payload",
         "validActions[].hint",
@@ -917,6 +1159,7 @@ fn fixture_surfaces(
         value: SemanticControlValue::Identity("Fixture".to_owned()),
         numeric_range: None,
         unit: None,
+        browser_metadata: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -952,6 +1195,8 @@ fn fixture_surfaces(
                     label: "PATCH".to_owned(),
                     role: SemanticSurfaceRole::Main,
                     controls: vec![main_control],
+                    sections: Vec::new(),
+                    visualizations: Vec::new(),
                     summary: SemanticSurfaceSummary::Patch {
                         patch_id,
                         patch_name: "Fixture".to_owned(),
@@ -964,6 +1209,8 @@ fn fixture_surfaces(
                     label: "UTILITY".to_owned(),
                     role: SemanticSurfaceRole::PersistentSide,
                     controls: vec![side_control],
+                    sections: Vec::new(),
+                    visualizations: Vec::new(),
                     summary: SemanticSurfaceSummary::PatchUtility {
                         patch_id,
                         capability_id,
@@ -985,6 +1232,8 @@ fn fixture_surfaces(
                     label: "MIXER".to_owned(),
                     role: SemanticSurfaceRole::Main,
                     controls: vec![main_control],
+                    sections: Vec::new(),
+                    visualizations: Vec::new(),
                     summary: SemanticSurfaceSummary::Mixer {
                         patch_count: 0,
                         global_parameter_count: 7,
@@ -995,6 +1244,8 @@ fn fixture_surfaces(
                     label: "INSPECTOR".to_owned(),
                     role: SemanticSurfaceRole::PersistentSide,
                     controls: vec![side_control],
+                    sections: Vec::new(),
+                    visualizations: Vec::new(),
                     summary: SemanticSurfaceSummary::MixerInspector {
                         focused_control,
                         focused_track: MixerTrackId::default(),
@@ -1152,6 +1403,21 @@ fn project_requested_value(
             )))
         }
         (
+            crate::control::SemanticControlId::Patch(PatchControlId::Capability(id)),
+            crate::control::StructuralEditIntent::ReplaceAsset {
+                capability_id,
+                parameter_id,
+                reference,
+            },
+        ) if targets_focused_patch
+            && id == parameter_id
+            && path.capability_id().is_none_or(|focus_capability| {
+                focus_capability == &FocusCapabilityId::Instrument(capability_id.clone())
+            }) =>
+        {
+            Some(SemanticControlValue::Asset(reference.clone()))
+        }
+        (
             crate::control::SemanticControlId::Patch(PatchControlId::EffectSlot(index)),
             crate::control::StructuralEditIntent::SetSlotOccupancy {
                 patch_id,
@@ -1260,6 +1526,17 @@ fn project_errors(
                     _ => false,
                 })
         }
+        crate::control::StructuralEditIntent::ReplaceAsset { parameter_id, .. }
+        | crate::control::StructuralEditIntent::PrepareAudition { parameter_id, .. } => {
+            match (correlation.patch_id(), correlation.source_capability_id()) {
+                (Some(patch_id), Some(capability_id)) => Some(FocusPath::patch_detail(
+                    patch_id,
+                    crate::control::FocusCapabilityId::Instrument(capability_id.clone()),
+                    PatchControlId::Capability(parameter_id.clone()),
+                )),
+                _ => None,
+            }
+        }
     };
     Ok(vec![SemanticError {
         code: SemanticErrorCode::EngineSelection(failure),
@@ -1305,6 +1582,7 @@ fn project_patch_surfaces(
         value: SemanticControlValue::Identity(descriptor.label().to_owned()),
         numeric_range: None,
         unit: None,
+        browser_metadata: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -1336,6 +1614,7 @@ fn project_patch_surfaces(
                 envelope.coarse_step() as f64,
             )),
             unit: envelope.unit().map(str::to_owned),
+            browser_metadata: None,
             enabled: true,
             visible: true,
             focusable: true,
@@ -1418,6 +1697,7 @@ fn project_patch_surfaces(
             value: SemanticControlValue::Identity(occupancy_value),
             numeric_range: None,
             unit: None,
+            browser_metadata: None,
             enabled: true,
             visible: true,
             focusable: true,
@@ -1584,6 +1864,7 @@ fn project_patch_surfaces(
                 value,
                 numeric_range,
                 unit,
+                browser_metadata: None,
                 enabled: true,
                 visible: true,
                 focusable: true,
@@ -1604,6 +1885,8 @@ fn project_patch_surfaces(
             label: SurfaceId::PatchMain.label().to_owned(),
             role: SemanticSurfaceRole::Main,
             controls,
+            sections: Vec::new(),
+            visualizations: Vec::new(),
             summary,
         },
         SemanticSurfaceViewModel {
@@ -1611,6 +1894,8 @@ fn project_patch_surfaces(
             label: SurfaceId::PatchUtility.label().to_owned(),
             role: SemanticSurfaceRole::PersistentSide,
             controls: utility_controls,
+            sections: Vec::new(),
+            visualizations: Vec::new(),
             summary: side_summary,
         },
     ];
@@ -1620,9 +1905,67 @@ fn project_patch_surfaces(
     // synthesize one. Its whole content resolves from the installed descriptor
     // the subject names, so this shell branches on no capability.
     if let Some(subject) = state.interaction().detail_subject() {
-        let detail_paths = resolver
-            .patch_detail_paths(patch_id, subject)
-            .map_err(map_resolver_error)?;
+        // The resolver's order contains enabled focus targets only. Projection
+        // additionally keeps visible disabled rows so dependency state remains
+        // explicit; those rows carry no valid actions and never enter focus.
+        let capability_id = subject.focus_capability_id();
+        let detail_paths = match subject {
+            PatchDetailSubject::Instrument { capability_id: id } => {
+                let descriptor = state
+                    .capabilities()
+                    .descriptor(id)
+                    .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
+                let mut paths = descriptor
+                    .parameters()
+                    .filter(|spec| parameter_availability(spec, patch.instrument_config()).1)
+                    .map(|spec| {
+                        FocusPath::patch_detail(
+                            patch_id,
+                            capability_id.clone(),
+                            PatchControlId::Capability(spec.id().clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                paths.extend(
+                    crate::synth::VoiceEnvelope::surface_descriptor()
+                        .iter()
+                        .map(|parameter| {
+                            FocusPath::patch_detail(
+                                patch_id,
+                                capability_id.clone(),
+                                PatchControlId::Envelope(parameter.parameter()),
+                            )
+                        }),
+                );
+                paths
+            }
+            PatchDetailSubject::Effect {
+                slot_id,
+                capability_id: id,
+            } => {
+                let descriptor = state
+                    .effects()
+                    .descriptor(id)
+                    .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
+                let occupant = patch
+                    .effect_slots()
+                    .iter()
+                    .flatten()
+                    .find(|effect| effect.slot_id() == *slot_id)
+                    .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
+                descriptor
+                    .parameters()
+                    .filter(|spec| effect_parameter_availability(spec, occupant).1)
+                    .map(|spec| {
+                        FocusPath::patch_detail(
+                            patch_id,
+                            capability_id.clone(),
+                            PatchControlId::Effect(*slot_id, spec.id().clone()),
+                        )
+                    })
+                    .collect()
+            }
+        };
         // A capability mid-preparation reports its typed lifecycle on its own
         // rows rather than leaving them looking settled. The section set is
         // never empty or stale — it is resolved from the installed descriptor
@@ -1634,31 +1977,6 @@ fn project_patch_surfaces(
                 .correlation()
                 .is_some_and(|correlation| correlation.patch_id() == Some(patch_id)))
         .then(|| status.clone());
-        // No detail row is editable in this phase: the reducer accepts no
-        // adjustment on `PatchDetail`, so an editable row would advertise an
-        // edit that is refused.
-        //
-        // This is a *surface-level* fact about what the reducer accepts, and it
-        // is uniform — a `StructuralChoice` row and a `ReadOnly` row project
-        // `editable: false` alike here, so this field discriminates nothing
-        // about the capability's own declaration.
-        //
-        // The capability-declared read-only fact is a different fact, and it
-        // now rides every descriptor-backed row as `patchInteraction` — the
-        // same single producer `PatchPageParameterRow` reads
-        // (`ParameterSpec::patch_interaction`), projected rather than
-        // re-derived. All three Braids rows and SoundFont's `file` row declare
-        // `ReadOnly`; SoundFont's `preset` declares `StructuralChoice`, so one
-        // detail surface carries both. A page marking a read-only row "in text
-        // or shape" reads that leaf, never this bool.
-        //
-        // Keeping the fact on `patchPage` alone does not reach *this* screen:
-        // the webview consumes exactly the serde serialization of
-        // `SemanticGraphicalViewModel`, and `patchPage`
-        // belongs to the StateTree observation, which no shipped surface
-        // paints. Without this leaf the declared "read-only marked in text or
-        // shape" rule is unrenderable.
-        let detail_editable = false;
         let mut detail_controls = Vec::with_capacity(detail_paths.len());
         for path in detail_paths {
             let control = match (subject, path.control_id()) {
@@ -1682,13 +2000,48 @@ fn project_patch_surfaces(
                         ParameterControlProjection {
                             enabled,
                             visible,
-                            focusable: true,
-                            editable: detail_editable,
+                            focusable: enabled,
+                            editable: enabled
+                                && spec.patch_interaction() != PatchInteraction::ReadOnly,
                             active,
                             status: subject_status.clone(),
                             errors,
                         },
                     )
+                }
+                (
+                    PatchDetailSubject::Instrument { .. },
+                    crate::control::SemanticControlId::Patch(PatchControlId::Envelope(parameter)),
+                ) => {
+                    let descriptor = parameter.descriptor();
+                    SemanticControlViewModel {
+                        path: path.clone(),
+                        label: descriptor.label().to_owned(),
+                        kind: SemanticControlKind::Continuous,
+                        value: SemanticControlValue::Scalar(
+                            patch.envelope().value(*parameter) as f64
+                        ),
+                        selected_label: None,
+                        numeric_range: Some(SemanticNumericRange::new(
+                            descriptor.minimum() as f64,
+                            descriptor.maximum() as f64,
+                            descriptor.fine_step() as f64,
+                            descriptor.coarse_step() as f64,
+                        )),
+                        unit: descriptor.unit().map(str::to_owned),
+                        browser_metadata: None,
+                        enabled: true,
+                        visible: true,
+                        focusable: true,
+                        editable: true,
+                        focused: active == &path,
+                        status: subject_status.clone(),
+                        error: error_for_path(errors, &path),
+                        requested_value: None,
+                        requested_label: None,
+                        patch_interaction: Some(PatchInteraction::ScalarEdit),
+                        valid_actions: Vec::new(),
+                    }
                 }
                 (
                     PatchDetailSubject::Effect {
@@ -1718,8 +2071,9 @@ fn project_patch_surfaces(
                         ParameterControlProjection {
                             enabled,
                             visible,
-                            focusable: true,
-                            editable: detail_editable,
+                            focusable: enabled,
+                            editable: enabled
+                                && spec.patch_interaction() != PatchInteraction::ReadOnly,
                             active,
                             status: subject_status.clone(),
                             errors,
@@ -1730,11 +2084,15 @@ fn project_patch_surfaces(
             };
             detail_controls.push(control);
         }
+        let (sections, visualizations) =
+            project_detail_structure(state, patch, subject, &detail_controls)?;
         surfaces.push(SemanticSurfaceViewModel {
             id: SurfaceId::PatchDetail,
             label: SurfaceId::PatchDetail.label().to_owned(),
             role: SemanticSurfaceRole::Detail,
             controls: detail_controls,
+            sections,
+            visualizations,
             summary: SemanticSurfaceSummary::PatchDetail {
                 patch_id,
                 subject: subject.clone(),
@@ -1742,7 +2100,458 @@ fn project_patch_surfaces(
         });
     }
 
+    if let Some(PatchSubordinateSession::Choice { subject, .. }) =
+        state.interaction().subordinate_session()
+    {
+        let source = resolver
+            .choice_source(subject)
+            .map_err(map_resolver_error)?;
+        let paths = resolver
+            .patch_choice_paths(subject)
+            .map_err(map_resolver_error)?;
+        let choice_controls = paths
+            .into_iter()
+            .zip(source.options().iter().filter(|option| option.is_enabled()))
+            .map(|(path, option)| SemanticControlViewModel {
+                focused: active == &path,
+                path,
+                label: option.label().to_owned(),
+                kind: SemanticControlKind::Choice,
+                value: SemanticControlValue::Identity(option.id().to_owned()),
+                numeric_range: None,
+                unit: None,
+                browser_metadata: None,
+                enabled: option.is_enabled(),
+                visible: true,
+                focusable: option.is_enabled(),
+                editable: option.is_enabled(),
+                status: None,
+                error: None,
+                requested_value: None,
+                requested_label: None,
+                patch_interaction: None,
+                selected_label: option.is_current().then(|| "CURRENT".to_owned()),
+                valid_actions: Vec::new(),
+            })
+            .collect();
+        surfaces.push(SemanticSurfaceViewModel {
+            id: SurfaceId::PatchChoice,
+            label: format!("OPTIONS · {}", source.origin_label()),
+            role: SemanticSurfaceRole::Modal,
+            controls: choice_controls,
+            sections: Vec::new(),
+            visualizations: Vec::new(),
+            summary: SemanticSurfaceSummary::PatchChoice {
+                patch_id,
+                subject: subject.clone(),
+            },
+        });
+    }
+
+    if let Some(PatchSubordinateSession::SampleBrowser {
+        patch_id,
+        asset_parameter_id,
+        ..
+    }) = state.interaction().subordinate_session()
+    {
+        let paths = resolver
+            .sample_browser_paths()
+            .map_err(map_resolver_error)?;
+        let controls = paths
+            .into_iter()
+            .zip(state.sample_browser().rows())
+            .map(|(path, row)| {
+                let (kind, marker) = match row.kind() {
+                    crate::synth::SampleBrowserRowKind::Parent(_) => {
+                        (SemanticControlKind::BrowserParent, "PARENT")
+                    }
+                    crate::synth::SampleBrowserRowKind::Folder(_) => {
+                        (SemanticControlKind::BrowserFolder, "FOLDER")
+                    }
+                    crate::synth::SampleBrowserRowKind::File(_) => {
+                        (SemanticControlKind::BrowserFile, "FILE")
+                    }
+                    crate::synth::SampleBrowserRowKind::Cancel => {
+                        (SemanticControlKind::BrowserCancel, "CANCEL — UNCHANGED")
+                    }
+                };
+                SemanticControlViewModel {
+                    focused: active == &path,
+                    path,
+                    label: row.label().to_owned(),
+                    kind,
+                    value: SemanticControlValue::Identity(row.id().to_owned()),
+                    numeric_range: None,
+                    unit: None,
+                    browser_metadata: project_browser_metadata(row),
+                    enabled: true,
+                    visible: true,
+                    focusable: true,
+                    editable: true,
+                    status: None,
+                    error: None,
+                    requested_value: None,
+                    requested_label: None,
+                    patch_interaction: None,
+                    selected_label: Some(marker.to_owned()),
+                    valid_actions: Vec::new(),
+                }
+            })
+            .collect();
+        let descriptor = state
+            .capabilities()
+            .descriptor(patch.instrument_config().capability_id())
+            .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
+        let preview_asset = match state.sample_browser().preview() {
+            SamplePreviewState::Held { asset_id }
+            | SamplePreviewState::Preparing { asset_id, .. }
+            | SamplePreviewState::Playing { asset_id }
+            | SamplePreviewState::Stopping { asset_id }
+            | SamplePreviewState::Failed { asset_id, .. } => Some(asset_id),
+            SamplePreviewState::Idle => state.sample_browser().requested_asset(),
+        };
+        let browser_asset = preview_asset
+            .and_then(|asset_id| AssetReference::new(AssetKind::Sample, asset_id.as_str()).ok())
+            .or_else(|| {
+                patch
+                    .instrument_config()
+                    .asset_reference(asset_parameter_id)
+                    .cloned()
+            });
+        let mut visualizations = project_visualizations(
+            state,
+            patch,
+            descriptor.visualizations(),
+            &|id| patch.instrument_config().value(id),
+            &|id| {
+                if id == asset_parameter_id {
+                    browser_asset.clone()
+                } else {
+                    None
+                }
+            },
+        );
+        visualizations.retain(|visualization| {
+            matches!(
+                visualization.data(),
+                SemanticVisualizationData::Waveform { .. }
+            )
+        });
+        surfaces.push(SemanticSurfaceViewModel {
+            id: SurfaceId::SampleBrowser,
+            label: "SAMPLE BROWSER".to_owned(),
+            role: SemanticSurfaceRole::Modal,
+            controls,
+            sections: Vec::new(),
+            visualizations,
+            summary: SemanticSurfaceSummary::SampleBrowser {
+                patch_id: *patch_id,
+                asset_parameter_id: asset_parameter_id.clone(),
+                folder: state.sample_browser().folder().clone(),
+                active_asset: patch
+                    .instrument_config()
+                    .asset_reference(asset_parameter_id)
+                    .cloned(),
+                requested_asset: state.sample_browser().requested_asset().cloned(),
+                lifecycle: state.sample_browser().lifecycle(),
+                preview_request_id: state.sample_browser().preview_request_id(),
+                preview: state.sample_browser().preview().clone(),
+            },
+        });
+    }
+
     Ok(surfaces)
+}
+
+fn project_browser_metadata(
+    row: &crate::synth::SampleBrowserRow,
+) -> Option<SemanticBrowserMetadata> {
+    if !matches!(row.kind(), crate::synth::SampleBrowserRowKind::File(_)) {
+        return None;
+    }
+    Some(match row.metadata() {
+        Some(Ok(metadata)) => {
+            let encoding = match metadata.encoding() {
+                crate::synth::SampleEncoding::SignedPcm => "SIGNED PCM",
+                crate::synth::SampleEncoding::Float => "FLOAT",
+            };
+            let channels = match metadata.channels() {
+                1 => "MONO".to_owned(),
+                2 => "STEREO".to_owned(),
+                count => format!("{count} CHANNELS"),
+            };
+            SemanticBrowserMetadata {
+                status: SemanticBrowserMetadataStatus::Ready,
+                text: format!(
+                    "{}-BIT {encoding} · {} HZ · {channels} · {} MS · {} BYTES",
+                    metadata.bits_per_sample(),
+                    metadata.sample_rate(),
+                    metadata.duration_milliseconds(),
+                    metadata.source_bytes()
+                ),
+                source_bytes: Some(metadata.source_bytes()),
+                sample_rate: Some(metadata.sample_rate()),
+                channels: Some(metadata.channels()),
+                bits_per_sample: Some(metadata.bits_per_sample()),
+                encoding: Some(metadata.encoding()),
+                frames: Some(metadata.frames()),
+                duration_milliseconds: Some(metadata.duration_milliseconds()),
+                cause: None,
+            }
+        }
+        Some(Err(cause)) => SemanticBrowserMetadata {
+            status: SemanticBrowserMetadataStatus::Failed,
+            text: format!("METADATA INVALID · {cause}").to_ascii_uppercase(),
+            source_bytes: row.source_bytes(),
+            sample_rate: None,
+            channels: None,
+            bits_per_sample: None,
+            encoding: None,
+            frames: None,
+            duration_milliseconds: None,
+            cause: Some(*cause),
+        },
+        None => SemanticBrowserMetadata {
+            status: SemanticBrowserMetadataStatus::Pending,
+            text: row.source_bytes().map_or_else(
+                || "METADATA LOADING".to_owned(),
+                |bytes| format!("METADATA LOADING · {bytes} BYTES"),
+            ),
+            source_bytes: row.source_bytes(),
+            sample_rate: None,
+            channels: None,
+            bits_per_sample: None,
+            encoding: None,
+            frames: None,
+            duration_milliseconds: None,
+            cause: None,
+        },
+    })
+}
+
+fn project_detail_structure(
+    state: &AppState,
+    patch: &Patch,
+    subject: &PatchDetailSubject,
+    controls: &[SemanticControlViewModel],
+) -> Result<
+    (
+        Vec<SemanticDetailSectionViewModel>,
+        Vec<SemanticVisualizationViewModel>,
+    ),
+    SemanticGraphicalViewModelError,
+> {
+    let section = |id: &str, label: &str, parameters: &[ParameterSpec]| {
+        let control_paths = parameters
+            .iter()
+            .filter_map(|parameter| {
+                controls
+                    .iter()
+                    .find(|control| match control.path().control_id() {
+                        SemanticControlId::Patch(PatchControlId::Capability(id))
+                        | SemanticControlId::Patch(PatchControlId::Effect(_, id)) => {
+                            id == parameter.id()
+                        }
+                        _ => false,
+                    })
+                    .map(|control| control.path().clone())
+            })
+            .collect();
+        SemanticDetailSectionViewModel {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            control_paths,
+        }
+    };
+    match subject {
+        PatchDetailSubject::Instrument { capability_id } => {
+            let descriptor = state
+                .capabilities()
+                .descriptor(capability_id)
+                .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
+            let mut sections = descriptor
+                .sections()
+                .iter()
+                .map(|value| section(value.id(), value.label(), value.parameters()))
+                .collect::<Vec<_>>();
+            sections.push(SemanticDetailSectionViewModel {
+                id: "shared.envelope".to_owned(),
+                label: "Envelope".to_owned(),
+                control_paths: controls
+                    .iter()
+                    .filter(|control| {
+                        matches!(
+                            control.path().control_id(),
+                            SemanticControlId::Patch(PatchControlId::Envelope(_))
+                        )
+                    })
+                    .map(|control| control.path().clone())
+                    .collect(),
+            });
+            let visualizations = project_visualizations(
+                state,
+                patch,
+                descriptor.visualizations(),
+                &|id| patch.instrument_config().value(id),
+                &|id| patch.instrument_config().asset_reference(id).cloned(),
+            );
+            Ok((sections, visualizations))
+        }
+        PatchDetailSubject::Effect {
+            slot_id,
+            capability_id,
+        } => {
+            let descriptor = state
+                .effects()
+                .descriptor(capability_id)
+                .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
+            let occupant = patch
+                .effect_slots()
+                .iter()
+                .flatten()
+                .find(|effect| effect.slot_id() == *slot_id)
+                .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
+            Ok((
+                descriptor
+                    .sections()
+                    .iter()
+                    .map(|value| section(value.id(), value.label(), value.parameters()))
+                    .collect(),
+                project_visualizations(
+                    state,
+                    patch,
+                    descriptor.visualizations(),
+                    &|id| occupant.value(id),
+                    &|id| occupant.asset_reference(id).cloned(),
+                ),
+            ))
+        }
+    }
+}
+
+fn project_visualizations<'a>(
+    state: &AppState,
+    patch: &Patch,
+    declarations: &[crate::synth::CapabilityVisualization],
+    value: &dyn Fn(&ParameterId) -> Option<&'a ParameterValue>,
+    asset: &dyn Fn(&ParameterId) -> Option<AssetReference>,
+) -> Vec<SemanticVisualizationViewModel> {
+    declarations
+        .iter()
+        .map(|declaration| {
+            let data = match declaration {
+                crate::synth::CapabilityVisualization::Envelope { .. } => {
+                    SemanticVisualizationData::Envelope {
+                        attack_milliseconds: patch.envelope().attack_milliseconds(),
+                        decay_milliseconds: patch.envelope().decay_milliseconds(),
+                        sustain: patch.envelope().sustain(),
+                        release_milliseconds: patch.envelope().release_milliseconds(),
+                    }
+                }
+                crate::synth::CapabilityVisualization::Waveform {
+                    asset_parameter_id,
+                    landmarks,
+                    ..
+                } => {
+                    let active_asset = asset(asset_parameter_id);
+                    let prepared = state.sample_visualization(patch.id()).filter(|prepared| {
+                        active_asset.as_ref().is_some_and(|reference| {
+                            reference.locator() == prepared.asset_id().as_str()
+                        })
+                    });
+                    let frames = prepared.map(|prepared| prepared.frames());
+                    let prepared_landmarks = prepared.map(|prepared| prepared.landmarks());
+                    let normalized =
+                        |role: crate::synth::WaveformLandmarkRole, parameter_id: &ParameterId| {
+                            let prepared_value =
+                                prepared_landmarks.zip(frames).map(|(exact, frames)| {
+                                    let frame = match role {
+                                        crate::synth::WaveformLandmarkRole::PlaybackStart => {
+                                            exact.start
+                                        }
+                                        crate::synth::WaveformLandmarkRole::PlaybackEnd => {
+                                            exact.end
+                                        }
+                                        crate::synth::WaveformLandmarkRole::LoopStart => {
+                                            exact.loop_start
+                                        }
+                                        crate::synth::WaveformLandmarkRole::LoopEnd => {
+                                            exact.loop_end
+                                        }
+                                    };
+                                    frame as f32 / frames.max(1) as f32
+                                });
+                            prepared_value.or_else(|| match value(parameter_id) {
+                                Some(ParameterValue::Continuous(value)) => Some(*value as f32),
+                                _ => None,
+                            })
+                        };
+                    let correlated_asset_lifecycle = (state.sample_browser().patch_id()
+                        == Some(patch.id())
+                        && state.sample_browser().asset_parameter_id() == Some(asset_parameter_id))
+                    .then(|| state.sample_browser().lifecycle());
+                    SemanticVisualizationData::Waveform {
+                        asset: active_asset,
+                        sample_rate: prepared.map(|value| value.sample_rate()),
+                        channels: prepared.map(|value| value.channels()),
+                        frames,
+                        pairs: prepared
+                            .map(|value| {
+                                value
+                                    .waveform()
+                                    .iter()
+                                    .map(|pair| SemanticWaveformPair {
+                                        left_min: pair.left_min,
+                                        left_max: pair.left_max,
+                                        right_min: pair.right_min,
+                                        right_max: pair.right_max,
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        landmarks: landmarks
+                            .iter()
+                            .filter_map(|landmark| {
+                                normalized(landmark.role(), landmark.parameter_id()).map(
+                                    |normalized_position| SemanticWaveformLandmark {
+                                        role: landmark.role(),
+                                        normalized_position,
+                                    },
+                                )
+                            })
+                            .collect(),
+                        status: correlated_asset_lifecycle.map_or_else(
+                            || {
+                                if prepared.is_some() {
+                                    "READY".to_owned()
+                                } else {
+                                    "WAVEFORM UNAVAILABLE".to_owned()
+                                }
+                            },
+                            |lifecycle| {
+                                if lifecycle == SampleAssetLifecycle::Ready && prepared.is_none() {
+                                    "READY · WAVEFORM UNAVAILABLE".to_owned()
+                                } else {
+                                    lifecycle.label().to_owned()
+                                }
+                            },
+                        ),
+                    }
+                }
+                crate::synth::CapabilityVisualization::Status { .. } => {
+                    SemanticVisualizationData::Status {
+                        text: state.engine_selection().kind().name().to_ascii_uppercase(),
+                    }
+                }
+            };
+            SemanticVisualizationViewModel {
+                id: declaration.id().to_owned(),
+                label: declaration.label().to_owned(),
+                focusable: false,
+                data,
+            }
+        })
+        .collect()
 }
 
 fn project_mixer_surfaces(
@@ -1805,6 +2614,7 @@ fn project_mixer_surfaces(
                         descriptor.coarse_step() as f64,
                     )),
                     unit: None,
+                    browser_metadata: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -1848,6 +2658,7 @@ fn project_mixer_surfaces(
                     value: SemanticControlValue::Identity(occupancy_value),
                     numeric_range: None,
                     unit: None,
+                    browser_metadata: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -1878,6 +2689,7 @@ fn project_mixer_surfaces(
                         descriptor.coarse_step() as f64,
                     )),
                     unit: None,
+                    browser_metadata: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -1934,6 +2746,7 @@ fn project_mixer_surfaces(
                         descriptor.coarse_step() as f64,
                     )),
                     unit: None,
+                    browser_metadata: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -1966,6 +2779,8 @@ fn project_mixer_surfaces(
             label: SurfaceId::MixerMain.label().to_owned(),
             role: SemanticSurfaceRole::Main,
             controls,
+            sections: Vec::new(),
+            visualizations: Vec::new(),
             summary: SemanticSurfaceSummary::Mixer {
                 patch_count: state.patches().len(),
                 global_parameter_count:
@@ -1977,6 +2792,8 @@ fn project_mixer_surfaces(
             label: SurfaceId::MixerInspector.label().to_owned(),
             role: SemanticSurfaceRole::PersistentSide,
             controls: inspector_controls,
+            sections: Vec::new(),
+            visualizations: Vec::new(),
             summary: SemanticSurfaceSummary::MixerInspector {
                 focused_control,
                 focused_track,
@@ -2021,6 +2838,7 @@ fn track_control(
             )
         }),
         unit: descriptor.unit().map(str::to_owned),
+        browser_metadata: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -2085,6 +2903,7 @@ fn control_from_parameter(
         selected_label,
         numeric_range,
         unit: spec.unit().map(str::to_owned),
+        browser_metadata: None,
         enabled: projection.enabled,
         visible: projection.visible,
         focusable: projection.focusable,
@@ -2110,6 +2929,7 @@ fn surface_root_control(
         value: SemanticControlValue::Summary("Read-only in Phase 2".to_owned()),
         numeric_range: None,
         unit: None,
+        browser_metadata: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -2223,7 +3043,7 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
             .surfaces
             .iter()
             .any(|surface| surface.id == data.active_surface)
-        || !data.interaction_mode.is_phase_two_reachable()
+        || !data.interaction_mode.is_phase_seven_reachable()
     {
         return Err(SemanticGraphicalViewModelError::IncoherentSurface);
     }
@@ -2232,7 +3052,14 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
         (false, Some(path))
             if path.entered_surface() == data.active_surface
                 && path.origin().context() == data.context
-                && path.origin().surface().is_main() => {}
+                && (path.origin().surface().is_main()
+                    || (matches!(
+                        data.active_surface,
+                        SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+                    ) && matches!(
+                        path.origin().surface(),
+                        SurfaceId::PatchUtility | SurfaceId::PatchDetail
+                    ))) => {}
         _ => return Err(SemanticGraphicalViewModelError::IncoherentSurface),
     }
     let controls = data
@@ -2410,14 +3237,14 @@ mod projection_enrichment_tests {
         production_capability_registry, production_soundfont_capability,
     };
     use crate::control::{
-        AppEvent, Direction, EventRejection, InteractionMode, PatchPageSection,
-        PatchPageSlotOccupancy, SemanticAction, SemanticControlId,
+        AppEvent, Direction, InteractionMode, PatchPageSection, PatchPageSlotOccupancy,
+        SemanticAction, SemanticControlId,
     };
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::patch_output::PatchOutput;
     use crate::synth::effect_slot_id::EffectSlotIndex;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
-    use crate::synth::{EffectSlotId, Patch};
+    use crate::synth::{EffectSlotId, InstrumentCapabilityProvider, Patch};
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use std::collections::BTreeSet;
 
@@ -2938,21 +3765,36 @@ mod projection_enrichment_tests {
             .capabilities()
             .descriptor(instrument.patches()[0].instrument_config().capability_id())
             .unwrap();
-        let expected = soundfont
+        let mut expected = soundfont
             .parameters()
             .map(|spec| spec.label().to_owned())
             .collect::<Vec<_>>();
+        expected.extend(
+            crate::synth::VoiceEnvelope::surface_descriptor()
+                .iter()
+                .map(|parameter| parameter.label().to_owned()),
+        );
         let projected = instrument_detail
             .controls()
             .iter()
             .map(|control| control.label().to_owned())
             .collect::<Vec<_>>();
-        assert_eq!(projected, expected, "section order is descriptor order");
+        assert_eq!(
+            projected, expected,
+            "descriptor sections precede the shared canonical envelope section"
+        );
+        assert_eq!(
+            instrument_detail.sections().last().unwrap().id(),
+            "shared.envelope"
+        );
+        assert!(instrument_detail
+            .visualizations()
+            .iter()
+            .all(|visualization| !visualization.focusable()));
         assert!(!effect_detail.controls().is_empty());
     }
 
-    /// The detail surface is uneditable in this phase, and it says so rather
-    /// than inviting an edit the reducer refuses.
+    /// Detail editability follows the descriptor interaction contract.
     ///
     /// Deliberately *not* a read-only proof: `editable` is uniform here, so it
     /// cannot tell a `ReadOnly` row from a `StructuralChoice` one. The
@@ -2961,7 +3803,7 @@ mod projection_enrichment_tests {
     /// `patch_page_projection.rs` by
     /// `the_declared_patch_interaction_reaches_the_detail_page_and_discriminates`.
     #[test]
-    fn detail_controls_project_editable_false_because_the_reducer_refuses_to_adjust_them() {
+    fn detail_controls_project_descriptor_owned_editability() {
         let mut state = patch_state();
         state
             .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
@@ -2969,23 +3811,15 @@ mod projection_enrichment_tests {
         let model = project(&state);
         let detail = model.surface(SurfaceId::PatchDetail).unwrap();
         assert!(!detail.controls().is_empty());
+        assert!(detail.controls().iter().any(|control| control.editable()));
         for control in detail.controls() {
-            assert!(
-                !control.editable(),
-                "{} claims to be editable on a surface the reducer will not adjust",
+            assert_eq!(
+                control.editable(),
+                control.patch_interaction() != Some(PatchInteraction::ReadOnly),
+                "{} editability drifted from its descriptor interaction",
                 control.label()
             );
         }
-
-        // The claim is derived, not asserted: adjustment really is refused.
-        let mut adjusting = state.clone();
-        adjusting
-            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
-            .unwrap();
-        assert_eq!(
-            adjusting.apply(AppEvent::Adjust(Direction::Right)),
-            Err(EventRejection::ActionUnavailableInContext)
-        );
     }
 
     /// A subject mid-preparation projects its typed lifecycle rather than an
@@ -3336,6 +4170,56 @@ mod projection_enrichment_tests {
                 SemanticControlId::Mixer(MixerControlId::Global { .. })
             )
         });
+        let mut choice = patch_state();
+        choice
+            .apply(AppEvent::Adjust(Direction::Up))
+            .expect("the focused engine row opens its generic choice surface");
+
+        let sample_provider = crate::adapter::sample_capability::SampleCapability::new(
+            crate::synth::SampleAssetId::new("Factory.wav").unwrap(),
+        )
+        .unwrap();
+        let sample_registry =
+            crate::synth::CapabilityRegistry::new(vec![sample_provider.descriptor()]).unwrap();
+        let folder = crate::synth::SampleFolderId::default();
+        let listing = crate::synth::SampleCatalogListing::new(
+            folder.clone(),
+            vec![
+                crate::synth::SampleBrowserRow::new(
+                    "file:Alternate.wav",
+                    "Alternate.wav",
+                    crate::synth::SampleBrowserRowKind::File(
+                        crate::synth::SampleAssetId::new("Alternate.wav").unwrap(),
+                    ),
+                    Some(128),
+                )
+                .unwrap(),
+                crate::synth::SampleBrowserRow::new(
+                    "cancel:",
+                    "CANCEL — UNCHANGED",
+                    crate::synth::SampleBrowserRowKind::Cancel,
+                    None,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let mut browser = AppState::new(sample_registry, GlobalParameters::new(0.0).unwrap())
+            .with_sample_catalog([(folder, Ok(listing))]);
+        browser
+            .apply(AppEvent::InstallPatches(vec![crate::synth::Patch::new(
+                PatchId::new(9).unwrap(),
+                "Sample Fixture".to_owned(),
+                sample_provider.default_config().unwrap(),
+                crate::kernel::MidiChannel::new(9).unwrap(),
+                PatchOutput::default(),
+            )]))
+            .unwrap();
+        browser
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        browser.apply(AppEvent::OpenRelated).unwrap();
+        browser.apply(AppEvent::OpenRelated).unwrap();
         vec![
             ("soundfont PATCH Main", patch_state()),
             ("MIXER Main", mixed_state()),
@@ -3348,6 +4232,8 @@ mod projection_enrichment_tests {
             ("MIXER Inspector master gain", inspector_global),
             ("PATCH Utility", entered(SurfaceId::PatchUtility)),
             ("PATCH Utility master gain", utility_global),
+            ("generic Patch choice", choice),
+            ("Sample Browser", browser),
             ("braids PATCH Main", braids(None)),
             (
                 "braids instrument detail",
@@ -3370,6 +4256,9 @@ mod projection_enrichment_tests {
         let mut covered = BTreeSet::new();
         let mut checked = 0_usize;
         for (fixture, state) in label_guard_fixtures() {
+            crate::control::StateProjector::new()
+                .project_with_shell(&state)
+                .unwrap_or_else(|error| panic!("{fixture} failed projection: {error}"));
             let keys = serialization_keys(&state);
             for surface in project(&state).surfaces() {
                 covered.insert(format!("{:?}", surface.id()));

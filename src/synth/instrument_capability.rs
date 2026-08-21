@@ -1,5 +1,6 @@
 use crate::kernel::midi_message::MidiMessageKind;
 use crate::synth::capability_id::{validate_namespaced_identifier, CapabilityId};
+use crate::synth::capability_visualization::CapabilityVisualization;
 use crate::synth::parameter_id::ParameterId;
 use core::fmt;
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_INSTRUMENT_SCALAR_PARAMETERS: usize = 16;
 
 /// The semantic kind of a stable asset reference.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AssetKind {
     SoundFont,
@@ -17,7 +18,7 @@ pub enum AssetKind {
 }
 
 /// A control-side asset identity containing no decoded or prepared state.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetReference {
     kind: AssetKind,
@@ -769,6 +770,8 @@ pub struct CapabilityDescriptor {
     label: String,
     semantic_accent: String,
     sections: Vec<CapabilitySection>,
+    #[serde(default)]
+    visualizations: Vec<CapabilityVisualization>,
     asset_requirements: Vec<AssetRequirement>,
     voice_policy: VoicePolicy,
     supported_midi_kinds: Vec<MidiMessageKind>,
@@ -789,6 +792,10 @@ impl CapabilityDescriptor {
             label: label.into(),
             semantic_accent: semantic_accent.into(),
             sections,
+            visualizations: vec![CapabilityVisualization::envelope(
+                "shared.envelope",
+                "Envelope",
+            )?],
             asset_requirements,
             voice_policy,
             supported_midi_kinds,
@@ -811,6 +818,21 @@ impl CapabilityDescriptor {
 
     pub fn sections(&self) -> &[CapabilitySection] {
         &self.sections
+    }
+
+    pub fn visualizations(&self) -> &[CapabilityVisualization] {
+        &self.visualizations
+    }
+
+    /// Adds descriptor-owned informative shapes without changing the
+    /// descriptor's canonical control schema.
+    pub fn with_visualizations(
+        mut self,
+        visualizations: impl IntoIterator<Item = CapabilityVisualization>,
+    ) -> Result<Self, CapabilityError> {
+        self.visualizations.extend(visualizations);
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn asset_requirements(&self) -> &[AssetRequirement] {
@@ -969,6 +991,35 @@ impl CapabilityDescriptor {
             }
         }
 
+        for (index, visualization) in self.visualizations.iter().enumerate() {
+            if self.visualizations[..index]
+                .iter()
+                .any(|prior| prior.id() == visualization.id())
+            {
+                return Err(CapabilityError::DuplicateVisualization(
+                    visualization.id().to_owned(),
+                ));
+            }
+            if let CapabilityVisualization::Waveform {
+                asset_parameter_id,
+                landmarks,
+                ..
+            } = visualization
+            {
+                if self
+                    .parameter(asset_parameter_id)
+                    .is_none_or(|parameter| parameter.kind() != ParameterKind::Asset)
+                    || landmarks
+                        .iter()
+                        .any(|landmark| self.parameter(landmark.parameter_id()).is_none())
+                {
+                    return Err(CapabilityError::InvalidVisualization(
+                        visualization.id().to_owned(),
+                    ));
+                }
+            }
+        }
+
         for (index, requirement) in self.asset_requirements.iter().enumerate() {
             if self.asset_requirements[..index]
                 .iter()
@@ -1081,7 +1132,13 @@ fn validate_asset(spec: &ParameterSpec, value: &AssetReference) -> Result<(), Ca
     let ParameterDefault::Asset(expected) = &spec.default_value else {
         return Err(CapabilityError::WrongAssetKind(spec.id().clone()));
     };
-    if value != expected {
+    // The descriptor default declares the semantic asset family and the
+    // initial locator. Asset-valued controls such as Sample selection must be
+    // able to replace that locator without inventing a capability-specific
+    // config representation. Engines that intentionally pin one exact file
+    // (the bundled SoundFont, for example) enforce that stronger constraint in
+    // their own preparer.
+    if value.kind() != expected.kind() {
         return Err(CapabilityError::AssetDoesNotMatch(spec.id().clone()));
     }
     Ok(())
@@ -1274,6 +1331,8 @@ pub enum CapabilityError {
     EmptySection(String),
     DuplicateCapability(CapabilityId),
     DuplicateSection(String),
+    DuplicateVisualization(String),
+    InvalidVisualization(String),
     DuplicateParameter(ParameterId),
     DuplicateChoice {
         parameter_id: ParameterId,
@@ -1343,6 +1402,12 @@ impl fmt::Display for CapabilityError {
             Self::EmptySection(id) => write!(formatter, "capability section {id} is empty"),
             Self::DuplicateCapability(id) => write!(formatter, "duplicate capability {id}"),
             Self::DuplicateSection(id) => write!(formatter, "duplicate capability section {id}"),
+            Self::DuplicateVisualization(id) => {
+                write!(formatter, "duplicate capability visualization {id}")
+            }
+            Self::InvalidVisualization(id) => {
+                write!(formatter, "capability visualization {id} is invalid")
+            }
             Self::DuplicateParameter(id) => write!(formatter, "duplicate parameter {id}"),
             Self::DuplicateChoice {
                 parameter_id,
@@ -1786,12 +1851,25 @@ mod tests {
             ),
             Err(CapabilityError::WrongAssetKind(_))
         ));
+        let replaced = descriptor
+            .create_config(
+                &values,
+                &[AssetAssignment::new(
+                    id("test.file"),
+                    AssetReference::new(AssetKind::Other, "other.bin").unwrap(),
+                )],
+            )
+            .unwrap();
+        assert_eq!(
+            replaced.asset_references()[0].reference().locator(),
+            "other.bin"
+        );
         assert!(matches!(
             descriptor.create_config(
                 &values,
                 &[AssetAssignment::new(
                     id("test.file"),
-                    AssetReference::new(AssetKind::Other, "other.bin").unwrap(),
+                    AssetReference::new(AssetKind::Sample, "other.wav").unwrap(),
                 )],
             ),
             Err(CapabilityError::AssetDoesNotMatch(_))

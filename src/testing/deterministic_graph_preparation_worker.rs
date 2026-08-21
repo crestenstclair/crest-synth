@@ -255,6 +255,7 @@ mod tests {
                 correlation,
                 candidate_config,
                 prepared_graph,
+                ..
             } => {
                 assert_eq!(correlation.request_id(), EngineSelectionRequestId::FIRST);
                 assert_eq!(

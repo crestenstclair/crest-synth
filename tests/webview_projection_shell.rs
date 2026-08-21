@@ -108,6 +108,7 @@ use crest_synth::adapter::production_effects::{
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_soundfont_capability,
 };
+use crest_synth::adapter::sample_capability::SampleCapability;
 use crest_synth::control::{
     AppEvent, AppState, Direction, InteractionMode, SemanticGraphicalViewModel, StateProjector,
     SurfaceId, TopLevelContext,
@@ -130,7 +131,11 @@ use crest_synth::shell::webview::token_export;
 use crest_synth::shell::webview::{protocol_response, PAGE_CSP};
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
-use crest_synth::synth::{EffectSlotId, InstrumentConfig, Patch};
+use crest_synth::synth::{
+    CapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider, InstrumentConfig, Patch,
+    SampleAssetId, SampleBrowserRow, SampleBrowserRowKind, SampleCatalogListing, SampleEncoding,
+    SampleFolderId, SampleMetadata,
+};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -405,6 +410,61 @@ fn production_patch_effect_detail_state() -> AppState {
     panic!("the PATCH focus order reaches an effect slot occupancy row within 32 steps");
 }
 
+fn production_sample_browser_state() -> AppState {
+    let provider = SampleCapability::new(SampleAssetId::new("Factory.wav").unwrap()).unwrap();
+    let patch = Patch::new(
+        PatchId::new(1).unwrap(),
+        "Sample Browser Fixture".to_owned(),
+        provider.default_config().unwrap(),
+        MidiChannel::new(0).unwrap(),
+        PatchOutput::default(),
+    );
+    let folder = SampleFolderId::default();
+    let listing = SampleCatalogListing::new(
+        folder.clone(),
+        vec![
+            SampleBrowserRow::new(
+                "file:Preview.wav",
+                "Preview.wav",
+                SampleBrowserRowKind::File(SampleAssetId::new("Preview.wav").unwrap()),
+                Some(4_096),
+            )
+            .unwrap()
+            .with_metadata(Ok(SampleMetadata::new(
+                SampleAssetId::new("Preview.wav").unwrap(),
+                4_096,
+                48_000,
+                2,
+                24,
+                SampleEncoding::SignedPcm,
+                48_000,
+            )
+            .unwrap()))
+            .unwrap(),
+            SampleBrowserRow::new(
+                "cancel:",
+                "CANCEL — UNCHANGED",
+                SampleBrowserRowKind::Cancel,
+                None,
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut state = AppState::new(
+        CapabilityRegistry::new(vec![provider.descriptor()]).unwrap(),
+        GlobalParameters::new(-3.0).unwrap(),
+    )
+    .with_sample_catalog([(folder, Ok(listing))]);
+    state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state.apply(AppEvent::OpenRelated).unwrap();
+    state.apply(AppEvent::OpenRelated).unwrap();
+    state
+}
+
 /// The MIXER fixture with the focused track's level driven to its exact
 /// range floor through the production reducer (WP03 T011): coarse decreases
 /// are applied until the reducer rejects the clamped no-op, so the projected
@@ -463,6 +523,58 @@ struct FidelityEvidence {
     /// The WP03 T011 PATCH document with the focused editable row raised to
     /// a deterministically nonzero position fraction.
     patch_geometry_document: String,
+}
+
+fn assert_asset_frame_has_no_prepared_or_ui_owned_authority(value: &Value, label: &str) {
+    fn walk(value: &Value, path: &str, label: &str) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    let child_path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    };
+                    let normalized = key.to_ascii_lowercase();
+                    assert!(
+                        !matches!(
+                            normalized.as_str(),
+                            "pcm"
+                                | "decodedpcm"
+                                | "interleaved"
+                                | "absolutepath"
+                                | "libraryroot"
+                                | "widgetindex"
+                                | "selectedindex"
+                                | "focusedindex"
+                        ),
+                        "{label}: forbidden prepared/UI authority entered the frame at {child_path}"
+                    );
+                    if key == "locator" {
+                        let locator = child.as_str().unwrap_or_else(|| {
+                            panic!("{label}: asset locator at {child_path} is textual")
+                        });
+                        assert!(
+                            !locator.starts_with('/')
+                                && !locator.starts_with('\\')
+                                && !locator.contains("/../")
+                                && !locator.starts_with("../")
+                                && !locator.contains(":\\"),
+                            "{label}: asset locator must remain library-relative, got {locator:?}"
+                        );
+                    }
+                    walk(child, &child_path, label);
+                }
+            }
+            Value::Array(values) => {
+                for (index, child) in values.iter().enumerate() {
+                    walk(child, &format!("{path}[{index}]"), label);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(value, "", label);
 }
 
 /// Pushes the state's accepted projection through the production
@@ -540,6 +652,7 @@ fn check_state_fidelity(
         round_tripped, model_value,
         "{label}: the emitted document must round-trip into a Value equal to the model's"
     );
+    assert_asset_frame_has_no_prepared_or_ui_owned_authority(&round_tripped, label);
 
     // The declared top-level surface, nothing added or trimmed.
     let Value::Object(map) = &round_tripped else {
@@ -637,6 +750,13 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         &production_patch_effect_detail_state(),
         "PATCH state E (effect detail open)",
     );
+    let mut sample_channel = ProjectionChannel::new();
+    let (patch_generation_f, patch_sample_browser) = check_state_fidelity(
+        &projector,
+        &mut sample_channel,
+        &production_sample_browser_state(),
+        "PATCH state F (Sample Browser open)",
+    );
     assert_ne!(
         patch_generation_d, patch_generation_e,
         "the two detail states must carry distinct generations so gating cannot mask one"
@@ -685,10 +805,10 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
 
     println!(
         "T022 serialized-schema fidelity: PASS \
-         (11 distinct states across both contexts, MIXER generations \
+         (12 distinct states across both contexts, MIXER generations \
          {generation_a}/{generation_b}/{generation_c}, PATCH generations \
          {patch_generation_a}/{patch_generation_b}/{patch_generation_c}/\
-         {patch_generation_d}/{patch_generation_e}, \
+         {patch_generation_d}/{patch_generation_e}/{patch_generation_f}, \
          emit path byte-identical + structural round-trip + declared key surface)"
     );
     FidelityEvidence {
@@ -700,6 +820,7 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
             ("patch-braids", patch_braids),
             ("patch-instrument-detail", patch_instrument_detail),
             ("patch-effect-detail", patch_effect_detail),
+            ("patch-sample-browser", patch_sample_browser),
         ],
         zero_level_document,
         patch_geometry_document,
@@ -2573,6 +2694,18 @@ fn assert_patch_observation_structure(
     // the workspace body and the strip is not painted, so the strip-shaped
     // assertions below do not apply. The shell bands and the persistent side
     // region are asserted for both, above and below.
+    let modal_surface = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("role").and_then(Value::as_str) == Some("modal"))
+        .cloned();
+    if let Some(modal_surface) = modal_surface {
+        assert_patch_modal_composition(observation, &modal_surface, label);
+        assert_patch_utility_panel(observation, document, inspector_width_at_least, label);
+        return;
+    }
     let detail_surface = document
         .get("surfaces")
         .and_then(Value::as_array)
@@ -2920,6 +3053,140 @@ fn assert_patch_observation_structure(
     );
 
     assert_patch_utility_panel(observation, document, inspector_width_at_least, label);
+}
+
+fn assert_patch_modal_composition(observation: &Value, modal_surface: &Value, label: &str) {
+    let modal = observation
+        .get("modal")
+        .filter(|value| !value.is_null())
+        .unwrap_or_else(|| panic!("{label}: a modal semantic surface paints the shared modal"));
+    assert_eq!(
+        modal.get("title").and_then(Value::as_str),
+        modal_surface.get("label").and_then(Value::as_str),
+        "{label}: the modal title is descriptor/projector-authored"
+    );
+    let expected = modal_surface
+        .get("controls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+        .map(|control| {
+            (
+                control
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                control
+                    .get("focused")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                !control
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                control
+                    .pointer("/browserMetadata/text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                control
+                    .pointer("/browserMetadata/status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let painted = modal
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|option| {
+            (
+                option
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                option
+                    .get("focused")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                option
+                    .get("disabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                option
+                    .get("metadata")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                option
+                    .get("metadataState")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        painted, expected,
+        "{label}: modal rows reconcile by semantic data"
+    );
+    assert_eq!(
+        painted
+            .iter()
+            .filter(|(_, focused, _, _, _)| *focused)
+            .count(),
+        1,
+        "{label}: modal focus is singular"
+    );
+
+    let expected_visualizations = modal_surface
+        .get("visualizations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|visualization| {
+            assert_eq!(
+                visualization.get("focusable").and_then(Value::as_bool),
+                Some(false),
+                "{label}: informative visualization cannot enter focus"
+            );
+            visualization
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let painted_visualizations = modal
+        .get("visualizations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|visualization| {
+            visualization
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(painted_visualizations, expected_visualizations);
+
+    if modal_surface
+        .pointer("/summary/kind")
+        .and_then(Value::as_str)
+        == Some("sampleBrowser")
+    {
+        assert_eq!(modal.get("browser").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            modal.get("previewState").and_then(Value::as_str),
+            modal_surface
+                .pointer("/summary/preview/kind")
+                .and_then(Value::as_str)
+        );
+        assert!(modal
+            .get("previewText")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("PLAYHEAD")));
+    }
 }
 
 /// WP04 T024/T025 (FR-011, FR-013, NFR-003): the painted box geometry of the

@@ -3,10 +3,12 @@
 #
 # Product invariant:
 #   no type in Synth, Mixer, RealTime, or Control may enumerate a variant,
-#   field, or descriptor entry named after a specific effect or bus; effects,
-#   slots, sends, and returns are addressed by index into descriptor-driven
-#   arrays. The single exception is MasterGainDb: master gain is genuinely
-#   global, a property of the master stage rather than of any effect.
+#   field, or descriptor entry named after a specific effect or bus; and the
+#   reducer, resolver, projector, renderer, rack, or live orchestration may
+#   not branch on a concrete capability identity to define fields. Effects,
+#   slots, sends, returns, and capability detail are descriptor-driven. The
+#   single exception is MasterGainDb: master gain is genuinely global, a
+#   property of the master stage rather than of any effect.
 #
 # Why this exists: the closed enumerated design (MixerTrackParameter::ReverbSend,
 # GlobalEffectsProcessor, GlobalParameter::ReverbRoomSize, ...) shipped even
@@ -28,8 +30,10 @@
 #
 # Deliberately out of scope (precision over reach — this is one invariant,
 # not a naming linter):
-#   - src/adapter/*: an adapter implementing reverb is supposed to say
-#     "reverb"; the invariant binds the four domain contexts only.
+#   - src/adapter/*: an adapter implementing a capability is supposed to own
+#     and declare its concrete identity.
+#   - code below a file's first `#[cfg(test)]`: conformance fixtures must name
+#     concrete registry entries in order to prove generic production logic.
 #   - comments and string literals: doc comments legitimately narrate the
 #     retired design, registry capability ids ("effect.reverb") are the open
 #     registry working as designed, and retained observation/telemetry labels
@@ -97,6 +101,10 @@ snake+='|delay_milliseconds|delay_feedback|delay_return|reverb_input|delay_input
 camel='reverbSend|delaySend|reverbRoomSize|reverbDamping|reverbReturn'
 camel+='|delayMilliseconds|delayFeedback|delayReturn'
 FORBIDDEN="\\b(${pascal}|${snake}|${camel})\\b"
+# Any concrete registry constant follows this spelling convention. Generic
+# production policy receives `CapabilityId` values from descriptors and must
+# therefore never need one of these adapter-owned constants.
+CAPABILITY_POLICY_FORBIDDEN='\b[A-Z][A-Z0-9_]*_CAPABILITY_ID\b'
 
 # Remove string literals first (so "// not a comment" inside a string cannot
 # hide code), then line comments. Line-granular: good enough for this tree,
@@ -145,6 +153,62 @@ scan() {
   return "$violations"
 }
 
+# Scans only production portions of Rust files for concrete capability policy.
+# The first cfg(test) module and everything below it are fixture code, not the
+# shipped reducer/projection/render path. Keeping this second scan separate
+# preserves exact line numbers and the older guard's string/comment behavior.
+scan_capability_policy() {
+  local violations=0 file production candidates rg_status rest line content stripped ident
+  local files
+  files="$(rg --files -g '*.rs' "$@")"
+  rg_status=$?
+  case "$rg_status" in
+    0) ;;
+    1) return 0 ;;
+    *)
+      printf 'check_no_name_enumerated_identity: rg failed (exit %s) while listing %s\n' \
+        "$rg_status" "$*" >&2
+      return 2
+      ;;
+  esac
+  while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
+    if ! production="$(perl -0pe 's/\n#\[cfg\(test\)\][\s\S]*\z//' "$file")"; then
+      printf 'check_no_name_enumerated_identity: perl failed while trimming test code from %s\n' \
+        "$file" >&2
+      return 2
+    fi
+    candidates="$(printf '%s\n' "$production" | rg -n -e "$CAPABILITY_POLICY_FORBIDDEN")"
+    rg_status=$?
+    case "$rg_status" in
+      0) ;;
+      1) continue ;;
+      *)
+        printf 'check_no_name_enumerated_identity: rg failed (exit %s) while scanning %s\n' \
+          "$rg_status" "$file" >&2
+        return 2
+        ;;
+    esac
+    while IFS= read -r rest; do
+      [[ -n "$rest" ]] || continue
+      line="${rest%%:*}"
+      content="${rest#*:}"
+      if ! stripped="$(printf '%s\n' "$content" | strip_noncode)"; then
+        printf 'check_no_name_enumerated_identity: perl failed while stripping %s:%s\n' \
+          "$file" "$line" >&2
+        return 2
+      fi
+      if printf '%s\n' "$stripped" | rg -q -e "$CAPABILITY_POLICY_FORBIDDEN"; then
+        while IFS= read -r ident; do
+          printf '%s:%s: concrete capability policy identifier %s\n' "$file" "$line" "$ident"
+        done < <(printf '%s\n' "$stripped" | rg -o -e "$CAPABILITY_POLICY_FORBIDDEN" | sort -u)
+        violations=1
+      fi
+    done <<<"$candidates"
+  done <<<"$files"
+  return "$violations"
+}
+
 fail_with_guidance() {
   cat <<'EOF'
 
@@ -175,6 +239,7 @@ pub struct GlobalReverbDelay {
     delay_feedback: f32,
 }
 pub fn process(reverb_input: &[f32]) {}
+pub const SAMPLE_CAPABILITY_ID: &str = "instrument.sample";
 EOF
   cat >"$fixture_root/allowed/exceptions.rs" <<'EOF'
 /// The retired `ReverbSend` and `GlobalEffectsProcessor` may be narrated
@@ -218,6 +283,21 @@ EOF
       exit 1
     fi
   done
+  capability_output="$(scan_capability_policy "$fixture_root/violation")"
+  case "$?" in
+    1) ;;
+    0)
+      echo 'self-test: seeded concrete capability policy was NOT detected' >&2
+      exit 1
+      ;;
+    *) exit 2 ;;
+  esac
+  if ! printf '%s\n' "$capability_output" | rg -Fq \
+    'reintroduced.rs:9: concrete capability policy identifier SAMPLE_CAPABILITY_ID'; then
+    echo 'self-test: concrete capability policy report was incomplete' >&2
+    printf '%s\n' "$capability_output" >&2
+    exit 1
+  fi
 
   allowed_output="$(scan "$fixture_root/allowed")"
   case "$?" in
@@ -240,12 +320,52 @@ fi
 # report <dir>... — scan and turn the three scan outcomes into the three
 # declared exit codes; a scanner failure never prints the pass marker.
 report() {
+  local violations=0
   scan "$@"
   case "$?" in
     0) ;;
-    1) fail_with_guidance ;;
+    1) violations=1 ;;
     *) exit 2 ;;
   esac
+  scan_capability_policy "$@"
+  case "$?" in
+    0) ;;
+    1) violations=1 ;;
+    *) exit 2 ;;
+  esac
+  [[ "$violations" -eq 0 ]] || fail_with_guidance
+  echo 'CREST_STATIC_VALIDATION no_name_enumerated_identity passed'
+  exit 0
+}
+
+# The legacy effect/bus vocabulary binds the four domain roots. Phase 7's
+# concrete-capability policy additionally binds the renderer and cumulative
+# live orchestration, without retroactively applying retired telemetry names
+# to those evidence modules.
+report_production_scopes() {
+  local violations=0
+  scan src/synth src/mixer src/real_time src/control
+  case "$?" in
+    0) ;;
+    1) violations=1 ;;
+    *) exit 2 ;;
+  esac
+  scan_capability_policy \
+    src/synth \
+    src/mixer \
+    src/real_time \
+    src/control \
+    src/testing/live_demo_scene.rs \
+    src/testing/live_demo_runner.rs \
+    src/testing/live_demo_report.rs \
+    src/shell/component_vocabulary.rs \
+    src/shell/standalone_application.rs
+  case "$?" in
+    0) ;;
+    1) violations=1 ;;
+    *) exit 2 ;;
+  esac
+  [[ "$violations" -eq 0 ]] || fail_with_guidance
   echo 'CREST_STATIC_VALIDATION no_name_enumerated_identity passed'
   exit 0
 }
@@ -263,4 +383,4 @@ if [[ "$#" -ne 0 ]]; then
   exit 2
 fi
 
-report src/synth src/mixer src/real_time src/control
+report_production_scopes

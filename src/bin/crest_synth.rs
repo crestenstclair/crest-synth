@@ -1,20 +1,17 @@
 use anyhow::{bail, Context, Result};
 use core::alloc::{GlobalAlloc, Layout};
 use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
-use crest_synth::adapter::braids_capability::BraidsCapability;
 use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
-use crest_synth::adapter::braids_preparer::BraidsPreparer;
 use crest_synth::adapter::corridors_midi_event_source::CorridorsMidiEventSource;
 use crest_synth::adapter::cpal_audio_output::CpalAudioOutput;
-use crest_synth::adapter::hidef_soundfont_asset::HiDefSoundFontAsset;
-use crest_synth::adapter::hidef_soundfont_capability::{
-    HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
-};
-use crest_synth::adapter::hidef_soundfont_preparer::HiDefSoundFontPreparer;
+use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
 use crest_synth::adapter::production_effects::{
     production_effect_preparers, production_effect_providers,
+};
+use crest_synth::adapter::production_instruments::{
+    production_instrument_preparers, production_instrument_providers,
 };
 use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_state::EventRejection;
@@ -32,7 +29,6 @@ use crest_synth::shell::standalone_application::{
 };
 use crest_synth::shell::webview::TauriWebviewWindow;
 use crest_synth::shell::window_input::WindowInput;
-use crest_synth::synth::{InstrumentCapabilityProvider, InstrumentPreparer};
 use crest_synth::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport};
 use crest_synth::testing::{
     BehavioralMutationCase, BehavioralMutationHarness, BehavioralMutationObservation,
@@ -79,33 +75,20 @@ fn main() -> Result<()> {
 }
 
 fn run(options: Options) -> Result<()> {
+    let _phase7_sample_library = options
+        .demo_live_detail_and_assets
+        .then(DemoSampleLibrary::create)
+        .transpose()?;
     let make_application = || -> Result<_> {
         let config = ApplicationConfig::default();
         let initial_parameters =
             ParameterSnapshot::new(0, config.global_parameters(), MixerState::default(), &[])
                 .context("failed to construct the initial audio parameter snapshot")?;
         let boundary = LockFreeAudioBoundary::new(AUDIO_COMMAND_CAPACITY, initial_parameters);
-        let soundfont_asset = HiDefSoundFontAsset::load()
-            .context("failed to load the fixed HiDef SoundFont asset")?;
-        let providers: Vec<Box<dyn InstrumentCapabilityProvider>> = vec![
-            Box::new(
-                HiDefSoundFontCapability::new(soundfont_asset.catalog())
-                    .context("failed to construct the HiDef capability provider")?,
-            ),
-            Box::new(
-                BraidsCapability::new()
-                    .context("failed to construct the Braids capability provider")?,
-            ),
-        ];
-        let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
-            Box::new(
-                HiDefSoundFontPreparer::new(&soundfont_asset)
-                    .context("failed to prepare the HiDef instrument factory")?,
-            ),
-            Box::new(
-                BraidsPreparer::new().context("failed to prepare the Braids instrument factory")?,
-            ),
-        ];
+        let providers = production_instrument_providers()
+            .context("failed to construct production instrument providers")?;
+        let preparers = production_instrument_preparers()
+            .context("failed to construct production instrument preparers")?;
         let effect_providers = production_effect_providers()
             .context("failed to construct the production effect capability providers")?;
         let effect_preparers = production_effect_preparers()
@@ -157,7 +140,11 @@ fn run(options: Options) -> Result<()> {
             crest_synth::testing::COMPONENT_GALLERY_OBSERVATION_MARKER
         );
     } else if options.demo_live {
-        let scene_kind = if options.demo_live_mixer {
+        let scene_kind = if options.demo_live_detail_and_assets {
+            LiveSceneKind::DetailAndAssets {
+                defeat_preview: options.defeat_detail_and_assets_preview,
+            }
+        } else if options.demo_live_mixer {
             LiveSceneKind::Mixer
         } else if options.demo_live_effects_and_buses {
             LiveSceneKind::EffectsAndBuses
@@ -168,7 +155,9 @@ fn run(options: Options) -> Result<()> {
         } else {
             LiveSceneKind::SixteenTrackMixerRouting
         };
-        let total_timeout = if options.demo_live_effects_and_buses {
+        let total_timeout = if options.demo_live_detail_and_assets {
+            std::time::Duration::from_secs(180)
+        } else if options.demo_live_effects_and_buses {
             crest_synth::testing::live_effects_and_buses_scene::EFFECTS_AND_BUSES_TOTAL_TIMEOUT
         } else if options.demo_live_patch_editor {
             crest_synth::testing::live_patch_editor_scene::PATCH_EDITOR_TOTAL_TIMEOUT
@@ -178,6 +167,11 @@ fn run(options: Options) -> Result<()> {
         if options.defeat_patch_selection {
             eprintln!(
                 "crest-synth live demo: --defeat-patch-selection is the declared controlled negative. The patch-selection gesture is removed; the journey still runs, still succeeds step by step, and still visits three slots and makes an audible edit — on the FIRST instrument. The reach predicates are what must fail, and this process must exit 1."
+            );
+        }
+        if options.defeat_detail_and_assets_preview {
+            eprintln!(
+                "crest-synth live demo: --defeat-detail-and-assets-preview removes the required semantic preview press/release; the report must exit non-zero on the named preview predicates"
             );
         }
         eprintln!(
@@ -196,7 +190,14 @@ fn run(options: Options) -> Result<()> {
                 emit_live_report,
             )
             .context("live observable demo execution failed")?;
-        if options.demo_live_mixer {
+        if options.demo_live_detail_and_assets {
+            let detail = observation
+                .detail_and_assets()
+                .context("the detail-and-assets scene did not retain its typed evidence")?;
+            let detail = serde_json::to_string(detail)
+                .context("failed to serialize detail-and-assets teardown evidence")?;
+            println!("CREST_DETAIL_AND_ASSETS_LIVE_OBSERVATION {detail}");
+        } else if options.demo_live_mixer {
             let mixer = observation
                 .live_mixer()
                 .context("the dedicated Mixer scene did not retain its typed evidence")?;
@@ -316,6 +317,108 @@ fn emit_live_report(report: &LiveDemoReport) {
     println!("CREST_LIVE_SUMMARY {}", report.summary());
 }
 
+/// Self-contained production-adapter library for the retained Phase 7 scene.
+///
+/// The files are created before application composition and consumed through
+/// `FilesystemSampleCatalog` plus `WavSampleDecoder`; no fixture decoder or
+/// callback-time I/O participates. Dropping the run restores any caller
+/// configuration and removes only this process-unique temporary directory.
+struct DemoSampleLibrary {
+    root: std::path::PathBuf,
+    previous_root: Option<std::ffi::OsString>,
+    previous_asset: Option<std::ffi::OsString>,
+}
+
+impl DemoSampleLibrary {
+    fn create() -> Result<Self> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("system clock is before the Unix epoch")?
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "crest-synth-phase7-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).context("failed to create the Phase 7 sample library")?;
+        let write_result = (|| -> Result<()> {
+            std::fs::write(root.join("A-valid.wav"), demo_wave(196.0))
+                .context("failed to write the active Phase 7 WAV fixture")?;
+            std::fs::write(root.join("B-alternate.wav"), demo_wave(329.63))
+                .context("failed to write the alternate Phase 7 WAV fixture")?;
+            std::fs::write(root.join("Z-invalid.wav"), b"not a RIFF/WAVE asset")
+                .context("failed to write the invalid Phase 7 WAV fixture")?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(error);
+        }
+        let previous_root =
+            std::env::var_os(crest_synth::adapter::production_instruments::SAMPLE_LIBRARY_ROOT_ENV);
+        let previous_asset = std::env::var_os(
+            crest_synth::adapter::production_instruments::SAMPLE_DEFAULT_ASSET_ENV,
+        );
+        std::env::set_var(
+            crest_synth::adapter::production_instruments::SAMPLE_LIBRARY_ROOT_ENV,
+            &root,
+        );
+        std::env::set_var(
+            crest_synth::adapter::production_instruments::SAMPLE_DEFAULT_ASSET_ENV,
+            "A-valid.wav",
+        );
+        Ok(Self {
+            root,
+            previous_root,
+            previous_asset,
+        })
+    }
+}
+
+impl Drop for DemoSampleLibrary {
+    fn drop(&mut self) {
+        let restore = |name: &str, value: &Option<std::ffi::OsString>| match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        };
+        restore(
+            crest_synth::adapter::production_instruments::SAMPLE_LIBRARY_ROOT_ENV,
+            &self.previous_root,
+        );
+        restore(
+            crest_synth::adapter::production_instruments::SAMPLE_DEFAULT_ASSET_ENV,
+            &self.previous_asset,
+        );
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn demo_wave(frequency_hz: f32) -> Vec<u8> {
+    const SAMPLE_RATE: u32 = 48_000;
+    const FRAMES: u32 = 24_000;
+    const CHANNELS: u16 = 1;
+    const BITS: u16 = 16;
+    let data_bytes = FRAMES * u32::from(CHANNELS) * u32::from(BITS / 8);
+    let mut bytes = Vec::with_capacity(44 + data_bytes as usize);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36_u32 + data_bytes).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&CHANNELS.to_le_bytes());
+    bytes.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+    bytes.extend_from_slice(&(SAMPLE_RATE * u32::from(CHANNELS) * 2).to_le_bytes());
+    bytes.extend_from_slice(&(CHANNELS * 2).to_le_bytes());
+    bytes.extend_from_slice(&BITS.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_bytes.to_le_bytes());
+    for frame in 0..FRAMES {
+        let phase = core::f32::consts::TAU * frequency_hz * frame as f32 / SAMPLE_RATE as f32;
+        let sample = (phase.sin() * 0.35 * i16::MAX as f32).round() as i16;
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    bytes
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Options {
     smoke: bool,
@@ -327,6 +430,9 @@ struct Options {
     demo_live_sixteen_track: bool,
     demo_live_effects_and_buses: bool,
     demo_live_patch_editor: bool,
+    demo_live_detail_and_assets: bool,
+    /// Controlled Phase 7 negative: omit the required semantic preview hold.
+    defeat_detail_and_assets_preview: bool,
     /// The declared controlled negative for the functional Patch editor
     /// scene. Accepted only alongside `--demo-live-patch-editor`.
     defeat_patch_selection: bool,
@@ -351,7 +457,11 @@ where
             "--observe" if !options.observe => options.observe = true,
             "--demo-scene" if !options.demo_scene => options.demo_scene = true,
             // `--demo-live` points at the newest cumulative retained scene.
-            "--demo-live" | "--demo-live-effects-and-buses" if !options.demo_live => {
+            "--demo-live" | "--demo-live-detail-and-assets" if !options.demo_live => {
+                options.demo_live = true;
+                options.demo_live_detail_and_assets = true;
+            }
+            "--demo-live-effects-and-buses" if !options.demo_live => {
                 options.demo_live = true;
                 options.demo_live_effects_and_buses = true;
             }
@@ -368,6 +478,9 @@ where
             }
             "--defeat-patch-selection" if !options.defeat_patch_selection => {
                 options.defeat_patch_selection = true;
+            }
+            "--defeat-detail-and-assets-preview" if !options.defeat_detail_and_assets_preview => {
+                options.defeat_detail_and_assets_preview = true;
             }
             "--demo-live-sixteen-track-mixer-routing" if !options.demo_live => {
                 options.demo_live = true;
@@ -396,11 +509,13 @@ where
             | "--observe"
             | "--demo-scene"
             | "--demo-live"
+            | "--demo-live-detail-and-assets"
             | "--demo-live-effects-and-buses"
             | "--demo-live-mixer"
             | "--demo-live-sixteen-track-mixer-routing"
             | "--demo-live-patch-editor"
             | "--defeat-patch-selection"
+            | "--defeat-detail-and-assets-preview"
             | "--demo-live-semantic-view-model"
             | "--demo-live-graphical-shell"
             | "--demo-live-component-library" => {
@@ -429,6 +544,9 @@ where
     }
     if options.defeat_patch_selection && !options.demo_live_patch_editor {
         bail!("--defeat-patch-selection requires --demo-live-patch-editor");
+    }
+    if options.defeat_detail_and_assets_preview && !options.demo_live_detail_and_assets {
+        bail!("--defeat-detail-and-assets-preview requires --demo-live-detail-and-assets");
     }
     if options.demo_component_library
         && (options.smoke
@@ -507,7 +625,7 @@ struct DemoSceneObservation {
 impl DemoSceneObservation {
     fn from_report(report: &DemoSceneReport, two_run_trace_equal: bool) -> Self {
         let records = report.event_log().records();
-        let mut event_variants = [false; 16];
+        let mut event_variants = [false; 20];
         let mut top_level_contexts = Vec::new();
         let mut navigate_directions = Vec::new();
         let mut adjust_directions = Vec::new();
@@ -535,6 +653,10 @@ impl DemoSceneObservation {
                     push_unique(&mut adjust_directions, *direction);
                 }
                 EventInput::SetInteractionMode { .. } => event_variants[4] = true,
+                EventInput::OpenRelated => event_variants[16] = true,
+                EventInput::Activate => event_variants[17] = true,
+                EventInput::PreviewStart => event_variants[18] = true,
+                EventInput::PreviewStop => event_variants[19] = true,
                 EventInput::EnterSurface { .. } => event_variants[5] = true,
                 EventInput::Return => event_variants[6] = true,
                 EventInput::Midi { message, .. } => {
@@ -542,6 +664,8 @@ impl DemoSceneObservation {
                     push_unique(&mut midi_kinds, message.kind());
                 }
                 EventInput::EnginePrepared { .. } => event_variants[8] = true,
+                EventInput::SampleAssetLifecycleAdvanced { .. } => {}
+                EventInput::SampleCatalogRefreshed { .. } => {}
                 EventInput::EnginePreparationFailed { .. } => event_variants[9] = true,
                 EventInput::EngineActivationAcknowledged { .. } => event_variants[10] = true,
                 EventInput::SetSlotOccupancy { .. } => event_variants[11] = true,
@@ -1198,7 +1322,7 @@ fn parameter_projection_matches_state(tree: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_options, DegenerateMode, Options};
+    use super::{parse_options, DegenerateMode, DemoSampleLibrary, Options};
     use crest_synth::control::event_record::{EventDirection, MidiKind};
 
     #[test]
@@ -1216,6 +1340,8 @@ mod tests {
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
                 demo_live_patch_editor: false,
+                demo_live_detail_and_assets: false,
+                defeat_detail_and_assets_preview: false,
                 defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: None,
@@ -1233,6 +1359,8 @@ mod tests {
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
                 demo_live_patch_editor: false,
+                demo_live_detail_and_assets: false,
+                defeat_detail_and_assets_preview: false,
                 defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: None,
@@ -1250,6 +1378,8 @@ mod tests {
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
                 demo_live_patch_editor: false,
+                demo_live_detail_and_assets: false,
+                defeat_detail_and_assets_preview: false,
                 defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: None,
@@ -1267,6 +1397,8 @@ mod tests {
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
                 demo_live_patch_editor: false,
+                demo_live_detail_and_assets: false,
+                defeat_detail_and_assets_preview: false,
                 defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: Some(DegenerateMode::Audio),
@@ -1290,6 +1422,8 @@ mod tests {
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
                 demo_live_patch_editor: false,
+                demo_live_detail_and_assets: false,
+                defeat_detail_and_assets_preview: false,
                 defeat_patch_selection: false,
                 demo_component_library: false,
                 degenerate: Some(DegenerateMode::Control),
@@ -1299,7 +1433,7 @@ mod tests {
             parse_options(["--demo-live"]).unwrap(),
             Options {
                 demo_live: true,
-                demo_live_effects_and_buses: true,
+                demo_live_detail_and_assets: true,
                 demo_live_patch_editor: false,
                 defeat_patch_selection: false,
                 ..Options::default()
@@ -1340,9 +1474,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase7_target_alias_negative_and_production_sample_fixtures_are_exact() {
+        use crest_synth::synth::{
+            SampleAssetCatalogPort, SampleAssetId, SampleBrowserRowKind, SampleDecoderPort,
+            SampleFolderId,
+        };
+
+        assert_eq!(
+            parse_options(["--demo-live-detail-and-assets"]).unwrap(),
+            Options {
+                demo_live: true,
+                demo_live_detail_and_assets: true,
+                ..Options::default()
+            }
+        );
+        assert_eq!(
+            parse_options([
+                "--demo-live-detail-and-assets",
+                "--defeat-detail-and-assets-preview",
+            ])
+            .unwrap(),
+            Options {
+                demo_live: true,
+                demo_live_detail_and_assets: true,
+                defeat_detail_and_assets_preview: true,
+                ..Options::default()
+            }
+        );
+        assert!(parse_options(["--defeat-detail-and-assets-preview"]).is_err());
+
+        let library = DemoSampleLibrary::create().unwrap();
+        let catalog =
+            crest_synth::adapter::filesystem_sample_catalog::FilesystemSampleCatalog::new(
+                &library.root,
+            )
+            .unwrap();
+        let listing = catalog.list(&SampleFolderId::default()).unwrap();
+        let files = listing
+            .rows()
+            .iter()
+            .filter_map(|row| match row.kind() {
+                SampleBrowserRowKind::File(asset) => Some(asset.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(files, ["A-valid.wav", "B-alternate.wav", "Z-invalid.wav"]);
+        let decoder = crest_synth::adapter::wav_sample_decoder::WavSampleDecoder;
+        for name in ["A-valid.wav", "B-alternate.wav"] {
+            let asset = SampleAssetId::new(name).unwrap();
+            let decoded = decoder
+                .decode(&asset, &catalog.read(&asset).unwrap())
+                .unwrap();
+            assert_eq!(decoded.metadata().sample_rate(), 48_000);
+            assert_eq!(decoded.metadata().channels(), 1);
+        }
+        let invalid = SampleAssetId::new("Z-invalid.wav").unwrap();
+        assert!(decoder
+            .decode(&invalid, &catalog.read(&invalid).unwrap())
+            .is_err());
+
+        let makefile = include_str!("../../Makefile");
+        assert!(makefile.contains("demo-live: demo-live-detail-and-assets"));
+        assert!(makefile.contains("--demo-live-detail-and-assets"));
+        assert!(makefile.contains("--defeat-detail-and-assets-preview"));
+    }
+
     /// The functional Patch editor scene is additive: it stands alone, its
     /// negative is accepted only beside it, and `--demo-live` keeps pointing
-    /// at the cumulative effects-and-buses scene.
+    /// at the cumulative detail-and-assets scene.
     #[test]
     fn the_patch_editor_scene_is_additive_and_its_negative_is_bound_to_it() {
         assert_eq!(
@@ -1365,7 +1565,7 @@ mod tests {
 
         // `demo-live` is unchanged: still the cumulative scene, never this one.
         let alias = parse_options(["--demo-live"]).unwrap();
-        assert!(alias.demo_live_effects_and_buses);
+        assert!(alias.demo_live_detail_and_assets);
         assert!(!alias.demo_live_patch_editor);
         assert!(!alias.demo_live_mixer);
 
@@ -1401,7 +1601,7 @@ mod tests {
             }
         );
         let alias = parse_options(["--demo-live"]).unwrap();
-        assert!(alias.demo_live_effects_and_buses);
+        assert!(alias.demo_live_detail_and_assets);
         assert!(!alias.demo_live_mixer);
         assert!(parse_options(["--demo-live-mixer", "--demo-live"]).is_err());
         assert!(parse_options(["--demo-live", "--demo-live-mixer"]).is_err());
@@ -1411,7 +1611,7 @@ mod tests {
         let makefile = include_str!("../../Makefile");
         assert!(makefile.contains("demo-live-mixer: ## Run the dedicated sixteen-track Mixer demo"));
         assert!(makefile.contains("cargo run --release --bin crest-synth -- --demo-live-mixer"));
-        assert!(makefile.contains("demo-live: demo-live-effects-and-buses"));
+        assert!(makefile.contains("demo-live: demo-live-detail-and-assets"));
         assert!(!makefile.contains("demo-live: demo-live-mixer"));
     }
 
@@ -1439,7 +1639,7 @@ mod tests {
 
         let alias = parse_options(["--demo-live"]).unwrap();
         assert!(!alias.demo_component_library);
-        assert!(alias.demo_live_effects_and_buses);
+        assert!(alias.demo_live_detail_and_assets);
 
         assert!(parse_options([
             "--demo-live-component-library",

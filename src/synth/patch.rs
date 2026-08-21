@@ -188,6 +188,14 @@ impl Patch {
         self
     }
 
+    /// Supplies one already-validated saved voice limit while reconstructing
+    /// persistent session data. Installation still validates it against the
+    /// restored capability's declared ceiling before it becomes canonical.
+    pub fn with_voice_limit(mut self, value: u16) -> Result<Self, VoiceLimitError> {
+        self.voice_limit = VoiceLimit::new(value)?;
+        Ok(self)
+    }
+
     /// Seeds this Patch's limit from its own capability's declared per-Patch
     /// polyphony ceiling, returning the seeded value.
     ///

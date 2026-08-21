@@ -1,12 +1,11 @@
-use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
-use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crate::control::app_state::EventRejection;
 use crate::control::event_log::EventLog;
 use crate::control::event_record::{EmittedEvent, EventInput, EventOutcome, EventSource, MidiKind};
 use crate::control::state_tree::StateTree;
 use crate::control::{
-    GraphicalShellProjection, InteractionMode, MixerControlId, SemanticAction, SemanticControlId,
-    SemanticSurfaceSummary, SurfaceId, TopLevelContext,
+    GraphicalShellProjection, InteractionMode, MixerControlId, SampleAssetLifecycle,
+    SamplePreviewState, SemanticAction, SemanticControlId, SemanticSurfaceSummary,
+    SemanticVisualizationData, SurfaceId, TopLevelContext,
 };
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -82,6 +81,7 @@ impl LiveShellCoverage {
             }
             SurfaceId::PatchUtility => self.patch_utility_observed = true,
             SurfaceId::PatchDetail => self.patch_detail_observed = true,
+            SurfaceId::PatchChoice | SurfaceId::SampleBrowser => {}
             SurfaceId::MixerMain => {
                 self.mixer_main_observed = true;
                 if self.mixer_inspector_observed && frame.return_path().is_none() {
@@ -743,15 +743,14 @@ fn insert_sorted_unique(values: &mut Vec<String>, value: String) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeAudioWitness {
-    parsed_soundfont_banks: usize,
+    prepared_shared_assets: usize,
     prepared_instruments: usize,
-    soundfont_patches: usize,
-    braids_patches: usize,
-    alternating_capabilities: bool,
+    engine_managed_patches: usize,
+    fixed_per_patch_patches: usize,
+    adjacent_capabilities_distinct: bool,
     initial_graph_revision: GraphRevision,
     active_graph_revision: GraphRevision,
     engine_switches: usize,
-    ready_capabilities: [Option<RuntimeReadyCapability>; 3],
     fallbacks: usize,
     callback_allocations: usize,
     callback_destructions: usize,
@@ -766,36 +765,27 @@ enum CallbackSafetySource {
     Process,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub enum RuntimeReadyCapability {
-    #[serde(rename = "instrument.braids")]
-    Braids,
-    #[serde(rename = "instrument.soundfont.hidef")]
-    SoundFont,
-}
-
 impl RuntimeAudioWitness {
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
-        parsed_soundfont_banks: usize,
+        prepared_shared_assets: usize,
         prepared_instruments: usize,
-        soundfont_patches: usize,
-        braids_patches: usize,
-        alternating_capabilities: bool,
+        engine_managed_patches: usize,
+        fixed_per_patch_patches: usize,
+        adjacent_capabilities_distinct: bool,
         active_graph_revision: GraphRevision,
         callback_allocations: usize,
         callback_destructions: usize,
     ) -> Self {
         Self {
-            parsed_soundfont_banks,
+            prepared_shared_assets,
             prepared_instruments,
-            soundfont_patches,
-            braids_patches,
-            alternating_capabilities,
+            engine_managed_patches,
+            fixed_per_patch_patches,
+            adjacent_capabilities_distinct,
             initial_graph_revision: active_graph_revision,
             active_graph_revision,
             engine_switches: 0,
-            ready_capabilities: [None, None, None],
             fallbacks: 0,
             callback_allocations,
             callback_destructions,
@@ -818,24 +808,24 @@ impl RuntimeAudioWitness {
         self
     }
 
-    pub const fn parsed_soundfont_banks(self) -> usize {
-        self.parsed_soundfont_banks
+    pub const fn prepared_shared_assets(self) -> usize {
+        self.prepared_shared_assets
     }
 
     pub const fn prepared_instruments(self) -> usize {
         self.prepared_instruments
     }
 
-    pub const fn soundfont_patches(self) -> usize {
-        self.soundfont_patches
+    pub const fn engine_managed_patches(self) -> usize {
+        self.engine_managed_patches
     }
 
-    pub const fn braids_patches(self) -> usize {
-        self.braids_patches
+    pub const fn fixed_per_patch_patches(self) -> usize {
+        self.fixed_per_patch_patches
     }
 
-    pub const fn alternating_capabilities(self) -> bool {
-        self.alternating_capabilities
+    pub const fn adjacent_capabilities_distinct(self) -> bool {
+        self.adjacent_capabilities_distinct
     }
 
     pub const fn active_graph_revision(self) -> GraphRevision {
@@ -872,29 +862,311 @@ impl RuntimeAudioWitness {
         capability_id: &crate::synth::CapabilityId,
         revision: GraphRevision,
     ) -> bool {
-        let capability = match capability_id.as_str() {
-            BRAIDS_CAPABILITY_ID => RuntimeReadyCapability::Braids,
-            HIDEF_CAPABILITY_ID => RuntimeReadyCapability::SoundFont,
-            _ => return false,
-        };
-        let Some(slot) = self.ready_capabilities.get_mut(self.engine_switches) else {
+        if capability_id.as_str().is_empty() || self.engine_switches >= 3 {
             return false;
-        };
-        *slot = Some(capability);
+        }
         self.engine_switches = self.engine_switches.saturating_add(1);
         self.active_graph_revision = revision;
         true
     }
+}
 
-    const fn has_exact_ready_sequence(self) -> bool {
-        matches!(
-            self.ready_capabilities,
-            [
-                Some(RuntimeReadyCapability::SoundFont),
-                Some(RuntimeReadyCapability::Braids),
-                Some(RuntimeReadyCapability::SoundFont)
-            ]
-        )
+const LIVE_DETAIL_ASSET_CHECKPOINT_CAPACITY: usize = 128;
+
+/// One bounded Phase 7 correlation sample. It joins reducer-owned focus and
+/// asset lifecycle, the visible semantic focus marker, the active graph, and
+/// callback energy from the same control-loop observation point.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveDetailAssetsCheckpoint {
+    generation: u64,
+    graph_revision: GraphRevision,
+    focus: crate::control::FocusPath,
+    visible_focus_matches: bool,
+    active_asset: Option<String>,
+    requested_asset: Option<String>,
+    lifecycle: SampleAssetLifecycle,
+    preview: SamplePreviewState,
+    preview_revision_compatible: bool,
+    primary_patch_id: Option<PatchId>,
+    primary_patch_rms: f32,
+    origin_track_rms: f32,
+    bus_input_rms: [f32; 2],
+    output_rms: f32,
+}
+
+impl LiveDetailAssetsCheckpoint {
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub const fn graph_revision(&self) -> GraphRevision {
+        self.graph_revision
+    }
+
+    pub const fn focus(&self) -> &crate::control::FocusPath {
+        &self.focus
+    }
+
+    pub const fn visible_focus_matches(&self) -> bool {
+        self.visible_focus_matches
+    }
+
+    pub const fn lifecycle(&self) -> SampleAssetLifecycle {
+        self.lifecycle
+    }
+
+    pub const fn preview_revision_compatible(&self) -> bool {
+        self.preview_revision_compatible
+    }
+
+    pub const fn primary_patch_id(&self) -> Option<PatchId> {
+        self.primary_patch_id
+    }
+
+    pub const fn primary_patch_rms(&self) -> f32 {
+        self.primary_patch_rms
+    }
+
+    pub const fn origin_track_rms(&self) -> f32 {
+        self.origin_track_rms
+    }
+
+    pub const fn bus_input_rms(&self) -> [f32; 2] {
+        self.bus_input_rms
+    }
+}
+
+/// Cumulative Phase 7 evidence sampled from canonical state, the production
+/// shell projection, and revision-compatible callback observations.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveDetailAssetsEvidence {
+    patch_id: PatchId,
+    track_id: MixerTrackId,
+    initial_asset: String,
+    final_asset: Option<String>,
+    active_requested_distinction_observed: bool,
+    cancelled_observed: bool,
+    invalid_observed: bool,
+    ready_after_asset_change: bool,
+    preview_revision_compatible: bool,
+    preview_track_rms_peak: f32,
+    preview_release_observed: bool,
+    committed_sample_track_rms_peak: f32,
+    waveform_correlated: bool,
+    exact_return_observed: bool,
+    checkpoints: Vec<LiveDetailAssetsCheckpoint>,
+    #[serde(skip)]
+    pending_return_origin: Option<crate::control::FocusPath>,
+}
+
+impl LiveDetailAssetsEvidence {
+    pub(crate) fn new(
+        patch_id: PatchId,
+        track_id: MixerTrackId,
+        initial_asset: impl Into<String>,
+    ) -> Self {
+        Self {
+            patch_id,
+            track_id,
+            initial_asset: initial_asset.into(),
+            final_asset: None,
+            active_requested_distinction_observed: false,
+            cancelled_observed: false,
+            invalid_observed: false,
+            ready_after_asset_change: false,
+            preview_revision_compatible: false,
+            preview_track_rms_peak: 0.0,
+            preview_release_observed: false,
+            committed_sample_track_rms_peak: 0.0,
+            waveform_correlated: false,
+            exact_return_observed: false,
+            checkpoints: Vec::new(),
+            pending_return_origin: None,
+        }
+    }
+
+    pub(crate) fn observe(
+        &mut self,
+        state: &crate::control::AppState,
+        shell: &GraphicalShellProjection,
+        audio: AudioObservationSnapshot,
+    ) {
+        let browser = state.sample_browser();
+        self.cancelled_observed |= browser.lifecycle() == SampleAssetLifecycle::Cancelled;
+        self.invalid_observed |= browser.lifecycle() == SampleAssetLifecycle::Invalid;
+
+        let active_asset = state
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == self.patch_id)
+            .and_then(|patch| {
+                patch
+                    .instrument_config()
+                    .asset_references()
+                    .iter()
+                    .find(|assignment| {
+                        assignment.reference().kind() == crate::synth::AssetKind::Sample
+                    })
+            })
+            .map(|assignment| assignment.reference().locator().to_owned());
+        if state.interaction().active_surface() == SurfaceId::SampleBrowser {
+            self.pending_return_origin = state
+                .interaction()
+                .return_path()
+                .map(|path| path.origin().clone());
+        } else if self.pending_return_origin.as_ref().is_some_and(|origin| {
+            state.interaction().focus_path() == origin
+                && shell.semantic_model().focus_path() == origin
+        }) {
+            self.exact_return_observed = true;
+            self.pending_return_origin = None;
+        }
+        self.final_asset = active_asset.clone();
+        self.active_requested_distinction_observed |=
+            browser.requested_asset().is_some_and(|requested| {
+                active_asset.as_deref() == Some(self.initial_asset.as_str())
+                    && requested.as_str() != self.initial_asset
+            });
+        self.ready_after_asset_change |= browser.lifecycle() == SampleAssetLifecycle::Ready
+            && active_asset
+                .as_deref()
+                .is_some_and(|asset| asset != self.initial_asset);
+        if browser.lifecycle() == SampleAssetLifecycle::Ready
+            && active_asset
+                .as_deref()
+                .is_some_and(|asset| asset != self.initial_asset)
+            && audio.active_graph_revision() == shell.semantic_model().status().graph_revision()
+        {
+            self.committed_sample_track_rms_peak = self
+                .committed_sample_track_rms_peak
+                .max(audio.track(self.track_id).rms());
+        }
+
+        let mut compatible_preview = false;
+        if matches!(browser.preview(), SamplePreviewState::Playing { .. }) {
+            if let Some(request_id) = browser.preview_request_id() {
+                if audio
+                    .compatible_preview(
+                        shell.generation(),
+                        shell.semantic_model().status().graph_revision(),
+                        request_id.value(),
+                        self.patch_id,
+                    )
+                    .is_some_and(|preview| preview.playing())
+                {
+                    compatible_preview = true;
+                    self.preview_revision_compatible = true;
+                    self.preview_track_rms_peak = self
+                        .preview_track_rms_peak
+                        .max(audio.track(self.track_id).rms());
+                }
+            }
+        }
+        self.preview_release_observed |= self.preview_revision_compatible
+            && matches!(browser.preview(), SamplePreviewState::Idle)
+            && !audio.preview_playing();
+
+        self.waveform_correlated |= shell
+            .semantic_model()
+            .surface(SurfaceId::PatchDetail)
+            .into_iter()
+            .flat_map(|surface| surface.visualizations())
+            .any(|visualization| {
+                matches!(
+                    visualization.data(),
+                    SemanticVisualizationData::Waveform {
+                        asset: Some(asset),
+                        pairs,
+                        status,
+                        ..
+                    } if active_asset.as_deref() == Some(asset.locator())
+                        && !pairs.is_empty()
+                        && status == "READY"
+                )
+            });
+
+        let phase7_surface = matches!(
+            state.interaction().active_surface(),
+            SurfaceId::PatchDetail | SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+        );
+        if phase7_surface && self.checkpoints.len() < LIVE_DETAIL_ASSET_CHECKPOINT_CAPACITY {
+            let checkpoint = LiveDetailAssetsCheckpoint {
+                generation: state.generation(),
+                graph_revision: audio.active_graph_revision(),
+                focus: state.interaction().focus_path().clone(),
+                visible_focus_matches: shell.semantic_model().focus_path()
+                    == state.interaction().focus_path(),
+                active_asset,
+                requested_asset: browser
+                    .requested_asset()
+                    .map(|asset| asset.as_str().to_owned()),
+                lifecycle: browser.lifecycle(),
+                preview: browser.preview().clone(),
+                preview_revision_compatible: compatible_preview,
+                primary_patch_id: audio.primary_patch_id(),
+                primary_patch_rms: audio.primary_patch_rms(),
+                origin_track_rms: audio.track(self.track_id).rms(),
+                bus_input_rms: [audio.reverb_input_rms(), audio.delay_input_rms()],
+                output_rms: audio.output_rms(),
+            };
+            let meaningfully_changed = self.checkpoints.last().is_none_or(|previous| {
+                previous.graph_revision != checkpoint.graph_revision
+                    || previous.focus != checkpoint.focus
+                    || previous.active_asset != checkpoint.active_asset
+                    || previous.requested_asset != checkpoint.requested_asset
+                    || previous.lifecycle != checkpoint.lifecycle
+                    || previous.preview != checkpoint.preview
+                    || previous.preview_revision_compatible
+                        != checkpoint.preview_revision_compatible
+            });
+            if meaningfully_changed {
+                self.checkpoints.push(checkpoint);
+            }
+        }
+    }
+
+    pub fn checkpoints(&self) -> &[LiveDetailAssetsCheckpoint] {
+        &self.checkpoints
+    }
+
+    pub const fn exact_return_observed(&self) -> bool {
+        self.exact_return_observed
+    }
+
+    pub const fn preview_revision_compatible(&self) -> bool {
+        self.preview_revision_compatible
+    }
+
+    pub const fn preview_release_observed(&self) -> bool {
+        self.preview_release_observed
+    }
+
+    pub const fn waveform_correlated(&self) -> bool {
+        self.waveform_correlated
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.active_requested_distinction_observed
+            && self.cancelled_observed
+            && self.invalid_observed
+            && self.ready_after_asset_change
+            && self.preview_revision_compatible
+            && self.preview_track_rms_peak > 1.0e-5
+            && self.preview_release_observed
+            && self.committed_sample_track_rms_peak > 1.0e-5
+            && self.waveform_correlated
+            && self.exact_return_observed
+            && !self.checkpoints.is_empty()
+            && self
+                .checkpoints
+                .iter()
+                .all(LiveDetailAssetsCheckpoint::visible_focus_matches)
+            && self
+                .final_asset
+                .as_deref()
+                .is_some_and(|asset| asset != self.initial_asset)
     }
 }
 
@@ -918,6 +1190,7 @@ pub struct LiveDemoReport {
     /// emitted observation after teardown, when the facts only the host knows
     /// are available.
     patch_editor: Option<crate::testing::PatchEditorMeasurement>,
+    detail_and_assets: Option<LiveDetailAssetsEvidence>,
     summary: String,
 }
 
@@ -1228,6 +1501,7 @@ impl LiveDemoReport {
         final_observation: AudioObservationSnapshot,
         runtime_audio: RuntimeAudioWitness,
         patch_editor: Option<crate::testing::PatchEditorMeasurement>,
+        detail_and_assets: Option<LiveDetailAssetsEvidence>,
     ) -> Result<Self, LiveDemoReportError> {
         let scene = scene.into();
         if scene.trim().is_empty() {
@@ -1247,7 +1521,14 @@ impl LiveDemoReport {
         }
         let tree_value: serde_json::Value = serde_json::from_str(state_tree.json())
             .map_err(|_| LiveDemoReportError::FinalShellMismatch)?;
-        let shell_value = serde_json::to_value(&graphical_shell)
+        // Compare the two documents after the same JSON text round trip.
+        // `serde_json::to_value` retains an f32 as an exact f64 decimal while
+        // StateTree stores the canonical serialized JSON spelling; waveform
+        // pairs exposed that representation-only difference even though both
+        // projections came from the same f32 values.
+        let shell_json = serde_json::to_string(&graphical_shell)
+            .map_err(|_| LiveDemoReportError::FinalShellMismatch)?;
+        let shell_value: serde_json::Value = serde_json::from_str(&shell_json)
             .map_err(|_| LiveDemoReportError::FinalShellMismatch)?;
         if graphical_shell.generation() != state_tree.generation()
             || graphical_shell.state_hash() != state_tree.state_hash()
@@ -1289,13 +1570,12 @@ impl LiveDemoReport {
                 installed_patches,
                 &state_tree,
             );
-        let runtime_complete = runtime_audio.parsed_soundfont_banks() > 0
+        let runtime_complete = runtime_audio.prepared_shared_assets() > 0
             && runtime_audio.prepared_instruments() == installed_patches.len()
             && runtime_composition_matches(&state_tree, runtime_audio)
             && runtime_audio.initial_graph_revision() < runtime_audio.active_graph_revision()
             && runtime_audio.active_graph_revision() == state_tree.graph_revision()
             && runtime_audio.engine_switches() == 3
-            && runtime_audio.has_exact_ready_sequence()
             && runtime_audio.fallbacks() == 0
             && runtime_audio.callback_allocations() == 0
             && runtime_audio.callback_destructions() == 0;
@@ -1325,9 +1605,12 @@ impl LiveDemoReport {
             && mixer_routing.is_complete()
             && effects_and_buses
                 .as_ref()
-                .is_none_or(LiveEffectsAndBusesEvidence::is_complete);
+                .is_none_or(LiveEffectsAndBusesEvidence::is_complete)
+            && detail_and_assets
+                .as_ref()
+                .is_none_or(LiveDetailAssetsEvidence::is_complete);
         let summary = format!(
-            "live demo {}: {}/{} editable parameters, {}/{} engine transitions, {} qualifying shell frames, {} checkpoints, {} events, {} dropped, banks={}, instruments={}, soundfontPatches={}, braidsPatches={}, alternatingCapabilities={}, initialGraphRevision={}, graphRevision={}, engineSwitches={}, fallbacks={}, callbackAllocations={}, callbackDestructions={}, cleanup={}, activeNotes={}",
+            "live demo {}: {}/{} editable parameters, {}/{} engine transitions, {} qualifying shell frames, {} checkpoints, {} events, {} dropped, preparedSharedAssets={}, instruments={}, engineManagedPatches={}, fixedPerPatchPatches={}, adjacentCapabilitiesDistinct={}, initialGraphRevision={}, graphRevision={}, engineSwitches={}, fallbacks={}, callbackAllocations={}, callbackDestructions={}, cleanup={}, activeNotes={}",
             if complete { "complete" } else { "incomplete" },
             coverage.exercised().len(),
             coverage.expected().len(),
@@ -1337,11 +1620,11 @@ impl LiveDemoReport {
             checkpoints.len(),
             event_log.total_observed(),
             event_log.dropped_records(),
-            runtime_audio.parsed_soundfont_banks(),
+            runtime_audio.prepared_shared_assets(),
             runtime_audio.prepared_instruments(),
-            runtime_audio.soundfont_patches(),
-            runtime_audio.braids_patches(),
-            runtime_audio.alternating_capabilities(),
+            runtime_audio.engine_managed_patches(),
+            runtime_audio.fixed_per_patch_patches(),
+            runtime_audio.adjacent_capabilities_distinct(),
             runtime_audio.initial_graph_revision(),
             runtime_audio.active_graph_revision(),
             runtime_audio.engine_switches(),
@@ -1366,6 +1649,7 @@ impl LiveDemoReport {
             mixer_routing,
             effects_and_buses,
             patch_editor,
+            detail_and_assets,
             summary,
         })
     }
@@ -1429,6 +1713,10 @@ impl LiveDemoReport {
 
     pub const fn effects_and_buses(&self) -> Option<&LiveEffectsAndBusesEvidence> {
         self.effects_and_buses.as_ref()
+    }
+
+    pub const fn detail_and_assets(&self) -> Option<&LiveDetailAssetsEvidence> {
+        self.detail_and_assets.as_ref()
     }
 
     pub const fn mixer_routing(&self) -> LiveMixerRoutingEvidence {
@@ -1648,6 +1936,7 @@ fn measure_mixer_routing(
                     }) => Some((*track_id, *parameter)),
                     SemanticControlId::Mixer(_)
                     | SemanticControlId::Patch(_)
+                    | SemanticControlId::Modal(_)
                     | SemanticControlId::SurfaceRoot => None,
                 })
                 .collect::<Vec<_>>()
@@ -2036,22 +2325,38 @@ fn runtime_composition_matches(tree: &StateTree, runtime: RuntimeAudioWitness) -
     if capabilities.len() != patches.len() {
         return false;
     }
-    let soundfont = capabilities
+    let Ok(registry) = serde_json::from_value::<crate::synth::CapabilityRegistry>(
+        value.get("capabilities").cloned().unwrap_or_default(),
+    ) else {
+        return false;
+    };
+    let engine_managed = capabilities
         .iter()
-        .filter(|capability| **capability == HIDEF_CAPABILITY_ID)
+        .filter(|capability| {
+            registry.descriptors().iter().any(|descriptor| {
+                descriptor.id().as_str() == **capability
+                    && descriptor.voice_policy() == crate::synth::VoicePolicy::EngineManaged
+            })
+        })
         .count();
-    let braids = capabilities
+    let fixed_per_patch = capabilities
         .iter()
-        .filter(|capability| **capability == BRAIDS_CAPABILITY_ID)
+        .filter(|capability| {
+            registry.descriptors().iter().any(|descriptor| {
+                descriptor.id().as_str() == **capability
+                    && matches!(
+                        descriptor.voice_policy(),
+                        crate::synth::VoicePolicy::FixedPerPatch { .. }
+                    )
+            })
+        })
         .count();
-    let alternating = capabilities.len() > 1
-        && soundfont > 0
-        && braids > 0
-        && capabilities.windows(2).all(|pair| pair[0] != pair[1]);
-    soundfont.saturating_add(braids) == patches.len()
-        && runtime.soundfont_patches() == soundfont
-        && runtime.braids_patches() == braids
-        && runtime.alternating_capabilities() == alternating
+    let adjacent_distinct =
+        capabilities.len() > 1 && capabilities.windows(2).all(|pair| pair[0] != pair[1]);
+    engine_managed.saturating_add(fixed_per_patch) == patches.len()
+        && runtime.engine_managed_patches() == engine_managed
+        && runtime.fixed_per_patch_patches() == fixed_per_patch
+        && runtime.adjacent_capabilities_distinct() == adjacent_distinct
 }
 
 fn engine_checkpoint_sequence_is_complete(
@@ -2272,7 +2577,6 @@ fn final_soundfont_config_is_default(tree: &StateTree) -> bool {
         .pointer("/engineSelection/kind")
         .and_then(serde_json::Value::as_str)
         == Some("ready")
-        && actual.capability_id().as_str() == HIDEF_CAPABILITY_ID
         && actual == expected
         && post_effects.len() == 1
         && effect_registry
@@ -2287,7 +2591,7 @@ impl Serialize for LiveDemoReport {
     {
         let state_tree: serde_json::Value =
             serde_json::from_str(self.state_tree.json()).map_err(serde::ser::Error::custom)?;
-        let mut report = serializer.serialize_struct("LiveDemoReport", 14)?;
+        let mut report = serializer.serialize_struct("LiveDemoReport", 15)?;
         report.serialize_field("schemaVersion", &Self::SCHEMA_VERSION)?;
         report.serialize_field("scene", &self.scene)?;
         report.serialize_field("complete", &self.complete)?;
@@ -2301,6 +2605,7 @@ impl Serialize for LiveDemoReport {
         report.serialize_field("runtimeAudio", &self.runtime_audio)?;
         report.serialize_field("mixerRouting", &self.mixer_routing)?;
         report.serialize_field("effectsAndBuses", &self.effects_and_buses)?;
+        report.serialize_field("detailAndAssets", &self.detail_and_assets)?;
         report.serialize_field("summary", &self.summary)?;
         report.end()
     }

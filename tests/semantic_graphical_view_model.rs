@@ -567,6 +567,7 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
             source_graph_revision: correlation.source_graph_revision(),
             target_graph_revision: target_revision,
             candidate_config: BraidsCapability::new().unwrap().default_config().unwrap(),
+            prepared_visualization: None,
         })
         .unwrap();
     let new_order = SemanticResolver::new(&recovering)

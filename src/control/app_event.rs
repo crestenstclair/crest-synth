@@ -1,14 +1,17 @@
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
-    EngineSelectionFailure, EngineSelectionRequestId, InteractionMode, SemanticAction,
-    StructuralEditIntent, SurfaceId,
+    EngineSelectionFailure, EngineSelectionRequestId, InteractionMode, SampleAssetLifecycle,
+    SemanticAction, StructuralEditIntent, SurfaceId,
 };
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::bus_id::BusId;
 use crate::real_time::GraphRevision;
 use crate::synth::effect_slot_id::EffectSlotIndex;
-use crate::synth::{CapabilityId, EffectCapabilityId, InstrumentConfig, Patch};
+use crate::synth::{
+    CapabilityId, EffectCapabilityId, InstrumentConfig, Patch, SampleAssetError,
+    SampleCatalogListing, SampleFolderId,
+};
 use serde::{Deserialize, Serialize};
 
 /// A semantic direction emitted by an input adapter.
@@ -41,6 +44,11 @@ pub enum AppEventPayloadShape {
     CapabilityId,
     GraphRevision,
     InstrumentConfig,
+    PreparedSampleVisualization,
+    SampleAssetLifecycle,
+    SampleFolderId,
+    SampleCatalogListing,
+    SampleAssetError,
     EngineSelectionFailure,
     Boolean,
     StructuralEditIntent,
@@ -72,6 +80,10 @@ pub enum AppEventSurfaceDescriptor {
     SetInteractionMode {
         mode: InteractionMode,
     },
+    OpenRelated,
+    Activate,
+    PreviewStart,
+    PreviewStop,
     EnterSurface {
         surface: SurfaceId,
     },
@@ -92,6 +104,16 @@ pub enum AppEventSurfaceDescriptor {
         source_graph_revision: AppEventPayloadShape,
         target_graph_revision: AppEventPayloadShape,
         candidate_config: AppEventPayloadShape,
+        prepared_visualization: AppEventPayloadShape,
+    },
+    SampleAssetLifecycleAdvanced {
+        request_id: AppEventPayloadShape,
+        lifecycle: AppEventPayloadShape,
+    },
+    SampleCatalogRefreshed {
+        folder: AppEventPayloadShape,
+        listing: AppEventPayloadShape,
+        failure: AppEventPayloadShape,
     },
     EnginePreparationFailed {
         request_id: AppEventPayloadShape,
@@ -134,7 +156,7 @@ pub enum AppEventSurfaceDescriptor {
     },
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 27] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 33] = [
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
@@ -177,6 +199,10 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 27] = [
     AppEventSurfaceDescriptor::SetInteractionMode {
         mode: InteractionMode::Adjust,
     },
+    AppEventSurfaceDescriptor::OpenRelated,
+    AppEventSurfaceDescriptor::Activate,
+    AppEventSurfaceDescriptor::PreviewStart,
+    AppEventSurfaceDescriptor::PreviewStop,
     AppEventSurfaceDescriptor::EnterSurface {
         surface: SurfaceId::PatchUtility,
     },
@@ -203,6 +229,16 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 27] = [
         source_graph_revision: AppEventPayloadShape::GraphRevision,
         target_graph_revision: AppEventPayloadShape::GraphRevision,
         candidate_config: AppEventPayloadShape::InstrumentConfig,
+        prepared_visualization: AppEventPayloadShape::PreparedSampleVisualization,
+    },
+    AppEventSurfaceDescriptor::SampleAssetLifecycleAdvanced {
+        request_id: AppEventPayloadShape::EngineSelectionRequestId,
+        lifecycle: AppEventPayloadShape::SampleAssetLifecycle,
+    },
+    AppEventSurfaceDescriptor::SampleCatalogRefreshed {
+        folder: AppEventPayloadShape::SampleFolderId,
+        listing: AppEventPayloadShape::SampleCatalogListing,
+        failure: AppEventPayloadShape::SampleAssetError,
     },
     AppEventSurfaceDescriptor::EnginePreparationFailed {
         request_id: AppEventPayloadShape::EngineSelectionRequestId,
@@ -265,6 +301,10 @@ pub enum AppEvent {
     Adjust(Direction),
     /// Select the reducer-owned interpretation of subsequent directions.
     SetInteractionMode(InteractionMode),
+    OpenRelated,
+    Activate,
+    PreviewStart,
+    PreviewStop,
     /// Enter one context-compatible persistent side surface.
     EnterSurface(SurfaceId),
     /// Restore the exact main-surface origin of the current side surface.
@@ -289,6 +329,20 @@ pub enum AppEvent {
         source_graph_revision: GraphRevision,
         target_graph_revision: GraphRevision,
         candidate_config: InstrumentConfig,
+        prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
+    },
+    /// Advances one correlated Sample assignment through observable worker-side
+    /// admission stages. Only Loading → Validating → Preparing is accepted.
+    SampleAssetLifecycleAdvanced {
+        request_id: EngineSelectionRequestId,
+        lifecycle: SampleAssetLifecycle,
+    },
+    /// Replaces one folder's correlated catalog result through the reducer.
+    /// Stable row focus is retained when the identity remains present and is
+    /// repaired deterministically when it does not.
+    SampleCatalogRefreshed {
+        folder: SampleFolderId,
+        listing: Result<SampleCatalogListing, SampleAssetError>,
     },
     /// Records one correlated typed preparation failure without adapter detail.
     EnginePreparationFailed {
@@ -351,6 +405,10 @@ impl AppEvent {
             SemanticAction::Navigate(direction) => Self::Navigate(direction),
             SemanticAction::Adjust(direction) => Self::Adjust(direction),
             SemanticAction::SetInteractionMode(mode) => Self::SetInteractionMode(mode),
+            SemanticAction::OpenRelated => Self::OpenRelated,
+            SemanticAction::Activate => Self::Activate,
+            SemanticAction::PreviewStart => Self::PreviewStart,
+            SemanticAction::PreviewStop => Self::PreviewStop,
             SemanticAction::EnterSurface(surface) => Self::EnterSurface(surface),
             SemanticAction::Return => Self::Return,
             SemanticAction::SetSlotOccupancy {
@@ -380,6 +438,11 @@ impl AppEvent {
             Self::SelectContext(_)
                 | Self::Navigate(_)
                 | Self::SetInteractionMode(_)
+                | Self::OpenRelated
+                | Self::PreviewStart
+                | Self::PreviewStop
+                | Self::SampleAssetLifecycleAdvanced { .. }
+                | Self::SampleCatalogRefreshed { .. }
                 | Self::EnterSurface(_)
                 | Self::Return
         )
@@ -411,6 +474,10 @@ impl AppEvent {
             Self::SetInteractionMode(mode) => {
                 AppEventSurfaceDescriptor::SetInteractionMode { mode: *mode }
             }
+            Self::OpenRelated => AppEventSurfaceDescriptor::OpenRelated,
+            Self::Activate => AppEventSurfaceDescriptor::Activate,
+            Self::PreviewStart => AppEventSurfaceDescriptor::PreviewStart,
+            Self::PreviewStop => AppEventSurfaceDescriptor::PreviewStop,
             Self::EnterSurface(surface) => {
                 AppEventSurfaceDescriptor::EnterSurface { surface: *surface }
             }
@@ -431,7 +498,21 @@ impl AppEvent {
                 source_graph_revision: AppEventPayloadShape::GraphRevision,
                 target_graph_revision: AppEventPayloadShape::GraphRevision,
                 candidate_config: AppEventPayloadShape::InstrumentConfig,
+                prepared_visualization: AppEventPayloadShape::PreparedSampleVisualization,
             },
+            Self::SampleAssetLifecycleAdvanced { .. } => {
+                AppEventSurfaceDescriptor::SampleAssetLifecycleAdvanced {
+                    request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                    lifecycle: AppEventPayloadShape::SampleAssetLifecycle,
+                }
+            }
+            Self::SampleCatalogRefreshed { .. } => {
+                AppEventSurfaceDescriptor::SampleCatalogRefreshed {
+                    folder: AppEventPayloadShape::SampleFolderId,
+                    listing: AppEventPayloadShape::SampleCatalogListing,
+                    failure: AppEventPayloadShape::SampleAssetError,
+                }
+            }
             Self::EnginePreparationFailed { .. } => {
                 AppEventSurfaceDescriptor::EnginePreparationFailed {
                     request_id: AppEventPayloadShape::EngineSelectionRequestId,
@@ -526,7 +607,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 27);
+        assert_eq!(descriptor.len(), 33);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
@@ -578,6 +659,20 @@ mod tests {
                 source_graph_revision: AppEventPayloadShape::GraphRevision,
                 target_graph_revision: AppEventPayloadShape::GraphRevision,
                 candidate_config: AppEventPayloadShape::InstrumentConfig,
+                prepared_visualization: AppEventPayloadShape::PreparedSampleVisualization,
+            })
+        );
+        assert!(
+            descriptor.contains(&AppEventSurfaceDescriptor::SampleAssetLifecycleAdvanced {
+                request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                lifecycle: AppEventPayloadShape::SampleAssetLifecycle,
+            })
+        );
+        assert!(
+            descriptor.contains(&AppEventSurfaceDescriptor::SampleCatalogRefreshed {
+                folder: AppEventPayloadShape::SampleFolderId,
+                listing: AppEventPayloadShape::SampleCatalogListing,
+                failure: AppEventPayloadShape::SampleAssetError,
             })
         );
         assert!(

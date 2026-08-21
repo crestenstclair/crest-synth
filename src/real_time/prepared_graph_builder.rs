@@ -6,18 +6,19 @@ use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use crate::real_time::patch_audio_block::{PatchAudioBlock, PatchAudioBlockError};
 use crate::real_time::prepared_graph::{
-    PositionCapabilityIdentity, PreparedGraph, PreparedGraphResources,
+    PositionCapabilityIdentity, PreparedAuditionSlot, PreparedGraph, PreparedGraphResources,
 };
 use crate::synth::instrument_capability::CapabilityRegistry;
-use crate::synth::instrument_preparer::InstrumentPreparer;
+use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
 use crate::synth::patch::Patch;
 use crate::synth::prepared_engine_rack_builder::{PreparedEngineRackBuilder, RackPreparationError};
 use crate::synth::EffectPreparationError;
 use crate::synth::{
-    EffectCapabilityRegistry, EffectPreparer, EffectRackPreparationError,
+    EffectCapabilityRegistry, EffectPreparer, EffectRackPreparationError, InstrumentConfig,
     PreparedPostEffectRackBuilder,
 };
 use core::fmt;
+use std::collections::HashSet;
 
 /// Control/worker-side composition service for one complete prepared graph.
 pub struct PreparedGraphBuilder<'a> {
@@ -26,6 +27,31 @@ pub struct PreparedGraphBuilder<'a> {
     effect_registry: Option<&'a EffectCapabilityRegistry>,
     effect_preparers: &'a [Box<dyn EffectPreparer>],
     returns: Option<&'a BusReturnBank>,
+    audition: Option<&'a AuditionPreparationRequest>,
+}
+
+/// Worker-owned input for the complete graph's one optional preview slot.
+pub struct AuditionPreparationRequest {
+    identity: u64,
+    patch_id: crate::kernel::PatchId,
+    candidate: InstrumentConfig,
+}
+
+impl AuditionPreparationRequest {
+    pub fn new(
+        identity: u64,
+        patch_id: crate::kernel::PatchId,
+        candidate: InstrumentConfig,
+    ) -> Result<Self, GraphPreparationError> {
+        if identity == 0 {
+            return Err(GraphPreparationError::InvalidAuditionIdentity);
+        }
+        Ok(Self {
+            identity,
+            patch_id,
+            candidate,
+        })
+    }
 }
 
 impl<'a> PreparedGraphBuilder<'a> {
@@ -39,6 +65,7 @@ impl<'a> PreparedGraphBuilder<'a> {
             effect_registry: None,
             effect_preparers: &[],
             returns: None,
+            audition: None,
         }
     }
 
@@ -61,6 +88,11 @@ impl<'a> PreparedGraphBuilder<'a> {
     /// implicitly.
     pub const fn with_returns(mut self, returns: &'a BusReturnBank) -> Self {
         self.returns = Some(returns);
+        self
+    }
+
+    pub const fn with_audition(mut self, audition: &'a AuditionPreparationRequest) -> Self {
+        self.audition = Some(audition);
         self
     }
 
@@ -242,12 +274,71 @@ impl<'a> PreparedGraphBuilder<'a> {
             return Err(GraphPreparationError::ParameterLayoutMismatch);
         }
 
+        let prepared_audition = if let Some(audition) = self.audition {
+            if !patches.iter().any(|patch| patch.id() == audition.patch_id)
+                || self.registry.validate_config(&audition.candidate).is_err()
+            {
+                return Err(GraphPreparationError::InvalidAuditionConfiguration);
+            }
+            let preparer = self
+                .preparers
+                .iter()
+                .find(|preparer| preparer.capability_id() == audition.candidate.capability_id())
+                .ok_or(GraphPreparationError::AuditionPreparerMissing)?;
+            let prepared = preparer
+                .prepare_audition(
+                    audition.patch_id,
+                    &audition.candidate,
+                    sample_rate,
+                    max_frames,
+                )
+                .map_err(GraphPreparationError::Audition)?;
+            if prepared.patch_id() != audition.patch_id {
+                return Err(GraphPreparationError::InvalidAuditionConfiguration);
+            }
+            let mut identities = HashSet::new();
+            let mut bytes = 0_usize;
+            for footprint in engine_rack
+                .prepared_asset_footprints()
+                .chain(prepared.prepared_asset_footprint())
+            {
+                let identity = (footprint.reference().clone(), footprint.preparation_key());
+                if identities.insert(identity) {
+                    bytes = bytes.checked_add(footprint.bytes()).ok_or({
+                        GraphPreparationError::Rack(
+                            RackPreparationError::PreparedAssetCapacityExceeded {
+                                bytes: usize::MAX,
+                                capacity: crate::synth::MAX_SAMPLE_GRAPH_PCM_BYTES,
+                            },
+                        )
+                    })?;
+                    if bytes > crate::synth::MAX_SAMPLE_GRAPH_PCM_BYTES {
+                        return Err(GraphPreparationError::Rack(
+                            RackPreparationError::PreparedAssetCapacityExceeded {
+                                bytes,
+                                capacity: crate::synth::MAX_SAMPLE_GRAPH_PCM_BYTES,
+                            },
+                        ));
+                    }
+                }
+            }
+            Some(PreparedAuditionSlot::new(audition.identity, prepared))
+        } else {
+            None
+        };
+        let resources = PreparedGraphResources::new(engine_rack, effect_rack, patch_audio, mixer);
+        let resources = if let Some(audition) = prepared_audition {
+            resources.with_audition(audition)
+        } else {
+            resources
+        };
+
         Ok(PreparedGraph::new(
             revision,
             sample_rate,
             max_frames,
             parameters,
-            PreparedGraphResources::new(engine_rack, effect_rack, patch_audio, mixer),
+            resources,
         ))
     }
 }
@@ -268,6 +359,10 @@ const RETURN_OCCUPANT_PATCH_ID: crate::kernel::PatchId = match crate::kernel::Pa
 pub enum GraphPreparationError {
     InvalidSampleRate,
     InvalidFrameCapacity,
+    InvalidAuditionIdentity,
+    InvalidAuditionConfiguration,
+    AuditionPreparerMissing,
+    Audition(InstrumentPreparationError),
     RevisionMismatch {
         graph: GraphRevision,
         parameters: GraphRevision,
@@ -329,6 +424,16 @@ impl fmt::Display for GraphPreparationError {
             Self::InvalidFrameCapacity => {
                 formatter.write_str("prepared graph frame capacity must be nonzero")
             }
+            Self::InvalidAuditionIdentity => {
+                formatter.write_str("audition identity must be nonzero")
+            }
+            Self::InvalidAuditionConfiguration => {
+                formatter.write_str("audition configuration is incompatible with its origin Patch")
+            }
+            Self::AuditionPreparerMissing => {
+                formatter.write_str("no installed preparer supports the audition capability")
+            }
+            Self::Audition(source) => write!(formatter, "prepared audition failed: {source}"),
             Self::RevisionMismatch { graph, parameters } => write!(
                 formatter,
                 "prepared graph revision {graph} does not match parameters {parameters}"
@@ -360,6 +465,7 @@ impl std::error::Error for GraphPreparationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Rack(source) => Some(source),
+            Self::Audition(source) => Some(source),
             Self::EffectRack(source) => Some(source),
             Self::PatchAudio(source) => Some(source),
             Self::Effects(source) => Some(source),

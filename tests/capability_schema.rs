@@ -27,9 +27,9 @@ use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
     CapabilityDescriptor, CapabilityError, CapabilityId, CapabilityRegistry, CapabilitySection,
-    InstrumentCapabilityProvider, InstrumentConfig, ParameterAssignment, ParameterDefault,
-    ParameterId, ParameterKind, ParameterPredicate, ParameterRange, ParameterSpec, ParameterUpdate,
-    ParameterValue, Patch, PatchInteraction, VoicePolicy,
+    CapabilityVisualization, InstrumentCapabilityProvider, InstrumentConfig, ParameterAssignment,
+    ParameterDefault, ParameterId, ParameterKind, ParameterPredicate, ParameterRange,
+    ParameterSpec, ParameterUpdate, ParameterValue, Patch, PatchInteraction, VoicePolicy,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
@@ -78,6 +78,30 @@ fn candidate(valid: &InstrumentConfig, values: Vec<ParameterAssignment>) -> Inst
         values,
         valid.asset_references().to_vec(),
     )
+}
+
+#[test]
+fn instrument_and_effect_descriptors_share_ordered_generic_visualization_metadata() {
+    let instruments = production_capability_registry().unwrap();
+    for descriptor in instruments.descriptors() {
+        assert!(matches!(
+            descriptor.visualizations().first(),
+            Some(CapabilityVisualization::Envelope { id, label })
+                if id == "shared.envelope" && label == "Envelope"
+        ));
+    }
+
+    let effect = crest_synth::adapter::production_effects::production_effect_registry()
+        .unwrap()
+        .descriptors()[0]
+        .clone()
+        .with_visualizations([CapabilityVisualization::status("shared.status", "Status").unwrap()])
+        .unwrap();
+    assert!(matches!(
+        effect.visualizations(),
+        [CapabilityVisualization::Status { id, label }]
+            if id == "shared.status" && label == "Status"
+    ));
 }
 
 #[test]

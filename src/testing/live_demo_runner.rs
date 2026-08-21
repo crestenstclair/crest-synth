@@ -2,7 +2,7 @@ use crate::control::app_event::AppEvent;
 use crate::control::app_loop::AppLoop;
 use crate::control::app_state::EventRejection;
 use crate::control::event_record::{
-    EmittedEvent, EventInput, EventOutcome, EventRecord, EventSource,
+    AudioEffect, EmittedEvent, EventInput, EventOutcome, EventRecord, EventSource,
 };
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
@@ -30,7 +30,8 @@ use crate::testing::live_demo_checkpoint::{
     LivePresetProjection, LiveTopologyCheckpoint,
 };
 use crate::testing::live_demo_report::{
-    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveShellCoverage, RuntimeAudioWitness,
+    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveDetailAssetsEvidence,
+    LiveShellCoverage, RuntimeAudioWitness,
 };
 use crate::testing::live_demo_scene::{
     selected_parameter_value, LiveDemoScene, LiveDemoSceneError, LiveDemoStep,
@@ -105,6 +106,7 @@ pub struct LiveDemoRunner<Source, Observation> {
     /// canonical projection the shell is already painting, so measuring costs
     /// no extra projection.
     patch_editor: Option<PatchEditorMeasurement>,
+    detail_and_assets: Option<LiveDetailAssetsEvidence>,
 }
 
 impl<Source, Observation> LiveDemoRunner<Source, Observation>
@@ -126,6 +128,9 @@ where
             scene.expected_topology_transitions(),
         );
         let measures_patch_editor = scene.measures_patch_editor();
+        let detail_and_assets = scene
+            .detail_assets_subject()
+            .map(|(patch, track, asset)| LiveDetailAssetsEvidence::new(patch, track, asset));
         let last_ready_graph_revision = runtime_audio.active_graph_revision();
         Self {
             automatic_midi,
@@ -157,6 +162,7 @@ where
             runtime_audio,
             aborted: false,
             patch_editor: measures_patch_editor.then(PatchEditorMeasurement::default),
+            detail_and_assets,
         }
     }
 
@@ -196,6 +202,10 @@ where
                 measurement.observe_projection(state, shell.semantic_model());
                 measurement.observe_audio(audio);
             }
+        }
+        if let Some(measurement) = self.detail_and_assets.as_mut() {
+            let audio = self.observation.read_latest_on_control();
+            measurement.observe(app_loop.state(), &shell, audio);
         }
         if self
             .recent_shells
@@ -322,6 +332,24 @@ where
             && self.topology_transition_index < self.scene.expected_topology_transitions().len()
         {
             return self.advance_topology(app_loop);
+        }
+
+        // Phase 7's preview interval is an observed transport predicate, not
+        // merely two dispatched gestures. Freeze the semantic tail while the
+        // compatible Playing block and then its de-clicked Idle block cross
+        // the callback observation seam. Without this gate, a MIDI dwell event
+        // advanced canonical generation on every tick and could keep the
+        // otherwise-valid audio observation perpetually one generation behind.
+        if let Some(evidence) = self.detail_and_assets.as_ref() {
+            let preview = app_loop.state().sample_browser().preview();
+            if (matches!(preview, crate::control::SamplePreviewState::Playing { .. })
+                && !evidence.preview_revision_compatible())
+                || (evidence.preview_revision_compatible()
+                    && matches!(preview, crate::control::SamplePreviewState::Idle)
+                    && !evidence.preview_release_observed())
+            {
+                return Ok(None);
+            }
         }
 
         // The semantic visibility tail (the steps after the scalar phase)
@@ -759,33 +787,38 @@ where
                     source_audio,
                     None,
                 )?;
-                if transition.target_capability_id().as_str()
-                    == crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID
-                    && matches!(
-                        transition.intent(),
-                        StructuralEditIntent::ReplaceCapability { .. }
-                    )
-                {
+                if matches!(
+                    transition.intent(),
+                    StructuralEditIntent::ReplaceCapability { .. }
+                ) {
                     let old_order = SemanticResolver::new(app_loop.state())
                         .patch_main_paths(transition.patch_id())?;
-                    let mut navigated = 0usize;
-                    while app_loop
-                        .state()
-                        .interaction()
-                        .focus_path()
-                        .capability_id()
-                        .is_none()
-                    {
-                        dispatch_engine_event(app_loop, AppEvent::Navigate(Direction::Down))?;
-                        navigated = navigated.saturating_add(1);
-                        if navigated >= old_order.len() {
-                            return Err(LiveDemoError::EngineProjectionMismatch);
+                    let target = app_loop
+                        .capabilities()
+                        .descriptor(transition.target_capability_id())
+                        .ok_or(LiveDemoError::EngineProjectionMismatch)?;
+                    let disappearing = old_order
+                        .iter()
+                        .find(|path| {
+                            matches!(
+                                path.control_id(),
+                                crate::control::SemanticControlId::Patch(
+                                    PatchControlId::Capability(parameter_id)
+                                ) if target.parameter(parameter_id).is_none()
+                            )
+                        })
+                        .cloned();
+                    if let Some(disappearing) = disappearing {
+                        let mut navigated = 0usize;
+                        while app_loop.state().interaction().focus_path() != &disappearing {
+                            dispatch_engine_event(app_loop, AppEvent::Navigate(Direction::Down))?;
+                            navigated = navigated.saturating_add(1);
+                            if navigated >= old_order.len() {
+                                return Err(LiveDemoError::EngineProjectionMismatch);
+                            }
                         }
+                        self.pending_focus_recovery = Some((disappearing, old_order));
                     }
-                    self.pending_focus_recovery = Some((
-                        app_loop.state().interaction().focus_path().clone(),
-                        old_order,
-                    ));
                 }
                 self.engine_phase = LiveEnginePhase::AwaitActivating {
                     request_id,
@@ -1693,6 +1726,10 @@ where
                     requested_label.map(str::to_owned),
                 ))
             }
+            StructuralEditIntent::ReplaceAsset { .. }
+            | StructuralEditIntent::PrepareAudition { .. } => {
+                return Err(LiveDemoError::EngineProjectionMismatch)
+            }
         };
 
         LiveEngineCheckpoint::new(
@@ -1748,6 +1785,27 @@ where
         if !audio_is_finite(observation) {
             return Err(LiveDemoError::NonFiniteAudioObservation);
         }
+        if self.detail_and_assets.is_some()
+            && (!matches!(
+                app_loop.state().sample_browser().preview(),
+                crate::control::SamplePreviewState::Idle
+            ) || app_loop
+                .state()
+                .sample_browser()
+                .preview_request_id()
+                .is_some()
+                || app_loop.state().sample_browser().request_id().is_some()
+                || app_loop
+                    .state()
+                    .sample_browser()
+                    .requested_asset()
+                    .is_some()
+                || observation.preview_playing()
+                || app_loop.staged_graph_revision().is_some()
+                || app_loop.in_flight_graph_revision().is_some())
+        {
+            return Ok(());
+        }
         let focused_patch = self
             .scene
             .patch_ids()
@@ -1777,6 +1835,7 @@ where
             measurement.observe_note_offs_from_event_log(&event_log);
         }
         let patch_editor = self.patch_editor.clone();
+        let detail_and_assets = self.detail_and_assets.clone();
         self.completed_report = Some(LiveDemoReport::new(
             self.scene.name(),
             self.checkpoints.clone(),
@@ -1792,6 +1851,7 @@ where
                 .with_active_graph_revision(active_graph_revision)
                 .measured(),
             patch_editor,
+            detail_and_assets,
         )?);
         self.mark_progress();
         Ok(())
@@ -2210,6 +2270,7 @@ fn edited_parameter_of(focus: &FocusPath) -> Option<PatchControlId> {
     match focus.control_id() {
         crate::control::SemanticControlId::Patch(control) => Some(control.clone()),
         crate::control::SemanticControlId::Mixer(_)
+        | crate::control::SemanticControlId::Modal(_)
         | crate::control::SemanticControlId::SurfaceRoot => None,
     }
 }
@@ -2439,6 +2500,8 @@ where
             Some(ParameterValue::Choice(choice_id))
                 if Some(choice_id.as_str()) == transition.source_choice_id()
         )),
+        StructuralEditIntent::ReplaceAsset { .. }
+        | StructuralEditIntent::PrepareAudition { .. } => Ok(false),
         StructuralEditIntent::SetSlotOccupancy { .. }
         | StructuralEditIntent::SetReturnOccupancy { .. } => Ok(false),
     }
@@ -2525,6 +2588,12 @@ fn verify_record(
     expected: &LiveExpectedTransition,
     record: &EventRecord,
 ) -> Result<(), LiveDemoError> {
+    let emitted_match = record.emitted_events() == expected.emitted_effects()
+        || live_tail_correlated_effect_matches(
+            step,
+            expected.emitted_effects(),
+            record.emitted_events(),
+        );
     if record.source() != EventSource::DemoScene
         || record.input() != expected.input()
         || record.input() != &EventInput::from(step.event())
@@ -2532,7 +2601,7 @@ fn verify_record(
         || record.generation_before() != expected.generation_before()
         || record.generation_after() != expected.generation_after()
         || record.parameter_generation() != expected.parameter_generation()
-        || record.emitted_events() != expected.emitted_effects()
+        || !emitted_match
         || record.rejection().map(|value| value.name()) != expected.rejection()
     {
         return Err(LiveDemoError::EventRecordMismatch);
@@ -2544,6 +2613,43 @@ fn verify_record(
         return Err(LiveDemoError::EventRecordMismatch);
     }
     Ok(())
+}
+
+/// Structural Sample and preview effects contain reducer-assigned correlation
+/// identities, so the pre-dispatch live expectation can specify their exact
+/// semantic shape but cannot manufacture their request number. The immutable
+/// record must still equal the deterministic prefix and carry exactly one
+/// attributable extra effect of the required kind.
+fn live_tail_correlated_effect_matches(
+    step: &LiveDemoStep,
+    expected: &[EmittedEvent],
+    actual: &[EmittedEvent],
+) -> bool {
+    if actual.len() != expected.len().saturating_add(1)
+        || actual.get(..expected.len()) != Some(expected)
+    {
+        return false;
+    }
+    match (step.event(), actual.last()) {
+        (AppEvent::PreviewStart, Some(EmittedEvent::EngineSelection { effect })) => {
+            effect.kind() == EngineSelectionEffectKind::PrepareRequested
+                && matches!(
+                    effect.intent(),
+                    StructuralEditIntent::PrepareAudition { .. }
+                )
+        }
+        (AppEvent::Activate, Some(EmittedEvent::EngineSelection { effect })) => {
+            effect.kind() == EngineSelectionEffectKind::PrepareRequested
+                && matches!(effect.intent(), StructuralEditIntent::ReplaceAsset { .. })
+        }
+        (
+            AppEvent::PreviewStop | AppEvent::Return | AppEvent::Navigate(_),
+            Some(EmittedEvent::AudioCommand {
+                effect: AudioEffect::PreviewStop { .. },
+            }),
+        ) => true,
+        _ => false,
+    }
 }
 
 fn audio_is_finite(observation: AudioObservationSnapshot) -> bool {

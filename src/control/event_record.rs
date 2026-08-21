@@ -218,6 +218,54 @@ impl From<&Patch> for PatchInput {
     }
 }
 
+/// Bounded, replayable worker visualization payload recorded for an accepted
+/// prepared result. It copies only the at-most-2,048 min/max pairs and exact
+/// landmarks; decoded PCM and prepared graph ownership never enter the log.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedSampleVisualizationInput {
+    asset_id: crate::synth::SampleAssetId,
+    sample_rate: u32,
+    channels: u16,
+    frames: usize,
+    waveform: Vec<crate::synth::WaveformPair>,
+    playback_start: usize,
+    playback_end: usize,
+    loop_start: usize,
+    loop_end: usize,
+    crossfade_frames: usize,
+    loop_mode: crate::synth::SampleLoopMode,
+}
+
+impl PreparedSampleVisualizationInput {
+    pub const fn asset_id(&self) -> &crate::synth::SampleAssetId {
+        &self.asset_id
+    }
+
+    pub fn waveform(&self) -> &[crate::synth::WaveformPair] {
+        &self.waveform
+    }
+}
+
+impl From<&crate::synth::PreparedSampleVisualization> for PreparedSampleVisualizationInput {
+    fn from(value: &crate::synth::PreparedSampleVisualization) -> Self {
+        let landmarks = value.landmarks();
+        Self {
+            asset_id: value.asset_id().clone(),
+            sample_rate: value.sample_rate(),
+            channels: value.channels(),
+            frames: value.frames(),
+            waveform: value.waveform().to_vec(),
+            playback_start: landmarks.start,
+            playback_end: landmarks.end,
+            loop_start: landmarks.loop_start,
+            loop_end: landmarks.loop_end,
+            crossfade_frames: landmarks.crossfade_frames,
+            loop_mode: landmarks.loop_mode,
+        }
+    }
+}
+
 /// A stable tagged representation of every current AppEvent variant.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -237,6 +285,10 @@ pub enum EventInput {
     SetInteractionMode {
         mode: InteractionMode,
     },
+    OpenRelated,
+    Activate,
+    PreviewStart,
+    PreviewStop,
     EnterSurface {
         surface: SurfaceId,
     },
@@ -265,6 +317,18 @@ pub enum EventInput {
         target_graph_revision: GraphRevision,
         #[serde(rename = "candidateConfig")]
         candidate_config: InstrumentConfig,
+        #[serde(rename = "preparedVisualization")]
+        prepared_visualization: Option<PreparedSampleVisualizationInput>,
+    },
+    SampleAssetLifecycleAdvanced {
+        #[serde(rename = "requestId")]
+        request_id: EngineSelectionRequestId,
+        lifecycle: crate::control::SampleAssetLifecycle,
+    },
+    SampleCatalogRefreshed {
+        folder: crate::synth::SampleFolderId,
+        listing: Option<crate::synth::SampleCatalogListing>,
+        failure: Option<crate::synth::SampleAssetError>,
     },
     EnginePreparationFailed {
         #[serde(rename = "requestId")]
@@ -337,6 +401,10 @@ impl From<&AppEvent> for EventInput {
                 direction: (*direction).into(),
             },
             AppEvent::SetInteractionMode(mode) => Self::SetInteractionMode { mode: *mode },
+            AppEvent::OpenRelated => Self::OpenRelated,
+            AppEvent::Activate => Self::Activate,
+            AppEvent::PreviewStart => Self::PreviewStart,
+            AppEvent::PreviewStop => Self::PreviewStop,
             AppEvent::EnterSurface(surface) => Self::EnterSurface { surface: *surface },
             AppEvent::Return => Self::Return,
             AppEvent::InstallPatches(patches) => Self::InstallPatches {
@@ -355,6 +423,7 @@ impl From<&AppEvent> for EventInput {
                 source_graph_revision,
                 target_graph_revision,
                 candidate_config,
+                prepared_visualization,
             } => Self::EnginePrepared {
                 request_id: *request_id,
                 patch_id: patch_id.value(),
@@ -364,7 +433,28 @@ impl From<&AppEvent> for EventInput {
                 source_graph_revision: *source_graph_revision,
                 target_graph_revision: *target_graph_revision,
                 candidate_config: candidate_config.clone(),
+                prepared_visualization: prepared_visualization
+                    .as_ref()
+                    .map(PreparedSampleVisualizationInput::from),
             },
+            AppEvent::SampleAssetLifecycleAdvanced {
+                request_id,
+                lifecycle,
+            } => Self::SampleAssetLifecycleAdvanced {
+                request_id: *request_id,
+                lifecycle: *lifecycle,
+            },
+            AppEvent::SampleCatalogRefreshed { folder, listing } => {
+                let (listing, failure) = match listing {
+                    Ok(listing) => (Some(listing.clone()), None),
+                    Err(failure) => (None, Some(*failure)),
+                };
+                Self::SampleCatalogRefreshed {
+                    folder: folder.clone(),
+                    listing,
+                    failure,
+                }
+            }
             AppEvent::EnginePreparationFailed {
                 request_id,
                 patch_id,
@@ -447,6 +537,11 @@ impl EventInput {
             Self::SelectContext { .. }
                 | Self::Navigate { .. }
                 | Self::SetInteractionMode { .. }
+                | Self::OpenRelated
+                | Self::PreviewStart
+                | Self::PreviewStop
+                | Self::SampleAssetLifecycleAdvanced { .. }
+                | Self::SampleCatalogRefreshed { .. }
                 | Self::EnterSurface { .. }
                 | Self::Return
         )
@@ -462,6 +557,18 @@ pub enum AudioEffect {
         patch_id: u32,
         message: MidiInput,
     },
+    PreviewStart {
+        #[serde(rename = "patchId")]
+        patch_id: u32,
+        #[serde(rename = "auditionId")]
+        audition_id: u64,
+    },
+    PreviewStop {
+        #[serde(rename = "patchId")]
+        patch_id: u32,
+        #[serde(rename = "auditionId")]
+        audition_id: u64,
+    },
     AllNotesOff,
 }
 
@@ -471,6 +578,20 @@ impl From<AudioCommand> for AudioEffect {
             AudioCommand::PatchMidi { patch_id, message } => Self::PatchMidi {
                 patch_id: patch_id.value(),
                 message: message.into(),
+            },
+            AudioCommand::PreviewStart {
+                patch_id,
+                audition_id,
+            } => Self::PreviewStart {
+                patch_id: patch_id.value(),
+                audition_id,
+            },
+            AudioCommand::PreviewStop {
+                patch_id,
+                audition_id,
+            } => Self::PreviewStop {
+                patch_id: patch_id.value(),
+                audition_id,
             },
             AudioCommand::AllNotesOff => Self::AllNotesOff,
         }
@@ -615,12 +736,31 @@ impl EventRecord {
         "input.context",
         "input.direction",
         "input.failure",
+        "input.folder",
         "input.intent.capabilityId",
         "input.intent.choiceId",
         "input.intent.kind",
         "input.intent.parameterId",
         "input.intent.targetCapabilityId",
         "input.kind",
+        "input.lifecycle",
+        "input.listing",
+        "input.listing.folder",
+        "input.listing.rows[].id",
+        "input.listing.rows[].kind.kind",
+        "input.listing.rows[].kind.target",
+        "input.listing.rows[].label",
+        "input.listing.rows[].metadata",
+        "input.listing.rows[].metadata.Err",
+        "input.listing.rows[].metadata.Ok.assetId",
+        "input.listing.rows[].metadata.Ok.bitsPerSample",
+        "input.listing.rows[].metadata.Ok.channels",
+        "input.listing.rows[].metadata.Ok.durationMilliseconds",
+        "input.listing.rows[].metadata.Ok.encoding",
+        "input.listing.rows[].metadata.Ok.frames",
+        "input.listing.rows[].metadata.Ok.sampleRate",
+        "input.listing.rows[].metadata.Ok.sourceBytes",
+        "input.listing.rows[].sourceBytes",
         "input.message.channel",
         "input.message.data1",
         "input.message.data2",
@@ -651,6 +791,21 @@ impl EventRecord {
         "input.patches[].postEffects[].values[].parameterId",
         "input.patches[].postEffects[].values[].value.kind",
         "input.patches[].postEffects[].values[].value.value",
+        "input.preparedVisualization",
+        "input.preparedVisualization.assetId",
+        "input.preparedVisualization.channels",
+        "input.preparedVisualization.crossfadeFrames",
+        "input.preparedVisualization.frames",
+        "input.preparedVisualization.loopEnd",
+        "input.preparedVisualization.loopMode",
+        "input.preparedVisualization.loopStart",
+        "input.preparedVisualization.playbackEnd",
+        "input.preparedVisualization.playbackStart",
+        "input.preparedVisualization.sampleRate",
+        "input.preparedVisualization.waveform[].leftMax",
+        "input.preparedVisualization.waveform[].leftMin",
+        "input.preparedVisualization.waveform[].rightMax",
+        "input.preparedVisualization.waveform[].rightMin",
         "input.requestId",
         "input.retiredGraphRevision",
         "input.sourceCapabilityId",
@@ -909,6 +1064,7 @@ mod tests {
     use super::{
         AudioEffect, EmittedEvent, EventDirection, EventInput, EventOutcome, EventRecord,
         EventRecordError, EventSource, MidiInput, MidiKind, PatchInput,
+        PreparedSampleVisualizationInput,
     };
     use crate::adapter::hidef_soundfont_capability::{
         HIDEF_CAPABILITY_ID, SOUNDFONT_PRESET_PARAMETER_ID,
@@ -930,10 +1086,16 @@ mod tests {
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::voice_envelope::VoiceEnvelope;
-    use crate::synth::{ParameterId, ParameterValue};
+    use crate::synth::{
+        ParameterId, ParameterValue, PreparedSampleLandmarks, PreparedSamplePcm,
+        PreparedSampleVisualization, SampleAssetError, SampleAssetId, SampleBrowserRow,
+        SampleBrowserRowKind, SampleCatalogListing, SampleEncoding, SampleFolderId, SampleLoopMode,
+        SampleMetadata, WaveformPair,
+    };
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use serde_json::Value;
     use std::collections::BTreeSet;
+    use std::sync::Arc;
 
     fn patch(id: u32) -> Patch {
         let provider =
@@ -1087,6 +1249,48 @@ mod tests {
             preset_status.correlation().unwrap(),
         )
         .unwrap();
+        let catalog_folder = SampleFolderId::default();
+        let catalog_asset = SampleAssetId::new("catalog-ready.wav").unwrap();
+        let catalog_listing = SampleCatalogListing::new(
+            catalog_folder.clone(),
+            vec![
+                SampleBrowserRow::new(
+                    "file:catalog-ready.wav",
+                    "catalog-ready.wav",
+                    SampleBrowserRowKind::File(catalog_asset.clone()),
+                    Some(256),
+                )
+                .unwrap()
+                .with_metadata(Ok(SampleMetadata::new(
+                    catalog_asset,
+                    256,
+                    48_000,
+                    2,
+                    24,
+                    SampleEncoding::SignedPcm,
+                    48_000,
+                )
+                .unwrap()))
+                .unwrap(),
+                SampleBrowserRow::new(
+                    "file:catalog-invalid.wav",
+                    "catalog-invalid.wav",
+                    SampleBrowserRowKind::File(SampleAssetId::new("catalog-invalid.wav").unwrap()),
+                    Some(12),
+                )
+                .unwrap()
+                .with_metadata(Err(SampleAssetError::MalformedWave))
+                .unwrap(),
+                SampleBrowserRow::new(
+                    "cancel:",
+                    "CANCEL — UNCHANGED",
+                    SampleBrowserRowKind::Cancel,
+                    None,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
 
         vec![
             schema_record(
@@ -1193,6 +1397,24 @@ mod tests {
                     source_graph_revision: GraphRevision::INITIAL,
                     target_graph_revision,
                     candidate_config: candidate_config.clone(),
+                    prepared_visualization: Some(PreparedSampleVisualizationInput {
+                        asset_id: SampleAssetId::new("event-log.wav").unwrap(),
+                        sample_rate: 48_000,
+                        channels: 2,
+                        frames: 128,
+                        waveform: vec![WaveformPair {
+                            left_min: -0.5,
+                            left_max: 0.5,
+                            right_min: -0.25,
+                            right_max: 0.25,
+                        }],
+                        playback_start: 0,
+                        playback_end: 128,
+                        loop_start: 16,
+                        loop_end: 112,
+                        crossfade_frames: 8,
+                        loop_mode: SampleLoopMode::Forward,
+                    }),
                 },
                 EventOutcome::Accepted,
                 vec![EmittedEvent::EngineSelection {
@@ -1240,11 +1462,44 @@ mod tests {
                     source_graph_revision: GraphRevision::INITIAL,
                     target_graph_revision,
                     candidate_config,
+                    prepared_visualization: None,
                 },
                 EventOutcome::Accepted,
                 vec![EmittedEvent::EngineSelection {
                     effect: preset_effect,
                 }],
+                None,
+            ),
+            schema_record(
+                EventSource::Worker,
+                EventInput::SampleAssetLifecycleAdvanced {
+                    request_id,
+                    lifecycle: crate::control::SampleAssetLifecycle::Validating,
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ),
+            schema_record(
+                EventSource::Worker,
+                EventInput::SampleCatalogRefreshed {
+                    folder: catalog_folder,
+                    listing: Some(catalog_listing),
+                    failure: None,
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ),
+            schema_record(
+                EventSource::Worker,
+                EventInput::SampleCatalogRefreshed {
+                    folder: SampleFolderId::default(),
+                    listing: None,
+                    failure: Some(SampleAssetError::Unavailable),
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
                 None,
             ),
         ]
@@ -1294,6 +1549,66 @@ mod tests {
         }
 
         assert_eq!(described, discovered);
+    }
+
+    #[test]
+    fn engine_prepared_event_input_keeps_the_bounded_visualization_without_pcm() {
+        let asset = SampleAssetId::new("event-input.wav").unwrap();
+        let pair = WaveformPair {
+            left_min: -0.75,
+            left_max: 0.5,
+            right_min: -0.25,
+            right_max: 0.125,
+        };
+        let pcm = PreparedSamplePcm::new(
+            asset.clone(),
+            48_000,
+            1,
+            Arc::from([0.0_f32, 0.25, -0.5, 0.75]),
+            Arc::from([pair]),
+        )
+        .unwrap();
+        let visualization = PreparedSampleVisualization::new(
+            &pcm,
+            PreparedSampleLandmarks {
+                start: 0,
+                end: 4,
+                loop_start: 1,
+                loop_end: 3,
+                crossfade_frames: 1,
+                loop_mode: SampleLoopMode::Forward,
+            },
+        );
+        let state = installed_state();
+        let config = state.patches()[0].instrument_config().clone();
+        let capability_id = config.capability_id().clone();
+        let event = AppEvent::EnginePrepared {
+            request_id: EngineSelectionRequestId::FIRST,
+            patch_id: state.patches()[0].id(),
+            intent: StructuralEditIntent::ReplaceCapability {
+                target_capability_id: capability_id.clone(),
+            },
+            source_capability_id: capability_id.clone(),
+            target_capability_id: capability_id,
+            source_graph_revision: GraphRevision::INITIAL,
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            candidate_config: config,
+            prepared_visualization: Some(visualization),
+        };
+        let input = EventInput::from(&event);
+        let EventInput::EnginePrepared {
+            prepared_visualization: Some(recorded),
+            ..
+        } = &input
+        else {
+            panic!("EnginePrepared records its visualization");
+        };
+        assert_eq!(recorded.asset_id(), &asset);
+        assert_eq!(recorded.waveform(), &[pair]);
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("preparedVisualization"));
+        assert!(!json.contains("interleaved"));
+        assert!(!json.contains("pcm"));
     }
 
     #[test]

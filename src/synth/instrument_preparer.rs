@@ -2,6 +2,7 @@ use crate::kernel::patch_id::PatchId;
 use crate::synth::capability_id::CapabilityId;
 use crate::synth::patch::Patch;
 use crate::synth::prepared_instrument::PreparedInstrument;
+use crate::synth::{InstrumentConfig, PreparedAudition, SampleAssetError};
 use core::fmt;
 
 /// Control/worker-side factory for one installed instrument capability.
@@ -27,6 +28,20 @@ pub trait InstrumentPreparer: Send + Sync {
         sample_rate: f32,
         max_frames: usize,
     ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError>;
+
+    /// Prepares the capability's optional one-voice asset audition.
+    ///
+    /// The default is an explicit refusal; callers never substitute the live
+    /// instrument or another capability as a preview fallback.
+    fn prepare_audition(
+        &self,
+        patch_id: PatchId,
+        _candidate: &InstrumentConfig,
+        _sample_rate: f32,
+        _max_frames: usize,
+    ) -> Result<Box<dyn PreparedAudition>, InstrumentPreparationError> {
+        Err(InstrumentPreparationError::UnsupportedCapability { patch_id })
+    }
 }
 
 /// A typed control-side instrument preparation failure. No variant permits a
@@ -35,16 +50,36 @@ pub trait InstrumentPreparer: Send + Sync {
 pub enum InstrumentPreparationError {
     AssetLoadFailed,
     AssetParseFailed,
-    UnsupportedCapability { patch_id: PatchId },
-    InvalidConfiguration { patch_id: PatchId },
+    UnsupportedCapability {
+        patch_id: PatchId,
+    },
+    InvalidConfiguration {
+        patch_id: PatchId,
+    },
     InvalidSampleRate,
     InvalidFrameCapacity,
-    AssetUnavailable { patch_id: PatchId },
-    InvalidAsset { patch_id: PatchId },
-    PresetUnavailable { patch_id: PatchId },
-    VoiceCapacityExceeded { patch_id: PatchId },
-    StorageAllocationFailed { patch_id: PatchId },
-    PreparationFailed { patch_id: PatchId },
+    AssetUnavailable {
+        patch_id: PatchId,
+    },
+    InvalidAsset {
+        patch_id: PatchId,
+    },
+    PresetUnavailable {
+        patch_id: PatchId,
+    },
+    VoiceCapacityExceeded {
+        patch_id: PatchId,
+    },
+    StorageAllocationFailed {
+        patch_id: PatchId,
+    },
+    SampleAsset {
+        patch_id: PatchId,
+        cause: SampleAssetError,
+    },
+    PreparationFailed {
+        patch_id: PatchId,
+    },
 }
 
 impl fmt::Display for InstrumentPreparationError {
@@ -88,6 +123,12 @@ impl fmt::Display for InstrumentPreparationError {
                 write!(
                     formatter,
                     "Patch {patch_id} instrument storage could not be allocated"
+                )
+            }
+            Self::SampleAsset { patch_id, cause } => {
+                write!(
+                    formatter,
+                    "Patch {patch_id} Sample preparation failed: {cause}"
                 )
             }
             Self::PreparationFailed { patch_id } => {

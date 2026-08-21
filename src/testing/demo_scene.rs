@@ -605,10 +605,7 @@ fn build_steps(
     push_key_press(&mut steps, WindowKey::W);
     push_checkpoint(
         &mut steps,
-        DemoCheckpoint::after_rejection(
-            "context.patch.adjustRejected",
-            EventRejection::ActionUnavailableInContext,
-        ),
+        DemoCheckpoint::new("context.patch.choiceOpened"),
     );
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
         WindowKey::K,
@@ -659,6 +656,20 @@ fn build_steps(
     push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.entered"));
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     push_checkpoint(&mut steps, DemoCheckpoint::new("surface.utility.returned"));
+    // The generic related-surface action reaches the same descriptor-owned
+    // detail subject through the Phase 7 semantic vocabulary. Keep the
+    // explicit EnterSurface journey below as the independent passive-surface
+    // admission witness; both return to the identical engine-row origin.
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::OpenRelated));
+    push_checkpoint(
+        &mut steps,
+        DemoCheckpoint::new("surface.detail.openRelatedEntered"),
+    );
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+    push_checkpoint(
+        &mut steps,
+        DemoCheckpoint::new("surface.detail.openRelatedReturned"),
+    );
     // The subordinate detail surface, entered and left through the same passive
     // semantic action boundary as the two persistent sides. Return restores the
     // exact origin, so the pair leaves the scene's focus where it found it and
@@ -755,7 +766,7 @@ fn push_preset_selection_steps(
     for _ in PatchControlId::surface_descriptor() {
         push_key_press(steps, WindowKey::S);
     }
-    push_single_adjustment(steps, WindowKey::W);
+    push_single_adjustment(steps, WindowKey::S);
     push_checkpoint(
         steps,
         DemoCheckpoint::after_rejection(
@@ -2267,6 +2278,18 @@ fn build_expected_coverage(
                 expected.push("event.setInteractionMode".to_owned());
                 expected.push(format!("interactionMode.{}", mode.label().to_ascii_lowercase()));
             }
+            crate::control::app_event::AppEventSurfaceDescriptor::OpenRelated => {
+                expected.push("event.openRelated".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::Activate => {
+                expected.push("event.activate".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::PreviewStart => {
+                expected.push("event.previewStart".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::PreviewStop => {
+                expected.push("event.previewStop".to_owned());
+            }
             crate::control::app_event::AppEventSurfaceDescriptor::EnterSurface { surface } => {
                 expected.push("event.enterSurface".to_owned());
                 // Only an *admitted* surface can be exercised by a scene step:
@@ -2291,6 +2314,12 @@ fn build_expected_coverage(
             crate::control::app_event::AppEventSurfaceDescriptor::EnginePrepared { .. } => {
                 expected.push("event.enginePrepared".to_owned());
             }
+            crate::control::app_event::AppEventSurfaceDescriptor::SampleAssetLifecycleAdvanced {
+                ..
+            } => {}
+            crate::control::app_event::AppEventSurfaceDescriptor::SampleCatalogRefreshed {
+                ..
+            } => {}
             crate::control::app_event::AppEventSurfaceDescriptor::EnginePreparationFailed {
                 ..
             } => {
@@ -2790,6 +2819,9 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyDown, WindowKey::A) => "keyDown.a",
         (WindowInputKind::KeyDown, WindowKey::D) => "keyDown.d",
         (WindowInputKind::KeyDown, WindowKey::K) => "keyDown.k",
+        (WindowInputKind::KeyDown, WindowKey::Shift) => "keyDown.shift",
+        (WindowInputKind::KeyDown, WindowKey::Return) => "keyDown.return",
+        (WindowInputKind::KeyDown, WindowKey::Space) => "keyDown.space",
         (WindowInputKind::KeyDown, WindowKey::Other) => "keyDown.other",
         (WindowInputKind::KeyUp, WindowKey::Digit1) => "keyUp.digit1",
         (WindowInputKind::KeyUp, WindowKey::Digit2) => "keyUp.digit2",
@@ -2810,6 +2842,9 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyUp, WindowKey::A) => "keyUp.a",
         (WindowInputKind::KeyUp, WindowKey::D) => "keyUp.d",
         (WindowInputKind::KeyUp, WindowKey::K) => "keyUp.k",
+        (WindowInputKind::KeyUp, WindowKey::Shift) => "keyUp.shift",
+        (WindowInputKind::KeyUp, WindowKey::Return) => "keyUp.return",
+        (WindowInputKind::KeyUp, WindowKey::Space) => "keyUp.space",
         (WindowInputKind::KeyUp, WindowKey::Other) => "keyUp.other",
         (WindowInputKind::FocusLost, _) => "focusLost",
     }
@@ -2945,10 +2980,10 @@ mod tests {
             .expected_coverage()
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
-        assert_eq!(WindowInput::surface_descriptor().len(), 41);
+        assert_eq!(WindowInput::surface_descriptor().len(), 47);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            27
+            33
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),

@@ -4,7 +4,8 @@ use crate::mixer::bus_return::BusReturnBank;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_state::MixerState;
 use crate::real_time::{
-    GraphPreparationError, GraphRevision, ParameterSnapshot, PreparedGraph, PreparedGraphBuilder,
+    AuditionPreparationRequest, GraphPreparationError, GraphRevision, ParameterSnapshot,
+    PreparedGraph, PreparedGraphBuilder,
 };
 use crate::shell::audio_output::AudioDeviceConfig;
 use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
@@ -198,9 +199,13 @@ impl GraphPreparationCorrelation {
     pub fn replacement_scope(&self) -> Option<crate::real_time::GraphReplacementScope> {
         match &self.intent {
             StructuralEditIntent::ReplaceCapability { .. }
-            | StructuralEditIntent::ReplaceParameterChoice { .. } => Some(
+            | StructuralEditIntent::ReplaceParameterChoice { .. }
+            | StructuralEditIntent::ReplaceAsset { .. } => Some(
                 crate::real_time::GraphReplacementScope::SelectedEngine(self.patch_id?),
             ),
+            StructuralEditIntent::PrepareAudition { .. } => {
+                Some(crate::real_time::GraphReplacementScope::Audition)
+            }
             StructuralEditIntent::SetSlotOccupancy { patch_id, slot, .. } => {
                 Some(crate::real_time::GraphReplacementScope::PatchSlot {
                     patch_id: *patch_id,
@@ -225,6 +230,10 @@ pub struct GraphPreparationRequest {
     candidate_patches: Vec<Patch>,
     candidate_returns: BusReturnBank,
     candidate_parameters: ParameterSnapshot,
+    /// Transient preview configuration prepared into the graph-owned
+    /// audition slot. It is intentionally separate from `candidate_patches`:
+    /// previewing a file never changes the complete canonical Patch topology.
+    audition_candidate: Option<InstrumentConfig>,
     audio_config: AudioDeviceConfig,
 }
 
@@ -312,8 +321,17 @@ impl GraphPreparationRequest {
             correlation.intent(),
         )?;
 
+        let audition = matches!(
+            correlation.intent(),
+            StructuralEditIntent::PrepareAudition { .. }
+        );
         let mut candidate_patches = active_patches.to_vec();
-        candidate_patches[selected_index].set_instrument_config(candidate_config);
+        let audition_candidate = if audition {
+            Some(candidate_config)
+        } else {
+            candidate_patches[selected_index].set_instrument_config(candidate_config);
+            None
+        };
         let candidate_parameters = ParameterSnapshot::project_patches_with_effects_and_returns(
             generation,
             correlation.target_graph_revision(),
@@ -331,6 +349,7 @@ impl GraphPreparationRequest {
             candidate_patches,
             candidate_returns: returns.clone(),
             candidate_parameters,
+            audition_candidate,
             audio_config,
         })
     }
@@ -397,7 +416,9 @@ impl GraphPreparationRequest {
                     })?;
             }
             StructuralEditIntent::ReplaceCapability { .. }
-            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+            | StructuralEditIntent::ReplaceParameterChoice { .. }
+            | StructuralEditIntent::ReplaceAsset { .. }
+            | StructuralEditIntent::PrepareAudition { .. } => {
                 return Err(GraphPreparationRequestError::IntentMismatch)
             }
         }
@@ -419,6 +440,7 @@ impl GraphPreparationRequest {
             candidate_patches,
             candidate_returns,
             candidate_parameters,
+            audition_candidate: None,
             audio_config,
         })
     }
@@ -440,6 +462,10 @@ impl GraphPreparationRequest {
         &self.candidate_parameters
     }
 
+    pub const fn audition_candidate(&self) -> Option<&InstrumentConfig> {
+        self.audition_candidate.as_ref()
+    }
+
     pub const fn audio_config(&self) -> AudioDeviceConfig {
         self.audio_config
     }
@@ -449,6 +475,9 @@ impl GraphPreparationRequest {
     pub fn candidate_config(&self) -> Option<&InstrumentConfig> {
         if self.correlation.intent().is_occupancy() {
             return None;
+        }
+        if let Some(candidate) = self.audition_candidate.as_ref() {
+            return Some(candidate);
         }
         self.candidate_patches
             .iter()
@@ -518,6 +547,7 @@ pub enum GraphPreparationResult {
         /// The committed candidate instrument config for instrument intents;
         /// occupancy intents change no instrument config.
         candidate_config: Option<InstrumentConfig>,
+        prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
         prepared_graph: PreparedGraph,
     },
     Failed {
@@ -724,6 +754,51 @@ fn validate_candidate_delta(
                 return Err(GraphPreparationRequestError::ConfigDeltaMismatch);
             }
         }
+        StructuralEditIntent::ReplaceAsset {
+            capability_id,
+            parameter_id,
+            reference,
+        } => {
+            if source.capability_id() != capability_id
+                || candidate.capability_id() != capability_id
+                || source.values() != candidate.values()
+                || source.asset_references().len() != candidate.asset_references().len()
+                || source.asset_reference(parameter_id) == Some(reference)
+                || candidate.asset_reference(parameter_id) != Some(reference)
+                || candidate
+                    .asset_references()
+                    .iter()
+                    .zip(source.asset_references())
+                    .any(|(next, prior)| {
+                        next.parameter_id() != prior.parameter_id()
+                            || (next.parameter_id() != parameter_id && next != prior)
+                    })
+            {
+                return Err(GraphPreparationRequestError::ConfigDeltaMismatch);
+            }
+        }
+        StructuralEditIntent::PrepareAudition {
+            capability_id,
+            parameter_id,
+            reference,
+        } => {
+            if source.capability_id() != capability_id
+                || candidate.capability_id() != capability_id
+                || source.values() != candidate.values()
+                || source.asset_references().len() != candidate.asset_references().len()
+                || candidate.asset_reference(parameter_id) != Some(reference)
+                || candidate
+                    .asset_references()
+                    .iter()
+                    .zip(source.asset_references())
+                    .any(|(next, prior)| {
+                        next.parameter_id() != prior.parameter_id()
+                            || (next.parameter_id() != parameter_id && next != prior)
+                    })
+            {
+                return Err(GraphPreparationRequestError::ConfigDeltaMismatch);
+            }
+        }
         StructuralEditIntent::SetSlotOccupancy { .. }
         | StructuralEditIntent::SetReturnOccupancy { .. } => {
             return Err(GraphPreparationRequestError::IntentMismatch);
@@ -751,16 +826,53 @@ pub(crate) fn prepare_graph_request_with_effects(
         };
     }
     let candidate_config = request.candidate_config().cloned();
-    let result = PreparedGraphBuilder::new(registry, preparers)
+    let audition_request = match (
+        correlation.intent(),
+        correlation.patch_id(),
+        request.audition_candidate().cloned(),
+    ) {
+        (StructuralEditIntent::PrepareAudition { .. }, Some(patch_id), Some(candidate)) => {
+            match AuditionPreparationRequest::new(
+                correlation.request_id().value(),
+                patch_id,
+                candidate,
+            ) {
+                Ok(request) => Some(request),
+                Err(error) => {
+                    return GraphPreparationResult::Failed {
+                        correlation,
+                        failure: map_graph_preparation_failure(&error),
+                    };
+                }
+            }
+        }
+        (StructuralEditIntent::PrepareAudition { .. }, _, _) => {
+            return GraphPreparationResult::Failed {
+                correlation,
+                failure: EngineSelectionFailure::GraphIncompatible,
+            };
+        }
+        (_, _, None) => None,
+        (_, _, Some(_)) => {
+            return GraphPreparationResult::Failed {
+                correlation,
+                failure: EngineSelectionFailure::GraphIncompatible,
+            };
+        }
+    };
+    let mut builder = PreparedGraphBuilder::new(registry, preparers)
         .with_effects(effects, effect_preparers)
-        .with_returns(request.candidate_returns())
-        .build(
-            correlation.target_graph_revision(),
-            request.candidate_patches(),
-            *request.candidate_parameters(),
-            audio_config.sample_rate(),
-            audio_config.render_capacity_frames(),
-        );
+        .with_returns(request.candidate_returns());
+    if let Some(audition) = audition_request.as_ref() {
+        builder = builder.with_audition(audition);
+    }
+    let result = builder.build(
+        correlation.target_graph_revision(),
+        request.candidate_patches(),
+        *request.candidate_parameters(),
+        audio_config.sample_rate(),
+        audio_config.render_capacity_frames(),
+    );
     match result {
         Ok(mut prepared_graph) => {
             // The replacement declares its exact correlated delta so
@@ -770,9 +882,14 @@ pub(crate) fn prepare_graph_request_with_effects(
             if let Some(scope) = correlation.replacement_scope() {
                 prepared_graph.set_carry_over_scope(scope);
             }
+            let prepared_visualization = correlation
+                .patch_id()
+                .and_then(|patch_id| prepared_graph.prepared_sample_visualization(patch_id))
+                .cloned();
             GraphPreparationResult::Prepared {
                 correlation,
                 candidate_config,
+                prepared_visualization,
                 prepared_graph,
             }
         }
@@ -795,35 +912,22 @@ fn map_graph_preparation_failure(error: &GraphPreparationError) -> EngineSelecti
         GraphPreparationError::UnrecordableCapabilityIdentity => {
             EngineSelectionFailure::InvalidDefaultConfig
         }
+        GraphPreparationError::InvalidAuditionIdentity
+        | GraphPreparationError::InvalidAuditionConfiguration => {
+            EngineSelectionFailure::GraphIncompatible
+        }
+        GraphPreparationError::AuditionPreparerMissing => EngineSelectionFailure::PreparerMissing,
+        GraphPreparationError::Audition(source) => {
+            map_instrument_preparation_failure(source)
+        }
         GraphPreparationError::Rack(error) => match error {
             RackPreparationError::MissingPreparer { .. } => EngineSelectionFailure::PreparerMissing,
             RackPreparationError::InvalidConfiguration { .. } => {
                 EngineSelectionFailure::InvalidDefaultConfig
             }
-            RackPreparationError::Instrument { source, .. } => match source {
-                InstrumentPreparationError::AssetLoadFailed
-                | InstrumentPreparationError::AssetParseFailed
-                | InstrumentPreparationError::AssetUnavailable { .. }
-                | InstrumentPreparationError::InvalidAsset { .. }
-                | InstrumentPreparationError::PresetUnavailable { .. } => {
-                    EngineSelectionFailure::AssetUnavailable
-                }
-                InstrumentPreparationError::InvalidSampleRate
-                | InstrumentPreparationError::InvalidFrameCapacity => {
-                    EngineSelectionFailure::UnsupportedAudioConfig
-                }
-                InstrumentPreparationError::UnsupportedCapability { .. } => {
-                    EngineSelectionFailure::PreparerMissing
-                }
-                InstrumentPreparationError::InvalidConfiguration { .. } => {
-                    EngineSelectionFailure::InvalidDefaultConfig
-                }
-                InstrumentPreparationError::VoiceCapacityExceeded { .. }
-                | InstrumentPreparationError::StorageAllocationFailed { .. }
-                | InstrumentPreparationError::PreparationFailed { .. } => {
-                    EngineSelectionFailure::PreparationFailed
-                }
-            },
+            RackPreparationError::Instrument { source, .. } => {
+                map_instrument_preparation_failure(source)
+            }
             RackPreparationError::InvalidSampleRate
             | RackPreparationError::InvalidFrameCapacity => {
                 EngineSelectionFailure::UnsupportedAudioConfig
@@ -834,6 +938,9 @@ fn map_graph_preparation_failure(error: &GraphPreparationError) -> EngineSelecti
             | RackPreparationError::ExtraPreparer { .. }
             | RackPreparationError::PreparedPatchMismatch { .. } => {
                 EngineSelectionFailure::GraphIncompatible
+            }
+            RackPreparationError::PreparedAssetCapacityExceeded { .. } => {
+                EngineSelectionFailure::GraphCapacityExceeded
             }
         },
         GraphPreparationError::PatchAudio(_) | GraphPreparationError::Effects(_) => {
@@ -878,6 +985,66 @@ fn map_graph_preparation_failure(error: &GraphPreparationError) -> EngineSelecti
     }
 }
 
+fn map_instrument_preparation_failure(
+    source: &InstrumentPreparationError,
+) -> EngineSelectionFailure {
+    match source {
+        InstrumentPreparationError::AssetLoadFailed
+        | InstrumentPreparationError::AssetParseFailed
+        | InstrumentPreparationError::AssetUnavailable { .. }
+        | InstrumentPreparationError::InvalidAsset { .. }
+        | InstrumentPreparationError::PresetUnavailable { .. } => {
+            EngineSelectionFailure::AssetUnavailable
+        }
+        InstrumentPreparationError::InvalidSampleRate
+        | InstrumentPreparationError::InvalidFrameCapacity => {
+            EngineSelectionFailure::UnsupportedAudioConfig
+        }
+        InstrumentPreparationError::UnsupportedCapability { .. } => {
+            EngineSelectionFailure::PreparerMissing
+        }
+        InstrumentPreparationError::InvalidConfiguration { .. } => {
+            EngineSelectionFailure::InvalidDefaultConfig
+        }
+        InstrumentPreparationError::VoiceCapacityExceeded { .. }
+        | InstrumentPreparationError::StorageAllocationFailed { .. }
+        | InstrumentPreparationError::PreparationFailed { .. } => {
+            EngineSelectionFailure::PreparationFailed
+        }
+        InstrumentPreparationError::SampleAsset { cause, .. } => map_sample_asset_failure(*cause),
+    }
+}
+
+fn map_sample_asset_failure(error: crate::synth::SampleAssetError) -> EngineSelectionFailure {
+    use crate::synth::SampleAssetError;
+    match error {
+        SampleAssetError::Unavailable => EngineSelectionFailure::AssetUnavailable,
+        SampleAssetError::UnsupportedContainer
+        | SampleAssetError::UnsupportedEncoding
+        | SampleAssetError::UnsupportedBitDepth
+        | SampleAssetError::UnsupportedChannelCount
+        | SampleAssetError::UnsupportedSampleRate => EngineSelectionFailure::UnsupportedAssetFormat,
+        SampleAssetError::SourceTooLarge
+        | SampleAssetError::DurationTooLong
+        | SampleAssetError::AssetScalarCapacityExceeded => {
+            EngineSelectionFailure::AssetCapacityExceeded
+        }
+        SampleAssetError::GraphPcmCapacityExceeded => EngineSelectionFailure::GraphCapacityExceeded,
+        SampleAssetError::Cancelled => EngineSelectionFailure::Cancelled,
+        SampleAssetError::AllocationFailed => EngineSelectionFailure::AllocationFailed,
+        SampleAssetError::InvalidRelativeId
+        | SampleAssetError::NonFinitePcm
+        | SampleAssetError::MalformedPcm
+        | SampleAssetError::MalformedWave
+        | SampleAssetError::MalformedCatalog
+        | SampleAssetError::PathEscape
+        | SampleAssetError::ArithmeticOverflow
+        | SampleAssetError::InvalidLandmark
+        | SampleAssetError::InvalidLoopRange
+        | SampleAssetError::CrossfadeTooLong => EngineSelectionFailure::InvalidAsset,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -889,7 +1056,10 @@ mod tests {
     use crate::adapter::production_instruments::{
         production_capability_registry, production_instrument_providers,
     };
-    use crate::control::EngineSelectionRequestId;
+    use crate::adapter::sample_capability::{
+        SampleCapability, SAMPLE_ASSET_PARAMETER_ID, SAMPLE_CAPABILITY_ID,
+    };
+    use crate::control::{EngineSelectionRequestId, StructuralEditIntent};
     use crate::kernel::{MidiChannel, PatchId};
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mixer_state::MixerState;
@@ -897,7 +1067,10 @@ mod tests {
     use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::GraphRevision;
     use crate::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
-    use crate::synth::{CapabilityId, DescriptorDefaultConfigFactory, Patch};
+    use crate::synth::{
+        AssetKind, AssetReference, CapabilityId, DescriptorDefaultConfigFactory,
+        InstrumentCapabilityProvider, ParameterId, Patch, SampleAssetId,
+    };
 
     fn config(id: &str) -> crate::synth::InstrumentConfig {
         let registry = production_capability_registry().unwrap();
@@ -991,6 +1164,72 @@ mod tests {
         );
         assert_eq!(request.candidate_parameters().patch_count(), active.len());
         assert_eq!(request.audio_config(), audio_config());
+    }
+
+    #[test]
+    fn audition_request_keeps_canonical_patch_topology_and_carries_only_transient_candidate() {
+        let provider = SampleCapability::new(SampleAssetId::new("active.wav").unwrap()).unwrap();
+        let registry = crate::synth::CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
+        let active = [Patch::new(
+            PatchId::new(3).unwrap(),
+            "Sample origin".to_owned(),
+            provider.default_config().unwrap(),
+            MidiChannel::new(2).unwrap(),
+            PatchOutput::default(),
+        )];
+        let candidate = crate::synth::DescriptorDefaultConfigFactory::new(
+            registry.clone(),
+            vec![Box::new(
+                SampleCapability::new(SampleAssetId::new("active.wav").unwrap()).unwrap(),
+            )],
+        )
+        .replace_asset(
+            active[0].instrument_config(),
+            &ParameterId::new(SAMPLE_ASSET_PARAMETER_ID).unwrap(),
+            AssetReference::new(AssetKind::Sample, "preview.wav").unwrap(),
+        )
+        .unwrap();
+        let capability_id = CapabilityId::new(SAMPLE_CAPABILITY_ID).unwrap();
+        let intent = StructuralEditIntent::PrepareAudition {
+            capability_id: capability_id.clone(),
+            parameter_id: ParameterId::new(SAMPLE_ASSET_PARAMETER_ID).unwrap(),
+            reference: AssetReference::new(AssetKind::Sample, "preview.wav").unwrap(),
+        };
+        let correlation = GraphPreparationCorrelation::new_with_intent(
+            EngineSelectionRequestId::FIRST,
+            active[0].id(),
+            intent,
+            capability_id.clone(),
+            capability_id,
+            GraphRevision::INITIAL,
+            GraphRevision::new(2).unwrap(),
+        )
+        .unwrap();
+        let request = GraphPreparationRequest::replacement(
+            correlation.clone(),
+            &active,
+            candidate.clone(),
+            4,
+            globals(),
+            MixerState::default(),
+            audio_config(),
+            &registry,
+        )
+        .unwrap();
+
+        assert_eq!(request.candidate_patches(), &active);
+        assert_eq!(request.audition_candidate(), Some(&candidate));
+        assert_eq!(request.candidate_config(), Some(&candidate));
+        assert_eq!(
+            request.candidate_parameters().patches()[0]
+                .instrument()
+                .count(),
+            provider.descriptor().scalar_parameter_count()
+        );
+        assert_eq!(
+            correlation.replacement_scope(),
+            Some(crate::real_time::GraphReplacementScope::Audition)
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::control::state_projector::{MidiProjectionSeed, StateProjectionError, 
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
-use crate::control::{GraphicalShellProjection, SemanticAction};
+use crate::control::{GraphicalShellProjection, SampleAssetLifecycle, SemanticAction};
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crate::real_time::{
     ControlStructuralGraphBoundary, GraphPreparationCorrelation, GraphPreparationRequest,
@@ -37,6 +37,7 @@ pub struct DispatchResult {
 /// Bounded observations from one nonblocking structural control tick.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StructuralProgress {
+    sample_asset_lifecycle_advanced: Option<SampleAssetLifecycle>,
     worker_result_polled: bool,
     failure_dispatched: bool,
     graph_stage: Option<GraphStageOutcome>,
@@ -47,6 +48,9 @@ pub struct StructuralProgress {
 }
 
 impl StructuralProgress {
+    pub const fn sample_asset_lifecycle_advanced(self) -> Option<SampleAssetLifecycle> {
+        self.sample_asset_lifecycle_advanced
+    }
     pub const fn worker_result_polled(self) -> bool {
         self.worker_result_polled
     }
@@ -484,6 +488,22 @@ where
                         .factory
                         .replace_structural_choice(source, parameter_id, choice_id)
                 }),
+            StructuralEditIntent::ReplaceAsset {
+                parameter_id,
+                reference,
+                ..
+            }
+            | StructuralEditIntent::PrepareAudition {
+                parameter_id,
+                reference,
+                ..
+            } => source_config
+                .ok_or_else(|| CapabilityError::UnknownCapability(source_capability_id.clone()))
+                .and_then(|source| {
+                    runtime
+                        .factory
+                        .replace_asset(source, parameter_id, reference.clone())
+                }),
             StructuralEditIntent::SetSlotOccupancy { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. } => {
                 unreachable!("occupancy intents were submitted above")
@@ -546,6 +566,28 @@ where
             return Err(StructuralAdvanceError::Revision(error));
         }
         let mut progress = StructuralProgress::default();
+
+        let next_sample_lifecycle = match self.state.sample_browser().lifecycle() {
+            SampleAssetLifecycle::Loading => Some(SampleAssetLifecycle::Validating),
+            SampleAssetLifecycle::Validating => Some(SampleAssetLifecycle::Preparing),
+            _ => None,
+        };
+        if let (Some(request_id), Some(lifecycle)) = (
+            self.state.sample_browser().request_id(),
+            next_sample_lifecycle,
+        ) {
+            match self.dispatch_from(
+                AppEvent::SampleAssetLifecycleAdvanced {
+                    request_id,
+                    lifecycle,
+                },
+                EventSource::Worker,
+            ) {
+                Ok(_) => progress.sample_asset_lifecycle_advanced = Some(lifecycle),
+                Err(rejection) => progress.rejected_worker_event = Some(rejection),
+            }
+            return Ok(progress);
+        }
 
         if let Some(event) = self.deferred_engine_failure.take() {
             match self.dispatch_from(event, EventSource::Worker) {
@@ -671,6 +713,7 @@ where
             GraphPreparationResult::Prepared {
                 correlation,
                 candidate_config,
+                prepared_visualization,
                 mut prepared_graph,
             } => {
                 let event = if correlation.intent().is_occupancy() {
@@ -708,6 +751,7 @@ where
                                 EngineSelectionStatusError::MissingCorrelation,
                             ),
                         )?,
+                        prepared_visualization,
                     }
                 };
                 let record_sequence = self.event_log.next_sequence();
@@ -964,6 +1008,8 @@ fn map_structural_capability_failure(
         )
     {
         EngineSelectionFailure::PresetUnavailable
+    } else if matches!(intent, StructuralEditIntent::ReplaceAsset { .. }) {
+        EngineSelectionFailure::InvalidAsset
     } else {
         map_capability_failure(error)
     }
@@ -1273,7 +1319,7 @@ mod tests {
         let rejected_tree = app_loop.current_state_tree();
         let rejected_shell = app_loop.current_graphical_shell();
         assert_eq!(
-            app_loop.dispatch(AppEvent::Adjust(Direction::Up)),
+            app_loop.dispatch(AppEvent::Adjust(Direction::Down)),
             Err(EventRejection::ActionUnavailableInContext)
         );
         assert_eq!(app_loop.current_state_tree(), rejected_tree);

@@ -214,6 +214,8 @@ pub struct GraphicalShellLiveObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     live_mixer: Option<LiveMixerSceneEvidence>,
     effects_and_buses: Option<crate::testing::LiveEffectsAndBusesEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail_and_assets: Option<crate::testing::LiveDetailAssetsEvidence>,
     /// The functional Patch editor observation, resolved here because the
     /// teardown half of its schema — window close, stream release, graph
     /// collection, callback safety — is only knowable after the host returns.
@@ -266,6 +268,7 @@ impl GraphicalShellLiveObservation {
             mixer_routing: report.mixer_routing().with_callback_safety(callback_safety),
             live_mixer: report.live_mixer(),
             effects_and_buses: report.effects_and_buses().cloned(),
+            detail_and_assets: report.detail_and_assets().cloned(),
             functional_patch_editor,
             physical_audio_nonzero: shell.physical_audio_nonzero(),
             active_notes_after_cleanup: report.final_audio_observation().active_notes(),
@@ -292,6 +295,10 @@ impl GraphicalShellLiveObservation {
                 .effects_and_buses
                 .as_ref()
                 .is_none_or(crate::testing::LiveEffectsAndBusesEvidence::is_complete)
+            && self
+                .detail_and_assets
+                .as_ref()
+                .is_none_or(crate::testing::LiveDetailAssetsEvidence::is_complete)
             && self.physical_audio_nonzero
             && self.active_notes_after_cleanup == 0
             && self.window_closed
@@ -337,6 +344,10 @@ impl GraphicalShellLiveObservation {
                 routing: self.sixteen_track_mixer_routing(),
                 effects_and_buses: evidence.clone(),
             })
+    }
+
+    pub const fn detail_and_assets(&self) -> Option<&crate::testing::LiveDetailAssetsEvidence> {
+        self.detail_and_assets.as_ref()
     }
 }
 
@@ -405,6 +416,8 @@ pub enum LiveSceneKind {
     SixteenTrackMixerRouting,
     /// The retained cumulative effects-and-buses scene.
     EffectsAndBuses,
+    /// The cumulative Phase 7 detail, choice, browser, preview, and asset scene.
+    DetailAndAssets { defeat_preview: bool },
     /// The functional Patch editor scene, whose subject is the second
     /// installed Patch. Additive: it does not subsume the cumulative scene.
     FunctionalPatchEditor {
@@ -419,11 +432,15 @@ pub enum LiveSceneKind {
 pub enum ApplicationError {
     Capability(CapabilityError),
     InstrumentComposition(InstrumentCompositionError),
+    ProductionInstrumentComposition(
+        crate::adapter::production_instruments::ProductionInstrumentCompositionError,
+    ),
     EffectComposition(EffectCompositionError),
     /// The declared default bus-return occupancy failed to compose at the
     /// production root; startup aborts instead of substituting silent
     /// returns.
     DefaultBusReturns(crate::adapter::production_effects::ProductionEffectCompositionError),
+    SampleCatalog(crate::synth::SampleAssetError),
     Instrument(InstrumentPreparationError),
     Graph(GraphPreparationError),
     GraphWorker(ThreadedGraphPreparationWorkerError),
@@ -461,6 +478,9 @@ impl fmt::Display for ApplicationError {
             Self::InstrumentComposition(error) => {
                 write!(formatter, "instrument composition failed: {error}")
             }
+            Self::ProductionInstrumentComposition(error) => {
+                write!(formatter, "production instrument composition failed: {error}")
+            }
             Self::EffectComposition(error) => {
                 write!(formatter, "effect composition failed: {error}")
             }
@@ -470,6 +490,7 @@ impl fmt::Display for ApplicationError {
                     "default bus-return composition failed at startup: {error}"
                 )
             }
+            Self::SampleCatalog(error) => write!(formatter, "sample catalog failed: {error}"),
             Self::Instrument(error) => write!(formatter, "instrument preparation failed: {error}"),
             Self::Graph(error) => write!(formatter, "prepared graph setup failed: {error}"),
             Self::GraphWorker(error) => write!(formatter, "graph worker setup failed: {error}"),
@@ -525,8 +546,10 @@ impl std::error::Error for ApplicationError {
         match self {
             Self::Capability(error) => Some(error),
             Self::InstrumentComposition(error) => Some(error),
+            Self::ProductionInstrumentComposition(error) => Some(error),
             Self::EffectComposition(error) => Some(error),
             Self::DefaultBusReturns(error) => Some(error),
+            Self::SampleCatalog(error) => Some(error),
             Self::Instrument(error) => Some(error),
             Self::Graph(error) => Some(error),
             Self::GraphWorker(error) => Some(error),
@@ -766,7 +789,7 @@ where
     structural_audio: StructuralAudio,
     initial_graph: PreparedGraph,
     deterministic_worker: Option<DeterministicGraphPreparationHandle>,
-    parsed_soundfont_banks: usize,
+    prepared_shared_assets: usize,
     prepared_instruments: usize,
     capability_composition: CapabilityCompositionObservation,
 }
@@ -802,16 +825,16 @@ fn configured_audio(config: ApplicationConfig) -> AudioDeviceConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CapabilityCompositionObservation {
-    soundfont_patches: usize,
-    braids_patches: usize,
-    alternating_capabilities: bool,
+    engine_managed_patches: usize,
+    fixed_per_patch_patches: usize,
+    adjacent_capabilities_distinct: bool,
 }
 
 fn observe_capability_composition(
     capabilities: &CapabilityRegistry,
     patches: &[Patch],
 ) -> CapabilityCompositionObservation {
-    let soundfont_patches = patches
+    let engine_managed_patches = patches
         .iter()
         .filter(|patch| {
             capabilities
@@ -819,7 +842,7 @@ fn observe_capability_composition(
                 .is_some_and(|descriptor| descriptor.voice_policy() == VoicePolicy::EngineManaged)
         })
         .count();
-    let braids_patches = patches
+    let fixed_per_patch_patches = patches
         .iter()
         .filter(|patch| {
             capabilities
@@ -829,17 +852,15 @@ fn observe_capability_composition(
                 })
         })
         .count();
-    let alternating_capabilities = patches.len() > 1
-        && soundfont_patches > 0
-        && braids_patches > 0
+    let adjacent_capabilities_distinct = patches.len() > 1
         && patches.windows(2).all(|pair| {
             pair[0].instrument_config().capability_id()
                 != pair[1].instrument_config().capability_id()
         });
     CapabilityCompositionObservation {
-        soundfont_patches,
-        braids_patches,
-        alternating_capabilities,
+        engine_managed_patches,
+        fixed_per_patch_patches,
+        adjacent_capabilities_distinct,
     }
 }
 
@@ -873,13 +894,18 @@ where
     let startup_returns =
         crate::adapter::production_effects::production_startup_bus_returns(&effects)
             .map_err(ApplicationError::DefaultBusReturns)?;
-    let state = AppState::for_graph_with_effects(
+    let mut state = AppState::for_graph_with_effects(
         capabilities.clone(),
         effects.clone(),
         config.global_parameters(),
         revision,
     )
     .with_initial_returns(startup_returns);
+    if let Some(listing) = crate::adapter::production_instruments::production_sample_root_listing()
+        .map_err(ApplicationError::ProductionInstrumentComposition)?
+    {
+        state = state.with_sample_catalog([listing]);
+    }
     let projector = StateProjector::for_graph(revision);
     let mut app_loop = match plan.event_log {
         Some(event_log) => AppLoop::with_event_log(state, projector, control_boundary, event_log)?,
@@ -888,7 +914,7 @@ where
     let mut automatic = AutomaticMidiTest::new(source);
     automatic.initialize_with_effects(&providers, &effect_providers, &mut app_loop)?;
 
-    let parsed_soundfont_banks = preparers
+    let prepared_shared_assets = preparers
         .iter()
         .map(|preparer| preparer.prepared_shared_asset_count())
         .sum();
@@ -952,7 +978,7 @@ where
         structural_audio,
         initial_graph,
         deterministic_worker,
-        parsed_soundfont_banks,
+        prepared_shared_assets,
         prepared_instruments,
         capability_composition,
     })
@@ -1128,7 +1154,7 @@ where
             audio_boundary,
             structural_audio,
             initial_graph,
-            parsed_soundfont_banks,
+            prepared_shared_assets,
             prepared_instruments,
             capability_composition,
             ..
@@ -1156,6 +1182,12 @@ where
                     &app_loop.current_state_tree(),
                 )?
             }
+            LiveSceneKind::DetailAndAssets { defeat_preview } => {
+                LiveDemoScene::detail_and_assets_from_installed_state(
+                    &app_loop.current_state_tree(),
+                    defeat_preview,
+                )?
+            }
             LiveSceneKind::FunctionalPatchEditor {
                 defeat_patch_selection,
             } => crate::testing::live_patch_editor_scene::from_installed_state(
@@ -1175,11 +1207,11 @@ where
 
         let (observation_writer, observation_reader) = observation.into_handles();
         let runtime_audio = RuntimeAudioWitness::new(
-            parsed_soundfont_banks,
+            prepared_shared_assets,
             prepared_instruments,
-            capability_composition.soundfont_patches,
-            capability_composition.braids_patches,
-            capability_composition.alternating_capabilities,
+            capability_composition.engine_managed_patches,
+            capability_composition.fixed_per_patch_patches,
+            capability_composition.adjacent_capabilities_distinct,
             initial_graph.revision(),
             0,
             0,
@@ -1380,7 +1412,7 @@ where
             audio_boundary,
             structural_audio,
             initial_graph,
-            parsed_soundfont_banks,
+            prepared_shared_assets,
             prepared_instruments,
             capability_composition,
             ..
@@ -1611,8 +1643,8 @@ where
             active_graph_revision: renderer.active_revision().value(),
             audio_changed,
             automatic_midi,
-            alternating_capabilities: capability_composition.alternating_capabilities,
-            braids_patches: capability_composition.braids_patches,
+            alternating_capabilities: capability_composition.adjacent_capabilities_distinct,
+            braids_patches: capability_composition.fixed_per_patch_patches,
             boundary_noop_nonfatal,
             callback_allocations: 0,
             callback_destructions: 0,
@@ -1623,7 +1655,7 @@ where
             edited_patch_id: target_id.value(),
             engine_consumed_value,
             event_commands_delivered,
-            parsed_soundfont_banks,
+            parsed_soundfont_banks: prepared_shared_assets,
             prepared_instruments,
             one_value_changed,
             parameter_published,
@@ -1633,7 +1665,7 @@ where
             post_boundary_edit_accepted,
             presets_match: true,
             round_robin_channels,
-            soundfont_patches: capability_composition.soundfont_patches,
+            soundfont_patches: capability_composition.engine_managed_patches,
             state_roundtrip,
             text_matches_state,
             unedited_patch_audio_unchanged,

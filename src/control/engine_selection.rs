@@ -3,7 +3,7 @@ use crate::mixer::bus_id::BusId;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::synth::capability_id::CapabilityId;
 use crate::synth::effect_slot_id::EffectSlotIndex;
-use crate::synth::{EffectCapabilityId, ParameterId};
+use crate::synth::{AssetReference, EffectCapabilityId, ParameterId};
 use core::fmt;
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
@@ -79,6 +79,12 @@ pub enum EngineSelectionFailure {
     ProviderMismatch,
     PreparerMissing,
     AssetUnavailable,
+    UnsupportedAssetFormat,
+    InvalidAsset,
+    AssetCapacityExceeded,
+    GraphCapacityExceeded,
+    Cancelled,
+    AllocationFailed,
     PresetUnavailable,
     UnsupportedAudioConfig,
     PreparationFailed,
@@ -87,13 +93,19 @@ pub enum EngineSelectionFailure {
 }
 
 impl EngineSelectionFailure {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 17] = [
         Self::UnknownCapability,
         Self::MissingDefault,
         Self::InvalidDefaultConfig,
         Self::ProviderMismatch,
         Self::PreparerMissing,
         Self::AssetUnavailable,
+        Self::UnsupportedAssetFormat,
+        Self::InvalidAsset,
+        Self::AssetCapacityExceeded,
+        Self::GraphCapacityExceeded,
+        Self::Cancelled,
+        Self::AllocationFailed,
         Self::PresetUnavailable,
         Self::UnsupportedAudioConfig,
         Self::PreparationFailed,
@@ -113,6 +125,12 @@ impl EngineSelectionFailure {
             Self::ProviderMismatch => "providerMismatch",
             Self::PreparerMissing => "preparerMissing",
             Self::AssetUnavailable => "assetUnavailable",
+            Self::UnsupportedAssetFormat => "unsupportedAssetFormat",
+            Self::InvalidAsset => "invalidAsset",
+            Self::AssetCapacityExceeded => "assetCapacityExceeded",
+            Self::GraphCapacityExceeded => "graphCapacityExceeded",
+            Self::Cancelled => "cancelled",
+            Self::AllocationFailed => "allocationFailed",
             Self::PresetUnavailable => "presetUnavailable",
             Self::UnsupportedAudioConfig => "unsupportedAudioConfig",
             Self::PreparationFailed => "preparationFailed",
@@ -144,6 +162,18 @@ pub enum StructuralEditIntent {
         parameter_id: ParameterId,
         choice_id: String,
     },
+    ReplaceAsset {
+        capability_id: CapabilityId,
+        parameter_id: ParameterId,
+        reference: AssetReference,
+    },
+    /// Prepares one transient graph-owned audition without changing the
+    /// canonical instrument configuration.
+    PrepareAudition {
+        capability_id: CapabilityId,
+        parameter_id: ParameterId,
+        reference: AssetReference,
+    },
     SetSlotOccupancy {
         patch_id: PatchId,
         slot: EffectSlotIndex,
@@ -161,14 +191,18 @@ impl StructuralEditIntent {
             Self::ReplaceCapability {
                 target_capability_id,
             } => Some(target_capability_id),
-            Self::ReplaceParameterChoice { capability_id, .. } => Some(capability_id),
+            Self::ReplaceParameterChoice { capability_id, .. }
+            | Self::ReplaceAsset { capability_id, .. }
+            | Self::PrepareAudition { capability_id, .. } => Some(capability_id),
             Self::SetSlotOccupancy { .. } | Self::SetReturnOccupancy { .. } => None,
         }
     }
 
     pub const fn parameter_id(&self) -> Option<&ParameterId> {
         match self {
-            Self::ReplaceParameterChoice { parameter_id, .. } => Some(parameter_id),
+            Self::ReplaceParameterChoice { parameter_id, .. }
+            | Self::ReplaceAsset { parameter_id, .. }
+            | Self::PrepareAudition { parameter_id, .. } => Some(parameter_id),
             _ => None,
         }
     }
@@ -215,6 +249,13 @@ impl StructuralEditIntent {
                     _ => false,
                 }
             }
+            Self::ReplaceAsset { capability_id, .. }
+            | Self::PrepareAudition { capability_id, .. } => match (patch_id, source, target) {
+                (Some(_), Some(source), Some(target)) => {
+                    source == target && capability_id == source
+                }
+                _ => false,
+            },
             Self::SetSlotOccupancy {
                 patch_id: intent_patch_id,
                 ..
@@ -481,7 +522,9 @@ impl EngineSelectionStatus {
             StructuralEditIntent::SetSlotOccupancy { patch_id, .. } => Some(*patch_id),
             StructuralEditIntent::SetReturnOccupancy { .. } => None,
             StructuralEditIntent::ReplaceCapability { .. }
-            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+            | StructuralEditIntent::ReplaceParameterChoice { .. }
+            | StructuralEditIntent::ReplaceAsset { .. }
+            | StructuralEditIntent::PrepareAudition { .. } => {
                 return Err(EngineSelectionStatusError::IntentMismatch)
             }
         };
@@ -763,7 +806,7 @@ mod tests {
 
     #[test]
     fn engine_selection_values_have_unique_exhaustive_stable_serialized_names() {
-        assert_eq!(EngineSelectionFailure::surface_descriptor().len(), 11);
+        assert_eq!(EngineSelectionFailure::surface_descriptor().len(), 17);
         assert_eq!(EngineSelectionStatusKind::surface_descriptor().len(), 4);
         for failures in EngineSelectionFailure::surface_descriptor().windows(2) {
             assert_ne!(failures[0], failures[1]);

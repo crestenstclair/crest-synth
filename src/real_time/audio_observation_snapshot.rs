@@ -2,7 +2,7 @@ use crate::kernel::patch_id::PatchId;
 use crate::mixer::mix_observation::MixObservation;
 use crate::mixer::mixer_track_id::{MixerTrackId, MixerTrackId as TrackId};
 use crate::mixer::track_meter::TrackMeter;
-use crate::real_time::{GraphRevision, PatchEffectObservation};
+use crate::real_time::{GraphRevision, PatchEffectObservation, PreviewAudioObservation};
 use serde::Serialize;
 
 /// Fixed-size numeric evidence from one completed real-time render block.
@@ -28,6 +28,10 @@ pub struct AudioObservationSnapshot {
     primary_patch_rms: f32,
     primary_active_notes: u32,
     patch_effect: PatchEffectObservation,
+    preview_identity: u64,
+    preview_patch_id: Option<PatchId>,
+    preview_playing: bool,
+    preview_playhead: f32,
     tracks: [TrackMeter; MixerTrackId::COUNT],
     left_peak: f32,
     right_peak: f32,
@@ -184,6 +188,10 @@ impl AudioObservationSnapshot {
             primary_patch_rms,
             primary_active_notes,
             patch_effect,
+            preview_identity: 0,
+            preview_patch_id: None,
+            preview_playing: false,
+            preview_playhead: 0.0,
             tracks: mix.tracks(),
             left_peak: mix.left_peak(),
             right_peak: mix.right_peak(),
@@ -457,6 +465,10 @@ impl AudioObservationSnapshot {
             primary_patch_rms,
             primary_active_notes,
             patch_effect,
+            preview_identity: 0,
+            preview_patch_id: None,
+            preview_playing: false,
+            preview_playhead: 0.0,
             tracks,
             left_peak,
             right_peak,
@@ -477,6 +489,15 @@ impl AudioObservationSnapshot {
     #[must_use]
     pub const fn with_voice_limit_refusals(mut self, voice_limit_refusals: u64) -> Self {
         self.voice_limit_refusals = voice_limit_refusals;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_preview_observation(mut self, preview: PreviewAudioObservation) -> Self {
+        self.preview_identity = preview.identity();
+        self.preview_patch_id = preview.patch_id();
+        self.preview_playing = preview.playing();
+        self.preview_playhead = preview.playhead();
         self
     }
 
@@ -522,6 +543,47 @@ impl AudioObservationSnapshot {
     }
     pub const fn patch_effect(self) -> PatchEffectObservation {
         self.patch_effect
+    }
+    pub const fn preview_identity(self) -> u64 {
+        self.preview_identity
+    }
+    pub const fn preview_patch_id(self) -> Option<PatchId> {
+        self.preview_patch_id
+    }
+    pub const fn preview_playing(self) -> bool {
+        self.preview_playing
+    }
+    pub const fn preview_playhead(self) -> f32 {
+        self.preview_playhead
+    }
+    /// Returns the passive audition observation only when it belongs to the
+    /// exact canonical document/request that is asking for it.
+    ///
+    /// This is a read-only filter over copied fixed-size data. Hosts may
+    /// repaint from the returned value, but cannot mistake a stale,
+    /// non-finite, or out-of-range playhead for compatible evidence.
+    pub fn compatible_preview(
+        self,
+        parameter_generation: u64,
+        graph_revision: GraphRevision,
+        preview_identity: u64,
+        patch_id: PatchId,
+    ) -> Option<PreviewAudioObservation> {
+        (self.parameter_generation == parameter_generation
+            && self.active_graph_revision == graph_revision
+            && preview_identity != 0
+            && self.preview_identity == preview_identity
+            && self.preview_patch_id == Some(patch_id)
+            && self.preview_playhead.is_finite()
+            && (0.0..=1.0).contains(&self.preview_playhead))
+        .then(|| {
+            PreviewAudioObservation::from_parts(
+                self.preview_identity,
+                self.preview_patch_id,
+                self.preview_playing,
+                self.preview_playhead,
+            )
+        })
     }
     pub const fn tracks(self) -> [TrackMeter; MixerTrackId::COUNT] {
         self.tracks
@@ -618,5 +680,65 @@ mod tests {
                 .voice_limit_refusals(),
             u64::MAX
         );
+    }
+
+    #[test]
+    fn preview_compatibility_rejects_stale_identity_and_invalid_playheads() {
+        let patch_id = crate::kernel::PatchId::new(7).unwrap();
+        let revision = crate::real_time::GraphRevision::new(3).unwrap();
+        let base = AudioObservationSnapshot::from_mix_with_graph_and_routing(
+            1,
+            1,
+            64,
+            11,
+            revision,
+            0,
+            0,
+            0,
+            None,
+            crate::mixer::mix_observation::MixObservation::default(),
+        )
+        .with_preview_observation(crate::real_time::PreviewAudioObservation::from_parts(
+            23,
+            Some(patch_id),
+            true,
+            0.375,
+        ));
+        let compatible = base
+            .compatible_preview(11, revision, 23, patch_id)
+            .expect("every correlation identity matches");
+        assert!(compatible.playing());
+        assert_eq!(compatible.playhead(), 0.375);
+
+        assert!(base
+            .compatible_preview(12, revision, 23, patch_id)
+            .is_none());
+        assert!(base
+            .compatible_preview(
+                11,
+                crate::real_time::GraphRevision::new(4).unwrap(),
+                23,
+                patch_id,
+            )
+            .is_none());
+        assert!(base
+            .compatible_preview(11, revision, 24, patch_id)
+            .is_none());
+        assert!(base
+            .compatible_preview(11, revision, 23, crate::kernel::PatchId::new(8).unwrap())
+            .is_none());
+        for playhead in [f32::NAN, f32::INFINITY, -0.001, 1.001] {
+            let invalid = base.with_preview_observation(
+                crate::real_time::PreviewAudioObservation::from_parts(
+                    23,
+                    Some(patch_id),
+                    true,
+                    playhead,
+                ),
+            );
+            assert!(invalid
+                .compatible_preview(11, revision, 23, patch_id)
+                .is_none());
+        }
     }
 }

@@ -971,8 +971,12 @@ impl LiveEngineCheckpoint {
             StructuralEditIntent::ReplaceParameterChoice { parameter_id, .. } => {
                 PatchControlId::Capability(parameter_id.clone())
             }
+            StructuralEditIntent::ReplaceAsset { parameter_id, .. } => {
+                PatchControlId::Capability(parameter_id.clone())
+            }
             StructuralEditIntent::SetSlotOccupancy { .. }
-            | StructuralEditIntent::SetReturnOccupancy { .. } => return false,
+            | StructuralEditIntent::SetReturnOccupancy { .. }
+            | StructuralEditIntent::PrepareAudition { .. } => return false,
         };
         if self.transition.trim().is_empty()
             || self.request_id.is_none()
@@ -1037,6 +1041,8 @@ impl LiveEngineCheckpoint {
                     && (self.status != EngineSelectionStatusKind::Preparing
                         || self.source_audio_nonzero)
             }
+            StructuralEditIntent::ReplaceAsset { .. }
+            | StructuralEditIntent::PrepareAudition { .. } => return false,
         };
         capability_projection_exact
             && match self.status {

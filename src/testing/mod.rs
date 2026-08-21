@@ -23,6 +23,9 @@ pub use deterministic_graph_preparation_worker::{
     DeterministicGraphPreparationHandle, DeterministicGraphPreparationWorker,
 };
 
+pub mod sample_asset_fakes;
+pub use sample_asset_fakes::{DeterministicSampleCatalog, DeterministicSampleDecoder};
+
 pub mod exhaustive_gui_demo;
 pub use exhaustive_gui_demo::{ExhaustiveGuiDemo, ExhaustiveGuiDemoError};
 
@@ -60,10 +63,10 @@ pub use live_demo_checkpoint::{
 
 pub mod live_demo_report;
 pub use live_demo_report::{
-    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveEffectsAndBusesEvidence,
-    LiveEventLogSummary, LiveMixerMultiSelectResult, LiveMixerRoutingEvidence,
-    LiveMixerSceneEvidence, LiveShellCoverage, RuntimeAudioWitness,
-    SixteenTrackMixerRoutingObservation,
+    LiveDemoCoverage, LiveDemoReport, LiveDemoReportError, LiveDetailAssetsCheckpoint,
+    LiveDetailAssetsEvidence, LiveEffectsAndBusesEvidence, LiveEventLogSummary,
+    LiveMixerMultiSelectResult, LiveMixerRoutingEvidence, LiveMixerSceneEvidence,
+    LiveShellCoverage, RuntimeAudioWitness, SixteenTrackMixerRoutingObservation,
 };
 
 mod live_mixer_routing_measurement;

@@ -127,6 +127,9 @@ pub const fn window_key_from_macos_key_code(key_code: u16) -> WindowKey {
         0 => WindowKey::A,
         2 => WindowKey::D,
         40 => WindowKey::K,
+        56 => WindowKey::Shift,
+        36 => WindowKey::Return,
+        49 => WindowKey::Space,
         _ => WindowKey::Other,
     }
 }
@@ -139,7 +142,7 @@ mod platform {
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSEvent, NSEventMask, NSEventType};
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -205,6 +208,9 @@ mod platform {
             let pressed = match event_type {
                 NSEventType::KeyDown => true,
                 NSEventType::KeyUp => false,
+                NSEventType::FlagsChanged if observed.keyCode() == 56 => observed
+                    .modifierFlags()
+                    .contains(NSEventModifierFlags(1 << 17)),
                 _ => return event.as_ptr(),
             };
             // WebKit's unhandled-key round-trip delivers the same event a
@@ -235,7 +241,7 @@ mod platform {
         // SAFETY: the block returns the pointer it was given (a valid event).
         let monitor = unsafe {
             NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-                NSEventMask::KeyDown | NSEventMask::KeyUp,
+                NSEventMask::KeyDown | NSEventMask::KeyUp | NSEventMask::FlagsChanged,
                 &handler,
             )
         };
@@ -281,9 +287,9 @@ mod tests {
 
     #[test]
     fn unmapped_key_codes_normalize_to_other() {
-        // kVK_ANSI_G (5) and kVK_Space (49) are outside the vocabulary.
+        // kVK_ANSI_G (5) and right Shift (60) are outside the vocabulary.
         assert_eq!(window_key_from_macos_key_code(5), WindowKey::Other);
-        assert_eq!(window_key_from_macos_key_code(49), WindowKey::Other);
+        assert_eq!(window_key_from_macos_key_code(60), WindowKey::Other);
     }
 
     #[test]

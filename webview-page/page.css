@@ -701,6 +701,218 @@ body {
   gap: var(--space-4);
 }
 
+.detail-sections,
+.detail-visualizations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.detail-section > h3,
+.detail-visualization > figcaption {
+  margin: 0;
+  padding: 0 var(--space-12) var(--space-4);
+}
+
+.detail-visualization {
+  margin: 0;
+  padding: var(--space-8) var(--space-12);
+  border-block: var(--keyline-resting) solid var(--color-border-default);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.envelope-shape {
+  height: calc(var(--min-interactive-target) + var(--space-24));
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  align-items: end;
+  border-bottom: var(--keyline-resting) solid var(--color-border-strong);
+}
+
+.envelope-shape span {
+  display: block;
+  border-top: var(--keyline-emphasis) solid var(--color-accent-patch);
+  transform-origin: left center;
+}
+
+.envelope-shape span:nth-child(1) { height: calc(var(--min-interactive-target) + var(--space-8)); transform: skewY(-28deg); }
+.envelope-shape span:nth-child(2) { height: calc(var(--space-32) + var(--space-4)); transform: skewY(16deg); }
+.envelope-shape span:nth-child(3) { height: calc(var(--space-32) + var(--space-4)); }
+.envelope-shape span:nth-child(4) { height: calc(var(--keyline-resting) + var(--keyline-resting)); transform: skewY(20deg); }
+
+.waveform-shape {
+  position: relative;
+  min-height: calc(var(--min-interactive-target) + var(--min-interactive-target));
+  padding: var(--space-8) 0;
+  border-block: var(--keyline-resting) solid var(--color-border-strong);
+  display: flex;
+  align-items: center;
+  gap: var(--keyline-resting);
+  overflow: hidden;
+}
+
+.waveform-shape > i {
+  flex: 1 1 0;
+  min-width: var(--keyline-resting);
+  height: calc(var(--wave-height, 0.02) * 80%);
+  background: var(--color-accent-patch);
+}
+
+.waveform-shape > b {
+  position: absolute;
+  inset-block: 0;
+  left: calc(var(--landmark-position, 0) * 100%);
+  width: var(--keyline-resting);
+  background: var(--color-accent-focus);
+}
+
+.waveform-shape > b > span {
+  position: absolute;
+  top: 0;
+  left: var(--space-4);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+
+/* Shared authored subordinate modal: the same option-row primitive seats
+ * descriptor choices and browser entries. Focus and current state use shape
+ * plus explicit text, so neither depends on accent color alone. */
+.modal-shell {
+  width: min(
+    calc(
+      var(--surface-split-main-steam-deck) - var(--space-32) - var(--space-8)
+    ),
+    calc(100% - var(--min-interactive-target))
+  );
+  max-height: min(
+    calc(
+      var(--surface-split-side-steam-deck) +
+        var(--surface-split-side-steam-deck) + var(--space-32) + var(--space-8)
+    ),
+    calc(100% - var(--min-interactive-target))
+  );
+  margin: var(--space-24) auto;
+  border: var(--keyline-resting) solid var(--color-border-strong);
+  background: var(--color-bg-surface);
+  box-shadow: var(--space-12) var(--space-12) 0 var(--color-bg-canvas);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.modal-title,
+.browser-status {
+  min-height: var(--min-interactive-target);
+  padding: var(--space-12) var(--space-16);
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-16);
+}
+
+.browser-status {
+  min-height: calc(var(--space-32) + var(--space-4));
+  padding-block: var(--space-8);
+  flex-wrap: wrap;
+}
+
+.sample-browser {
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+}
+
+.browser-visualizations {
+  min-height: 0;
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+}
+
+.browser-visualizations .detail-visualization {
+  border: 0;
+  padding-block: var(--space-4);
+}
+
+.browser-visualizations .waveform-shape {
+  min-height: calc(var(--min-interactive-target) + var(--space-24));
+}
+
+.preview-region {
+  --preview-playhead: 0;
+  min-height: calc(var(--space-32) + var(--space-8));
+  padding: var(--space-8) var(--space-16);
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+  display: grid;
+  grid-template-columns: auto minmax(calc(var(--min-interactive-target) + var(--space-32)), 1fr) auto;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+.preview-playhead-shape {
+  height: var(--space-8);
+  border: var(--keyline-resting) solid var(--color-border-strong);
+  position: relative;
+}
+
+.preview-playhead-marker {
+  position: absolute;
+  inset-block: calc(var(--radius-none) - var(--keyline-emphasis));
+  left: calc(var(--preview-playhead) * 100%);
+  width: calc(var(--keyline-resting) + var(--keyline-resting));
+  transform: translateX(calc(var(--radius-none) - var(--keyline-resting)));
+  background: var(--color-accent-focus);
+}
+
+.preview-region[data-preview-state="stale"] .preview-playhead-shape,
+.preview-region[data-preview-state="stopped"] .preview-playhead-shape {
+  border-style: dashed;
+}
+
+.modal-options {
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--space-8);
+}
+
+.modal-option {
+  min-height: var(--min-interactive-target);
+  padding: var(--space-8)
+    calc(var(--space-8) + var(--keyline-resting) + var(--keyline-resting));
+  border: var(--keyline-resting) solid transparent;
+  display: grid;
+  grid-template-columns: calc(var(--space-16) + var(--space-4)) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: calc(var(--space-8) + var(--keyline-resting) + var(--keyline-resting));
+}
+
+.modal-option + .modal-option {
+  border-top-color: var(--color-border-default);
+}
+
+.modal-option.is-focused {
+  border-color: var(--color-accent-focus);
+  outline: var(--keyline-resting) solid var(--color-accent-focus);
+  outline-offset: calc(var(--radius-none) - var(--space-4));
+}
+
+.modal-option.is-disabled {
+  border-style: dashed;
+  opacity: 0.62;
+}
+
+.modal-option-shape,
+.modal-option-state {
+  color: var(--color-accent-focus);
+}
+
+.modal-option-label,
+.modal-option-meta,
+.modal-option-state {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---- Utility panel rows ------------------------------------------------
  * Two lines, as the design draws them (`Utility MASTER VOLUME` 36:53): the
  * label and value on one line, the position indicator full width below it.

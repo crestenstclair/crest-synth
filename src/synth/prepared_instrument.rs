@@ -1,6 +1,7 @@
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::parameter_snapshot::RtPatchParameters;
+use crate::synth::{AssetReference, PreparedSampleVisualization};
 use core::fmt;
 
 /// One fully prepared Patch-specific synthesis runtime.
@@ -32,6 +33,49 @@ pub trait PreparedInstrument: Send {
 
     /// Silences this instrument's voices with bounded work.
     fn all_notes_off(&mut self);
+
+    /// Reports one immutable shared prepared asset to the worker-side graph
+    /// builder. Callback rendering never calls this method. The generic
+    /// reference and numeric preparation key let the builder deduplicate and
+    /// budget assets without switching on a concrete capability identity.
+    fn prepared_asset_footprint(&self) -> Option<&PreparedAssetFootprint> {
+        None
+    }
+
+    /// Optional bounded control-side visualization produced during
+    /// preparation. The callback never calls this method.
+    fn prepared_sample_visualization(&self) -> Option<&PreparedSampleVisualization> {
+        None
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct PreparedAssetFootprint {
+    reference: AssetReference,
+    preparation_key: u64,
+    bytes: usize,
+}
+
+impl PreparedAssetFootprint {
+    pub const fn new(reference: AssetReference, preparation_key: u64, bytes: usize) -> Self {
+        Self {
+            reference,
+            preparation_key,
+            bytes,
+        }
+    }
+
+    pub const fn reference(&self) -> &AssetReference {
+        &self.reference
+    }
+
+    pub const fn preparation_key(&self) -> u64 {
+        self.preparation_key
+    }
+
+    pub const fn bytes(&self) -> usize {
+        self.bytes
+    }
 }
 
 /// A fixed-size failure returned by callback-side instrument dispatch.

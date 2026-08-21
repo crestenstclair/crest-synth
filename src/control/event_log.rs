@@ -156,7 +156,10 @@ pub struct EventLog {
 
 impl EventLog {
     /// The stable schema version emitted in every serialized log.
-    pub const SCHEMA_VERSION: u32 = 5;
+    ///
+    /// Version 6 records the bounded prepared Sample visualization carried by
+    /// `EnginePrepared`, making Phase 7 replay lossless without logging PCM.
+    pub const SCHEMA_VERSION: u32 = 6;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "totalObserved",

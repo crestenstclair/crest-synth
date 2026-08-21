@@ -575,7 +575,7 @@ impl StateProjector {
                     page.engine().active_label()
                 );
                 match semantic.focus_path().control_id() {
-                    SemanticControlId::Patch(_) => {}
+                    SemanticControlId::Patch(_) | SemanticControlId::Modal(_) => {}
                     SemanticControlId::SurfaceRoot
                         if semantic.active_surface() == crate::control::SurfaceId::PatchUtility => {
                     }
@@ -629,6 +629,9 @@ impl StateProjector {
                         format!("{} PATCHES · READ ONLY", state.patches.len()),
                     ),
                     SemanticControlId::Patch(_) => {
+                        return Err(StateProjectionError::InvalidSelection)
+                    }
+                    SemanticControlId::Modal(_) => {
                         return Err(StateProjectionError::InvalidSelection)
                     }
                 };
@@ -701,6 +704,7 @@ fn selection_from_serialized(
         }
         SemanticControlId::Mixer(_)
         | SemanticControlId::Patch(_)
+        | SemanticControlId::Modal(_)
         | SemanticControlId::SurfaceRoot => Err(StateProjectionError::InvalidSelection),
     }
 }
@@ -1708,6 +1712,7 @@ mod tests {
                 source_graph_revision: correlation.source_graph_revision(),
                 target_graph_revision: target_revision,
                 candidate_config,
+                prepared_visualization: None,
             })
             .unwrap();
         assert_eq!(

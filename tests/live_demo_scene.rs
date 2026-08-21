@@ -636,11 +636,11 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     assert!(report_json.contains("\"complete\":true"));
     assert!(report_json.contains("\"mixerRouting\":{"));
     assert!(report_json.contains("\"shared_track_sum_exact\":true"));
-    assert_eq!(report.runtime_audio().parsed_soundfont_banks(), 1);
+    assert_eq!(report.runtime_audio().prepared_shared_assets(), 1);
     assert_eq!(report.runtime_audio().prepared_instruments(), 2);
-    assert_eq!(report.runtime_audio().soundfont_patches(), 1);
-    assert_eq!(report.runtime_audio().braids_patches(), 1);
-    assert!(report.runtime_audio().alternating_capabilities());
+    assert_eq!(report.runtime_audio().engine_managed_patches(), 1);
+    assert_eq!(report.runtime_audio().fixed_per_patch_patches(), 1);
+    assert!(report.runtime_audio().adjacent_capabilities_distinct());
     assert_eq!(
         report.runtime_audio().active_graph_revision(),
         GraphRevision::new(4).unwrap()

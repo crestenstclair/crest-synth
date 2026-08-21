@@ -6,6 +6,8 @@ pub mod graphical_shell_projection;
 pub mod interaction_state;
 pub mod patch_control_id;
 pub mod patch_page_projection;
+pub mod sample_browser_state;
+pub mod saved_session;
 pub mod semantic_action;
 pub mod semantic_focus;
 pub mod semantic_graphical_view_model;
@@ -34,7 +36,9 @@ pub use graphical_shell_projection::{
     GraphicalShellProjection, GraphicalShellProjectionError, ShellContextLine, ShellFooter,
     ShellIdentityHeader, ShellMainRegion, ShellSideRegion, ShellWorkspace,
 };
-pub use interaction_state::{InteractionState, Selection, SelectionSection};
+pub use interaction_state::{
+    InteractionState, PatchSubordinateSession, Selection, SelectionSection,
+};
 pub use patch_control_id::PatchControlId;
 pub use patch_page_projection::{
     PatchPageEffectSlot, PatchPageEngine, PatchPageEngineChoice, PatchPageEnvelopeRow,
@@ -42,18 +46,25 @@ pub use patch_page_projection::{
     PatchPageProjection, PatchPageProjectionError, PatchPageSection, PatchPageSlotOccupancy,
     EMPTY_OCCUPANCY_CHOICE_ID,
 };
+pub use sample_browser_state::{SampleAssetLifecycle, SampleBrowserState, SamplePreviewState};
+pub use saved_session::{
+    PreparedSavedSession, SavedSession, SavedSessionError, SavedSessionRestoreError,
+    SAVED_SESSION_VERSION,
+};
 pub use semantic_action::{InteractionMode, SemanticAction, SemanticActionKind, ValidAction};
 pub use semantic_focus::{
-    FocusCapabilityId, FocusPath, FocusPathError, MixerControlId, PatchDetailSubject, ReturnPath,
-    SemanticControlId, SurfaceId,
+    FocusCapabilityId, FocusPath, FocusPathError, MixerControlId, ModalControlId,
+    PatchChoiceSubject, PatchDetailSubject, ReturnPath, SemanticControlId, SurfaceId,
 };
 pub use semantic_graphical_view_model::{
-    SemanticControlKind, SemanticControlValue, SemanticControlViewModel, SemanticError,
+    SemanticBrowserMetadata, SemanticBrowserMetadataStatus, SemanticControlKind,
+    SemanticControlValue, SemanticControlViewModel, SemanticDetailSectionViewModel, SemanticError,
     SemanticErrorCode, SemanticGraphicalViewModel, SemanticGraphicalViewModelError,
     SemanticLifecycleStatus, SemanticNumericRange, SemanticSurfaceRole, SemanticSurfaceSummary,
-    SemanticSurfaceViewModel,
+    SemanticSurfaceViewModel, SemanticVisualizationData, SemanticVisualizationViewModel,
+    SemanticWaveformLandmark, SemanticWaveformPair,
 };
-pub use semantic_resolver::SemanticResolver;
+pub use semantic_resolver::{ResolvedChoiceOption, ResolvedChoiceSource, SemanticResolver};
 pub use state_projector::{StateProjectionError, StateProjector};
 pub use state_snapshot::StateSnapshot;
 pub use text_projection::TextProjection;

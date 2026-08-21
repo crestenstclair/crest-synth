@@ -6,6 +6,9 @@ use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
 use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
 use crate::synth::patch::Patch;
 use core::fmt;
+use std::collections::HashSet;
+
+const MAX_PREPARED_ASSET_GRAPH_BYTES: usize = crate::synth::MAX_SAMPLE_GRAPH_PCM_BYTES;
 
 /// Builds one complete fixed-capacity prepared rack outside the callback.
 pub struct PreparedEngineRackBuilder;
@@ -68,6 +71,8 @@ impl PreparedEngineRackBuilder {
         }
 
         let mut slots = std::array::from_fn(|_| None);
+        let mut prepared_asset_identities = HashSet::new();
+        let mut prepared_asset_bytes = 0_usize;
         for (index, patch) in patches.iter().enumerate() {
             let capability_id = patch.instrument_config().capability_id();
             let scalar_count = registry
@@ -96,6 +101,23 @@ impl PreparedEngineRackBuilder {
                     expected: patch.id(),
                     actual,
                 });
+            }
+            if let Some(footprint) = instrument.prepared_asset_footprint() {
+                let identity = (footprint.reference().clone(), footprint.preparation_key());
+                if prepared_asset_identities.insert(identity) {
+                    prepared_asset_bytes = prepared_asset_bytes
+                        .checked_add(footprint.bytes())
+                        .ok_or(RackPreparationError::PreparedAssetCapacityExceeded {
+                            bytes: usize::MAX,
+                            capacity: MAX_PREPARED_ASSET_GRAPH_BYTES,
+                        })?;
+                    if prepared_asset_bytes > MAX_PREPARED_ASSET_GRAPH_BYTES {
+                        return Err(RackPreparationError::PreparedAssetCapacityExceeded {
+                            bytes: prepared_asset_bytes,
+                            capacity: MAX_PREPARED_ASSET_GRAPH_BYTES,
+                        });
+                    }
+                }
             }
             slots[index] = Some(PreparedEngineSlot::new(
                 patch.id(),
@@ -141,6 +163,10 @@ pub enum RackPreparationError {
         expected: PatchId,
         actual: PatchId,
     },
+    PreparedAssetCapacityExceeded {
+        bytes: usize,
+        capacity: usize,
+    },
 }
 
 impl fmt::Display for RackPreparationError {
@@ -175,6 +201,10 @@ impl fmt::Display for RackPreparationError {
             Self::PreparedPatchMismatch { expected, actual } => write!(
                 formatter,
                 "preparer returned Patch {actual} for expected Patch {expected}"
+            ),
+            Self::PreparedAssetCapacityExceeded { bytes, capacity } => write!(
+                formatter,
+                "prepared shared assets use {bytes} bytes; graph capacity is {capacity}"
             ),
         }
     }
@@ -613,5 +643,91 @@ mod tests {
 
         assert!(matches!(error, RackPreparationError::Instrument { .. }));
         assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    struct FootprintPreparer {
+        capability_id: CapabilityId,
+        shared_identity: bool,
+    }
+
+    impl InstrumentPreparer for FootprintPreparer {
+        fn capability_id(&self) -> &CapabilityId {
+            &self.capability_id
+        }
+
+        fn prepare(
+            &self,
+            patch: &Patch,
+            _sample_rate: f32,
+            _max_frames: usize,
+        ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
+            let locator = if self.shared_identity {
+                "shared.wav".to_owned()
+            } else {
+                format!("patch-{}.wav", patch.id().value())
+            };
+            Ok(Box::new(FootprintInstrument {
+                patch_id: patch.id(),
+                footprint: crate::synth::PreparedAssetFootprint::new(
+                    crate::synth::AssetReference::new(crate::synth::AssetKind::Sample, locator)
+                        .unwrap(),
+                    48_000,
+                    300 * 1024 * 1024,
+                ),
+            }))
+        }
+    }
+
+    struct FootprintInstrument {
+        patch_id: PatchId,
+        footprint: crate::synth::PreparedAssetFootprint,
+    }
+
+    impl PreparedInstrument for FootprintInstrument {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn dispatch(
+            &mut self,
+            _message: MidiMessage,
+            _parameters: &RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
+            Ok(())
+        }
+
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &RtPatchParameters,
+        ) {
+            output.fill(0.0);
+        }
+
+        fn all_notes_off(&mut self) {}
+
+        fn prepared_asset_footprint(&self) -> Option<&crate::synth::PreparedAssetFootprint> {
+            Some(&self.footprint)
+        }
+    }
+
+    #[test]
+    fn complete_rack_deduplicates_shared_preparation_identity_and_rejects_aggregate_overflow() {
+        let patches = [patch(1), patch(2)];
+        let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FootprintPreparer {
+            capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+            shared_identity: true,
+        })];
+        PreparedEngineRackBuilder::build(&patches, &registry(), &preparers, 48_000.0, 8).unwrap();
+
+        let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FootprintPreparer {
+            capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+            shared_identity: false,
+        })];
+        assert!(matches!(
+            PreparedEngineRackBuilder::build(&patches, &registry(), &preparers, 48_000.0, 8),
+            Err(RackPreparationError::PreparedAssetCapacityExceeded { .. })
+        ));
     }
 }

@@ -5,9 +5,10 @@ use crest_synth::adapter::production_effects::{
     production_chorus_config, production_effect_registry,
 };
 use crest_synth::adapter::production_instruments::production_capability_registry;
+use crest_synth::adapter::sample_capability::SampleCapability;
 use crest_synth::control::{
     AppEvent, AppState, EngineSelectionFailure, GraphicalShellProjection, PatchControlId,
-    PatchPageProjection, StateProjector, StateTree, SurfaceId, TopLevelContext,
+    PatchPageProjection, SemanticAction, StateProjector, StateTree, SurfaceId, TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
@@ -17,8 +18,12 @@ use crest_synth::real_time::GraphRevision;
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityId, EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry,
-    EffectSlotId, InstrumentConfig, Patch, VoiceEnvelope,
+    AssetAssignment, CapabilityId, CapabilityRegistry, EffectCapabilityDescriptor,
+    EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider,
+    InstrumentConfig, Patch, PreparedSampleLandmarks, PreparedSamplePcm,
+    PreparedSampleVisualization, SampleAssetId, SampleBrowserRow, SampleBrowserRowKind,
+    SampleCatalogListing, SampleEncoding, SampleFolderId, SampleLoopMode, SampleMetadata,
+    VoiceEnvelope, WaveformPair,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use crest_synth::testing::{
@@ -27,6 +32,7 @@ use crest_synth::testing::{
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 fn configured_state(first: InstrumentConfig, second: InstrumentConfig) -> AppState {
     let capabilities = production_capability_registry().unwrap();
@@ -401,6 +407,169 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             .unwrap()
             .4,
     );
+    // The Sample Browser is a transient subordinate union variant and is not
+    // reachable from the production registry when no library root is
+    // configured. Build it through the same reducer/projector boundary with
+    // the real capability so its active asset and correlated preview leaves
+    // remain part of the bidirectional schema witness in every environment.
+    let sample = SampleCapability::new(SampleAssetId::new("Factory.wav").unwrap()).unwrap();
+    let sample_patch = Patch::new(
+        PatchId::new(1).unwrap(),
+        "Schema Sample".to_owned(),
+        sample.default_config().unwrap(),
+        MidiChannel::new(0).unwrap(),
+        PatchOutput::default(),
+    );
+    let folder = SampleFolderId::default();
+    let listing = SampleCatalogListing::new(
+        folder.clone(),
+        vec![SampleBrowserRow::new(
+            "file:Preview.wav",
+            "Preview.wav",
+            SampleBrowserRowKind::File(SampleAssetId::new("Preview.wav").unwrap()),
+            Some(128),
+        )
+        .unwrap()
+        .with_metadata(Ok(SampleMetadata::new(
+            SampleAssetId::new("Preview.wav").unwrap(),
+            128,
+            48_000,
+            1,
+            32,
+            SampleEncoding::Float,
+            48_000,
+        )
+        .unwrap()))
+        .unwrap()],
+    )
+    .unwrap();
+    let mut sample_state = AppState::for_graph(
+        CapabilityRegistry::new(vec![sample.descriptor()]).unwrap(),
+        support::globals(),
+        GraphRevision::INITIAL,
+    )
+    .with_sample_catalog([(folder, Ok(listing))]);
+    sample_state
+        .apply(AppEvent::InstallPatches(vec![sample_patch]))
+        .unwrap();
+    sample_state
+        .apply_semantic_action(SemanticAction::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    sample_state
+        .apply_semantic_action(SemanticAction::OpenRelated)
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&sample_state)
+            .unwrap()
+            .4,
+    );
+    sample_state
+        .apply_semantic_action(SemanticAction::OpenRelated)
+        .unwrap();
+    sample_state
+        .apply_semantic_action(SemanticAction::PreviewStart)
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&sample_state)
+            .unwrap()
+            .4,
+    );
+    let preview_correlation = sample_state
+        .engine_selection()
+        .correlation()
+        .unwrap()
+        .clone();
+    let mut failed_preview_state = sample_state.clone();
+    failed_preview_state
+        .apply(AppEvent::EnginePreparationFailed {
+            request_id: preview_correlation.request_id(),
+            patch_id: preview_correlation.patch_id().unwrap(),
+            intent: preview_correlation.intent().clone(),
+            source_capability_id: preview_correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: preview_correlation.target_capability_id().unwrap().clone(),
+            source_graph_revision: preview_correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::INITIAL.checked_next().unwrap(),
+            failure: EngineSelectionFailure::UnsupportedAssetFormat,
+        })
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&failed_preview_state)
+            .unwrap()
+            .4,
+    );
+    let preview_reference = match preview_correlation.intent() {
+        crest_synth::control::StructuralEditIntent::PrepareAudition { reference, .. } => {
+            reference.clone()
+        }
+        _ => panic!("preview fixture must carry an audition intent"),
+    };
+    let source_config = sample_state.patches()[0].instrument_config();
+    let candidate_assets = source_config
+        .asset_references()
+        .iter()
+        .map(|assignment| {
+            AssetAssignment::new(
+                assignment.parameter_id().clone(),
+                if assignment.parameter_id().as_str()
+                    == crest_synth::adapter::sample_capability::SAMPLE_ASSET_PARAMETER_ID
+                {
+                    preview_reference.clone()
+                } else {
+                    assignment.reference().clone()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let candidate_config = sample
+        .descriptor()
+        .create_config(source_config.values(), &candidate_assets)
+        .unwrap();
+    let preview_pcm = PreparedSamplePcm::new(
+        SampleAssetId::new("Preview.wav").unwrap(),
+        48_000,
+        1,
+        Arc::from([0.0_f32, 0.5, -0.5, 0.0]),
+        Arc::from([WaveformPair {
+            left_min: -0.5,
+            left_max: 0.5,
+            right_min: -0.5,
+            right_max: 0.5,
+        }]),
+    )
+    .unwrap();
+    let prepared_visualization = PreparedSampleVisualization::new(
+        &preview_pcm,
+        PreparedSampleLandmarks {
+            start: 0,
+            end: 4,
+            loop_start: 0,
+            loop_end: 4,
+            crossfade_frames: 0,
+            loop_mode: SampleLoopMode::Off,
+        },
+    );
+    sample_state
+        .apply(AppEvent::EnginePrepared {
+            request_id: preview_correlation.request_id(),
+            patch_id: preview_correlation.patch_id().unwrap(),
+            intent: preview_correlation.intent().clone(),
+            source_capability_id: preview_correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: preview_correlation.target_capability_id().unwrap().clone(),
+            source_graph_revision: preview_correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::INITIAL.checked_next().unwrap(),
+            candidate_config,
+            prepared_visualization: Some(prepared_visualization),
+        })
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&sample_state)
+            .unwrap()
+            .4,
+    );
     let mut discovered = BTreeSet::new();
     for tree in trees {
         discover_leaves(
@@ -439,7 +608,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // detail surface projectable — `patchPage.detail`, plus per-control
     // `requestedValue` and `validActions` on the semantic model — and moved
     // `PatchDetailSubject`'s own fields to camelCase in the same bump.
-    assert_eq!(StateTree::SCHEMA_VERSION, 15);
+    assert_eq!(StateTree::SCHEMA_VERSION, 17);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

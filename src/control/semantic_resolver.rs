@@ -1,7 +1,7 @@
 use crate::control::{
-    AppState, EventRejection, FocusCapabilityId, FocusPath, MixerControlId, PatchControlId,
-    PatchDetailSubject, SemanticAction, SemanticActionAvailability, SemanticControlId, SurfaceId,
-    ValidAction,
+    AppState, EventRejection, FocusCapabilityId, FocusPath, MixerControlId, PatchChoiceSubject,
+    PatchControlId, PatchDetailSubject, PatchSubordinateSession, SemanticAction,
+    SemanticActionAvailability, SemanticControlId, SurfaceId, ValidAction,
 };
 use crate::kernel::PatchId;
 use crate::mixer::bus_id::BusId;
@@ -9,7 +9,7 @@ use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_track_id::{MixerTrackId, MixerTrackId as TrackId};
 use crate::mixer::mixer_track_parameters::MixerTrackParameter;
 use crate::synth::instrument_capability::{ParameterSpec, ParameterValue};
-use crate::synth::{ParameterId, PatchInteraction};
+use crate::synth::{ParameterId, ParameterKind, PatchInteraction};
 use std::collections::HashSet;
 
 /// Pure descriptor-backed authority for semantic focus order and recovery.
@@ -21,9 +21,280 @@ pub struct SemanticResolver<'a> {
     state: &'a AppState,
 }
 
+/// One available value in the shared trapped option modal.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedChoiceOption {
+    id: String,
+    label: String,
+    current: bool,
+    enabled: bool,
+}
+
+impl ResolvedChoiceOption {
+    fn enabled(id: impl Into<String>, label: impl Into<String>, current: bool) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            current,
+            enabled: true,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub const fn is_current(&self) -> bool {
+        self.current
+    }
+
+    pub const fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+/// Ephemeral resolution of a generic choice subject against canonical state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedChoiceSource {
+    subject: PatchChoiceSubject,
+    origin_label: String,
+    options: Vec<ResolvedChoiceOption>,
+}
+
+impl ResolvedChoiceSource {
+    pub const fn subject(&self) -> &PatchChoiceSubject {
+        &self.subject
+    }
+
+    pub fn origin_label(&self) -> &str {
+        &self.origin_label
+    }
+
+    pub fn options(&self) -> &[ResolvedChoiceOption] {
+        &self.options
+    }
+}
+
 impl<'a> SemanticResolver<'a> {
     pub const fn new(state: &'a AppState) -> Self {
         Self { state }
+    }
+
+    /// Derives a generic choice subject from the focused canonical control.
+    pub fn choice_subject(&self, path: &FocusPath) -> Option<PatchChoiceSubject> {
+        if !matches!(
+            path.surface(),
+            SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail
+        ) {
+            return None;
+        }
+        let patch_id = path.patch_id()?;
+        let SemanticControlId::Patch(control) = path.control_id() else {
+            return None;
+        };
+        let subject = PatchChoiceSubject::new(patch_id, control.clone());
+        self.choice_source(&subject).ok().map(|_| subject)
+    }
+
+    /// Resolves installed, fixed-domain, or descriptor-owned choices without
+    /// storing an option list in interaction state.
+    pub fn choice_source(
+        &self,
+        subject: &PatchChoiceSubject,
+    ) -> Result<ResolvedChoiceSource, EventRejection> {
+        let patch = self
+            .state
+            .patches()
+            .iter()
+            .find(|patch| patch.id() == subject.patch_id())
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let (origin_label, options) = match subject.control_id() {
+            PatchControlId::Engine => {
+                let current = patch.instrument_config().capability_id();
+                (
+                    "Instrument".to_owned(),
+                    self.state
+                        .capabilities()
+                        .descriptors()
+                        .iter()
+                        .map(|descriptor| {
+                            ResolvedChoiceOption::enabled(
+                                descriptor.id().to_string(),
+                                descriptor.label(),
+                                descriptor.id() == current,
+                            )
+                        })
+                        .collect(),
+                )
+            }
+            PatchControlId::EffectSlot(slot) => {
+                let current = patch
+                    .effect_slot(*slot)
+                    .map(|effect| effect.capability_id());
+                let options: Vec<ResolvedChoiceOption> =
+                    core::iter::once(ResolvedChoiceOption::enabled(
+                        crate::control::EMPTY_OCCUPANCY_CHOICE_ID,
+                        "EMPTY",
+                        current.is_none(),
+                    ))
+                    .chain(self.state.effects().descriptors().iter().map(|descriptor| {
+                        ResolvedChoiceOption::enabled(
+                            descriptor.id().to_string(),
+                            descriptor.label(),
+                            current == Some(descriptor.id()),
+                        )
+                    }))
+                    .collect();
+                (format!("Effect Slot {}", slot.index() + 1), options)
+            }
+            PatchControlId::Output(
+                crate::mixer::patch_output::PatchOutputParameter::OutputTrack,
+            ) => {
+                let current = patch.output().track_id();
+                (
+                    "Output Track".to_owned(),
+                    MixerTrackId::ALL
+                        .into_iter()
+                        .map(|track| {
+                            let id = track.to_string();
+                            ResolvedChoiceOption::enabled(id.clone(), id, track == current)
+                        })
+                        .collect(),
+                )
+            }
+            PatchControlId::Capability(parameter_id) => {
+                let descriptor = self
+                    .state
+                    .capabilities()
+                    .descriptor(patch.instrument_config().capability_id())
+                    .ok_or(EventRejection::InvalidInstrumentConfig)?;
+                let spec = descriptor
+                    .parameter(parameter_id)
+                    .filter(|spec| spec.kind() == ParameterKind::Choice)
+                    .ok_or(EventRejection::InvalidSelection)?;
+                let current = match patch.instrument_config().value(parameter_id) {
+                    Some(ParameterValue::Choice(current)) => current.as_str(),
+                    _ => return Err(EventRejection::InvalidInstrumentConfig),
+                };
+                (
+                    spec.label().to_owned(),
+                    spec.choices()
+                        .iter()
+                        .map(|choice| {
+                            ResolvedChoiceOption::enabled(
+                                choice.id(),
+                                choice.label(),
+                                choice.id() == current,
+                            )
+                        })
+                        .collect(),
+                )
+            }
+            PatchControlId::Effect(slot_id, parameter_id) => {
+                let config = patch
+                    .effect_slots()
+                    .iter()
+                    .flatten()
+                    .find(|config| config.slot_id() == *slot_id)
+                    .ok_or(EventRejection::InvalidEffectConfig)?;
+                let descriptor = self
+                    .state
+                    .effects()
+                    .descriptor(config.capability_id())
+                    .ok_or(EventRejection::InvalidEffectConfig)?;
+                let spec = descriptor
+                    .parameter(parameter_id)
+                    .filter(|spec| spec.kind() == ParameterKind::Choice)
+                    .ok_or(EventRejection::InvalidSelection)?;
+                let current = match config.value(parameter_id) {
+                    Some(ParameterValue::Choice(current)) => current.as_str(),
+                    _ => return Err(EventRejection::InvalidEffectConfig),
+                };
+                (
+                    spec.label().to_owned(),
+                    spec.choices()
+                        .iter()
+                        .map(|choice| {
+                            ResolvedChoiceOption::enabled(
+                                choice.id(),
+                                choice.label(),
+                                choice.id() == current,
+                            )
+                        })
+                        .collect(),
+                )
+            }
+            PatchControlId::Output(_)
+            | PatchControlId::Envelope(_)
+            | PatchControlId::Global(_)
+            | PatchControlId::MidiInput
+            | PatchControlId::VoiceLimit => return Err(EventRejection::InvalidSelection),
+        };
+        if options.is_empty() {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        Ok(ResolvedChoiceSource {
+            subject: subject.clone(),
+            origin_label,
+            options,
+        })
+    }
+
+    pub fn patch_choice_paths(
+        &self,
+        subject: &PatchChoiceSubject,
+    ) -> Result<Vec<FocusPath>, EventRejection> {
+        let source = self.choice_source(subject)?;
+        let paths = source
+            .options()
+            .iter()
+            .filter(|option| option.is_enabled())
+            .map(|option| {
+                FocusPath::patch_choice(
+                    subject.patch_id(),
+                    subject.stable_id(),
+                    option.id().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        ensure_unique(&paths)?;
+        Ok(paths)
+    }
+
+    pub fn sample_browser_paths(&self) -> Result<Vec<FocusPath>, EventRejection> {
+        let (patch_id, parameter_id) = match self.state.interaction().subordinate_session() {
+            Some(PatchSubordinateSession::SampleBrowser {
+                patch_id,
+                asset_parameter_id,
+                ..
+            }) => (*patch_id, asset_parameter_id),
+            _ => return Err(EventRejection::ActionUnavailableInContext),
+        };
+        if self.state.sample_browser().patch_id() != Some(patch_id)
+            || self.state.sample_browser().asset_parameter_id() != Some(parameter_id)
+        {
+            return Err(EventRejection::InvalidSelection);
+        }
+        let paths = self
+            .state
+            .sample_browser()
+            .rows()
+            .iter()
+            .map(|row| {
+                FocusPath::sample_browser(
+                    patch_id,
+                    parameter_id.as_str().to_owned(),
+                    row.id().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        ensure_unique(&paths)?;
+        Ok(paths)
     }
 
     /// Returns PATCH Main's canonical focus order for one installed Patch.
@@ -196,7 +467,7 @@ impl<'a> SemanticResolver<'a> {
                     .capabilities()
                     .descriptor(id)
                     .ok_or(EventRejection::InvalidInstrumentConfig)?;
-                descriptor
+                let mut paths = descriptor
                     .parameters()
                     .filter(|spec| row_is_visible_and_enabled(spec, |id| config.value(id)))
                     .map(|spec| {
@@ -206,7 +477,19 @@ impl<'a> SemanticResolver<'a> {
                             PatchControlId::Capability(spec.id().clone()),
                         )
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                paths.extend(
+                    crate::synth::VoiceEnvelope::surface_descriptor()
+                        .iter()
+                        .map(|parameter| {
+                            FocusPath::patch_detail(
+                                patch_id,
+                                capability_id.clone(),
+                                PatchControlId::Envelope(parameter.parameter()),
+                            )
+                        }),
+                );
+                paths
             }
             PatchDetailSubject::Effect {
                 slot_id,
@@ -371,6 +654,13 @@ impl<'a> SemanticResolver<'a> {
                     .ok_or(EventRejection::NoPatchesInstalled)?;
                 self.patch_detail_paths(patch_id, subject)
             }
+            SurfaceId::PatchChoice => match self.state.interaction().subordinate_session() {
+                Some(PatchSubordinateSession::Choice { subject, .. }) => {
+                    self.patch_choice_paths(subject)
+                }
+                _ => Err(EventRejection::ActionUnavailableInContext),
+            },
+            SurfaceId::SampleBrowser => self.sample_browser_paths(),
             SurfaceId::MixerInspector => self.mixer_inspector_paths(self.selected_mixer_track()?),
         }
     }
@@ -537,10 +827,16 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         | SemanticAction::SetInteractionMode(InteractionMode::MultiSelect) => {
             ("Unavailable mode", None)
         }
+        SemanticAction::OpenRelated => ("Open related", Some("Shift+W")),
+        SemanticAction::Activate => ("Choose", Some("Return")),
+        SemanticAction::PreviewStart => ("Preview", Some("hold Space")),
+        SemanticAction::PreviewStop => ("Stop preview", Some("release Space")),
         SemanticAction::SetSlotOccupancy { .. } => ("Set slot occupancy", None),
         SemanticAction::SetReturnOccupancy { .. } => ("Set return occupancy", None),
         SemanticAction::EnterSurface(SurfaceId::PatchUtility) => ("Open Utility", Some("D")),
         SemanticAction::EnterSurface(SurfaceId::PatchDetail) => ("Open Detail", Some("Return")),
+        SemanticAction::EnterSurface(SurfaceId::PatchChoice)
+        | SemanticAction::EnterSurface(SurfaceId::SampleBrowser) => ("Unavailable surface", None),
         SemanticAction::EnterSurface(SurfaceId::MixerInspector) => ("Open Inspector", None),
         SemanticAction::EnterSurface(SurfaceId::PatchMain)
         | SemanticAction::EnterSurface(SurfaceId::MixerMain) => ("Unavailable surface", None),

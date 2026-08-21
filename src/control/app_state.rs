@@ -7,9 +7,11 @@ use crate::control::engine_selection::{
 use crate::control::interaction_state::{InteractionState, Selection, SelectionSection};
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
-    FocusPath, MixerControlId, SemanticAction, SemanticControlId, SemanticResolver, SurfaceId,
+    FocusPath, MixerControlId, ModalControlId, PatchSubordinateSession, SampleBrowserState,
+    SamplePreviewState, SemanticAction, SemanticControlId, SemanticResolver, SurfaceId,
 };
 use crate::kernel::midi_channel::MidiChannel;
+use crate::kernel::patch_id::PatchId;
 use crate::mixer::bus_id::BusId;
 use crate::mixer::bus_return::{BusReturnBank, RETURN_LEVEL_DESCRIPTOR};
 use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
@@ -30,8 +32,9 @@ use crate::synth::instrument_capability::{
 use crate::synth::patch::{Patch, PatchEditableTarget};
 use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
-    EffectCapabilityError, EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, ParameterId,
-    PostEffectConfig, VoiceEnvelopeParameter,
+    AssetKind, AssetReference, EffectCapabilityError, EffectCapabilityId, EffectCapabilityRegistry,
+    EffectSlotId, ParameterId, PostEffectConfig, SampleAssetId, SampleBrowserRowKind,
+    VoiceEnvelopeParameter,
 };
 use core::fmt;
 
@@ -430,6 +433,10 @@ pub(crate) fn exercise_reducer_table_rejections(
                 .expect("probe path shape is valid");
             interaction
         },
+        sample_browser: SampleBrowserState::default(),
+        pending_asset_config: None,
+        sample_visualizations: std::collections::BTreeMap::new(),
+        pending_sample_visualization: None,
         engine_selection: EngineSelectionStatus::ready(GraphRevision::INITIAL),
         last_engine_selection_request_id: EngineSelectionRequestId::NONE,
         generation: 0,
@@ -512,6 +519,19 @@ pub struct AppState {
     returns: BusReturnBank,
     interaction: InteractionState,
     engine_selection: EngineSelectionStatus,
+    sample_browser: SampleBrowserState,
+    /// Prepared Sample candidate held outside canonical Patch state until the
+    /// audio callback has installed the graph and the retired graph has been
+    /// collected. This is control-thread state only; projections and
+    /// persistence continue to observe the active asset while activation is
+    /// pending.
+    pending_asset_config: Option<crate::synth::InstrumentConfig>,
+    sample_visualizations:
+        std::collections::BTreeMap<PatchId, crate::synth::PreparedSampleVisualization>,
+    pending_sample_visualization: Option<(
+        EngineSelectionRequestId,
+        crate::synth::PreparedSampleVisualization,
+    )>,
     last_engine_selection_request_id: EngineSelectionRequestId,
     generation: u64,
 }
@@ -561,6 +581,38 @@ impl<'state> SemanticActionAvailability<'state> {
 }
 
 impl AppState {
+    pub(crate) fn restore_voice_limits(
+        &mut self,
+        limits: &[(PatchId, u16)],
+    ) -> Result<(), EventRejection> {
+        if limits.len() != self.patches.len()
+            || limits.iter().any(|(patch_id, value)| {
+                self.patches
+                    .iter()
+                    .find(|patch| patch.id() == *patch_id)
+                    .and_then(|patch| {
+                        self.capabilities
+                            .descriptor(patch.instrument_config().capability_id())
+                    })
+                    .is_none_or(|descriptor| {
+                        *value == 0
+                            || *value > VoiceLimit::seeded_from(descriptor.voice_policy()).value()
+                    })
+            })
+        {
+            return Err(EventRejection::InvalidInstrumentConfig);
+        }
+        for (patch_id, value) in limits {
+            self.patches
+                .iter_mut()
+                .find(|patch| patch.id() == *patch_id)
+                .ok_or(EventRejection::UnknownPatch)?
+                .set_voice_limit(*value)
+                .map_err(|_| EventRejection::InvalidParameterValue)?;
+        }
+        Ok(())
+    }
+
     /// Creates startup state before the fixture Patch set is installed.
     pub fn new(capabilities: CapabilityRegistry, global: GlobalParameters) -> Self {
         Self::for_graph(capabilities, global, GraphRevision::INITIAL)
@@ -605,6 +657,10 @@ impl AppState {
             returns: BusReturnBank::default(),
             interaction: InteractionState::new(),
             engine_selection: EngineSelectionStatus::ready(active_graph_revision),
+            sample_browser: SampleBrowserState::default(),
+            pending_asset_config: None,
+            sample_visualizations: std::collections::BTreeMap::new(),
+            pending_sample_visualization: None,
             last_engine_selection_request_id: EngineSelectionRequestId::NONE,
             generation: 0,
         }
@@ -645,9 +701,43 @@ impl AppState {
         &self.mixer
     }
 
+    pub fn sample_visualization(
+        &self,
+        patch_id: PatchId,
+    ) -> Option<&crate::synth::PreparedSampleVisualization> {
+        self.pending_sample_visualization
+            .as_ref()
+            .filter(|(request_id, _)| {
+                self.sample_browser.preview_request_id() == Some(*request_id)
+                    || self.sample_browser.request_id() == Some(*request_id)
+            })
+            .map(|(_, visualization)| visualization)
+            .or_else(|| self.sample_visualizations.get(&patch_id))
+    }
+
     /// Returns the canonical eight-return bank in ascending `BusId` order.
     pub const fn bus_returns(&self) -> &BusReturnBank {
         &self.returns
+    }
+
+    /// Supplies the transient controller-native Sample catalog discovered by
+    /// the composition root. Listings are control state only and are excluded
+    /// from saved Patch/session data.
+    pub fn with_sample_catalog(
+        mut self,
+        listings: impl IntoIterator<
+            Item = (
+                crate::synth::SampleFolderId,
+                Result<crate::synth::SampleCatalogListing, crate::synth::SampleAssetError>,
+            ),
+        >,
+    ) -> Self {
+        self.sample_browser = self.sample_browser.with_catalog(listings);
+        self
+    }
+
+    pub const fn sample_browser(&self) -> &SampleBrowserState {
+        &self.sample_browser
     }
 
     /// Resolves one MIXER global row's current value: master gain alone.
@@ -788,7 +878,11 @@ impl AppState {
             || matches!(
                 action,
                 SemanticAction::Navigate(_)
-                    if self.interaction.mode() != crate::control::InteractionMode::Navigate
+                    if !matches!(
+                        self.interaction.mode(),
+                        crate::control::InteractionMode::Navigate
+                            | crate::control::InteractionMode::Modal
+                    )
             )
             || matches!(
                 action,
@@ -890,11 +984,20 @@ impl AppState {
                 Ok(ReducerEffects::default())
             }
             AppEvent::Navigate(direction) => {
+                let audio_command = if self.interaction.active_surface() == SurfaceId::SampleBrowser
+                {
+                    self.preview_stop_command()
+                } else {
+                    None
+                };
                 match self.context() {
                     TopLevelContext::Mixer => self.navigate(direction)?,
                     TopLevelContext::Patch => self.navigate_patch_control(direction)?,
                 }
-                Ok(ReducerEffects::default())
+                Ok(ReducerEffects {
+                    audio_command,
+                    engine_selection_effect: None,
+                })
             }
             AppEvent::Adjust(direction) => match self.context() {
                 TopLevelContext::Mixer => self.adjust(direction),
@@ -905,6 +1008,25 @@ impl AppState {
                     .set_mode(mode)
                     .map_err(|_| EventRejection::ActionUnavailableInContext)?;
                 Ok(ReducerEffects::default())
+            }
+            AppEvent::OpenRelated => {
+                self.open_related_surface()?;
+                Ok(ReducerEffects::default())
+            }
+            AppEvent::Activate => self.activate_focused_subordinate(),
+            AppEvent::PreviewStart => {
+                let engine_selection_effect = self.preview_start()?;
+                Ok(ReducerEffects {
+                    audio_command: None,
+                    engine_selection_effect: Some(engine_selection_effect),
+                })
+            }
+            AppEvent::PreviewStop => {
+                let audio_command = self.preview_stop()?;
+                Ok(ReducerEffects {
+                    audio_command,
+                    engine_selection_effect: None,
+                })
             }
             AppEvent::EnterSurface(SurfaceId::PatchDetail) => {
                 self.enter_patch_detail()?;
@@ -917,10 +1039,22 @@ impl AppState {
                 Ok(ReducerEffects::default())
             }
             AppEvent::Return => {
+                let audio_command = if self.interaction.active_surface() == SurfaceId::SampleBrowser
+                {
+                    self.preview_stop_command()
+                } else {
+                    None
+                };
+                if self.interaction.active_surface() == SurfaceId::SampleBrowser {
+                    self.sample_browser.cancelled();
+                }
                 self.interaction
                     .return_to_origin()
                     .map_err(|_| EventRejection::ActionUnavailableInContext)?;
-                Ok(ReducerEffects::default())
+                Ok(ReducerEffects {
+                    audio_command,
+                    engine_selection_effect: None,
+                })
             }
             AppEvent::InstallPatches(patches) => {
                 self.install_patches(patches)?;
@@ -936,6 +1070,7 @@ impl AppState {
                 source_graph_revision,
                 target_graph_revision,
                 candidate_config,
+                prepared_visualization,
             } => {
                 let engine_selection_effect = self.engine_prepared(
                     request_id,
@@ -946,10 +1081,54 @@ impl AppState {
                     source_graph_revision,
                     target_graph_revision,
                     candidate_config,
+                    prepared_visualization,
                 )?;
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(engine_selection_effect),
+                })
+            }
+            AppEvent::SampleAssetLifecycleAdvanced {
+                request_id,
+                lifecycle,
+            } => {
+                if !self
+                    .sample_browser
+                    .assignment_lifecycle_advanced(request_id, lifecycle)
+                {
+                    return Err(EventRejection::MismatchedEngineSelection);
+                }
+                Ok(ReducerEffects::default())
+            }
+            AppEvent::SampleCatalogRefreshed { folder, listing } => {
+                let refreshing_visible = self.interaction.active_surface()
+                    == SurfaceId::SampleBrowser
+                    && self.sample_browser.folder() == &folder;
+                let (held, old_order, audio_command) = if refreshing_visible {
+                    (
+                        Some(self.interaction.focus_path().clone()),
+                        Some(SemanticResolver::new(self).sample_browser_paths()?),
+                        self.preview_stop_command(),
+                    )
+                } else {
+                    (None, None, None)
+                };
+                let reloaded = self.sample_browser.refresh_listing(folder, listing);
+                if reloaded {
+                    let held = held.ok_or(EventRejection::InvalidSelection)?;
+                    let old_order = old_order.ok_or(EventRejection::InvalidSelection)?;
+                    let new_order = SemanticResolver::new(self).sample_browser_paths()?;
+                    let repaired = if new_order.contains(&held) {
+                        held
+                    } else {
+                        SemanticResolver::recover(&held, &old_order, &new_order)
+                            .ok_or(EventRejection::InvalidSelection)?
+                    };
+                    self.interaction.active_focus = repaired;
+                }
+                Ok(ReducerEffects {
+                    audio_command,
+                    engine_selection_effect: None,
                 })
             }
             AppEvent::EnginePreparationFailed {
@@ -981,15 +1160,16 @@ impl AppState {
                 retired_graph_revision,
                 collected,
             } => {
-                let engine_selection_effect = self.engine_activation_acknowledged(
-                    request_id,
-                    &intent,
-                    target_graph_revision,
-                    retired_graph_revision,
-                    collected,
-                )?;
+                let (engine_selection_effect, audio_command) = self
+                    .engine_activation_acknowledged(
+                        request_id,
+                        &intent,
+                        target_graph_revision,
+                        retired_graph_revision,
+                        collected,
+                    )?;
                 Ok(ReducerEffects {
-                    audio_command: None,
+                    audio_command,
                     engine_selection_effect: Some(engine_selection_effect),
                 })
             }
@@ -1147,6 +1327,324 @@ impl AppState {
         self.interaction
             .enter_detail(subject, focus)
             .map_err(|_| EventRejection::ActionUnavailableInContext)
+    }
+
+    fn open_related_surface(&mut self) -> Result<(), EventRejection> {
+        match self.interaction.active_surface() {
+            SurfaceId::PatchMain => self.enter_patch_detail(),
+            SurfaceId::PatchDetail => self.open_sample_browser(),
+            SurfaceId::PatchUtility
+            | SurfaceId::PatchChoice
+            | SurfaceId::SampleBrowser
+            | SurfaceId::MixerMain
+            | SurfaceId::MixerInspector => Err(EventRejection::ActionUnavailableInContext),
+        }
+    }
+
+    fn open_sample_browser(&mut self) -> Result<(), EventRejection> {
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let parameter_id = match self.interaction.focus_path().control_id() {
+            SemanticControlId::Patch(crate::control::PatchControlId::Capability(id)) => id.clone(),
+            _ => return Err(EventRejection::ActionUnavailableInContext),
+        };
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let descriptor = self
+            .capabilities
+            .descriptor(patch.instrument_config().capability_id())
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        let spec = descriptor
+            .parameter(&parameter_id)
+            .filter(|spec| spec.kind() == ParameterKind::Asset)
+            .ok_or(EventRejection::ActionUnavailableInContext)?;
+        let reference = patch
+            .instrument_config()
+            .asset_reference(spec.id())
+            .filter(|reference| reference.kind() == AssetKind::Sample)
+            .ok_or(EventRejection::ActionUnavailableInContext)?;
+        let _ = SampleAssetId::new(reference.locator())
+            .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+        self.sample_browser.begin(patch_id, parameter_id.clone());
+        let row = self
+            .sample_browser
+            .rows()
+            .first()
+            .ok_or(EventRejection::InvalidSelection)?;
+        let focus = FocusPath::sample_browser(
+            patch_id,
+            parameter_id.as_str().to_owned(),
+            row.id().to_owned(),
+        );
+        self.interaction
+            .enter_sample_browser(patch_id, parameter_id, focus)
+            .map_err(|_| EventRejection::ActionUnavailableInContext)
+    }
+
+    fn open_patch_choice(&mut self) -> Result<(), EventRejection> {
+        let origin = self.interaction.focus_path().clone();
+        let resolver = SemanticResolver::new(self);
+        let subject = resolver
+            .choice_subject(&origin)
+            .ok_or(EventRejection::ActionUnavailableInContext)?;
+        let source = resolver.choice_source(&subject)?;
+        let paths = resolver.patch_choice_paths(&subject)?;
+        let focus_index = source
+            .options()
+            .iter()
+            .position(|option| option.is_current() && option.is_enabled())
+            .unwrap_or(0);
+        let focus = paths
+            .get(focus_index)
+            .cloned()
+            .ok_or(EventRejection::ActionUnavailableInContext)?;
+        self.interaction
+            .enter_choice(subject, focus)
+            .map_err(|_| EventRejection::ActionUnavailableInContext)
+    }
+
+    fn activate_focused_subordinate(&mut self) -> Result<ReducerEffects, EventRejection> {
+        if matches!(
+            self.interaction.subordinate_session(),
+            Some(PatchSubordinateSession::SampleBrowser { .. })
+        ) {
+            return self.activate_sample_browser_row();
+        }
+        let subject = match self.interaction.subordinate_session() {
+            Some(PatchSubordinateSession::Choice { subject, .. }) => subject.clone(),
+            Some(PatchSubordinateSession::SampleBrowser { .. })
+            | Some(PatchSubordinateSession::Detail { .. })
+            | None => return Err(EventRejection::ActionUnavailableInContext),
+        };
+        let option_id = match self.interaction.focus_path().control_id() {
+            SemanticControlId::Modal(ModalControlId::Choice(id)) => id.clone(),
+            _ => return Err(EventRejection::InvalidSelection),
+        };
+        let source = SemanticResolver::new(self).choice_source(&subject)?;
+        let option = source
+            .options()
+            .iter()
+            .find(|option| option.id() == option_id && option.is_enabled())
+            .ok_or(EventRejection::InvalidSelection)?;
+        if option.is_current() {
+            self.interaction
+                .return_to_origin()
+                .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+            return Ok(ReducerEffects::default());
+        }
+
+        let effect = match subject.control_id().clone() {
+            crate::control::PatchControlId::Engine => {
+                let target = self
+                    .capabilities
+                    .descriptors()
+                    .iter()
+                    .find(|descriptor| descriptor.id().to_string() == option_id)
+                    .map(|descriptor| descriptor.id().clone())
+                    .ok_or(EventRejection::EngineSelectionUnavailable)?;
+                Some(self.request_engine_selection_to(target)?)
+            }
+            crate::control::PatchControlId::EffectSlot(slot) => {
+                let entry = if option_id == crate::control::EMPTY_OCCUPANCY_CHOICE_ID {
+                    None
+                } else {
+                    Some(
+                        self.effects
+                            .descriptors()
+                            .iter()
+                            .find(|descriptor| descriptor.id().to_string() == option_id)
+                            .map(|descriptor| descriptor.id().clone())
+                            .ok_or(EventRejection::InvalidEffectConfig)?,
+                    )
+                };
+                Some(
+                    self.request_topology_change(StructuralEditIntent::SetSlotOccupancy {
+                        patch_id: subject.patch_id(),
+                        slot,
+                        entry,
+                    })?,
+                )
+            }
+            crate::control::PatchControlId::Output(PatchOutputParameter::OutputTrack) => {
+                let track = MixerTrackId::ALL
+                    .into_iter()
+                    .find(|track| track.to_string() == option_id)
+                    .ok_or(EventRejection::InvalidParameterValue)?;
+                let patch = self
+                    .patches
+                    .iter_mut()
+                    .find(|patch| patch.id() == subject.patch_id())
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                patch.set_output(patch.output().with_track_id(track));
+                None
+            }
+            crate::control::PatchControlId::Capability(parameter_id) => {
+                let patch = self
+                    .patches
+                    .iter()
+                    .find(|patch| patch.id() == subject.patch_id())
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                let descriptor = self
+                    .capabilities
+                    .descriptor(patch.instrument_config().capability_id())
+                    .ok_or(EventRejection::InvalidInstrumentConfig)?;
+                let update = descriptor
+                    .parameter(&parameter_id)
+                    .filter(|spec| spec.kind() == ParameterKind::Choice)
+                    .map(crate::synth::ParameterSpec::update)
+                    .ok_or(EventRejection::InvalidSelection)?;
+                if update == crate::synth::ParameterUpdate::Scalar {
+                    self.set_instrument_scalar_choice(
+                        subject.patch_id(),
+                        &parameter_id,
+                        option_id,
+                    )?;
+                    None
+                } else {
+                    Some(self.request_parameter_choice_to(parameter_id, option_id)?)
+                }
+            }
+            crate::control::PatchControlId::Effect(slot_id, parameter_id) => {
+                self.set_effect_choice(slot_id, &parameter_id, option_id)?;
+                None
+            }
+            crate::control::PatchControlId::Output(_)
+            | crate::control::PatchControlId::Envelope(_)
+            | crate::control::PatchControlId::Global(_)
+            | crate::control::PatchControlId::MidiInput
+            | crate::control::PatchControlId::VoiceLimit => {
+                return Err(EventRejection::InvalidSelection)
+            }
+        };
+        self.interaction
+            .return_to_origin()
+            .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+        Ok(ReducerEffects {
+            audio_command: None,
+            engine_selection_effect: effect,
+        })
+    }
+
+    fn activate_sample_browser_row(&mut self) -> Result<ReducerEffects, EventRejection> {
+        let audio_command = self.preview_stop_command();
+        let entry_id = match self.interaction.focus_path().control_id() {
+            SemanticControlId::Modal(ModalControlId::BrowserEntry(id)) => id.clone(),
+            _ => return Err(EventRejection::InvalidSelection),
+        };
+        let row = self
+            .sample_browser
+            .row(&entry_id)
+            .cloned()
+            .ok_or(EventRejection::InvalidSelection)?;
+        match row.kind().clone() {
+            SampleBrowserRowKind::Parent(folder) | SampleBrowserRowKind::Folder(folder) => {
+                self.sample_browser.load_folder(folder);
+                let focus = SemanticResolver::new(self)
+                    .sample_browser_paths()?
+                    .into_iter()
+                    .next()
+                    .ok_or(EventRejection::InvalidSelection)?;
+                self.interaction.active_focus = focus;
+                Ok(ReducerEffects {
+                    audio_command,
+                    engine_selection_effect: None,
+                })
+            }
+            SampleBrowserRowKind::File(asset_id) => {
+                let effect = self.request_asset_assignment(asset_id.clone())?;
+                self.sample_browser
+                    .assignment_requested(asset_id, effect.request_id());
+                self.interaction
+                    .return_to_origin()
+                    .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+                Ok(ReducerEffects {
+                    audio_command,
+                    engine_selection_effect: Some(effect),
+                })
+            }
+            SampleBrowserRowKind::Cancel => {
+                self.sample_browser.cancelled();
+                self.interaction
+                    .return_to_origin()
+                    .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+                Ok(ReducerEffects {
+                    audio_command,
+                    engine_selection_effect: None,
+                })
+            }
+        }
+    }
+
+    fn request_asset_assignment(
+        &mut self,
+        asset_id: SampleAssetId,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        let (patch_id, parameter_id) = match self.interaction.subordinate_session() {
+            Some(PatchSubordinateSession::SampleBrowser {
+                patch_id,
+                asset_parameter_id,
+                ..
+            }) => (*patch_id, asset_parameter_id.clone()),
+            _ => return Err(EventRejection::ActionUnavailableInContext),
+        };
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let capability_id = patch.instrument_config().capability_id().clone();
+        let descriptor = self
+            .capabilities
+            .descriptor(&capability_id)
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        let spec = descriptor
+            .parameter(&parameter_id)
+            .filter(|spec| {
+                spec.kind() == ParameterKind::Asset
+                    && spec.update() == crate::synth::ParameterUpdate::Structural
+            })
+            .ok_or(EventRejection::InvalidSelection)?;
+        let reference = AssetReference::new(AssetKind::Sample, asset_id.as_str())
+            .map_err(|_| EventRejection::InvalidParameterValue)?;
+        if patch.instrument_config().asset_reference(spec.id()) == Some(&reference) {
+            return Err(EventRejection::ParameterAtBoundary);
+        }
+        let request_id = self
+            .last_engine_selection_request_id
+            .checked_next()
+            .map_err(|_| EventRejection::RequestIdOverflow)?;
+        let intent = StructuralEditIntent::ReplaceAsset {
+            capability_id: capability_id.clone(),
+            parameter_id,
+            reference,
+        };
+        let status = EngineSelectionStatus::preparing_with_intent(
+            self.engine_selection.active_graph_revision(),
+            request_id,
+            patch_id,
+            intent,
+            capability_id.clone(),
+            capability_id,
+        )
+        .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+        let effect = EngineSelectionEffect::from_correlation(
+            EngineSelectionEffectKind::PrepareRequested,
+            status
+                .correlation()
+                .ok_or(EventRejection::MismatchedEngineSelection)?,
+        )
+        .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+        self.engine_selection = status;
+        self.last_engine_selection_request_id = request_id;
+        Ok(effect)
     }
 
     fn select_context(&mut self, context: TopLevelContext) -> Result<(), EventRejection> {
@@ -1337,6 +1835,61 @@ impl AppState {
         Ok(effect)
     }
 
+    fn request_engine_selection_to(
+        &mut self,
+        target_capability_id: crate::synth::CapabilityId,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        if self
+            .capabilities
+            .descriptor(&target_capability_id)
+            .is_none()
+        {
+            return Err(EventRejection::EngineSelectionUnavailable);
+        }
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::EngineSelectionUnavailable)?;
+        let source_capability_id = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .map(|patch| patch.instrument_config().capability_id().clone())
+            .ok_or(EventRejection::EngineSelectionUnavailable)?;
+        if source_capability_id == target_capability_id {
+            return Err(EventRejection::EngineSelectionUnavailable);
+        }
+        let request_id = self
+            .last_engine_selection_request_id
+            .checked_next()
+            .map_err(|_| EventRejection::RequestIdOverflow)?;
+        let intent = StructuralEditIntent::ReplaceCapability {
+            target_capability_id: target_capability_id.clone(),
+        };
+        let status = EngineSelectionStatus::preparing_with_intent(
+            self.engine_selection.active_graph_revision(),
+            request_id,
+            patch_id,
+            intent,
+            source_capability_id,
+            target_capability_id,
+        )
+        .map_err(|_| EventRejection::EngineSelectionUnavailable)?;
+        let effect = EngineSelectionEffect::from_correlation(
+            EngineSelectionEffectKind::PrepareRequested,
+            status
+                .correlation()
+                .expect("Preparing status always owns correlation"),
+        )
+        .expect("Preparing correlation has no target revision");
+        self.engine_selection = status;
+        self.last_engine_selection_request_id = request_id;
+        Ok(effect)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn engine_prepared(
         &mut self,
@@ -1348,6 +1901,7 @@ impl AppState {
         source_graph_revision: GraphRevision,
         target_graph_revision: GraphRevision,
         candidate_config: crate::synth::InstrumentConfig,
+        prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
     ) -> Result<EngineSelectionEffect, EventRejection> {
         let old_patch_order = SemanticResolver::new(self).patch_main_paths(patch_id)?;
         let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
@@ -1376,7 +1930,7 @@ impl AppState {
             .voice_policy();
         let patch = self
             .patches
-            .iter_mut()
+            .iter()
             .find(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::MismatchedEngineSelection)?;
         if patch.instrument_config().capability_id() != &source_capability_id
@@ -1395,17 +1949,43 @@ impl AppState {
                 .expect("Activating status always owns correlation"),
         )
         .expect("Activating correlation owns a target revision");
-        // Commit the config and narrow the limit together. The preparation
-        // worker deliberately does not clamp: clamping only the candidate
-        // would leave the candidate snapshot and canonical state out of step,
-        // so the one narrowing happens here, where both land at once.
-        let carry_over = patch.replace_instrument_config(candidate_config, target_policy);
-        debug_assert_eq!(
-            patch.voice_limit(),
-            carry_over.limit(),
-            "the reported carry-over limit must be the one canonical state now holds"
-        );
+        let asset_assignment = matches!(intent, StructuralEditIntent::ReplaceAsset { .. });
+        let audition = matches!(intent, StructuralEditIntent::PrepareAudition { .. });
+        if asset_assignment
+            && self.sample_browser.lifecycle() != crate::control::SampleAssetLifecycle::Preparing
+        {
+            return Err(EventRejection::MismatchedEngineSelection);
+        }
+        if asset_assignment {
+            // The prepared graph owns the candidate, but canonical Patch state
+            // remains the active graph's state until the callback swap is
+            // acknowledged. Asset locators therefore cannot leak early into
+            // projection or persistence.
+            self.pending_asset_config = Some(candidate_config);
+        } else if !audition {
+            let patch = self
+                .patches
+                .iter_mut()
+                .find(|patch| patch.id() == patch_id)
+                .ok_or(EventRejection::MismatchedEngineSelection)?;
+            // Commit the config and narrow the limit together. The preparation
+            // worker deliberately does not clamp: clamping only the candidate
+            // would leave the candidate snapshot and canonical state out of
+            // step, so the one narrowing happens here, where both land at once.
+            let carry_over = patch.replace_instrument_config(candidate_config, target_policy);
+            debug_assert_eq!(
+                patch.voice_limit(),
+                carry_over.limit(),
+                "the reported carry-over limit must be the one canonical state now holds"
+            );
+        }
+        self.pending_sample_visualization = prepared_visualization.map(|value| (request_id, value));
         self.engine_selection = status;
+        if asset_assignment {
+            self.sample_browser.assignment_activating(request_id);
+        } else if audition {
+            self.sample_browser.preview_activating(request_id);
+        }
         self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
         Ok(effect)
     }
@@ -1436,6 +2016,14 @@ impl AppState {
             .engine_selection
             .failed(failure)
             .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+        if matches!(intent, StructuralEditIntent::ReplaceAsset { .. }) {
+            self.pending_asset_config = None;
+            self.pending_sample_visualization = None;
+            self.sample_browser.assignment_failed(request_id, failure);
+        } else if matches!(intent, StructuralEditIntent::PrepareAudition { .. }) {
+            self.pending_sample_visualization = None;
+            self.sample_browser.preview_failed(request_id, failure);
+        }
         Ok(())
     }
 
@@ -1446,14 +2034,15 @@ impl AppState {
         target_graph_revision: GraphRevision,
         retired_graph_revision: GraphRevision,
         collected: bool,
-    ) -> Result<EngineSelectionEffect, EventRejection> {
+    ) -> Result<(EngineSelectionEffect, Option<AudioCommand>), EventRejection> {
         if self.engine_selection.kind() != EngineSelectionStatusKind::Activating {
             return Err(EventRejection::StaleEngineSelection);
         }
         let correlation = self
             .engine_selection
             .correlation()
-            .ok_or(EventRejection::StaleEngineSelection)?;
+            .ok_or(EventRejection::StaleEngineSelection)?
+            .clone();
         if correlation.request_id() != request_id {
             return Err(EventRejection::StaleEngineSelection);
         }
@@ -1466,19 +2055,67 @@ impl AppState {
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
-        if !self.committed_intent_matches_state(correlation) {
+        if !self.committed_intent_matches_state(&correlation) {
             return Err(EventRejection::MismatchedEngineSelection);
         }
+        let asset_assignment = matches!(intent, StructuralEditIntent::ReplaceAsset { .. });
+        let audition = matches!(intent, StructuralEditIntent::PrepareAudition { .. });
         let effect = EngineSelectionEffect::from_correlation(
             EngineSelectionEffectKind::ActivationAcknowledged,
-            correlation,
+            &correlation,
         )
         .expect("Activating correlation owns a target revision");
+        if asset_assignment {
+            let candidate = self
+                .pending_asset_config
+                .clone()
+                .ok_or(EventRejection::MismatchedEngineSelection)?;
+            let patch_id = correlation
+                .patch_id()
+                .ok_or(EventRejection::MismatchedEngineSelection)?;
+            let old_patch_order = SemanticResolver::new(self).patch_main_paths(patch_id)?;
+            let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
+            let target_policy = self
+                .capabilities
+                .descriptor(candidate.capability_id())
+                .ok_or(EventRejection::MismatchedEngineSelection)?
+                .voice_policy();
+            let patch = self
+                .patches
+                .iter_mut()
+                .find(|patch| patch.id() == patch_id)
+                .ok_or(EventRejection::MismatchedEngineSelection)?;
+            patch.replace_instrument_config(candidate, target_policy);
+            if let Some((pending_request, visualization)) = self.pending_sample_visualization.take()
+            {
+                if pending_request == request_id {
+                    self.sample_visualizations.insert(patch_id, visualization);
+                }
+            }
+            self.pending_asset_config = None;
+            self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
+        }
         self.engine_selection = self
             .engine_selection
             .acknowledged()
             .map_err(|_| EventRejection::MismatchedEngineSelection)?;
-        Ok(effect)
+        if asset_assignment {
+            self.sample_browser.assignment_ready(request_id);
+        }
+        let audio_command = if audition && self.sample_browser.preview_ready(request_id) {
+            Some(AudioCommand::preview_start(
+                correlation
+                    .patch_id()
+                    .ok_or(EventRejection::MismatchedEngineSelection)?,
+                request_id.value(),
+            ))
+        } else {
+            None
+        };
+        if audition && audio_command.is_none() {
+            self.pending_sample_visualization = None;
+        }
+        Ok((effect, audio_command))
     }
 
     /// Enters the shared correlated structural lifecycle for one occupancy
@@ -1533,7 +2170,9 @@ impl AppState {
                 }
             }
             StructuralEditIntent::ReplaceCapability { .. }
-            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+            | StructuralEditIntent::ReplaceParameterChoice { .. }
+            | StructuralEditIntent::ReplaceAsset { .. }
+            | StructuralEditIntent::PrepareAudition { .. } => {
                 return Err(EventRejection::InvalidSelection)
             }
         }
@@ -1637,7 +2276,9 @@ impl AppState {
                 Ok(effect)
             }
             StructuralEditIntent::ReplaceCapability { .. }
-            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+            | StructuralEditIntent::ReplaceParameterChoice { .. }
+            | StructuralEditIntent::ReplaceAsset { .. }
+            | StructuralEditIntent::PrepareAudition { .. } => {
                 Err(EventRejection::MismatchedEngineSelection)
             }
         }
@@ -1686,6 +2327,25 @@ impl AppState {
                 };
                 config_matches_committed_intent(patch.instrument_config(), correlation.intent())
             }
+            StructuralEditIntent::ReplaceAsset { .. } => {
+                let Some(patch_id) = correlation.patch_id() else {
+                    return false;
+                };
+                let Some(patch) = self.patches.iter().find(|patch| patch.id() == patch_id) else {
+                    return false;
+                };
+                let Some(candidate) = self.pending_asset_config.as_ref() else {
+                    return false;
+                };
+                correlation.source_capability_id()
+                    == Some(patch.instrument_config().capability_id())
+                    && candidate.capability_id() == patch.instrument_config().capability_id()
+                    && config_matches_committed_intent(candidate, correlation.intent())
+            }
+            StructuralEditIntent::PrepareAudition { capability_id, .. } => correlation
+                .patch_id()
+                .and_then(|patch_id| self.patches.iter().find(|patch| patch.id() == patch_id))
+                .is_some_and(|patch| patch.instrument_config().capability_id() == capability_id),
             StructuralEditIntent::SetSlotOccupancy {
                 patch_id,
                 slot,
@@ -1770,9 +2430,11 @@ impl AppState {
                     Err(EventRejection::ActionUnavailableInContext)
                 }
             },
-            SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail => {
-                Err(EventRejection::ActionUnavailableInContext)
-            }
+            SurfaceId::PatchMain
+            | SurfaceId::PatchUtility
+            | SurfaceId::PatchDetail
+            | SurfaceId::PatchChoice
+            | SurfaceId::SampleBrowser => Err(EventRejection::ActionUnavailableInContext),
         }
     }
 
@@ -1807,6 +2469,25 @@ impl AppState {
                         &SemanticResolver::new(self).patch_utility_paths(patch_id)?,
                         direction == Direction::Down,
                     )
+                } else {
+                    Err(EventRejection::ActionUnavailableInContext)
+                }
+            }
+            SurfaceId::PatchChoice => {
+                if matches!(direction, Direction::Up | Direction::Down) {
+                    let paths =
+                        SemanticResolver::new(self).ordered_paths(SurfaceId::PatchChoice)?;
+                    self.navigate_side_nonwrapping(&paths, direction == Direction::Down)
+                } else {
+                    Err(EventRejection::ActionUnavailableInContext)
+                }
+            }
+            SurfaceId::SampleBrowser => {
+                if matches!(direction, Direction::Up | Direction::Down) {
+                    let paths = SemanticResolver::new(self).sample_browser_paths()?;
+                    self.navigate_side_nonwrapping(&paths, direction == Direction::Down)?;
+                    self.sample_browser.preview_stop();
+                    Ok(())
                 } else {
                     Err(EventRejection::ActionUnavailableInContext)
                 }
@@ -1850,6 +2531,18 @@ impl AppState {
         &mut self,
         direction: Direction,
     ) -> Result<ReducerEffects, EventRejection> {
+        if direction == Direction::Up
+            && SemanticResolver::new(self)
+                .choice_subject(self.interaction.focus_path())
+                .is_some()
+        {
+            self.open_patch_choice()?;
+            return Ok(ReducerEffects::default());
+        }
+        if self.interaction.active_surface() == SurfaceId::PatchDetail {
+            self.adjust_patch_detail(direction)?;
+            return Ok(ReducerEffects::default());
+        }
         if self.interaction.active_surface() == SurfaceId::PatchUtility {
             let SemanticControlId::Patch(control) = self.interaction.focus_path().control_id()
             else {
@@ -1936,6 +2629,101 @@ impl AppState {
         }
     }
 
+    fn preview_start(&mut self) -> Result<EngineSelectionEffect, EventRejection> {
+        if self.interaction.active_surface() != SurfaceId::SampleBrowser
+            || !matches!(self.sample_browser.preview(), SamplePreviewState::Idle)
+            || self.engine_selection.is_in_flight()
+        {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        let entry_id = match self.interaction.focus_path().control_id() {
+            SemanticControlId::Modal(ModalControlId::BrowserEntry(id)) => id,
+            _ => return Err(EventRejection::InvalidSelection),
+        };
+        let asset_id = match self.sample_browser.row(entry_id).map(|row| row.kind()) {
+            Some(SampleBrowserRowKind::File(asset_id)) => asset_id.clone(),
+            _ => return Err(EventRejection::ActionUnavailableInContext),
+        };
+        let (patch_id, parameter_id) = match self.interaction.subordinate_session() {
+            Some(PatchSubordinateSession::SampleBrowser {
+                patch_id,
+                asset_parameter_id,
+                ..
+            }) => (*patch_id, asset_parameter_id.clone()),
+            _ => return Err(EventRejection::ActionUnavailableInContext),
+        };
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let capability_id = patch.instrument_config().capability_id().clone();
+        let descriptor = self
+            .capabilities
+            .descriptor(&capability_id)
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        descriptor
+            .parameter(&parameter_id)
+            .filter(|spec| {
+                spec.kind() == ParameterKind::Asset
+                    && spec.update() == crate::synth::ParameterUpdate::Structural
+            })
+            .ok_or(EventRejection::InvalidSelection)?;
+        let reference = AssetReference::new(AssetKind::Sample, asset_id.as_str())
+            .map_err(|_| EventRejection::InvalidParameterValue)?;
+        let request_id = self
+            .last_engine_selection_request_id
+            .checked_next()
+            .map_err(|_| EventRejection::RequestIdOverflow)?;
+        let intent = StructuralEditIntent::PrepareAudition {
+            capability_id: capability_id.clone(),
+            parameter_id,
+            reference,
+        };
+        let status = EngineSelectionStatus::preparing_with_intent(
+            self.engine_selection.active_graph_revision(),
+            request_id,
+            patch_id,
+            intent,
+            capability_id.clone(),
+            capability_id,
+        )
+        .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+        let effect = EngineSelectionEffect::from_correlation(
+            EngineSelectionEffectKind::PrepareRequested,
+            status
+                .correlation()
+                .ok_or(EventRejection::MismatchedEngineSelection)?,
+        )
+        .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+        self.engine_selection = status;
+        self.last_engine_selection_request_id = request_id;
+        self.sample_browser.preview_requested(asset_id, request_id);
+        Ok(effect)
+    }
+
+    fn preview_stop(&mut self) -> Result<Option<AudioCommand>, EventRejection> {
+        if self.interaction.active_surface() != SurfaceId::SampleBrowser
+            || matches!(self.sample_browser.preview(), SamplePreviewState::Idle)
+        {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        Ok(self.preview_stop_command())
+    }
+
+    fn preview_stop_command(&mut self) -> Option<AudioCommand> {
+        let patch_id = self.sample_browser.patch_id()?;
+        let request_id = self.sample_browser.preview_request_id()?;
+        let command = self
+            .sample_browser
+            .preview_stop()
+            .then(|| AudioCommand::preview_stop(patch_id, request_id.value()));
+        if command.is_some() {
+            self.pending_sample_visualization = None;
+        }
+        command
+    }
+
     fn adjust_patch_output(
         &mut self,
         parameter: PatchOutputParameter,
@@ -1984,6 +2772,79 @@ impl AppState {
             }
         };
         patch.set_output(updated);
+        Ok(())
+    }
+
+    fn adjust_patch_detail(&mut self, direction: Direction) -> Result<(), EventRejection> {
+        let control = match self.interaction.focus_path().control_id() {
+            SemanticControlId::Patch(control) => control.clone(),
+            _ => return Err(EventRejection::InvalidSelection),
+        };
+        match control {
+            crate::control::PatchControlId::Capability(parameter_id) => {
+                self.adjust_instrument_parameter(&parameter_id, direction)
+            }
+            crate::control::PatchControlId::Effect(slot_id, parameter_id) => {
+                self.adjust_patch_effect(slot_id, &parameter_id, direction)
+            }
+            crate::control::PatchControlId::Envelope(parameter) => {
+                let patch_id = self
+                    .interaction
+                    .patch_focus()
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                let patch_index = self
+                    .patches
+                    .iter()
+                    .position(|patch| patch.id() == patch_id)
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                self.adjust_patch_envelope(patch_index, parameter, direction)
+            }
+            crate::control::PatchControlId::Engine
+            | crate::control::PatchControlId::Output(_)
+            | crate::control::PatchControlId::EffectSlot(_)
+            | crate::control::PatchControlId::Global(_)
+            | crate::control::PatchControlId::MidiInput
+            | crate::control::PatchControlId::VoiceLimit => Err(EventRejection::InvalidSelection),
+        }
+    }
+
+    fn adjust_instrument_parameter(
+        &mut self,
+        parameter_id: &ParameterId,
+        direction: Direction,
+    ) -> Result<(), EventRejection> {
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch_index = self
+            .patches
+            .iter()
+            .position(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let config = self.patches[patch_index].instrument_config();
+        let descriptor = self
+            .capabilities
+            .descriptor(config.capability_id())
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        let spec = descriptor
+            .parameter(parameter_id)
+            .filter(|spec| {
+                spec.patch_interaction() == PatchInteraction::ScalarEdit
+                    && spec.update() == crate::synth::ParameterUpdate::Scalar
+                    && spec.kind() != ParameterKind::Choice
+            })
+            .ok_or(EventRejection::InvalidSelection)?;
+        let current = config
+            .value(parameter_id)
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        let value = spec
+            .adjusted_scalar_value(current, parameter_adjustment(direction))
+            .map_err(map_scalar_adjustment_error)?;
+        let candidate = config
+            .with_scalar_value(descriptor, parameter_id, value)
+            .map_err(map_scalar_adjustment_error)?;
+        self.patches[patch_index].set_instrument_config(candidate);
         Ok(())
     }
 
@@ -2136,6 +2997,89 @@ impl AppState {
         Ok(())
     }
 
+    fn set_effect_choice(
+        &mut self,
+        slot_id: EffectSlotId,
+        parameter_id: &ParameterId,
+        choice_id: String,
+    ) -> Result<(), EventRejection> {
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch_index = self
+            .patches
+            .iter()
+            .position(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let slot_index = self.patches[patch_index]
+            .effect_slots()
+            .iter()
+            .position(|slot| {
+                slot.as_ref()
+                    .is_some_and(|effect| effect.slot_id() == slot_id)
+            })
+            .and_then(|position| EffectSlotIndex::new(position).ok())
+            .ok_or(EventRejection::InvalidSelection)?;
+        let config = self.patches[patch_index]
+            .effect_slot(slot_index)
+            .ok_or(EventRejection::InvalidSelection)?;
+        let descriptor = self
+            .effects
+            .descriptor(config.capability_id())
+            .ok_or(EventRejection::InvalidEffectConfig)?;
+        let spec = descriptor
+            .parameter(parameter_id)
+            .filter(|spec| {
+                spec.kind() == ParameterKind::Choice
+                    && spec.update() == crate::synth::ParameterUpdate::Scalar
+            })
+            .ok_or(EventRejection::InvalidSelection)?;
+        if !spec.choices().iter().any(|choice| choice.id() == choice_id) {
+            return Err(EventRejection::InvalidParameterValue);
+        }
+        let candidate = config
+            .with_scalar_value(descriptor, parameter_id, ParameterValue::Choice(choice_id))
+            .map_err(|_| EventRejection::InvalidEffectConfig)?;
+        self.patches[patch_index]
+            .set_slot_occupancy(slot_index, Some(candidate))
+            .map_err(|_| EventRejection::InvalidEffectConfig)
+    }
+
+    fn set_instrument_scalar_choice(
+        &mut self,
+        patch_id: PatchId,
+        parameter_id: &ParameterId,
+        choice_id: String,
+    ) -> Result<(), EventRejection> {
+        let patch_index = self
+            .patches
+            .iter()
+            .position(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let config = self.patches[patch_index].instrument_config();
+        let descriptor = self
+            .capabilities
+            .descriptor(config.capability_id())
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        let spec = descriptor
+            .parameter(parameter_id)
+            .filter(|spec| {
+                spec.kind() == ParameterKind::Choice
+                    && spec.update() == crate::synth::ParameterUpdate::Scalar
+                    && spec.patch_interaction() == PatchInteraction::ScalarEdit
+            })
+            .ok_or(EventRejection::InvalidSelection)?;
+        if !spec.choices().iter().any(|choice| choice.id() == choice_id) {
+            return Err(EventRejection::InvalidParameterValue);
+        }
+        let candidate = config
+            .with_scalar_value(descriptor, parameter_id, ParameterValue::Choice(choice_id))
+            .map_err(map_scalar_adjustment_error)?;
+        self.patches[patch_index].set_instrument_config(candidate);
+        Ok(())
+    }
+
     fn request_parameter_choice(
         &mut self,
         parameter_id: ParameterId,
@@ -2194,6 +3138,72 @@ impl AppState {
             capability_id: source_capability_id.clone(),
             parameter_id,
             choice_id: spec.choices()[target_index].id().to_owned(),
+        };
+        let status = EngineSelectionStatus::preparing_with_intent(
+            self.engine_selection.active_graph_revision(),
+            request_id,
+            patch_id,
+            intent,
+            source_capability_id.clone(),
+            source_capability_id,
+        )
+        .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+        let effect = EngineSelectionEffect::from_correlation(
+            EngineSelectionEffectKind::PrepareRequested,
+            status
+                .correlation()
+                .expect("Preparing status always owns correlation"),
+        )
+        .expect("Preparing correlation has no target revision");
+        self.engine_selection = status;
+        self.last_engine_selection_request_id = request_id;
+        Ok(effect)
+    }
+
+    fn request_parameter_choice_to(
+        &mut self,
+        parameter_id: ParameterId,
+        choice_id: String,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        let patch_id = self
+            .interaction
+            .patch_focus()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let source_capability_id = patch.instrument_config().capability_id().clone();
+        let descriptor = self
+            .capabilities
+            .descriptor(&source_capability_id)
+            .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        let spec = descriptor
+            .parameter(&parameter_id)
+            .filter(|spec| {
+                spec.kind() == ParameterKind::Choice
+                    && spec.patch_interaction() == PatchInteraction::StructuralChoice
+                    && spec.choices().iter().any(|choice| choice.id() == choice_id)
+            })
+            .ok_or(EventRejection::InvalidSelection)?;
+        if patch.instrument_config().value(&parameter_id)
+            == Some(&ParameterValue::Choice(choice_id.clone()))
+        {
+            return Err(EventRejection::ParameterAtBoundary);
+        }
+        debug_assert!(!spec.choices().is_empty());
+        let request_id = self
+            .last_engine_selection_request_id
+            .checked_next()
+            .map_err(|_| EventRejection::RequestIdOverflow)?;
+        let intent = StructuralEditIntent::ReplaceParameterChoice {
+            capability_id: source_capability_id.clone(),
+            parameter_id,
+            choice_id,
         };
         let status = EngineSelectionStatus::preparing_with_intent(
             self.engine_selection.active_graph_revision(),
@@ -2599,9 +3609,11 @@ impl AppState {
                 // roots and one return *origin*, all of which are main by
                 // construction. A subordinate surface's own focus is repaired
                 // where that surface's order is resolved.
-                SurfaceId::PatchUtility | SurfaceId::PatchDetail | SurfaceId::MixerInspector => {
-                    return Err(EventRejection::InvalidSelection)
-                }
+                SurfaceId::PatchUtility
+                | SurfaceId::PatchDetail
+                | SurfaceId::PatchChoice
+                | SurfaceId::SampleBrowser
+                | SurfaceId::MixerInspector => return Err(EventRejection::InvalidSelection),
             };
             SemanticResolver::recover(path, old_order, new_order)
                 .ok_or(EventRejection::InvalidSelection)
@@ -2791,6 +3803,45 @@ fn candidate_matches_intent(
                             && (next.parameter_id() == parameter_id || next == prior)
                     })
         }
+        StructuralEditIntent::ReplaceAsset {
+            capability_id,
+            parameter_id,
+            reference,
+        } => {
+            source.capability_id() == capability_id
+                && candidate.capability_id() == capability_id
+                && source.values() == candidate.values()
+                && source.asset_references().len() == candidate.asset_references().len()
+                && source.asset_reference(parameter_id) != Some(reference)
+                && candidate.asset_reference(parameter_id) == Some(reference)
+                && candidate
+                    .asset_references()
+                    .iter()
+                    .zip(source.asset_references())
+                    .all(|(next, prior)| {
+                        next.parameter_id() == prior.parameter_id()
+                            && (next.parameter_id() == parameter_id || next == prior)
+                    })
+        }
+        StructuralEditIntent::PrepareAudition {
+            capability_id,
+            parameter_id,
+            reference,
+        } => {
+            source.capability_id() == capability_id
+                && candidate.capability_id() == capability_id
+                && source.values() == candidate.values()
+                && source.asset_references().len() == candidate.asset_references().len()
+                && candidate.asset_reference(parameter_id) == Some(reference)
+                && candidate
+                    .asset_references()
+                    .iter()
+                    .zip(source.asset_references())
+                    .all(|(next, prior)| {
+                        next.parameter_id() == prior.parameter_id()
+                            && (next.parameter_id() == parameter_id || next == prior)
+                    })
+        }
     }
 }
 
@@ -2814,6 +3865,22 @@ fn config_matches_committed_intent(
                     config.value(parameter_id),
                     Some(ParameterValue::Choice(value)) if value == choice_id
                 )
+        }
+        StructuralEditIntent::ReplaceAsset {
+            capability_id,
+            parameter_id,
+            reference,
+        } => {
+            config.capability_id() == capability_id
+                && config.asset_reference(parameter_id) == Some(reference)
+        }
+        StructuralEditIntent::PrepareAudition {
+            capability_id,
+            parameter_id,
+            reference,
+        } => {
+            config.capability_id() == capability_id
+                && config.asset_reference(parameter_id) == Some(reference)
         }
     }
 }
@@ -3026,6 +4093,7 @@ mod tests {
             source_graph_revision: correlation.source_graph_revision(),
             target_graph_revision,
             candidate_config,
+            prepared_visualization: None,
         }
     }
 
@@ -3932,15 +5000,19 @@ mod tests {
             EngineSelectionStatusKind::Ready
         );
 
-        for direction in [Direction::Up, Direction::Down] {
-            let mut vertical = mixed_state();
-            let before = vertical.clone();
-            assert_eq!(
-                vertical.apply(AppEvent::Adjust(direction)),
-                Err(EventRejection::ActionUnavailableInContext)
-            );
-            assert_eq!(vertical, before);
-        }
+        let mut open_choice = mixed_state();
+        open_choice.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+        assert_eq!(
+            open_choice.interaction().active_surface(),
+            SurfaceId::PatchChoice
+        );
+        let mut vertical = mixed_state();
+        let before = vertical.clone();
+        assert_eq!(
+            vertical.apply(AppEvent::Adjust(Direction::Down)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(vertical, before);
     }
 
     #[test]

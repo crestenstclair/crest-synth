@@ -3,14 +3,38 @@ use crate::adapter::braids_preparer::BraidsPreparer;
 use crate::adapter::hidef_soundfont_asset::HiDefSoundFontAsset;
 use crate::adapter::hidef_soundfont_capability::HiDefSoundFontCapability;
 use crate::adapter::hidef_soundfont_preparer::HiDefSoundFontPreparer;
+use crate::adapter::sample_capability::SampleCapability;
+use crate::adapter::sample_preparer::SamplePreparer;
+use crate::adapter::{
+    filesystem_sample_catalog::FilesystemSampleCatalog, wav_sample_decoder::WavSampleDecoder,
+};
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
-use std::sync::OnceLock;
+use crate::synth::{SampleAssetCatalogPort, SampleAssetError, SampleAssetId, SampleDecoderPort};
+use std::sync::{Arc, OnceLock};
+
+pub const SAMPLE_LIBRARY_ROOT_ENV: &str = "CREST_SAMPLE_LIBRARY_ROOT";
+pub const SAMPLE_DEFAULT_ASSET_ENV: &str = "CREST_SAMPLE_DEFAULT_ASSET";
+
+pub type ProductionSampleRootListing = Option<(
+    crate::synth::SampleFolderId,
+    Result<crate::synth::SampleCatalogListing, SampleAssetError>,
+)>;
 
 static SHARED_TEST_COMPOSITION_ASSET: OnceLock<
     Result<HiDefSoundFontAsset, crate::adapter::hidef_soundfont_asset::HiDefSoundFontAssetError>,
 > = OnceLock::new();
+static OPTIONAL_PRODUCTION_SAMPLE: OnceLock<
+    Result<Option<ProductionSamplePorts>, ProductionInstrumentCompositionError>,
+> = OnceLock::new();
+
+#[derive(Clone)]
+struct ProductionSamplePorts {
+    capability: SampleCapability,
+    catalog: Arc<dyn SampleAssetCatalogPort>,
+    decoder: Arc<dyn SampleDecoderPort>,
+}
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ProductionInstrumentCompositionError {
@@ -20,6 +44,12 @@ pub enum ProductionInstrumentCompositionError {
     Capability(CapabilityError),
     #[error("failed to construct the production instrument preparers: {0}")]
     Preparation(InstrumentPreparationError),
+    #[error("invalid production Sample configuration: {0}")]
+    Sample(SampleAssetError),
+    #[error(
+        "{SAMPLE_LIBRARY_ROOT_ENV} and {SAMPLE_DEFAULT_ASSET_ENV} must be configured together"
+    )]
+    IncompleteSampleConfiguration,
 }
 
 /// Shared process-local asset used by test composition helpers. The standalone
@@ -38,15 +68,61 @@ pub fn production_soundfont_capability(
         .map_err(ProductionInstrumentCompositionError::Capability)
 }
 
+fn optional_production_sample(
+) -> Result<Option<ProductionSamplePorts>, ProductionInstrumentCompositionError> {
+    OPTIONAL_PRODUCTION_SAMPLE
+        .get_or_init(load_optional_production_sample)
+        .clone()
+}
+
+fn load_optional_production_sample(
+) -> Result<Option<ProductionSamplePorts>, ProductionInstrumentCompositionError> {
+    let (root, asset) = match (
+        std::env::var_os(SAMPLE_LIBRARY_ROOT_ENV),
+        std::env::var_os(SAMPLE_DEFAULT_ASSET_ENV),
+    ) {
+        (None, None) => return Ok(None),
+        (Some(root), Some(asset)) => (root, asset),
+        _ => return Err(ProductionInstrumentCompositionError::IncompleteSampleConfiguration),
+    };
+    let asset = asset.into_string().map_err(|_| {
+        ProductionInstrumentCompositionError::Sample(SampleAssetError::InvalidRelativeId)
+    })?;
+    let asset = SampleAssetId::new(asset).map_err(ProductionInstrumentCompositionError::Sample)?;
+    let catalog = Arc::new(
+        FilesystemSampleCatalog::new(root).map_err(ProductionInstrumentCompositionError::Sample)?,
+    );
+    let decoder = Arc::new(WavSampleDecoder);
+    // Registration is all-or-nothing: prove the configured default through
+    // the real filesystem and WAV adapters before exposing the descriptor.
+    let bytes = catalog
+        .read(&asset)
+        .map_err(ProductionInstrumentCompositionError::Sample)?;
+    decoder
+        .decode(&asset, &bytes)
+        .map_err(ProductionInstrumentCompositionError::Sample)?;
+    let capability =
+        SampleCapability::new(asset).map_err(ProductionInstrumentCompositionError::Capability)?;
+    Ok(Some(ProductionSamplePorts {
+        capability,
+        catalog,
+        decoder,
+    }))
+}
+
 /// Builds the production providers in stable fixture/discovery order.
 pub fn production_instrument_providers(
 ) -> Result<Vec<Box<dyn InstrumentCapabilityProvider>>, ProductionInstrumentCompositionError> {
-    Ok(vec![
+    let mut providers: Vec<Box<dyn InstrumentCapabilityProvider>> = vec![
         Box::new(production_soundfont_capability()?),
         Box::new(
             BraidsCapability::new().map_err(ProductionInstrumentCompositionError::Capability)?,
         ),
-    ])
+    ];
+    if let Some(sample) = optional_production_sample()? {
+        providers.push(Box::new(sample.capability));
+    }
+    Ok(providers)
 }
 
 /// Builds the immutable production registry in stable fixture/discovery order.
@@ -65,13 +141,32 @@ pub fn production_capability_registry(
 /// Prepares both production factories in the same exact capability order.
 pub fn production_instrument_preparers(
 ) -> Result<Vec<Box<dyn InstrumentPreparer>>, ProductionInstrumentCompositionError> {
-    Ok(vec![
+    let mut preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
         Box::new(
             HiDefSoundFontPreparer::new(production_soundfont_asset()?)
                 .map_err(ProductionInstrumentCompositionError::Preparation)?,
         ),
         Box::new(BraidsPreparer::new().map_err(ProductionInstrumentCompositionError::Preparation)?),
-    ])
+    ];
+    if let Some(sample) = optional_production_sample()? {
+        preparers.push(Box::new(
+            SamplePreparer::new(sample.catalog, sample.decoder)
+                .map_err(ProductionInstrumentCompositionError::Preparation)?,
+        ));
+    }
+    Ok(preparers)
+}
+
+/// Returns the configured production library's root listing for reducer-owned
+/// browser composition. Absence means Sample is not installed; a configured
+/// adapter failure remains typed and never fabricates browser rows.
+pub fn production_sample_root_listing(
+) -> Result<ProductionSampleRootListing, ProductionInstrumentCompositionError> {
+    let Some(sample) = optional_production_sample()? else {
+        return Ok(None);
+    };
+    let folder = crate::synth::SampleFolderId::default();
+    Ok(Some((folder.clone(), sample.catalog.list(&folder))))
 }
 
 #[cfg(test)]

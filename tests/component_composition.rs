@@ -103,19 +103,67 @@ const AUTHORED_VIEWPORTS: [([f32; 2], ViewportDensityPolicy); 2] = [
     ([1_280.0, 800.0], ViewportDensityPolicy::SteamDeck),
 ];
 
-/// The three pairs the control family declares un-askable, and the only ones.
+/// The pairs the control family declares un-askable, and the only ones.
 ///
 /// Transcribed from `DESIGN.md:462-465` — a mixer track column carries a
 /// level, a pan, and the two track toggles, so it never carries a choice, an
 /// asset, or a surface summary. Pinned here rather than read back from the
 /// selector, so that switching an askable pair off fails rather than
 /// agreeing with itself.
-const NOT_ASKABLE_PAIRS: [(SemanticControlKind, PresentationRole); 3] = [
+const NOT_ASKABLE_PAIRS: [(SemanticControlKind, PresentationRole); 15] = [
     (SemanticControlKind::Choice, PresentationRole::VerticalStrip),
     (SemanticControlKind::Asset, PresentationRole::VerticalStrip),
     (
         SemanticControlKind::Surface,
         PresentationRole::VerticalStrip,
+    ),
+    (
+        SemanticControlKind::BrowserParent,
+        PresentationRole::ListedRow,
+    ),
+    (
+        SemanticControlKind::BrowserParent,
+        PresentationRole::VerticalStrip,
+    ),
+    (
+        SemanticControlKind::BrowserParent,
+        PresentationRole::PanelEntry,
+    ),
+    (
+        SemanticControlKind::BrowserFolder,
+        PresentationRole::ListedRow,
+    ),
+    (
+        SemanticControlKind::BrowserFolder,
+        PresentationRole::VerticalStrip,
+    ),
+    (
+        SemanticControlKind::BrowserFolder,
+        PresentationRole::PanelEntry,
+    ),
+    (
+        SemanticControlKind::BrowserFile,
+        PresentationRole::ListedRow,
+    ),
+    (
+        SemanticControlKind::BrowserFile,
+        PresentationRole::VerticalStrip,
+    ),
+    (
+        SemanticControlKind::BrowserFile,
+        PresentationRole::PanelEntry,
+    ),
+    (
+        SemanticControlKind::BrowserCancel,
+        PresentationRole::ListedRow,
+    ),
+    (
+        SemanticControlKind::BrowserCancel,
+        PresentationRole::VerticalStrip,
+    ),
+    (
+        SemanticControlKind::BrowserCancel,
+        PresentationRole::PanelEntry,
     ),
 ];
 
@@ -138,7 +186,13 @@ const PRODUCTION_PROJECTED_KINDS: [SemanticControlKind; 6] = [
 ];
 
 /// The kinds the shipped reducer projects nothing of.
-const PRODUCTION_UNPROJECTED_KINDS: [SemanticControlKind; 1] = [SemanticControlKind::Surface];
+const PRODUCTION_UNPROJECTED_KINDS: [SemanticControlKind; 5] = [
+    SemanticControlKind::Surface,
+    SemanticControlKind::BrowserParent,
+    SemanticControlKind::BrowserFolder,
+    SemanticControlKind::BrowserFile,
+    SemanticControlKind::BrowserCancel,
+];
 
 /// The declared column anatomy, closed and ordered, transcribed from the design
 /// authority rather than read back from the page.
@@ -271,6 +325,10 @@ fn kind_name(kind: SemanticControlKind) -> &'static str {
         SemanticControlKind::Asset => "Asset",
         SemanticControlKind::Identity => "Identity",
         SemanticControlKind::Surface => "Surface",
+        SemanticControlKind::BrowserParent => "BrowserParent",
+        SemanticControlKind::BrowserFolder => "BrowserFolder",
+        SemanticControlKind::BrowserFile => "BrowserFile",
+        SemanticControlKind::BrowserCancel => "BrowserCancel",
     }
 }
 
@@ -1065,7 +1123,7 @@ fn is_declared_not_askable(kind: SemanticControlKind, role: PresentationRole) ->
 /// Selection is total over kind × role, and every declared control is
 /// reachable.
 fn check_selection_is_total_and_every_control_reachable() {
-    assert_eq!(SEMANTIC_CONTROL_KIND_COUNT, 7);
+    assert_eq!(SEMANTIC_CONTROL_KIND_COUNT, 11);
     assert_eq!(PRESENTATION_ROLE_COUNT, 4);
     assert_eq!(COMPONENT_CONTROL_COUNT, 8);
 
@@ -1114,7 +1172,7 @@ fn check_selection_is_total_and_every_control_reachable() {
     assert_eq!(
         refused,
         NOT_ASKABLE_PAIRS.len(),
-        "the un-askable set is no longer exactly the three declared pairs"
+        "the un-askable set no longer matches the declared pairs"
     );
     assert_eq!(
         reachable, declared,

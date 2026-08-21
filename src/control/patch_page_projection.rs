@@ -1160,7 +1160,19 @@ impl PatchPageProjection {
         // the main order is what makes a Braids detail focus projectable at
         // all: Braids' main order hosts no `Capability` row, so its detail rows
         // exist in exactly one place.
-        let resolved_controls = if state.interaction().active_surface() == SurfaceId::PatchDetail {
+        let modal_origin_surface = state
+            .interaction()
+            .return_path()
+            .filter(|_| {
+                matches!(
+                    state.interaction().active_surface(),
+                    SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+                )
+            })
+            .map(|path| path.origin().surface());
+        let resolved_controls = if state.interaction().active_surface() == SurfaceId::PatchDetail
+            || modal_origin_surface == Some(SurfaceId::PatchDetail)
+        {
             detail
                 .as_ref()
                 .map(|detail| {

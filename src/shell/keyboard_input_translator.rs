@@ -5,18 +5,24 @@ use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 
 /// Translates normalized window input into the closed semantic-action vocabulary.
 ///
-/// The translator owns only the transient state of the K modifier. It never
+/// The translator owns only transient modifier/hold state. It never
 /// owns or mutates application selection, Patch parameters, projections, or
 /// audio state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct KeyboardInputTranslator {
     k_held: bool,
+    shift_held: bool,
+    start_held: bool,
 }
 
 impl KeyboardInputTranslator {
     /// Creates a translator with no modifier held.
     pub const fn new() -> Self {
-        Self { k_held: false }
+        Self {
+            k_held: false,
+            shift_held: false,
+            start_held: false,
+        }
     }
 
     /// Translates one normalized window input into at most one semantic action.
@@ -24,20 +30,31 @@ impl KeyboardInputTranslator {
         match event.kind() {
             WindowInputKind::FocusLost => {
                 self.k_held = false;
-                Some(SemanticAction::SetInteractionMode(
-                    InteractionMode::Navigate,
-                ))
+                self.shift_held = false;
+                if core::mem::take(&mut self.start_held) {
+                    Some(SemanticAction::PreviewStop)
+                } else {
+                    Some(SemanticAction::SetInteractionMode(
+                        InteractionMode::Navigate,
+                    ))
+                }
             }
-            WindowInputKind::KeyUp => {
-                if event.key() == WindowKey::K {
+            WindowInputKind::KeyUp => match event.key() {
+                WindowKey::K => {
                     self.k_held = false;
                     Some(SemanticAction::SetInteractionMode(
                         InteractionMode::Navigate,
                     ))
-                } else {
+                }
+                WindowKey::Shift => {
+                    self.shift_held = false;
                     None
                 }
-            }
+                WindowKey::Space if core::mem::take(&mut self.start_held) => {
+                    Some(SemanticAction::PreviewStop)
+                }
+                _ => None,
+            },
             WindowInputKind::KeyDown => self.translate_key_down(event.key()),
         }
     }
@@ -60,6 +77,20 @@ impl KeyboardInputTranslator {
         if key == WindowKey::K {
             self.k_held = true;
             return Some(SemanticAction::SetInteractionMode(InteractionMode::Adjust));
+        }
+        if key == WindowKey::Shift {
+            self.shift_held = true;
+            return None;
+        }
+        if key == WindowKey::Return {
+            return Some(SemanticAction::Activate);
+        }
+        if key == WindowKey::Space {
+            if self.start_held {
+                return None;
+            }
+            self.start_held = true;
+            return Some(SemanticAction::PreviewStart);
         }
 
         let direction = match key {
@@ -88,8 +119,19 @@ impl KeyboardInputTranslator {
             | WindowKey::Q
             | WindowKey::E
             | WindowKey::K
+            | WindowKey::Shift
+            | WindowKey::Return
+            | WindowKey::Space
             | WindowKey::Other => return None,
         };
+
+        if self.shift_held {
+            return match direction {
+                Direction::Up => Some(SemanticAction::OpenRelated),
+                Direction::Down => Some(SemanticAction::Return),
+                Direction::Left | Direction::Right => None,
+            };
+        }
 
         Some(if self.k_held {
             SemanticAction::Adjust(direction)
@@ -311,6 +353,61 @@ mod tests {
         );
         assert_eq!(
             translator.translate(WindowInput::key_up(WindowKey::Other)),
+            None
+        );
+    }
+
+    #[test]
+    fn shift_vertical_maps_single_level_open_and_return_without_leaking_modifier_identity() {
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Shift)),
+            None
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::W)),
+            Some(SemanticAction::OpenRelated)
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::S)),
+            Some(SemanticAction::Return)
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Shift)),
+            None
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::W)),
+            Some(SemanticAction::Navigate(Direction::Up))
+        );
+    }
+
+    #[test]
+    fn return_and_start_press_hold_release_have_exact_semantic_edges() {
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Return)),
+            Some(SemanticAction::Activate)
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Return)),
+            None
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Space)),
+            Some(SemanticAction::PreviewStart)
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Space)),
+            None,
+            "key repeat must not fabricate a second preview request"
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Space)),
+            Some(SemanticAction::PreviewStop)
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Space)),
             None
         );
     }

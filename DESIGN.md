@@ -6,6 +6,20 @@ This is the single product and technical design for Crest Synth.
 
 The [controller-first Figma design](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=0-1) is the visual and interaction reference. Its screens define composition, navigation, focus behavior, and visual language. Example patch names, engines, effects, and values are fixtures, not an exhaustive implementation checklist.
 
+Phase 7 implementation and visual acceptance use these authored nodes directly:
+
+- [Instrument Detail — 37:7](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=37-7);
+- [FX Detail — 38:60](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=38-60);
+- [Sample Detail — 39:92](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=39-92);
+- [Sample Browser — 41:138](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=41-138);
+- [Engine Options — 48:173](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=48-173), [Post FX Options — 48:207](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=48-207), and [Interaction Map — 49:3](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=49-3).
+
+The checked-in `figma-functional-interpretation/` captures are review aids for
+those live nodes, not another product authority. Their concrete filenames,
+option names, parameter counts, labels, and values remain fixtures. The
+reference review date and intentional product-owned resolutions are recorded
+beside those captures.
+
 When sources disagree:
 
 1. The real-time safety and domain contracts here are normative.
@@ -369,7 +383,63 @@ or other engine is substituted.
 
 The Sample Browser is a nested Patch modal, not a native dialog. It supports controller navigation, metadata/waveform preview, hold-to-preview, assign, and cancel. Holding Start while a sample row is focused previews that sample. Preview stops when Start is released or on focus change, navigation, assignment, or cancel. Preparation occurs off the callback.
 
-The detailed Sample capability contract—including admitted formats, playback and loop semantics, polyphony, root-pitch behavior, and preparation limits—is intentionally deferred until Phase 7 planning. Earlier phases neither depend on nor infer those choices from Figma fixtures.
+Phase 7 admits one deliberately bounded Sample capability. A Sample Patch owns
+one stable library-relative asset assignment and declares
+`FixedPerPatch(16)`. The first adapter accepts only uncompressed RIFF/WAVE with
+one or two channels, signed PCM16/24/32 or IEEE float32, and a source rate from
+8 through 192 kHz. One source is limited to 256 MiB and 300 seconds. RF64,
+RIFX, compressed WAV, non-WAV content, more than two channels, malformed chunk
+arithmetic, and non-finite floating-point samples are typed failures; none is
+repaired, substituted, or sent to a fallback engine.
+
+The canonical Sample configuration owns a root note from 0.00 through 127.00
+semitones (default 60.00), normalized playback start and length, normalized
+loop start and length, `OFF` or `FORWARD` loop mode, crossfade seconds, and the
+Patch's existing `VoiceEnvelope`. Preparation converts those normalized values
+to an inclusive playback start, exclusive playback end, inclusive loop start,
+exclusive loop end, and a crossfade no longer than the lesser of 200 ms or
+half the loop. It rejects empty, inverted, or out-of-range landmarks. A voice
+reads at `2^((midi_note - root_note) / 12)` with bounded linear interpolation;
+mono duplicates to stereo and stereo retains its channels. Note-off enters the
+canonical envelope release, and a forward loop continues only until that
+release reaches silence. Voice allocation is deterministic: first inactive,
+then oldest releasing, then oldest active. Reverse, ping-pong, time stretching,
+slicing, multi-zone mapping, streaming, and destructive sample editing are not
+part of this capability.
+
+All sample work before render is control/worker-side: resolve a validated
+library-relative identity, prevent traversal or symlink escape, parse and
+decode, resample to the negotiated device rate, derive at most 2,048 waveform
+min/max pairs, validate landmarks, allocate and warm all sixteen voices, and
+build the complete graph. One prepared asset contains at most 28,800,000
+scalar `f32` samples, and one complete graph owns at most 512 MiB of
+deduplicated Sample PCM. The callback sees only immutable numeric PCM,
+prepared landmarks, bounded voice state, and fixed-size commands. Saved state
+contains the stable relative asset and normalized configuration, never decoded
+PCM, absolute paths, transient browser state, preview state, or device state.
+A missing saved asset restores as explicit `Unavailable` and never selects a
+nearby file or another engine.
+
+Assignment extends the correlated complete-graph lifecycle. Canonical control
+state distinguishes the active asset from a requested asset and owns
+`Loading`, `Validating`, `Preparing`, `Activating`, `Ready`, `Unavailable`,
+`Invalid`, `Cancelled`, and typed failure states. The correlation key includes
+Patch, monotonic request, source graph revision, and asset identity. Only a
+compatible block-boundary activation commits the active reference; stale,
+cancelled, invalid, unavailable, or over-budget results leave the prior session
+and graph unchanged.
+
+Browser audition never changes the assignment. Preparing the focused candidate
+adds one correlated, preallocated audition slot to a complete candidate graph.
+After compatible activation, fixed-size preview start/stop events cross the
+discrete-event transport. The one audition voice plays the raw asset from file
+start at original pitch, without looping, and mixes into the origin Patch stem
+before post effects and trim, so its Mixer track, level, pan, mute, solo, sends,
+returns, and meters remain truthful. Release or any focus/navigation/assign/
+cancel transition applies a prepared 5 ms de-click stop. A result that becomes
+ready after the hold ended cannot sound. Preview and playhead observation use
+the newest compatible scalar-observation transport and never mutate
+`AppState` during repaint.
 
 ### MIDI
 
@@ -456,6 +526,27 @@ The strip contains patch identity/routing, one instrument selector, ordered post
 Instrument and effect detail views reuse the shell. The active capability supplies the title, accent, sections, values, ranges, units, and dependency rules. Non-Sample synths that expose the shared Patch `VoiceEnvelope` render a live, non-focusable ADSR preview in the strip visualization slot and instrument detail. Sample detail keeps its asset selector and non-focusable waveform/loop visualization alongside the same ADSR control contract.
 
 Option selection is a nested modal showing installed choices. Focus is trapped until choose/cancel and then returns to the originating control.
+
+Reducer-owned subordinate interaction is one private canonical session union,
+not independent detail/modal/browser flags. Its variants are `Detail`,
+`Choice`, and `SampleBrowser`; each carries only its stable subject and exact
+semantic origin, plus the detail subject needed when a choice/browser replaces
+Detail temporarily. Exactly one subordinate session may exist. Modal and
+browser rows are identified by stable choice or library-relative identities,
+never indices. A modal cannot open another modal. Closing one surface restores
+the exact origin when it remains valid; a removed origin resolves to the
+nearest enabled semantic sibling deterministically and exposes that recovery
+in status text. Presentation-density changes dispatch no action and preserve
+the same session, focus, and return identity.
+
+The generic choice resolver obtains engine choices from the installed
+instrument registry, effect occupancy from `EMPTY` plus the installed effect
+registry, routes from T00 through T0F, and other structural choices from their
+descriptor or correlated catalog. The renderer receives that projection; it
+does not construct availability from labels. Confirm dispatches the owning
+canonical scalar or structural intent, while cancel changes no session/audio
+state. Requested and active values remain separate through preparation and
+activation, with typed status expressed in text or shape as well as color.
 
 ### Mixer
 
@@ -625,7 +716,7 @@ Versions belong in `Cargo.toml`, not here.
 | latest snapshots | [triple-buffer](https://github.com/HadrienG2/triple-buffer) | Suitable for newest-complete parameters/meters after destruction behavior is audited. |
 | SoundFont baseline | [RustySynth](https://github.com/sinshu/rustysynth) | Current-spec candidate behind `SoundFontBackend`; requires allocation, voice-bound, preset, percussion, and timing audits. |
 | SoundFont alternative | [OxiSynth](https://github.com/PolyMeilex/OxiSynth) | Evaluate as a pure-Rust alternative. [FluidSynth](https://github.com/FluidSynth/fluidsynth) is the mature FFI fallback when compatibility outweighs deployment cost. |
-| audio decode | [Symphonia](https://github.com/pdeljanov/Symphonia) | Decode/demux on workers into the prepared sample model. |
+| Phase 7 WAV decode | [hound](https://github.com/ruuda/hound) | Small worker-side RIFF/WAVE decoder behind Crest's `SampleDecoderPort`; its types never cross the adapter. Broader codec support is deferred. |
 | MIDI files | [midly](https://github.com/kovaxis/midly) | Fixture/demo adapter only; parser types stay private. |
 | persistence | [Serde](https://github.com/serde-rs/serde) + JSON | Versioned control-side schema with explicit migrations. |
 | destruction | ownership return ring | Prepared graphs return through their dedicated bounded structural queue and are destroyed only on control/worker ownership. |
@@ -745,7 +836,7 @@ An architecture change must preserve the one-way state path and callback contrac
 - The product topology is capped at three ordered post-effect slots per Patch and eight bus returns. A bounded implementation slice may support fewer but may not exceed these limits without updating this design.
 - The production topology provides three ordered post-effect slots per Patch, each independently empty or occupied from the registry, with occupancy selected through the correlated prepared structural lifecycle: `PreparedEngineRack → PatchAudioBlock → PreparedPostEffectRack → MixEngine`. Slot order is render order; slots may be emptied, filled, or exchanged through that lifecycle, and the first fixture Patch holds one Chorus by default. There is no bypass control and no dynamic render-time graph editing — every topology change is prepared off the audio path and exchanged complete.
 - The mixer is one fixed bank of exactly sixteen persistent tracks. A Patch owns only its output `MixerTrackId` and pre-track trim; a track owns level, pan, mute, solo, sends, and its meter. Multiple Patches may share a track, and no Patch-owned mixer-fader state exists.
-- The detailed Sample capability contract is intentionally deferred until Phase 7 planning and is not inferred from Figma fixtures or treated as a prerequisite for earlier phases.
+- The bounded Phase 7 Sample capability contract is defined above and is not inferred from Figma fixtures: the visible example assets, names, values, and counts remain composition fixtures rather than an exhaustive capability list.
 - In the Sample Browser, holding Start while a sample row is focused previews that sample; releasing Start or leaving the row stops preview, and Start remains reserved elsewhere.
 - Every Braids Patch owns exactly sixteen voices; Braids capacity scales as `16 × active Braids Patch count` and is never pooled globally.
 - Every SoundFont Patch owns one synthesizer with engine-managed polyphony; SoundFont is not artificially capped at sixteen and is never split into one synthesizer per note.

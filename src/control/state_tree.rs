@@ -180,6 +180,15 @@ struct MidiTreeTemplate {
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
     ///
+    /// Version 17: Sample Browser file controls gained typed catalog metadata
+    /// status, admitted format fields, duration/channel data, and explicit
+    /// failure text. The frame still contains no decoded PCM or absolute path.
+    ///
+    /// Version 16: capability descriptors and the semantic surface model gained
+    /// ordered non-focusable visualization declarations/data plus semantic
+    /// detail sections. Prepared waveform summaries remain bounded and contain
+    /// no decoded PCM or absolute paths.
+    ///
     /// Version 15: the subordinate detail surface became projectable, so the
     /// tree gained `patchPage.detail` and the semantic model's controls gained
     /// `requestedValue`, their own `validActions`, and the capability-declared
@@ -208,7 +217,7 @@ impl StateTree {
     ///
     /// Version 12: the six retired reverb/delay `global` leaves are gone —
     /// return-owned state travels as the indexed top-level `returns` section.
-    pub const SCHEMA_VERSION: u32 = 15;
+    pub const SCHEMA_VERSION: u32 = 17;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -256,6 +265,12 @@ impl StateTree {
         "capabilities.descriptors[].id",
         "capabilities.descriptors[].label",
         "capabilities.descriptors[].semanticAccent",
+        "capabilities.descriptors[].visualizations[].assetParameterId",
+        "capabilities.descriptors[].visualizations[].id",
+        "capabilities.descriptors[].visualizations[].kind",
+        "capabilities.descriptors[].visualizations[].label",
+        "capabilities.descriptors[].visualizations[].landmarks[].parameterId",
+        "capabilities.descriptors[].visualizations[].landmarks[].role",
         "capabilities.descriptors[].sections[].id",
         "capabilities.descriptors[].sections[].label",
         "capabilities.descriptors[].sections[].parameters[].id",
@@ -277,6 +292,9 @@ impl StateTree {
         "capabilities.descriptors[].sections[].parameters[].unit",
         "capabilities.descriptors[].sections[].parameters[].formatter",
         "capabilities.descriptors[].sections[].parameters[].enabledWhen",
+        "capabilities.descriptors[].sections[].parameters[].enabledWhen.parameterId",
+        "capabilities.descriptors[].sections[].parameters[].enabledWhen.equals.kind",
+        "capabilities.descriptors[].sections[].parameters[].enabledWhen.equals.value",
         "capabilities.descriptors[].sections[].parameters[].visibleWhen",
         "capabilities.descriptors[].assetRequirements[].parameterId",
         "capabilities.descriptors[].assetRequirements[].required",
@@ -397,6 +415,8 @@ impl StateTree {
         "engineSelection.correlation.intent.slot",
         "engineSelection.correlation.intent.bus",
         "engineSelection.correlation.intent.entry",
+        "engineSelection.correlation.intent.reference.kind",
+        "engineSelection.correlation.intent.reference.locator",
         "engineSelection.correlation.requestId",
         "engineSelection.correlation.patchId",
         "engineSelection.correlation.sourceCapabilityId",
@@ -577,6 +597,7 @@ impl StateTree {
                 "interaction.activeFocus.context",
                 "interaction.activeFocus.controlId.id",
                 "interaction.activeFocus.controlId.id.bus",
+                "interaction.activeFocus.controlId.id.id",
                 "interaction.activeFocus.controlId.id.kind",
                 "interaction.activeFocus.controlId.id.parameter",
                 "interaction.activeFocus.controlId.id.trackId",
@@ -756,6 +777,14 @@ impl StateTree {
                     && Some(page.focused_control_id())
                         == match state.interaction.active_focus.control_id() {
                             SemanticControlId::Patch(control) => Some(control.clone()),
+                            SemanticControlId::Modal(_) => {
+                                state.interaction.return_path.as_ref().and_then(|path| {
+                                    match path.origin().control_id() {
+                                        SemanticControlId::Patch(control) => Some(control.clone()),
+                                        _ => None,
+                                    }
+                                })
+                            }
                             _ => None,
                         }
                     && page.engine().status() == projected_engine_status

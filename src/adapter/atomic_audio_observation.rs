@@ -91,6 +91,10 @@ struct AtomicObservationFields {
     effect_output_rms: AtomicU32,
     effect_difference_rms: AtomicU32,
     effect_side_rms: AtomicU32,
+    preview_identity: AtomicU64,
+    preview_patch_id: AtomicU32,
+    preview_playing: AtomicU32,
+    preview_playhead: AtomicU32,
     track_left_peaks: [AtomicU32; MixerTrackId::COUNT],
     track_right_peaks: [AtomicU32; MixerTrackId::COUNT],
     track_rms: [AtomicU32; MixerTrackId::COUNT],
@@ -141,6 +145,14 @@ impl AtomicObservationFields {
                 initial.patch_effect().difference_rms().to_bits(),
             ),
             effect_side_rms: AtomicU32::new(initial.patch_effect().side_rms().to_bits()),
+            preview_identity: AtomicU64::new(initial.preview_identity()),
+            preview_patch_id: AtomicU32::new(
+                initial
+                    .preview_patch_id()
+                    .map_or(0, |patch_id| patch_id.value()),
+            ),
+            preview_playing: AtomicU32::new(u32::from(initial.preview_playing())),
+            preview_playhead: AtomicU32::new(initial.preview_playhead().to_bits()),
             track_left_peaks: std::array::from_fn(|index| {
                 AtomicU32::new(initial.tracks()[index].left_peak().to_bits())
             }),
@@ -219,6 +231,18 @@ impl AtomicObservationFields {
             snapshot.patch_effect().side_rms().to_bits(),
             Ordering::Relaxed,
         );
+        self.preview_identity
+            .store(snapshot.preview_identity(), Ordering::Relaxed);
+        self.preview_patch_id.store(
+            snapshot
+                .preview_patch_id()
+                .map_or(0, |patch_id| patch_id.value()),
+            Ordering::Relaxed,
+        );
+        self.preview_playing
+            .store(u32::from(snapshot.preview_playing()), Ordering::Relaxed);
+        self.preview_playhead
+            .store(snapshot.preview_playhead().to_bits(), Ordering::Relaxed);
         for index in 0..MixerTrackId::COUNT {
             let meter = snapshot.tracks()[index];
             self.track_left_peaks[index].store(meter.left_peak().to_bits(), Ordering::Relaxed);
@@ -303,7 +327,18 @@ impl AtomicObservationFields {
                     self.non_finite_samples.load(Ordering::Relaxed),
                     self.clipped_samples.load(Ordering::Relaxed),
                 )
-                .with_voice_limit_refusals(self.voice_limit_refusals.load(Ordering::Relaxed));
+                .with_voice_limit_refusals(self.voice_limit_refusals.load(Ordering::Relaxed))
+                .with_preview_observation(
+                    crate::real_time::PreviewAudioObservation::from_parts(
+                        self.preview_identity.load(Ordering::Relaxed),
+                        crate::kernel::patch_id::PatchId::new(
+                            self.preview_patch_id.load(Ordering::Relaxed),
+                        )
+                        .ok(),
+                        self.preview_playing.load(Ordering::Relaxed) != 0,
+                        f32::from_bits(self.preview_playhead.load(Ordering::Relaxed)),
+                    ),
+                );
             let after = self.version.load(Ordering::Acquire);
             if before == after {
                 return snapshot;
@@ -348,6 +383,12 @@ mod tests {
             ),
         )
         .with_voice_limit_refusals(sequence * 2)
+        .with_preview_observation(crate::real_time::PreviewAudioObservation::from_parts(
+            sequence,
+            crate::kernel::patch_id::PatchId::new(sequence as u32).ok(),
+            sequence != 0,
+            0.5,
+        ))
     }
 
     #[test]
@@ -396,6 +437,12 @@ mod tests {
             );
             assert_eq!(latest.routing_failures(), sequence);
             assert_eq!(latest.voice_limit_refusals(), sequence * 2);
+            assert_eq!(latest.preview_identity(), sequence);
+            assert_eq!(latest.preview_playing(), sequence != 0);
+            assert_eq!(
+                latest.preview_playhead().to_bits(),
+                if sequence == 0 { 0.0_f32 } else { 0.5_f32 }.to_bits()
+            );
             assert_eq!(
                 latest
                     .last_unknown_patch_id()

@@ -177,6 +177,22 @@ where
                     rack.all_notes_off();
                     self.active_notes.clear_all();
                 }
+                AudioCommand::PreviewStart {
+                    patch_id,
+                    audition_id,
+                } => {
+                    if !self.active_graph.preview_start(audition_id, patch_id) {
+                        self.routing_failures = self.routing_failures.saturating_add(1);
+                    }
+                }
+                AudioCommand::PreviewStop {
+                    patch_id,
+                    audition_id,
+                } => {
+                    if !self.active_graph.preview_stop(audition_id, patch_id) {
+                        self.routing_failures = self.routing_failures.saturating_add(1);
+                    }
+                }
             }
         }
 
@@ -187,9 +203,8 @@ where
 
         let parameters = self.parameters;
         let mut effect_observations = [PatchEffectObservation::EMPTY; MAX_PATCHES];
-        let (primary_patch_id, primary_patch_rms, patch_effect, mix) = {
-            let (rack, effect_rack, patch_audio, mixer) =
-                self.active_graph.callback_parts_with_effects_mut();
+        {
+            let (rack, patch_audio, _) = self.active_graph.callback_parts_mut();
             if patch_audio.begin_render(&parameters, frame_count).is_err() {
                 return;
             }
@@ -197,6 +212,11 @@ where
                 interleaved_stereo.fill(0.0);
                 return;
             }
+        }
+        let preview_observation = self.active_graph.render_audition(frame_count);
+        let (primary_patch_id, primary_patch_rms, patch_effect, mix) = {
+            let (_, effect_rack, patch_audio, mixer) =
+                self.active_graph.callback_parts_with_effects_mut();
             if effect_rack
                 .process(patch_audio, &parameters, &mut effect_observations)
                 .is_err()
@@ -252,7 +272,8 @@ where
                 patch_effect,
                 mix,
             )
-            .with_voice_limit_refusals(self.voice_limit_refusals),
+            .with_voice_limit_refusals(self.voice_limit_refusals)
+            .with_preview_observation(preview_observation),
         );
     }
 
@@ -330,7 +351,8 @@ where
             // sounding voice carried over.
             Some(
                 crate::real_time::GraphReplacementScope::PatchSlot { .. }
-                | crate::real_time::GraphReplacementScope::BusReturn(_),
+                | crate::real_time::GraphReplacementScope::BusReturn(_)
+                | crate::real_time::GraphReplacementScope::Audition,
             ) => {}
         }
         self.handoff_status.record_swap(replacement_revision);
@@ -503,7 +525,9 @@ mod tests {
     use crate::real_time::graph_revision::GraphRevision;
     use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters};
     use crate::real_time::prepared_graph::PreparedGraph;
-    use crate::real_time::prepared_graph_builder::PreparedGraphBuilder;
+    use crate::real_time::prepared_graph_builder::{
+        AuditionPreparationRequest, PreparedGraphBuilder,
+    };
     use crate::real_time::structural_graph_boundary::{
         AudioStructuralGraphBoundary, RetiredBoundaryFull,
     };
@@ -513,7 +537,7 @@ mod tests {
     use crate::synth::patch::Patch;
     use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
     use crate::synth::sound_font_instrument::SoundFontInstrument;
-    use crate::synth::DescriptorDefaultConfigFactory;
+    use crate::synth::{DescriptorDefaultConfigFactory, PreparedAudition};
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::Cell;
@@ -710,6 +734,59 @@ mod tests {
                 }))
             }
         }
+
+        fn prepare_audition(
+            &self,
+            patch_id: PatchId,
+            _candidate: &crate::synth::InstrumentConfig,
+            _sample_rate: f32,
+            _max_frames: usize,
+        ) -> Result<Box<dyn PreparedAudition>, InstrumentPreparationError> {
+            Ok(Box::new(FixtureAudition {
+                patch_id,
+                playing: false,
+            }))
+        }
+    }
+
+    struct FixtureAudition {
+        patch_id: PatchId,
+        playing: bool,
+    }
+
+    impl PreparedAudition for FixtureAudition {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn start(&mut self) {
+            self.playing = true;
+        }
+
+        fn stop(&mut self) {
+            self.playing = false;
+        }
+
+        fn render(&mut self, output: &mut [f32], frame_count: usize) {
+            if !self.playing {
+                return;
+            }
+            for sample in output.iter_mut().take(frame_count.saturating_mul(2)) {
+                *sample += 0.125;
+            }
+        }
+
+        fn is_playing(&self) -> bool {
+            self.playing
+        }
+
+        fn playhead(&self) -> f32 {
+            if self.playing {
+                0.5
+            } else {
+                0.0
+            }
+        }
     }
 
     struct FirstInstrument {
@@ -859,6 +936,40 @@ mod tests {
                 .unwrap()
         }
 
+        fn graph_with_audition(
+            &self,
+            revision: u64,
+            generation: u64,
+            identity: u64,
+            patch_id: PatchId,
+        ) -> PreparedGraph {
+            let registry = self.provider.registry().unwrap();
+            let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer {
+                capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+                first_dispatches: Arc::clone(&self.first_dispatches),
+                second_dispatches: Arc::clone(&self.second_dispatches),
+                drops: Arc::clone(&self.drops),
+            })];
+            let candidate = self
+                .patches
+                .iter()
+                .find(|patch| patch.id() == patch_id)
+                .unwrap()
+                .instrument_config()
+                .clone();
+            let audition = AuditionPreparationRequest::new(identity, patch_id, candidate).unwrap();
+            PreparedGraphBuilder::new(&registry, &preparers)
+                .with_audition(&audition)
+                .build(
+                    GraphRevision::new(revision).unwrap(),
+                    &self.patches,
+                    self.parameters(revision, generation),
+                    48_000.0,
+                    4,
+                )
+                .unwrap()
+        }
+
         fn boundary(&self, latest: ParameterSnapshot, commands: &[AudioCommand]) -> TestBoundary {
             let mut storage = [None; 4];
             for (slot, command) in storage.iter_mut().zip(commands) {
@@ -908,6 +1019,71 @@ mod tests {
         assert_eq!(renderer.observation.latest.parameter_generation(), 9);
         assert_eq!(renderer.observation.latest.commands_consumed(), 2);
         assert_eq!(renderer.observation.latest.active_notes(), 1);
+    }
+
+    #[test]
+    fn audition_commands_mix_only_into_the_correlated_origin_track_and_publish_playhead() {
+        let fixture = Fixture::new();
+        let patch_id = fixture.patches[0].id();
+        let identity = 41;
+
+        let baseline_boundary = fixture.boundary(fixture.parameters(1, 1), &[]);
+        let mut baseline = AudioRenderer::with_observation(
+            baseline_boundary,
+            TestStructural::new(),
+            fixture.graph(1, 1),
+            TestObservation::default(),
+        );
+        let mut baseline_output = [0.0; 8];
+        baseline.render(&mut baseline_output);
+        let baseline_observation = baseline.observation.latest;
+
+        let boundary = fixture.boundary(
+            fixture.parameters(1, 1),
+            &[AudioCommand::preview_start(patch_id, identity)],
+        );
+        let mut renderer = AudioRenderer::with_observation(
+            boundary,
+            TestStructural::new(),
+            fixture.graph_with_audition(1, 1, identity, patch_id),
+            TestObservation::default(),
+        );
+        let mut output = [0.0; 8];
+        begin_memory_count();
+        renderer.render(&mut output);
+        let start_memory = finish_memory_count();
+
+        let observation = renderer.observation.latest;
+        assert_eq!(start_memory, (0, 0));
+        assert_eq!(observation.preview_identity(), identity);
+        assert_eq!(observation.preview_patch_id(), Some(patch_id));
+        assert!(observation.preview_playing());
+        assert_eq!(observation.preview_playhead(), 0.5);
+        assert!(
+            observation.track(MixerTrackId::new(0).unwrap()).rms()
+                > baseline_observation
+                    .track(MixerTrackId::new(0).unwrap())
+                    .rms()
+        );
+        assert_eq!(
+            observation
+                .track(MixerTrackId::new(1).unwrap())
+                .rms()
+                .to_bits(),
+            baseline_observation
+                .track(MixerTrackId::new(1).unwrap())
+                .rms()
+                .to_bits(),
+            "the audition must not enter another Patch/track stem"
+        );
+
+        renderer.boundary.commands[1] = Some(AudioCommand::preview_stop(patch_id, identity));
+        begin_memory_count();
+        renderer.render(&mut output);
+        let stop_memory = finish_memory_count();
+        assert_eq!(stop_memory, (0, 0));
+        assert!(!renderer.observation.latest.preview_playing());
+        assert_eq!(renderer.observation.latest.preview_playhead(), 0.0);
     }
 
     #[test]

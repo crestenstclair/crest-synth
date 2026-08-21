@@ -1,11 +1,12 @@
 use crate::control::{
-    FocusPath, FocusPathError, InteractionMode, MixerControlId, PatchControlId, PatchDetailSubject,
-    ReturnPath, SemanticControlId, SurfaceId, TopLevelContext,
+    FocusPath, FocusPathError, InteractionMode, MixerControlId, PatchChoiceSubject, PatchControlId,
+    PatchDetailSubject, ReturnPath, SemanticControlId, SurfaceId, TopLevelContext,
 };
 use crate::kernel::PatchId;
 use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::mixer::mixer_track_parameters::MixerTrackParameter;
 use crate::mixer::patch_output::PatchOutputParameter;
+use crate::synth::ParameterId;
 
 /// Compatibility classification derived from the canonical MixerControlId.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,30 +57,46 @@ impl Selection {
     }
 }
 
-/// Reducer-owned singular semantic focus, remembered roots, mode, and return.
+/// The one reducer-owned PATCH subordinate session.
 ///
-/// # The detail invariant
-///
-/// `detail_subject` is `Some` **exactly** while `active_focus.surface` is
-/// `PatchDetail` and `return_path.entered_surface` is `PatchDetail`. The three
-/// facts move together in one transition, so no reachable state pairs an open
-/// detail surface with no subject, or a subject with no surface to live on.
-///
-/// That is enforced structurally rather than by convention, for one of the
-/// three fields: `detail_subject` is private to this module, so — unlike its
-/// `pub(super)` siblings — the reducer cannot assign it, and
-/// [`Self::enter_detail`], [`Self::leave_subordinate`], and
-/// [`Self::return_to_origin`] are the only transitions that can set or clear
-/// it. `active_focus` and `return_path` remain `pub(super)`: the reducer
-/// assigns `active_focus` directly at four sites, each of which moves within one
-/// already-open surface's own resolved order and so cannot change which surface
-/// is active — `app_state::navigate_side_nonwrapping`,
-/// `app_state::repair_inspector_focus`, and the persistent-side and detail
-/// branches of `app_state::with_counterfactual_focus`, each of which makes the
-/// named surface active first and only then places the row inside it. The
-/// invariant is therefore held by *every* mutator on this type ending in an
-/// [`Self::assert_detail_invariant`] call, plus those four guarded reducer
-/// writes — not by the privacy of one field alone.
+/// Choice and browser surfaces replace, rather than stack on, Detail or
+/// Utility. Their suspended return identity is enough to reconstruct the exact
+/// replaced surface on one Return without storing option, folder, or row
+/// indices. The whole union is transient interaction state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PatchSubordinateSession {
+    Detail {
+        subject: PatchDetailSubject,
+    },
+    Choice {
+        subject: PatchChoiceSubject,
+        suspended_detail: Option<PatchDetailSubject>,
+        suspended_return: Option<ReturnPath>,
+    },
+    SampleBrowser {
+        patch_id: PatchId,
+        asset_parameter_id: ParameterId,
+        suspended_detail: Option<PatchDetailSubject>,
+        suspended_return: Option<ReturnPath>,
+    },
+}
+
+impl PatchSubordinateSession {
+    pub const fn detail_subject(&self) -> Option<&PatchDetailSubject> {
+        match self {
+            Self::Detail { subject } => Some(subject),
+            Self::Choice {
+                suspended_detail, ..
+            }
+            | Self::SampleBrowser {
+                suspended_detail, ..
+            } => suspended_detail.as_ref(),
+        }
+    }
+}
+
+/// Reducer-owned singular semantic focus, remembered roots, mode, return, and
+/// at most one PATCH subordinate session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InteractionState {
     pub(super) active_focus: FocusPath,
@@ -87,8 +104,9 @@ pub struct InteractionState {
     pub(super) remembered_mixer_main: FocusPath,
     pub(super) mode: InteractionMode,
     pub(super) return_path: Option<ReturnPath>,
-    /// Deliberately private, not `pub(super)`: see the type's detail invariant.
-    detail_subject: Option<PatchDetailSubject>,
+    /// Deliberately private: surface, subject, and suspended origin may only
+    /// move together through this type's transitions.
+    subordinate_session: Option<PatchSubordinateSession>,
 }
 
 impl InteractionState {
@@ -101,33 +119,69 @@ impl InteractionState {
             remembered_mixer_main: mixer,
             mode: InteractionMode::Navigate,
             return_path: None,
-            detail_subject: None,
+            subordinate_session: None,
         }
     }
 
-    /// Reports whether the three detail facts agree.
-    ///
-    /// Exposed so tests can assert the invariant over reachable states rather
-    /// than trusting that every transition remembered to maintain it.
-    pub fn detail_invariant_holds(&self) -> bool {
-        let focus_is_detail = self.active_focus.surface() == SurfaceId::PatchDetail;
-        let return_is_detail = self
-            .return_path
-            .as_ref()
-            .is_some_and(|path| path.entered_surface() == SurfaceId::PatchDetail);
-        let subject_is_open = self.detail_subject.is_some();
-        focus_is_detail == subject_is_open && return_is_detail == subject_is_open
+    /// Reports whether surface, mode, return, and subordinate subject agree.
+    pub fn subordinate_invariant_holds(&self) -> bool {
+        let entered = self.return_path.as_ref().map(ReturnPath::entered_surface);
+        match (&self.subordinate_session, self.active_focus.surface()) {
+            (None, SurfaceId::PatchDetail | SurfaceId::PatchChoice | SurfaceId::SampleBrowser) => {
+                false
+            }
+            (None, _) => true,
+            (Some(PatchSubordinateSession::Detail { .. }), SurfaceId::PatchDetail) => {
+                entered == Some(SurfaceId::PatchDetail) && self.mode != InteractionMode::Modal
+            }
+            (
+                Some(PatchSubordinateSession::Choice {
+                    suspended_detail,
+                    suspended_return,
+                    ..
+                }),
+                SurfaceId::PatchChoice,
+            ) => {
+                entered == Some(SurfaceId::PatchChoice)
+                    && self.mode == InteractionMode::Modal
+                    && suspended_detail.is_some()
+                        == suspended_return
+                            .as_ref()
+                            .is_some_and(|path| path.entered_surface() == SurfaceId::PatchDetail)
+            }
+            (
+                Some(PatchSubordinateSession::SampleBrowser {
+                    suspended_detail,
+                    suspended_return,
+                    ..
+                }),
+                SurfaceId::SampleBrowser,
+            ) => {
+                entered == Some(SurfaceId::SampleBrowser)
+                    && self.mode == InteractionMode::Modal
+                    && suspended_detail.is_some()
+                        == suspended_return
+                            .as_ref()
+                            .is_some_and(|path| path.entered_surface() == SurfaceId::PatchDetail)
+            }
+            (Some(_), _) => false,
+        }
     }
 
-    /// Panics in debug builds if a transition left the three facts disagreeing.
-    fn assert_detail_invariant(&self) {
+    /// Backward-compatible witness name used by the earlier acceptance suite.
+    pub fn detail_invariant_holds(&self) -> bool {
+        self.subordinate_invariant_holds()
+    }
+
+    fn assert_subordinate_invariant(&self) {
         debug_assert!(
-            self.detail_invariant_holds(),
-            "detail surface, subject, and return path must move together: \
-             surface={:?} subject={:?} return={:?}",
+            self.subordinate_invariant_holds(),
+            "subordinate surface, subject, mode, and return must agree: \
+             surface={:?} session={:?} return={:?} mode={:?}",
             self.active_focus.surface(),
-            self.detail_subject,
+            self.subordinate_session,
             self.return_path.as_ref().map(ReturnPath::entered_surface),
+            self.mode,
         );
     }
 
@@ -159,10 +213,17 @@ impl InteractionState {
         self.return_path.as_ref()
     }
 
+    pub const fn subordinate_session(&self) -> Option<&PatchSubordinateSession> {
+        self.subordinate_session.as_ref()
+    }
+
     /// Returns the capability whose schema the open detail surface shows, or
     /// `None` when no detail entry is open.
     pub const fn detail_subject(&self) -> Option<&PatchDetailSubject> {
-        self.detail_subject.as_ref()
+        match self.subordinate_session.as_ref() {
+            Some(session) => session.detail_subject(),
+            None => None,
+        }
     }
 
     pub const fn patch_focus(&self) -> Option<PatchId> {
@@ -173,6 +234,22 @@ impl InteractionState {
     }
 
     pub fn patch_control_focus(&self) -> Option<PatchControlId> {
+        if let Some(PatchSubordinateSession::Choice { subject, .. }) =
+            self.subordinate_session.as_ref()
+        {
+            return Some(subject.control_id().clone());
+        }
+        if self.active_focus.surface() == SurfaceId::SampleBrowser {
+            return self
+                .return_path
+                .as_ref()
+                .and_then(|path| match path.origin().control_id() {
+                    SemanticControlId::Patch(control) => Some(control.clone()),
+                    SemanticControlId::Mixer(_)
+                    | SemanticControlId::Modal(_)
+                    | SemanticControlId::SurfaceRoot => None,
+                });
+        }
         let path = if self.active_focus.context() == TopLevelContext::Patch {
             &self.active_focus
         } else {
@@ -180,7 +257,9 @@ impl InteractionState {
         };
         match path.control_id() {
             SemanticControlId::Patch(control) => Some(control.clone()),
-            SemanticControlId::Mixer(_) | SemanticControlId::SurfaceRoot => None,
+            SemanticControlId::Mixer(_)
+            | SemanticControlId::Modal(_)
+            | SemanticControlId::SurfaceRoot => None,
         }
     }
 
@@ -192,7 +271,9 @@ impl InteractionState {
         };
         match path.control_id() {
             SemanticControlId::Mixer(control) => control,
-            SemanticControlId::Patch(_) | SemanticControlId::SurfaceRoot => {
+            SemanticControlId::Patch(_)
+            | SemanticControlId::Modal(_)
+            | SemanticControlId::SurfaceRoot => {
                 unreachable!("remembered MixerMain path is always a Mixer control")
             }
         }
@@ -200,7 +281,7 @@ impl InteractionState {
 
     pub(super) fn initialize_patch_focus(&mut self, focus: Option<FocusPath>) {
         self.remembered_patch_main = focus;
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
     }
 
     /// Lands the active focus on a main path, leaving any subordinate surface.
@@ -218,7 +299,7 @@ impl InteractionState {
         }
         self.active_focus = focus;
         self.leave_subordinate();
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
         Ok(())
     }
 
@@ -237,16 +318,25 @@ impl InteractionState {
         // A detail subject belongs to the context it was opened in; switching
         // context leaves the detail surface rather than carrying it.
         self.leave_subordinate();
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
         Ok(())
     }
 
     pub(super) fn set_mode(&mut self, mode: InteractionMode) -> Result<(), FocusPathError> {
-        if !mode.is_phase_two_reachable() {
+        let modal_surface = matches!(
+            self.active_focus.surface(),
+            SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+        );
+        let allowed = if modal_surface {
+            mode == InteractionMode::Modal
+        } else {
+            mode.is_phase_two_reachable()
+        };
+        if !allowed {
             return Err(FocusPathError::ModalIdentityUnavailable);
         }
         self.mode = mode;
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
         Ok(())
     }
 
@@ -282,18 +372,20 @@ impl InteractionState {
                 // The selected track's first send: Send(trackId, BusId 0).
                 FocusPath::mixer_send(*track_id, crate::mixer::bus_id::BusId::default())
             }
-            SurfaceId::PatchDetail | SurfaceId::PatchMain | SurfaceId::MixerMain => {
-                return Err(FocusPathError::ControlSurfaceMismatch)
-            }
+            SurfaceId::PatchDetail
+            | SurfaceId::PatchChoice
+            | SurfaceId::SampleBrowser
+            | SurfaceId::PatchMain
+            | SurfaceId::MixerMain => return Err(FocusPathError::ControlSurfaceMismatch),
         };
         self.mode = InteractionMode::Navigate;
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
         Ok(())
     }
 
     /// Opens the subordinate detail surface on one subject.
     ///
-    /// This is the *only* transition that can set `detail_subject`, and it
+    /// This is the only transition that can create a Detail session, and it
     /// sets all three detail facts together: the remembered origin, the
     /// subject, and the focus on the subject's first control. The origin must
     /// be the current main path, so entering from `PatchUtility` or from an
@@ -314,10 +406,90 @@ impl InteractionState {
         }
         let return_path = ReturnPath::new(self.active_focus.clone(), SurfaceId::PatchDetail)?;
         self.return_path = Some(return_path);
-        self.detail_subject = Some(subject);
+        self.subordinate_session = Some(PatchSubordinateSession::Detail { subject });
         self.active_focus = focus;
         self.mode = InteractionMode::Navigate;
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
+        Ok(())
+    }
+
+    /// Replaces the current PATCH main, Utility, or Detail surface with one
+    /// generic choice session. A modal/browser origin is refused, so sessions
+    /// can never stack.
+    pub(super) fn enter_choice(
+        &mut self,
+        subject: PatchChoiceSubject,
+        focus: FocusPath,
+    ) -> Result<(), FocusPathError> {
+        self.enter_modal_surface(subject.patch_id(), focus, |detail, suspended_return| {
+            PatchSubordinateSession::Choice {
+                subject,
+                suspended_detail: detail,
+                suspended_return,
+            }
+        })
+    }
+
+    /// Replaces the current PATCH main, Utility, or Detail surface with the
+    /// controller-native Sample Browser.
+    pub(super) fn enter_sample_browser(
+        &mut self,
+        patch_id: PatchId,
+        asset_parameter_id: ParameterId,
+        focus: FocusPath,
+    ) -> Result<(), FocusPathError> {
+        self.enter_modal_surface(patch_id, focus, |detail, suspended_return| {
+            PatchSubordinateSession::SampleBrowser {
+                patch_id,
+                asset_parameter_id,
+                suspended_detail: detail,
+                suspended_return,
+            }
+        })
+    }
+
+    fn enter_modal_surface(
+        &mut self,
+        patch_id: PatchId,
+        focus: FocusPath,
+        make_session: impl FnOnce(
+            Option<PatchDetailSubject>,
+            Option<ReturnPath>,
+        ) -> PatchSubordinateSession,
+    ) -> Result<(), FocusPathError> {
+        if self.active_focus.context() != TopLevelContext::Patch
+            || !matches!(
+                self.active_focus.surface(),
+                SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail
+            )
+            || self.active_focus.patch_id() != Some(patch_id)
+        {
+            return Err(FocusPathError::ContextSurfaceMismatch);
+        }
+        focus.validate()?;
+        if !matches!(
+            focus.surface(),
+            SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+        ) || focus.patch_id() != Some(patch_id)
+        {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
+        let entered_surface = focus.surface();
+        let origin = self.active_focus.clone();
+        let suspended_detail = match self.subordinate_session.take() {
+            Some(PatchSubordinateSession::Detail { subject }) => Some(subject),
+            Some(other) => {
+                self.subordinate_session = Some(other);
+                return Err(FocusPathError::ModalIdentityUnavailable);
+            }
+            None => None,
+        };
+        let suspended_return = self.return_path.take();
+        self.return_path = Some(ReturnPath::new(origin, entered_surface)?);
+        self.subordinate_session = Some(make_session(suspended_detail, suspended_return));
+        self.active_focus = focus;
+        self.mode = InteractionMode::Modal;
+        self.assert_subordinate_invariant();
         Ok(())
     }
 
@@ -337,9 +509,28 @@ impl InteractionState {
             return Err(FocusPathError::ContextSurfaceMismatch);
         }
         self.active_focus = path.origin().clone();
-        self.detail_subject = None;
+        match self.subordinate_session.take() {
+            Some(PatchSubordinateSession::Choice {
+                suspended_detail,
+                suspended_return,
+                ..
+            })
+            | Some(PatchSubordinateSession::SampleBrowser {
+                suspended_detail,
+                suspended_return,
+                ..
+            }) => {
+                self.return_path = suspended_return;
+                self.subordinate_session =
+                    suspended_detail.map(|subject| PatchSubordinateSession::Detail { subject });
+            }
+            Some(PatchSubordinateSession::Detail { .. }) | None => {
+                self.return_path = None;
+                self.subordinate_session = None;
+            }
+        }
         self.mode = InteractionMode::Navigate;
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
         Ok(())
     }
 
@@ -350,8 +541,8 @@ impl InteractionState {
     /// focus itself. Clears the return path and the subject together.
     pub(super) fn leave_subordinate(&mut self) {
         self.return_path = None;
-        self.detail_subject = None;
-        self.assert_detail_invariant();
+        self.subordinate_session = None;
+        self.assert_subordinate_invariant();
     }
 
     /// Leaves an open detail surface by restoring its remembered origin.
@@ -363,7 +554,10 @@ impl InteractionState {
     /// silently retargeting a detail view would show one capability's values
     /// under another's title. Reports whether a surface was actually left.
     pub(super) fn leave_detail_to_origin(&mut self) -> bool {
-        if self.detail_subject.is_none() {
+        if !matches!(
+            self.subordinate_session,
+            Some(PatchSubordinateSession::Detail { .. })
+        ) {
             return false;
         }
         let origin = self
@@ -372,10 +566,10 @@ impl InteractionState {
             .expect("the detail invariant pairs an open subject with a return path")
             .origin()
             .clone();
-        self.detail_subject = None;
+        self.subordinate_session = None;
         self.active_focus = origin;
         self.mode = InteractionMode::Navigate;
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
         true
     }
 
@@ -385,7 +579,7 @@ impl InteractionState {
         if was_active {
             self.active_focus = focus;
         }
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
     }
 
     pub(super) fn replace_remembered_mixer_main(&mut self, focus: FocusPath) {
@@ -394,7 +588,7 @@ impl InteractionState {
         if was_active {
             self.active_focus = focus;
         }
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
     }
 
     /// Replaces the remembered origin of whichever surface is open.
@@ -413,7 +607,7 @@ impl InteractionState {
             return Ok(());
         };
         self.return_path = Some(ReturnPath::new(origin, return_path.entered_surface())?);
-        self.assert_detail_invariant();
+        self.assert_subordinate_invariant();
         Ok(())
     }
 }
@@ -427,7 +621,10 @@ impl Default for InteractionState {
 #[cfg(test)]
 mod tests {
     use super::InteractionState;
-    use crate::control::{FocusPath, InteractionMode, PatchControlId, SurfaceId, TopLevelContext};
+    use crate::control::{
+        FocusCapabilityId, FocusPath, InteractionMode, PatchChoiceSubject, PatchControlId,
+        PatchDetailSubject, PatchSubordinateSession, SurfaceId, TopLevelContext,
+    };
     use crate::kernel::PatchId;
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::mixer::mixer_track_parameters::MixerTrackParameter;
@@ -509,5 +706,107 @@ mod tests {
         assert!(state.set_mode(InteractionMode::Modal).is_err());
         assert!(state.enter_surface(SurfaceId::PatchUtility).is_err());
         assert_eq!(state.mode(), InteractionMode::Navigate);
+    }
+
+    #[test]
+    fn one_choice_session_replaces_detail_and_returns_through_both_exact_origins() {
+        let patch_id = PatchId::new(7).unwrap();
+        let capability_id = crate::synth::CapabilityId::new("instrument.test").unwrap();
+        let parameter_id = crate::synth::ParameterId::new("test.choice").unwrap();
+        let origin = FocusPath::patch_main(
+            patch_id,
+            Some(FocusCapabilityId::Instrument(capability_id.clone())),
+            PatchControlId::Capability(parameter_id.clone()),
+        );
+        let detail_focus = FocusPath::patch_detail(
+            patch_id,
+            FocusCapabilityId::Instrument(capability_id.clone()),
+            PatchControlId::Capability(parameter_id.clone()),
+        );
+        let subject = PatchDetailSubject::instrument(capability_id);
+        let choice_subject =
+            PatchChoiceSubject::new(patch_id, PatchControlId::Capability(parameter_id.clone()));
+        let choice_focus =
+            FocusPath::patch_choice(patch_id, choice_subject.stable_id(), "choice.test.one");
+
+        let mut state = InteractionState::new();
+        state.initialize_patch_focus(Some(origin.clone()));
+        state.select_context(TopLevelContext::Patch).unwrap();
+        state
+            .enter_detail(subject.clone(), detail_focus.clone())
+            .unwrap();
+        state
+            .enter_choice(choice_subject.clone(), choice_focus.clone())
+            .unwrap();
+
+        assert_eq!(state.focus_path(), &choice_focus);
+        assert_eq!(state.mode(), InteractionMode::Modal);
+        assert!(matches!(
+            state.subordinate_session(),
+            Some(PatchSubordinateSession::Choice {
+                subject: actual,
+                suspended_detail: Some(actual_detail),
+                suspended_return: Some(_),
+            }) if actual == &choice_subject && actual_detail == &subject
+        ));
+        assert!(state.subordinate_invariant_holds());
+
+        let before_nested_attempt = state.clone();
+        assert!(state
+            .enter_sample_browser(
+                patch_id,
+                parameter_id,
+                FocusPath::sample_browser(patch_id, "browser.test", "cancel"),
+            )
+            .is_err());
+        assert_eq!(
+            state, before_nested_attempt,
+            "modal-from-modal changed state"
+        );
+
+        state.return_to_origin().unwrap();
+        assert_eq!(state.focus_path(), &detail_focus);
+        assert_eq!(state.detail_subject(), Some(&subject));
+        assert_eq!(state.return_path().map(|path| path.origin()), Some(&origin));
+        state.return_to_origin().unwrap();
+        assert_eq!(state.focus_path(), &origin);
+        assert!(state.subordinate_session().is_none());
+        assert!(state.return_path().is_none());
+        assert!(state.subordinate_invariant_holds());
+    }
+
+    #[test]
+    fn sample_browser_replaces_utility_without_fabricating_a_detail_subject() {
+        let patch_id = PatchId::new(3).unwrap();
+        let origin = FocusPath::patch_main(patch_id, None, PatchControlId::Engine);
+        let asset_id = crate::synth::ParameterId::new("sample.asset").unwrap();
+        let browser_focus =
+            FocusPath::sample_browser(patch_id, "browser.sample.asset", "folder.drums");
+        let mut state = InteractionState::new();
+        state.initialize_patch_focus(Some(origin.clone()));
+        state.select_context(TopLevelContext::Patch).unwrap();
+        state.enter_surface(SurfaceId::PatchUtility).unwrap();
+        let utility_focus = state.focus_path().clone();
+        state
+            .enter_sample_browser(patch_id, asset_id.clone(), browser_focus.clone())
+            .unwrap();
+
+        assert_eq!(state.focus_path(), &browser_focus);
+        assert!(matches!(
+            state.subordinate_session(),
+            Some(PatchSubordinateSession::SampleBrowser {
+                asset_parameter_id,
+                suspended_detail: None,
+                suspended_return: Some(_),
+                ..
+            }) if asset_parameter_id == &asset_id
+        ));
+        assert_eq!(state.detail_subject(), None);
+        state.return_to_origin().unwrap();
+        assert_eq!(state.focus_path(), &utility_focus);
+        assert_eq!(state.active_surface(), SurfaceId::PatchUtility);
+        state.return_to_origin().unwrap();
+        assert_eq!(state.focus_path(), &origin);
+        assert!(state.subordinate_invariant_holds());
     }
 }

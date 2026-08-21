@@ -13,6 +13,7 @@ use crate::synth::capability_id::CapabilityId;
 use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::EffectCapabilityId;
 use crate::synth::EffectSlotId;
+use crate::synth::PreparedAudition;
 use core::fmt;
 
 /// Fixed byte capacity of one recorded per-position capability identity.
@@ -99,6 +100,7 @@ struct PreparedGraphState {
     effect_rack: PreparedPostEffectRack,
     patch_audio: PatchAudioBlock,
     mixer: MixEngine,
+    audition: Option<PreparedAuditionSlot>,
     /// The exact correlated delta this replacement declares, set on worker
     /// ownership after preparation. `Some` authorizes the block-boundary
     /// voice carry-over exchange at activation; `None` (a fresh initial
@@ -112,6 +114,68 @@ pub(crate) struct PreparedGraphResources {
     effect_rack: PreparedPostEffectRack,
     patch_audio: PatchAudioBlock,
     mixer: MixEngine,
+    audition: Option<PreparedAuditionSlot>,
+}
+
+/// One graph-owned, request-correlated preview voice. The request identity is
+/// fixed-size command data; the capability-specific voice stays behind the
+/// generic audition port.
+pub(crate) struct PreparedAuditionSlot {
+    identity: u64,
+    audition: Box<dyn PreparedAudition>,
+}
+
+impl PreparedAuditionSlot {
+    pub(crate) fn new(identity: u64, audition: Box<dyn PreparedAudition>) -> Self {
+        Self { identity, audition }
+    }
+
+    pub(crate) fn prepared_sample_visualization(
+        &self,
+    ) -> Option<&crate::synth::PreparedSampleVisualization> {
+        self.audition.prepared_sample_visualization()
+    }
+
+    pub(crate) fn patch_id(&self) -> PatchId {
+        self.audition.patch_id()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PreviewAudioObservation {
+    identity: u64,
+    patch_id: Option<PatchId>,
+    playing: bool,
+    playhead: f32,
+}
+
+impl PreviewAudioObservation {
+    pub(crate) const fn from_parts(
+        identity: u64,
+        patch_id: Option<PatchId>,
+        playing: bool,
+        playhead: f32,
+    ) -> Self {
+        Self {
+            identity,
+            patch_id,
+            playing,
+            playhead,
+        }
+    }
+
+    pub const fn identity(self) -> u64 {
+        self.identity
+    }
+    pub const fn patch_id(self) -> Option<PatchId> {
+        self.patch_id
+    }
+    pub const fn playing(self) -> bool {
+        self.playing
+    }
+    pub const fn playhead(self) -> f32 {
+        self.playhead
+    }
 }
 
 impl PreparedGraphResources {
@@ -126,7 +190,13 @@ impl PreparedGraphResources {
             effect_rack,
             patch_audio,
             mixer,
+            audition: None,
         }
+    }
+
+    pub(crate) fn with_audition(mut self, audition: PreparedAuditionSlot) -> Self {
+        self.audition = Some(audition);
+        self
     }
 }
 
@@ -173,6 +243,7 @@ impl PreparedGraph {
                 effect_rack: resources.effect_rack,
                 patch_audio: resources.patch_audio,
                 mixer: resources.mixer,
+                audition: resources.audition,
                 carry_over: None,
             }),
         }
@@ -204,6 +275,25 @@ impl PreparedGraph {
 
     pub const fn effect_rack(&self) -> &PreparedPostEffectRack {
         &self.inner.effect_rack
+    }
+
+    /// Worker/control-side bounded visualization for the prepared target.
+    /// Audition data wins for its Patch because it describes the candidate
+    /// being previewed without replacing the active instrument assignment.
+    pub fn prepared_sample_visualization(
+        &self,
+        patch_id: PatchId,
+    ) -> Option<&crate::synth::PreparedSampleVisualization> {
+        self.inner
+            .audition
+            .as_ref()
+            .filter(|audition| audition.patch_id() == patch_id)
+            .and_then(PreparedAuditionSlot::prepared_sample_visualization)
+            .or_else(|| {
+                self.inner
+                    .engine_rack
+                    .prepared_sample_visualization(patch_id)
+            })
     }
 
     /// Returns the fixed replacement contract without borrowing graph-owned
@@ -334,6 +424,54 @@ impl PreparedGraph {
         )
     }
 
+    /// Starts the exact prepared audition only when both request and Patch
+    /// identities agree with the active graph.
+    pub(crate) fn preview_start(&mut self, identity: u64, patch_id: PatchId) -> bool {
+        let Some(slot) = self.inner.audition.as_mut() else {
+            return false;
+        };
+        if slot.identity != identity || slot.audition.patch_id() != patch_id {
+            return false;
+        }
+        slot.audition.start();
+        true
+    }
+
+    pub(crate) fn preview_stop(&mut self, identity: u64, patch_id: PatchId) -> bool {
+        let Some(slot) = self.inner.audition.as_mut() else {
+            return false;
+        };
+        if slot.identity != identity || slot.audition.patch_id() != patch_id {
+            return false;
+        }
+        slot.audition.stop();
+        true
+    }
+
+    /// Adds the preview to the origin Patch stem before its post effects,
+    /// trim, routing, sends, returns, and meters.
+    pub(crate) fn render_audition(&mut self, frame_count: usize) -> PreviewAudioObservation {
+        let Some(slot) = self.inner.audition.as_mut() else {
+            return PreviewAudioObservation::default();
+        };
+        let patch_id = slot.audition.patch_id();
+        let Some(index) = (0..self.inner.engine_rack.patch_count())
+            .find(|index| self.inner.engine_rack.patch_id(*index) == Some(patch_id))
+        else {
+            return PreviewAudioObservation::default();
+        };
+        let Some(stem) = self.inner.patch_audio.stem_mut(index, patch_id) else {
+            return PreviewAudioObservation::default();
+        };
+        slot.audition.render(stem, frame_count);
+        PreviewAudioObservation {
+            identity: slot.identity,
+            patch_id: Some(patch_id),
+            playing: slot.audition.is_playing(),
+            playhead: slot.audition.playhead(),
+        }
+    }
+
     /// Declares the exact correlated delta this replacement carries, enabling
     /// voice carry-over at activation. Set only on worker ownership after a
     /// correlated preparation succeeds; never on the callback.
@@ -389,6 +527,7 @@ impl PreparedGraph {
                 (None, Some((patch_id, slot.index())), None)
             }
             GraphReplacementScope::BusReturn(bus) => (None, None, Some(bus)),
+            GraphReplacementScope::Audition => (None, None, None),
         };
         self.inner
             .engine_rack
@@ -423,6 +562,9 @@ pub enum GraphReplacementScope {
     },
     /// Exactly one bus return may change occupancy.
     BusReturn(crate::mixer::bus_id::BusId),
+    /// The engine/effect/routing layout is unchanged; only the graph-owned
+    /// preview slot may differ.
+    Audition,
 }
 
 impl PreparedGraphLayout {
@@ -559,6 +701,16 @@ impl PreparedGraphLayout {
                     index += 1;
                 }
                 true
+            }
+            GraphReplacementScope::Audition => {
+                self.scalar_counts == candidate.scalar_counts
+                    && self.engine_capability_identities == candidate.engine_capability_identities
+                    && self.effect_slot_ids == candidate.effect_slot_ids
+                    && self.effect_scalar_counts == candidate.effect_scalar_counts
+                    && self.effect_capability_identities == candidate.effect_capability_identities
+                    && self.return_slot_ids == candidate.return_slot_ids
+                    && self.return_scalar_counts == candidate.return_scalar_counts
+                    && self.return_capability_identities == candidate.return_capability_identities
             }
         }
     }

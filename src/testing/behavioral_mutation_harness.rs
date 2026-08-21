@@ -1314,6 +1314,7 @@ where
                 })
             }
             AudioCommand::AllNotesOff => Some(AudioCommand::AllNotesOff),
+            AudioCommand::PreviewStart { .. } | AudioCommand::PreviewStop { .. } => Some(command),
         }
     }
 

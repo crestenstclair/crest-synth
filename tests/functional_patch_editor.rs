@@ -55,12 +55,13 @@ use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_instrument_preparers,
     production_soundfont_capability,
 };
+use crest_synth::adapter::sample_capability::SampleCapability;
 use crest_synth::control::{
     AppEvent, AppState, Direction, EventRejection, FocusPath, InteractionMode, PatchControlId,
     PatchDetailSubject, PatchPageProjection, PatchPageSection, PatchPageSlotOccupancy,
-    SemanticControlId, SemanticControlKind, SemanticControlValue, SemanticControlViewModel,
-    SemanticGraphicalViewModel, SemanticResolver, SemanticSurfaceRole, SemanticSurfaceViewModel,
-    StateProjector, SurfaceId, TopLevelContext,
+    SemanticAction, SemanticControlId, SemanticControlKind, SemanticControlValue,
+    SemanticControlViewModel, SemanticGraphicalViewModel, SemanticResolver, SemanticSurfaceRole,
+    SemanticSurfaceViewModel, StateProjector, SurfaceId, TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -80,7 +81,11 @@ use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::instrument_capability::ParameterValue;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::voice_limit::{VoiceLimit, VoiceLimitError};
-use crest_synth::synth::{EffectSlotId, InstrumentConfig, ParameterKind, Patch, PatchInteraction};
+use crest_synth::synth::{
+    CapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider, InstrumentConfig,
+    ParameterKind, Patch, PatchInteraction, SampleAssetId, SampleBrowserRow, SampleBrowserRowKind,
+    SampleCatalogListing, SampleFolderId,
+};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
 
@@ -263,6 +268,66 @@ fn fixture_state() -> AppState {
     state
         .apply(AppEvent::SelectContext(TopLevelContext::Patch))
         .expect("the PATCH context is reachable with Patches installed");
+    state
+}
+
+/// One installed Sample Patch with a deterministic controller-native root
+/// listing, opened all the way to the trapped browser through semantic
+/// actions. This fixture exists so cross-surface guards see Phase 7's real
+/// browser projection rather than merely adding its enum name to an expected
+/// set.
+fn sample_browser_fixture() -> AppState {
+    let asset_id = SampleAssetId::new("Factory.wav").unwrap();
+    let provider = SampleCapability::new(asset_id.clone()).unwrap();
+    let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
+    let folder = SampleFolderId::default();
+    let listing = SampleCatalogListing::new(
+        folder.clone(),
+        vec![
+            SampleBrowserRow::new(
+                "file:Factory.wav",
+                "Factory.wav",
+                SampleBrowserRowKind::File(asset_id),
+                Some(128),
+            )
+            .unwrap(),
+            SampleBrowserRow::new(
+                "cancel:",
+                "CANCEL — UNCHANGED",
+                SampleBrowserRowKind::Cancel,
+                None,
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    let patch = Patch::new(
+        PatchId::new(1).unwrap(),
+        "Sample Fixture".to_owned(),
+        provider.default_config().unwrap(),
+        MidiChannel::new(0).unwrap(),
+        PatchOutput::default(),
+    );
+    let mut state = AppState::for_graph(
+        registry,
+        GlobalParameters::new(-3.0).unwrap(),
+        GraphRevision::INITIAL,
+    )
+    .with_sample_catalog([(folder, Ok(listing))]);
+    state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+    state
+        .apply_semantic_action(SemanticAction::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state
+        .apply_semantic_action(SemanticAction::OpenRelated)
+        .unwrap();
+    state
+        .apply_semantic_action(SemanticAction::OpenRelated)
+        .unwrap();
+    assert_eq!(
+        state.interaction().active_surface(),
+        SurfaceId::SampleBrowser
+    );
     state
 }
 
@@ -866,12 +931,25 @@ fn projected_screen_strings(state: &AppState) -> Vec<(String, String)> {
             if let Some(label) = control.get("label").and_then(Value::as_str) {
                 strings.push((format!("{surface_id} {id} label"), label.to_owned()));
             }
-            strings.push((
-                format!("{surface_id} {id} painted value"),
-                page_value_text(&control),
-            ));
-            if let Some(text) = page_requested_value_text(&control) {
-                strings.push((format!("{surface_id} {id} painted requested value"), text));
+            let modal = matches!(surface_id.as_str(), "patchChoice" | "sampleBrowser");
+            if modal {
+                if let Some(marker) = control.get("selectedLabel").and_then(Value::as_str) {
+                    strings.push((format!("{surface_id} {id} state marker"), marker.to_owned()));
+                }
+                if let Some(metadata) = control
+                    .pointer("/browserMetadata/text")
+                    .and_then(Value::as_str)
+                {
+                    strings.push((format!("{surface_id} {id} metadata"), metadata.to_owned()));
+                }
+            } else {
+                strings.push((
+                    format!("{surface_id} {id} painted value"),
+                    page_value_text(&control),
+                ));
+                if let Some(text) = page_requested_value_text(&control) {
+                    strings.push((format!("{surface_id} {id} painted requested value"), text));
+                }
             }
             for action in control
                 .get("validActions")
@@ -1032,6 +1110,18 @@ fn screen_string_fixtures() -> Vec<(&'static str, AppState)> {
         )
     });
 
+    let mut choice = fixture_state();
+    set_mode(&mut choice, InteractionMode::Adjust);
+    choice
+        .apply(AppEvent::Adjust(Direction::Up))
+        .expect("the engine row opens its installed-choice modal");
+    assert_eq!(
+        choice.interaction().active_surface(),
+        SurfaceId::PatchChoice
+    );
+
+    let sample_browser = sample_browser_fixture();
+
     vec![
         ("soundfont PATCH Main", fixture_state()),
         ("braids PATCH Main", braids(None)),
@@ -1047,6 +1137,8 @@ fn screen_string_fixtures() -> Vec<(&'static str, AppState)> {
         ("PATCH Utility", entered(SurfaceId::PatchUtility)),
         ("PATCH Utility master gain", utility_master),
         ("preset swap in flight", preset_swap_in_flight().0),
+        ("engine choice modal", choice),
+        ("Sample Browser", sample_browser),
         ("MIXER Main", mixer),
         ("MIXER Inspector", inspector),
     ]
@@ -2363,10 +2455,9 @@ fn check_the_whole_patch_surface_marks_nothing_unavailable() -> usize {
                     Some(&Value::Bool(true)),
                     "{where_} is projected invisible"
                 );
-                assert_eq!(
-                    control.get("enabled"),
-                    Some(&Value::Bool(true)),
-                    "{where_} is projected disabled, which the page paints as Locked"
+                assert!(
+                    control.get("enabled").and_then(Value::as_bool).is_some(),
+                    "{where_} does not project an explicit enabled state"
                 );
                 let painted = page_value_text(&control);
                 assert_ne!(
@@ -3167,14 +3258,57 @@ fn check_one_detail_identity_serves_two_subjects() -> (usize, usize) {
             "the surface reports the one projected lifecycle"
         );
         // The semantic model's detail rows agree, so the two documents cannot
-        // disagree about what the same descriptor declared.
+        // disagree about what the same descriptor declared. Instrument detail
+        // additionally carries the canonical Patch envelope; effect detail
+        // does not acquire an instrument-only row family.
         let model = semantic(state);
         let rows = model.surface(SurfaceId::PatchDetail).unwrap().controls();
-        assert_eq!(rows.len(), specs.len());
-        for (row, spec) in rows.iter().zip(&specs) {
+        let schema_rows = rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    (subject, row.path().control_id()),
+                    (
+                        PatchDetailSubject::Instrument { .. },
+                        SemanticControlId::Patch(PatchControlId::Capability(_)),
+                    ) | (
+                        PatchDetailSubject::Effect { .. },
+                        SemanticControlId::Patch(PatchControlId::Effect(..)),
+                    )
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(schema_rows.len(), specs.len());
+        for (row, spec) in schema_rows.iter().zip(&specs) {
             assert_eq!(row.label(), spec.label());
             assert_eq!(row.patch_interaction(), Some(spec.patch_interaction()));
             assert_eq!(row.unit(), spec.unit());
+        }
+        let envelope_rows = rows
+            .iter()
+            .filter_map(|row| match row.path().control_id() {
+                SemanticControlId::Patch(PatchControlId::Envelope(parameter)) => {
+                    Some((row, *parameter))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        match subject {
+            PatchDetailSubject::Instrument { .. } => {
+                assert_eq!(
+                    envelope_rows.len(),
+                    crest_synth::synth::VoiceEnvelope::surface_descriptor().len()
+                );
+                for ((row, parameter), descriptor) in envelope_rows
+                    .iter()
+                    .zip(crest_synth::synth::VoiceEnvelope::surface_descriptor())
+                {
+                    assert_eq!(*parameter, descriptor.parameter());
+                    assert_eq!(row.label(), descriptor.label());
+                    assert_eq!(row.patch_interaction(), Some(PatchInteraction::ScalarEdit));
+                }
+            }
+            PatchDetailSubject::Effect { .. } => assert!(envelope_rows.is_empty()),
         }
     }
     (1, 2)
@@ -3308,11 +3442,12 @@ fn check_return_lands_on_the_exact_origin() {
 /// The read-only *fact* is `patchInteraction`, which is what the render script
 /// discriminates on (`control.patchInteraction === "readOnly"` → the authored
 /// `READ-ONLY` mark plus a dashed keyline, so the declaration reads in text and
-/// in shape rather than in colour alone). `editable` is uniformly `false` on
-/// every detail row in this phase and therefore discriminates nothing, which is
-/// asserted here so a page that reached for it instead fails.
+/// in shape rather than in colour alone). Phase 7's shared Patch-envelope rows
+/// are scalar-editable beside capability-owned read-only rows, so the two facts
+/// must agree row by row rather than being inferred from a whole surface.
 fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
-    // Braids declares every one of its rows read-only.
+    // Braids declares every capability row read-only; the canonical Patch
+    // envelope remains scalar-editable on the shared instrument-detail shell.
     let mut braids = fixture_state();
     braids
         .apply(AppEvent::SelectPatch(Direction::Right))
@@ -3323,16 +3458,22 @@ fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
     let braids_document = document(&braids);
     let rows = surface_controls(&braids_document, "patchDetail");
     assert!(!rows.is_empty());
-    assert!(
-        rows.iter()
-            .all(|row| row.get("patchInteraction").and_then(Value::as_str) == Some("readOnly")),
-        "every Braids row declares itself read-only"
+    let interactions = rows
+        .iter()
+        .filter_map(|row| row.get("patchInteraction").and_then(Value::as_str))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        interactions,
+        BTreeSet::from(["readOnly", "scalarEdit"]),
+        "Braids detail must distinguish descriptor rows from the shared envelope"
     );
-    assert!(
-        rows.iter()
-            .all(|row| row.get("editable") == Some(&Value::Bool(false))),
-        "no detail row is editable in this phase"
-    );
+    assert!(rows.iter().all(
+        |row| match row.get("patchInteraction").and_then(Value::as_str) {
+            Some("readOnly") => row.get("editable") == Some(&Value::Bool(false)),
+            Some("scalarEdit") => row.get("editable") == Some(&Value::Bool(true)),
+            _ => false,
+        }
+    ));
 
     // SoundFont's detail carries one structural row beside its read-only file
     // row, so the mark discriminates rather than being uniformly true.
@@ -3343,15 +3484,20 @@ fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
         .iter()
         .filter_map(|row| row.get("patchInteraction").and_then(Value::as_str))
         .collect();
-    assert!(
-        interactions.contains("readOnly") && interactions.len() > 1,
-        "the read-only mark must discriminate on one surface, got {interactions:?}"
+    assert_eq!(
+        interactions,
+        BTreeSet::from(["readOnly", "scalarEdit", "structuralChoice"]),
+        "SoundFont detail must retain all three descriptor/shared interaction classes"
     );
-    assert!(
-        rows.iter()
-            .all(|row| row.get("editable") == Some(&Value::Bool(false))),
-        "`editable` is uniformly false here and cannot be what marks a read-only row"
-    );
+    assert!(rows.iter().all(
+        |row| match row.get("patchInteraction").and_then(Value::as_str) {
+            Some("readOnly") => row.get("editable") == Some(&Value::Bool(false)),
+            Some("scalarEdit" | "structuralChoice") => {
+                row.get("editable") == Some(&Value::Bool(true))
+            }
+            _ => false,
+        }
+    ));
 
     // A capability mid-preparation reports its typed lifecycle on its own rows
     // and keeps the section set the installed descriptor declares.

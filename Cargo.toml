@@ -45,6 +45,8 @@ rtrb = "0.3.4"
 triple_buffer = "9.0.0"
 anyhow = "1.0"
 thiserror = "2.0"
+# Phase 7's bounded RIFF/WAVE-only decoder adapter. Exact pin, no features.
+hound = "=3.5.1"
 # Webview shell runtime — the product's sole shell behind the AppWindow port.
 # Default macOS bundle only — no tray, updater, or CLI features.
 tauri = "2"

@@ -467,6 +467,7 @@ fn prove_patch_lifecycle_visibility() {
             source_graph_revision: correlation.source_graph_revision(),
             target_graph_revision: target_revision,
             candidate_config: BraidsCapability::new().unwrap().default_config().unwrap(),
+            prepared_visualization: None,
         })
         .unwrap();
     let (_, page, text, parameters, _) = StateProjector::new().project_with_tree(&state).unwrap();

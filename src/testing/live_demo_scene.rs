@@ -350,14 +350,7 @@ impl LiveExpectedTransition {
             emitted_effects.push(EmittedEvent::StateAccepted {
                 generation: generation_after,
             });
-            if !matches!(
-                &step.event,
-                AppEvent::SelectContext(_)
-                    | AppEvent::Navigate(_)
-                    | AppEvent::SetInteractionMode(_)
-                    | AppEvent::EnterSurface(_)
-                    | AppEvent::Return
-            ) {
+            if EventInput::from(&step.event).publishes_parameters_on_acceptance() {
                 emitted_effects.push(EmittedEvent::ParameterSnapshotPublished {
                     generation: generation_after,
                     graph_revision,
@@ -624,6 +617,9 @@ pub struct LiveDemoScene {
     /// canonical projection into a `PatchEditorMeasurement` while this scene
     /// runs, and the host emits the resulting observation after teardown.
     measures_patch_editor: bool,
+    /// Present only for the Phase 7 cumulative scene. The runner observes the
+    /// exact Sample Patch/route without naming its capability implementation.
+    detail_assets_subject: Option<(PatchId, MixerTrackId, String)>,
 }
 
 impl LiveDemoScene {
@@ -636,23 +632,27 @@ impl LiveDemoScene {
         if state.patches.is_empty() {
             return Err(LiveDemoSceneError::NoInstalledPatches);
         }
-        let soundfont =
-            CapabilityId::new(crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID)
-                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-        let braids = CapabilityId::new(crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID)
-            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-        if state.patches[0].instrument.capability_id() != &soundfont
-            || state.capabilities.descriptor(&braids).is_none()
-        {
+        let source_capability = state.patches[0].instrument.capability_id().clone();
+        let alternate_capability = state
+            .capabilities
+            .descriptors()
+            .iter()
+            .find(|descriptor| descriptor.id() != &source_capability)
+            .map(|descriptor| descriptor.id().clone())
+            .ok_or(LiveDemoSceneError::EngineFixtureUnavailable)?;
+        if state.capabilities.descriptor(&source_capability).is_none() {
             return Err(LiveDemoSceneError::EngineFixtureUnavailable);
         }
-        let expected_chorus = crate::adapter::chorus_capability::CHORUS_CAPABILITY_ID;
-        let expected_slot = crate::adapter::chorus_capability::CHORUS_EFFECT_SLOT_ID;
+        let expected_effect = state
+            .effects
+            .descriptors()
+            .first()
+            .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
         if state.effects.descriptors().len() != 3
-            || state.effects.descriptors()[0].id().as_str() != expected_chorus
             || state.patches[0].post_effects.len() != 1
-            || state.patches[0].post_effects[0].capability_id().as_str() != expected_chorus
-            || state.patches[0].post_effects[0].slot_id().value() != expected_slot
+            || state.patches[0].post_effects[0].capability_id() != expected_effect.id()
+            || state.patches[0].post_effects[0].slot_id()
+                != crate::synth::effect_slot_id::EffectSlotIndex::ALL[0].instance_identity()
             || state
                 .patches
                 .iter()
@@ -755,17 +755,18 @@ impl LiveDemoScene {
                 .map(|descriptor| LiveEditableParameter::global(descriptor.parameter())),
         );
 
-        let preset_parameter = ParameterId::new(
-            crate::adapter::hidef_soundfont_capability::SOUNDFONT_PRESET_PARAMETER_ID,
-        )
-        .map_err(|_| LiveDemoSceneError::PresetFixtureUnavailable)?;
-        let soundfont_descriptor = state
+        let source_descriptor = state
             .capabilities
-            .descriptor(&soundfont)
+            .descriptor(&source_capability)
             .ok_or(LiveDemoSceneError::PresetFixtureUnavailable)?;
-        let preset_spec = soundfont_descriptor
-            .parameter(&preset_parameter)
+        let preset_spec = source_descriptor
+            .parameters()
+            .find(|parameter| {
+                parameter.patch_interaction() == PatchInteraction::StructuralChoice
+                    && parameter.choices().len() > 1
+            })
             .ok_or(LiveDemoSceneError::PresetFixtureUnavailable)?;
+        let preset_parameter = preset_spec.id().clone();
         let source_preset_id = match state.patches[0].instrument.value(&preset_parameter) {
             Some(ParameterValue::Choice(choice_id)) => choice_id,
             _ => return Err(LiveDemoSceneError::PresetFixtureUnavailable),
@@ -809,7 +810,7 @@ impl LiveDemoScene {
                 "SoundFontPresetToNext",
                 first.patch_id,
                 first.channel,
-                soundfont.clone(),
+                source_capability.clone(),
                 preset_parameter,
                 source_preset.id(),
                 source_preset.label(),
@@ -821,16 +822,16 @@ impl LiveDemoScene {
                 first.patch_id,
                 first.channel,
                 Direction::Right,
-                soundfont.clone(),
-                braids.clone(),
+                source_capability.clone(),
+                alternate_capability.clone(),
             ),
             LiveEngineTransition::capability(
                 "BraidsToDescriptorDefaultSoundFont",
                 first.patch_id,
                 first.channel,
                 Direction::Left,
-                braids,
-                soundfont,
+                alternate_capability,
+                source_capability,
             ),
         ];
         // C-004 (mission webview-shell-cutover): the frozen engine
@@ -885,6 +886,7 @@ impl LiveDemoScene {
             expected_topology_transitions: Vec::new(),
             patches,
             measures_patch_editor: false,
+            detail_assets_subject: None,
         })
     }
 
@@ -897,6 +899,192 @@ impl LiveDemoScene {
     pub fn mixer_from_installed_state(tree: &StateTree) -> Result<Self, LiveDemoSceneError> {
         let mut scene = Self::from_installed_state(tree)?;
         scene.name = "live-mixer".to_owned();
+        Ok(scene)
+    }
+
+    /// Extends the cumulative scene with the controller-native Sample journey.
+    ///
+    /// The Sample Patch is discovered from its canonical asset kind, never a
+    /// capability name. The added events stay on the normal reducer path and
+    /// leave asynchronous preparation to the threaded production worker.
+    pub fn detail_and_assets_from_installed_state(
+        tree: &StateTree,
+        defeat_preview: bool,
+    ) -> Result<Self, LiveDemoSceneError> {
+        let decoded = decode_state_tree(tree)?;
+        let sample_index = decoded
+            .patches
+            .iter()
+            .position(|patch| {
+                patch
+                    .instrument
+                    .asset_references()
+                    .iter()
+                    .any(|assignment| {
+                        assignment.reference().kind() == crate::synth::AssetKind::Sample
+                    })
+            })
+            .ok_or(LiveDemoSceneError::SampleFixtureUnavailable)?;
+        let initial_asset = decoded.patches[sample_index]
+            .instrument
+            .asset_references()
+            .iter()
+            .find(|assignment| assignment.reference().kind() == crate::synth::AssetKind::Sample)
+            .map(|assignment| assignment.reference().locator().to_owned())
+            .ok_or(LiveDemoSceneError::SampleFixtureUnavailable)?;
+        let mut scene = Self::from_installed_state(tree)?;
+        let probe = scene
+            .patches
+            .first()
+            .copied()
+            .ok_or(LiveDemoSceneError::NoInstalledPatches)?;
+        let cleanup_at = scene
+            .steps
+            .iter()
+            .position(LiveDemoStep::is_cleanup)
+            .unwrap_or(scene.steps.len());
+        let mut journey = vec![LiveDemoStep::accepted_event(AppEvent::SelectContext(
+            TopLevelContext::Patch,
+        ))];
+        let detail_patch = decoded
+            .patches
+            .first()
+            .ok_or(LiveDemoSceneError::NoInstalledPatches)?;
+        let detail_descriptor = decoded
+            .capabilities
+            .descriptor(detail_patch.instrument.capability_id())
+            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let mut detail_slots = detail_patch
+            .post_effects
+            .iter()
+            .cloned()
+            .map(Some)
+            .collect::<Vec<_>>();
+        detail_slots.resize(crate::synth::effect_slot_id::MAX_EFFECT_SLOTS, None);
+        let detail_controls = PatchControlId::resolve(
+            detail_descriptor,
+            &detail_patch.instrument,
+            &decoded.effects,
+            &detail_slots,
+        );
+        let descriptor_choice = detail_descriptor
+            .parameters()
+            .find(|parameter| {
+                parameter.patch_interaction() == PatchInteraction::StructuralChoice
+                    && !parameter.choices().is_empty()
+            })
+            .map(|parameter| PatchControlId::Capability(parameter.id().clone()))
+            .ok_or(LiveDemoSceneError::PresetFixtureUnavailable)?;
+        let occupied_slot = detail_slots
+            .iter()
+            .position(Option::is_some)
+            .and_then(|index| crate::synth::effect_slot_id::EffectSlotIndex::new(index).ok())
+            .map(PatchControlId::EffectSlot)
+            .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
+
+        // The shared Phase 7 surfaces are exercised before the Sample-specific
+        // tail. Each generic choice source is opened twice: Return proves an
+        // unchanged cancellation and Activate confirms the already-current
+        // stable identity. Choosing the current entry deliberately avoids an
+        // undeclared fourth structural lifecycle while still traversing the
+        // production modal confirmation path.
+        journey.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+            SurfaceId::PatchDetail,
+        )));
+        journey.push(LiveDemoStep::accepted_event(AppEvent::Return));
+        push_live_choice_cancel_and_current_commit(&mut journey);
+        push_patch_navigation_between(
+            &mut journey,
+            &detail_controls,
+            &PatchControlId::Engine,
+            &descriptor_choice,
+        )?;
+        push_live_choice_cancel_and_current_commit(&mut journey);
+        push_patch_navigation_between(
+            &mut journey,
+            &detail_controls,
+            &descriptor_choice,
+            &occupied_slot,
+        )?;
+        journey.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+            SurfaceId::PatchDetail,
+        )));
+        journey.push(LiveDemoStep::accepted_event(AppEvent::Return));
+        push_live_choice_cancel_and_current_commit(&mut journey);
+        journey.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+            SurfaceId::PatchUtility,
+        )));
+        journey.extend(
+            (0..2).map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down))),
+        );
+        push_live_choice_cancel_and_current_commit(&mut journey);
+        journey.push(LiveDemoStep::accepted_event(AppEvent::Return));
+        push_patch_navigation_between(
+            &mut journey,
+            &detail_controls,
+            &occupied_slot,
+            &PatchControlId::Engine,
+        )?;
+
+        journey.extend(
+            (0..sample_index)
+                .map(|_| LiveDemoStep::accepted_event(AppEvent::SelectPatch(Direction::Right))),
+        );
+        journey.extend([
+            LiveDemoStep::accepted_event(AppEvent::EnterSurface(SurfaceId::PatchDetail)),
+            LiveDemoStep::accepted_event(AppEvent::OpenRelated),
+            // Root listing: A active fixture, B alternate fixture, Z invalid
+            // fixture, then CANCEL. Move to the alternate without indices in
+            // domain state; these are bounded semantic Down actions.
+            LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
+        ]);
+        if !defeat_preview {
+            journey.push(LiveDemoStep::accepted_event(AppEvent::PreviewStart));
+        }
+        push_phase7_worker_dwell(&mut journey, scene.patches[sample_index], 12);
+        if !defeat_preview {
+            journey.push(LiveDemoStep::accepted_event(AppEvent::PreviewStop));
+        }
+        journey.extend([
+            LiveDemoStep::accepted_event(AppEvent::Return),
+            // Re-enter and select the production-adapter invalid WAV.
+            LiveDemoStep::accepted_event(AppEvent::OpenRelated),
+            LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
+            LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
+            LiveDemoStep::accepted_event(AppEvent::Activate),
+        ]);
+        push_phase7_worker_dwell(&mut journey, probe, 12);
+        journey.extend([
+            // Recover by assigning the valid alternate asset.
+            LiveDemoStep::accepted_event(AppEvent::OpenRelated),
+            LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
+            LiveDemoStep::accepted_event(AppEvent::Activate),
+        ]);
+        // Once the compatible B graph is published, keep driving semantic
+        // note pairs on the Sample Patch itself. Early pairs may land while
+        // preparation advances; later pairs audibly prove the committed
+        // asset on its Patch-local route.
+        push_phase7_worker_dwell(&mut journey, scene.patches[sample_index], 16);
+        journey.extend([
+            // Exercise one live Sample detail scalar through the same mode
+            // and reducer path as every other descriptor-owned control.
+            LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
+            LiveDemoStep::accepted_event(AppEvent::SetInteractionMode(InteractionMode::Adjust)),
+            LiveDemoStep::accepted_event(AppEvent::Adjust(Direction::Right)),
+            LiveDemoStep::accepted_event(AppEvent::SetInteractionMode(InteractionMode::Navigate)),
+            // Finish on the remembered Mixer root so the final cumulative
+            // report can re-verify all sixteen stable track/control identities
+            // after the Patch-detail tail, not merely rely on an earlier frame.
+            LiveDemoStep::accepted_event(AppEvent::SelectContext(TopLevelContext::Mixer)),
+        ]);
+        scene.steps.splice(cleanup_at..cleanup_at, journey);
+        scene.name = "detail-and-assets-live-demo".to_owned();
+        scene.total_timeout = Duration::from_secs(180);
+        scene.detail_assets_subject = Some((
+            scene.patches[sample_index].patch_id,
+            scene.patches[sample_index].output.track_id(),
+            initial_asset,
+        ));
         Ok(scene)
     }
 
@@ -939,6 +1127,12 @@ impl LiveDemoScene {
     /// while this scene runs.
     pub const fn measures_patch_editor(&self) -> bool {
         self.measures_patch_editor
+    }
+
+    pub fn detail_assets_subject(&self) -> Option<(PatchId, MixerTrackId, &str)> {
+        self.detail_assets_subject
+            .as_ref()
+            .map(|(patch, track, asset)| (*patch, *track, asset.as_str()))
     }
 
     pub fn name(&self) -> &str {
@@ -1114,6 +1308,10 @@ impl LiveEngineTransition {
         match &self.intent {
             StructuralEditIntent::ReplaceCapability { .. } => PatchControlId::Engine,
             StructuralEditIntent::ReplaceParameterChoice { parameter_id, .. } => {
+                PatchControlId::Capability(parameter_id.clone())
+            }
+            StructuralEditIntent::ReplaceAsset { parameter_id, .. }
+            | StructuralEditIntent::PrepareAudition { parameter_id, .. } => {
                 PatchControlId::Capability(parameter_id.clone())
             }
             StructuralEditIntent::SetSlotOccupancy { .. }
@@ -1758,6 +1956,61 @@ fn push_probed_checkpoint(
     }
 }
 
+/// Gives the threaded structural worker bounded real callback time while the
+/// scene continues to prove real MIDI on a separate Patch. Each event still
+/// waits for a painted projection in the semantic tail, so this is observable
+/// progress rather than a wall-clock sleep or a direct lifecycle injection.
+fn push_phase7_worker_dwell(steps: &mut Vec<LiveDemoStep>, patch: LivePatch, note_pairs: usize) {
+    for index in 0..note_pairs {
+        let note = 48_u8.saturating_add((index % 24) as u8);
+        steps.extend([
+            LiveDemoStep::accepted_event(AppEvent::Midi {
+                patch_id: patch.patch_id,
+                message: MidiMessage::try_new(patch.channel, MidiMessageKind::NoteOn, note, 104)
+                    .expect("the bounded Phase 7 MIDI probe is valid"),
+            }),
+            LiveDemoStep::accepted_event(AppEvent::Midi {
+                patch_id: patch.patch_id,
+                message: MidiMessage::try_new(patch.channel, MidiMessageKind::NoteOff, note, 0)
+                    .expect("the bounded Phase 7 MIDI release is valid"),
+            }),
+        ]);
+    }
+}
+
+fn push_live_choice_cancel_and_current_commit(steps: &mut Vec<LiveDemoStep>) {
+    for exit in [AppEvent::Return, AppEvent::Activate] {
+        steps.extend([
+            LiveDemoStep::accepted_event(AppEvent::SetInteractionMode(InteractionMode::Adjust)),
+            LiveDemoStep::accepted_event(AppEvent::Adjust(Direction::Up)),
+            LiveDemoStep::accepted_event(exit),
+        ]);
+    }
+}
+
+fn push_patch_navigation_between(
+    steps: &mut Vec<LiveDemoStep>,
+    controls: &[PatchControlId],
+    source: &PatchControlId,
+    target: &PatchControlId,
+) -> Result<(), LiveDemoSceneError> {
+    let source = controls
+        .iter()
+        .position(|control| control == source)
+        .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
+    let target = controls
+        .iter()
+        .position(|control| control == target)
+        .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
+    let (direction, count) = if source <= target {
+        (Direction::Down, target - source)
+    } else {
+        (Direction::Up, source - target)
+    };
+    steps.extend((0..count).map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(direction))));
+    Ok(())
+}
+
 fn push_shared_probed_checkpoint(
     steps: &mut Vec<LiveDemoStep>,
     probe_patch: LivePatch,
@@ -2390,6 +2643,7 @@ pub enum LiveDemoSceneError {
     InvalidEffectConfig,
     EngineFixtureUnavailable,
     PresetFixtureUnavailable,
+    SampleFixtureUnavailable,
     InvalidPlannedAdjustment,
     SelectedParameterMismatch,
     ExpectedValueMismatch { expected: f32, actual: f32 },
@@ -2425,10 +2679,13 @@ impl fmt::Display for LiveDemoSceneError {
                 formatter.write_str("installed state contains an invalid Patch effect schema/config")
             }
             Self::EngineFixtureUnavailable => formatter.write_str(
-                "live engine proof requires the focused first Patch on SoundFont and installed Braids",
+                "live engine proof requires the focused first Patch and an adjacent installed capability",
             ),
             Self::PresetFixtureUnavailable => formatter.write_str(
-                "live preset proof requires an authored SoundFont preset with an adjacent choice",
+                "live preset proof requires a descriptor structural choice with an adjacent option",
+            ),
+            Self::SampleFixtureUnavailable => formatter.write_str(
+                "Phase 7 live proof requires one installed Patch with a Sample asset reference",
             ),
             Self::InvalidPlannedAdjustment => {
                 formatter.write_str("descriptor-derived adjustment would not change its parameter")

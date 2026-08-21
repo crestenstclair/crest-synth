@@ -42,6 +42,26 @@ pub struct PreparedEngineRack {
 }
 
 impl PreparedEngineRack {
+    pub(crate) fn prepared_asset_footprints(
+        &self,
+    ) -> impl Iterator<Item = &crate::synth::PreparedAssetFootprint> {
+        self.slots[..self.patch_count]
+            .iter()
+            .filter_map(Option::as_ref)
+            .filter_map(|slot| slot.instrument.prepared_asset_footprint())
+    }
+
+    pub(crate) fn prepared_sample_visualization(
+        &self,
+        patch_id: PatchId,
+    ) -> Option<&crate::synth::PreparedSampleVisualization> {
+        self.slots[..self.patch_count]
+            .iter()
+            .filter_map(Option::as_ref)
+            .find(|slot| slot.patch_id == patch_id)
+            .and_then(|slot| slot.instrument.prepared_sample_visualization())
+    }
+
     pub(crate) fn from_slots(
         patch_count: usize,
         slots: [Option<PreparedEngineSlot>; MAX_PATCHES],

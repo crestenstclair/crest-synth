@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-mixer demo-live-effects-and-buses demo-live-patch-editor demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell demo-live-component-library semantic-graphical-view-model-acceptance webview-tokens clean
+.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-detail-and-assets demo-live-mixer demo-live-effects-and-buses demo-live-patch-editor demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell demo-live-component-library semantic-graphical-view-model-acceptance webview-tokens clean
 
 help: ## Show the available project commands
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -47,7 +47,13 @@ demo: ## Run the exhaustive GUI demo and structured trace
 # only shell — the interactive and headless targets compose the same
 # TauriWebviewWindow directly and no renderer flag exists. Target names are
 # frozen by the ROADMAP retention contract.
-demo-live: demo-live-effects-and-buses ## Run the newest optimized graphical live demo
+demo-live: demo-live-detail-and-assets ## Run the newest optimized graphical live demo
+
+demo-live-detail-and-assets: ## Run the cumulative Phase 7 detail, choice, browser, preview, and Sample assignment demo
+	cargo run --release --bin crest-synth -- --demo-live-detail-and-assets
+
+# Controlled negative (must exit non-zero on preview reach/audio predicates):
+#   cargo run --release --bin crest-synth -- --demo-live-detail-and-assets --defeat-detail-and-assets-preview
 
 demo-live-mixer: ## Run the dedicated sixteen-track Mixer demo with a real window, MIDI probes, and physical audio
 	cargo run --release --bin crest-synth -- --demo-live-mixer
@@ -56,7 +62,7 @@ demo-live-effects-and-buses: ## Run the cumulative effects-and-buses demo with a
 	cargo run --release --bin crest-synth -- --demo-live-effects-and-buses
 
 # Additive: the demo-live alias above keeps pointing at the cumulative
-# effects-and-buses scene, and this scene does not subsume it. Its subject is
+# detail-and-assets scene, and this scene does not subsume it. Its subject is
 # the SECOND installed Patch, reached through the on-screen SelectPatch
 # gesture. Its declared controlled negative removes that gesture:
 #   cargo run --release --bin crest-synth -- --demo-live-patch-editor --defeat-patch-selection

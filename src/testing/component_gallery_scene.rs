@@ -1902,6 +1902,10 @@ const fn kind_name(kind: SemanticControlKind) -> &'static str {
         SemanticControlKind::Asset => "Asset",
         SemanticControlKind::Identity => "Identity",
         SemanticControlKind::Surface => "Surface",
+        SemanticControlKind::BrowserParent => "BrowserParent",
+        SemanticControlKind::BrowserFolder => "BrowserFolder",
+        SemanticControlKind::BrowserFile => "BrowserFile",
+        SemanticControlKind::BrowserCancel => "BrowserCancel",
     }
 }
 

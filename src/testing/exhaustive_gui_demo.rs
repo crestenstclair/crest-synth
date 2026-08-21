@@ -348,6 +348,14 @@ where
                             run.observed
                                 .insert("effect.emitted.audioCommand.allNotesOff".to_owned());
                         }
+                        AudioCommand::PreviewStart { .. } => {
+                            run.observed
+                                .insert("effect.emitted.audioCommand.previewStart".to_owned());
+                        }
+                        AudioCommand::PreviewStop { .. } => {
+                            run.observed
+                                .insert("effect.emitted.audioCommand.previewStop".to_owned());
+                        }
                     }
                 }
                 DemoSceneStep::Tick(elapsed) => {
@@ -1567,6 +1575,18 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
                     mode.label().to_ascii_lowercase()
                 ));
             }
+            EventInput::OpenRelated => {
+                observed.insert("event.openRelated".to_owned());
+            }
+            EventInput::Activate => {
+                observed.insert("event.activate".to_owned());
+            }
+            EventInput::PreviewStart => {
+                observed.insert("event.previewStart".to_owned());
+            }
+            EventInput::PreviewStop => {
+                observed.insert("event.previewStop".to_owned());
+            }
             EventInput::EnterSurface { surface } => {
                 observed.insert("event.enterSurface".to_owned());
                 observed.insert(format!("surface.{}", surface.label().to_ascii_lowercase()));
@@ -1584,6 +1604,8 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
             EventInput::EnginePrepared { .. } => {
                 observed.insert("event.enginePrepared".to_owned());
             }
+            EventInput::SampleAssetLifecycleAdvanced { .. } => {}
+            EventInput::SampleCatalogRefreshed { .. } => {}
             EventInput::EnginePreparationFailed { .. } => {
                 observed.insert("event.enginePreparationFailed".to_owned());
             }
@@ -1622,6 +1644,12 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
                     }
                     AudioEffect::AllNotesOff => {
                         observed.insert("effect.emitted.audioCommand.allNotesOff".to_owned());
+                    }
+                    AudioEffect::PreviewStart { .. } => {
+                        observed.insert("effect.emitted.audioCommand.previewStart".to_owned());
+                    }
+                    AudioEffect::PreviewStop { .. } => {
+                        observed.insert("effect.emitted.audioCommand.previewStop".to_owned());
                     }
                 },
                 EmittedEvent::EngineSelection { effect } => {
@@ -2171,6 +2199,9 @@ const fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyDown, WindowKey::A) => "keyDown.a",
         (WindowInputKind::KeyDown, WindowKey::D) => "keyDown.d",
         (WindowInputKind::KeyDown, WindowKey::K) => "keyDown.k",
+        (WindowInputKind::KeyDown, WindowKey::Shift) => "keyDown.shift",
+        (WindowInputKind::KeyDown, WindowKey::Return) => "keyDown.return",
+        (WindowInputKind::KeyDown, WindowKey::Space) => "keyDown.space",
         (WindowInputKind::KeyDown, WindowKey::Other) => "keyDown.other",
         (WindowInputKind::KeyUp, WindowKey::Digit1) => "keyUp.digit1",
         (WindowInputKind::KeyUp, WindowKey::Digit2) => "keyUp.digit2",
@@ -2191,6 +2222,9 @@ const fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyUp, WindowKey::A) => "keyUp.a",
         (WindowInputKind::KeyUp, WindowKey::D) => "keyUp.d",
         (WindowInputKind::KeyUp, WindowKey::K) => "keyUp.k",
+        (WindowInputKind::KeyUp, WindowKey::Shift) => "keyUp.shift",
+        (WindowInputKind::KeyUp, WindowKey::Return) => "keyUp.return",
+        (WindowInputKind::KeyUp, WindowKey::Space) => "keyUp.space",
         (WindowInputKind::KeyUp, WindowKey::Other) => "keyUp.other",
         (WindowInputKind::FocusLost, _) => "focusLost",
     }

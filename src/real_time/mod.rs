@@ -35,12 +35,16 @@ pub use prepared_bus_return_rack::PreparedBusReturnRack;
 pub mod prepared_engine_rack;
 pub use prepared_engine_rack::{PreparedEngineRack, RackDispatchError, RackRenderError};
 pub mod prepared_graph;
-pub use prepared_graph::{GraphReplacementScope, PreparedGraph, PreparedGraphRefreshError};
+pub use prepared_graph::{
+    GraphReplacementScope, PreparedGraph, PreparedGraphRefreshError, PreviewAudioObservation,
+};
 pub mod prepared_post_effect_rack;
 pub(crate) use prepared_post_effect_rack::PreparedPostEffectSlot;
 pub use prepared_post_effect_rack::{EffectRackProcessError, PreparedPostEffectRack};
 pub mod prepared_graph_builder;
-pub use prepared_graph_builder::{GraphPreparationError, PreparedGraphBuilder};
+pub use prepared_graph_builder::{
+    AuditionPreparationRequest, GraphPreparationError, PreparedGraphBuilder,
+};
 pub mod structural_graph_boundary;
 pub use structural_graph_boundary::{
     AudioStructuralGraphBoundary, ControlStructuralGraphBoundary, NoStructuralGraphChanges,

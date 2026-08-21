@@ -102,7 +102,8 @@ fn focused_patch_control(state: &AppState) -> PatchControlId {
 
 /// The PATCH focus order contributes one occupancy row per slot
 /// whether occupied or empty, bare Up/Down never wraps, and PATCH and MIXER
-/// remain the only top-level contexts with the four fixed surfaces.
+/// remain the only top-level contexts with the fixed persistent and
+/// subordinate surfaces.
 #[test]
 fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
     let mut state = installed_state();
@@ -149,20 +150,31 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
     );
     assert_eq!(state, bottom);
 
-    // C-003: two top-level contexts, five fixed surfaces — four persistent
-    // plus the one subordinate PATCH detail surface — and no modal focus.
+    // C-003: two top-level contexts and the closed seven-surface vocabulary —
+    // four persistent surfaces plus PATCH detail, choice, and Sample Browser.
     assert_eq!(
         TopLevelContext::surface_descriptor(),
         &[TopLevelContext::Patch, TopLevelContext::Mixer]
     );
-    assert_eq!(SurfaceId::surface_descriptor().len(), 5);
+    assert_eq!(
+        SurfaceId::surface_descriptor(),
+        &[
+            SurfaceId::PatchMain,
+            SurfaceId::PatchUtility,
+            SurfaceId::PatchDetail,
+            SurfaceId::PatchChoice,
+            SurfaceId::SampleBrowser,
+            SurfaceId::MixerMain,
+            SurfaceId::MixerInspector,
+        ]
+    );
     assert_eq!(
         SurfaceId::ALL
             .iter()
             .filter(|surface| surface.is_subordinate())
             .count(),
-        1,
-        "exactly one subordinate surface exists"
+        3,
+        "exactly the three declared PATCH subordinate surfaces exist"
     );
     assert!(state.interaction().focus_path().modal_id().is_none());
     assert_eq!(
@@ -173,8 +185,9 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
 
 /// Occupancy rows use the engine row's adjacent nonwrapping choice
 /// contract — empty, then each installed registry entry in declared order —
-/// and Edit+Up/Down is unavailable. No modal, picker, or new key exists
-/// (C-008): the whole cycle happens through Adjust(Left/Right) in place.
+/// while Adjust+Up opens the shared descriptor-driven choice modal and
+/// Adjust+Down remains unavailable. The adjacent cycle itself stays on
+/// Adjust(Left/Right) in place.
 #[test]
 fn slot_occupancy_cycles_adjacent_choices_without_wrapping() {
     let mut state = installed_state();
@@ -191,12 +204,15 @@ fn slot_occupancy_cycles_adjacent_choices_without_wrapping() {
     }
     set_mode(&mut state, InteractionMode::Adjust);
 
-    // Vertical edit is unavailable on an occupancy row, exactly as on Engine.
+    // Up opens the shared Phase 7 choice modal and Return restores the exact
+    // occupancy origin; Down has no structural meaning.
+    let origin = state.interaction().focus_path().clone();
+    state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchChoice);
+    state.apply_semantic_action(SemanticAction::Return).unwrap();
+    assert_eq!(state.interaction().focus_path(), &origin);
+    set_mode(&mut state, InteractionMode::Adjust);
     let before = state.clone();
-    assert_eq!(
-        state.apply(AppEvent::Adjust(Direction::Up)),
-        Err(EventRejection::ActionUnavailableInContext)
-    );
     assert_eq!(
         state.apply(AppEvent::Adjust(Direction::Down)),
         Err(EventRejection::ActionUnavailableInContext)

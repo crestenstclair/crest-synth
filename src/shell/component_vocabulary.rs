@@ -217,10 +217,14 @@ pub const ALL_SEMANTIC_CONTROL_KINDS: [SemanticControlKind; SEMANTIC_CONTROL_KIN
     SemanticControlKind::Asset,
     SemanticControlKind::Identity,
     SemanticControlKind::Surface,
+    SemanticControlKind::BrowserParent,
+    SemanticControlKind::BrowserFolder,
+    SemanticControlKind::BrowserFile,
+    SemanticControlKind::BrowserCancel,
 ];
 
 /// How many semantic control kinds selection covers.
-pub const SEMANTIC_CONTROL_KIND_COUNT: usize = 7;
+pub const SEMANTIC_CONTROL_KIND_COUNT: usize = 11;
 
 /// What one `(SemanticControlKind, PresentationRole)` pair resolves to.
 ///
@@ -309,6 +313,19 @@ pub const fn control_for(kind: SemanticControlKind, role: PresentationRole) -> C
         (Kind::Surface, Role::ListedRow | Role::PanelEntry) => Asks(Control::ParameterRow),
         (Kind::Surface, Role::VerticalStrip) => NotAskableInRole,
         (Kind::Surface, Role::ModalEntry) => Asks(Control::ModalOption),
+
+        // Browser navigation rows exist only inside the focus-trapped Sample
+        // Browser. They deliberately reuse ModalOption: the semantic kind
+        // carries parent/folder/file/cancel meaning while the shared control
+        // paints the selectable row and its explicit marker.
+        (
+            Kind::BrowserParent | Kind::BrowserFolder | Kind::BrowserFile | Kind::BrowserCancel,
+            Role::ModalEntry,
+        ) => Asks(Control::ModalOption),
+        (
+            Kind::BrowserParent | Kind::BrowserFolder | Kind::BrowserFile | Kind::BrowserCancel,
+            Role::ListedRow | Role::VerticalStrip | Role::PanelEntry,
+        ) => NotAskableInRole,
     }
 }
 
@@ -747,12 +764,60 @@ mod tests {
     /// All three are mixer track columns. A column carries a level, a pan, and
     /// the two track toggles (`DESIGN.md:462-465`); it never carries a choice,
     /// an asset, or a surface summary.
-    const NOT_ASKABLE_PAIRS: [(SemanticControlKind, PresentationRole); 3] = [
+    const NOT_ASKABLE_PAIRS: [(SemanticControlKind, PresentationRole); 15] = [
         (SemanticControlKind::Choice, PresentationRole::VerticalStrip),
         (SemanticControlKind::Asset, PresentationRole::VerticalStrip),
         (
             SemanticControlKind::Surface,
             PresentationRole::VerticalStrip,
+        ),
+        (
+            SemanticControlKind::BrowserParent,
+            PresentationRole::ListedRow,
+        ),
+        (
+            SemanticControlKind::BrowserParent,
+            PresentationRole::VerticalStrip,
+        ),
+        (
+            SemanticControlKind::BrowserParent,
+            PresentationRole::PanelEntry,
+        ),
+        (
+            SemanticControlKind::BrowserFolder,
+            PresentationRole::ListedRow,
+        ),
+        (
+            SemanticControlKind::BrowserFolder,
+            PresentationRole::VerticalStrip,
+        ),
+        (
+            SemanticControlKind::BrowserFolder,
+            PresentationRole::PanelEntry,
+        ),
+        (
+            SemanticControlKind::BrowserFile,
+            PresentationRole::ListedRow,
+        ),
+        (
+            SemanticControlKind::BrowserFile,
+            PresentationRole::VerticalStrip,
+        ),
+        (
+            SemanticControlKind::BrowserFile,
+            PresentationRole::PanelEntry,
+        ),
+        (
+            SemanticControlKind::BrowserCancel,
+            PresentationRole::ListedRow,
+        ),
+        (
+            SemanticControlKind::BrowserCancel,
+            PresentationRole::VerticalStrip,
+        ),
+        (
+            SemanticControlKind::BrowserCancel,
+            PresentationRole::PanelEntry,
         ),
     ];
 
@@ -783,6 +848,10 @@ mod tests {
             SemanticControlKind::Asset => "Asset",
             SemanticControlKind::Identity => "Identity",
             SemanticControlKind::Surface => "Surface",
+            SemanticControlKind::BrowserParent => "BrowserParent",
+            SemanticControlKind::BrowserFolder => "BrowserFolder",
+            SemanticControlKind::BrowserFile => "BrowserFile",
+            SemanticControlKind::BrowserCancel => "BrowserCancel",
         }
     }
 
@@ -849,7 +918,7 @@ mod tests {
     /// count until [`ALL_SEMANTIC_CONTROL_KINDS`] is updated too.
     #[test]
     fn iteration_yields_every_declared_control_kind() {
-        assert_eq!(SEMANTIC_CONTROL_KIND_COUNT, 7);
+        assert_eq!(SEMANTIC_CONTROL_KIND_COUNT, 11);
         assert_eq!(
             ALL_SEMANTIC_CONTROL_KINDS.len(),
             SEMANTIC_CONTROL_KIND_COUNT

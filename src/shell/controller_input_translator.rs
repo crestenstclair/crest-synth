@@ -1,0 +1,186 @@
+use crate::control::{Direction, SemanticAction};
+
+/// A normalized controller gesture at the platform-adapter boundary.
+///
+/// Chord detection belongs to the physical controller adapter (for example,
+/// `gilrs`). The domain therefore sees neither button codes nor a particular
+/// device layout: it sees the same directional, Edit, Shift, and Start
+/// vocabulary the keyboard adapter already normalizes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControllerGesture {
+    Direction(Direction),
+    EditDirection(Direction),
+    ShiftDirection(Direction),
+    Edit,
+    Select,
+    Start,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControllerInputKind {
+    Pressed,
+    Released,
+    Disconnected,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControllerInput {
+    gesture: ControllerGesture,
+    kind: ControllerInputKind,
+}
+
+impl ControllerInput {
+    pub const fn pressed(gesture: ControllerGesture) -> Self {
+        Self {
+            gesture,
+            kind: ControllerInputKind::Pressed,
+        }
+    }
+
+    pub const fn released(gesture: ControllerGesture) -> Self {
+        Self {
+            gesture,
+            kind: ControllerInputKind::Released,
+        }
+    }
+
+    pub const fn disconnected() -> Self {
+        Self {
+            gesture: ControllerGesture::Start,
+            kind: ControllerInputKind::Disconnected,
+        }
+    }
+
+    pub const fn gesture(self) -> ControllerGesture {
+        self.gesture
+    }
+
+    pub const fn kind(self) -> ControllerInputKind {
+        self.kind
+    }
+}
+
+/// Converts normalized controller edges to the closed semantic vocabulary.
+///
+/// Only the Start hold edge needs transient adapter state. Canonical focus,
+/// mode, parameters, and preview state remain reducer-owned.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ControllerInputTranslator {
+    start_held: bool,
+}
+
+impl ControllerInputTranslator {
+    pub const fn new() -> Self {
+        Self { start_held: false }
+    }
+
+    pub fn translate(&mut self, input: ControllerInput) -> Option<SemanticAction> {
+        match input.kind() {
+            ControllerInputKind::Disconnected => self.start_held.then(|| {
+                self.start_held = false;
+                SemanticAction::PreviewStop
+            }),
+            ControllerInputKind::Released => {
+                if input.gesture() == ControllerGesture::Start && self.start_held {
+                    self.start_held = false;
+                    Some(SemanticAction::PreviewStop)
+                } else {
+                    None
+                }
+            }
+            ControllerInputKind::Pressed => match input.gesture() {
+                ControllerGesture::Direction(direction) => {
+                    Some(SemanticAction::Navigate(direction))
+                }
+                ControllerGesture::EditDirection(direction) => {
+                    Some(SemanticAction::Adjust(direction))
+                }
+                ControllerGesture::ShiftDirection(Direction::Up) => {
+                    Some(SemanticAction::OpenRelated)
+                }
+                ControllerGesture::ShiftDirection(Direction::Down) => Some(SemanticAction::Return),
+                ControllerGesture::ShiftDirection(Direction::Left) => {
+                    Some(SemanticAction::SelectPatch(Direction::Left))
+                }
+                ControllerGesture::ShiftDirection(Direction::Right) => {
+                    Some(SemanticAction::SelectPatch(Direction::Right))
+                }
+                ControllerGesture::Edit => Some(SemanticAction::Activate),
+                // Multi-select is reserved until its canonical action exists.
+                ControllerGesture::Select => None,
+                ControllerGesture::Start if self.start_held => None,
+                ControllerGesture::Start => {
+                    self.start_held = true;
+                    Some(SemanticAction::PreviewStart)
+                }
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controller_gestures_emit_the_same_semantic_vocabulary_as_keyboard_chords() {
+        let mut translator = ControllerInputTranslator::new();
+        for direction in Direction::ALL {
+            assert_eq!(
+                translator.translate(ControllerInput::pressed(ControllerGesture::Direction(
+                    direction
+                ))),
+                Some(SemanticAction::Navigate(direction))
+            );
+            assert_eq!(
+                translator.translate(ControllerInput::pressed(ControllerGesture::EditDirection(
+                    direction
+                ))),
+                Some(SemanticAction::Adjust(direction))
+            );
+        }
+        assert_eq!(
+            translator.translate(ControllerInput::pressed(ControllerGesture::ShiftDirection(
+                Direction::Up
+            ))),
+            Some(SemanticAction::OpenRelated)
+        );
+        assert_eq!(
+            translator.translate(ControllerInput::pressed(ControllerGesture::ShiftDirection(
+                Direction::Down
+            ))),
+            Some(SemanticAction::Return)
+        );
+        assert_eq!(
+            translator.translate(ControllerInput::pressed(ControllerGesture::Edit)),
+            Some(SemanticAction::Activate)
+        );
+    }
+
+    #[test]
+    fn start_is_one_press_and_one_release_even_with_repeat_or_disconnect() {
+        let mut translator = ControllerInputTranslator::new();
+        let start = ControllerInput::pressed(ControllerGesture::Start);
+        assert_eq!(
+            translator.translate(start),
+            Some(SemanticAction::PreviewStart)
+        );
+        assert_eq!(translator.translate(start), None);
+        assert_eq!(
+            translator.translate(ControllerInput::released(ControllerGesture::Start)),
+            Some(SemanticAction::PreviewStop)
+        );
+        assert_eq!(
+            translator.translate(ControllerInput::released(ControllerGesture::Start)),
+            None
+        );
+        assert_eq!(
+            translator.translate(start),
+            Some(SemanticAction::PreviewStart)
+        );
+        assert_eq!(
+            translator.translate(ControllerInput::disconnected()),
+            Some(SemanticAction::PreviewStop)
+        );
+    }
+}

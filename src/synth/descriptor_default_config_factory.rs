@@ -1,7 +1,8 @@
 use crate::synth::capability_id::CapabilityId;
 use crate::synth::instrument_capability::{
-    AssetAssignment, CapabilityError, CapabilityRegistry, InstrumentConfig, ParameterAssignment,
-    ParameterDefault, ParameterKind, ParameterUpdate, ParameterValue, PatchInteraction,
+    AssetAssignment, AssetReference, CapabilityError, CapabilityRegistry, InstrumentConfig,
+    ParameterAssignment, ParameterDefault, ParameterKind, ParameterUpdate, ParameterValue,
+    PatchInteraction,
 };
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::ParameterId;
@@ -117,6 +118,54 @@ impl DescriptorDefaultConfigFactory {
                 .any(|(candidate, original)| {
                     candidate.parameter_id() != original.parameter_id()
                         || (candidate.parameter_id() != parameter_id && candidate != original)
+                })
+        {
+            return Err(CapabilityError::ProviderRegistryMismatch(
+                source.capability_id().clone(),
+            ));
+        }
+        Ok(candidate)
+    }
+
+    /// Replaces exactly one descriptor-declared asset reference while keeping
+    /// every scalar assignment and other asset byte-for-byte canonical.
+    pub fn replace_asset(
+        &self,
+        source: &InstrumentConfig,
+        parameter_id: &ParameterId,
+        reference: AssetReference,
+    ) -> Result<InstrumentConfig, CapabilityError> {
+        self.registry.validate_config(source)?;
+        let descriptor = self
+            .registry
+            .descriptor(source.capability_id())
+            .ok_or_else(|| CapabilityError::UnknownCapability(source.capability_id().clone()))?;
+        let spec = descriptor
+            .parameter(parameter_id)
+            .filter(|spec| {
+                spec.kind() == ParameterKind::Asset && spec.update() == ParameterUpdate::Structural
+            })
+            .ok_or_else(|| CapabilityError::StructuralParameter(parameter_id.clone()))?;
+        debug_assert_eq!(spec.id(), parameter_id);
+        let mut assets = source.asset_references().to_vec();
+        let assignment = assets
+            .iter_mut()
+            .find(|assignment| assignment.parameter_id() == parameter_id)
+            .ok_or_else(|| CapabilityError::MissingAsset(parameter_id.clone()))?;
+        *assignment = AssetAssignment::new(parameter_id.clone(), reference);
+        let provider = self.provider_for(source.capability_id(), descriptor)?;
+        let candidate = provider.create_config(source.values(), &assets)?;
+        self.registry.validate_config(&candidate)?;
+        if candidate.capability_id() != source.capability_id()
+            || candidate.values() != source.values()
+            || candidate.asset_references().len() != source.asset_references().len()
+            || candidate
+                .asset_references()
+                .iter()
+                .zip(source.asset_references())
+                .any(|(next, prior)| {
+                    next.parameter_id() != prior.parameter_id()
+                        || (next.parameter_id() != parameter_id && next != prior)
                 })
         {
             return Err(CapabilityError::ProviderRegistryMismatch(

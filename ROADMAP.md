@@ -501,6 +501,54 @@ Assemble the sixteen-track Mixer from the same component library and interaction
 
 ## Phase 7 — Detail, choice, and asset workflows
 
+### Phase 6 completion note (2026-08-20) — physical live proof complete
+
+`make demo-live-mixer` completed successfully through the production window,
+semantic reducer, projection, physical audio device, and teardown paths. The
+retained report exercised all **64/64** track/control focus pairs across the
+sixteen stable track identities, **105/105** editable parameters, and all
+**3/3** engine transitions. Level, pan, mute, solo, and **32/32** indexed send
+edits were exact; Inspector, selected-track meters, shared-track summing,
+Patch-local trim/reroute isolation, mute/solo gates, post-gate sends, pre-gate
+meters, and invalid-route rejection all passed. Multi-select remains explicitly
+reported as not implemented.
+
+The scene painted **1,992** qualifying shell frames, correlated **114**
+checkpoints, processed **14,924** events with **0** dropped, rendered nonzero
+physical audio, and completed with **0** active notes. The callback recorded
+**0** allocations and **0** destructions; the window, stream, and graph
+ownership all closed cleanly. Phase 6 is closed and Phase 7 is unblocked.
+
+Phase 7 acceptance is owned by the requirement-linked production tests and the
+retained `make demo-live-detail-and-assets` report. In compact form: subordinate
+interaction scenarios map to reducer/resolver tests; Sample admission,
+preparation, rendering, persistence, and audition scenarios map to adapter,
+graph, callback, and end-to-end tests; projection and composition scenarios map
+to frame-stream/webview witnesses at both viewport classes; cumulative audible,
+negative, and teardown scenarios map to the live report. Test names retain the
+spec requirement/scenario terms so this roadmap remains a progress index, not a
+second behavior authority.
+
+### Phase 7 implementation status (2026-08-21) — deterministic gates complete
+
+The descriptor-driven detail, generic choice modal, controller-native Sample
+Browser, bounded WAV Sample capability, prepared audition, persistence,
+projection, and cumulative headless scene are implemented. The post-review
+gate passed `cargo fmt --all -- --check`,
+`cargo clippy --all-targets -- -D warnings`, and `cargo test --all-targets`.
+The all-target run included the Phase 7 acceptance, twelve Sample workflow,
+positive/controlled-negative live-scene, callback allocation/destruction,
+component vocabulary/composition, no-name guard, and headless webview targets.
+
+Phase 7 is not closed yet. The required native webview run passed its serialized
+checks but timed out before the first `animation-frame-ready` acknowledgement,
+so the 1920×1080 comparison, 1280×800 live reflow, native input/window witness,
+and clean native teardown remain incomplete. The physical
+`make demo-live-detail-and-assets` and retained `make demo-live` alias also
+remain to be run on a production window/audio-device host. Until those gates
+pass, the Phase 8 handoff remains pending rather than inferred from headless
+evidence.
+
 Complete the subordinate PATCH surfaces using the same shell and component vocabulary.
 
 - Instrument detail and effect detail.
@@ -509,7 +557,9 @@ Complete the subordinate PATCH surfaces using the same shell and component vocab
 - Typed loading, unavailable, validation, and cancellation states without UI-owned domain copies.
 - Add `make demo-live-detail-and-assets`: play real MIDI while the scene opens instrument/effect details and choice surfaces, navigates the Sample Browser, previews and commits a valid asset through production preparation, exercises cancel/error paths, and returns focus to each exact origin.
 
-The detailed Sample capability contract—including admitted formats, playback and loop semantics, polyphony, root-pitch behavior, and preparation limits—is intentionally deferred until Phase 7 planning. It is not an unresolved prerequisite for Phases 1–6 and must not be inferred from Figma fixtures.
+The bounded Sample contract and its dependency pin are now recorded in
+`DESIGN.md`; Figma's filenames, option lists, values, and counts remain visual
+fixtures rather than an exhaustive capability contract.
 
 ## Phase 8 — Controller and resolution hardening
 

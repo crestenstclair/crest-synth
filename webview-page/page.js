@@ -1358,15 +1358,46 @@
         break;
       }
     }
-    var rows = "";
-    for (var i = 0; i < controls.length; i += 1) {
-      if (!controls[i].visible) {
-        continue;
+    var sections = "";
+    var declaredSections = (detail && detail.sections) || [];
+    for (var sectionIndex = 0; sectionIndex < declaredSections.length; sectionIndex += 1) {
+      var declared = declaredSections[sectionIndex];
+      var sectionRows = "";
+      var paths = declared.controlPaths || [];
+      for (var pathIndex = 0; pathIndex < paths.length; pathIndex += 1) {
+        var wanted = JSON.stringify(paths[pathIndex]);
+        for (var rowIndex = 0; rowIndex < controls.length; rowIndex += 1) {
+          if (controls[rowIndex].visible && JSON.stringify(controls[rowIndex].path) === wanted) {
+            sectionRows += patchRowHtml(controls[rowIndex], mode, "detail");
+            break;
+          }
+        }
       }
-      rows += patchRowHtml(controls[i], mode, "detail");
+      sections +=
+        '<section class="detail-section" data-detail-section="' +
+        escapeHtml(String(declared.id)) +
+        '"><h3 class="type-label muted" data-role="detail-section-label">' +
+        escapeHtml(String(declared.label)) +
+        "</h3>" +
+        (sectionRows || markUnavailableRowHtml(String(declared.label))) +
+        "</section>";
     }
-    if (!rows) {
-      rows = markUnavailableRowHtml(String((detail && detail.label) || "DETAIL"));
+    if (!sections) {
+      var rows = "";
+      for (var i = 0; i < controls.length; i += 1) {
+        if (controls[i].visible) {
+          rows += patchRowHtml(controls[i], mode, "detail");
+        }
+      }
+      sections =
+        '<section class="detail-section" data-detail-section="unsectioned">' +
+        (rows || markUnavailableRowHtml(String((detail && detail.label) || "DETAIL"))) +
+        "</section>";
+    }
+    var visualizationMarkup = "";
+    var visualizations = (detail && detail.visualizations) || [];
+    for (var visualizationIndex = 0; visualizationIndex < visualizations.length; visualizationIndex += 1) {
+      visualizationMarkup += detailVisualizationHtml(visualizations[visualizationIndex]);
     }
     return (
       '<div class="detail" id="detail">' +
@@ -1383,7 +1414,193 @@
           "</span>"
         : "") +
       "</div>" +
-      '<div class="detail-section" data-role="detail-section">' +
+      '<div class="detail-sections" data-role="detail-sections">' +
+      sections +
+      "</div>" +
+      '<div class="detail-visualizations" data-role="detail-visualizations">' +
+      visualizationMarkup +
+      "</div></div>"
+    );
+  }
+
+  function detailVisualizationHtml(visualization) {
+    var data = visualization.data || { kind: "status", text: UNAVAILABLE };
+    var body = "";
+    if (data.kind === "envelope") {
+      body =
+        '<div class="envelope-shape" aria-hidden="true"><span></span><span></span><span></span><span></span></div>' +
+        '<span class="type-hint">A ' +
+        escapeHtml(Number(data.attackMilliseconds || 0).toFixed(1)) +
+        " / D " +
+        escapeHtml(Number(data.decayMilliseconds || 0).toFixed(1)) +
+        " / S " +
+        escapeHtml(Number(data.sustain || 0).toFixed(3)) +
+        " / R " +
+        escapeHtml(Number(data.releaseMilliseconds || 0).toFixed(1)) +
+        "</span>";
+    } else if (data.kind === "waveform") {
+      var pairs = data.pairs || [];
+      var bars = "";
+      var stride = Math.max(1, Math.ceil(pairs.length / 192));
+      for (var pairIndex = 0; pairIndex < pairs.length; pairIndex += stride) {
+        var pair = pairs[pairIndex];
+        var height = Math.max(
+          0.02,
+          Math.min(1, Number(pair.leftMax || 0) - Number(pair.leftMin || 0))
+        );
+        bars += '<i style="--wave-height:' + height.toFixed(6) + '"></i>';
+      }
+      var landmarks = "";
+      var landmarkValues = data.landmarks || [];
+      for (var landmarkIndex = 0; landmarkIndex < landmarkValues.length; landmarkIndex += 1) {
+        var landmark = landmarkValues[landmarkIndex];
+        landmarks +=
+          '<b data-landmark="' +
+          escapeHtml(String(landmark.role)) +
+          '" style="--landmark-position:' +
+          Math.max(0, Math.min(1, Number(landmark.normalizedPosition || 0))).toFixed(6) +
+          '"><span class="type-hint">' +
+          escapeHtml(String(landmark.role).toUpperCase()) +
+          "</span></b>";
+      }
+      body =
+        '<div class="waveform-shape" data-role="waveform-shape">' +
+        (bars || '<span class="type-hint muted">NO PREPARED SUMMARY</span>') +
+        landmarks +
+        "</div>" +
+        '<span class="type-hint" data-role="waveform-status">' +
+        escapeHtml(String(data.status || UNAVAILABLE)) +
+        "</span>";
+    } else {
+      body = '<span class="type-hint">' + escapeHtml(String(data.text || UNAVAILABLE)) + "</span>";
+    }
+    return (
+      '<figure class="detail-visualization" data-visualization="' +
+      escapeHtml(String(visualization.id)) +
+      '" data-visualization-kind="' +
+      escapeHtml(String(data.kind)) +
+      '"><figcaption class="type-label muted">' +
+      escapeHtml(String(visualization.label)) +
+      "</figcaption>" +
+      body +
+      "</figure>"
+    );
+  }
+
+  // One shared subordinate modal composition for descriptor choices and the
+  // Sample Browser. Row identity, current/focus markers, lifecycle, and hold
+  // state are all projected; the DOM owns no option or file index.
+  function modalShellHtml(model) {
+    var modal = surfaceByRole(model, "modal");
+    if (!modal) {
+      return "";
+    }
+    var summary = modal.summary || {};
+    var browser = summary.kind === "sampleBrowser";
+    var controls = modal.controls || [];
+    var rows = "";
+    for (var i = 0; i < controls.length; i += 1) {
+      var control = controls[i];
+      if (control.visible !== true) {
+        continue;
+      }
+      var marker = [];
+      if (control.selectedLabel) {
+        marker.push(String(control.selectedLabel));
+      }
+      if (control.focused) {
+        marker.push("FOCUS");
+      }
+      if (!control.enabled) {
+        marker.push(UNAVAILABLE);
+      }
+      var browserMetadata = control.browserMetadata || null;
+      if (browserMetadata && browserMetadata.status === "pending") {
+        marker.push("LOADING");
+      } else if (browserMetadata && browserMetadata.status === "failed") {
+        marker.push("INVALID");
+      }
+      rows +=
+        '<div class="modal-option' +
+        (control.focused ? " is-focused" : "") +
+        (!control.enabled ? " is-disabled" : "") +
+        (browserMetadata ? " has-browser-metadata" : "") +
+        '" data-focus-path="' +
+        escapeHtml(JSON.stringify(control.path || null)) +
+        '" data-metadata-state="' +
+        escapeHtml(String((browserMetadata && browserMetadata.status) || "none")) +
+        '">' +
+        '<span class="modal-option-shape" aria-hidden="true">' +
+        (control.focused ? "▶" : "◇") +
+        "</span>" +
+        '<span class="type-value modal-option-label">' +
+        escapeHtml(String(control.label || UNAVAILABLE_MARK)) +
+        "</span>" +
+        (browserMetadata || control.unit
+          ? '<span class="type-hint muted modal-option-meta">' +
+            escapeHtml(String(browserMetadata ? browserMetadata.text : control.unit)) +
+            "</span>"
+          : "") +
+        '<span class="type-hint modal-option-state">' +
+        escapeHtml(marker.join(HINT_SEPARATOR) || "AVAILABLE") +
+        "</span></div>";
+    }
+    if (!rows) {
+      rows = markUnavailableRowHtml(browser ? "FILES" : "OPTIONS");
+    }
+    var status = "";
+    if (browser) {
+      var browserVisualizations = "";
+      var modalVisualizations = modal.visualizations || [];
+      for (var visualizationIndex = 0; visualizationIndex < modalVisualizations.length; visualizationIndex += 1) {
+        browserVisualizations += detailVisualizationHtml(modalVisualizations[visualizationIndex]);
+      }
+      var preview = summary.preview || { kind: "idle" };
+      var previewText = String(preview.kind || "idle").toUpperCase();
+      if (preview.assetId) {
+        previewText += HINT_SEPARATOR + String(preview.assetId);
+      }
+      if (preview.kind === "preparing") {
+        previewText += preview.held ? HINT_SEPARATOR + "HELD" : HINT_SEPARATOR + "RELEASED";
+      }
+      status =
+        '<div class="browser-status" data-role="browser-status">' +
+        '<span class="type-label muted">' +
+        escapeHtml(String(summary.folder || "/")) +
+        "</span>" +
+        '<span class="type-hint">' +
+        escapeHtml(String(summary.lifecycle || UNAVAILABLE).toUpperCase()) +
+        "</span>" +
+        '<span class="type-hint adjust">PREVIEW ' +
+        escapeHtml(previewText) +
+        "</span>" +
+        '<span class="type-hint muted">ORIGIN PATCH ROUTING / MUTE / SOLO / SENDS APPLY</span>' +
+        "</div>" +
+        '<div class="browser-visualizations" data-role="browser-visualizations">' +
+        (browserVisualizations || markUnavailableRowHtml("WAVEFORM")) +
+        "</div>" +
+        '<div class="preview-region" data-role="preview-region" data-preview-state="' +
+        escapeHtml(String(preview.kind || "idle")) +
+        '" aria-label="preview ' +
+        escapeHtml(previewText.toLowerCase()) +
+        '">' +
+        '<span class="type-label muted">PREVIEW</span>' +
+        '<span class="preview-playhead-shape" aria-hidden="true"><span class="preview-playhead-marker"></span></span>' +
+        '<span class="type-hint" data-role="preview-playhead">PLAYHEAD — / ' +
+        escapeHtml(String(preview.kind || "idle").toUpperCase()) +
+        "</span></div>";
+    }
+    return (
+      '<div class="modal-shell' + (browser ? " sample-browser" : " option-modal") + '" id="modal-shell">' +
+      '<div class="modal-title">' +
+      '<span class="type-label muted">' +
+      escapeHtml(browser ? "LIBRARY" : "SELECT OPTION") +
+      "</span>" +
+      '<span class="type-heading focus">' +
+      escapeHtml(String(modal.label || (browser ? "SAMPLE BROWSER" : "OPTIONS"))) +
+      "</span></div>" +
+      status +
+      '<div class="modal-options" data-role="modal-options">' +
       rows +
       "</div></div>"
     );
@@ -1397,7 +1614,12 @@
   function patchWorkspaceHtml(model) {
     var main = surfaceById(model, "patchMain");
     var detail = surfaceByRole(model, "detail");
-    var body = detail ? detailShellHtml(model) : patchStripHtml(model);
+    var modal = surfaceByRole(model, "modal");
+    var body = modal
+      ? modalShellHtml(model)
+      : detail
+        ? detailShellHtml(model)
+        : patchStripHtml(model);
     var focused = focusedControl(model);
     var annotation = focused
       ? '<span class="type-hint focus" data-role="section-annotation">FOCUS' +
@@ -1405,7 +1627,7 @@
         escapeHtml(String(focused.label)) +
         "</span>"
       : "";
-    var surface = detail || main;
+    var surface = modal || detail || main;
     var title = escapeHtml(String((surface && surface.label) || "PATCH"));
     return workspaceScaffold(
       model,
@@ -1758,13 +1980,11 @@
   // searched by identity after every paint/reflow; no row number becomes
   // application state and scrolling dispatches no semantic event.
   function revealSemanticFocus(doc, model) {
-    if (!model || model.activeSurface !== "mixerInspector") {
+    if (!model) {
       return;
     }
     var wanted = JSON.stringify(model.focusPath || null);
-    var rows = doc.querySelectorAll(
-      '.inspector-controls [data-focus-path]'
-    );
+    var rows = doc.querySelectorAll('[data-focus-path]');
     for (var i = 0; i < rows.length; i += 1) {
       if (rows[i].getAttribute("data-focus-path") === wanted) {
         rows[i].scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -1965,6 +2185,44 @@
         }
       : null;
 
+    var modalNode = doc.getElementById("modal-shell");
+    var modal = null;
+    if (modalNode) {
+      var optionNodes = modalNode.querySelectorAll(".modal-option");
+      var modalOptions = [];
+      for (var optionIndex = 0; optionIndex < optionNodes.length; optionIndex += 1) {
+        modalOptions.push({
+          focusPath: optionNodes[optionIndex].getAttribute("data-focus-path"),
+          focused: optionNodes[optionIndex].classList.contains("is-focused"),
+          disabled: optionNodes[optionIndex].classList.contains("is-disabled"),
+          label: textOf(optionNodes[optionIndex], ".modal-option-label"),
+          metadata: textOf(optionNodes[optionIndex], ".modal-option-meta"),
+          metadataState: optionNodes[optionIndex].getAttribute("data-metadata-state"),
+          state: textOf(optionNodes[optionIndex], ".modal-option-state"),
+        });
+      }
+      var visualizationNodes = modalNode.querySelectorAll("[data-visualization]");
+      var modalVisualizations = [];
+      for (var modalVisualizationIndex = 0; modalVisualizationIndex < visualizationNodes.length; modalVisualizationIndex += 1) {
+        modalVisualizations.push({
+          id: visualizationNodes[modalVisualizationIndex].getAttribute("data-visualization"),
+          kind: visualizationNodes[modalVisualizationIndex].getAttribute("data-visualization-kind"),
+          landmarkCount: visualizationNodes[modalVisualizationIndex].querySelectorAll("[data-landmark]").length,
+          pairCount: visualizationNodes[modalVisualizationIndex].querySelectorAll(".waveform-shape > i").length,
+          status: textOf(visualizationNodes[modalVisualizationIndex], '[data-role="waveform-status"]'),
+        });
+      }
+      var previewNode = modalNode.querySelector('[data-role="preview-region"]');
+      modal = {
+        browser: modalNode.classList.contains("sample-browser"),
+        title: textOf(modalNode, ".modal-title .type-heading"),
+        options: modalOptions,
+        visualizations: modalVisualizations,
+        previewState: previewNode ? previewNode.getAttribute("data-preview-state") : null,
+        previewText: previewNode ? textOf(previewNode, '[data-role="preview-playhead"]') : null,
+      };
+    }
+
     var headerNode = doc.querySelector('[data-role="strip-header"]');
     var stripHeader = headerNode
       ? {
@@ -2037,7 +2295,10 @@
     // exactly as tall as the window, the menu bar) takes its cut before the
     // page sees a pixel. A viewport-sized iframe does not reproduce that, and
     // a seating claim measured in one is a claim about a different surface.
-    var bodyNode = doc.getElementById("strip") || doc.getElementById("detail");
+    var bodyNode =
+      doc.getElementById("strip") ||
+      doc.getElementById("detail") ||
+      doc.getElementById("modal-shell");
     var workspaceBody = null;
     if (bodyNode) {
       // The composition's own height, measured from its first child's top to
@@ -2081,6 +2342,7 @@
       groups: groups,
       stripHeader: stripHeader,
       detail: detail,
+      modal: modal,
       lifecycles: lifecycles,
       sectionAnnotation: textOf(doc, '[data-role="section-annotation"]'),
       patchIdentity: textOf(doc, '[data-role="patch-identity"]'),
@@ -2200,6 +2462,64 @@
         "METER " + selected.rms.toFixed(3) + " / " + selected.state.toUpperCase();
       inspectorMeter.setAttribute("data-meter-state", selected.state);
     }
+  }
+
+  // Reads preview playback from exactly the same compatible latest-value
+  // frame as meters. The model contributes only the canonical correlation
+  // identities; the frame contributes only passive playback observation.
+  // Neither object is changed during repaint.
+  function updatePreviewObservation() {
+    var doc = window.document;
+    var region = doc.querySelector('[data-role="preview-region"]');
+    if (!region || !latestModel) {
+      return;
+    }
+    var browser = surfaceById(latestModel, "sampleBrowser");
+    var summary = (browser && browser.summary) || {};
+    var canonical = summary.preview || { kind: "idle" };
+    var expectedIdentity = Number(summary.previewRequestId || 0);
+    var expectedPatch = Number(summary.patchId);
+    var compatible =
+      latestFrame &&
+      latestFrame.parameterGeneration === latestModel.generation &&
+      graphRevisionsMatch(latestFrame, latestModel) &&
+      expectedIdentity > 0 &&
+      Number(latestFrame.previewIdentity) === expectedIdentity &&
+      Number(latestFrame.previewPatchId) === expectedPatch;
+    var playhead = compatible ? Number(latestFrame.previewPlayhead) : 0;
+    var finite = Number.isFinite(playhead) && playhead >= 0 && playhead <= 1;
+    var state;
+    if (canonical.kind !== "playing") {
+      state = String(canonical.kind || "idle");
+      playhead = 0;
+    } else if (!compatible || !finite) {
+      state = "stale";
+      playhead = 0;
+    } else if (!latestFrame.previewPlaying) {
+      state = "stopped";
+      playhead = 0;
+    } else {
+      state = "playing";
+    }
+    region.style.setProperty("--preview-playhead", playhead.toFixed(6));
+    region.setAttribute("data-preview-state", state);
+    region.setAttribute(
+      "aria-label",
+      "preview " + state + " playhead " + playhead.toFixed(3)
+    );
+    var readout = region.querySelector('[data-role="preview-playhead"]');
+    if (readout) {
+      readout.textContent =
+        state === "playing"
+          ? "PLAYHEAD " + (playhead * 100).toFixed(1) + "% / PLAYING"
+          : "PLAYHEAD — / " + state.toUpperCase();
+    }
+  }
+
+  function observeAudio(frame) {
+    latestFrame = frame;
+    updateMeter();
+    updatePreviewObservation();
   }
 
   // The paint acknowledgment for one painted document: the document's
@@ -2322,6 +2642,7 @@
         try {
           render(model);
           updateMeter();
+          updatePreviewObservation();
         } catch (error) {
           emitRenderError(error, model);
           return; // a failed render must NOT ack
@@ -2339,8 +2660,7 @@
       }
     );
     var meterListener = tauri.event.listen(METER_EVENT, function (event) {
-      latestFrame = event.payload;
-      updateMeter();
+      observeAudio(event.payload);
     });
     Promise.all([projectionListener, meterListener])
       .then(function () {
@@ -2377,6 +2697,10 @@
     }
   });
 
-  window.crest = { render: render, renderObservation: renderObservation };
+  window.crest = {
+    render: render,
+    renderObservation: renderObservation,
+    observeAudio: observeAudio,
+  };
   attachTransports();
 })();

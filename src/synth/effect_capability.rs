@@ -1,8 +1,9 @@
 use crate::kernel::midi_message::MidiMessageKind;
 use crate::synth::{
     AssetAssignment, AssetReference, AssetRequirement, CapabilityDescriptor, CapabilityError,
-    CapabilityId, CapabilitySection, EffectCapabilityId, EffectSlotId, ParameterAssignment,
-    ParameterDefault, ParameterKind, ParameterSpec, ParameterUpdate, ParameterValue, VoicePolicy,
+    CapabilityId, CapabilitySection, CapabilityVisualization, EffectCapabilityId, EffectSlotId,
+    ParameterAssignment, ParameterDefault, ParameterKind, ParameterSpec, ParameterUpdate,
+    ParameterValue, VoicePolicy,
 };
 use core::fmt;
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,8 @@ pub struct EffectCapabilityDescriptor {
     label: String,
     semantic_accent: String,
     sections: Vec<CapabilitySection>,
+    #[serde(default)]
+    visualizations: Vec<CapabilityVisualization>,
     asset_requirements: Vec<AssetRequirement>,
 }
 
@@ -44,6 +47,7 @@ impl EffectCapabilityDescriptor {
             label: label.into(),
             semantic_accent: semantic_accent.into(),
             sections,
+            visualizations: Vec::new(),
             asset_requirements,
         };
         descriptor.validation_descriptor()?;
@@ -70,6 +74,19 @@ impl EffectCapabilityDescriptor {
 
     pub fn sections(&self) -> &[CapabilitySection] {
         &self.sections
+    }
+
+    pub fn visualizations(&self) -> &[CapabilityVisualization] {
+        &self.visualizations
+    }
+
+    pub fn with_visualizations(
+        mut self,
+        visualizations: impl IntoIterator<Item = CapabilityVisualization>,
+    ) -> Result<Self, EffectCapabilityError> {
+        self.visualizations.extend(visualizations);
+        self.validation_descriptor()?;
+        Ok(self)
     }
 
     pub fn asset_requirements(&self) -> &[AssetRequirement] {
@@ -158,6 +175,7 @@ impl EffectCapabilityDescriptor {
             VoicePolicy::FixedPerPatch { voices: 1 },
             vec![MidiMessageKind::AllNotesOff],
         )
+        .and_then(|descriptor| descriptor.with_visualizations(self.visualizations.clone()))
         .map_err(Into::into)
     }
 }

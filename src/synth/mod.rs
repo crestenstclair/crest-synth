@@ -1,4 +1,5 @@
 pub mod capability_id;
+pub mod capability_visualization;
 pub mod descriptor_default_config_factory;
 pub mod effect_capability;
 pub mod effect_capability_id;
@@ -12,13 +13,19 @@ pub mod instrument_composition;
 pub mod instrument_preparer;
 pub mod parameter_id;
 pub mod patch;
+pub mod prepared_audition;
 pub mod prepared_engine_rack_builder;
 pub mod prepared_instrument;
 pub mod prepared_post_effect;
 pub mod prepared_post_effect_rack_builder;
+pub mod sample_asset;
+pub mod sample_preparation;
 pub mod sound_font_preset;
 
 pub use capability_id::{CapabilityId, IdentifierError};
+pub use capability_visualization::{
+    CapabilityVisualization, WaveformLandmarkRole, WaveformLandmarkSpec,
+};
 pub use descriptor_default_config_factory::DescriptorDefaultConfigFactory;
 pub use effect_capability::{
     EffectCapabilityDescriptor, EffectCapabilityError, EffectCapabilityRegistry, PostEffectConfig,
@@ -40,11 +47,26 @@ pub use instrument_capability_provider::InstrumentCapabilityProvider;
 pub use instrument_composition::{compose_instrument_registry, InstrumentCompositionError};
 pub use instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
 pub use patch::{resolve_patch_editable_targets, Patch, PatchEditableTarget, VoiceLimitCarryOver};
+pub use prepared_audition::PreparedAudition;
 pub use prepared_engine_rack_builder::{PreparedEngineRackBuilder, RackPreparationError};
-pub use prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
+pub use prepared_instrument::{
+    PreparedAssetFootprint, PreparedInstrument, PreparedInstrumentError,
+};
 pub use prepared_post_effect::{PreparedEffectError, PreparedPostEffect};
 pub use prepared_post_effect_rack_builder::{
     EffectRackPreparationError, PreparedPostEffectRackBuilder,
+};
+pub use sample_asset::{
+    DecodedSample, PreparedSampleLandmarks, PreparedSamplePcm, PreparedSampleVisualization,
+    SampleAssetCatalogPort, SampleAssetError, SampleAssetId, SampleBrowserRow,
+    SampleBrowserRowKind, SampleCatalogListing, SampleDecoderPort, SampleEncoding, SampleFolderId,
+    SampleLoopMode, SampleMetadata, SamplePlaybackConfig, WaveformPair,
+    MAX_LOOP_CROSSFADE_MILLISECONDS, MAX_SAMPLE_DURATION_SECONDS, MAX_SAMPLE_GRAPH_PCM_BYTES,
+    MAX_SAMPLE_RATE, MAX_SAMPLE_SCALARS, MAX_SAMPLE_SOURCE_BYTES, MAX_WAVEFORM_PAIRS,
+    MIN_SAMPLE_RATE, SAMPLE_VOICE_COUNT,
+};
+pub use sample_preparation::{
+    prepare_sample_pcm, summarize_waveform, validate_sample_graph_budget,
 };
 pub mod sound_font_instrument;
 pub mod voice_envelope;

@@ -19,6 +19,7 @@ pub enum InteractionMode {
 impl InteractionMode {
     pub const ALL: [Self; 4] = [Self::Navigate, Self::Adjust, Self::Modal, Self::MultiSelect];
     pub const PHASE_TWO: [Self; 2] = [Self::Navigate, Self::Adjust];
+    pub const PHASE_SEVEN: [Self; 3] = [Self::Navigate, Self::Adjust, Self::Modal];
 
     pub const fn surface_descriptor() -> &'static [Self] {
         &Self::ALL
@@ -26,6 +27,10 @@ impl InteractionMode {
 
     pub const fn is_phase_two_reachable(self) -> bool {
         matches!(self, Self::Navigate | Self::Adjust)
+    }
+
+    pub const fn is_phase_seven_reachable(self) -> bool {
+        matches!(self, Self::Navigate | Self::Adjust | Self::Modal)
     }
 
     pub const fn label(self) -> &'static str {
@@ -62,6 +67,15 @@ pub enum SemanticAction {
     Navigate(Direction),
     Adjust(Direction),
     SetInteractionMode(InteractionMode),
+    /// Opens Detail from a subject control, or the Sample Browser from an
+    /// asset row, as resolved from canonical state.
+    OpenRelated,
+    /// Confirms the focused stable option or browser row.
+    Activate,
+    /// Begins a cancellable browser-only preview hold.
+    PreviewStart,
+    /// Ends or cancels the current browser preview hold.
+    PreviewStop,
     EnterSurface(SurfaceId),
     Return,
     SetSlotOccupancy {
@@ -83,6 +97,10 @@ pub enum SemanticActionKind {
     Navigate,
     Adjust,
     SetInteractionMode,
+    OpenRelated,
+    Activate,
+    PreviewStart,
+    PreviewStop,
     EnterSurface,
     Return,
     SetSlotOccupancy,
@@ -90,12 +108,16 @@ pub enum SemanticActionKind {
 }
 
 impl SemanticActionKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 13] = [
         Self::SelectContext,
         Self::SelectPatch,
         Self::Navigate,
         Self::Adjust,
         Self::SetInteractionMode,
+        Self::OpenRelated,
+        Self::Activate,
+        Self::PreviewStart,
+        Self::PreviewStop,
         Self::EnterSurface,
         Self::Return,
         Self::SetSlotOccupancy,
@@ -107,7 +129,7 @@ impl SemanticActionKind {
     }
 }
 
-const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 18] = [
+const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 22] = [
     SemanticAction::SelectContext(TopLevelContext::Patch),
     SemanticAction::SelectContext(TopLevelContext::Mixer),
     // Only the horizontal pair: moving along the installed Patch order is an
@@ -124,6 +146,10 @@ const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 18] = [
     SemanticAction::Adjust(Direction::Right),
     SemanticAction::SetInteractionMode(InteractionMode::Navigate),
     SemanticAction::SetInteractionMode(InteractionMode::Adjust),
+    SemanticAction::OpenRelated,
+    SemanticAction::Activate,
+    SemanticAction::PreviewStart,
+    SemanticAction::PreviewStop,
     SemanticAction::EnterSurface(SurfaceId::PatchUtility),
     // The descriptor lists the *admitted* surfaces, which `SurfaceId::is_enterable`
     // decides. `PatchDetail` was absent for exactly as long as no projection
@@ -152,6 +178,10 @@ impl SemanticAction {
             Self::Navigate(_) => SemanticActionKind::Navigate,
             Self::Adjust(_) => SemanticActionKind::Adjust,
             Self::SetInteractionMode(_) => SemanticActionKind::SetInteractionMode,
+            Self::OpenRelated => SemanticActionKind::OpenRelated,
+            Self::Activate => SemanticActionKind::Activate,
+            Self::PreviewStart => SemanticActionKind::PreviewStart,
+            Self::PreviewStop => SemanticActionKind::PreviewStop,
             Self::EnterSurface(_) => SemanticActionKind::EnterSurface,
             Self::Return => SemanticActionKind::Return,
             Self::SetSlotOccupancy { .. } => SemanticActionKind::SetSlotOccupancy,
@@ -217,9 +247,10 @@ mod tests {
 
     #[test]
     fn semantic_action_descriptors_are_closed_unique_and_phase_two_safe() {
-        assert_eq!(SemanticActionKind::surface_descriptor().len(), 9);
+        assert_eq!(SemanticActionKind::surface_descriptor().len(), 13);
         assert_eq!(InteractionMode::surface_descriptor().len(), 4);
         assert_eq!(InteractionMode::PHASE_TWO.len(), 2);
+        assert_eq!(InteractionMode::PHASE_SEVEN.len(), 3);
         assert!(SemanticAction::surface_descriptor()
             .iter()
             .all(SemanticAction::is_phase_two_admitted));
@@ -245,7 +276,7 @@ mod tests {
                 "{surface:?}: the descriptor lists exactly the admitted surfaces"
             );
         }
-        assert_eq!(SemanticAction::surface_descriptor().len(), 18);
+        assert_eq!(SemanticAction::surface_descriptor().len(), 22);
     }
 
     #[test]

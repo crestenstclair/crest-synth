@@ -22,15 +22,19 @@ pub enum SurfaceId {
     PatchMain,
     PatchUtility,
     PatchDetail,
+    PatchChoice,
+    SampleBrowser,
     MixerMain,
     MixerInspector,
 }
 
 impl SurfaceId {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::PatchMain,
         Self::PatchUtility,
         Self::PatchDetail,
+        Self::PatchChoice,
+        Self::SampleBrowser,
         Self::MixerMain,
         Self::MixerInspector,
     ];
@@ -41,7 +45,11 @@ impl SurfaceId {
 
     pub const fn context(self) -> TopLevelContext {
         match self {
-            Self::PatchMain | Self::PatchUtility | Self::PatchDetail => TopLevelContext::Patch,
+            Self::PatchMain
+            | Self::PatchUtility
+            | Self::PatchDetail
+            | Self::PatchChoice
+            | Self::SampleBrowser => TopLevelContext::Patch,
             Self::MixerMain | Self::MixerInspector => TopLevelContext::Mixer,
         }
     }
@@ -74,7 +82,10 @@ impl SurfaceId {
     /// Reports whether this surface is subordinate: entered from a main path,
     /// remembered by exactly one [`ReturnPath`], and left through `Return`.
     pub const fn is_subordinate(self) -> bool {
-        matches!(self, Self::PatchDetail)
+        matches!(
+            self,
+            Self::PatchDetail | Self::PatchChoice | Self::SampleBrowser
+        )
     }
 
     /// Reports whether a [`ReturnPath`] may name this surface as the one it was
@@ -110,7 +121,7 @@ impl SurfaceId {
     pub const fn is_enterable(self) -> bool {
         match self {
             Self::PatchUtility | Self::MixerInspector | Self::PatchDetail => true,
-            Self::PatchMain | Self::MixerMain => false,
+            Self::PatchChoice | Self::SampleBrowser | Self::PatchMain | Self::MixerMain => false,
         }
     }
 
@@ -119,6 +130,8 @@ impl SurfaceId {
             Self::PatchMain => "PATCH",
             Self::PatchUtility => "UTILITY",
             Self::PatchDetail => "DETAIL",
+            Self::PatchChoice => "OPTIONS",
+            Self::SampleBrowser => "SAMPLE BROWSER",
             Self::MixerMain => "MIXER",
             Self::MixerInspector => "INSPECTOR",
         }
@@ -181,6 +194,59 @@ impl PatchDetailSubject {
                 FocusCapabilityId::Instrument(capability_id.clone())
             }
             Self::Effect { capability_id, .. } => FocusCapabilityId::Effect(capability_id.clone()),
+        }
+    }
+}
+
+/// The exact generic PATCH control whose available values fill one choice modal.
+///
+/// The subject carries no option list or active value. Those are resolved from
+/// the current instrument/effect registries, Mixer track domain, or owning
+/// descriptor every time the modal is projected.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchChoiceSubject {
+    patch_id: PatchId,
+    control_id: PatchControlId,
+}
+
+impl PatchChoiceSubject {
+    pub const fn new(patch_id: PatchId, control_id: PatchControlId) -> Self {
+        Self {
+            patch_id,
+            control_id,
+        }
+    }
+
+    pub const fn patch_id(&self) -> PatchId {
+        self.patch_id
+    }
+
+    pub const fn control_id(&self) -> &PatchControlId {
+        &self.control_id
+    }
+
+    pub fn stable_id(&self) -> String {
+        format!(
+            "patch.{}.choice.{}",
+            self.patch_id,
+            self.control_id.as_str()
+        )
+    }
+}
+
+/// Stable semantic identity of one row inside a trapped modal surface.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "id", rename_all = "camelCase")]
+pub enum ModalControlId {
+    Choice(String),
+    BrowserEntry(String),
+}
+
+impl ModalControlId {
+    pub fn stable_id(&self) -> &str {
+        match self {
+            Self::Choice(id) | Self::BrowserEntry(id) => id,
         }
     }
 }
@@ -286,6 +352,7 @@ pub enum FocusCapabilityId {
 pub enum SemanticControlId {
     Patch(PatchControlId),
     Mixer(MixerControlId),
+    Modal(ModalControlId),
     SurfaceRoot,
 }
 
@@ -293,7 +360,7 @@ impl SemanticControlId {
     pub const fn as_mixer_track_id(&self) -> Option<MixerTrackId> {
         match self {
             Self::Mixer(MixerControlId::Track { track_id, .. }) => Some(*track_id),
-            Self::Mixer(_) | Self::Patch(_) | Self::SurfaceRoot => None,
+            Self::Mixer(_) | Self::Patch(_) | Self::Modal(_) | Self::SurfaceRoot => None,
         }
     }
 }
@@ -317,7 +384,7 @@ impl fmt::Display for FocusPathError {
             Self::CapabilityIdentityMismatch => {
                 "focus path has an invalid capability identity shape"
             }
-            Self::ModalIdentityUnavailable => "Phase 2 focus paths cannot contain a modal identity",
+            Self::ModalIdentityUnavailable => "focus path has an invalid modal identity",
         })
     }
 }
@@ -379,6 +446,38 @@ impl FocusPath {
             capability_id: Some(capability_id),
             control_id: SemanticControlId::Patch(control_id),
             modal_id: None,
+        }
+    }
+
+    /// One stable installed/descriptor choice inside a trapped PATCH modal.
+    pub fn patch_choice(
+        patch_id: PatchId,
+        modal_id: impl Into<String>,
+        choice_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            context: TopLevelContext::Patch,
+            surface: SurfaceId::PatchChoice,
+            patch_id: Some(patch_id),
+            capability_id: None,
+            control_id: SemanticControlId::Modal(ModalControlId::Choice(choice_id.into())),
+            modal_id: Some(modal_id.into()),
+        }
+    }
+
+    /// One stable parent/folder/file/cancel row inside the Sample Browser.
+    pub fn sample_browser(
+        patch_id: PatchId,
+        modal_id: impl Into<String>,
+        entry_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            context: TopLevelContext::Patch,
+            surface: SurfaceId::SampleBrowser,
+            patch_id: Some(patch_id),
+            capability_id: None,
+            control_id: SemanticControlId::Modal(ModalControlId::BrowserEntry(entry_id.into())),
+            modal_id: Some(modal_id.into()),
         }
     }
 
@@ -462,9 +561,6 @@ impl FocusPath {
         if self.surface.context() != self.context {
             return Err(FocusPathError::ContextSurfaceMismatch);
         }
-        if self.modal_id.is_some() {
-            return Err(FocusPathError::ModalIdentityUnavailable);
-        }
         match (&self.surface, &self.control_id) {
             (SurfaceId::PatchMain, SemanticControlId::Patch(control)) => {
                 if self.patch_id.is_none() {
@@ -502,6 +598,27 @@ impl FocusPath {
                 }
                 if !matches!(self.capability_id, Some(FocusCapabilityId::Effect(_))) {
                     return Err(FocusPathError::CapabilityIdentityMismatch);
+                }
+            }
+            (SurfaceId::PatchChoice, SemanticControlId::Modal(ModalControlId::Choice(id))) => {
+                if self.patch_id.is_none()
+                    || self.capability_id.is_some()
+                    || self.modal_id.as_ref().is_none_or(String::is_empty)
+                    || id.is_empty()
+                {
+                    return Err(FocusPathError::ModalIdentityUnavailable);
+                }
+            }
+            (
+                SurfaceId::SampleBrowser,
+                SemanticControlId::Modal(ModalControlId::BrowserEntry(id)),
+            ) => {
+                if self.patch_id.is_none()
+                    || self.capability_id.is_some()
+                    || self.modal_id.as_ref().is_none_or(String::is_empty)
+                    || id.is_empty()
+                {
+                    return Err(FocusPathError::ModalIdentityUnavailable);
                 }
             }
             (
@@ -552,6 +669,12 @@ impl FocusPath {
             }
             _ => return Err(FocusPathError::ControlSurfaceMismatch),
         }
+        if self.surface != SurfaceId::PatchChoice
+            && self.surface != SurfaceId::SampleBrowser
+            && self.modal_id.is_some()
+        {
+            return Err(FocusPathError::ModalIdentityUnavailable);
+        }
         Ok(())
     }
 
@@ -589,16 +712,25 @@ pub struct ReturnPath {
 }
 
 impl ReturnPath {
-    /// Captures one exact main-surface origin before entering a subordinate
-    /// or persistent side surface.
+    /// Captures one exact origin before entering a subordinate or persistent
+    /// side surface.
     ///
-    /// The origin must be a *main* path in the entered surface's own context.
-    /// That single requirement is what makes the surfaces non-nesting: a path
-    /// already on `PatchUtility` or `PatchDetail` is not main, so it can never
-    /// become a second stacked origin.
+    /// Persistent side and Detail entry still require a main origin. A Choice
+    /// or Sample Browser may replace a PATCH main, Utility, or Detail surface
+    /// and remember that exact origin, but a modal/browser origin is rejected;
+    /// therefore there is one replaceable subordinate session, never a stack.
     pub fn new(origin: FocusPath, entered_surface: SurfaceId) -> Result<Self, FocusPathError> {
         origin.validate()?;
-        if !origin.surface().is_main()
+        let origin_allowed = match entered_surface {
+            SurfaceId::PatchChoice | SurfaceId::SampleBrowser => {
+                matches!(
+                    origin.surface(),
+                    SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail
+                )
+            }
+            _ => origin.surface().is_main(),
+        };
+        if !origin_allowed
             || !entered_surface.is_return_target()
             || origin.context() != entered_surface.context()
         {
@@ -630,10 +762,10 @@ mod tests {
     use crate::mixer::global_parameters::GlobalParameter;
 
     #[test]
-    fn five_surfaces_are_context_compatible_and_layout_neutral() {
+    fn seven_surfaces_are_context_compatible_and_layout_neutral() {
         use crate::control::TopLevelContext;
 
-        assert_eq!(SurfaceId::surface_descriptor().len(), 5);
+        assert_eq!(SurfaceId::surface_descriptor().len(), 7);
         assert_eq!(SurfaceId::PatchMain.context(), TopLevelContext::Patch);
         assert_eq!(
             SurfaceId::MixerInspector.context(),
@@ -658,7 +790,8 @@ mod tests {
         }
     }
 
-    /// The detail surface is a return target *and* an offered entry target.
+    /// Persistent sides and Detail are direct entry targets; Choice and the
+    /// Sample Browser are opened only through their stable subjects.
     ///
     /// `EnterSurface` admission was deliberately narrower than the structural
     /// return-target rule for exactly one surface, for exactly one reason: no
@@ -667,21 +800,23 @@ mod tests {
     /// agreement rather than assuming it, so a surface that silently stops
     /// being offered is a failure and not a shrug.
     #[test]
-    fn every_non_main_surface_is_both_a_return_target_and_an_offered_entry_target() {
+    fn direct_entry_and_subject_opened_surfaces_have_distinct_admission() {
         assert!(SurfaceId::PatchDetail.is_return_target());
         assert!(
             SurfaceId::PatchDetail.is_enterable(),
             "the detail projection exists, so the entry gate is gone"
         );
-        for surface in SurfaceId::ALL {
-            assert_eq!(
-                surface.is_enterable(),
-                surface.is_return_target(),
-                "{surface:?}: admission and the return-target shape rule must agree"
-            );
-        }
-        for offered in [SurfaceId::PatchUtility, SurfaceId::MixerInspector] {
+        for offered in [
+            SurfaceId::PatchUtility,
+            SurfaceId::PatchDetail,
+            SurfaceId::MixerInspector,
+        ] {
             assert!(offered.is_enterable());
+            assert!(offered.is_return_target());
+        }
+        for subject_opened in [SurfaceId::PatchChoice, SurfaceId::SampleBrowser] {
+            assert!(!subject_opened.is_enterable());
+            assert!(subject_opened.is_return_target());
         }
         for main in [SurfaceId::PatchMain, SurfaceId::MixerMain] {
             assert!(!main.is_enterable());
