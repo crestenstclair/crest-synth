@@ -1,7 +1,7 @@
 use crate::control::{
     AppState, EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind,
     FocusCapabilityId, FocusPath, MixerControlId, PatchControlId, PatchDetailSubject, ReturnPath,
-    SemanticResolver, SurfaceId, TopLevelContext, ValidAction,
+    SemanticControlId, SemanticResolver, SurfaceId, TopLevelContext, ValidAction,
 };
 use crate::kernel::{MidiChannel, PatchId};
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -624,7 +624,9 @@ impl SemanticGraphicalViewModel {
         "surfaces[].role",
         "surfaces[].summary.capabilityId",
         "surfaces[].summary.effectCount",
-        "surfaces[].summary.focusedControl.bus",
+        // `MixerInspector.focusedControl` is the remembered MixerMain origin,
+        // so its identity is always the Track variant (never a send/return
+        // bus identity), even while an Inspector row owns active focus.
         "surfaces[].summary.focusedControl.kind",
         "surfaces[].summary.focusedControl.parameter",
         "surfaces[].summary.focusedControl.trackId",
@@ -1758,12 +1760,17 @@ fn project_mixer_surfaces(
         }
     }
 
-    let focused_track = state
-        .interaction()
-        .remembered_mixer_main()
-        .control_id()
-        .as_mixer_track_id()
-        .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?;
+    let SemanticControlId::Mixer(
+        focused_control @ MixerControlId::Track {
+            track_id: focused_track,
+            ..
+        },
+    ) = state.interaction().remembered_mixer_main().control_id()
+    else {
+        return Err(SemanticGraphicalViewModelError::InvalidFocusPath);
+    };
+    let focused_control = focused_control.clone();
+    let focused_track = *focused_track;
     let inspector_paths = resolver
         .mixer_inspector_paths(focused_track)
         .map_err(map_resolver_error)?;
@@ -1971,7 +1978,7 @@ fn project_mixer_surfaces(
             role: SemanticSurfaceRole::PersistentSide,
             controls: inspector_controls,
             summary: SemanticSurfaceSummary::MixerInspector {
-                focused_control: state.interaction().mixer_control_focus().clone(),
+                focused_control,
                 focused_track,
                 patch_count: state.patches().len(),
                 routed_patches,

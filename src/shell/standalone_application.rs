@@ -59,7 +59,8 @@ use crate::testing::midi_event_source::MidiEventSource;
 use crate::testing::{
     DeterministicGraphPreparationHandle, DeterministicGraphPreparationWorker, LiveCheckpoint,
     LiveDemoError, LiveDemoReport, LiveDemoRunner, LiveDemoScene, LiveDemoSceneError,
-    LiveMixerRoutingEvidence, RuntimeAudioWitness, SixteenTrackMixerRoutingObservation,
+    LiveMixerRoutingEvidence, LiveMixerSceneEvidence, RuntimeAudioWitness,
+    SixteenTrackMixerRoutingObservation,
 };
 use core::fmt;
 use serde::Serialize;
@@ -210,6 +211,8 @@ pub struct GraphicalShellLiveObservation {
     mixer_context_observed: bool,
     #[serde(flatten)]
     mixer_routing: LiveMixerRoutingEvidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    live_mixer: Option<LiveMixerSceneEvidence>,
     effects_and_buses: Option<crate::testing::LiveEffectsAndBusesEvidence>,
     /// The functional Patch editor observation, resolved here because the
     /// teardown half of its schema — window close, stream release, graph
@@ -261,6 +264,7 @@ impl GraphicalShellLiveObservation {
             patch_context_observed: shell.patch_context_observed(),
             mixer_context_observed: shell.mixer_context_observed(),
             mixer_routing: report.mixer_routing().with_callback_safety(callback_safety),
+            live_mixer: report.live_mixer(),
             effects_and_buses: report.effects_and_buses().cloned(),
             functional_patch_editor,
             physical_audio_nonzero: shell.physical_audio_nonzero(),
@@ -280,6 +284,10 @@ impl GraphicalShellLiveObservation {
             && self.patch_context_observed
             && self.mixer_context_observed
             && self.mixer_routing.is_complete()
+            && self
+                .live_mixer
+                .as_ref()
+                .is_none_or(LiveMixerSceneEvidence::is_complete)
             && self
                 .effects_and_buses
                 .as_ref()
@@ -302,6 +310,15 @@ impl GraphicalShellLiveObservation {
         )
     }
 
+    /// The additive dedicated Mixer witness. It is absent from every older
+    /// retained scene, preserving their emitted schemas and target behavior.
+    pub fn live_mixer(&self) -> Option<LiveMixerObservation> {
+        self.live_mixer.as_ref().map(|scene| LiveMixerObservation {
+            scene: scene.clone(),
+            routing: self.sixteen_track_mixer_routing(),
+        })
+    }
+
     /// The functional Patch editor teardown projection, present only for the
     /// scene that measures it.
     pub const fn functional_patch_editor(
@@ -320,6 +337,25 @@ impl GraphicalShellLiveObservation {
                 routing: self.sixteen_track_mixer_routing(),
                 effects_and_buses: evidence.clone(),
             })
+    }
+}
+
+/// Final dedicated Mixer witness emitted after physical teardown.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LiveMixerObservation {
+    #[serde(flatten)]
+    scene: LiveMixerSceneEvidence,
+    #[serde(flatten)]
+    routing: SixteenTrackMixerRoutingObservation,
+}
+
+impl LiveMixerObservation {
+    pub fn is_complete(&self) -> bool {
+        self.scene.is_complete() && self.routing.is_complete()
+    }
+
+    pub const fn scene(&self) -> &LiveMixerSceneEvidence {
+        &self.scene
     }
 }
 
@@ -363,6 +399,8 @@ impl EffectsAndBusesLiveObservation {
 /// The retained live scene selected by the binary's stable flags.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LiveSceneKind {
+    /// The additive dedicated Mixer scene and typed report.
+    Mixer,
     /// The retained sixteen-track mixer-routing scene.
     SixteenTrackMixerRouting,
     /// The retained cumulative effects-and-buses scene.
@@ -1107,6 +1145,9 @@ where
             },
         )?;
         let scene = match scene_kind {
+            LiveSceneKind::Mixer => {
+                LiveDemoScene::mixer_from_installed_state(&app_loop.current_state_tree())?
+            }
             LiveSceneKind::SixteenTrackMixerRouting => {
                 LiveDemoScene::from_installed_state(&app_loop.current_state_tree())?
             }

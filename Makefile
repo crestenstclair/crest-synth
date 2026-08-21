@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-effects-and-buses demo-live-patch-editor demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell demo-live-component-library semantic-graphical-view-model-acceptance webview-tokens clean
+.PHONY: help build check test lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-mixer demo-live-effects-and-buses demo-live-patch-editor demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell demo-live-component-library semantic-graphical-view-model-acceptance webview-tokens clean
 
 help: ## Show the available project commands
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -48,6 +48,9 @@ demo: ## Run the exhaustive GUI demo and structured trace
 # TauriWebviewWindow directly and no renderer flag exists. Target names are
 # frozen by the ROADMAP retention contract.
 demo-live: demo-live-effects-and-buses ## Run the newest optimized graphical live demo
+
+demo-live-mixer: ## Run the dedicated sixteen-track Mixer demo with a real window, MIDI probes, and physical audio
+	cargo run --release --bin crest-synth -- --demo-live-mixer
 
 demo-live-effects-and-buses: ## Run the cumulative effects-and-buses demo with a real window and physical audio
 	cargo run --release --bin crest-synth -- --demo-live-effects-and-buses

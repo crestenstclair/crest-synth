@@ -5,8 +5,8 @@ use crate::control::event_log::EventLog;
 use crate::control::event_record::{EmittedEvent, EventInput, EventOutcome, EventSource, MidiKind};
 use crate::control::state_tree::StateTree;
 use crate::control::{
-    GraphicalShellProjection, InteractionMode, MixerControlId, SemanticControlId, SurfaceId,
-    TopLevelContext,
+    GraphicalShellProjection, InteractionMode, MixerControlId, SemanticAction, SemanticControlId,
+    SemanticSurfaceSummary, SurfaceId, TopLevelContext,
 };
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -193,6 +193,14 @@ impl LiveShellCoverage {
         self.physical_audio_nonzero
     }
 
+    pub const fn mixer_inspector_observed(&self) -> bool {
+        self.mixer_inspector_observed
+    }
+
+    pub const fn mixer_return_observed(&self) -> bool {
+        self.mixer_return_observed
+    }
+
     pub const fn qualifying_frames(&self) -> u64 {
         self.qualifying_frames
     }
@@ -277,6 +285,78 @@ pub struct LiveMixerRoutingEvidence {
     stable_focus_exact: bool,
     callback_allocations: usize,
     callback_destructions: usize,
+}
+
+/// Truthful result for the optional multi-select interaction in the dedicated
+/// Mixer scene. The current reducer does not advertise that action, so the
+/// scene reports `notImplemented` rather than fabricating selection marks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LiveMixerMultiSelectResult {
+    Exercised,
+    NotImplemented,
+}
+
+/// Mixer-specific scene facts retained before physical teardown. Counts are
+/// measured from the descriptor-derived expected/exercised coverage sets;
+/// Inspector correlation comes from the canonical semantic projection and a
+/// generation-correlated painted-frame witness.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveMixerSceneEvidence {
+    focus_pairs_expected: usize,
+    focus_pairs_exercised: usize,
+    focus_matrix_exact: bool,
+    level_edits_exact: bool,
+    pan_edits_exact: bool,
+    mute_edits_exact: bool,
+    solo_edits_exact: bool,
+    indexed_send_edits_expected: usize,
+    indexed_send_edits_exercised: usize,
+    inspector_painted: bool,
+    inspector_return_painted: bool,
+    inspector_projection_exact: bool,
+    selected_track_meter_correlated: bool,
+    multi_select: LiveMixerMultiSelectResult,
+    multi_select_truthful: bool,
+    milestone_timeout_ms: u64,
+    total_timeout_ms: u64,
+}
+
+impl LiveMixerSceneEvidence {
+    pub const FOCUS_PAIRS: usize = MixerTrackId::COUNT * MixerTrackParameter::MAIN.len();
+    pub const INDEXED_SEND_EDITS: usize = MixerTrackId::COUNT * 2;
+
+    pub const fn is_complete(&self) -> bool {
+        self.focus_pairs_expected == Self::FOCUS_PAIRS
+            && self.focus_pairs_exercised == Self::FOCUS_PAIRS
+            && self.focus_matrix_exact
+            && self.level_edits_exact
+            && self.pan_edits_exact
+            && self.mute_edits_exact
+            && self.solo_edits_exact
+            && self.indexed_send_edits_expected == Self::INDEXED_SEND_EDITS
+            && self.indexed_send_edits_exercised == Self::INDEXED_SEND_EDITS
+            && self.inspector_painted
+            && self.inspector_return_painted
+            && self.inspector_projection_exact
+            && self.selected_track_meter_correlated
+            && self.multi_select_truthful
+            && self.milestone_timeout_ms > 0
+            && self.total_timeout_ms > self.milestone_timeout_ms
+    }
+
+    pub const fn focus_pairs_exercised(&self) -> usize {
+        self.focus_pairs_exercised
+    }
+
+    pub const fn indexed_send_edits_exercised(&self) -> usize {
+        self.indexed_send_edits_exercised
+    }
+
+    pub const fn multi_select(&self) -> LiveMixerMultiSelectResult {
+        self.multi_select
+    }
 }
 
 impl LiveMixerRoutingEvidence {
@@ -1355,6 +1435,12 @@ impl LiveDemoReport {
         self.mixer_routing
     }
 
+    /// Dedicated Mixer-scene evidence. Other retained scene identities do
+    /// not acquire this report implicitly, which keeps their schemas stable.
+    pub fn live_mixer(&self) -> Option<LiveMixerSceneEvidence> {
+        (self.scene == "live-mixer").then(|| measure_live_mixer(self))
+    }
+
     pub fn summary(&self) -> &str {
         &self.summary
     }
@@ -1362,6 +1448,165 @@ impl LiveDemoReport {
     pub fn to_json(&self) -> Result<String, LiveDemoReportError> {
         serde_json::to_string(self).map_err(|_| LiveDemoReportError::Serialization)
     }
+}
+
+fn measure_live_mixer(report: &LiveDemoReport) -> LiveMixerSceneEvidence {
+    let is_main =
+        |identifier: &&String| identifier.starts_with("track.T") && !identifier.contains(".sends[");
+    let is_send = |identifier: &&String| identifier.contains(".sends[");
+    let expected_main = report.coverage.expected().iter().filter(is_main).count();
+    let exercised_main = report.coverage.exercised().iter().filter(is_main).count();
+    let expected_sends = report.coverage.expected().iter().filter(is_send).count();
+    let exercised_sends = report.coverage.exercised().iter().filter(is_send).count();
+    let class_exact = |name: &str| {
+        let suffix = format!(".{name}");
+        MixerTrackId::ALL.into_iter().all(|track_id| {
+            report
+                .coverage
+                .exercised()
+                .contains(&format!("track.{track_id}{suffix}"))
+        })
+    };
+
+    let semantic = report.graphical_shell.semantic_model();
+    let inspector_projection_exact =
+        mixer_inspector_projection_is_exact(semantic, report.state_tree.json());
+    let multi_select_advertised = semantic.valid_actions().iter().any(|action| {
+        action.action() == &SemanticAction::SetInteractionMode(InteractionMode::MultiSelect)
+    });
+    let multi_select_exercised = report.event_log.records().iter().any(|record| {
+        record.outcome() == EventOutcome::Accepted
+            && matches!(
+                record.input(),
+                EventInput::SetInteractionMode {
+                    mode: InteractionMode::MultiSelect
+                }
+            )
+    });
+    let multi_select = if multi_select_advertised && multi_select_exercised {
+        LiveMixerMultiSelectResult::Exercised
+    } else {
+        LiveMixerMultiSelectResult::NotImplemented
+    };
+
+    LiveMixerSceneEvidence {
+        focus_pairs_expected: expected_main,
+        focus_pairs_exercised: exercised_main,
+        focus_matrix_exact: expected_main == LiveMixerSceneEvidence::FOCUS_PAIRS
+            && exercised_main == LiveMixerSceneEvidence::FOCUS_PAIRS
+            && report
+                .coverage
+                .missing()
+                .iter()
+                .all(|id| !id.starts_with("track.T")),
+        level_edits_exact: class_exact(MixerTrackParameter::Level.name()),
+        pan_edits_exact: class_exact(MixerTrackParameter::Pan.name()),
+        mute_edits_exact: class_exact(MixerTrackParameter::Mute.name()),
+        solo_edits_exact: class_exact(MixerTrackParameter::Solo.name()),
+        indexed_send_edits_expected: expected_sends,
+        indexed_send_edits_exercised: exercised_sends,
+        inspector_painted: report.shell_coverage.mixer_inspector_observed(),
+        inspector_return_painted: report.shell_coverage.mixer_return_observed(),
+        inspector_projection_exact,
+        selected_track_meter_correlated: report.mixer_routing.pre_gate_meters_exact(),
+        multi_select,
+        multi_select_truthful: !multi_select_advertised || multi_select_exercised,
+        milestone_timeout_ms: u64::try_from(
+            crate::testing::live_demo_runner::LIVE_DEMO_NO_PROGRESS_TIMEOUT.as_millis(),
+        )
+        .unwrap_or(u64::MAX),
+        total_timeout_ms: u64::try_from(
+            crate::testing::live_demo_runner::LIVE_DEMO_TOTAL_TIMEOUT.as_millis(),
+        )
+        .unwrap_or(u64::MAX),
+    }
+}
+
+fn mixer_inspector_projection_is_exact(
+    semantic: &crate::control::SemanticGraphicalViewModel,
+    state_tree_json: &str,
+) -> bool {
+    let Some(main) = semantic.surface(SurfaceId::MixerMain) else {
+        return false;
+    };
+    let Some(inspector) = semantic.surface(SurfaceId::MixerInspector) else {
+        return false;
+    };
+    let Some(focused) = main.controls().iter().find(|control| control.focused()) else {
+        return false;
+    };
+    let SemanticControlId::Mixer(focused_id) = focused.path().control_id() else {
+        return false;
+    };
+    let Some(focused_track) = focused_id.track_id() else {
+        return false;
+    };
+    let SemanticSurfaceSummary::MixerInspector {
+        focused_control,
+        focused_track: summary_track,
+        routed_patches,
+        ..
+    } = inspector.summary()
+    else {
+        return false;
+    };
+    if focused_control != focused_id || *summary_track != focused_track {
+        return false;
+    }
+    let sends_exact = inspector.controls().len() >= crate::mixer::bus_id::BusId::COUNT
+        && crate::mixer::bus_id::BusId::ALL
+            .into_iter()
+            .zip(inspector.controls().iter())
+            .all(|(bus, control)| {
+                matches!(
+                    control.path().control_id(),
+                    SemanticControlId::Mixer(MixerControlId::Send {
+                        track_id,
+                        bus: control_bus,
+                    }) if *track_id == focused_track && *control_bus == bus
+                ) && control.numeric_range().is_some()
+            });
+    let main_values_exact = main.controls().iter().all(|control| {
+        matches!(
+            control.path().control_id(),
+            SemanticControlId::Mixer(MixerControlId::Track { parameter, .. })
+                if control.numeric_range().is_some()
+                    == matches!(
+                        parameter,
+                        MixerTrackParameter::Level | MixerTrackParameter::Pan
+                    )
+        )
+    });
+    let expected_routes = serde_json::from_str::<serde_json::Value>(state_tree_json)
+        .ok()
+        .and_then(|tree| {
+            tree.get("patches")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
+        .map(|patches| {
+            patches
+                .iter()
+                .filter(|patch| {
+                    patch
+                        .pointer("/output/trackId")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(focused_track.index() as u64)
+                })
+                .filter_map(|patch| {
+                    Some((
+                        u32::try_from(patch.get("id")?.as_u64()?).ok()?,
+                        patch.get("name")?.as_str()?.to_owned(),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let projected_routes = routed_patches
+        .iter()
+        .map(|patch| (patch.patch_id().value(), patch.patch_name().to_owned()))
+        .collect::<Vec<_>>();
+    sends_exact && main_values_exact && projected_routes == expected_routes
 }
 
 fn measure_mixer_routing(

@@ -467,6 +467,30 @@ All sixteen faders remain visible at 1920×1080. The persistent mixer tracks are
 - Shift+Up returns to Patch.
 - Focus uses cyan; mute and solo pair warning/positive color with explicit `M ON` or `S ON` text.
 
+The main bank carries one reducer-owned `(MixerTrackId, MixerTrackParameter)`
+focus. Column emphasis identifies the track, and a text or shape mark identifies
+the focused Level, Pan, Mute, or Solo row; color alone never leaves the row
+ambiguous. Density is presentation, not interaction state: changing between the
+authored 1920×1080 and 1280×800 policies reflows the same sixteen semantic
+identities, dispatches no event, and preserves the exact focused track and row.
+
+The Inspector remains visible while the bank owns focus. Its correlation header
+is pinned and names the selected track and control, formatted value and range,
+mute/solo state, pre-gate meter, and every Patch routed to the track (or `EMPTY`).
+The body is independently scrollable because its schema-driven send, return, and
+global row set is not bounded by panel height. It follows the resolver's stable
+send → return → global order and reveals the element carrying the exact active
+`FocusPath` after navigation or density reflow; scroll offset is presentation
+state and never becomes a selection index. Entering the Inspector records a
+semantic return path, and leaving restores the exact originating main row.
+
+Every column paints its own passive pre-gate meter from the newest compatible
+decimated `AudioObservationSnapshot`; the Inspector paints the selected track's
+numeric reading from that same frame. Compatibility requires both the painted
+parameter generation and active graph revision. Missing or stale data paints an
+explicit zero/stale state. Meter repaint owns no history, focus, or application
+mutation and remains outside the hard-real-time callback.
+
 ### Semantic controls
 
 Physical bindings are adapter configuration:
@@ -510,6 +534,11 @@ Explicit modes are:
 - `Adjust` — amber 3 px keyline while editing;
 - `Modal` — focus trapped in a choice/browser surface;
 - `MultiSelect` — visibly distinct and never color-only.
+
+`MultiSelect` is advertised only when canonical reducer state owns stable
+selected identities and defines the edit target semantics. A surface or demo
+must omit the action and report it as not implemented while those semantics are
+unavailable; a UI-local class or selection array is never an implementation.
 
 The footer echoes the current context/path and only actions valid at the focused target.
 
@@ -620,10 +649,23 @@ A completed behavior must be distinguishable from a no-op:
 - **DSP:** finite measured peak/RMS, stereo routing, mute/solo, synthesis → Patch effect → mix order, target-only Chorus difference and stereo side energy, independent effect instances/tails, `16 × N` Patch-local Braids scaling, deterministic Patch-local stealing, engine-managed SoundFont polyphony, and independent overlapping-note envelopes in both engines.
 - **RT:** allocator instrumentation, callback timing, overflow recovery, graph swap, off-thread destruction.
 - **Assets:** real SF2/sample fixtures, exact authored preset names, bank/program ordering, preset identity, malformed input, loop bounds, and atomic replacement.
-- **UI:** golden images at 1920×1080 and 1280×800, semantic tokens, single focus, complete controller navigation, modal return.
+- **UI:** golden images at 1920×1080 and 1280×800, semantic tokens, single focus, complete controller navigation, modal return, all sixteen Mixer columns and compatible meters, row-specific Mixer focus, and a pinned/reachable Inspector whose route and send correlation survives density changes.
 - **Integration:** standalone, fixture, and synthetic inputs use the production reducer and render path; the production fixture alternates SoundFont and Braids Patches and configures Chorus only on its first Patch. The deterministic demo modifies both focused-Patch output fields, all six parameters on every one of the sixteen tracks, every focused-Patch ADSR value, both Chorus scalars, and every global value through canonical navigation and adjustment; proves shared-track accumulation, trim/reroute isolation, exact pre/post-effect and gate/send/meter order, target isolation, independent instances, stereo output, and no fallback; selects adjacent SoundFont presets by exact catalog identity; then selects SoundFont → Braids → descriptor-default SoundFont through the same worker, reducer, complete graph handoff, and renderer while preserving Patch outputs, MixerState, and effect config/layout. It also proves catalog order/name fidelity, pending/busy/failure/stale handling, scalar/structural coexistence, block-boundary activation, off-callback retirement, target-only mutation, finite distinct output, and two-run logical determinism. The paced physical-device demo sounds two Patches through one track, exercises all sixteen track identities and both Patch-output controls with exact-generation observations, visibly and audibly edits both Chorus scalars before the structural sequence, waits for every acknowledged graph revision, restores descriptor-default SoundFont with Chorus still configured, performs semantic note cleanup, closes the window, releases the stream and worker, collects graph ownership, and exits normally; exhaustive negative-path, sample-exact routing, independent-instance, and two-run proof remains headless.
 
 Offline render is the deterministic audio proof. Device smoke tests separately validate negotiation and underruns. Construction-only tests, success-token logs, and silent output are not evidence.
+
+`make demo-live-mixer` is an additive optimized physical-audio witness; it does
+not replace retained live targets or retarget the `demo-live` alias. Its bounded
+scene sends real MIDI through multiple Patches on shared and isolated tracks,
+visits every T00–T0F identity on each Level, Pan, Mute, and Solo row, exercises
+accepted level, pan, mute, solo, and indexed-send edits, and correlates canonical
+state, parameter snapshots, the painted bank/Inspector, compatible meters, and
+newer finite nonzero physical render observations. Its typed report proves
+target isolation, shared accumulation, pan channel movement, mute precedence,
+solo exclusion, post-gate sends, indexed returns, semantic cleanup, and bounded
+window/device/worker teardown. Multi-select is exercised only when canonical
+valid actions expose it; otherwise the report records `notImplemented` and
+claims no coverage.
 
 `make demo-live` keeps the complete lossless `EventLog` in its typed report for
 verification, but terminal output emits a compact
@@ -712,7 +754,7 @@ An architecture change must preserve the one-way state path and callback contrac
 - PATCH structural editability is descriptor-owned. The engine row and parameters classified `StructuralChoice` share one reducer/application-coordinator lifecycle, one in-flight limit, and one prepared-graph handoff; locked assets and Braids Scalar rows remain read-only on PATCH.
 - PATCH focus is the reducer-owned nonwrapping order Engine → Attack → Decay → Sustain → Release → active instrument `StructuralChoice` controls → configured effect `ScalarEdit` controls. The four ADSR rows reuse `VoiceEnvelopeParameter`, and instrument/effect controls reuse `ParameterId` plus stable effect-slot identity; none creates UI-owned state or duplicate field enums.
 - The PATCH main workspace is a composed strip, not a flat control list: an identity-and-routing header, the instrument selector, the envelope group, and one titled group per ordered effect slot with that slot's occupant parameters nested beneath it. Grouping is structure, not decoration — a flat run erases which rows belong to which slot.
-- The PATCH Utility panel is exactly five rows — master volume, patch volume, MIDI input, output track, voice limit — bounded by declaration rather than by what fits. Five rows seat inside the persistent side region at both authored viewports, so the panel needs no scroll affordance. The MIXER Inspector's row set is not bounded this way and its overflow remains an open decision for the phase that owns that surface.
+- The PATCH Utility panel is exactly five rows — master volume, patch volume, MIDI input, output track, voice limit — bounded by declaration rather than by what fits. Five rows seat inside the persistent side region at both authored viewports, so the panel needs no scroll affordance. The MIXER Inspector instead keeps its correlation header pinned and its schema-driven send → return → global body independently scrollable; semantic focus reveals the exact row after navigation or density reflow and no scroll/index value owns selection.
 - Master gain has exactly one canonical owner, reachable from two surfaces. PATCH Utility's master volume and the MIXER Inspector's master gain address the same `GlobalParameters` value through the same descriptor; PATCH owns no copy and shadows nothing.
 - Each Patch owns a canonical voice limit in 1..=64, seeded at installation from its active engine's declared polyphony ceiling and edited as a stepped control from PATCH Utility. Enforcement **refuses rather than steals**: a note-on arriving while the Patch already sounds its limit is not started, and no latched voice is truncated. This matches the reducer's refuse-rather-than-wrap idiom everywhere else, and it is the falsifiable half of the pair — a defeated limit shows as a note that sounded, where stealing would show only as a different note stopping. A limit lowered below the sounding count applies at the next note-on; the callback never ends a voice out of band.
 - One subordinate `PatchDetail` surface serves both instrument and effect subjects. Its title, accent, sections, values, ranges, units, status, and errors come entirely from the descriptor its subject names, so the surface branches on no capability. Phase 5 builds this shell; Phase 7 completes its content (sample detail, waveform landmarks) and the choice modals. Subordinate surfaces do not nest, and leaving one restores the exact originating row.
@@ -737,6 +779,10 @@ An architecture change must preserve the one-way state path and callback contrac
 - Discrete events, scalar snapshots, and structural graphs cross the RT boundary differently.
 - Structural audio state is prepared and destroyed off the callback.
 - The authored mixer has sixteen tracks; patch and voice capacity remain explicit runtime bounds.
+- MIXER focus is one stable reducer-owned track/control path. Density reflow dispatches no event, and the bank uses row-specific text or shape plus track emphasis so focus is never color-only.
+- All sixteen Mixer meters and the Inspector numeric meter paint from one newest generation/revision-compatible decimated audio observation. Missing or stale observations paint an explicit zero/stale state and never mutate application state.
+- Multi-select is truthful capability-gated behavior: it is visible and demonstrable only when the reducer owns stable selected identities and defined target semantics; otherwise the UI omits it and the live Mixer report records `notImplemented`.
+- `make demo-live-mixer` is additive to retained demo targets and leaves the `demo-live` alias unchanged. It owns the physical-audio proof of the complete Mixer workspace, sixteen-by-four focus traversal, Inspector/meter correlation, and audible target/routing isolation.
 - The authored color set is the union of the design file's published variables and this document's table. The design file publishes a selected-row background this document omitted; this document declares elevated, strong border, patch, and chorus accents the design file does not publish as variables. Neither source is trimmed to match the other, so the vocabulary holds seventeen semantic colors.
 - The Steam Deck density policy is authored from the desktop frames and the declared minimums, not measured from an authored small-viewport design, because no such design exists.
 - Loading and error appearances reuse the structural-edit vocabulary this document already declares — the `Preparing`/`Activating` treatment and the typed-failure text — rather than inventing a second visual language.

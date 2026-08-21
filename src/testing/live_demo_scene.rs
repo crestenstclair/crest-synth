@@ -888,6 +888,18 @@ impl LiveDemoScene {
         })
     }
 
+    /// The additive Mixer witness. It deliberately reuses the frozen
+    /// production-path scene plan: that plan already traverses every one of
+    /// the 16×4 main controls, opens each track's Inspector, edits two
+    /// audible indexed sends per track, walks returns/globals, and carries
+    /// real MIDI probes throughout. Only the scene identity differs, so the
+    /// retained sixteen-track target and the `demo-live` alias do not move.
+    pub fn mixer_from_installed_state(tree: &StateTree) -> Result<Self, LiveDemoSceneError> {
+        let mut scene = Self::from_installed_state(tree)?;
+        scene.name = "live-mixer".to_owned();
+        Ok(scene)
+    }
+
     /// Extends one frozen base scene into the retained cumulative
     /// effects-and-buses scene by appending the ordered topology transitions
     /// the runner drives after the engine phase. The scalar steps, engine

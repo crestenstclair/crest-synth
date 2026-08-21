@@ -237,14 +237,48 @@ body {
     );
 }
 
+/* While the Inspector owns focus, its origin track remains correlated by a
+ * dashed emphasis keyline. This is a shape change, not a color-only cue. */
+.column.correlated {
+  background: var(--color-bg-panel);
+  border-left: var(--keyline-emphasis) dashed var(--color-accent-focus);
+}
+
 /* LevelFader — the dominant structure at both authored viewports. */
 .level-fader {
+  position: relative;
   flex: 1;
   align-self: stretch;
   display: flex;
   justify-content: center;
   min-height: 0;
   margin: var(--space-8) 0;
+}
+
+.level-fader[data-row-state="focused"],
+.pan-readout[data-row-state="focused"],
+.state-part[data-row-state="focused"] {
+  outline: var(--keyline-emphasis) solid var(--color-accent-focus);
+  outline-offset: calc(-1 * var(--keyline-emphasis));
+}
+
+.level-fader[data-row-state="adjusting"],
+.pan-readout[data-row-state="adjusting"],
+.state-part[data-row-state="adjusting"] {
+  outline: var(--keyline-emphasis) double var(--color-accent-adjust);
+  outline-offset: calc(-1 * var(--keyline-emphasis));
+}
+
+.level-fader[data-row-state="error"],
+.pan-readout[data-row-state="error"],
+.state-part[data-row-state="error"] {
+  outline: var(--keyline-emphasis) dashed var(--color-accent-warning);
+}
+
+.level-fader[data-row-state="disabled"],
+.pan-readout[data-row-state="disabled"],
+.state-part[data-row-state="disabled"] {
+  border-bottom: var(--keyline-resting) dotted var(--color-border-strong);
 }
 
 .level-fader.unavailable {
@@ -285,6 +319,42 @@ body {
   );
 }
 
+/* Passive per-track observation: one narrow rail beside each fader. It has
+ * no control identity and therefore never enters semantic focus order. */
+.track-meter {
+  position: absolute;
+  top: 0;
+  right: var(--space-4);
+  bottom: 0;
+  width: var(--space-4);
+  overflow: hidden;
+  border: var(--keyline-resting) solid var(--color-border-strong);
+  border-radius: var(--radius-small);
+  background: var(--color-bg-canvas);
+}
+
+.track-meter-fill {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: calc(var(--meter-rms, 0) * 100%);
+  background: var(--color-accent-positive);
+}
+
+.track-meter[data-meter-state="stale"] {
+  border-style: dashed;
+}
+
+.track-meter[data-meter-state="zero"]::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-top: var(--keyline-emphasis) solid var(--color-text-muted);
+}
+
 /* Fill color by state; each state is also carried by text or shape (the
  * StateLine marks, the keyline, the disabled dimming of the whole column). */
 .level-fader[data-state="focused"] .fader-fill {
@@ -308,11 +378,24 @@ body {
 }
 
 .pan-readout {
+  display: flex;
+  align-items: center;
+  min-height: var(--min-interactive-target);
+  padding: 0 var(--space-4);
   margin-top: var(--space-8);
 }
 
 .state-line {
+  display: flex;
+  align-items: center;
+  min-height: var(--min-interactive-target);
   margin-top: var(--space-4);
+}
+
+.state-part {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
 }
 
 /* ---- the PATCH strip ----------------------------------------------------
@@ -682,6 +765,55 @@ body {
   flex-direction: column;
   gap: var(--space-12);
   overflow: hidden;
+}
+
+.inspector-pinned {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-bottom: var(--space-8);
+  border-bottom: var(--keyline-emphasis) solid var(--color-border-strong);
+}
+
+.inspector-reading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-12);
+}
+
+.inspector-meter {
+  margin-left: auto;
+}
+
+.route-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  list-style: none;
+}
+
+.route-list li {
+  display: flex;
+  gap: var(--space-12);
+}
+
+.route-id {
+  color: var(--color-accent-patch);
+}
+
+.empty-route {
+  border: var(--keyline-resting) dashed var(--color-border-strong);
+  padding: var(--space-4);
+}
+
+.inspector-controls {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 
 #inspector .big-readout {

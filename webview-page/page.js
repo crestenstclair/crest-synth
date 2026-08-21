@@ -229,11 +229,13 @@
   // which row heads it — and never painted; the same way the mixer bank
   // groups its columns by `id.trackId`.
   function controlIdOf(control) {
-    return String(
+    var id =
       control && control.path && control.path.controlId
         ? control.path.controlId.id
-        : ""
-    );
+        : "";
+    return id !== null && typeof id === "object"
+      ? JSON.stringify(id)
+      : String(id);
   }
 
   // One surface's control by identity, or null.
@@ -281,6 +283,21 @@
       }
     }
     return false;
+  }
+
+  function columnFocusedRow(column) {
+    var parameters = ["level", "pan", "mute", "solo"];
+    for (var i = 0; i < parameters.length; i += 1) {
+      var parameter = parameters[i];
+      if (column[parameter] && column[parameter].focused) {
+        return parameter;
+      }
+    }
+    return null;
+  }
+
+  function mixerRowState(control, mode) {
+    return control ? controlState(control, mode).name : "unavailable";
   }
 
   // Fill/emphasis state for the column's fader, resolved in declared
@@ -346,7 +363,14 @@
   function focusedTrackId(model) {
     var id =
       model.focusPath && model.focusPath.controlId && model.focusPath.controlId.id;
-    return id && id.kind === "track" ? id.trackId : null;
+    if (id && (id.kind === "track" || id.kind === "send")) {
+      return id.trackId;
+    }
+    var inspector = surfaceById(model, "mixerInspector");
+    var summary = (inspector && inspector.summary) || null;
+    return summary && summary.kind === "mixerInspector"
+      ? summary.focusedTrack
+      : null;
   }
 
   function statusToneClass(status) {
@@ -612,8 +636,11 @@
     );
   }
 
-  function columnHtml(column) {
+  function columnHtml(column, model) {
     var focused = columnFocused(column);
+    var correlated = focusedTrackId(model) === column.trackId;
+    var focusedRow = columnFocusedRow(column);
+    var mode = model.interactionMode;
     var state = faderState(column);
     var header =
       '<span class="structure track-header type-label ' +
@@ -626,24 +653,37 @@
     if (column.level) {
       var level = fraction(column.level).toFixed(6);
       fader =
-        '<div class="structure level-fader" data-structure="LevelFader" data-state="' +
+        '<div class="structure level-fader" data-structure="LevelFader"' +
+        ' data-control-row="level" data-row-state="' +
+        mixerRowState(column.level, mode) +
+        '" data-state="' +
         state +
         '" data-level="' +
         level +
         '">' +
         '<div class="fader-track"><div class="fader-fill"></div>' +
-        '<div class="fader-cap"></div></div></div>';
+        '<div class="fader-cap"></div></div>' +
+        '<div class="track-meter" data-meter-track="' +
+        column.trackId +
+        '" data-meter-state="stale" aria-label="' +
+        trackName(column.trackId) +
+        ' meter stale"><div class="track-meter-fill"></div></div></div>';
     } else {
       fader =
         '<div class="structure level-fader unavailable" data-structure="LevelFader"' +
+        ' data-control-row="level" data-row-state="unavailable"' +
         ' data-state="unavailable"><span class="type-hint muted">' +
         UNAVAILABLE +
-        "</span></div>";
+        '</span><div class="track-meter" data-meter-track="' +
+        column.trackId +
+        '" data-meter-state="stale" aria-label="' +
+        trackName(column.trackId) +
+        ' meter stale"><div class="track-meter-fill"></div></div></div>';
     }
 
     var readout = column.level
       ? '<span class="structure level-readout type-value ' +
-        (focused ? "focus" : "patch") +
+        (column.level.focused ? "focus" : "patch") +
         '" data-structure="LevelReadout">' +
         midiHex(column.level) +
         "</span>"
@@ -653,7 +693,10 @@
         "</span>";
 
     var pan = column.pan
-      ? '<span class="structure pan-readout type-hint" data-structure="PanReadout">' +
+      ? '<span class="structure pan-readout type-hint" data-structure="PanReadout"' +
+        ' data-control-row="pan" data-row-state="' +
+        mixerRowState(column.pan, mode) +
+        '">' +
         '<span class="muted">P</span> <span class="secondary">' +
         panCondition(column.pan) +
         "</span></span>"
@@ -669,13 +712,21 @@
     if (column.mute || column.solo) {
       var mutePart = column.mute
         ? toggleOn(column.mute)
-          ? '<span class="warning">M ON</span>'
-          : '<span class="muted">M --</span>'
+          ? '<span class="state-part warning" data-control-row="mute" data-row-state="' +
+            mixerRowState(column.mute, mode) +
+            '">M ON</span>'
+          : '<span class="state-part muted" data-control-row="mute" data-row-state="' +
+            mixerRowState(column.mute, mode) +
+            '">M --</span>'
         : '<span class="muted">M ' + UNAVAILABLE + "</span>";
       var soloPart = column.solo
         ? toggleOn(column.solo)
-          ? '<span class="positive">S ON</span>'
-          : '<span class="muted">S --</span>'
+          ? '<span class="state-part positive" data-control-row="solo" data-row-state="' +
+            mixerRowState(column.solo, mode) +
+            '">S ON</span>'
+          : '<span class="state-part muted" data-control-row="solo" data-row-state="' +
+            mixerRowState(column.solo, mode) +
+            '">S --</span>'
         : '<span class="muted">S ' + UNAVAILABLE + "</span>";
       // The separator carries no surrounding spaces: the authored "M --" /
       // "S ON" marks plus a bare interpunct measure 72 px in the hint
@@ -698,9 +749,11 @@
 
     return (
       '<div class="column' +
-      (focused ? " focused" : "") +
+      (focused ? " focused" : correlated ? " correlated" : "") +
       '" data-track="' +
       column.trackId +
+      '" data-focused-row="' +
+      (focusedRow === null ? "" : focusedRow) +
       '">' +
       header +
       fader +
@@ -716,7 +769,7 @@
   // the meter listener may overwrite it.
   function meterHtml(model) {
     return (
-      '<span class="type-value secondary meter" id="meter-readout">' +
+      '<span class="type-value secondary meter" id="meter-readout" data-meter-state="stale" aria-label="selected track meter stale">' +
       (focusedTrackId(model) === null ? "" : "METER 0.000") +
       "</span>"
     );
@@ -750,7 +803,7 @@
     if (columns.length > 0) {
       var cells = "";
       for (var i = 0; i < columns.length; i += 1) {
-        cells += columnHtml(columns[i]);
+        cells += columnHtml(columns[i], model);
       }
       bank = '<div class="bank" id="bank">' + cells + "</div>";
     } else {
@@ -824,6 +877,28 @@
   function patchRowHtml(control, mode, role) {
     var state = controlState(control, mode);
     var id = controlIdOf(control);
+    var focusPath = JSON.stringify(control.path || null);
+    var semanticId =
+      control && control.path && control.path.controlId
+        ? control.path.controlId.id
+        : null;
+    var mixerAttributes = "";
+    if (semanticId && typeof semanticId === "object") {
+      mixerAttributes +=
+        ' data-mixer-kind="' + escapeHtml(String(semanticId.kind || "")) + '"';
+      if (semanticId.trackId !== undefined) {
+        mixerAttributes += ' data-mixer-track="' + semanticId.trackId + '"';
+      }
+      if (semanticId.bus !== undefined) {
+        mixerAttributes += ' data-mixer-bus="' + semanticId.bus + '"';
+      }
+      if (semanticId.parameter !== undefined) {
+        mixerAttributes +=
+          ' data-mixer-parameter="' +
+          escapeHtml(String(semanticId.parameter)) +
+          '"';
+      }
+    }
     var locked = readOnly(control);
     // A read-only row says READ-ONLY rather than the generic "Locked": the
     // declaration is the more specific fact and both are the same mark slot.
@@ -874,9 +949,12 @@
       (role === "panel" ? " panel" : "") +
       '" data-control="' +
       escapeHtml(id) +
+      '" data-focus-path="' +
+      escapeHtml(focusPath) +
       '" data-state="' +
       state.name +
       '"' +
+      mixerAttributes +
       (control.patchInteraction
         ? ' data-interaction="' + escapeHtml(String(control.patchInteraction)) + '"'
         : "") +
@@ -1492,12 +1570,28 @@
     );
   }
 
-  // The MIXER Inspector reading (unchanged from the shipped MIXER page).
+  function mixerIdentity(control, id) {
+    if (control && control.label) {
+      var label = String(control.label);
+      var match = label.match(/^(T[0-9A-Fa-f]{2})\s+(.+)$/);
+      return match
+        ? match[1].toUpperCase() + " / " + match[2].toUpperCase()
+        : label.toUpperCase();
+    }
+    return id && id.kind === "track"
+      ? trackName(id.trackId) + " / " + String(id.parameter).toUpperCase()
+      : UNAVAILABLE;
+  }
+
+  // The persistent MIXER Inspector: a correlation header bound to the
+  // selected main-track control and a separately scrollable body composed
+  // from the Inspector surface's canonical FocusPath-ordered controls.
   function mixerInspectorHtml(model, inspector) {
     var main = surfaceById(model, "mixerMain");
-
+    var summary = inspector.summary || {};
     var trackId = focusedTrackId(model);
-    var focused = focusedControl(model);
+    var correlatedId = summary.focusedControl || null;
+    var focused = controlById(main, JSON.stringify(correlatedId || null));
     var columns = trackColumns(main);
     var column = null;
     for (var i = 0; i < columns.length; i += 1) {
@@ -1558,51 +1652,61 @@
         "</tbody></table>";
     }
 
-    // The focused track's sends, in the surface's declared order.
-    var sendRows = "";
+    var routes = summary.routedPatches || [];
+    var routeRows = "";
+    for (var p = 0; p < routes.length; p += 1) {
+      routeRows +=
+        '<li data-route="' +
+        p +
+        '" data-patch-id="' +
+        escapeHtml(String(routes[p].patchId)) +
+        '" data-patch-name="' +
+        escapeHtml(String(routes[p].patchName)) +
+        '"><span class="route-id">P' +
+        String(routes[p].patchId).padStart(2, "0") +
+        '</span><span class="route-name">' +
+        escapeHtml(String(routes[p].patchName)) +
+        "</span></li>";
+    }
+    var routing = routeRows
+      ? '<ul class="route-list type-hint secondary" data-role="routes">' +
+        routeRows +
+        "</ul>"
+      : '<span class="type-hint muted empty-route" data-role="routes">EMPTY</span>';
+
+    var controlRows = "";
     var controls = inspector.controls || [];
     for (var c = 0; c < controls.length; c += 1) {
-      var control = controls[c];
-      var id = control.path.controlId.id;
-      if (!id || id.kind !== "send" || id.trackId !== trackId) {
-        continue;
+      if (controls[c].visible) {
+        controlRows += patchRowHtml(controls[c], model.interactionMode, "panel");
       }
-      var label = String(control.label)
-        .replace(/^T[0-9A-Fa-f]{2}\s+/, "")
-        .toUpperCase();
-      sendRows +=
-        '<tr data-send="' +
-        id.bus +
-        '"><td>' +
-        escapeHtml(label) +
-        "</td><td>" +
-        midiDecimal(control) +
-        "</td></tr>";
     }
-    var sends = sendRows
-      ? '<div class="rule"></div>' +
-        '<table class="type-hint secondary" data-role="sends"><tbody>' +
-        sendRows +
-        "</tbody></table>"
-      : "";
 
     return (
+      '<div class="inspector-pinned" data-role="inspector-correlation">' +
       '<span class="type-label muted">CURSOR</span>' +
       '<span class="type-value focus" data-role="cursor">' +
-      escapeHtml(focusIdentity(model)) +
+      escapeHtml(mixerIdentity(focused, correlatedId)) +
       "</span>" +
-      '<span class="type-display big-readout ' +
+      '<div class="inspector-reading"><span class="type-display big-readout ' +
       bigTone +
       '" data-role="big-readout">' +
       escapeHtml(big) +
       "</span>" +
+      '<span class="type-value secondary inspector-meter" id="inspector-meter-readout" data-meter-state="stale">METER 0.000 / STALE</span></div>' +
       (rangeHint
         ? '<span class="type-hint muted" data-role="readout-range">' +
           escapeHtml(rangeHint) +
           "</span>"
         : "") +
       muteSolo +
-      sends
+      '<div class="rule"></div><span class="type-label muted">ROUTING</span>' +
+      routing +
+      "</div>" +
+      '<div class="inspector-controls" data-role="inspector-controls">' +
+      sideRegionHintLine(model, inspector) +
+      controlRows +
+      "</div>"
     );
   }
 
@@ -1650,6 +1754,25 @@
     }
   }
 
+  // Focus visibility follows the serialized semantic path. The DOM is
+  // searched by identity after every paint/reflow; no row number becomes
+  // application state and scrolling dispatches no semantic event.
+  function revealSemanticFocus(doc, model) {
+    if (!model || model.activeSurface !== "mixerInspector") {
+      return;
+    }
+    var wanted = JSON.stringify(model.focusPath || null);
+    var rows = doc.querySelectorAll(
+      '.inspector-controls [data-focus-path]'
+    );
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i].getAttribute("data-focus-path") === wanted) {
+        rows[i].scrollIntoView({ block: "nearest", inline: "nearest" });
+        return;
+      }
+    }
+  }
+
   // Rebuilds the five shell bands from one deserialized
   // SemanticGraphicalViewModel document. Same document, identical DOM. The
   // context line, identity header, workspace scaffold, side region, and
@@ -1657,6 +1780,7 @@
   // body and the side reading follow the document's own context.
   function render(model) {
     var doc = window.document;
+    latestModel = model;
     var main = surfaceById(model, "mixerMain");
     var columns = trackColumns(main);
     doc.getElementById("context-line").innerHTML = contextLineHtml(model);
@@ -1674,6 +1798,7 @@
     // geometry in the same paint, on the initial render and every re-render
     // alike. render() is the single place projection content enters the DOM.
     applyDynamicGeometry(doc);
+    revealSemanticFocus(doc, model);
   }
 
   // ---- the structural observation (acceptance harness contract) -----------
@@ -1723,14 +1848,32 @@
       for (var s = 0; s < structureNodes.length; s += 1) {
         structures.push(structureNodes[s].getAttribute("data-structure"));
       }
+      var columnMeter = node.querySelector("[data-meter-track]");
       columns.push({
         trackId: Number(node.getAttribute("data-track")),
         header: textOf(node, '[data-structure="TrackHeader"]'),
         structures: structures,
         focused: node.classList.contains("focused"),
+        correlated: node.classList.contains("correlated"),
+        focusedRow: node.getAttribute("data-focused-row") || null,
         levelHex: textOf(node, '[data-structure="LevelReadout"]'),
         pan: textOf(node, '[data-structure="PanReadout"]'),
         stateLine: textOf(node, '[data-structure="StateLine"]'),
+        rowStates: Array.prototype.map.call(
+          node.querySelectorAll("[data-control-row]"),
+          function (row) {
+            return {
+              row: row.getAttribute("data-control-row"),
+              state: row.getAttribute("data-row-state"),
+            };
+          }
+        ),
+        meterState: columnMeter
+          ? columnMeter.getAttribute("data-meter-state")
+          : null,
+        meterLabel: columnMeter
+          ? columnMeter.getAttribute("aria-label")
+          : null,
       });
     }
 
@@ -1848,16 +1991,45 @@
     var inspectorElement = doc.getElementById("inspector");
     var sends = [];
     var sendRows = inspectorElement.querySelectorAll(
-      '[data-role="sends"] tr[data-send]'
+      '.inspector-controls .prow[data-mixer-kind="send"]'
     );
     for (var r2 = 0; r2 < sendRows.length; r2 += 1) {
-      var cells = sendRows[r2].querySelectorAll("td");
+      var sendLabel = textOf(sendRows[r2], ".prow-label") || "";
       sends.push({
-        label: cells[0].textContent.trim(),
-        value: cells[1].textContent.trim(),
+        trackId: Number(sendRows[r2].getAttribute("data-mixer-track")),
+        bus: Number(sendRows[r2].getAttribute("data-mixer-bus")),
+        label: sendLabel.replace(/^T[0-9A-Fa-f]{2}\s+/, "").toUpperCase(),
+        value: textOf(sendRows[r2], ".prow-value"),
       });
     }
     var utility = rowReport(inspectorElement.querySelectorAll(".prow"));
+    var routes = [];
+    var routeNodes = inspectorElement.querySelectorAll("[data-route]");
+    for (var routeIndex = 0; routeIndex < routeNodes.length; routeIndex += 1) {
+      routes.push({
+        patchId: routeNodes[routeIndex].getAttribute("data-patch-id"),
+        patchName: routeNodes[routeIndex].getAttribute("data-patch-name"),
+      });
+    }
+    var inspectorBody = inspectorElement.querySelector(
+      '[data-role="inspector-controls"]'
+    );
+    var inspectorCorrelation = inspectorElement.querySelector(
+      '[data-role="inspector-correlation"]'
+    );
+    var inspectorFocused = inspectorBody
+      ? inspectorBody.querySelector(
+          '.prow[data-state="focused"], .prow[data-state="adjusting"]'
+        )
+      : null;
+    var inspectorFocusedVisible = null;
+    if (inspectorBody && inspectorFocused) {
+      var bodyRect = inspectorBody.getBoundingClientRect();
+      var focusedRect = inspectorFocused.getBoundingClientRect();
+      inspectorFocusedVisible =
+        focusedRect.top >= bodyRect.top - 1 &&
+        focusedRect.bottom <= bodyRect.bottom + 1;
+    }
 
     // What the workspace body actually got, in the window that actually
     // shipped it. `window.innerHeight` is the page's real height, which is not
@@ -1892,7 +2064,9 @@
       };
     }
 
-    var focusedNode = doc.querySelector("#bank .column.focused");
+    var focusedNode = doc.querySelector(
+      "#bank .column.focused, #bank .column.correlated"
+    );
     return {
       generation: model.generation,
       stateHash: model.stateHash,
@@ -1922,8 +2096,18 @@
         bigReadout: textOf(inspectorElement, '[data-role="big-readout"]'),
         mute: textOf(inspectorElement, '[data-role="mute"]'),
         solo: textOf(inspectorElement, '[data-role="solo"]'),
+        routes: routes,
+        emptyRoute: textOf(inspectorElement, ".empty-route"),
         sends: sends,
         utility: utility,
+        controlOrder: utility.map(function (row) {
+          return row.control;
+        }),
+        focusedControl: inspectorFocused
+          ? inspectorFocused.getAttribute("data-control")
+          : null,
+        focusedVisible: inspectorFocusedVisible,
+        meter: textOf(inspectorElement, "#inspector-meter-readout"),
         hintLine: textOf(inspectorElement, '[data-role="utility-hint"]'),
         // The side region seats its entries without a scroll affordance on
         // PATCH: measured, so a relaxed `overflow` shows up as evidence
@@ -1932,6 +2116,12 @@
           0,
           inspectorElement.scrollHeight - inspectorElement.clientHeight
         ),
+        bodyScrollableBy: inspectorBody
+          ? Math.max(0, inspectorBody.scrollHeight - inspectorBody.clientHeight)
+          : 0,
+        correlationHeightPx: inspectorCorrelation
+          ? Math.round(inspectorCorrelation.getBoundingClientRect().height)
+          : 0,
       },
       meter: textOf(doc, "#meter-readout"),
       anatomy: COLUMN_ANATOMY.slice(),
@@ -1952,30 +2142,64 @@
     );
   }
 
-  // Repaints only the meter element: the focused track's rms when the frame
-  // matches the document on screen (same parameterGeneration, same graph
-  // revision), the zero state otherwise — the retired-shell stale rule, verbatim.
+  function meterReading(frame, model, trackId) {
+    var compatible =
+      frame &&
+      frame.parameterGeneration === model.generation &&
+      graphRevisionsMatch(frame, model);
+    var track = compatible && frame.tracks ? frame.tracks[trackId] : null;
+    var rms = track ? Number(track.rms) : 0;
+    if (!track || !Number.isFinite(rms) || rms < 0) {
+      return { rms: 0, state: "stale" };
+    }
+    return { rms: rms, state: rms > 0 ? "active" : "zero" };
+  }
+
+  // Repaints all passive track meters and the selected-track numeric meter
+  // from one compatible latest snapshot. Missing or incompatible values are
+  // explicitly stale; compatible silence is explicitly zero.
   function updateMeter() {
-    var el = window.document.getElementById("meter-readout");
-    if (!el || !latestModel) {
+    var doc = window.document;
+    if (!latestModel) {
       return;
     }
+    var meterNodes = doc.querySelectorAll("[data-meter-track]");
+    for (var i = 0; i < meterNodes.length; i += 1) {
+      var meterTrackId = Number(meterNodes[i].getAttribute("data-meter-track"));
+      var reading = meterReading(latestFrame, latestModel, meterTrackId);
+      meterNodes[i].style.setProperty("--meter-rms", reading.rms.toFixed(6));
+      meterNodes[i].setAttribute("data-meter-state", reading.state);
+      meterNodes[i].setAttribute(
+        "aria-label",
+        trackName(meterTrackId) +
+          " meter " +
+          reading.rms.toFixed(3) +
+          " " +
+          reading.state
+      );
+    }
+
     var trackId = focusedTrackId(latestModel);
-    if (trackId === null) {
-      el.textContent = "";
+    var caption = doc.getElementById("meter-readout");
+    var inspectorMeter = doc.getElementById("inspector-meter-readout");
+    if (trackId === null || !caption) {
+      if (caption) {
+        caption.textContent = "";
+      }
       return;
     }
-    var rms = 0;
-    if (
-      latestFrame &&
-      latestFrame.parameterGeneration === latestModel.generation &&
-      graphRevisionsMatch(latestFrame, latestModel) &&
-      latestFrame.tracks &&
-      latestFrame.tracks[trackId]
-    ) {
-      rms = latestFrame.tracks[trackId].rms;
+    var selected = meterReading(latestFrame, latestModel, trackId);
+    caption.textContent = "METER " + selected.rms.toFixed(3);
+    caption.setAttribute("data-meter-state", selected.state);
+    caption.setAttribute(
+      "aria-label",
+      "selected track meter " + selected.rms.toFixed(3) + " " + selected.state
+    );
+    if (inspectorMeter) {
+      inspectorMeter.textContent =
+        "METER " + selected.rms.toFixed(3) + " / " + selected.state.toUpperCase();
+      inspectorMeter.setAttribute("data-meter-state", selected.state);
     }
-    el.textContent = "METER " + Number(rms).toFixed(3);
   }
 
   // The paint acknowledgment for one painted document: the document's
@@ -2145,6 +2369,12 @@
         : { name: "UnhandledRejection", message: String(event.reason) },
       latestModel
     );
+  });
+
+  window.addEventListener("resize", function () {
+    if (latestModel) {
+      revealSemanticFocus(window.document, latestModel);
+    }
   });
 
   window.crest = { render: render, renderObservation: renderObservation };

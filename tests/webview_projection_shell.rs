@@ -316,6 +316,17 @@ fn production_mixer_state() -> AppState {
     state
 }
 
+/// The same MIXER fixture with the persistent Inspector owning focus. Its
+/// main-surface origin remains T00/Level while the active semantic path is
+/// the first canonical Inspector send row.
+fn production_mixer_inspector_state() -> AppState {
+    let mut state = production_mixer_state();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::MixerInspector))
+        .expect("entering the MIXER Inspector from T00/Level is accepted");
+    state
+}
+
 /// The fixture with the PATCH context selected, in navigate mode — the first
 /// PATCH fixture state (WP01 T004).
 fn production_patch_state() -> AppState {
@@ -437,6 +448,9 @@ struct FidelityEvidence {
     /// sits at the fixture default level — fraction 60/66 ≈ 0.909091, MIDI
     /// 115 = hex 73, the cutover review's RISK-1 repro value.
     document_a: String,
+    /// The exact page-facing MIXER document with Inspector focus, used to
+    /// prove pinned correlation and semantic focus reveal at both densities.
+    mixer_inspector_document: String,
     /// The three PATCH fixture documents (navigate, adjust, Braids-focused),
     /// labelled, in fidelity-proof order — the same bytes the live sections
     /// render and push so the DOM and ack layers see exactly the documents
@@ -661,9 +675,17 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
     );
     assert_geometry_fixture_documents(&document_a, &zero_level_document, &patch_geometry_document);
 
+    let mut inspector_channel = ProjectionChannel::new();
+    let (_, mixer_inspector_document) = check_state_fidelity(
+        &projector,
+        &mut inspector_channel,
+        &production_mixer_inspector_state(),
+        "MIXER state D (Inspector focus)",
+    );
+
     println!(
         "T022 serialized-schema fidelity: PASS \
-         (10 distinct states across both contexts, MIXER generations \
+         (11 distinct states across both contexts, MIXER generations \
          {generation_a}/{generation_b}/{generation_c}, PATCH generations \
          {patch_generation_a}/{patch_generation_b}/{patch_generation_c}/\
          {patch_generation_d}/{patch_generation_e}, \
@@ -671,6 +693,7 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
     );
     FidelityEvidence {
         document_a,
+        mixer_inspector_document,
         patch_documents: vec![
             ("patch-navigate", patch_navigate),
             ("patch-adjust", patch_adjust),
@@ -2047,6 +2070,31 @@ fn observe_render(
         .ok_or_else(|| format!("harness phase {tag:?} carried no observation"))
 }
 
+/// Reads all passive track meters and the selected-track numeric meter after
+/// the page listener has had one turn to apply the latest frame.
+fn observe_meter_paint(
+    window: &tauri::WebviewWindow,
+    receiver: &mpsc::Receiver<Value>,
+    phase: &str,
+) -> Result<Value, String> {
+    window
+        .eval(format!(
+            "window.setTimeout(function () {{ \
+             var nodes = Array.prototype.map.call(document.querySelectorAll('[data-meter-track]'), \
+               function (node) {{ return {{ trackId: Number(node.getAttribute('data-meter-track')), \
+                 state: node.getAttribute('data-meter-state'), \
+                 label: node.getAttribute('aria-label'), \
+                 rms: node.style.getPropertyValue('--meter-rms') }}; }}); \
+             var selected = document.getElementById('inspector-meter-readout'); \
+             window.__TAURI__.event.emit('{HARNESS_EVENT}', {{ phase: '{phase}', \
+               meters: nodes, selectedText: selected ? selected.textContent : null, \
+               selectedState: selected ? selected.getAttribute('data-meter-state') : null }}); \
+             }}, 50);"
+        ))
+        .map_err(|error| format!("meter paint probe {phase:?} failed: {error}"))?;
+    receive_phase(receiver, phase, Duration::from_secs(10))
+}
+
 /// Structural correctness of one painted observation against the document it
 /// rendered: the declared bands, the sixteen-column anatomy in order, the
 /// focused column, the hex readout form, and the Inspector's declared send
@@ -2087,12 +2135,41 @@ fn assert_observation_structure(
         MixerTrackId::COUNT,
         "{label}: all sixteen mixer columns must be seated"
     );
+    let active_surface = document
+        .get("activeSurface")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: the document names its active surface"));
+    let inspector_surface = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("mixerInspector"))
+        .unwrap_or_else(|| panic!("{label}: the document carries the MIXER Inspector"));
+    let correlated_track = inspector_surface
+        .pointer("/summary/focusedTrack")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("{label}: the Inspector summary names its track"));
+    let correlated_parameter = inspector_surface
+        .pointer("/summary/focusedControl/parameter")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: the Inspector summary names its main row"));
+    let mode = document
+        .get("interactionMode")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: the document names its interaction mode"));
+
     let mut focused_tracks = Vec::new();
-    for column in columns {
+    let mut correlated_tracks = Vec::new();
+    for (expected_track, column) in columns.iter().enumerate() {
         let track_id = column
             .get("trackId")
             .and_then(Value::as_u64)
             .unwrap_or_else(|| panic!("{label}: every column carries its track id"));
+        assert_eq!(
+            track_id, expected_track as u64,
+            "{label}: mixer columns stay ordered T00 through T0F"
+        );
         let structures: Vec<&str> = column
             .get("structures")
             .and_then(Value::as_array)
@@ -2119,16 +2196,79 @@ fn assert_observation_structure(
         if column.get("focused").and_then(Value::as_bool) == Some(true) {
             focused_tracks.push(track_id);
         }
+        if column.get("correlated").and_then(Value::as_bool) == Some(true) {
+            correlated_tracks.push(track_id);
+        }
+        assert_eq!(
+            column.get("meterState").and_then(Value::as_str),
+            Some("stale"),
+            "{label}: T{track_id:02X} paints a passive stale meter before a compatible frame"
+        );
+        let row_states = column
+            .get("rowStates")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("{label}: T{track_id:02X} reports its four row states"));
+        assert_eq!(
+            row_states.len(),
+            4,
+            "{label}: T{track_id:02X} reports Level, Pan, Mute, and Solo independently"
+        );
+        for row in ["level", "pan", "mute", "solo"] {
+            let painted = row_states
+                .iter()
+                .find(|state| state.get("row").and_then(Value::as_str) == Some(row))
+                .unwrap_or_else(|| panic!("{label}: T{track_id:02X} reports {row}"));
+            let expected_state = if active_surface == "mixerMain"
+                && track_id == correlated_track
+                && row == correlated_parameter
+            {
+                if mode == "adjust" {
+                    "adjusting"
+                } else {
+                    "focused"
+                }
+            } else {
+                "resting"
+            };
+            assert_eq!(
+                painted.get("state").and_then(Value::as_str),
+                Some(expected_state),
+                "{label}: T{track_id:02X}/{row} carries its exact non-color row state"
+            );
+        }
+        let state_line = column
+            .get("stateLine")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            state_line.contains("M ") && state_line.contains("S "),
+            "{label}: T{track_id:02X} spells out both toggle states"
+        );
     }
 
-    // Exactly one focused column, identified consistently by the observation
-    // and by the document's own focus path.
-    assert_eq!(
-        focused_tracks.len(),
-        1,
-        "{label}: exactly one column must be focused (got {focused_tracks:?})"
-    );
-    let focused_track = focused_tracks[0];
+    let focused_track = if active_surface == "mixerMain" {
+        assert_eq!(
+            focused_tracks,
+            vec![correlated_track],
+            "{label}: exactly the canonical main track is focused"
+        );
+        assert!(
+            correlated_tracks.is_empty(),
+            "{label}: main focus does not duplicate the correlation treatment"
+        );
+        correlated_track
+    } else {
+        assert!(
+            focused_tracks.is_empty(),
+            "{label}: the bank does not claim focus while the Inspector owns it"
+        );
+        assert_eq!(
+            correlated_tracks,
+            vec![correlated_track],
+            "{label}: exactly the Inspector origin track remains correlated"
+        );
+        correlated_track
+    };
     assert_eq!(
         observation
             .pointer("/focus/trackId")
@@ -2136,14 +2276,22 @@ fn assert_observation_structure(
         Some(focused_track),
         "{label}: the observation's focus identity must match the focused column"
     );
-    let document_focus_track = document
-        .pointer("/focusPath/controlId/id/trackId")
-        .and_then(Value::as_u64)
-        .unwrap_or_else(|| panic!("{label}: the document focus path names a track"));
-    assert_eq!(
-        focused_track, document_focus_track,
-        "{label}: the painted focus must be the document's focus"
-    );
+    if active_surface == "mixerMain" {
+        assert_eq!(
+            columns[focused_track as usize]
+                .get("focusedRow")
+                .and_then(Value::as_str),
+            Some(correlated_parameter),
+            "{label}: the painted row focus must be the canonical row"
+        );
+    } else {
+        assert!(
+            columns
+                .iter()
+                .all(|column| column.get("focusedRow").is_some_and(Value::is_null)),
+            "{label}: no main row claims focus while the Inspector owns it"
+        );
+    }
     let cursor = observation
         .pointer("/inspector/cursor")
         .and_then(Value::as_str)
@@ -2205,6 +2353,81 @@ fn assert_observation_structure(
         painted_sends, expected_sends,
         "{label}: Inspector sends must paint in the document's declared order"
     );
+    assert_eq!(
+        painted_sends.len(),
+        8,
+        "{label}: the focused track exposes all eight indexed sends"
+    );
+
+    let expected_routes: Vec<(String, String)> = inspector_surface
+        .pointer("/summary/routedPatches")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|route| {
+            (
+                route
+                    .get("patchId")
+                    .map(Value::to_string)
+                    .unwrap_or_default(),
+                route
+                    .get("patchName")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    let painted_routes: Vec<(String, String)> = observation
+        .pointer("/inspector/routes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|route| {
+            (
+                route
+                    .get("patchId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                route
+                    .get("patchName")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        painted_routes, expected_routes,
+        "{label}: the pinned routing summary is the projected exact Patch list"
+    );
+
+    let expected_control_order: Vec<String> = inspector_surface
+        .get("controls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+        .map(|control| {
+            control
+                .pointer("/path/controlId/id")
+                .map(Value::to_string)
+                .unwrap_or_default()
+        })
+        .collect();
+    let painted_control_order: Vec<String> = observation
+        .pointer("/inspector/controlOrder")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        painted_control_order, expected_control_order,
+        "{label}: Inspector rows stay in canonical send → return → global order"
+    );
 
     // The persistent side region honors the authored floor.
     let width = observation
@@ -2215,6 +2438,49 @@ fn assert_observation_structure(
         width >= f64::from(inspector_width_at_least) - 1.0,
         "{label}: Inspector width {width}px must be at least the authored {inspector_width_at_least}px"
     );
+    assert_eq!(
+        observation
+            .pointer("/inspector/scrollableBy")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{label}: the persistent Inspector itself stays pinned"
+    );
+    assert!(
+        observation
+            .pointer("/inspector/bodyScrollableBy")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            > 0,
+        "{label}: lower canonical Inspector rows remain reachable in its body"
+    );
+    assert!(
+        observation
+            .pointer("/inspector/correlationHeightPx")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            > 0,
+        "{label}: the pinned correlation header is painted"
+    );
+    if active_surface == "mixerInspector" {
+        assert_eq!(
+            observation
+                .pointer("/inspector/focusedVisible")
+                .and_then(Value::as_bool),
+            Some(true),
+            "{label}: the active serialized Inspector FocusPath is revealed"
+        );
+        let expected_focused = document
+            .pointer("/focusPath/controlId/id")
+            .map(Value::to_string)
+            .unwrap_or_default();
+        assert_eq!(
+            observation
+                .pointer("/inspector/focusedControl")
+                .and_then(Value::as_str),
+            Some(expected_focused.as_str()),
+            "{label}: Inspector focus is correlated by semantic identity"
+        );
+    }
 
     // The meter element painted its zero/stale state for the focused track
     // (only the meter listener may write a live reading).
@@ -2222,6 +2488,13 @@ fn assert_observation_structure(
         observation.get("meter").and_then(Value::as_str),
         Some("METER 0.000"),
         "{label}: the meter paints the zero state under a pure render"
+    );
+    assert_eq!(
+        observation
+            .pointer("/inspector/meter")
+            .and_then(Value::as_str),
+        Some("METER 0.000 / STALE"),
+        "{label}: the Inspector numeric meter explicitly marks stale input"
     );
 }
 
@@ -3184,6 +3457,7 @@ fn drive_live_window(
     use tauri::Manager;
 
     let document_a: &str = &fidelity.document_a;
+    let mixer_inspector_document: &str = &fidelity.mixer_inspector_document;
     let patch_documents: &[(&'static str, String)] = &fidelity.patch_documents;
     // T015: what the production channel decides about every real painted ack
     // the healthy sections below produce. Asserted at the very end, after
@@ -3319,6 +3593,31 @@ fn drive_live_window(
     );
     screenshot("t024-desktop-1920x1080.png");
 
+    let inspector_document: Value = serde_json::from_str(mixer_inspector_document)
+        .map_err(|error| format!("the MIXER Inspector fidelity document parses: {error}"))?;
+    let inspector_desktop_first = observe_render(
+        &window,
+        receiver,
+        mixer_inspector_document,
+        "desktop-mixer-inspector-1",
+    )?;
+    let inspector_desktop_second = observe_render(
+        &window,
+        receiver,
+        mixer_inspector_document,
+        "desktop-mixer-inspector-2",
+    )?;
+    assert_eq!(
+        inspector_desktop_first, inspector_desktop_second,
+        "T024: MIXER Inspector focus renders deterministically at 1920x1080"
+    );
+    assert_observation_structure(
+        &inspector_desktop_first,
+        &inspector_document,
+        desktop_side,
+        "T024 desktop 1920x1080 MIXER Inspector",
+    );
+
     // The PATCH fixture documents at the desktop viewport: the same
     // double-render determinism, against the exact bytes the fidelity
     // section proved.
@@ -3366,6 +3665,152 @@ fn drive_live_window(
         "T024 compact 1280x800",
     );
     screenshot("t024-compact-1280x800.png");
+
+    let inspector_compact_first = observe_render(
+        &window,
+        receiver,
+        mixer_inspector_document,
+        "compact-mixer-inspector-1",
+    )?;
+    let inspector_compact_second = observe_render(
+        &window,
+        receiver,
+        mixer_inspector_document,
+        "compact-mixer-inspector-2",
+    )?;
+    assert_eq!(
+        inspector_compact_first, inspector_compact_second,
+        "T024: MIXER Inspector focus renders deterministically at 1280x800"
+    );
+    assert_observation_structure(
+        &inspector_compact_first,
+        &inspector_document,
+        compact_side,
+        "T024 compact 1280x800 MIXER Inspector",
+    );
+
+    // One deterministic all-track meter correlation probe. Rendering sets
+    // the page's current document; only the meter transport then repaints
+    // these passive nodes. A stale generation and a stale graph revision are
+    // both refused before the compatible frame is accepted.
+    window
+        .eval(format!("window.crest.render({document_a});"))
+        .map_err(|error| format!("rendering the meter correlation document failed: {error}"))?;
+    let document_generation = document
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "the meter document carries its generation".to_owned())?;
+    let document_revision = document
+        .pointer("/status/graphRevision")
+        .cloned()
+        .ok_or_else(|| "the meter document carries its graph revision".to_owned())?;
+    let mut stale_generation = serde_json::to_value(AudioObservationSnapshot::from_mix(
+        1,
+        1,
+        512,
+        document_generation + 1,
+        0,
+        0,
+        MixObservation::default(),
+    ))
+    .map_err(|error| format!("the stale meter frame serializes: {error}"))?;
+    stale_generation["activeGraphRevision"] = document_revision.clone();
+    tauri::Emitter::emit(handle, METER_EVENT, stale_generation)
+        .map_err(|error| format!("emitting the stale-generation frame failed: {error}"))?;
+    let stale_generation_paint = observe_meter_paint(&window, receiver, "meter-stale-generation")?;
+    assert!(
+        stale_generation_paint
+            .get("meters")
+            .and_then(Value::as_array)
+            .is_some_and(|meters| {
+                meters.len() == MixerTrackId::COUNT
+                    && meters
+                        .iter()
+                        .all(|meter| meter.get("state").and_then(Value::as_str) == Some("stale"))
+            }),
+        "all sixteen meter shapes refuse a stale parameter generation"
+    );
+
+    let mut stale_revision = serde_json::to_value(AudioObservationSnapshot::from_mix(
+        2,
+        2,
+        1_024,
+        document_generation,
+        0,
+        0,
+        MixObservation::default(),
+    ))
+    .map_err(|error| format!("the stale-revision meter frame serializes: {error}"))?;
+    stale_revision["activeGraphRevision"] = Value::from(u64::MAX);
+    tauri::Emitter::emit(handle, METER_EVENT, stale_revision)
+        .map_err(|error| format!("emitting the stale-revision frame failed: {error}"))?;
+    let stale_revision_paint = observe_meter_paint(&window, receiver, "meter-stale-revision")?;
+    assert!(
+        stale_revision_paint
+            .get("meters")
+            .and_then(Value::as_array)
+            .is_some_and(|meters| {
+                meters.len() == MixerTrackId::COUNT
+                    && meters
+                        .iter()
+                        .all(|meter| meter.get("state").and_then(Value::as_str) == Some("stale"))
+            }),
+        "all sixteen meter shapes refuse a stale graph revision"
+    );
+
+    let mut compatible = serde_json::to_value(AudioObservationSnapshot::from_mix(
+        3,
+        3,
+        1_536,
+        document_generation,
+        0,
+        0,
+        MixObservation::default(),
+    ))
+    .map_err(|error| format!("the compatible meter frame serializes: {error}"))?;
+    compatible["activeGraphRevision"] = document_revision;
+    for track in 0..MixerTrackId::COUNT {
+        let rms = (track + 1) as f64 / 32.0;
+        compatible["tracks"][track]["leftPeak"] = Value::from(rms);
+        compatible["tracks"][track]["rightPeak"] = Value::from(rms);
+        compatible["tracks"][track]["rms"] = Value::from(rms);
+    }
+    tauri::Emitter::emit(handle, METER_EVENT, compatible)
+        .map_err(|error| format!("emitting the compatible meter frame failed: {error}"))?;
+    let compatible_paint = observe_meter_paint(&window, receiver, "meter-compatible")?;
+    let painted_meters = compatible_paint
+        .get("meters")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "the compatible paint reports all meters".to_owned())?;
+    assert_eq!(painted_meters.len(), MixerTrackId::COUNT);
+    for (track, meter) in painted_meters.iter().enumerate() {
+        let expected_rms = (track + 1) as f64 / 32.0;
+        assert_eq!(
+            meter.get("trackId").and_then(Value::as_u64),
+            Some(track as u64)
+        );
+        assert_eq!(meter.get("state").and_then(Value::as_str), Some("active"));
+        assert_eq!(
+            meter
+                .get("rms")
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<f64>().ok()),
+            Some(expected_rms),
+            "T{track:02X} meter geometry must use its own canonical array index"
+        );
+        assert!(
+            meter
+                .get("label")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.starts_with(&format!("T{track:02X} meter"))),
+            "T{track:02X} meter exposes its identity and numeric state without color"
+        );
+    }
+    assert_eq!(
+        compatible_paint.get("selectedText").and_then(Value::as_str),
+        Some("METER 0.031 / ACTIVE"),
+        "the Inspector numeric meter is correlated to selected T00"
+    );
 
     // The PATCH fixture documents at the compact viewport.
     for (patch_label, patch_bytes) in patch_documents {
@@ -3415,6 +3860,7 @@ fn drive_live_window(
     let mut channel = ProjectionChannel::new();
     let pushes = 150_usize;
     let mut emits: Vec<(u64, Instant)> = Vec::with_capacity(pushes);
+    let mut last_paced_document: Option<Value> = None;
     // T015: this section's own pushed generations and its starting point in
     // the ack log, so only acks this section produced are ever forwarded.
     let mut paced_generations: HashSet<u64> = HashSet::with_capacity(pushes);
@@ -3438,6 +3884,7 @@ fn drive_live_window(
         channel
             .push(&projection, |payload| {
                 emits.push((generation, Instant::now()));
+                last_paced_document = Some(payload.clone());
                 tauri::Emitter::emit(handle, PROJECTION_EVENT, payload)
             })
             .map_err(|error| format!("paced push failed: {error}"))?;
@@ -3514,6 +3961,61 @@ fn drive_live_window(
             p95.as_secs_f64() * 1_000.0
         ));
     }
+
+    // One complete accepted-edit correlation: canonical state, fixed RT
+    // snapshot, exact semantic document, painted target, Inspector summary,
+    // and the acked generation all name the same final paced edit.
+    let last_paced_document = last_paced_document
+        .as_ref()
+        .ok_or_else(|| "the paced run retained its final emitted document".to_owned())?;
+    let last_paced_json = serde_json::to_string(last_paced_document)
+        .map_err(|error| format!("the final paced document serializes: {error}"))?;
+    let last_paced_observation = observe_render(
+        &window,
+        receiver,
+        &last_paced_json,
+        "paced-edit-correlation",
+    )?;
+    assert_observation_structure(
+        &last_paced_observation,
+        last_paced_document,
+        desktop_side,
+        "T026 final paced edit correlation",
+    );
+    let focused_control = last_paced_document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("mixerMain"))
+        .and_then(|surface| surface.get("controls"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|control| control.get("focused").and_then(Value::as_bool) == Some(true))
+        .ok_or_else(|| "the final paced document carries its focused control".to_owned())?;
+    let expected_midi = (page_fraction(focused_control) * 127.0).round() as u8;
+    let expected_hex = format!("{expected_midi:02X}");
+    assert_eq!(
+        last_paced_observation
+            .pointer("/columns/0/levelHex")
+            .and_then(Value::as_str),
+        Some(expected_hex.as_str()),
+        "the painted T00 Level readout is the accepted canonical value"
+    );
+    let (_, _, final_parameters) = projector
+        .project(&state)
+        .map_err(|error| format!("the final paced state projects fixed parameters: {error}"))?;
+    assert_eq!(final_parameters.generation(), final_generation);
+    assert_eq!(
+        f64::from(
+            final_parameters
+                .mixer_track(MixerTrackId::default())
+                .level_db()
+        ),
+        innermost_number(focused_control)
+            .ok_or_else(|| "the focused Level control carries its numeric value".to_owned())?
+    );
 
     // The last painted ack carries post-paint evidence for all five declared
     // shell regions: painted bounds and a visible label each.

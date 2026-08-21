@@ -427,11 +427,11 @@ fn page_source(name: &str) -> String {
 
 /// `controlIdOf` — the serialized identity of one projected control.
 fn page_control_id(control: &Value) -> String {
-    control
-        .pointer("/path/controlId/id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
+    match control.pointer("/path/controlId/id") {
+        Some(Value::String(id)) => id.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(id) => id.to_string(),
+    }
 }
 
 /// `controlValueText` — one typed document value as finished screen text.
@@ -1147,7 +1147,7 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
     );
     let required: [(&str, &str); 66] = [
         // `controlIdOf` — [`page_control_id`].
-        ("the control identity read", "    return String(\n      control && control.path && control.path.controlId\n        ? control.path.controlId.id\n        : \"\"\n    );"),
+        ("the control identity read", "    var id =\n      control && control.path && control.path.controlId\n        ? control.path.controlId.id\n        : \"\";\n    return id !== null && typeof id === \"object\"\n      ? JSON.stringify(id)\n      : String(id);"),
         // `controlValueText` — [`page_value_text`], arm for arm.
         ("the absent value mark", "    var value = control && control.value;\n    if (!value || typeof value !== \"object\") {\n      return UNAVAILABLE_MARK;"),
         ("the scalar value discriminator", "    if (value.kind === \"scalar\") {"),

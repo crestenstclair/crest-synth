@@ -5,7 +5,7 @@ Read `DESIGN.md` before changing product behavior or architecture. It is the mas
 A deliberately narrow implementation slice must not redefine the product. Keep
 durable architecture and product decisions in `DESIGN.md`, and prove behavior
 with the repository's production-path tests and validation scripts. Do not
-invoke the retired CUE DSL or OpenSpec tooling preserved under `archive/`.
+invoke the retired CUE DSL or OpenSpec tooling.
 
 Preserve these boundaries:
 

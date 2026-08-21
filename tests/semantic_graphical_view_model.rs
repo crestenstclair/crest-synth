@@ -31,6 +31,7 @@ use crest_synth::control::{
 use crest_synth::kernel::{MidiChannel, PatchId};
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
+use crest_synth::mixer::mixer_track_parameters::MixerTrackParameter;
 use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crest_synth::real_time::{AudioCommand, GraphRevision, ParameterSnapshot};
@@ -589,4 +590,136 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     assert!(recovered.errors().is_empty());
 
     println!("CREST_ACCEPTANCE semantic_graphical_view_model passed");
+}
+
+#[test]
+fn mixer_focus_matrix_inspector_return_and_density_reflow_keep_semantic_identity() {
+    let mut state = installed_state(true);
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+        .unwrap();
+
+    let rows = MixerTrackParameter::MAIN;
+    for (row_index, parameter) in rows.into_iter().enumerate() {
+        for track_index in 0..MixerTrackId::COUNT {
+            let expected_track = MixerTrackId::new(track_index as u8).unwrap();
+            assert!(matches!(
+                state.interaction().focus_path().control_id(),
+                SemanticControlId::Mixer(MixerControlId::Track {
+                    track_id,
+                    parameter: focused_parameter,
+                }) if *track_id == expected_track && *focused_parameter == parameter
+            ));
+            let model = semantic(&state);
+            let focused = model
+                .surface(SurfaceId::MixerMain)
+                .unwrap()
+                .controls()
+                .iter()
+                .filter(|control| control.focused())
+                .collect::<Vec<_>>();
+            assert_eq!(focused.len(), 1);
+            assert_eq!(focused[0].path(), state.interaction().focus_path());
+
+            if track_index + 1 < MixerTrackId::COUNT {
+                state.apply(AppEvent::Navigate(Direction::Right)).unwrap();
+            }
+        }
+
+        let before_generation = state.generation();
+        let before_tree = StateProjector::new()
+            .project(&state)
+            .unwrap()
+            .0
+            .json()
+            .to_owned();
+        assert_eq!(
+            state.apply(AppEvent::Navigate(Direction::Right)),
+            Err(crest_synth::control::EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state.generation(), before_generation);
+        assert_eq!(
+            StateProjector::new().project(&state).unwrap().0.json(),
+            before_tree
+        );
+
+        for _ in 1..MixerTrackId::COUNT {
+            state.apply(AppEvent::Navigate(Direction::Left)).unwrap();
+        }
+        if row_index + 1 < rows.len() {
+            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+    }
+
+    // Return to the requested T0A / Solo origin using the same nonwrapping
+    // semantic traversal a physical adapter emits.
+    for _ in 0..3 {
+        state.apply(AppEvent::Navigate(Direction::Up)).unwrap();
+    }
+    for _ in 0..10 {
+        state.apply(AppEvent::Navigate(Direction::Right)).unwrap();
+    }
+    for _ in 0..3 {
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    }
+    let origin = state.interaction().focus_path().clone();
+    assert!(matches!(
+        origin.control_id(),
+        SemanticControlId::Mixer(MixerControlId::Track {
+            track_id,
+            parameter: MixerTrackParameter::Solo,
+        }) if *track_id == MixerTrackId::new(10).unwrap()
+    ));
+    state
+        .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::MixerInspector))
+        .unwrap();
+    assert_eq!(
+        state.interaction().active_surface(),
+        SurfaceId::MixerInspector
+    );
+    assert!(matches!(
+        semantic(&state)
+            .surface(SurfaceId::MixerInspector)
+            .expect("the persistent Inspector remains projected")
+            .summary(),
+        SemanticSurfaceSummary::MixerInspector {
+            focused_control: MixerControlId::Track {
+                track_id,
+                parameter: MixerTrackParameter::Solo,
+            },
+            focused_track,
+            ..
+        } if *track_id == MixerTrackId::new(10).unwrap()
+            && *focused_track == MixerTrackId::new(10).unwrap()
+    ));
+    state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    state.apply(AppEvent::Return).unwrap();
+    assert_eq!(state.interaction().focus_path(), &origin);
+
+    // A density change paints the exact same semantic path and dispatches no
+    // event. The page-facing observation can differ geometrically only.
+    let before_generation = state.generation();
+    let desktop = render(
+        StateProjector::new().project_with_shell(&state).unwrap().3,
+        [1_920.0, 1_080.0],
+    );
+    let compact = render(
+        StateProjector::new().project_with_shell(&state).unwrap().3,
+        [1_280.0, 800.0],
+    );
+    assert_eq!(desktop.focus_path(), &origin);
+    assert_eq!(compact.focus_path(), &origin);
+    assert_eq!(state.generation(), before_generation);
+
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+        .unwrap();
+    assert_eq!(state.interaction().focus_path(), &origin);
+
+    assert!(semantic(&state).valid_actions().iter().all(|action| {
+        action.action() != &SemanticAction::SetInteractionMode(InteractionMode::MultiSelect)
+    }));
 }

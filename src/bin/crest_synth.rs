@@ -157,7 +157,9 @@ fn run(options: Options) -> Result<()> {
             crest_synth::testing::COMPONENT_GALLERY_OBSERVATION_MARKER
         );
     } else if options.demo_live {
-        let scene_kind = if options.demo_live_effects_and_buses {
+        let scene_kind = if options.demo_live_mixer {
+            LiveSceneKind::Mixer
+        } else if options.demo_live_effects_and_buses {
             LiveSceneKind::EffectsAndBuses
         } else if options.demo_live_patch_editor {
             LiveSceneKind::FunctionalPatchEditor {
@@ -194,7 +196,17 @@ fn run(options: Options) -> Result<()> {
                 emit_live_report,
             )
             .context("live observable demo execution failed")?;
-        if options.demo_live_patch_editor {
+        if options.demo_live_mixer {
+            let mixer = observation
+                .live_mixer()
+                .context("the dedicated Mixer scene did not retain its typed evidence")?;
+            if !mixer.is_complete() {
+                bail!("dedicated Mixer live predicates were incomplete");
+            }
+            let json = serde_json::to_string(&mixer)
+                .context("failed to serialize dedicated Mixer teardown evidence")?;
+            println!("CREST_LIVE_MIXER_OBSERVATION {json}");
+        } else if options.demo_live_patch_editor {
             let editor = observation
                 .functional_patch_editor()
                 .context("the functional Patch editor scene did not retain its measurement")?;
@@ -310,6 +322,7 @@ struct Options {
     observe: bool,
     demo_scene: bool,
     demo_live: bool,
+    demo_live_mixer: bool,
     demo_live_semantic: bool,
     demo_live_sixteen_track: bool,
     demo_live_effects_and_buses: bool,
@@ -349,6 +362,10 @@ where
                 options.demo_live = true;
                 options.demo_live_patch_editor = true;
             }
+            "--demo-live-mixer" if !options.demo_live => {
+                options.demo_live = true;
+                options.demo_live_mixer = true;
+            }
             "--defeat-patch-selection" if !options.defeat_patch_selection => {
                 options.defeat_patch_selection = true;
             }
@@ -380,6 +397,7 @@ where
             | "--demo-scene"
             | "--demo-live"
             | "--demo-live-effects-and-buses"
+            | "--demo-live-mixer"
             | "--demo-live-sixteen-track-mixer-routing"
             | "--demo-live-patch-editor"
             | "--defeat-patch-selection"
@@ -1193,6 +1211,7 @@ mod tests {
                 observe: false,
                 demo_scene: false,
                 demo_live: false,
+                demo_live_mixer: false,
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
@@ -1209,6 +1228,7 @@ mod tests {
                 observe: true,
                 demo_scene: false,
                 demo_live: false,
+                demo_live_mixer: false,
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
@@ -1225,6 +1245,7 @@ mod tests {
                 observe: true,
                 demo_scene: true,
                 demo_live: false,
+                demo_live_mixer: false,
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
@@ -1241,6 +1262,7 @@ mod tests {
                 observe: true,
                 demo_scene: false,
                 demo_live: false,
+                demo_live_mixer: false,
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
@@ -1263,6 +1285,7 @@ mod tests {
                 observe: true,
                 demo_scene: true,
                 demo_live: false,
+                demo_live_mixer: false,
                 demo_live_semantic: false,
                 demo_live_sixteen_track: false,
                 demo_live_effects_and_buses: false,
@@ -1344,6 +1367,7 @@ mod tests {
         let alias = parse_options(["--demo-live"]).unwrap();
         assert!(alias.demo_live_effects_and_buses);
         assert!(!alias.demo_live_patch_editor);
+        assert!(!alias.demo_live_mixer);
 
         // The negative is rejected outside its scene, and outside every other.
         assert!(parse_options(["--defeat-patch-selection"]).is_err());
@@ -1366,6 +1390,31 @@ mod tests {
         .is_err());
     }
 
+    #[test]
+    fn the_dedicated_mixer_scene_is_additive_and_the_live_alias_is_unchanged() {
+        assert_eq!(
+            parse_options(["--demo-live-mixer"]).unwrap(),
+            Options {
+                demo_live: true,
+                demo_live_mixer: true,
+                ..Options::default()
+            }
+        );
+        let alias = parse_options(["--demo-live"]).unwrap();
+        assert!(alias.demo_live_effects_and_buses);
+        assert!(!alias.demo_live_mixer);
+        assert!(parse_options(["--demo-live-mixer", "--demo-live"]).is_err());
+        assert!(parse_options(["--demo-live", "--demo-live-mixer"]).is_err());
+        assert!(parse_options(["--demo-live-mixer", "--demo-live-mixer"]).is_err());
+        assert!(parse_options(["--demo-live-mixer", "--smoke"]).is_err());
+
+        let makefile = include_str!("../../Makefile");
+        assert!(makefile.contains("demo-live-mixer: ## Run the dedicated sixteen-track Mixer demo"));
+        assert!(makefile.contains("cargo run --release --bin crest-synth -- --demo-live-mixer"));
+        assert!(makefile.contains("demo-live: demo-live-effects-and-buses"));
+        assert!(!makefile.contains("demo-live: demo-live-mixer"));
+    }
+
     /// The gallery is its own scene, not a live-demo alias.
     ///
     /// `--demo-live` must keep resolving to the newest cumulative autonomous
@@ -1383,6 +1432,7 @@ mod tests {
         );
         let gallery = parse_options(["--demo-live-component-library"]).unwrap();
         assert!(!gallery.demo_live);
+        assert!(!gallery.demo_live_mixer);
         assert!(!gallery.demo_live_effects_and_buses);
         assert!(!gallery.demo_live_sixteen_track);
         assert!(!gallery.demo_live_semantic);
@@ -1417,6 +1467,7 @@ mod tests {
         assert!(parse_options(["--smoke", "--degenerate-audio"]).is_err());
         assert!(parse_options(["--demo-live", "--demo-live"]).is_err());
         assert!(parse_options(["--demo-live", "--demo-live-effects-and-buses"]).is_err());
+        assert!(parse_options(["--demo-live", "--demo-live-mixer"]).is_err());
         assert!(parse_options(["--demo-live-effects-and-buses", "--smoke"]).is_err());
         assert!(
             parse_options(["--demo-live", "--demo-live-sixteen-track-mixer-routing",]).is_err()

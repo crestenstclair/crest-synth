@@ -110,8 +110,16 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     automatic
         .initialize_with_effects(&providers, &effect_providers, &mut app_loop)
         .expect("fixture initializes through AppLoop");
-    let scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())
-        .expect("installed fixture produces a live scene");
+    let retained_scene = LiveDemoScene::from_installed_state(&app_loop.current_state_tree())
+        .expect("installed fixture produces the retained live scene");
+    let scene = LiveDemoScene::mixer_from_installed_state(&app_loop.current_state_tree())
+        .expect("installed fixture produces the dedicated Mixer live scene");
+    assert_eq!(scene.name(), "live-mixer");
+    assert_eq!(scene.steps(), retained_scene.steps());
+    assert_eq!(
+        scene.expected_editable_parameters(),
+        retained_scene.expected_editable_parameters()
+    );
 
     let expected_count = app_loop
         .patches()
@@ -425,6 +433,16 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         .expect("bounded live scene completes");
     assert!(first_checkpoint_elapsed.unwrap() >= Duration::from_millis(500));
     let routing = report.mixer_routing();
+    let mixer_scene = report
+        .live_mixer()
+        .expect("the dedicated scene retains its typed Mixer evidence");
+    assert!(mixer_scene.is_complete());
+    assert_eq!(mixer_scene.focus_pairs_exercised(), 16 * 4);
+    assert_eq!(mixer_scene.indexed_send_edits_exercised(), 16 * 2);
+    assert_eq!(
+        mixer_scene.multi_select(),
+        crest_synth::testing::LiveMixerMultiSelectResult::NotImplemented
+    );
     assert!(
         report.complete(),
         "{}; routing={routing:?}",
