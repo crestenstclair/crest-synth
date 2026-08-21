@@ -411,7 +411,7 @@
       bottom: 36px;
       left: 39px;
       width: 1px;
-      background: linear-gradient(var(--positive), var(--adjust) 52%, var(--border) 53%);
+      background: linear-gradient(var(--positive) 0 76%, var(--border) 78%);
       content: "";
     }
 
@@ -975,7 +975,7 @@
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>Crest Synth / Product Roadmap</span>
         </div>
-        <span class="roadmap-state">Roadmap active</span>
+        <span class="roadmap-state">Phase 8 next</span>
       </div>
 
       <div class="hero">
@@ -984,7 +984,7 @@
           <h1>From shell to finished instrument.</h1>
           <p class="hero-copy">
             A compact view of the features, proof targets, and delivery state for every product phase.
-            <strong>Phase 5 passed physical live acceptance on 20 Aug 2026; Phase 6 is next.</strong>
+            <strong>Phase 7 closed and archived on 21 Aug 2026; Phase 8 is next.</strong>
           </p>
         </div>
 
@@ -1004,9 +1004,9 @@
       <section aria-label="Roadmap summary">
         <div class="summary-grid">
           <article class="summary-card complete">
-            <span class="number">5</span>
+            <span class="number">7</span>
             <span class="label">Complete</span>
-            <span class="detail">Phases 1–5 delivered</span>
+            <span class="detail">Phases 1–7 closed</span>
           </article>
           <article class="summary-card validation">
             <span class="number">0</span>
@@ -1014,12 +1014,12 @@
             <span class="detail">No phase awaiting proof</span>
           </article>
           <article class="summary-card planned">
-            <span class="number">4</span>
+            <span class="number">2</span>
             <span class="label">Planned</span>
-            <span class="detail">Phases 6–9 queued</span>
+            <span class="detail">Phase 8 next; Phase 9 queued</span>
           </article>
           <article class="summary-card gates">
-            <span class="number">3</span>
+            <span class="number">5</span>
             <span class="label">Closed gates</span>
             <span class="detail">Permanent regression coverage</span>
           </article>
@@ -1028,17 +1028,17 @@
         <div class="progress-panel">
           <div class="progress-head">
             <span>Delivery sequence</span>
-            <span>Updated 20 Aug 2026</span>
+            <span>Updated 21 Aug 2026</span>
           </div>
-          <div class="phase-rail" aria-label="Five phases complete and four phases planned">
+          <div class="phase-rail" aria-label="Seven phases complete and two phases planned">
             <div class="rail-step complete"><span class="rail-bar"></span><span class="rail-label">P1 Done</span></div>
             <div class="rail-step complete"><span class="rail-bar"></span><span class="rail-label">P2 Done</span></div>
             <div class="rail-step complete"><span class="rail-bar"></span><span class="rail-label">P3 Done</span></div>
             <div class="rail-step complete"><span class="rail-bar"></span><span class="rail-label">P4 Done</span></div>
             <div class="rail-step complete"><span class="rail-bar"></span><span class="rail-label">P5 Done</span></div>
-            <div class="rail-step"><span class="rail-bar"></span><span class="rail-label">P6 Plan</span></div>
-            <div class="rail-step"><span class="rail-bar"></span><span class="rail-label">P7 Plan</span></div>
-            <div class="rail-step"><span class="rail-bar"></span><span class="rail-label">P8 Plan</span></div>
+            <div class="rail-step complete"><span class="rail-bar"></span><span class="rail-label">P6 Done</span></div>
+            <div class="rail-step complete"><span class="rail-bar"></span><span class="rail-label">P7 Done</span></div>
+            <div class="rail-step"><span class="rail-bar"></span><span class="rail-label">P8 Next</span></div>
             <div class="rail-step"><span class="rail-bar"></span><span class="rail-label">P9 Plan</span></div>
           </div>
         </div>
@@ -1169,50 +1169,62 @@
             </div>
           </article>
 
-          <article class="phase-card planned" data-status="planned">
+          <article class="phase-card complete" data-status="complete">
             <div class="phase-index"><span class="phase-number">06</span></div>
             <div class="phase-summary">
-              <span class="status">Planned</span>
+              <span class="status complete">Complete · 20 Aug 2026</span>
               <h3>Functional Mixer blockout</h3>
-              <p>Assemble the canonical sixteen-track Mixer from the shared component library and interaction model.</p>
-              <span class="phase-target">Planned proof target<code>make demo-live-mixer</code></span>
+              <p>The canonical sixteen-track Mixer passed deterministic and physical production-window/audio acceptance.</p>
+              <span class="phase-target">Retained proof target<code>make demo-live-mixer</code></span>
             </div>
             <div class="phase-features">
-              <p class="feature-label">Planned features</p>
+              <p class="feature-label">Delivered features</p>
               <ul class="feature-list">
                 <li>All sixteen tracks addressable through stable semantic track and control focus.</li>
-                <li>Level, pan, mute, solo, routing summary, sends, meters, and persistent Inspector.</li>
+                <li>Level, pan, mute, solo, routing summary, indexed sends, compatible meters, and persistent Inspector.</li>
                 <li>Row and track position retained across navigation and responsive density changes.</li>
-                <li>Status and control state communicated through text or shape as well as color.</li>
-                <li>Audible target-isolation and routing proof across multiple Patches.</li>
+                <li>Shared-track summing, Patch trim/reroute isolation, mute/solo gates, post-gate sends, and pre-gate meters proved audibly.</li>
+                <li>Multi-select remains explicitly reported as not implemented rather than claimed.</li>
               </ul>
+              <div class="validation-metrics" aria-label="Phase 6 completed live evidence">
+                <div class="metric"><strong>64 / 64</strong><span>Focus pairs</span></div>
+                <div class="metric"><strong>32 / 32</strong><span>Send edits</span></div>
+                <div class="metric"><strong>0</strong><span>Events dropped</span></div>
+              </div>
+              <div class="phase-note"><strong>Physical proof complete.</strong> The retained run edited 105/105 parameters, crossed 3/3 engine transitions, painted 1,992 qualifying frames, correlated 114 checkpoints across 14,924 events, rendered nonzero physical audio, recorded no callback allocations or destructions, and closed with zero active notes.</div>
             </div>
           </article>
 
-          <article class="phase-card planned" data-status="planned">
+          <article class="phase-card complete" data-status="complete">
             <div class="phase-index"><span class="phase-number">07</span></div>
             <div class="phase-summary">
-              <span class="status">Planned</span>
+              <span class="status complete">Closed · archived 21 Aug 2026</span>
               <h3>Detail, choice, and asset workflows</h3>
-              <p>Complete subordinate PATCH surfaces with exact focus return and typed preparation states.</p>
-              <span class="phase-target">Planned proof target<code>make demo-live-detail-and-assets</code></span>
+              <p>Delivered descriptor-driven detail and choice workflows plus a bounded, prepared Sample capability and controller-native asset browser.</p>
+              <span class="phase-target">Retained proof target<code>make demo-live-detail-and-assets</code></span>
             </div>
             <div class="phase-features">
-              <p class="feature-label">Planned features</p>
+              <p class="feature-label">Delivered features</p>
               <ul class="feature-list">
-                <li>Instrument detail and effect detail surfaces.</li>
-                <li>Engine, effect, route, and other choice modals with trapped focus and exact return paths.</li>
-                <li>Sample detail, waveform landmarks, and controller-native Sample Browser.</li>
-                <li>Hold Start to preview a sample; release Start to stop preview.</li>
-                <li>Typed loading, unavailable, validation, cancellation, commit, and error states.</li>
+                <li>One descriptor-driven detail composition for instruments, effects, and Sample controls with exact semantic return.</li>
+                <li>Engine, effect, route, and descriptor-choice modals with trapped stable focus.</li>
+                <li>Controller-native Sample Browser, bounded waveform landmarks, hold/release audition, and prepared assignment.</li>
+                <li>Sixteen preallocated Sample voices, bounded WAV admission and graph memory, typed lifecycle failures, and no fallback.</li>
+                <li>Audition and committed playback traverse the origin Patch, effects, Mixer, sends, returns, gates, and meters.</li>
               </ul>
+              <div class="validation-metrics" aria-label="Phase 7 archive evidence">
+                <div class="metric"><strong>73 / 79</strong><span>Tasks at archive</span></div>
+                <div class="metric"><strong>3 / 3</strong><span>Canonical specs</span></div>
+                <div class="metric"><strong>0</strong><span>Deterministic failures</span></div>
+              </div>
+              <div class="phase-note"><strong>Closed by explicit product approval.</strong> Formatting, lint, all-target tests, exact selectors, component guards, callback audits, and canonical-spec validation passed; the operator also verified open-ended physical audio. The archive deliberately preserves six unchecked native viewport/input and structured physical-demo items, so closure does not rewrite those missing reports as measured acceptance.</div>
             </div>
           </article>
 
           <article class="phase-card planned" data-status="planned">
             <div class="phase-index"><span class="phase-number">08</span></div>
             <div class="phase-summary">
-              <span class="status">Planned</span>
+              <span class="status">Next · Planned</span>
               <h3>Controller and resolution hardening</h3>
               <p>Stress the complete interface across input devices, viewport classes, content extremes, and lifecycle states.</p>
               <span class="phase-target">Planned proof target<code>make demo-live-controller-resolution</code></span>
@@ -1254,9 +1266,9 @@
       <section class="gates-section" aria-labelledby="gates-title">
         <div class="section-head">
           <div>
-            <p class="eyebrow">Corrective milestones</p>
+            <p class="eyebrow">Delivery milestones</p>
             <h2 id="gates-title">Closed gates</h2>
-            <p>Completed corrections retained as permanent regression boundaries.</p>
+            <p>Completed corrections and closure decisions retained as permanent project history.</p>
           </div>
         </div>
         <div class="gate-grid">
@@ -1278,6 +1290,18 @@
             <p>Retired the egui visual layer after retained evidence, moved the authored vocabulary to the sole production webview shell, and re-proved live operation.</p>
             <span class="gate-date">6 Aug 2026</span>
           </article>
+          <article class="gate-card">
+            <span class="gate-status">Closed</span>
+            <h3>Phase 6 physical Mixer acceptance</h3>
+            <p>Proved all sixteen stable track identities, every main-row focus pair, indexed sends, Inspector correlation, routing isolation, nonzero physical audio, and clean teardown.</p>
+            <span class="gate-date">20 Aug 2026</span>
+          </article>
+          <article class="gate-card">
+            <span class="gate-status">Closed</span>
+            <h3>Phase 7 archive and canonical spec sync</h3>
+            <p>Archived the approved implementation, synchronized 21 requirements into three canonical specs, and retained all six uncompleted native and structured physical-evidence tasks in the historical record.</p>
+            <span class="gate-date">21 Aug 2026</span>
+          </article>
         </div>
       </section>
 
@@ -1298,7 +1322,7 @@
     </main>
 
     <footer>
-      <span>Source: ROADMAP.md · status snapshot 2026-08-20</span>
+      <span>Sources: ROADMAP.md + Phase 7 OpenSpec archive · status snapshot 2026-08-21</span>
       <span>Product authority: <a href="DESIGN.md">DESIGN.md</a></span>
     </footer>
   </div>

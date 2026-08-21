@@ -46,7 +46,7 @@ demo: ## Run the exhaustive GUI demo and structured trace
 # inside StandaloneApplication::run_live_demo_scene. The webview shell is the product's
 # only shell — the interactive and headless targets compose the same
 # TauriWebviewWindow directly and no renderer flag exists. Target names are
-# frozen by the ROADMAP retention contract.
+# retained as stable operator-facing compatibility targets.
 demo-live: demo-live-detail-and-assets ## Run the newest optimized graphical live demo
 
 demo-live-detail-and-assets: ## Run the cumulative Phase 7 detail, choice, browser, preview, and Sample assignment demo

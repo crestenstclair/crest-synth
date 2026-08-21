@@ -278,7 +278,7 @@ impl SemanticControlViewModel {
     /// It exists because without it a choice id was on screen. The webview
     /// consumes exactly the serde serialization of this model, so the PATCH page's
     /// `selectedLabel` never reached it and the shipped Preset row painted
-    /// `sf2.bank-0.program-40` while `DESIGN.md` calls it "the **authored-name**
+    /// `sf2.bank-0.program-40` while `AGENTS.md` calls it "the **authored-name**
     /// Preset row" and declares SoundFont presets "labeled with exact authored
     /// SF2 names". The product contract forbids a serialization key on
     /// screen as a *label*; this key reached the screen as a *value*, which the

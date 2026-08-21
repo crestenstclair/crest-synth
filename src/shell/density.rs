@@ -21,7 +21,7 @@ use crate::shell::tokens::MIN_INTERACTIVE_TARGET_PX;
 /// Which authored viewport a policy resolves.
 ///
 /// The set is closed at two. A third size is a design decision, not a code
-/// decision: it is authored in `DESIGN.md` and added here, never synthesized
+/// decision: it is authored in `AGENTS.md` and added here, never synthesized
 /// by scaling one of these at a call site.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ViewportDensityPolicy {
@@ -229,7 +229,7 @@ impl ViewportDensityPolicy {
 
     /// Returns the four vertical band heights.
     ///
-    /// Desktop reproduces `DESIGN.md:440-445` and the constants the adapter
+    /// Desktop reproduces `AGENTS.md` and the constants the adapter
     /// already carries. The Steam Deck bands shrink less than proportionally:
     /// they carry text at fixed authored sizes, so uniform scaling would
     /// squeeze the type before it squeezed the space.
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn the_desktop_policy_reproduces_the_authored_design_geometry() {
-        // `DESIGN.md:440-445` plus the per-variant values measured from the
+        // `AGENTS.md` plus the per-variant values measured from the
         // design file's Patch Strip frame.
         let desktop = ViewportDensityPolicy::Desktop;
         assert_eq!(desktop.bands().workspace_px, 896.0);

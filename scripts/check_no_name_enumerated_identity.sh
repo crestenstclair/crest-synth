@@ -10,12 +10,11 @@
 #   single exception is MasterGainDb: master gain is genuinely global, a
 #   property of the master stage rather than of any effect.
 #
-# Why this exists: the closed enumerated design (MixerTrackParameter::ReverbSend,
-# GlobalEffectsProcessor, GlobalParameter::ReverbRoomSize, ...) shipped even
-# though DESIGN.md declared the expansion in advance. A prose constraint is a
-# demonstrably insufficient control here, so the property is enforced
-# mechanically: reintroducing a name-enumerated effect or routing identity
-# fails the build rather than depending on a reviewer noticing.
+# Why this exists: the retired closed enumerated design
+# (MixerTrackParameter::ReverbSend, GlobalEffectsProcessor,
+# GlobalParameter::ReverbRoomSize, ...) shipped before the current canonical
+# registry boundary. AGENTS.md records the durable invariant, and this script
+# enforces it mechanically so a regression fails the build.
 #
 # What it checks: the four bound context trees (src/synth, src/mixer,
 # src/real_time, src/control) must not contain any of the retired identifiers
@@ -220,7 +219,7 @@ returns to be addressed by index into descriptor-driven arrays, so adding a
 registry entry never changes a Synth, Mixer, RealTime, or Control type.
 Register concrete effects in src/adapter/ instead. MasterGainDb is the
 single declared exception. If you believe a flagged identifier is legitimate,
-amend the product invariant in DESIGN.md first — do not weaken this script.
+amend the product invariant in AGENTS.md first — do not weaken this script.
 EOF
   exit 1
 }
