@@ -31,7 +31,7 @@
 //! Every other `demo-live-*` scene is deliberately input-isolated: while
 //! active, mapped semantic key input is not dispatched into `AppState`, so an
 //! asynchronous edit cannot replace the exact generation a checkpoint awaits
-//! (`AGENTS.md`). This scene is the opposite on purpose. It exists to
+//! (`DESIGN.md`). This scene is the opposite on purpose. It exists to
 //! be driven by hand. It therefore accepts input, makes no exact-generation
 //! claim, asserts nothing about audio, does not time out, and is not an alias
 //! for `demo-live`.
@@ -399,7 +399,7 @@ impl ComponentGalleryPage {
     /// The page one step before this one, or `None` at the first page.
     ///
     /// Non-wrapping, matching the nonwrapping movement the product uses
-    /// everywhere else (`AGENTS.md`). Returning `None` at the end rather
+    /// everywhere else (`DESIGN.md`). Returning `None` at the end rather
     /// than the same page is what lets the caller report *retained* instead of
     /// *changed*, so a step that did nothing is visible as a step that did
     /// nothing.
@@ -515,7 +515,7 @@ impl GalleryPageSelection {
     /// Stepping does not wrap. At the first page a previous-step retains the
     /// first page, and at the last a next-step retains the last, which is the
     /// nonwrapping movement the product uses everywhere else
-    /// (`AGENTS.md`). A wrapping step would let an operator holding one
+    /// (`DESIGN.md`). A wrapping step would let an operator holding one
     /// bracket cycle forever without ever learning they had reached an end.
     pub fn apply(&mut self, input: WindowInput) -> PageSelection {
         if input.kind() != WindowInputKind::KeyDown {

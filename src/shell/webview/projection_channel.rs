@@ -7,7 +7,7 @@
 //! the [`PROJECTION_EVENT`] named event through the tauri `Emitter`. The
 //! payload is exactly the projector's serialization — one schema, no
 //! page-facing struct, no trimmed or selected field. If the page ever needs a
-//! field this document lacks, the fix is in the projector and `AGENTS.md`, never
+//! field this document lacks, the fix is in the projector and `DESIGN.md`, never
 //! a wrapper here.
 //!
 //! # Generation gating

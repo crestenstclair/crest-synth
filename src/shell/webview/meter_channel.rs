@@ -5,7 +5,7 @@
 //! read through the same `AudioObservationCallback` accessor the retired native
 //! window paints its meters from — and the channel emits at most one frame
 //! per [`METER_INTERVAL`] on the [`METER_EVENT`] named event. This realizes
-//! AGENTS.md's meter transport semantics ("latest-value snapshots,
+//! DESIGN.md's meter transport semantics ("latest-value snapshots,
 //! decimated") as equivalent push traffic: same decimation, same
 //! loss-tolerance, no new state category.
 //!

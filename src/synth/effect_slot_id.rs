@@ -3,7 +3,7 @@ use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 /// The product-level maximum number of ordered post-effect slots per Patch.
 ///
-/// Sourced from the AGENTS.md product maximum of three ordered post-FX slots:
+/// Sourced from the DESIGN.md product maximum of three ordered post-FX slots:
 /// no slice, snapshot, rack, or graph may exceed it without changing that
 /// declaration.
 pub const MAX_EFFECT_SLOTS: usize = 3;

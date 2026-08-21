@@ -10,7 +10,7 @@
 //! failure this type exists to prevent.
 //!
 //! Every state announces itself with text or shape and not with color alone
-//! (`AGENTS.md`). That pairing is declared here as data, in
+//! (`DESIGN.md`). That pairing is declared here as data, in
 //! [`ComponentState::appearance`], rather than as branching inside each
 //! primitive.
 //!
@@ -68,7 +68,7 @@ pub const COMPONENT_STATE_COUNT: usize = 9;
 /// The authored progress words a [`ComponentState::Loading`] component
 /// carries, in lifecycle order.
 ///
-/// `AGENTS.md` — a targeted structural row displays its active and
+/// `DESIGN.md` — a targeted structural row displays its active and
 /// requested value plus `Preparing`, then `Activating`. Loading reuses that
 /// vocabulary instead of introducing a second one, so the word a loading
 /// component shows is the same word the structural-edit lifecycle already
@@ -131,7 +131,7 @@ impl ComponentState {
     /// `Loading` and `Error` deliberately reuse the vocabulary already
     /// declared for structural edits — the adjustment accent with its progress
     /// text, and the warning accent with typed short text. Neither invents a
-    /// second visual language, and neither animates: `AGENTS.md` asks for
+    /// second visual language, and neither animates: `DESIGN.md` asks for
     /// text or shape, and a spinner would additionally force a repaint the
     /// 16 ms idle cadence does not want.
     pub const fn appearance(self) -> StateAppearance {
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn mute_and_solo_carry_the_authored_words() {
-        // `AGENTS.md` — mute and solo pair warning/positive color with
+        // `DESIGN.md` — mute and solo pair warning/positive color with
         // explicit `M ON` or `S ON` text.
         assert_eq!(
             ComponentState::Muted.appearance().signal,

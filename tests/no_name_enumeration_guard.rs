@@ -10,7 +10,7 @@
 //!
 //! Why this is a mechanical gate rather than prose: the closed enumerated
 //! design (`MixerTrackParameter::ReverbSend`, `GlobalEffectsProcessor`,
-//! `GlobalParameter::ReverbRoomSize`, ...) shipped even though `AGENTS.md`
+//! `GlobalParameter::ReverbRoomSize`, ...) shipped even though `DESIGN.md`
 //! declared the three-slot / eight-return expansion in advance. A design
 //! document is a demonstrably insufficient control here, so a failed check —
 //! not a reviewer's attention — is what stops the next closed shortcut.
@@ -33,7 +33,7 @@
 //! If this test fails on your change, do not weaken the script or this test:
 //! address the effect or bus by index/registry entry instead, or — if you
 //! believe the identifier is genuinely legitimate — amend the invariant in
-//! `AGENTS.md` first.
+//! `DESIGN.md` first.
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -89,7 +89,7 @@
   //
   // The order is the order the projection emits, and it has to be: the
   // capability's own rows belong to the instrument the engine row names, but
-  // the projection emits them *after* the envelope (AGENTS.md: "Engine,
+  // the projection emits them *after* the envelope (DESIGN.md: "Engine,
   // Attack, Decay, Sustain, Release, descriptor-declared instrument
   // StructuralChoice rows"), so a group that gathered them under the engine
   // row would paint them out of the reducer's own order. Grouping is a
@@ -507,7 +507,7 @@
           // The document's own authored name for the stored id, never a name
           // composed here. `parameter.value` is the choice *identity* —
           // `sf2.bank-0.program-40`, `braids.model.csaw` — and painting it is
-          // the defect FR-014 closes; AGENTS.md calls this exact row "the
+          // the defect FR-014 closes; DESIGN.md calls this exact row "the
           // authored-name Preset row". The projection carries the descriptor's
           // label beside the id as `selectedLabel`, so the page reads a name it
           // was given (mission finding F-33). A choice with no projected label

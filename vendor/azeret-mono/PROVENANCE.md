@@ -1,7 +1,7 @@
 # Azeret Mono source provenance
 
 This directory contains the Azeret Mono typeface required by the Crest Synth
-visual system. `AGENTS.md` specifies Azeret Mono for every type style, in the
+visual system. `DESIGN.md` specifies Azeret Mono for every type style, in the
 Regular, Medium, SemiBold, and Bold weights.
 
 - Upstream: `https://github.com/google/fonts/tree/main/ofl/azeretmono`
@@ -23,7 +23,7 @@ fonttools varLib.instancer "AzeretMono[wght].ttf" wght=<400|500|600|700> \
     -o AzeretMono-<Regular|Medium|SemiBold|Bold>.ttf
 ```
 
-The derivation maps `AGENTS.md`'s named weights onto the upstream `wght` axis:
+The derivation maps `DESIGN.md`'s named weights onto the upstream `wght` axis:
 Regular 400, Medium 500, SemiBold 600, Bold 700. No outline, metric, or naming
 data is edited by hand.
 

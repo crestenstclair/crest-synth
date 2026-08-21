@@ -15,7 +15,7 @@
 //! 1. **The expected values are written independently of the thing under
 //!    test.** [`AUTHORED_COLORS`], [`AUTHORED_TYPE_STYLES`],
 //!    [`AUTHORED_SPACING`], and [`AUTHORED_RADII`] are transcribed from
-//!    `AGENTS.md` § Colors and § Type and geometry — the as-built token
+//!    `DESIGN.md` § Colors and § Type and geometry — the as-built token
 //!    reference —
 //!    not read back from `src/shell/visual/token.rs` or from the generator.
 //!    The generated stylesheet must spell each authored value verbatim
@@ -114,15 +114,15 @@ use serde_json::Value;
 const ACCEPTANCE_MARKER: &str = "CREST_ACCEPTANCE component_vocabulary passed";
 
 // ===========================================================================
-// The authored table, transcribed from AGENTS.md
+// The authored table, transcribed from DESIGN.md
 // ===========================================================================
 //
-// `AGENTS.md` is the as-built authority for the token values. The values below
+// `DESIGN.md` is the as-built authority for the token values. The values below
 // are copied from it, not from the vocabulary, so a token change that drifts
 // from the recorded contract fails here rather than agreeing with itself.
 
 /// Every authored color: the vocabulary's role, the canonical name the design
-/// file publishes, and the authored value as `AGENTS.md` § Colors writes it.
+/// file publishes, and the authored value as `DESIGN.md` § Colors writes it.
 const AUTHORED_COLORS: [(SemanticColor, &str, &str); 17] = [
     (SemanticColor::BgCanvas, "color/bg/canvas", "#0c1015"),
     (SemanticColor::BgSurface, "color/bg/surface", "#121821"),
@@ -176,7 +176,7 @@ const AUTHORED_COLORS: [(SemanticColor, &str, &str); 17] = [
 ];
 
 /// Every authored type style: the vocabulary's style, the canonical name, and
-/// `AGENTS.md` § Type and geometry's size / line / weight / tracking row.
+/// `DESIGN.md` § Type and geometry's size / line / weight / tracking row.
 const AUTHORED_TYPE_STYLES: [(TypeStyle, &str, f32, f32, &str, u16, f32); 8] = [
     (
         TypeStyle::DisplayScreen,
@@ -252,7 +252,7 @@ const AUTHORED_TYPE_STYLES: [(TypeStyle, &str, f32, f32, &str, u16, f32); 8] = [
     ),
 ];
 
-/// `AGENTS.md`: "Spacing: 4, 8, 12, 16, 24, 32 px."
+/// `DESIGN.md`: "Spacing: 4, 8, 12, 16, 24, 32 px."
 const AUTHORED_SPACING: [(SpacingStep, &str, f32); 6] = [
     (SpacingStep::S4, "space/4", 4.0),
     (SpacingStep::S8, "space/8", 8.0),
@@ -262,25 +262,25 @@ const AUTHORED_SPACING: [(SpacingStep, &str, f32); 6] = [
     (SpacingStep::S32, "space/32", 32.0),
 ];
 
-/// `AGENTS.md`: "Radius: 0, 4, 8 px."
+/// `DESIGN.md`: "Radius: 0, 4, 8 px."
 const AUTHORED_RADII: [(Radius, f32); 3] = [
     (Radius::None, 0.0),
     (Radius::Small, 4.0),
     (Radius::Large, 8.0),
 ];
 
-/// `AGENTS.md`: "Minimum interactive target: 48 px."
+/// `DESIGN.md`: "Minimum interactive target: 48 px."
 const AUTHORED_MIN_TARGET_PX: f32 = 48.0;
-/// `AGENTS.md`: "Resting keyline: 1 px."
+/// `DESIGN.md`: "Resting keyline: 1 px."
 const AUTHORED_KEYLINE_RESTING_PX: f32 = 1.0;
-/// `AGENTS.md`: "Focus: 3 px cyan keyline"; "Adjustment: 3 px amber keyline."
+/// `DESIGN.md`: "Focus: 3 px cyan keyline"; "Adjustment: 3 px amber keyline."
 const AUTHORED_KEYLINE_EMPHASIS_PX: f32 = 3.0;
-/// `AGENTS.md`: "halo radius 8, spread 1, opacity 0.28."
+/// `DESIGN.md`: "halo radius 8, spread 1, opacity 0.28."
 const AUTHORED_HALO_RADIUS_PX: f32 = 8.0;
 const AUTHORED_HALO_SPREAD_PX: f32 = 1.0;
 const AUTHORED_HALO_OPACITY: f32 = 0.28;
 
-/// `AGENTS.md`: "Mixer fader specimen: 14 px track, 8 px fill, 3 px bottom
+/// `DESIGN.md`: "Mixer fader specimen: 14 px track, 8 px fill, 3 px bottom
 /// shoulder, 34×6 px cap, 2 px rounding." Transcribed here, not read back
 /// from the vocabulary, so a drifted fader token fails against the design
 /// rather than against itself (WP07 T027, NFR-004).
@@ -784,7 +784,7 @@ fn check_declared_values_match_the_authored_table() {
     assert_eq!(
         ALL_COLORS.len(),
         AUTHORED_COLORS.len(),
-        "the vocabulary declares {} colors where AGENTS.md authors {}",
+        "the vocabulary declares {} colors where DESIGN.md authors {}",
         ALL_COLORS.len(),
         AUTHORED_COLORS.len()
     );
@@ -793,7 +793,7 @@ fn check_declared_values_match_the_authored_table() {
         assert_eq!(
             [resolved.r(), resolved.g(), resolved.b()],
             authored_rgb(hex),
-            "{name} resolves to #{:02x}{:02x}{:02x} where AGENTS.md authors {hex}",
+            "{name} resolves to #{:02x}{:02x}{:02x} where DESIGN.md authors {hex}",
             resolved.r(),
             resolved.g(),
             resolved.b()
@@ -814,7 +814,7 @@ fn check_declared_values_match_the_authored_table() {
     for role in ALL_COLORS {
         assert!(
             authored_roles.contains(role.canonical_name()),
-            "{} is declared but AGENTS.md authors no such color",
+            "{} is declared but DESIGN.md authors no such color",
             role.canonical_name()
         );
     }
@@ -822,7 +822,7 @@ fn check_declared_values_match_the_authored_table() {
     assert_eq!(
         ALL_TYPE_STYLES.len(),
         AUTHORED_TYPE_STYLES.len(),
-        "the vocabulary declares {} type styles where AGENTS.md authors {}",
+        "the vocabulary declares {} type styles where DESIGN.md authors {}",
         ALL_TYPE_STYLES.len(),
         AUTHORED_TYPE_STYLES.len()
     );
@@ -885,7 +885,7 @@ fn check_declared_values_match_the_authored_table() {
 /// The generated token table spells every authored value, verbatim — the
 /// value half of "authored Rust value → generated token → page usage".
 ///
-/// The expected declaration text is assembled from the AGENTS.md
+/// The expected declaration text is assembled from the DESIGN.md
 /// transcription above, never from the generator's helpers, so a generator
 /// that reformats, drops, or rewrites a value fails against the authored
 /// text. Counts and injectivity close the sweep: a token silently added or

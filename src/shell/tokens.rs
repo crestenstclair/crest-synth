@@ -7,7 +7,7 @@
 //! changes every appearance of it and no second definition can survive.
 //!
 //! Names are the canonical names published by the design file. Where
-//! `AGENTS.md` uses a shorter name for the same value, the design file's name
+//! `DESIGN.md` uses a shorter name for the same value, the design file's name
 //! wins in code and the mapping is recorded on the variant.
 //!
 //! Realizes `valueObject.Shell.SemanticVisualToken`.
@@ -52,7 +52,7 @@ impl AuthoredRgb {
 /// A named background, border, text, or accent role.
 ///
 /// The set is closed. A color the interface needs and this enum does not
-/// declare is added here and to `AGENTS.md`, never introduced as a local
+/// declare is added here and to `DESIGN.md`, never introduced as a local
 /// literal.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SemanticColor {
@@ -62,15 +62,15 @@ pub enum SemanticColor {
     BgSurface,
     /// `color/bg/panel` — grouped regions.
     BgPanel,
-    /// `color/bg/elevated` — controls and modals. Declared by `AGENTS.md`; the
+    /// `color/bg/elevated` — controls and modals. Declared by `DESIGN.md`; the
     /// design file does not publish it as a variable.
     BgElevated,
     /// `color/bg/selected` — the selected-row background. Published by the
-    /// design file and retained in the as-built vocabulary in `AGENTS.md`.
+    /// design file and retained in the as-built vocabulary in `DESIGN.md`.
     BgSelected,
     /// `color/border/default` — resting hairlines.
     BorderDefault,
-    /// `color/border/strong` — structural separation. Declared by `AGENTS.md`.
+    /// `color/border/strong` — structural separation. Declared by `DESIGN.md`.
     BorderStrong,
     /// `color/text/primary` — primary content.
     TextPrimary,
@@ -86,19 +86,19 @@ pub enum SemanticColor {
     AccentPositive,
     /// `color/accent/warning` — error, mute, destructive.
     AccentWarning,
-    /// `color/accent/instrument/plates` — instrument identity. `AGENTS.md`
+    /// `color/accent/instrument/plates` — instrument identity. `DESIGN.md`
     /// names this `instrument`; both denote the same value.
     AccentInstrument,
-    /// `color/accent/patch` — patch identity. Declared by `AGENTS.md`.
+    /// `color/accent/patch` — patch identity. Declared by `DESIGN.md`.
     AccentPatch,
-    /// `color/accent/chorus` — chorus identity. Declared by `AGENTS.md`.
+    /// `color/accent/chorus` — chorus identity. Declared by `DESIGN.md`.
     AccentChorus,
 }
 
 /// Every declared color, in declaration order.
 ///
 /// The vocabulary is the union of the design file's thirteen published
-/// variables and the four additional semantic roles recorded in `AGENTS.md`.
+/// variables and the four additional semantic roles recorded in `DESIGN.md`.
 /// Neither source is trimmed to match the other.
 pub const ALL_COLORS: [SemanticColor; 17] = [
     SemanticColor::BgCanvas,
@@ -393,13 +393,13 @@ pub const FOCUS_HALO_SPREAD_PX: f32 = 1.0;
 
 /// The authored opacity of the focus halo.
 ///
-/// The design file carries `0x47` alpha — 71/255 = 0.2784. `AGENTS.md` rounds
+/// The design file carries `0x47` alpha — 71/255 = 0.2784. `DESIGN.md` rounds
 /// to 0.28 and that rounded value is what ships, so the two documents read the
 /// same number.
 pub const FOCUS_HALO_OPACITY: f32 = 0.28;
 
 // The mixer fader specimen geometry, measured from the authored design
-// (`AGENTS.md` § visual vocabulary; the design file's mixer fader specimen).
+// (`DESIGN.md` § visual vocabulary; the design file's mixer fader specimen).
 // Declared here so the projection page resolves them as generated custom
 // properties rather than carrying hand-copied pixel literals.
 

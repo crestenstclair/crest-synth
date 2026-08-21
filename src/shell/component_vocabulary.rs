@@ -48,8 +48,8 @@ use crate::shell::tokens::SemanticColor;
 /// yet name, and adding one fails compilation at [`control_for`] rather than
 /// quietly reusing an existing role's shapes.
 ///
-/// The roles are the surfaces `AGENTS.md` already declares, not an invented
-/// taxonomy — the PATCH strip and its rows (`AGENTS.md`), the sixteen
+/// The roles are the surfaces `DESIGN.md` already declares, not an invented
+/// taxonomy — the PATCH strip and its rows (`DESIGN.md`), the sixteen
 /// compact mixer columns (`:462`), the persistent Utility/Inspector (`:444`,
 /// `:466`), and the nested option modal with trapped focus (`:458`).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
@@ -308,7 +308,7 @@ pub const fn control_for(kind: SemanticControlKind, role: PresentationRole) -> C
         (Kind::Identity, Role::ModalEntry) => Asks(Control::ModalOption),
 
         // A surface summary — the read-only root the Utility and Inspector
-        // panels carry (`AGENTS.md`). It is a row, and a mixer column has
+        // panels carry (`DESIGN.md`). It is a row, and a mixer column has
         // no surface to summarize.
         (Kind::Surface, Role::ListedRow | Role::PanelEntry) => Asks(Control::ParameterRow),
         (Kind::Surface, Role::VerticalStrip) => NotAskableInRole,
@@ -346,7 +346,7 @@ pub const UNAVAILABLE_MARK: &str = "--";
 ///
 /// The five that `ShellFrameObservation` emits, plus the whole frame that
 /// contains them. The set is closed: a new region is a change to the structural
-/// bands, which is a design decision authored in `AGENTS.md` and reflected in
+/// bands, which is a design decision authored in `DESIGN.md` and reflected in
 /// the observation, never a layout a composition invents.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -673,7 +673,7 @@ pub enum StatusMark<'a> {
 /// Every state that carries a status carries text or shape: `Disabled` says
 /// `Locked`, `Loading` reports `Preparing`/`Activating`, `Error` carries its
 /// short typed failure text, mute and solo say `M ON`/`S ON`
-/// (`AGENTS.md`), and `Selected` pairs its fill with a filled mark.
+/// (`DESIGN.md`), and `Selected` pairs its fill with a filled mark.
 /// `Resting`, `Focused`, and `Adjusting` carry no status: rest is the
 /// baseline, and focus and adjustment are carried by the frame and the cursor.
 pub fn status_mark<'a>(state: ComponentState, detail: StatusDetail<'a>) -> Option<StatusMark<'a>> {
@@ -762,7 +762,7 @@ mod tests {
     /// fails here.
     ///
     /// All three are mixer track columns. A column carries a level, a pan, and
-    /// the two track toggles (`AGENTS.md`); it never carries a choice,
+    /// the two track toggles (`DESIGN.md`); it never carries a choice,
     /// an asset, or a surface summary.
     const NOT_ASKABLE_PAIRS: [(SemanticControlKind, PresentationRole); 15] = [
         (SemanticControlKind::Choice, PresentationRole::VerticalStrip),

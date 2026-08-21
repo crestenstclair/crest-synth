@@ -97,7 +97,7 @@ use serde_json::{json, Value};
 /// after every declared check has run and passed.
 const ACCEPTANCE_MARKER: &str = "CREST_ACCEPTANCE component_composition passed";
 
-/// `AGENTS.md`: the two authored viewports.
+/// `DESIGN.md`: the two authored viewports.
 const AUTHORED_VIEWPORTS: [([f32; 2], ViewportDensityPolicy); 2] = [
     ([1_920.0, 1_080.0], ViewportDensityPolicy::Desktop),
     ([1_280.0, 800.0], ViewportDensityPolicy::SteamDeck),
@@ -105,7 +105,7 @@ const AUTHORED_VIEWPORTS: [([f32; 2], ViewportDensityPolicy); 2] = [
 
 /// The pairs the control family declares un-askable, and the only ones.
 ///
-/// Transcribed from `AGENTS.md` — a mixer track column carries a
+/// Transcribed from `DESIGN.md` — a mixer track column carries a
 /// level, a pan, and the two track toggles, so it never carries a choice, an
 /// asset, or a surface summary. Pinned here rather than read back from the
 /// selector, so that switching an askable pair off fails rather than
@@ -207,7 +207,7 @@ const COLUMN_ANATOMY: [&str; 5] = [
 /// The declared unavailable treatment, and the fabrications it must not be.
 const FORBIDDEN_MARKERS: [&str; 5] = ["", " ", "0", "0.0", "0.000"];
 
-/// The five entries `AGENTS.md` draws in the PATCH Utility panel, in
+/// The five entries `DESIGN.md` draws in the PATCH Utility panel, in
 /// authored order, with the projected driver each driven entry reads —
 /// transcribed from the product authority rather than parsed back from the
 /// page, so a panel that quietly rebinds or drops one fails here.
@@ -576,7 +576,7 @@ const SPACING_ASSIGNMENTS: [&str; 4] = [
     "indent =",
 ];
 
-/// The authored palette, transcribed from `AGENTS.md` § Colors, plus the
+/// The authored palette, transcribed from `DESIGN.md` § Colors, plus the
 /// palette the shell painted before the vocabulary landed.
 const PALETTE_HEXES: [(&str, &str); 24] = [
     ("color/bg/canvas", "#0c1015"),
@@ -1735,7 +1735,7 @@ fn check_a_designed_structure_with_no_view_data_is_marked() {
     assert_eq!(
         entries.len(),
         AUTHORED_UTILITY_ENTRIES.len(),
-        "the page designs {} Utility entries where AGENTS.md draws {}",
+        "the page designs {} Utility entries where DESIGN.md draws {}",
         entries.len(),
         AUTHORED_UTILITY_ENTRIES.len()
     );
